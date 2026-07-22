@@ -6,12 +6,14 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 
 | ドキュメント | 位置づけ | 状態 |
 | --- | --- | --- |
-| [design/sakutei-design-v2.4.md](design/sakutei-design-v2.4.md) | **設計の正（source of truth）。** 汎用収束エンジン全体の仕様。決定済みの設計のみを記録する。 | v2.4（最新・権威） |
+| [design/sakutei-design-v2.5.md](design/sakutei-design-v2.5.md) | **設計の正（source of truth）。** 汎用収束エンジン全体の仕様。決定済みの設計のみを記録する。 | v2.5（最新・権威） |
+| [design/CHANGELOG-v2.5.md](design/CHANGELOG-v2.5.md) | v2.4 → v2.5 の変更一覧（衛星の天井・BulkObserve 一貫性契約・claim の git 配布と S2-free シャード）。 | — |
+| [design/sakutei-design-v2.4.md](design/sakutei-design-v2.4.md) | 旧版（歴史として保持、編集しない）。 | v2.4（旧版） |
 | [design/CHANGELOG-v2.4.md](design/CHANGELOG-v2.4.md) | v2.3 → v2.4 の変更一覧（早期収束パス・BulkObserve・claim-as-intent）。 | — |
 | [design/sakutei-design-v2.3.md](design/sakutei-design-v2.3.md) | 旧版（歴史として保持、編集しない）。 | v2.3（旧版） |
 | [design/CHANGELOG-v2.3.md](design/CHANGELOG-v2.3.md) | v2.2 → v2.3 の変更一覧（20 件、対応レビュー指摘・見送り理由つき）。 | — |
 | [design/sakutei-design-v2.2.md](design/sakutei-design-v2.2.md) | 旧版（歴史として保持、編集しない）。 | v2.2（旧版） |
-| [design/reconciler-design-v1.md](design/reconciler-design-v1.md) | 収束エンジンコア（reconciler）の初期設計メモ。コアの制御ループ・型・実装判断がより詳細。矛盾する場合は **v2.3 が優先**。 | v1（背景資料） |
+| [design/reconciler-design-v1.md](design/reconciler-design-v1.md) | 収束エンジンコア（reconciler）の初期設計メモ。コアの制御ループ・型・実装判断がより詳細。矛盾する場合は **v2.5 が優先**。 | v1（背景資料） |
 
 ## 実装例（examples/）
 
@@ -30,6 +32,8 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 | review/v2.3/scenarios/01〜20-\*.md | v2.3 での再検討（前回ギャップの解消/部分/未解消を差分判定）。 |
 | [review/v2.4/README.md](review/v2.4/README.md) | **第 3 ラウンド総括(対象: v2.4)。** 早期収束パス+スケールアウト経路の影響 7 構成の差分再判定と全 20 構成の現在地。 |
 | review/v2.4/scenarios/\*.md | v2.4 での再検討（04/06/07/11/14/19/20 の 7 構成）。 |
+| [review/v2.5/README.md](review/v2.5/README.md) | **第 4 ラウンド総括(対象: v2.5)。** 衛星の天井・BulkObserve 契約・S2-free シャードの影響 7 構成の差分再判定と v2.2 からの推移。 |
+| review/v2.5/scenarios/\*.md | v2.5 での再検討（04/06/07/11/14/19/20 の 7 構成）。 |
 
 ## プレゼンテーション（web/）
 
@@ -39,8 +43,8 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 
 ## 読む順序の推奨
 
-1. `design/sakutei-design-v2.4.md` — 全体像・原則・v1a/v1b/v1.5 スコープを把握
-2. `design/CHANGELOG-v2.4.md` — 直近の設計変更とその理由
+1. `design/sakutei-design-v2.5.md` — 全体像・原則・v1a/v1b/v1.5 スコープを把握
+2. `design/CHANGELOG-v2.5.md` — 直近の設計変更とその理由
 3. `design/reconciler-design-v1.md` — コアの制御ループと型を深掘り
 4. `examples/proxmox-mysql-dbaas-schema.md` — Provider / 合成リソースの具体像
-5. `review/v2.4/README.md` — 現設計の適用可能性の到達点と残存課題
+5. `review/v2.5/README.md` — 現設計の適用可能性の到達点と残存課題

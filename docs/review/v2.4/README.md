@@ -1,5 +1,7 @@
 # v2.4 再検討 総括 — 影響構成の差分再判定(第 3 ラウンド)
 
+> **注:** 本ラウンドで顕在化した共通課題(衛星 QPS・BulkObserve 一貫性・claim の git スケール)は v2.5 で対処済み。最新の判定は [../v2.5/README.md](../v2.5/README.md) を参照。
+
 実施日: 2026-07-22。対象: `docs/design/sakutei-design-v2.4.md`(早期収束パス+スケールアウト経路を追加。変更内容は [CHANGELOG-v2.4](../../design/CHANGELOG-v2.4.md))。
 
 v2.4 の 2 提案(§6.8 早期収束パス / §5.7 BulkObserve・§12.4 claim-as-intent)の影響が大きい **7 構成のみ**を再判定した。残り 13 構成は v2.3 判定([../v2.3/README.md](../v2.3/README.md))を引き継ぐ。

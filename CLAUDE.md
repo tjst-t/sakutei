@@ -19,11 +19,13 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── design/
-    │   ├── sakutei-design-v2.4.md             # ★設計の正（source of truth）
+    │   ├── sakutei-design-v2.5.md             # ★設計の正（source of truth）
+    │   ├── CHANGELOG-v2.5.md                  # v2.4→v2.5（衛星の天井・BulkObserve契約・S2-free）
+    │   ├── sakutei-design-v2.4.md             # 旧版（歴史として保持・編集しない）
     │   ├── CHANGELOG-v2.4.md                  # v2.3→v2.4（早期収束パス・BulkObserve・claim）
-    │   ├── sakutei-design-v2.3.md             # 旧版（歴史として保持・編集しない）
+    │   ├── sakutei-design-v2.3.md             # 旧版
     │   ├── CHANGELOG-v2.3.md                  # v2.2→v2.3 の変更一覧（20件・見送り理由つき）
-    │   ├── sakutei-design-v2.2.md             # 旧版（歴史として保持・編集しない）
+    │   ├── sakutei-design-v2.2.md             # 旧版
     │   └── reconciler-design-v1.md            # コアの初期設計メモ（背景資料）
     ├── examples/
     │   └── proxmox-mysql-dbaas-schema.md      # Provider/合成リソースの worked example
@@ -32,12 +34,13 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
     │   ├── 01〜03-*-review.md                 # 設計レビュー（整合性/安全性/実装可能性）
     │   ├── scenarios/01〜20-*.md              # 20構成の適用可能性検討（対象: v2.2）
     │   ├── v2.3/                              # 第2ラウンド（対象: v2.3）: README.md + scenarios/
-    │   └── v2.4/                              # 第3ラウンド（対象: v2.4）: README.md + scenarios/（7構成）
+    │   ├── v2.4/                              # 第3ラウンド（対象: v2.4）: 7構成の差分再判定
+    │   └── v2.5/                              # 第4ラウンド（対象: v2.5）: 7構成の差分再判定
     └── web/
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `sakutei-design-v2.4.md` が唯一の「設計の正」。v2.2/v2.3 は旧版（編集しない）、`reconciler-design-v1.md` は詳細だが古く、矛盾時は **v2.4 が優先**。すべて日本語で書かれている。
+**権威関係:** `sakutei-design-v2.5.md` が唯一の「設計の正」。v2.2〜v2.4 は旧版（編集しない）、`reconciler-design-v1.md` は詳細だが古く、矛盾時は **v2.5 が優先**。すべて日本語で書かれている。
 
 ## アーキテクチャ（設計）
 
@@ -70,7 +73,9 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 - **SecretRef** — 専用型。`String()` は `***` を返し自動マスク、値は Apply 直前に JIT 解決。git への書き戻しループなし。
 - **devenv（坪庭）/ twin（縮景）** — 隔離検証 DC / デジタルツイン（render の外部入力を差し替えて本番プールに触れない）。
 - **早期収束パス（§6.8）** — 「edge-triggered な起床、level-triggered な真実」。`DesiredSource.Watch()` のヒント（revision+scope のみ、状態は運ばない）で影響サブ DAG だけ即時に新鮮な Observe→Diff→Apply。cause A/E のみ・集合差 prune 禁止・予算カウンタは定期経路と共有。ヒント喪失=次周期が拾う。
-- **BulkObserve（§5.7）/ claim-as-intent（§12.4）** — スケールの 3 段: ①バルク観測でスケール算術を桁で改善（API 系は単一デーモン 1 万規模）→ ②`--claim <scope-selector>` の静的シャーディング（割当自体を git の intent として宣言、二重 claim は fencing で検知、ルーター不要）→ ③動的ルーター/リバランスのみ v2。**シャード間協調は現実を介して行う**（相手の作った現実を Observe して gate。シャード間 RPC は正しさに関与しない）。
+- **BulkObserve（§5.7-5.8）/ claim-as-intent（§12.4-12.5）** — スケールの 3 段: ①バルク観測でスケール算術を桁で改善（API 系は単一デーモン 1 万規模。§5.8 一貫性契約: 非アトミック宣言・complete-or-error・**prune 非流用の型分離**・SDK 等価性テスト）→ ②`--claim <scope-selector>` の静的シャーディング（割当自体を git の intent として宣言、`intent/<scope>/` パス規約+sparse checkout+ミラー中継、二重 claim は fencing で検知、ルーター不要）→ ③動的ルーター/リバランスのみ v2。**シャード間協調は現実を介して行う**（相手の作った現実を Observe して gate。シャード間 RPC は正しさに関与しない）。
+- **衛星停止原則（§16.7-16.8）** — 「**衛星の停止は、変化を止めるが、維持を止めない**」。割当事実は Release まで不変なので Lookup はローカルキャッシュ可（S3 扱い）→ 定常収束は衛星コールゼロ、allocator QPS はフリート規模でなく churn に比例。停止時は新規採番リソースのみ waiting-allocation（converging 類似）。衛星停止影響表は §19.9。
+- **S2-free シャード（§12.5）** — エッジ/店舗 claim は Resource 収束のみを担い ローカル S2 を持たない（ホスト全損でも再イメージ→pull→収束で完全復旧）。Task/Workflow は中央 claim で実行するか完了マーカーを現実側に置く。開店/閉店=claim 変更 PR による所有権ハンドオフ。write 資格は拠点ローカル file SecretBackend（爆発半径=当該拠点、§15.7）。
 
 ## CLI（設計上の verb）
 
@@ -112,6 +117,7 @@ sakutei import       # 既存リアルを intent として書き出す（ブラ�
 - **v2+ のまま:** 多相 Task 状態機械、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、動的シャードルーター/リバランス、intent UI。
 - **v2.3 の主要新概念:** `external_owner`（外部オーケストレータ所有 scope の除外宣言+協調 seam）、段0-minimal（1 ノード縮退形）、`ledger_only`/`observability:none`（観測不能資産の階級）、fencing token。詳細は `docs/design/CHANGELOG-v2.3.md`。
 - **v2.4 の主要新概念:** 早期収束パス（§6.8）、BulkObserve（§5.7）、claim-as-intent 静的シャーディング（§12.4）、`DesiredSource.Watch`（§13.5）。詳細は `docs/design/CHANGELOG-v2.4.md`。
+- **v2.5 の主要新概念:** 衛星停止原則（§16.7-16.8, §19.9）、BulkObserve 一貫性契約（§5.8）、claim の git 配布規約+S2-free シャード（§12.5）、エッジ資格局所性（§15.7）。詳細は `docs/design/CHANGELOG-v2.5.md`。
 - **実装前に必ず決める（§26 カテゴリ A）:** コア型 `State`/`Plan`/`Scope`/`Event`、Provider interface 正準形（§5.1 に一本化済み）、S2 永続化先（quorum ストア+fencing）。v2.4 で確定済み: `ID`=`(provider, scope, id)` 複合、rendered_revision は scope 単位で算出、予算カウンタはシャード単位。
 - **非技術的未決:** 実装前に雇用主の IP / OSS 公開規程の確認が必要（§26.5）。自組織 社内利用が主目的、OSS 化はボーナス。
 
