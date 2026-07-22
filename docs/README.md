@@ -15,6 +15,14 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 | --- | --- |
 | [examples/proxmox-mysql-dbaas-schema.md](examples/proxmox-mysql-dbaas-schema.md) | v2.2 の §5（Provider 実装ガイド）と §7.5（合成リソース）の worked example。`proxmox_vm` を基底 Provider として定義し、その上に MySQL DBaaS を合成リソースとして構築する具体例。規範仕様ではなく解説用。 |
 
+## レビュー・適用可能性検討（review/）
+
+| ドキュメント | 内容 |
+| --- | --- |
+| [review/README.md](review/README.md) | **総括レポート。** 設計レビュー（3 観点）と 20 構成での適用可能性検討の判定一覧・横断的発見・設計へのフィードバック。 |
+| review/01〜03-\*-review.md | 設計レビュー各論（整合性・安全性・実装可能性）。 |
+| review/scenarios/01〜20-\*.md | 20 構成（ホームラボ〜大規模 DC〜マルチサイト〜IaaS/SDN/PaaS/SaaS 等）それぞれの詳細検討。 |
+
 ## プレゼンテーション（web/）
 
 | ファイル | 内容 |
