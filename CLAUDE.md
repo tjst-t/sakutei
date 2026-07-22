@@ -18,7 +18,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 ├── README.md
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
-    ├── design/
+    ├── architecture/
     │   ├── spec/                              # ★設計の正（source of truth）v3.0 分冊
     │   │   ├── README.md                      #   索引（版・改訂規約・目次・§→ファイル対応）
     │   │   └── part1〜part8-*.md              #   8部29節の本文（§番号は全部で一意）
@@ -38,7 +38,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `docs/design/spec/`（README.md + part1〜8）が唯一の「設計の正」v3.0（v2.6 と内容等価の全面再構成）。`old/` は旧版（編集しない）、矛盾時は **v3.0 が優先**。すべて日本語で書かれている。
+**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」v3.0（v2.6 と内容等価の全面再構成）。`old/` は旧版（編集しない）、矛盾時は **v3.0 が優先**。すべて日本語で書かれている。
 
 ## v3.0 の構成（8部29節・分冊）
 
@@ -118,7 +118,7 @@ sakutei import       # 既存リアルを intent として書き出す  --scope 
 ## 作業時の指針
 
 - ドキュメントはすべて日本語。追記・修正時も**日本語**で、既存の用語（英語機能名の component 名、庭園メタファの別名: 関守/台帳/図面/坪庭/縮景）を踏襲する。
-- 設計に関する記述を変更するときは `docs/design/spec/` を正とする。旧版やサンプルとの矛盾は v3.0 に寄せる。**改訂は分冊（part1〜8）を直接編集**し、`CHANGELOG-vX.Y.md` を `docs/design/` に追加して `spec/README.md` の版番号を上げる（版ごとのファイル複製はしない。履歴は git）。大規模再構成時のみ `spec/` 一式を `old/vX.Y/` にスナップショットする。
+- 設計に関する記述を変更するときは `docs/architecture/spec/` を正とする。旧版やサンプルとの矛盾は v3.0 に寄せる。**改訂は分冊（part1〜8）を直接編集**し、`CHANGELOG-vX.Y.md` を `docs/architecture/` に追加して `spec/README.md` の版番号を上げる（版ごとのファイル複製はしない。履歴は git）。大規模再構成時のみ `spec/` 一式を `old/vX.Y/` にスナップショットする。
 - `generated/` は自動生成専用（ヘッダ必須・直接コミット拒否）、`intent/` は人が書く intent の出力先（claim シャーディング時は `intent/<scope>/` 規約）。
 - **Schema 設計が最難関**（secret/managed/ordered/identity の誤宣言は安全保証を黙って無効化する。identity は運用上の変更頻度で選ぶ）。
 - コンポーネント名は機能的な英語名（reconciler / credential-broker / allocator / catalog）を使う。固有名詞は「Sakutei」のみ。

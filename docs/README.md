@@ -2,14 +2,14 @@
 
 Sakutei（作庭）の設計ドキュメント一覧。現時点ではコードは未実装で、本リポジトリは**設計仕様のみ**を保持する。
 
-## 設計仕様（design/）
+## 設計仕様（architecture/）
 
 | ドキュメント | 位置づけ | 状態 |
 | --- | --- | --- |
-| [design/spec/README.md](design/spec/README.md) | **設計の正（source of truth）の索引。** v3.0 は 8 部 29 節の分冊構成（part1〜part8）。§番号は全部を通して一意。 | v3.0（最新・権威） |
-| design/spec/part1〜8-\*.md | 各部の本文（思想と境界 / 中核モデル / 収束機構 / 安全機構 / スケールと分散 / 衛星と外部世界 / 運用ライフサイクル / 実装）。 | v3.0 |
-| [design/CHANGELOG-v3.0.md](design/CHANGELOG-v3.0.md) | v2.6 → v3.0 の構成対応マップ（内容等価の全面再構成・統合時調整・分冊化の記録）。 | — |
-| design/old/ | 旧版アーカイブ（歴史として保持、編集しない）: `sakutei-design-v2.2〜v2.6.md`、各 `CHANGELOG-v2.x.md`、`reconciler-design-v1.md`（コアの初期設計メモ・背景資料）。矛盾する場合は **v3.0 が優先**。 | 旧版 |
+| [architecture/spec/README.md](architecture/spec/README.md) | **設計の正（source of truth）の索引。** v3.0 は 8 部 29 節の分冊構成（part1〜part8）。§番号は全部を通して一意。 | v3.0（最新・権威） |
+| architecture/spec/part1〜8-\*.md | 各部の本文（思想と境界 / 中核モデル / 収束機構 / 安全機構 / スケールと分散 / 衛星と外部世界 / 運用ライフサイクル / 実装）。 | v3.0 |
+| [architecture/CHANGELOG-v3.0.md](architecture/CHANGELOG-v3.0.md) | v2.6 → v3.0 の構成対応マップ（内容等価の全面再構成・統合時調整・分冊化の記録）。 | — |
+| architecture/old/ | 旧版アーカイブ（歴史として保持、編集しない）: `sakutei-design-v2.2〜v2.6.md`、各 `CHANGELOG-v2.x.md`、`reconciler-design-v1.md`（コアの初期設計メモ・背景資料）。矛盾する場合は **v3.0 が優先**。 | 旧版 |
 
 ## 実装例（examples/）
 
@@ -42,8 +42,8 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 
 ## 読む順序の推奨
 
-1. `design/spec/README.md` — 設計の正の索引。ここから 8 部（思想→モデル→収束→安全→スケール→衛星→運用→実装）を辿る
-2. `design/old/reconciler-design-v1.md` — コアの制御ループと型を深掘り（背景資料）
+1. `architecture/spec/README.md` — 設計の正の索引。ここから 8 部（思想→モデル→収束→安全→スケール→衛星→運用→実装）を辿る
+2. `architecture/old/reconciler-design-v1.md` — コアの制御ループと型を深掘り（背景資料）
 3. `examples/proxmox-mysql-dbaas-schema.md` — Provider / 合成リソースの具体像
 4. `review/v2.6/README.md` — 適用可能性の到達点（最終判定分布）と収束宣言
-5. 設計の変遷を追う場合: `design/old/CHANGELOG-v2.3〜v2.6.md` → `design/CHANGELOG-v3.0.md` を順に
+5. 設計の変遷を追う場合: `architecture/old/CHANGELOG-v2.3〜v2.6.md` → `architecture/CHANGELOG-v3.0.md` を順に
