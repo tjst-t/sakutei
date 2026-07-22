@@ -1,0 +1,280 @@
+{
+  "datastores": [
+    {
+      "name": "intent(git)",
+      "purpose": "desired（理想状態）の正。人が書く platform 層 intent と RenderedSource の生成物。DesiredSource=FileSource の実体で、履歴/レビュー/監査の半分を git が担う（§21.1, §26.3）",
+      "consistency": "strong（commit 連鎖。単一書込経路を PR で保証。commit hash = intent_revision）",
+      "backup": "git remote（GitHub/GitLab）+ 各段0 ノードのローカルミラー（読み取り全断耐性・§25.2）。外部 git は稼働必須依存にしない"
+    },
+    {
+      "name": "メモリ(S1観測 / S3履歴)",
+      "purpose": "S1=リソースの current 観測キャッシュ（そもそも保持しない=観測 state レス）。S3=振動検知/ベースライン/backoff/Since/in-flight 集合/last-seen リング/Lookup キャッシュ（§4.9, §8.4, §10.5）",
+      "consistency": "none（プロセスローカル・揮発）",
+      "backup": "なし。喪失=再導出。S1 は毎周期 Observe で再取得、S3 は検知が数周鈍るだけ（安全側）。永続化しないことが観測 state レスの看板を守る条件"
+    },
+    {
+      "name": "S2ストア(quorum + fencing)",
+      "purpose": "S2 進行 state。Task/Workflow の進行フェーズ・承認待ち・rolling 進行位置・invariant 状態、シャードルーターの claim 割当表、累積破壊予算カウンタ（喪失=事故:誤配送/二重実行）（§4.9, §25.3）",
+      "consistency": "strong（quorum。単一 writer を fencing token で保証・二重 claim 検知。DR の claim ハンドオフで旧プライマリの遅延書込を弾く）",
+      "backup": "quorum ストア or 同期レプリカ + fencing（§25.3）。allocator の割当記録も同置き場に相乗り可（§19.8）"
+    },
+    {
+      "name": "S4監査",
+      "purpose": "append-only の Event ログ（Apply 実行記録・承認事実・BreakGlass 使用・head アンカー）。原因タグ A/B/C/D/E がそのまま帰属になる（§26.3）",
+      "consistency": "append-only + 連鎖ハッシュ（改竄検知）。収束経路から不可視・別権限別プロセスで書く",
+      "backup": "WORM ストレージ or 外部 SIEM への即時 push（毎周/毎時）。head hash を外部アンカー。侵害ホストが自分の犯行ログを改竄できないことをストレージ層で担保（§26.3）"
+    },
+    {
+      "name": "allocator(SQLite BEGIN IMMEDIATE or NetBox)",
+      "purpose": "採番の事実（(pool,owner)→value）。VLAN/IP/ASN のプール払い出し記録=冪等性の記憶。inventory でも intent でもない第3のカテゴリ（§19.1, §19.9）",
+      "consistency": "strong（SQLite BEGIN IMMEDIATE で同一プールへの並行 Allocate を直列化し二重払い出しを防ぐ。1 プール 1 権威・§19.7）",
+      "backup": "同期レプリカ + fencing token / 世代番号（active/standby・§19.8）。喪失時は現実 Observe/List から owner→value を逆引き再構築（§19.7）。実装は AllocationAuthority seam で NetBox/Infoblox 等へ差替可"
+    },
+    {
+      "name": "DesiredStore(将来・bbolt/SQLite)",
+      "purpose": "理想状態の embedded KV 保持先（将来）。並行書込やクエリ性が実問題になった時点で FileSource から DesiredStore seam 経由で移行（§21.3）",
+      "consistency": "single-writer（embedded KV）。etcd（分散合意）は不要——etcd は多書き手の合意用であって永続化用ではない",
+      "backup": "ファイル同期。v1 は不採用（メモリ + file(git) が主）。DB プロセスゼロ・単一バイナリを維持する"
+    }
+  ],
+  "schemas": [
+    {
+      "entity": "ID",
+      "stored_in": "intent(git)",
+      "table": "（値オブジェクト・リソース識別子）",
+      "fields": [
+        {"name": "provider", "type": "string", "notes": "どの provider が扱うか"},
+        {"name": "scope", "type": "Scope", "notes": "ルーティングキー。claim シャーディングの境界"},
+        {"name": "local", "type": "string", "notes": "scope 内のローカル ID（provider が発行・観測。コアは不透明に扱う）"}
+      ],
+      "invariants": [
+        "ID の scope がルーティングキーであり claim シャーディングの担当境界を切る（§4.1）",
+        "global-unique な単一文字列 ID は採らない——再シャードでリソースの帰属が壊れるため複合キーにする",
+        "local の解釈は provider に閉じ、コアは不透明に扱う"
+      ]
+    },
+    {
+      "entity": "Scope",
+      "stored_in": "intent(git)",
+      "table": "（値オブジェクト・ラベル集合 + パス）",
+      "fields": [
+        {"name": "labels", "type": "map<string,string>", "notes": "例 {site: tokyo, cluster: prod}。provider 非依存の管理境界を1型で吸収"},
+        {"name": "path", "type": "string", "notes": "Path()=labels→intent/<scope>/... 派生値。rendered_revision 算出単位"}
+      ],
+      "invariants": [
+        "claim の scope-selector / prune 境界 / intent パス規約 / rendered_revision 算出単位の4用途が同一語彙を共有する（§4.2）",
+        "型付き（zone 型/cluster 型）にせずラベル集合1型に統一——provider 追加でコア型を変えないため",
+        "rendered_revision は scope 単位（Path 粒度）で算出する（§9.4）"
+      ]
+    },
+    {
+      "entity": "State",
+      "stored_in": "メモリ(S1観測 / S3履歴)",
+      "table": "（Schema 付き map・S1 は保持しない）",
+      "fields": [
+        {"name": "fields", "type": "map<string,TypedValue>", "notes": "key=Schema フィールド名、value=Schema 宣言型に沿う"},
+        {"name": "TypedValue.kind", "type": "FieldKind", "notes": "Schema の type と対応"},
+        {"name": "TypedValue.value", "type": "any", "notes": "実値"}
+      ],
+      "invariants": [
+        "観測 state レス=State は保持しない（S1・毎周期 Observe で再導出。周期越え再利用は禁止・§4.3, §8.2）",
+        "State は現実側の状態のみを表し desired を持たない——この分離が dry-run の正しさの根拠",
+        "各値は Schema の宣言型に従う（secret フィールドは値を持たず SecretRef 参照）"
+      ]
+    },
+    {
+      "entity": "Plan",
+      "stored_in": "メモリ(S1観測 / S3履歴)",
+      "table": "（Diff の出力・揮発）",
+      "fields": [
+        {"name": "ops", "type": "[]Op", "notes": "操作列"},
+        {"name": "op.kind", "type": "OpKind", "notes": "Create | Update | Delete"},
+        {"name": "op.target", "type": "ID", "notes": "対象（provider,scope,local 複合）"},
+        {"name": "op.destructive", "type": "bool", "notes": "★破壊性フラグ。rate limit/破壊予算/halt-all 凍結を駆動。不明時は破壊的側に倒す"},
+        {"name": "op.cause", "type": "CauseTag", "notes": "原因タグ A/B/C/D/E。per-resource 帰属"},
+        {"name": "op.diagnostic", "type": "string", "notes": "人間可読の差分診断（status/plan 表示用）"},
+        {"name": "op.fields", "type": "[]FieldDiff", "notes": "変わるフィールド（Update 時）"}
+      ],
+      "invariants": [
+        "Plan は Diff の出力であり Observe（現実を見るだけ）では作れない——Observe/Diff 分離が dry-run の根拠（§10.1）",
+        "原因タグは per-resource で確定する（Cycle グローバル revision では A と E の相乗りを塞げない・§10.3）",
+        "Destructive が安全機構の駆動軸。TrueObserve:false 等の不明時は破壊的側に倒す（非対称原則）"
+      ]
+    },
+    {
+      "entity": "Observation",
+      "stored_in": "メモリ(S1観測 / S3履歴)",
+      "table": "（Read の戻り・揮発）",
+      "fields": [
+        {"name": "availability", "type": "Availability", "notes": "ok（存在・State 有効） | unknown（到達不能） | converging（相手が収束作業中）"},
+        {"name": "state", "type": "State", "notes": "availability==ok のときのみ有効"},
+        {"name": "ready", "type": "map<string,bool>", "notes": "名前付き ready condition の充足状況（依存 gate 用）"},
+        {"name": "observed_at", "type": "time", "notes": "観測時刻。周期越え再利用の検知に使う"}
+      ],
+      "invariants": [
+        "unknown ≠ absent——到達不能を『存在しない』と混同しない（削除の巻き添えを防ぐ・§4.5）",
+        "Observe は desired を知らない——drifted/converged は Diff から導出、oscillating は履歴から導出",
+        "observed_at を各 Observation に刻み、周期をまたいだ再利用を拒否する（観測 state 再導入の防止・§4.5）"
+      ]
+    },
+    {
+      "entity": "ChangeHint",
+      "stored_in": "メモリ(S1観測 / S3履歴)",
+      "table": "（早期収束トリガ・合流キュー・揮発）",
+      "fields": [
+        {"name": "intent_revision", "type": "string", "notes": "どの intent 版か（合流時に最新を読む目印）"},
+        {"name": "scopes", "type": "[]Scope", "notes": "触られた scope 群（これ『だけ』を運ぶ）"}
+      ],
+      "invariants": [
+        "ヒントは真実を運ばない——変更後の値・状態は運ばず『この scope を今見に行け』としか言わない（§4.6, §8.6）",
+        "トリガ喪失は正しさを損なわない（遅延のみ・次の定期周期が必ず拾う）",
+        "同一 scope への複数ヒントは合流し、実行時に最新 desired を読む（古いヒントで古い状態を適用しない）"
+      ]
+    },
+    {
+      "entity": "Event",
+      "stored_in": "S4監査",
+      "table": "audit_events",
+      "fields": [
+        {"name": "kind", "type": "EventKind", "notes": "DriftDetected / ProviderUpgradeDiff / StageAwaitingApproval / BreakGlassUsed 等"},
+        {"name": "severity", "type": "Severity", "notes": "info | warning | critical"},
+        {"name": "level_or_edge", "type": "LevelKind", "notes": "level（継続状態 firing/resolved）か edge（事件・一回）か"},
+        {"name": "scope", "type": "Scope", "notes": "どの scope で起きたか"},
+        {"name": "resource", "type": "*ID", "notes": "個別リソース参照（あれば）"},
+        {"name": "revision", "type": "string", "notes": "関連する rendered_revision / intent_revision"},
+        {"name": "since", "type": "time", "notes": "level イベントの継続開始（transient↔stuck 自動昇格）"},
+        {"name": "cause", "type": "*CauseTag", "notes": "原因タグ（監査帰属。誰の commit 由来か/自己修復か）"}
+      ],
+      "invariants": [
+        "収束失敗は level（firing/resolved）で報告し、毎周同じアラートを撒く破綻を回避する（§22.3）",
+        "append-only + 連鎖ハッシュ + 外部アンカー——head を外部固定しないと全体書換で改竄可能（§26.3）",
+        "承認者は全員 S4 に append し『どの承認ゲートを誰が通したか』を原因タグの帰属と一体で追う（§26.6）"
+      ]
+    },
+    {
+      "entity": "SecretRef",
+      "stored_in": "intent(git)",
+      "table": "（値オブジェクト・desired 中の参照）",
+      "fields": [
+        {"name": "path", "type": "string", "notes": "例 vault:/db/prod#password。実値は保持しない"},
+        {"name": "gen", "type": "string", "notes": "世代。render フェーズ1 が Vault(KV v2) metadata から注入（ピン留めではない）"}
+      ],
+      "invariants": [
+        "String() は常に *** を返し自動マスク——ログ/Event/ダンプで平文化しない（型で防ぐ・§4.8）",
+        "実値化は Apply 直前・provider に渡す瞬間のみ .Resolve(ctx) で JIT 解決し使用後 Zero()",
+        "diff は参照同士で取る（値を知らなくても diff できる）——git への実値書き戻しループなし。rotate は intent_revision 不変・rendered_revision 変化=原因タグ E-secret で検出"
+      ]
+    },
+    {
+      "entity": "Allocation",
+      "stored_in": "allocator(SQLite BEGIN IMMEDIATE or NetBox)",
+      "table": "allocations",
+      "fields": [
+        {"name": "pool", "type": "string", "notes": "プール名（例 tenant-acme-vlans。intent でレンジを disjoint に分割宣言）"},
+        {"name": "owner", "type": "string", "notes": "払い出し要求者（冪等キー。同 owner→同 value）"},
+        {"name": "value", "type": "string", "notes": "払い出された ID（VLAN/IP/ASN）"},
+        {"name": "state", "type": "enum", "notes": "reserved（TTL 付き仮予約） | confirmed（本払い出し） | released（cooldown 中）"},
+        {"name": "fencing_token", "type": "int", "notes": "世代番号。standby 昇格時に上げ、古い active の Confirm/Release を fence する"}
+      ],
+      "invariants": [
+        "(pool,owner) で冪等——同じ owner には常に同じ value を返し二重払い出しを防ぐ（§19.3）",
+        "1 プール 1 権威——2 権威が同一プールから独立払い出しすると復帰時に採番衝突（最悪級事故）。プールをサイト毎に静的 disjoint 分割（§19.7）",
+        "Release は非対称——desired 消滅ではなく『現実から消えた（List に現れない）』を根拠にし cooldown 後に返却（§19.5）"
+      ]
+    },
+    {
+      "entity": "WorkflowProgress",
+      "stored_in": "S2ストア(quorum + fencing)",
+      "table": "workflow_progress",
+      "fields": [
+        {"name": "workflow_id", "type": "string", "notes": "Workflow/Task インスタンス識別子"},
+        {"name": "phase", "type": "string", "notes": "進行フェーズ（Idle/Staging/Applying/Rebooting/Confirming 等、多相 Task の状態機械）"},
+        {"name": "current_gate", "type": "string", "notes": "承認待ちゲート名（StageAwaitingApproval で停止中）"},
+        {"name": "invariant_state", "type": "json", "notes": "全体不変条件（min_active/quorum 等）の充足状況"},
+        {"name": "reached_step", "type": "string", "notes": "到達済み step（部分失敗からの再開点）"},
+        {"name": "fencing_token", "type": "int", "notes": "二重 claim/実行の検知。DR ハンドオフ時に旧プライマリの遅延書込を弾く"}
+      ],
+      "invariants": [
+        "S2 喪失は事故——喪失すると二重実行や中途半端な適用が起こる。quorum ストア + fencing で永続化（§25.3）",
+        "承認待ちは S2 の永続化により『待ち』フェーズで停止したまま留まる（§6.4）",
+        "各相の入口で『もう済んでいるか』を現実 Observe で確認し二重実行を防ぐ（べき等な再開・§6.2）"
+      ]
+    },
+    {
+      "entity": "ClaimAssignment",
+      "stored_in": "S2ストア(quorum + fencing)",
+      "table": "claim_router",
+      "fields": [
+        {"name": "scope_selector", "type": "Scope", "notes": "担当 scope（--claim {site: site-a} 等。intent としても宣言）"},
+        {"name": "owner_daemon", "type": "string", "notes": "その claim を収束するデーモン識別子"},
+        {"name": "fencing_token", "type": "int", "notes": "世代番号。二重 claim を検知し単一 writer を保証"}
+      ],
+      "invariants": [
+        "シャード割当表の喪失=誤配送（S2・喪失時=事故）。quorum ストアに永続化（§4.9, §25.3）",
+        "二重 claim は fencing token で検知する（DR の claim ハンドオフ時 split-brain 防止・§25.3）",
+        "シャード割当そのものを git の intent として宣言する（claim-as-intent。静的分割・動的調停機構は作らない）"
+      ]
+    }
+  ],
+  "design_indexes": [
+    {
+      "name": "allocations_pool_owner_uniq",
+      "purpose": "(pool,owner) 冪等採番の担保——同一 owner の再要求で必ず同一 value を返す",
+      "kind": "unique",
+      "note": "SQLite BEGIN IMMEDIATE で同一プールへの並行 Allocate を直列化。二重払い出し防止の一次防壁（§19.3, §19.9）"
+    },
+    {
+      "name": "claim_router_by_scope",
+      "purpose": "ID.scope をルーティングキーとして担当デーモンを引く（scoped reconcile / prune 境界 / sparse checkout）",
+      "kind": "lookup",
+      "note": "scope が claim シャーディング/prune 境界/intent パス/rendered_revision 算出の4用途を貫く語彙（§4.2, §17）"
+    },
+    {
+      "name": "audit_events_append_chain",
+      "purpose": "append-only + 連鎖ハッシュで改竄検知。head を外部アンカーに固定",
+      "kind": "append-only chain",
+      "note": "毎周/毎時 外部 SIEM/WORM へ即時 push。時系列（scope,since）で level イベントの firing/resolved を辿る（§26.3）"
+    },
+    {
+      "name": "in_flight_set",
+      "purpose": "per-resource Apply 排他——定期経路と早期収束パスが同一リソースへ同時 Apply しないための in-flight 集合",
+      "kind": "in-memory set (S3)",
+      "note": "rate limit は in-flight を含む同時変更数で評価（毎周少しずつ発射する抜け道を塞ぐ）。喪失は Apply 冪等 + 次周 Observe で安全に再導出（§8.4）"
+    }
+  ],
+  "api_contracts": [
+    {
+      "group": "承認ゲート API",
+      "base_path": "/workflows",
+      "summary": "段階適用（rolling/canary）の手動承認ゲートを HTTP で通過させる。ボディに承認者 ID + 署名。N-of-M（quorum n of m）・役割制約・申請者≠承認者（separation）を requirements で強制。承認 API 自体は認可を持たない（誰が叩けるかは上位 IdP）。承認された全承認者を S4 監査に append する。却下/タイムアウト=halt",
+      "endpoints": [
+        {"method": "POST", "path": "/workflows/{id}/gates/{gate}/approve", "summary": "ゲートに承認を投じる。requirements を満たす承認が揃った瞬間に次ステージへ進む。申請者≠承認者を型で強制し自己承認を塞ぐ（§6.4, §26.6）"}
+      ]
+    },
+    {
+      "group": "CLI（sakutei 単一バイナリ・サブコマンド）",
+      "base_path": "sakutei",
+      "summary": "エンドポイントではなくプロセス起動 verb。`sakutei`=常駐して回り続ける（本来の姿）／`sakutei plan`=dry-run（Diff で止める）／`sakutei reconcile`=一回収束（手動キック）、`--expect-revision <rev>` で期待 rendered_revision とズレていれば中断／`sakutei status`=drifted 一覧（適合レポート）／`sakutei import --scope <範囲> --out intent/`=既存リアルを intent へ書き出す／`sakutei --claim <scope-selector>`=担当 scope を宣言して常駐（静的シャーディング）。plan と reconcile はそれぞれ独立に Observe する（観測 state 再導入の防止）。apply は意図的に主 verb にしない（『叩く道具』でなく『回り続けるもの』・§26.6）",
+      "endpoints": []
+    }
+  ],
+  "event_contracts": [
+    {
+      "name": "Event",
+      "producer": "reconciler（収束コア）",
+      "consumers": ["Prometheus/Alertmanager（sink）", "外部 SIEM/WORM（S4 監査 push）", "catalog UI（ステータス表示）"],
+      "payload_sketch": "{kind, severity, level_or_edge, scope, resource(*ID), revision, since, cause(*A/B/C/D/E)}。単一型に kind enum を持たせ発生源と sink を分離。BreakGlassUsed / ProviderUpgradeDiff / StageAwaitingApproval / DriftDetected 等を1型で流す",
+      "ordering": "unordered",
+      "idempotency": "収束失敗は level（firing/resolved）で報告し毎周の重複アラートを回避（同一継続は更新・回復で resolved）。Workflow/canary 失敗は edge で1回通知。Since から transient↔stuck を自動昇格。ルーティング/沈黙/エスカレーションは Alertmanager へ委譲"
+    },
+    {
+      "name": "ChangeHint",
+      "producer": "DesiredSource.Watch（FileSource=git webhook/merge フック、DBSource=書込通知）",
+      "consumers": ["reconciler（早期収束パス・scoped reconcile）"],
+      "payload_sketch": "{intent_revision, scopes[]}。触られた scope 群だけを運ぶ。変更後の値・状態は一切運ばない（真実を運ばない）",
+      "ordering": "unordered",
+      "idempotency": "ヒント喪失は正しさを損なわない（遅延のみ・次の定期周期が必ず拾う）。同一 scope への複数ヒントは合流（coalesce）し実行時に最新 desired を読む。溢れたヒントは次の定期周期へ縮退。観測 state レス無傷（ヒントを現在状態として信じない）"
+    }
+  ],
+  "versioning_policy": "provider_version は『provider の diff/正規化ロジックのソースハッシュ』を SDK が自動算出し diff 入力に埋め込む（手動 version でなく reconciler 本体 version とも分離）。version 未埋め込みの provider は起動時に登録拒否＝fail-closed（Schema lint が version 未宣言を静的検出）。これにより原因タグ C（ghost diff）の検知漏れ＝危険側転倒を塞ぐ。intent_revision（人の commit=git hash / DB tx ID）と rendered_revision（intent + 解決済み外部入力すべてのハッシュ・scope 単位算出・decision-relevant な入力のみの決定的ハッシュで TTL ヒット/ミスや列挙順で揺れない）を型で分離し、A（意図）/E（外部入力変化）の判定基盤にする。Loader は YAML/JSON 両対応で round-trip 保持は YAML のみ配慮、JSON Schema でロード時検証（pruneable/scope/enum 必須化・循環検出・Norway 問題封じ）、将来 CUE へ差替余地（Starlark は round-trip 不可のため不採用）。コア型は後から変えると全 provider に波及するため構造を正準形として固定し、契約破壊は seam interface（Provider/Executor/Loader/DesiredSource/DesiredStore/SecretBackend/AllocationAuthority/CredentialProvider）で吸収する。ライセンスは Apache-2.0（v3.1・特許条項を含む）。"
+}

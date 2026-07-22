@@ -1,0 +1,32 @@
+{
+  "id": "ADR-0002",
+  "title": "観測 state レス + level-triggered を収束コアの土台にする",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "オンプレ基盤の宣言的管理では、既存ツールがそれぞれ構造的限界を持つ。Terraform は宣言と現実の間に state（現在状態のキャッシュ）を挟むため、宣言・state・現実の three-way diff と drift 地獄、state を正とみなす誤削除が原理的に付きまとう。Ansible は state を持たず冪等だが一回 push で終わり収束しない。Sakutei は k8s の収束原理（level-triggered な収束ループ）だけを借り、その代償の実装機構は捨てる。中核をどこに据えるかが、以降の dry-run の正しさ・原因タグ帰属・drift 検知漏れゼロのすべての前提になる。",
+  "alternatives": [
+    {
+      "name": "Terraform 型の state 保持",
+      "tradeoff": "宣言・state・現実の three-way diff と state ドリフト、state を正とする誤削除が構造的に付きまとうため却下"
+    },
+    {
+      "name": "edge-triggered（イベント一回処理）",
+      "tradeoff": "暴発はイベント分で止まるが、状態そのものを毎周判定できず drift 検知漏れが生じるため土台にできない"
+    }
+  ],
+  "decision": "毎周期、宣言された desired と現実の actual を再導出して差分を埋める level-triggered を駆動原理とし、かつ現実の現在状態をキャッシュとして保持しない観測 state レスを土台に据える。喪失が事故になる state（S2）だけを限定的に永続化する。",
+  "decision_note": "この二性質の組み合わせが、three-way diff / state ドリフト / drift 検知漏れを構造的に排除する。",
+  "consequences": [
+    "+ 宣言と現実の二項しか存在せず、両者の間にずれる中間物（state）が無いため state ドリフトが原理的に発生しない",
+    "+ 毎周・全リソースをリアル再観測するため drift 検知漏れがゼロになる",
+    "+ Observe と Diff が型で分離され dry-run が原理的に正しくなる",
+    "- 毎周・全 Observe が周期律速のコストになり、単一デーモンの規模天井と早期収束パスの必要を生む",
+    "- 観測を次周期に持ち越せない（周期越え再利用は観測 state の再導入として禁止）",
+    "従属: 状態分類 S1〜S4・Observe/Diff 分離・原因タグ B の消去法判定・シャード間協調は本原則の適用として導かれる"
+  ],
+  "reversibility_cost": "one_way_door",
+  "affects": ["*"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "この土台が崩れると後続すべて（dry-run の正しさ・原因タグ帰属・drift 検知漏れゼロ）が成立しない。撤回は事実上の別プロジェクト化。"
+}

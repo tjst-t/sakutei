@@ -1,0 +1,31 @@
+{
+  "id": "ADR-0022",
+  "title": "Provider SDK: 作者は約4関数 + List、SDK が横断保証を担う",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "provider の書きやすさが Sakutei の普及を直接決める。エコシステムで provider の数と品質を得た側が広く使われるのは先行ツール(Terraform)の教訓である。したがって設計の肝は、provider 作者が書く最小を極限まで削り、面倒はコア側の共通ライブラリ(SDK)が引き受けることにある。実装の重さの本体は Read/Apply のロジックではなく Schema を正しく書くことであり、Schema 宣言(secret/managed/ordered/identity)を誤ると設計が積み上げた安全保証が無音で無効化される。",
+  "alternatives": [
+    {
+      "name": "provider をフル手書きにする(SDK が横断保証を担わない)",
+      "tradeoff": "Diff・秘匿マスク・managed 除外・version 埋込・エラー分類・テストハーネスを作者が毎回書くことになり参入障壁が高く採用されない。約4関数 + List に削り SDK が横断保証を担う方がエコシステムを広げられる"
+    },
+    {
+      "name": "抽象リソース層(役割と実装の分離)を今作る",
+      "tradeoff": "2 つ目の同種 provider 実装が実際に必要になるまで抽象化しても検証できず、早すぎる抽象化は最大公約数を誤る。v1 は具体依存のみとし解禁トリガを登録して v2 に残す"
+    }
+  ],
+  "decision": "provider 作者が書くのは約4関数(Schema / Capabilities / Read / Apply)+ prune を許すなら List のみとし、Diff・secret マスキング・managed 除外・version 埋込・エラー分類・テストハーネス・BulkObserve 等価性テストは SDK が担う。最難関は Schema 設計であり、Schema lint をロード拒否レベルで強制し、identity は技術的一意性でなく運用上の変更頻度で選ぶ(物理トポロジ座標を推奨)。",
+  "consequences": [
+    "+ 作者は Schema → Read → Apply の順で約4関数を書けばよく、参入障壁が劇的に下がりエコシステムが広がる",
+    "+ 作者は自分の階級(完全/標準/最小)を選べ、Capabilities で正直に宣言すればコアが安全に縮退する(prune させない・破壊的側に倒す)",
+    "+ identity を物理トポロジ座標(leaf03-p12 等)にすれば筐体交換時に理想状態の変更が不要になり運用コストが下がる",
+    "+ golden path テンプレート・契約テスト自動生成・worked example で作者を最短経路に乗せられる",
+    "- Schema で secret/managed/ordered/identity を誤宣言すると安全保証が無音で外れるため Schema lint を必須にする",
+    "- Ansible 等の最小階級 provider では横断保証の多くが落ち、Sakutei の保証群は当面少数派のコア provider にしか完全には効かない(正直に認識すべき制約)"
+  ],
+  "reversibility_cost": "medium",
+  "affects": ["provider-sdk"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "抽象リソースの解禁トリガは『2 つ目の同種 provider 実装が実際に必要になったとき』。2 層 provider 戦略(自作コア + Ansible ロングテール)で埋める。§28 を正とする。"
+}

@@ -1,0 +1,30 @@
+{
+  "id": "ADR-0019",
+  "title": "設定は YAML/JSON + JSON Schema 検証(CUE は将来・Starlark 却下)",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "理想状態は人が書く語彙(YAML)と機械が書く経路(JSON = API write)の両方から供給される。catalog UI やテナントの即時書込は同じ理想状態木を機械経路で書き、人はテキストで手編集する。両経路が同一の木を安全に往復(round-trip)できることと、YAML の型曖昧性(Norway 問題等)を封じることが要件になる。将来、参照や導出がテンプレート側に溜まってきたときの移行余地も残す必要がある。",
+  "alternatives": [
+    {
+      "name": "設定言語に Starlark を採用する",
+      "tradeoff": "Starlark は round-trip 不可であり、API write(機械経路)とテキスト手編集(人経路)の往復と衝突する。往復できない設定言語は catalog の書込経路と両立しない"
+    },
+    {
+      "name": "最初から CUE を Loader の正にする",
+      "tradeoff": "CUE は検証 + 参照 + 導出を言語内に持つ強力な選択肢だが、参照(暗黙依存)が主役になる前に導入すると過剰。テンプレートにロジックが溜まり始めた時点で Loader を差し替える余地を残す方がよい"
+    }
+  ],
+  "decision": "v1 は YAML / JSON 両対応とし、同じ木を吐く別シリアライザとして Loader interface の下に置く(JSON = API の機械経路、YAML = 人の手編集、round-trip は YAML のみ配慮)。スキーマ検証は JSON Schema を外付けしロード時に強制する。参照が主役になったら CUE へ Loader を差し替える余地を残し、Starlark は round-trip 不可のため採らない。",
+  "consequences": [
+    "+ JSON Schema でロード時に pruneable/scope/enum 必須化・循環検出・YAML 型曖昧性(version は文字列必須等)を封じられる",
+    "+ Loader seam により CUE への移行余地を残しつつ、v1 は枯れた YAML/JSON で始められる",
+    "+ キー命名は snake_case を正とし Loader が Go フィールド名へ変換するので、depends_on/dependsOn の混在を吸収できる",
+    "- round-trip はコメント・整形保持を含めて YAML でのみ配慮するため、UI とテキスト手編集の 2 経路調停(catalog の難所)は別途対処が要る",
+    "- CUE 移行の再検討トリガ(カスタム関数の増加)を監視し続ける必要がある"
+  ],
+  "reversibility_cost": "medium",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "CUE 移行の再検討トリガは『テンプレート側にロジックが溜まり始めたとき』。§21.3・§29.2 を正とする。"
+}

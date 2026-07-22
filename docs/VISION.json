@@ -1,0 +1,53 @@
+{
+  "summary": "Sakutei は、オンプレミス基盤全域を対象とする宣言的インフラ収束エンジン。k8s の収束原理（level-triggered な収束ループ）だけを借り、観測 state を持たず毎周期リアルを再観測する『観測 state レス』により、回り続けながら drift を自動修復する。",
+  "target_users": [
+    "オンプレミス基盤の運用者（物理電源/BMC からネットワーク・ストレージ・ハイパーバイザ・VM・ゲスト OS・コンテナまでを収束管理したい層）",
+    "スイートスポット: 数十〜1万リソース規模で、単一デーモンが毎周全 Observe を回せる環境（数万を超えるとシャーディングへ）",
+    "スイートスポット: platform ownership 中心で、共有基盤を PR + 承認で厳格に統治し drift を自動修復したい環境",
+    "スイートスポット: 合成リソースとしてテンプレート化できる繰り返しの多い構成（IaaS カタログ・クラスタ・テナント）を持つ環境",
+    "スイートスポット: git / PR によるレビューと監査を受容する（あるいは根付かせられる）組織文化を持つ環境",
+    "適さない層: 管理対象機器の API が貧しく Observe すら困難な環境（SOHO 級 NW/ストレージ機器・ベンダーロックの箱）。可視化・drift 検知までが到達上限で収束（Apply）はできない",
+    "適さない層: 認可・quota・課金・セルフサービスポータルを必要とする上位テナント基盤（それ自体が別事業であり Sakutei の責務ではない）",
+    "適さない層: ゼロタッチ物理の立ち上げを求める層（電源も配線もない段0 の底を人手・OOB なしに起こす能力は責務外）"
+  ],
+  "problem": "既存の宣言的インフラ管理ツールはそれぞれ構造的な限界を持つ。Terraform は宣言と現実の間に state（現在状態のキャッシュ）を挟むため、宣言・state・現実の three-way diff が原理的に生じ、state ドリフト地獄と state を正とみなすことによる誤削除が付きまとう。Ansible は state を持たず冪等だが一回 push して終わり収束しないため、人手や外部要因で現実がずれても次に人が playbook を叩くまで放置され、drift の検知も自動修復もない。k8s は level-triggered で回り続けるが、その代償として apiserver・etcd の分散合意・scheduler・admission・CRD 足場という重い実装機構を抱え、オンプレ基盤の収束にはオーバースペックである。手作業が多く誰も正確な実態を把握していないオンプレでこそ、drift 自動修復と観測 state レスの価値が最大化する。",
+  "success_criteria": [
+    "『触っていないのに勝手に理想状態へ戻る』体験が greenfield / devenv 上で成立する（level-triggered な自己修復。v1a のゴールで、数百行のオーケストレータ + provider 数個で実証）",
+    "『壊れそうで止まる』が成立する。chaos テスト（provider をわざと落とす・drift を注入する・大量削除をトリガする）で、爆発半径制御・alert-only 縮退・oscillation 検知・unknown ≠ absent が壊れる前に効く",
+    "毎周・全リソースをリアル再観測するため drift 検知漏れがゼロになり、『state 上は収束しているが現実はずれている』状態が原理的に起きない",
+    "宣言と現実の二項しか存在せず両者の間にずれる中間物（state）が無いため、Terraform の three-way diff / state ドリフトが構造的に消える",
+    "Observe と Diff が型で分離されているため dry-run（sakutei plan、Diff で止める）が原理的に正しく『何が変わるか』を示せる",
+    "20 構成の適用可能性検討（v2.6 ラウンド）で ◎6 / ○10 / △2 / ✗0 に到達し、到達不能として残った領域が対象側の制約・別事業・責務外の三種に純化する（設計で解ける課題はすべて解けた収束状態）",
+    "『いつでも止められる』ことが担保される。グローバル freeze を1コマンドで叩け、Sakutei を止めても本番（データ面）は動き続ける（制御面が落ちてもデータ面は動く）",
+    "既存基盤へ安全に入れる。alert-only で drift 検知器として先に信頼を得て、scope 単位で『N 日間 diff ゼロ』を満たしたものから auto + closed-world へ段階昇格できる"
+  ],
+  "out_of_scope": [
+    "シークレットの値・動的発行・rotation は作らず Vault へ委譲する（SecretRef で参照し値を持たない）",
+    "配置最適化・ビンパッキング・migrate は作らず DRS / ハイパーバイザへ委譲する（scheduler を再発明しない。cluster への intent と粗い容量充足のみ担う）",
+    "時系列監視・通知ルーティング・沈黙は作らず Prometheus / Alertmanager へ委譲する（監視『設定』は Resource として収束するが、判定と通知は委譲）",
+    "人の ID・認証（IdP / SSO）と認可・quota・課金・ポータル（上位テナント基盤）は作らない。認可・quota 適用済みの理想状態を DesiredSource の一実装として受け取るだけ",
+    "アプリ層のデプロイ・スケールは作らず k8s 等へ委譲する（Sakutei は土台=インフラを供給）",
+    "intent の履歴・レビュー・改竄耐性アンカーは git（GitHub/GitLab）へ委譲する",
+    "ロングテール provider の実行実体は Ansible モジュールへ委譲する（モジュールのみ借り、実行モデル=playbook/一回 push は借りない）",
+    "k8s の実装機構は意図的に捨てる: 中央 API サーバ（apiserver）・分散合意（etcd）・scheduler・admission・CRD 足場は採らない",
+    "上位テナント基盤（認可/quota/課金/セルフサービスポータル）は別事業であり作らない（パブリック IaaS 級で残る差分は委譲先の実装工数）",
+    "ゼロタッチ物理・provisioner 実体は責務外。段0 の底の立ち上げは人手（Ansible + 金庫）から始まる",
+    "パブリッククラウド（AWS 等）の全面対応は主目標ではない。技術的には BulkObserve 経路で収束可能だが、Terraform のエコシステムが厚く採否は経済判断であり、Sakutei の主戦場はオンプレ"
+  ],
+  "tech_constraints": [
+    "言語は Go。全 interface 定義が Go で、バイナリは sakutei 単一・サブコマンドで機能分岐する",
+    "状態保存はメモリ + file（git）が主。将来 DesiredStore として bbolt / SQLite を差し替える。喪失が事故になる S2 のみ外部永続化する",
+    "etcd や必須 DB プロセスは持たない（分散合意を中枢に戻さない）",
+    "シークレットは HashiCorp Vault（KV v2）を SecretBackend として利用。段0-minimal では file ベース SecretBackend で縮退可能",
+    "設定形式は YAML + JSON（Loader 経由）、JSON Schema で検証。将来 CUE を検討",
+    "ブートストラップは Proxmox 3ノード + 統合 Ceph + VM-HA を Ansible で構築（段0）。段0-minimal は単一ノード縮退形",
+    "位置づけは OSS 個人プロジェクトを第一歩とする（職務発明・雇用主 IP 規程による着手前制約は存在しない）",
+    "ライセンスは Apache-2.0。最初のコード公開時点から適用する（特許条項を含み将来の企業利用でも安心）",
+    "実装は v1a（コア実証 ≈10 人月）/ v1b（brownfield 導入・採番連携）/ v1.5（手続きの最小形）にスライスする"
+  ],
+  "design_references": [
+    "Kubernetes: 収束原理（level-triggered な収束ループ）という動作原理だけを借りる。実装機構（apiserver/etcd/scheduler/admission/CRD）は捨てる",
+    "Terraform: 反面教師。宣言と現実の間に state を挟む設計が three-way diff / state ドリフトを生むため、観測 state レスで構造的に排除する",
+    "Ansible: 冪等性と『モジュール』（冪等な実行実体）を借りる。実行モデル（playbook / 一回 push）は借りず、収束ループに載せる"
+  ]
+}

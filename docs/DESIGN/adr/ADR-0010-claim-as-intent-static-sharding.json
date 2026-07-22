@@ -1,0 +1,32 @@
+{
+  "id": "ADR-0010",
+  "title": "claim-as-intent 静的シャーディング + シャード間協調は現実を介して",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "単一デーモンの天井を超えて複数デーモンへ分割する必要が生じる。素朴な動的ルーターは、どのデーモンがどの scope を担当するかの割当表（S2）とその可用性が新たな中心依存になり、shared-nothing の利点を失って「メタ収束器（収束器の割当を収束する収束器）」の轍を踏む。また分割後にシャード同士が状態を交換し合うと、交換した状態を信じることが観測 state を持つのと同じ罠になる。共有物（採番 = allocator・秘密 = Vault・intent = git）はすべて衛星に外出し済みで、この分解をそのままスケールの分解に再利用できる。",
+  "alternatives": [
+    {
+      "name": "中央ルーター + 割当表を新 S2 に置く",
+      "tradeoff": "割当表とその可用性が新たな中心依存になり、新しい可用性部品とメタ収束器の轍を踏むため却下"
+    },
+    {
+      "name": "動的リバランス（負荷に応じた自動 scope 移動）",
+      "tradeoff": "動的ルーターの中心依存を前提とし、静的シャーディングで大半のスケール要求を満たせるため v2 に留保"
+    }
+  ],
+  "decision": "デーモンは --claim <scope-selector> で起動し、全 intent を pull して自分の claim 分だけ収束する。シャード割当そのものを git の intent として宣言（claim-as-intent・PR レビュー / 履歴つき）し、新可用性部品も新 S2 も増やさない（二重 claim 検知は fencing 世代番号のみ S2）。シャード同士は互いに問い合わせず、相手の作った現実を Observe して gate する（観測 ready 待ちによる結果整合）——シャード間協調は現実を介して行う。",
+  "consequences": [
+    "+ 割当が git の既存 intent 経路に載り PR レビュー・監査の対象に格上げされ、新 S2 を fencing 世代番号のみに抑えられる",
+    "+ 各シャードが shared-nothing で独立に収束し、シャード間 RPC / 状態交換が正しさに一切関与しない（観測 state レス思想のスケール版）",
+    "+ ownership の論理境界がそのままシャードの物理境界・予算カウンタ境界になる",
+    "- シャード間の強い順序保証は放棄し結果整合になる",
+    "- 全域不変条件（総容量・グローバル quota）はシャード内 gate + 外部集約でしか扱えず単体では強制不可",
+    "- 次の天井は allocator・Vault の QPS（ただし定常収束は衛星コールゼロで回るため churn に比例）",
+    "従属: 再シャードは drain→claim 変更 PR→fencing 世代更新の最小 Workflow、ID の scope=ルーティングキー（ADR-0004）が前提"
+  ],
+  "reversibility_cost": "high",
+  "affects": ["reconciler", "allocator"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "段2（静的シャーディング）は v1a 型切り / v1b 実装。動的ルーター・自動リバランス・RemoteExecutor は v2。二重 claim 検知は既存 fencing token を再利用する。"
+}

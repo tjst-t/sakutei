@@ -1,0 +1,31 @@
+{
+  "id": "ADR-0015",
+  "title": "状態クラス S1〜S4 と S2 の外部永続(quorum + fencing)、etcd/必須 DB なし",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "観測 state レスを貫くには、システムが持つ state を『喪失したら何が起きるか』で階級化し、保持してよいものと再導出すべきものを型レベルで分ける必要がある。観測(S1)は毎周期リアルから再導出するので保持しないが、Task/Workflow の進行(S2)は承認ゲート待ち・rolling 進行位置・invariant 状態などを含み、喪失すると二重実行や中途半端な適用という事故になる。どの state をどこに置くかを着手前に確定しないと、後から全体に波及する。",
+  "alternatives": [
+    {
+      "name": "全 state を保持する(現在状態をキャッシュする)",
+      "tradeoff": "キャッシュした現在状態を信じると Terraform の three-way-diff / state ドリフト問題を再導入する。観測 state レス原則そのものに反する"
+    },
+    {
+      "name": "S2(進行 state)もローカルのみに置く",
+      "tradeoff": "S2 は喪失が事故になる state。ローカル単一ディスクに賭けると全損時に承認ゲート待ちや rolling 位置が失われ、二重実行・誤配送(採番衝突等)を招く。quorum ストア + fencing が要る"
+    }
+  ],
+  "decision": "state を S1(観測・保持しない)/ S2(進行・外部永続必須・喪失=事故)/ S3(履歴・メモリのみ・再取得可)/ S4(監査・append-only)の 4 クラスに分ける。S2 のみ quorum ストア(または同期レプリカ)+ fencing token で永続化し二重 claim を検知する。etcd や必須 DB プロセスは持たない。",
+  "consequences": [
+    "+ 観測 state レスを保ちつつ、喪失が事故になる S2 だけを最小限に外部永続化できる",
+    "+ 割当記録・S4 も S2 と同じ置き場に相乗りでき、専用ストアを増やさずに済む",
+    "+ DR で claim をハンドオフする際も fencing が旧プライマリの遅延書込を弾き split-brain を防ぐ",
+    "+ 状態を階級化することで S2-free シャード(何も覚えないから何も失わない)のような耐久性ゼロ階級を第一級に定義できる",
+    "- S2 の永続化先(quorum ストア + fencing)は着手前決定であり、KV 製品選定は運用パラメータとして残る",
+    "- S2 に載る状態機械(多相 Task の危険区間 death 等)の扱いは実装中に人手ゲートの判定基準を詰める必要がある"
+  ],
+  "reversibility_cost": "high",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "S4 の永続化先は WORM or 外部即時 push。S2 永続化先は着手前決定として確定済み。§4(状態分類)・§25.3・§26.3 を正とする。"
+}

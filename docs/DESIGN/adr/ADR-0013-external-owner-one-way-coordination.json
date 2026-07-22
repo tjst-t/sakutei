@@ -1,0 +1,30 @@
+{
+  "id": "ADR-0013",
+  "title": "external_owner による外部オーケストレータ所有 scope の除外と一方向協調",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "現実の基盤には Sakutei ではなく外部オーケストレータが所有・変更する領域が併存する(Heat / k8s operator / UniFi コントローラ / MHA / VNFM / DRS / RDS 等)。同一リソースを Sakutei と外部の双方が収束させると、level-triggered な自己修復が相手の変更を巻き戻し、収束衝突事故になる。scope 単位で『これは外部が所有する』と第一級に宣言し、Sakutei は観測して待つだけの一方向協調で縁を切る必要がある。",
+  "alternatives": [
+    {
+      "name": "外部所有領域も Sakutei が二重管理する",
+      "tradeoff": "Sakutei と外部オーケストレータが同一リソースを互いに収束し合い、片方の変更を他方が即座に巻き戻す収束衝突事故を招く"
+    },
+    {
+      "name": "除外を managed fields で個別フィールド単位に宣言する",
+      "tradeoff": "managed は同一リソース内のフィールド分割には効くが、scope 全体を『別のオーケストレータの領土』として除外する第一級概念にはならない。scope 単位の除外宣言が別途必要"
+    }
+  ],
+  "decision": "external_owner を scope 単位の第一級宣言として持ち、宣言された scope を Sakutei の Apply/prune 対象から除外する。Sakutei は相手が作った現実を Observe して gate する(観測 ready 待ち)一方向協調のみを行い、相手に問い合わせも書き込みもしない。",
+  "consequences": [
+    "+ 外部オーケストレータ所有領域との収束衝突を構造的に排除できる",
+    "+ シャード間協調『現実を介して行う』と同じ思想で、外部システムとの境界も現実の Observe で結べる",
+    "+ 観測不能資産(ledger_only / observability:none)の縁を切る手段としても機能する",
+    "- Sakutei から外部所有 scope への破壊的操作・自己修復は一切できない(可視化・drift 検知・ready gate まで)",
+    "- 外部が作る現実の readiness をどう Observe するかは provider ごとの設計判断になる"
+  ],
+  "reversibility_cost": "medium",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "協調は一方向(観測して待つ)であり、シャード間 RPC/状態交換を正しさに関与させない原則の外部システム版。§18.1・§29.3(a) と接続。"
+}

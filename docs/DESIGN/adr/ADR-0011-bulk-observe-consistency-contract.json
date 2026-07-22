@@ -1,0 +1,31 @@
+{
+  "id": "ADR-0011",
+  "title": "BulkObserve + 一貫性契約（prune 非流用の型分離）",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "単一デーモンの規模天井は「1リソース＝1コール」を暗黙前提にした実機レイテンシ算術で決まる（vCenter 0.8s / NETCONF 1.5s / CLI 4s / Ansible 6s、30s 間隔で数十〜数百台）。しかし現実の権威の多くは scope 内を1コールでまとめて返すバルク API を持つ（vCenter PropertyCollector / Proxmox /cluster/resources / AWS Describe / NetBox 一覧）。これを第一級化すれば分散化の前に単一デーモンを大きく延ばせる。ただしバルク結果を prune の根拠に流用すると、非アトミックなスナップショットの欠損が誤削除に直結する。",
+  "alternatives": [
+    {
+      "name": "1リソース1コール前提のまま（バルクを使わない）",
+      "tradeoff": "API 系プロバイダで単一デーモンの規模天井が実際より1桁低くなり、不要に早く分散へ追い込まれるため却下"
+    },
+    {
+      "name": "bulk 結果を prune の根拠に流用する",
+      "tradeoff": "BulkObserve は非アトミックスナップショットで走査窓内に対象が移動/欠損しうるため、集合差 prune に使うと誤削除するため却下"
+    }
+  ],
+  "decision": "任意 capability として BulkObserve(scope) → []Observation を追加し、宣言した provider にはバルク経路を、未宣言には SDK が per-resource Read へ透過的に fallback する。一貫性契約として、非アトミックスナップショット宣言・complete-or-error・走査窓内遷移の吸収を課し、prune の根拠には一切使えないよう List（ID 集合）と型を別に保つ。SDK は BulkObserve の戻りが集合差 prune の入力に渡る経路を型レベルで塞ぐ。",
+  "consequences": [
+    "+ API 系プロバイダの単一デーモン天井が数千〜1万規模まで押し上がり、分散の前に単一を大きく延ばせる",
+    "+ 毎周・全量再観測の原則は不変（取り方が N コール→1コールに変わるだけで観測 state レスに影響しない）",
+    "+ BulkObserve（状態）と List（prune 根拠の ID 集合）の型分離により prune 誤用を型で塞げる",
+    "- バルク結果は当該周期でのみ使用し周期越え再利用は禁止（observed_at を各 Observation に刻む）",
+    "- 「完全階級 + bulk」を名乗るには BulkObserve(scope) ≡ {Read(id) ∀ id ∈ scope} の SDK 等価性テストを通す必要がある",
+    "従属: 走査窓内の DRS 移動は managed fields 除外 / converging / settle が吸収する"
+  ],
+  "reversibility_cost": "medium",
+  "affects": ["provider-sdk", "reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "段1（BulkObserve）は v1a 型切り / v1b 実バルク実装。prune の安全性は List 完全性検証（ADR-0005）に依存し Observe 高速化とは要件が異なるため型を別に保つ。"
+}

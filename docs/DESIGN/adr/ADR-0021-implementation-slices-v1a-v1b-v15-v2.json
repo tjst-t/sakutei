@@ -1,0 +1,31 @@
+{
+  "id": "ADR-0021",
+  "title": "実装スライス v1a / v1b / v1.5 / v2",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "v1 を一括の MVP として積むと、後付け不可能なコア型と実装量の大きい機能が同列に並び、規模が過大(≈22.5 人月)になる。20 構成の適用検討では 12 構成が『事業の核』を Task/Workflow 系に依存させており、それらを全部 v2 に置くと多くの構成で核が動かない。したがって v1 をスライスし、後付けで全体に波及するものと、無いと使い始められない導入形態があるものを分けて優先度づけする必要がある。",
+  "alternatives": [
+    {
+      "name": "v1 を一括の MVP として実装する",
+      "tradeoff": "後付け不可のコア型と実装量の大きい機能が同列に並び MVP が ≈22.5 人月と過大になる。コア実証(v1a ≈10 人月)を先に切り出す方が中核命題を 1 桁小さい規模で証明できる"
+    },
+    {
+      "name": "Task / Workflow を全部 v2 に置く",
+      "tradeoff": "20 構成のうち 12 構成が Task/Workflow 系に事業の核を依存させており、全部 v2 だと多くの構成で核が動かない。最も需要の高い最小形(単純 Task + 最小 Workflow)を v1.5 に前倒す必要がある"
+    }
+  ],
+  "decision": "v1 を v1a(コア実証 ≈10 人月: コア型 + 収束ループ + 安全機構 + 早期収束 seam + BulkObserve/--claim 型切り + 最小 SDK + provider 2 個(DNS 第一号)+ devenv)/ v1b(brownfield 導入と採番連携)/ v1.5(手続きの最小形)に割り、多相 Task 状態機械・自動段階ロールアウト・DBSource・credential-broker・分散 Executor・動的ルーターは v2 に切り離す。分割基準は『後付けすると全 provider・全 scope に波及するか(v1a)』と『無いと使い始められない導入形態があるか(v1b/v1.5)』。",
+  "consequences": [
+    "+ v1a が『触っていないのに戻る』と『壊れそうで止まる』の 2 体験を 1 桁小さい規模(≈10 人月)で実証できる",
+    "+ 後付けで波及するコア型・seam・安全機構の骨格を v1a で先に固定できる(seam は今切る split は後)",
+    "+ 12 構成が依存する Task/Workflow の最小形(単純 Task + 直列 Workflow + 不変条件 + 手動承認ゲート)を v1.5 で前倒せる",
+    "+ brownfield 導入(import/Sync Mode)と採番連携を v1b にまとめ、既存基盤に安全に入る道筋を切れる",
+    "- DNS を provider 第一号に固定する(Read/Apply が最もクリーンで検証が軽い)ため、他 provider 階級の検証は後段になる",
+    "- 多相 Task・自動 canary・分散 Executor・DBSource など重い機能は v2 に残り、それらを核とする構成は当面フル対応されない"
+  ],
+  "reversibility_cost": "low",
+  "affects": ["*"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "早期収束 Watch seam + scoped run と静的シャーディングは v2 でなく v1a/v1b に前倒し済み。v2 に残るのは動的ルーター/自動リバランスと DBSource 連動 Watch のみ。§27 を正とする。"
+}

@@ -1,0 +1,241 @@
+{
+  "components": [
+    {
+      "name": "reconciler",
+      "responsibility": "理想状態と現実を毎周突き合わせて差分を埋める収束コア（単一バイナリ・単一デーモン）。",
+      "language_or_stack": "Go（単一バイナリ + サブコマンド）",
+      "deploys_as": "single binary",
+      "key_interfaces": [
+        {
+          "kind": "cli",
+          "summary": "sakutei（常駐して回り続ける）/ plan（Diff で止める dry-run）/ reconcile（一回収束、--expect-revision）/ status（drifted 一覧）/ import（既存現実を intent 化）/ --claim <scope-selector>（静的シャーディング）"
+        },
+        {
+          "kind": "http",
+          "summary": "承認ゲート API: POST /workflows/{id}/gates/{gate}/approve"
+        },
+        {
+          "kind": "function",
+          "summary": "seam interface 群を呼び出す: Provider/Lister/BulkObserver・Executor・Loader・DesiredSource/Watcher・DesiredStore・SecretBackend・AllocationAuthority・CredentialProvider"
+        },
+        {
+          "kind": "event",
+          "summary": "単一 Event 型を発火し sink（Alertmanager 等）へ流す Event bus。収束失敗は level（firing/resolved）、Workflow/canary 失敗は edge で報告"
+        }
+      ],
+      "depends_on": ["credential-broker", "allocator", "provider-sdk", "catalog", "devenv", "twin"],
+      "notes": "収束ループ（Observe→Diff→Apply/prune）・DAG/wave 依存解決（Kahn 法・wave 単位で並列）・render パイプライン（2 フェーズ）・3 プリミティブ（Resource/Task/Workflow）・安全機構・早期収束パス（ChangeHint）・claim シャーディングを内包。credential-broker は v2 で実行時依存（v1 は SecretRef 直結で broker 依存なし）。段0 では Vault にも実行時依存。"
+    },
+    {
+      "name": "credential-broker",
+      "responsibility": "ターゲット機器認証を一元化し JIT 短命クレデンシャルを発行する（関守）。",
+      "language_or_stack": "Go（別プロセス・別ソフトウェア、v2）",
+      "deploys_as": "external",
+      "key_interfaces": [
+        {
+          "kind": "function",
+          "summary": "CredentialProvider: Acquire(ctx, target, identity) (Credential, error) / Release(ctx, Credential) error。reconciler の Executor が Apply/Read 実行時に呼ぶ"
+        }
+      ],
+      "depends_on": ["allocator"],
+      "notes": "v2 で有効化。reconciler の依存先（下位）かつ reconciler の管理対象。層A（動的発行: SSH 署名証明書/PKI）と層B（レガシー機器: 静的資格 + 定期 rotate）を統一 interface の裏で自動振り分け。段0 の VM-HA 保護対象で可用性要件は最上位（broker 断 = 認証が要る全ターゲットの Observe 停止 = 全盲）。値の永続化は Vault、人の認証は IdP/SSO に委譲。allocator への依存は概念上の衛星間関係で必須ではない。"
+    },
+    {
+      "name": "allocator",
+      "responsibility": "VLAN/IP/ASN プールからの採番権威。払い出し記録を state として永続化する（台帳）。",
+      "language_or_stack": "Go + SQLite（BEGIN IMMEDIATE でアトミック払い出し、v1b で最小実装）",
+      "deploys_as": "external",
+      "key_interfaces": [
+        {
+          "kind": "function",
+          "summary": "AllocationAuthority: Allocate（冪等: 同 owner→同 value）/ Reserve→Confirm（PR 用二段階払い出し）/ Release（下流削除を List 確認後・cooldown 付き）/ Lookup"
+        }
+      ],
+      "depends_on": [],
+      "notes": "state（冪等性の記憶）を持つため衛星として分離。active/standby + fencing token（世代番号）で二重払い出しを防ぐ。1 プール 1 権威（サイトごとにプールレンジを disjoint 分割）。Lookup 結果はシャードローカルに無期限キャッシュ可（自分が確定させた事実 = S3）。停止しても止まるのは新規採番のみで既存収束は継続（waiting-allocation 縮退）。NetBox/Infoblox/phpIPAM/自作を差し替え可能。"
+    },
+    {
+      "name": "catalog",
+      "responsibility": "intent 用の薄い UI。独自の DB を持たず git を真実の源とする（図面）。",
+      "language_or_stack": "Web フロントエンド（薄い UI、v2）",
+      "deploys_as": "external",
+      "key_interfaces": [
+        {
+          "kind": "http",
+          "summary": "intent 表示・投入 UI。書込経路は ownership に従い、tenant 操作は即時反映、platform 操作は UI→PR 起票→承認へ回す"
+        }
+      ],
+      "depends_on": [],
+      "notes": "v2。独自データモデル/DB を持たず git が正。各商品は合成リソースのテンプレート。停止しても止まるのは新規投入 UI（人の書込 UX）だけで、収束ループ全体と git は生き続ける。難所は UI ではなく round-trip（UI とテキスト手編集の 2 経路調停）で、platform 層を UI→PR 生成にして git を単一書込経路に保つ。"
+    },
+    {
+      "name": "provider-sdk",
+      "responsibility": "Provider 作者の記述を約4関数 + List に削り、横断的な安全保証をコア側で肩代わりする共通ライブラリ。",
+      "language_or_stack": "Go（reconciler にリンクされる共通ライブラリ/コア）",
+      "deploys_as": "in-process module",
+      "key_interfaces": [
+        {
+          "kind": "function",
+          "summary": "作者が書く: Schema()・Capabilities()・Read(ctx,id)→Observation・Apply(ctx,plan)（create/update/delete 統合）・（任意）List(ctx,scope)・（任意）BulkObserve(ctx,scope)"
+        }
+      ],
+      "depends_on": [],
+      "notes": "SDK が担うもの: Schema ベースの汎用 diff（順序付き含む）/ secret 自動マスキング（SecretRef 化）/ managed fields 除外 / provider_version 埋め込み（原因タグ C）/ エラー分類（transient/permanent）/ テストハーネス（フェイク provider・契約テスト自動生成）/ BulkObserve 等価性テスト / Schema lint（secret 未宣言・identity 未指定をロード拒否レベルで強制）。最難関は Schema 設計（誤ると安全保証が無音で無効化）。version 未埋め込み provider は起動時に登録拒否（fail-closed）。"
+    },
+    {
+      "name": "devenv",
+      "responsibility": "隔離検証データセンター。Sakutei 自身で構築される dogfooding 環境（坪庭）。",
+      "language_or_stack": "Sakutei が収束で構築（Proxmox nesting 等）",
+      "deploys_as": "external",
+      "key_interfaces": [
+        {
+          "kind": "function",
+          "summary": "本番プールに触れずに収束エンジン全体を検証する隔離環境。段0 の立ち上げ手順（Ansible + reconciler 自律収束）をそのまま踏襲"
+        }
+      ],
+      "depends_on": ["reconciler"],
+      "notes": "本システムがインフラ収束エンジンである以上、検証環境も収束の対象。自らを自らで立ち上げることが最も強い動作証明になる。"
+    },
+    {
+      "name": "twin",
+      "responsibility": "render の外部入力を差し替え、本番プールに触れずに ghost diff 等を本番前に観測するデジタルツイン（縮景）。",
+      "language_or_stack": "Sakutei（render 外部入力の差し替え機構）",
+      "deploys_as": "external",
+      "key_interfaces": [
+        {
+          "kind": "function",
+          "summary": "render フェーズ1 の外部入力（inventory/allocation/secret metadata）を差し替え、provider_version 更新の ghost diff（原因タグ C）を本番前に観測する自動流し込み先"
+        }
+      ],
+      "depends_on": ["reconciler"],
+      "notes": "provider_version 更新時の ProviderUpgradeDiff を本番適用前に twin へ自動流し込むのを既定運用に組み込む。"
+    }
+  ],
+  "boundaries": [
+    {
+      "between": ["reconciler", "credential-broker"],
+      "justification": "ライフサイクル差（core = 常時収束ループ / broker = 要求応答型）・可用性の逆転（broker は core の依存先で、core が死んでも認証が生きていないと緊急時に人が機器に入れない。core 内に認証を置くと致命的な循環依存）・攻撃面の分離（認証は最大の攻撃対象で、広い攻撃面を持つ core と同居させず小さく監査可能な別プロセスに隔離）。broker 断は Vault 断より重い（認証が要る全ターゲットの Observe が止まる = 全盲）。"
+    },
+    {
+      "between": ["reconciler", "allocator"],
+      "justification": "allocator は state（冪等性の記憶 = 前回何を払い出したか）を持つ。core を観測 state レスに保つため採番の記憶を外部の権威に外出しし、並行・シャード環境の採番調停を一元化する。core は「1 つくれ」と要求するだけ。"
+    },
+    {
+      "between": ["reconciler", "catalog"],
+      "justification": "UI に独自のデータモデル/DB を持たせない（intent は git が正なので UI は薄いフロントエンドでよい）。allocator と逆向きの理由での分離。"
+    },
+    {
+      "between": ["reconciler", "provider-sdk"],
+      "justification": "seam interface（Provider/Lister/BulkObserver）が実質的なモジュール境界。SDK をコア側に置くことで作者の記述を約4関数に削り、フェイク Provider を挿すだけで実インフラなしに収束エンジン全体をテストできる（seam は今切る・split は後）。"
+    },
+    {
+      "between": ["reconciler", "devenv"],
+      "justification": "収束エンジンとその隔離検証環境の分離。devenv は Sakutei 自身で構築する dogfooding 対象で、本番プールに触れずに検証する。"
+    }
+  ],
+  "data_flows": [
+    {
+      "name": "収束サイクル（毎周・全 DAG）",
+      "steps": [
+        "render（§9）で desired を生成し rendered_revision を確定する",
+        "desired のリソース集合を Observe し、prune 対象 scope を List する（全並列・semaphore 既定 16 で同時度制限）",
+        "Diff（集合 diff → フィールド diff）で変更が要るノード集合 D を求め、原因タグ A〜E を per-resource で帰属する",
+        "D の部分 DAG を構築し Kahn 法で wave に分解する",
+        "各 wave を並列 Apply（非同期・in-flight 集合に入れ、失敗ノードの下流は skip → 次周回収）",
+        "Diff の推移を記録（振動検知・ベースライン）",
+        "jitter 付き sleep → 次 Cycle"
+      ]
+    },
+    {
+      "name": "render 2 フェーズ",
+      "steps": [
+        "フェーズ1（外部入力解決・副作用あり）: inventory を外部 CMDB から合成する",
+        "フェーズ1: シークレット世代を Vault metadata から解決する（値は読まない）",
+        "フェーズ1: allocation を AllocationAuthority から払い出す。どの外部権威が不達でも前回解決値を保持し空の desired を生成しない（新規払い出しは保留）",
+        "フェーズ2（決定的展開・副作用なし）: 合成リソースを実子リソースに Expand（例: virtual_network → vxlan_segment + vds_portgroup + dhcp_scope）し依存グラフに乗せる",
+        "render 入力は TTL キャッシュ。intent_revision（人の commit）と rendered_revision（intent + 解決済み外部入力のハッシュ・scope 単位）を確定する"
+      ]
+    },
+    {
+      "name": "早期収束（トリガ収束）",
+      "steps": [
+        "DesiredSource.Watch から ChangeHint（intent_revision + 触られた scope 群のみ。真実は運ばない）を受信する",
+        "render（§9）で新しい rendered desired を生成する",
+        "新旧の rendered desired 同士を diff する（決定的・リアル非接触。ここでは Observe しない）",
+        "desired が変わったリソースから影響サブ DAG を算出する（原因タグ A/E のみ対象。drift B は定期ループに残す）",
+        "そのサブ DAG だけを Observe → Diff → Apply（通常の wave/skip セマンティクスを適用。rate limit・in-flight 排他は定期経路と共有）",
+        "同一 scope へのヒントは合流し実行時に最新 desired を読む。溢れたヒントは次の定期周期へ縮退する"
+      ]
+    },
+    {
+      "name": "claim シャーディング",
+      "steps": [
+        "各デーモンを sakutei --claim <scope-selector> で起動する（どのデーモンがどの scope を担当するかは git 上の宣言的 intent）",
+        "sparse checkout / partial clone で自 claim 分 + 共有 platform 参照分の intent を pull する",
+        "自 claim にマッチする scope だけを自律収束する（claim に含まれない scope は Observe すらしない・shared-nothing）",
+        "シャード間は互いに問い合わせず、相手が作った現実を Observe して gate する（観測 ready 待ち・結果整合）",
+        "二重 claim（2 デーモンが同一 scope を掴む）は fencing token（世代番号）で検知し、古い世代の writer を fence する"
+      ]
+    },
+    {
+      "name": "段0 ブートストラップ",
+      "steps": [
+        "人が Ansible + 金庫で段0（管理NW到達性の最小核 + Proxmox 3 ノード + 統合 Ceph + VM-HA）を構築する",
+        "段0 上に Vault / [credential-broker=v2] / reconciler を VM として定義する",
+        "Vault を Ansible（オペレータ起動）で unseal する（コールドスタートは Vault 先行。unseal key は playbook 外・人の金庫に着地）",
+        "コールドスタート順序 Vault unseal 完了 → broker healthy → reconciler start を ready_condition 相当で守る",
+        "reconciler が git から intent を pull し（外部 git 不達時はローカルミラー）段1 以降の本番インフラ全体を自律収束する"
+      ]
+    }
+  ],
+  "external_dependencies": [
+    {
+      "name": "Vault",
+      "purpose": "シークレットの値・動的発行・rotation。core は SecretRef で参照し値を持たない",
+      "swappable": true,
+      "notes": "SecretBackend seam 経由で file 実装（段0-minimal）等に差し替え可能。断中は secret を持つ Apply のみ alert-only 縮退し、last-resolved + TTL キャッシュで Observe と secret 無し Apply は継続。"
+    },
+    {
+      "name": "git（GitHub/GitLab）",
+      "purpose": "intent の履歴・レビュー・改竄耐性アンカー。FileSource の実体で監査の半分を担う",
+      "swappable": false,
+      "notes": "真実の源。DesiredSource の一実装だが履歴・PR レビュー・単一書込経路という正の性質を提供する中核。稼働必須依存にはせず、各ノードのローカルミラーで全断耐性を持つ。"
+    },
+    {
+      "name": "Prometheus / Alertmanager",
+      "purpose": "時系列監視・通知ルーティング・沈黙。監視設定は Resource として収束するが判定と通知は委譲",
+      "swappable": true,
+      "notes": "observability-as-Resource: scrape target / blackbox / Alertmanager ルールを生成・維持し、judgement と routing を再発明しない。単一 Event 型の sink。"
+    },
+    {
+      "name": "IdP / SSO",
+      "purpose": "人の ID・認証。broker 経由で利用し core は認可を持たない",
+      "swappable": true,
+      "notes": "人の認証は既存の企業 IdP が正。ヒューマンの短命資格発行の身元根拠。"
+    },
+    {
+      "name": "DRS / ハイパーバイザ",
+      "purpose": "配置最適化・ビンパッキング・migrate。core は cluster への intent と粗い容量充足のみ",
+      "swappable": true,
+      "notes": "scheduler を再発明しない。DRS が動かす managed fields は Schema で managed 宣言し diff 対象外にする。"
+    },
+    {
+      "name": "k8s（アプリ層）",
+      "purpose": "アプリ層のデプロイ・スケール。core は土台（インフラ）を供給する",
+      "swappable": true,
+      "notes": "アプリ層は k8s が正。Sakutei は k8s の下の土台に閉じる。k8s の収束原理だけを借り実装機構（apiserver/etcd/scheduler/admission/CRD）は捨てている。"
+    },
+    {
+      "name": "Ansible（モジュール）",
+      "purpose": "ロングテール provider の実行実体。Executor の一実装としてモジュールのみ借り実行モデルは借りない",
+      "swappable": true,
+      "notes": "changed:true/false のみ返す最小階級（TrueObserve=false で機械的縮退）。*_info 系で Observe できる対象は部分昇格可。横断機能は Sakutei 側でラップする。"
+    },
+    {
+      "name": "上位テナント基盤",
+      "purpose": "認可・quota・課金・ポータル。DesiredSource の一実装として認可・quota 適用済みの理想状態を投入する",
+      "swappable": true,
+      "notes": "別事業であり Sakutei の責務ではない。Sakutei は投入された intent を収束するだけ（認可を持たない）。"
+    }
+  ]
+}

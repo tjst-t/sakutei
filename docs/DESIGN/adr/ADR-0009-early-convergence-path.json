@@ -1,0 +1,32 @@
+{
+  "id": "ADR-0009",
+  "title": "早期収束パス（edge-triggered な起床・level-triggered な真実）",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "本システムは level-triggered ゆえ収束は周期律速である。定期周期は drift 検知漏れゼロを保証する一方、人の意図変更（特に tenant 層のセルフサービス API）の反映が次の周期まで待たされる構造的レイテンシを持つ（パブリック IaaS 構成の核心課題）。UX を周期待ちから解放しつつ、観測 state レスと安全機構を一切崩さずにレイテンシだけを短縮する経路が要る。",
+  "alternatives": [
+    {
+      "name": "周期そのものを短縮する",
+      "tradeoff": "毎周・全 DAG の Observe コストが全体で増え、相手 API への礼儀・課金・rate limit を圧迫するため却下"
+    },
+    {
+      "name": "DBSource の即時同期を待つ（トリガ機構を作らない）",
+      "tradeoff": "DBSource 連動は v2 であり、v1a の FileSource（git webhook / merge フック）で先に効かせられる早期収束を諦めることになるため却下"
+    }
+  ],
+  "decision": "トリガによる早起き（edge ヒント）+ 定期周期（level 保証）のハイブリッドを第一級化する。ChangeHint は {intent_revision, 触られた scope 群} のみを運びペイロード（変更後の値）を運ばない。トリガを受けたら新旧 rendered desired 同士の決定的 diff（リアル非接触）から影響サブ DAG を算出し、そのサブ DAG だけを Observe→Diff→Apply する。トリガ喪失は次の定期周期が拾い、正しさは無傷で遅延のみ。",
+  "consequences": [
+    "+ 制御プレーンの追加レイテンシが秒オーダーに収まり、tenant セルフサービスの UX が周期待ちから解放される",
+    "+ トリガは真実を運ばず新鮮な Observe を毎回行うため、観測 state レスが無傷（速い経路が観測 state を再導入しない）",
+    "+ platform 層も PR マージ＝ヒント発火でガバナンス不変のままレイテンシだけ短縮できる",
+    "- 速い経路は cause A（意図）/ E（外部入力）限定で、道中の drift B は速い経路で修復せず定期ループに残す（役割純化）",
+    "- 集合差 prune は速い経路で禁止（テナント即時削除は DBSource 側 tombstone = 明示 absent で個別削除として扱う）",
+    "- rate limit・累積破壊予算・per-resource in-flight 排他は定期経路と共有しバイパス不可、溢れたヒントは定期周期へ縮退",
+    "従属: render フェーズ1 の採番副作用が速い経路に乗るため allocator の可用性が UX に直結する"
+  ],
+  "reversibility_cost": "medium",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "k8s の informer watch（edge ヒント）+ resync（level 保証）と同型。入口は DesiredSource.Watch（任意 capability）。Watch/scoped run は既存コードパスの部分 DAG 適用で増分が小さいため v1a に型切り。"
+}

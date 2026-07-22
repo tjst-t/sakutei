@@ -1,0 +1,79 @@
+{
+  "priority_rules": [
+    {
+      "priority": 1,
+      "rule": "level-triggered + 観測 state レス",
+      "detail": "毎周期 desired と actual を突き合わせ差分を埋める。観測 state は持たず毎周リアルを再観測し、前回の観測結果を正とみなさない。持つ state は分類し、喪失が事故になるもの（S2）だけを永続化する。効くのは drift 検知漏れをゼロにしたい場面と three-way diff / state ドリフトを構造的に排除したい場面。他の全原則の土台であり、後続の原則の多くはこの原則を破らないための規律として導かれる。"
+    },
+    {
+      "priority": 2,
+      "rule": "いつ = 収束 / どう = 手続き",
+      "detail": "『いつ・どの順で変えるか』は収束が判定し、『どう変えるか』は Task/Workflow が実行する。経路依存・非冪等・中断が致命的な手続き（migration / firmware / ローリング / DR）は収束ループに載せず Task/Workflow に閉じ込め、収束はトリガ・メンテ窓ゲート・依存順序・drift 検知・完了確認だけを担う。実行中の対象は converging 扱いにして収束の介入を止める。効くのは冪等な状態収束では表現できない一回性・順序依存の危険な手順を扱う場面（例: column: new_name とだけ書くと収束が rename を drop+add に化けさせデータを消す）。"
+    },
+    {
+      "priority": 3,
+      "rule": "確信が持てないとき、加算はしても減算はしない（非対称原則）",
+      "detail": "最も広く貫く原則。unknown ≠ absent（到達不能を『消えた』と断じない）/ pruneable:false 既定 / 分断時の破壊保留 / 爆発半径 halt / freeze / allocation の Release 遅延 / render 入力の incomplete ≠ empty まで、すべてこの一つの規律の適用。効くのは観測や理想が不確かなときに『消す』判断が誤ると回復不能になる場面、すなわち削除・破壊のすべて。破壊は確信を要求し、加算は許す。"
+    },
+    {
+      "priority": 4,
+      "rule": "持たない・委譲する",
+      "detail": "値・配置・予測・認可は自前で持たず外部に委ねる（シークレット値→Vault、配置最適化→DRS、時系列予測→Prometheus、認可・課金→上位テナント基盤）。持たないことが強みであり、漏洩面が縮み、再発明を避け、core が小さく保たれる。効くのは『作れるが作るべきでない』機能の誘惑が生じる場面。判断基準はその責務が state を持つか・別事業として成立するか・攻撃面を広げるか。"
+    },
+    {
+      "priority": 5,
+      "rule": "seam は今切る、split は後",
+      "detail": "将来の分離点（分散実行・外部 CMDB・DB 供給源・認証・採番）を interface として先に切り、実際の分割は必要になってから行う。これによりコアを無変更のまま拡張を吸収できる。効くのは今は単一プロセス・単一実装で足りるが将来分割・差し替えが確実に来ると分かっている場面。seam を切っておけばフェイク Provider を挿すだけで実インフラなしに収束エンジン全体をテストできる（seam 設計の副産物）。"
+    },
+    {
+      "priority": 6,
+      "rule": "ownership がすべてを貫く",
+      "detail": "ただ一つの区別 platform（共有基盤・PR 必須・厳格）か tenant（専有・即時書込・緩い）かが、所有・書込ポリシー・修復モード・レート制限・爆発半径・供給源の選択・シャード分割境界を横断的に決める。tenant は即時書込/auto/緩め(warn)/爆発半径小/DBSource、platform は PR 必須/alert-only 寄り/厳(halt)/爆発半径大/FileSource(git)。所有権の論理境界がそのままシャードの物理境界になる。効くのは書込経路・remediation・rate limit・blast-radius をリソースごとに設計しなければと思える場面で、実際はすべて ownership 一軸で決まる。"
+    },
+    {
+      "priority": 7,
+      "rule": "シャード間協調は現実を介して行う",
+      "detail": "スケールアウトはシャーディング（tenant / site / cluster での水平分割）で行い、各シャードは shared-nothing で独立に収束する。シャード同士は互いに問い合わせず、相手が作った現実を Observe して gate する（観測 ready 待ちによる結果整合）。シャード間 RPC / 状態交換は正しさに一切関与しない（交換した状態を信じることは観測 state を持つのと同じ罠）。観測 state レス思想のスケール版。共有物はすべて衛星に外出し済み（採番=allocator・秘密=Vault・intent=git）。効くのは単一デーモンの天井を超えて複数デーモンへ分割する場面。"
+    },
+    {
+      "priority": 8,
+      "rule": "衛星の停止は変化を止めるが維持を止めない",
+      "detail": "定常状態の収束ループは衛星コールゼロで回ることを設計保証とする。allocator が確定させた割当事実は Release まで不変なので Lookup 結果をシャードローカルに無期限キャッシュしてよい（自分が確定させた事実なので観測 state レスに反しない）。secret も last-resolved 保持 + TTL キャッシュで Vault 断中も Apply できる。衛星停止で止まるのは変化（新規採番を伴う作成）だけで、維持（既存リソースの定常収束）は止まらない。衛星への QPS はフリート規模でなく変更レート（churn）に比例する。効くのは『シャード数を増やすと共有衛星が詰まる』懸念が生じる場面。"
+    }
+  ],
+  "coding_conventions": [
+    "言語は Go。全 interface 定義（Provider / Lister / Executor / Loader / DesiredSource / DesiredStore / SecretBackend / AllocationAuthority / CredentialProvider）は Go で書く",
+    "バイナリは sakutei 単一とし、サブコマンドで機能を分岐する",
+    "設定形式は YAML + JSON（Loader 経由）で受け、JSON Schema で検証する。矛盾する宣言（循環・prune 宣言・mode 矛盾・Schema lint 違反）は理想状態ロード時に拒否する（同じ入口・同じ思想）",
+    "ドキュメントはすべて日本語で書く",
+    "固有名詞はプロジェクト名 Sakutei のみとし、コンポーネントは機能的な英語名（reconciler / credential-broker / allocator / catalog）を正とする。庭園メタファは別名として保持する（関守=credential-broker / 台帳=allocator / 図面=catalog / 坪庭=devenv / 縮景=twin）",
+    "provider 実装は『まず Schema、次に Read/Apply』の順で書く。作者が書くのは約4関数（Schema / Capabilities / Read / Apply）+ 任意の List / BulkObserve に留め、diff・マスキング・managed 除外・version 埋込・エラー分類・テストは SDK が担う",
+    "Event は単一型 + kind enum + scope/resource/revision 参照で表し、構造化ログ（JSON）で出力する",
+    "CLI 動詞は業界標準を用いる（plan / reconcile / status / import）。apply は主動詞に置かない（『回り続けるもの』を名前で表明する）"
+  ],
+  "ui_ux": [],
+  "architecture": [
+    "単一バイナリ・単一デーモンの reconciler（収束コア）に、ライフサイクル差・可用性の逆転・攻撃面の分離という明確な理由でのみ衛星（credential-broker / allocator / catalog）を分離する。衛星が生えているのは責務境界を正しく引いた結果",
+    "seam interface が実質的なモジュール境界である。将来の分離点を interface として先に切り、コアを無変更のまま拡張を吸収する（Provider / Lister / BulkObserver / Executor / Loader / DesiredSource / Watcher / DesiredStore / SecretBackend / AllocationAuthority / CredentialProvider）",
+    "コントローラは Executor 型にしか触らない（v1 は LocalExecutor のみだが、実行境界を型で抽象化しておく）",
+    "generated/ は RenderedSource / Sync Mode の自動生成専用。冒頭に自動生成ヘッダを付し、直接コミットを拒否する（二重管理防止）。intent/ は人が書く intent の出力先",
+    "Schema 設計が最難関。secret / managed / ordered / identity の宣言を誤ると設計が積み上げた安全保証が無音で無効化される（エラーにならず静かに保証だけが外れる）。secret 誤り=資格情報が平文でログに出る、managed 誤り=DRS と永久に喧嘩、ordered 誤り=FW ルール順序が壊れる、identity 誤り=別リソースを消す",
+    "identity は技術的一意性でなく『運用上の変更頻度』で選ぶ。変わりやすい属性（シリアル・MAC）でなく物理トポロジ座標（leaf03-p12 等）を identity にし、シリアル・型番は managed + computed で観測のみ行う",
+    "provider は階級（完全 / 標準 / 最小）を選べ、Capabilities で正直に宣言すればコアが自動で安全に縮退する（prune させない・破壊的側に倒す）。2層戦略: 自作コア provider（完全階級を目指す）+ Ansible provider（changed 真偽のみ・最小階級で広くカバー）",
+    "安全機構は level-triggered の要。rate limit + halt・破壊的変更の累積時間窓予算・List 完全性検証（件数急減 halt）・remediation mode（auto / alert-only）・グローバル freeze を持ち、デフォルトは halt、明示的意図で進む。『1 commit で全 VM 削除』を止める装置は v1 必須",
+    "ブートストラップは2段構造。段0（人が Ansible + 金庫で作る不変の最小土台。Proxmox 3ノード + Ceph + VM-HA 上に Vault / reconciler）→ 段1以降は自律収束。自己を立ち上げる何かは自分の外側から来る（定石であり妥協ではない）",
+    "検証は4段（ユニット+フェイク Provider が主戦場で開発の8割 / 単一 Provider 統合 / devenv フルスタック E2E / chaos 意図的破壊が最重要）。監査は Event を S4 として append-only + 連鎖ハッシュで WORM or 外部即時 push へ永続化する"
+  ],
+  "forbidden": [
+    "破壊的変更のデフォルト halt を勝手に外すこと（速く収束する力は速く壊す力であり毎周期効く。デフォルトは halt、進むのは明示的意図があるときだけ）",
+    "pruneable:false 既定を勝手に true に変えること（破壊的型は pruneable:false がデフォルト。closed-world は境界の明示宣言でのみ作られる）",
+    "List 完全性検証（Lister / 件数急減 halt）なしで prune を実行すること（Lister は prune の前提であり、これ無しの prune は本番の大半を削除対象にしうる）",
+    "plan の観測を reconcile に持ち越すこと（観測 state レス違反。plan と reconcile はそれぞれ独立に Observe する。持ち越すと観測 state を再導入してしまう）",
+    "早期収束パス（scoped run / 部分収束）で集合差 prune を行うこと（部分 DAG では scope 内の現実の全 ID が揃わず、prune の前提である List 完全性が保証されないため）",
+    "unknown を absent とみなして prune すること（到達不能・分断・観測断を『消えた』と断じない。分断中は加算のみを許し破壊的操作は halt する）",
+    "shared-nothing シャード間で状態を RPC 交換し、それを信じて gate すること（協調は現実を Observe して行う。交換した状態を信じるのは観測 state を持つのと同じ罠）",
+    "reconciler が自分の依存先（broker 到達資格・Vault アドレス・管理NW到達性の最小核）を収束対象にすること（自傷で全盲になり自分で直せなくなる。managed 除外 + external_owner 相当で触らない）",
+    "Sync Mode の出力を Apply 経路に接続すること（現実→intent は片方向のみ。双方向にすると書き戻しループが生じ原因タグ A が現実の揺れと区別できなくなる）",
+    "spec（設計の正）と矛盾する JSON を正として扱うこと。この JSON は spec の派生射影であり、新しい設計判断は導入しない。矛盾時は spec に寄せる"
+  ]
+}

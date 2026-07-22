@@ -1,0 +1,31 @@
+{
+  "id": "ADR-0018",
+  "title": "Go 単一バイナリ + 状態はメモリ + file(git)",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "Sakutei は宣言的インフラ収束エンジン(コントロールプレーン)である。k8s からは収束原理だけを借り、実装機構(apiserver・etcd・scheduler・admission・CRD)は意図的に捨てている。全 interface 定義は Go であり、実行体・状態保存の形をどう置くかが運用重量を左右する。理想状態の正は git(ファイル)にあり、通常運転はメモリ上で回せる。喪失が事故になる state は限られる(S2 のみ)。",
+  "alternatives": [
+    {
+      "name": "マイクロサービス群として分割する",
+      "tradeoff": "プロセス間協調・デプロイ・監視の運用が重くなる。収束コアは単一バイナリ + サブコマンドに保ち、衛星(allocator/broker/catalog)だけをライフサイクル・攻撃面の都合で別プロセスに切り出す方が軽い"
+    },
+    {
+      "name": "etcd を必須依存にする",
+      "tradeoff": "etcd は『多書き手の合意』のためであって永続化のためではない。理想状態は git が単一書込経路で正なので合意は不要。etcd 必須は k8s の重さをそのまま継承してしまう"
+    }
+  ],
+  "decision": "言語は Go、バイナリは sakutei 単一としサブコマンドで機能を分岐する。状態保存はメモリ + file(git)を主とし、理想状態は起動時に読んでインメモリ保持・API 書込は write-through する。喪失が事故になる S2 のみ外部永続化し、並行書込やクエリ性が実問題になった時点で DesiredStore interface 経由で bbolt / SQLite へ移行する。etcd や必須 DB プロセスは持たない。",
+  "consequences": [
+    "+ DB プロセスゼロ・単一バイナリで、git diff で理想状態の変遷が読める軽い運用になる",
+    "+ 収束原理だけを借り k8s の実装機構(etcd 合意)の重さを継承しない",
+    "+ DesiredStore seam を切っておくことで、後から embedded KV へコアを変えずに移行できる(seam は今切る split は後)",
+    "- 並行書込やクエリ性が問題になったら DesiredStore への移行作業が発生する",
+    "- 単一バイナリのスケール天井は Observe 時間で決まり、超えるには静的シャーディング(--claim)が要る",
+    "- Go 前提を固定するため、この選択は provider SDK の言語(Go interface)にも波及する"
+  ],
+  "reversibility_cost": "high",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "衛星群(allocator/broker/catalog)は別プロセス・別ソフトウェアとして分離する。§21.3・§27.1 を正とする。"
+}

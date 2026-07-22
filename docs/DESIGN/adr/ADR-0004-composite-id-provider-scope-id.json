@@ -1,0 +1,25 @@
+{
+  "id": "ADR-0004",
+  "title": "ID を (provider, scope, id) 複合にする",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "リソースの同一性をどう表すかは、後から変えると全 provider に波及するコア型の中でも最も基底の判断である。静的シャーディング（ADR-0010）は「どの scope を自分が収束するか」で担当を分けるため、scope がルーティングキーになる。ID に scope を含めないと、再シャード（scope 移動）でリソースの帰属・depends_on 参照・監査帰属が壊れる。scope はさらに prune 境界・intent/<scope>/ パス規約・rendered_revision 算出単位という4用途で同一語彙を共有し、この一致が設計の要になる。",
+  "alternatives": [
+    {
+      "name": "global-unique な単一フラット ID 空間",
+      "tradeoff": "再シャード（scope 移動）で識別子が変わり depends_on 参照・監査帰属が壊れるため棄却"
+    }
+  ],
+  "decision": "ID を (Provider, Scope, Local) の複合キーで確定する。Scope がルーティングキーであり claim シャーディングの境界になる。Local は provider が観測・発行する id 文字列で、その解釈は provider に閉じコアは不透明に扱う。",
+  "consequences": [
+    "+ scope が移っても Local 部分は不変を保ち、シャードのルーティングが ID から直接引ける",
+    "+ scope の同一語彙が claim / prune 境界 / パス規約 / rendered_revision 算出単位の4用途を貫き、テナント跨ぎ衝突を型で防ぐ",
+    "- ID は基底型なので、複合の構造を後から変えると全 provider・全参照・全監査に波及する（one_way_door）",
+    "従属: Scope はラベル集合 + パス形式の1型に統一（provider 追加のたびにコア型を変えない）"
+  ],
+  "reversibility_cost": "one_way_door",
+  "affects": ["*"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "v2.3 の推奨を v2.4（CHG-Z1）で確定へ格上げした。scope はルーティングキーであるという性質が ADR-0010 の静的シャーディングの前提になる。"
+}

@@ -1,0 +1,31 @@
+{
+  "id": "ADR-0014",
+  "title": "安全機構: 累積時間窓予算 + planned_change 専用レーン + 運用プロファイル + schedule + N-of-M",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "level-triggered な収束は毎周期、速く収束する力がそのまま速く壊す力になる。『1 コミットで全 VM 削除』のような暴発を止めつつ、棚卸し削除・一斉再イメージ・一括退去のような大量の正当作業とは正面衝突させない両立が要る。さらに 1 名運用(ホームラボ)から規制環境(金融の 4-eyes)まで、規模ごとに適切な承認・抑止の既定が異なる。安全機構は level-triggered 設計の要であり、暴発防止と正当作業の通過を機械可読な宣言で同時に満たす必要がある。",
+  "alternatives": [
+    {
+      "name": "cycle 瞬間量のみの rate limit で守る",
+      "tradeoff": "1 周期の変更量だけを見ると、周期をまたいで漸進的に全リソースを削除する経路が予算に引っかからず通ってしまう。累積時間窓予算で周期跨ぎの総量を見る必要がある"
+    },
+    {
+      "name": "破壊的大量変更に一律で他者承認を必須にする",
+      "tradeoff": "1 名運用では『自分で書いて自分でレビュー』の承認儀式が空回りして運用を阻害する。solo は cooling-off(遅延実行 + 中断機会)で代替する方が実効的な安全になる"
+    }
+  ],
+  "decision": "破壊的変更の累積時間窓予算 + halt をデフォルトの守りとし、その上に planned_change(対象 scope/種別/max_count/window/承認情報を宣言する専用予算レーン・バイパスではない別枠計上)・運用プロファイル(solo/team/enterprise)・remediation schedule(時間帯連動 mode 切替)・承認ゲートの N-of-M 拡張を重ねる。mode 衝突は most-restrictive-wins で解決する。",
+  "consequences": [
+    "+ 暴発(累積予算超過で halt)と大量正当作業(planned_change の別枠レーンで通過)を両立できる。宣言外の変更は通常予算で止まる",
+    "+ solo は cooling-off で承認儀式を回避しつつ監査記録は team と同等に残せる。enterprise は N-of-M + 役割制約 + separation を既定化できる",
+    "+ HPC 一斉再イメージの delete 誤計上・棚卸し削除の List 急減誤発火が kind 宣言と scope 単位閾値で解決する",
+    "+ mode 決定源(schedule/ownership/scope/freeze)が衝突しても『どこか 1 つが止めろと言えば止まる』で安全側に倒れる",
+    "- planned_change の kind 整合検証・reimage の delete/create ペアリング判定は実装中に詰める必要がある",
+    "- 予算・レーン・プロファイル・schedule・ゲートが絡む安全機構は複雑で、後付けすると予算計上経路が変わるため v1a で骨格を切る必要がある"
+  ],
+  "reversibility_cost": "high",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "planned_change の型と予算レーン評価・運用プロファイルは v1a、承認 requirements 連携・remediation schedule・N-of-M は v1.5。§13・§14 を正とする。"
+}

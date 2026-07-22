@@ -1,0 +1,379 @@
+{
+  "entities": [
+    {
+      "name": "Resource",
+      "definition": "宣言的状態を毎周期 Observe→Diff→Apply で収束する対象で、全プリミティブの土台。",
+      "identity": "ID（(provider, scope, local) 複合・§4.1）",
+      "lifecycle": [
+        "unknown",
+        "converging",
+        "converged",
+        "drifted"
+      ],
+      "owns": [],
+      "notes": "unknown/converging は Observation から、converged/drifted は Diff（Plan が空か否か）から導出される報告用状態（§4.5）。観測 state を持たない（S1・§4.9, §6.1）。"
+    },
+    {
+      "name": "Task",
+      "definition": "単一リソースの一回性・手続き的作業（migration・firmware 更新）を収束ループの外で実行するプリミティブ。",
+      "identity": "対象 Resource + 手続き種別",
+      "lifecycle": [
+        "Idle",
+        "Staging",
+        "Verifying",
+        "Applying",
+        "Rebooting",
+        "Confirming",
+        "Done",
+        "Failed",
+        "Rollback"
+      ],
+      "owns": [],
+      "notes": "単純型（完了印を現実側に置き Observe で問う。v1.5）と多相型（リブート跨ぎの状態機械。v2）がある。進行フェーズのみ外部永続化（S2）。非冪等操作は strategy: task で収束ループから排除する（§6.2, §6.5）。"
+    },
+    {
+      "name": "Workflow",
+      "definition": "複数リソースをまたぐ順序付き手続きで、全体不変条件と手動承認ゲートを持つプリミティブ（ローリング/DR）。",
+      "identity": "workflow 名 + target",
+      "lifecycle": [
+        "running",
+        "awaiting-approval",
+        "halt",
+        "done",
+        "failed"
+      ],
+      "owns": [
+        "Task"
+      ],
+      "notes": "進行位置 + invariant を外部永続化（S2）。内部で多相 Task を呼ぶ階層構造。承認ゲートは health_check（自動）と manual_approval（N-of-M・申請者≠承認者）を持つ。既定 on_failure は halt（§6.3, §6.4）。"
+    },
+    {
+      "name": "Provider",
+      "definition": "リソース種別ごとに Schema/Capabilities/Read/Apply を実装する2層コア抽象の一方（リソース単位）。",
+      "identity": "provider 名",
+      "lifecycle": [],
+      "owns": [],
+      "notes": "作者が書くのは約4関数で、Diff はコアが Schema 駆動で汎用実装する。階級は完全/標準/最小で Capabilities により機械的に縮退する（§5.1, §5.6）。"
+    },
+    {
+      "name": "Lister",
+      "definition": "scope 内の現実の全 ID を漏れなく列挙する任意 capability で、prune（集合演算）の前提となる。",
+      "identity": "provider 名（Lister を実装する provider に付随）",
+      "lifecycle": [],
+      "owns": [],
+      "notes": "List の網羅性（complete-or-error・ページング完走）が prune の安全性を担保する。List:false の provider に prune を宣言するとロード時に拒否。BulkObserve と型を分離し prune の根拠に混ぜない（§5.4, §5.7）。"
+    },
+    {
+      "name": "Shard",
+      "definition": "claim（scope-selector）で担当境界を切り、自 claim にマッチする scope だけを shared-nothing で収束する独立収束領域。",
+      "identity": "claim（scope-selector）",
+      "lifecycle": [
+        "provisioning-claim",
+        "stable",
+        "handoff"
+      ],
+      "owns": [
+        "Resource"
+      ],
+      "notes": "sakutei --claim で起動。二重 claim は fencing token（世代番号・唯一の S2）で検知。開店=中央プロビジョニング claim で構築→安定後に claim 変更 PR で店舗デーモン（S2-free）へハンドオフ、閉店は逆順。再シャードは drain→claim 変更 PR→fencing 世代更新の Workflow（§17）。"
+    },
+    {
+      "name": "Intent",
+      "definition": "git 上で人がレビューして書く desired（理想状態）で、DesiredSource 経由で収束ループに供給される。",
+      "identity": "intent_revision（commit hash 相当）",
+      "lifecycle": [
+        "written",
+        "reviewed(PR)",
+        "merged"
+      ],
+      "owns": [],
+      "notes": "platform 層は PR 必須（FileSource/git）、tenant 層は即時書込（DBSource・v2）。intent/<scope>/ パス規約で claim↔パスが機械対応する（§21.1, §17.4）。"
+    },
+    {
+      "name": "allocator",
+      "definition": "VLAN/IP/ASN プールの採番権威（衛星・台帳）で、払い出し記録という state を外部永続化して冪等性を担保する。",
+      "identity": "コンポーネント名 allocator（interface=AllocationAuthority、役割=採番権威）",
+      "lifecycle": [
+        "active",
+        "standby",
+        "waiting-allocation(縮退)"
+      ],
+      "owns": [],
+      "notes": "Allocate/Reserve/Confirm/Release/Lookup の5操作。1プール1権威（サイトごとに disjoint 分割）。停止は新規採番だけを止め、既存収束は Lookup キャッシュ（S3）で継続。可用性目標は reconciler 以上（active/standby+fencing）。v1b で最小実装（SQLite+BEGIN IMMEDIATE）（§19）。"
+    },
+    {
+      "name": "credential-broker",
+      "definition": "エンジンがターゲットに到達するための短命クレデンシャルを JIT 発行する衛星（関守）。",
+      "identity": "コンポーネント名 credential-broker（interface=CredentialProvider）",
+      "lifecycle": [
+        "active"
+      ],
+      "owns": [],
+      "notes": "core の依存先（下位）で可用性要件は最上位——停止すると認証が要る全ターゲットの Observe が全盲になる。v2 で有効化、v1 は SecretRef（Vault 静的資格）で暫定供給。Acquire/Release の2操作（§20.4）。"
+    },
+    {
+      "name": "catalog",
+      "definition": "intent 用の薄い UI 衛星（図面）で、独自の DB を持たず git を真実の源とする。",
+      "identity": "コンポーネント名 catalog",
+      "lifecycle": [],
+      "owns": [],
+      "notes": "各商品=合成リソースのテンプレート。書込経路は ownership に従う（tenant=即時 / platform=UI→PR）。停止しても収束ループは回る（git 直接編集にフォールバック）。v2（§21.4）。"
+    }
+  ],
+  "value_objects": [
+    {
+      "name": "ID",
+      "definition": "(Provider, Scope, Local) の複合キー。global-unique な単一文字列だと再シャードで帰属が壊れるため、scope をルーティングキーとして内包する不変の識別子として値で表す（§4.1）。"
+    },
+    {
+      "name": "Scope",
+      "definition": "provider 非依存のラベル集合 + パス形式。zone/cluster/rack を1型で吸収し、claim 境界・prune 境界・パス規約・rendered_revision 算出単位の4用途で同一語彙を共有する不変の管理境界であり、同一性でなく値で比較されるため value（§4.2）。"
+    },
+    {
+      "name": "State",
+      "definition": "Schema 付き map（key=フィールド名, value=Schema 宣言型）。現実側の状態のみを表し desired を持たない。型情報は Schema が持つので構造は map で足り、識別子でなく観測値そのものなので value（§4.3）。"
+    },
+    {
+      "name": "Plan",
+      "definition": "操作列（Create/Update/Delete）+ 破壊性フラグ + 原因タグ + 対象 ID + 診断からなる「何をすべきか」の記述。Diff の出力であり毎周期再計算される派生値なので、同一性を持つ entity ではなく value（§4.4）。"
+    },
+    {
+      "name": "Observation",
+      "definition": "Read の戻り値で Availability（ok/unknown/converging）+ State + Ready + ObservedAt からなる。ある周期の観測結果そのものであり周期をまたいだ再利用が禁止される使い捨ての値なので value（§4.5）。"
+    },
+    {
+      "name": "ChangeHint",
+      "definition": "早期収束のトリガが流す intent_revision + 触られた scope 群のみ。変更後の値（真実）を一切運ばず「いつ収束するか」のヒントに過ぎないため、状態を持たない軽量な value（§4.6, §21.2）。"
+    },
+    {
+      "name": "SecretRef",
+      "definition": "秘密の参照（path + gen）。String() が *** を返し自動マスクし、値は Apply 直前に Resolve() で JIT 実値化する。値を保持せず参照同士で diff を取る型で、秘密という属性を型で表す value（§4.8, §20.2）。"
+    },
+    {
+      "name": "cause tag",
+      "definition": "差分1件ごとの原因分類 A〜E（A 意図的/B drift/C ツール更新（ghost diff）/D カスケード/E 外部入力変化）。intent_revision と rendered_revision と provider_version の差で per-resource に確定する、危険度と対応を決める分類ラベルとしての value（§10.2）。"
+    },
+    {
+      "name": "Capabilities",
+      "definition": "provider の能力差を機械可読にするフラグ集合（TrueObserve/List/Converging/CommitConfirm/BulkObserve）。散文の注意書きでなくコアの機械的縮退を駆動するメタデータで、provider に付随する属性値なので value（§5.3）。"
+    },
+    {
+      "name": "Availability",
+      "definition": "Observation の三値（Ok/Unknown/Converging）。存在（ok+State）/到達不能（unknown≠absent）/相手が収束作業中（converging）を絶対に混同しない非対称原則の起点で、状態の分類を表す enum value（§4.5）。"
+    },
+    {
+      "name": "Op",
+      "definition": "Plan を構成する単一操作（Kind + Target ID + Destructive + Cause + Fields + Diagnostic）。Destructive フラグが rate limit・破壊予算・全体凍結を駆動する。Plan の要素であり独立した同一性を持たない value（§4.4）。"
+    },
+    {
+      "name": "DeletionPolicy",
+      "definition": "prune の世界観宣言（ExplicitAbsentOnly=open-world / PruneWithinScope=closed-world・Lister 必須）。リソース型に付随する削除規律の宣言値で、破壊的型は pruneable:false が既定。設定値としての value（§5.4）。"
+    },
+    {
+      "name": "Event",
+      "definition": "単一型 + kind enum（DriftDetected/ProviderUpgradeDiff/StageAwaitingApproval/BreakGlassUsed 等）+ severity + level/edge + scope/resource/revision 参照。発生源と sink を分離する共通型で、発生した事実を運ぶ不変の value（§4.7, §22.3）。"
+    },
+    {
+      "name": "Allocation",
+      "definition": "allocator(台帳)が確定させた採番事実(VLAN/IP/ASN の払い出し)。Release まで不変ゆえローカルにキャッシュ可能な値であり、収束対象の Resource ではない。S2 に永続。"
+    },
+    {
+      "name": "ClaimAssignment",
+      "definition": "どの scope をどのデーモンが収束するかの割当を git 上の intent として宣言したもの。二重 claim は fencing 世代番号で検知。シャードルーターを持たないための値。"
+    },
+    {
+      "name": "WorkflowProgress",
+      "definition": "Workflow/Task が今どのフェーズか・どの承認待ちかを表す進捗。喪失=事故(S2)。手続きの外部永続状態であり宣言的 desired ではない。"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "Provider",
+      "to": "Resource",
+      "kind": "one_to_many",
+      "label": "リソース種別ごとに Provider が Schema/Read/Apply を実装し複数 Resource を扱う"
+    },
+    {
+      "from": "Provider",
+      "to": "Lister",
+      "kind": "one_to_one",
+      "label": "prune を許す Provider は Lister（List）を追加実装する（任意 capability）"
+    },
+    {
+      "from": "Lister",
+      "to": "Resource",
+      "kind": "one_to_many",
+      "label": "List が scope 内の全 ID を列挙し、集合差（現実−理想）で prune 対象を判定する"
+    },
+    {
+      "from": "Workflow",
+      "to": "Task",
+      "kind": "one_to_many",
+      "label": "Workflow のステップが内部で多相 Task を呼ぶ（階層構造）"
+    },
+    {
+      "from": "Task",
+      "to": "Resource",
+      "kind": "many_to_one",
+      "label": "Task は単一 Resource の非冪等手続きを実行する（strategy: task で収束が起動）"
+    },
+    {
+      "from": "Workflow",
+      "to": "Resource",
+      "kind": "one_to_many",
+      "label": "Workflow は複数 Resource をまたぐ順序付き手続き + 不変条件を持つ"
+    },
+    {
+      "from": "Shard",
+      "to": "Resource",
+      "kind": "one_to_many",
+      "label": "Shard は自 claim にマッチする scope の Resource 群のみを収束する（owns via claim）"
+    },
+    {
+      "from": "allocator",
+      "to": "Scope",
+      "kind": "one_to_many",
+      "label": "allocator はプールを claim/scope 軸で disjoint に分割管理する（1プール1権威）"
+    },
+    {
+      "from": "Intent",
+      "to": "Resource",
+      "kind": "one_to_many",
+      "label": "Intent が DesiredSource.Fetch 経由で複数 Resource の desired を供給する"
+    },
+    {
+      "from": "Resource",
+      "to": "SecretRef",
+      "kind": "many_to_one",
+      "label": "Resource の secret フィールドは SecretRef として値でなく参照を保持する"
+    },
+    {
+      "from": "Resource",
+      "to": "Resource",
+      "kind": "one_to_many",
+      "label": "合成リソース（親）が render フェーズ2 で子 Resource 群を展開し managed_by で ownership を伝播する"
+    },
+    {
+      "from": "Provider",
+      "to": "Capabilities",
+      "kind": "one_to_one",
+      "label": "Provider が Capabilities を宣言し、コアが階級に応じ機械的に縮退する"
+    },
+    {
+      "from": "credential-broker",
+      "to": "Provider",
+      "kind": "one_to_many",
+      "label": "credential-broker が Provider の到達資格を JIT 発行する（実行時依存・v2）"
+    }
+  ],
+  "glossary": [
+    {
+      "term": "関守（credential-broker）",
+      "definition": "ターゲット認証を一元化し短命クレデンシャルを JIT 発行する衛星。core の依存先で、停止すると全ターゲットの Observe が全盲になるため可用性要件は最上位（§20.4）。"
+    },
+    {
+      "term": "台帳（allocator）",
+      "definition": "VLAN/IP/ASN の採番権威となる衛星。払い出し記録という state を外部永続化し、収束エンジン自身は state を持たずに済む（§19）。"
+    },
+    {
+      "term": "図面（catalog）",
+      "definition": "intent 用の薄い UI 衛星。独自 DB を持たず git を真実の源とし、書込経路は ownership に従う（§21.4）。"
+    },
+    {
+      "term": "坪庭（devenv）",
+      "definition": "本番の内側に隔離された、本物と同じ材料でできた開発・検証環境。物理1台にネストで段0〜段2 を再現し、Sakutei 自身で構築する（dogfooding・§23.7, §26.2）。"
+    },
+    {
+      "term": "縮景（twin）",
+      "definition": "devenv の最終像。render の外部入力を差し替えた環境で、本番 intent を同じ reconciler で流し込み本番と構造的に一致させる。chaos の常設先（§26.2）。"
+    },
+    {
+      "term": "観測 state レス",
+      "definition": "キャッシュした「現在状態」を持たず毎周期リアルを再観測する原則（正確には S1 観測 state レス）。Terraform の three-way-diff/state ドリフト問題を構造的に排除する（§4.9, §8）。"
+    },
+    {
+      "term": "level-triggered",
+      "definition": "毎周期 desired と actual を再導出し観測状態を持たない収束原理。トリガ（edge）は「いつ収束するか」だけを運び、真実は毎周期の再観測で得る（§3, §8）。"
+    },
+    {
+      "term": "段0 / 段0-minimal",
+      "definition": "段0=人が Ansible+金庫で作る不変の最小土台（Proxmox 3ノード+Ceph+VM-HA 上に Vault/broker/reconciler）。段0-minimal=1ノード縮退形（Vault/broker/allocator 不要）で solo プロファイルの既定（§23.2, §23.6）。"
+    },
+    {
+      "term": "ownership（platform/tenant）",
+      "definition": "所有権2層の1軸。platform=共有基盤（PR 必須・厳格・halt・爆発半径大・FileSource）、tenant=専有（即時・緩い・auto・砂場内・DBSource）。書込経路から prune 境界まで7関心事を貫く（§7.1）。"
+    },
+    {
+      "term": "external_owner",
+      "definition": "内部に自前収束ループを持つ外部オーケストレータ（DRS/ACI/MHA 等）が所有する scope の除外宣言。Sakutei は Observe するが Apply しない。協調は ready_condition を Observe で待つ一方向に閉じる（§7.3）。"
+    },
+    {
+      "term": "managed fields",
+      "definition": "外部システムが動かすフィールド（DRS の vMotion・動的 IP・HA 電源状態）を Schema で managed 宣言し diff 対象から自動除外する（フィールド単位。scope 単位の external_owner と対をなす）（§7.2）。"
+    },
+    {
+      "term": "pruneable",
+      "definition": "prune（減算）の可否フラグ。破壊的型は pruneable:false が既定で、確信が持てないとき減算はしない非対称原則を型で表す。managed_by で親から子へ伝播する（§7.5）。"
+    },
+    {
+      "term": "DeletionPolicy（ExplicitAbsentOnly/PruneWithinScope）",
+      "definition": "prune の世界観。ExplicitAbsentOnly=open-world（明示 absent のみ削除）、PruneWithinScope=closed-world（scope 内集合差で削除・Lister 必須）（§5.4）。"
+    },
+    {
+      "term": "状態クラス S1〜S4",
+      "definition": "state の分類。S1=観測（持たない）/ S2=進行（外部永続化必須・喪失=事故）/ S3=履歴（メモリのみ・喪失は安全側）/ S4=監査（append-only・収束経路から不可視）。永続化必須は S2 だけ（§4.9）。"
+    },
+    {
+      "term": "rendered_revision",
+      "definition": "render 出力の世代（intent + 解決済み外部入力すべての decision-relevant な決定的ハッシュ）。scope 単位で算出し、intent_revision との差が原因タグ判定基盤になる（§9.4）。"
+    },
+    {
+      "term": "planned_change",
+      "definition": "大量正当作業（reimage/decommission 等）の解除弁となる宣言 + 専用予算レーン。宣言 kind と実際の Plan 操作種別の整合を検証する。型と予算レーン評価は v1a（§13）。"
+    },
+    {
+      "term": "claim-as-intent",
+      "definition": "どのデーモンがどの scope を担当するかを git の宣言的 intent とする静的シャーディング方式。新ルーターも新 S2 も増やさず、割当が PR レビュー・履歴・監査の対象になる（§17.1）。"
+    },
+    {
+      "term": "S2-free シャード",
+      "definition": "Resource 収束のみを担いローカル S2 を持たない第一級のシャード階級。デーモンホスト全損でも失うものがゼロで、再イメージ→pull→収束で完全復旧する（§17.5）。"
+    },
+    {
+      "term": "早期収束パス",
+      "definition": "ChangeHint（Watch）を受けてその scope だけを新鮮に render→Observe→Diff→Apply する部分収束経路。edge-triggered な起床 + level-triggered な真実。取りこぼしは定期周期が拾う（遅延のみ・§8, §21.2）。"
+    },
+    {
+      "term": "BulkObserve",
+      "definition": "scope 内を1コールでまとめて Read するバルク観測の任意 capability。単一デーモンの天井を押し上げる。Observe 専用で prune の根拠には一切使えない（型分離）（§5.7, §16.3）。"
+    },
+    {
+      "term": "waiting-allocation",
+      "definition": "allocator 停止時に新規採番が必要なリソースだけが入る縮退状態。converging に類似しエラーでも halt でもなく下流 skip のみ。既存収束は Lookup キャッシュで継続する（§19.9）。"
+    },
+    {
+      "term": "fencing token",
+      "definition": "二重 claim（2デーモンが同一 scope を掴む）や旧 active の書き込みを世代番号で fence する仕組み。静的シャーディングでは割当表を持たず fencing 世代番号だけを S2 として使う（合意より軽い）（§15, §17.3）。"
+    },
+    {
+      "term": "Observation vs ConvergenceStatus",
+      "definition": "Observe は Availability（ok/unknown/converging）+State を返し desired を知らない。drifted/converged は Diff（Plan が空か否か）から導出される報告用状態で、混ぜると dry-run の根拠が崩れる（§4.5）。"
+    },
+    {
+      "term": "TrueObserve",
+      "definition": "current を「状態」として返せる Capability（Ansible check mode=false）。false だと actual 比較不能で原因タグ A/B を区別できず changed に統合、rate limit は破壊的側に倒す（§5.3）。"
+    },
+    {
+      "term": "ledger_only / observability:none",
+      "definition": "Observe すら不可能な資産（API を持たない旧機器等）の階級。台帳には unknown として第一級で存在させるが Read/Diff/Apply の対象にせず、List 集合演算からも除外し prune の巻き添えを防ぐ（§5.8）。"
+    },
+    {
+      "term": "AllocationAuthority",
+      "definition": "allocator の interface。Allocate（冪等要求）/ Reserve→Confirm（PR 用二段階）/ Release（非対称返却・List 確認+cooldown）/ Lookup（キャッシュ再取得）の5操作（§19.3）。"
+    },
+    {
+      "term": "DesiredSource",
+      "definition": "理想状態の供給源を隠す seam（Fetch が Resource 群 + intent_revision を返す）。FileSource（git/v1）・DBSource（v2）・RenderedSource（CMDB 合成）を切替可能にし、収束ループは供給源を区別しない（§21.1）。"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "ADR-0017",
+  "title": "段0 ブートストラップ + 段0-minimal(単一ノード縮退形)",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "Sakutei はインフラを作るが、自分自身(動作ホスト・自分の設定・資格情報)は自分では収束できない。これは一般解の存在しない構造であり、自己を立ち上げる何かは自分の外側から来るしかない(k8s の kubeadm、Cluster API の management cluster と同型)。したがって人が Ansible と金庫で作る不変の最小の土台(段0)が要る。だが Proxmox 3ノード + Ceph + Vault-HA の段0 は 1〜2 台構成やホームラボ・個人利用には過大であり、その帯域を閉ざす。",
+  "alternatives": [
+    {
+      "name": "段0 も Sakutei 自身で自己収束させる",
+      "tradeoff": "自分を立ち上げるものを自分で作る鶏卵構造になり、コールドスタート・自傷(依存先を壊すと全盲)を解けない。段0 は Ansible(open-world・pull・稀・意図的)で人が作るのが定石"
+    },
+    {
+      "name": "段0 を 3ノード + Ceph + Vault-HA 固定にする",
+      "tradeoff": "個人 OSS 利用者・ホームラボには重すぎて入口を閉ざす。単一ノード・ローカルディスク・file SecretBackend の段0-minimal を第一級の縮退形として持つ方が採用の入口が軽い"
+    }
+  ],
+  "decision": "ブートストラップを 2 段構造にする。段0 は人が Ansible + 金庫で作る不変の最小土台(Proxmox 3ノード + Ceph + VM-HA 上に Vault/reconciler)、段1 以降は段0 の上で reconciler が自律収束する。加えて段0-minimal(単一ノード・Ceph なし・file SecretBackend・Vault/broker なし)を第一級の縮退形として定義し solo プロファイルの既定とする。",
+  "consequences": [
+    "+ 自己を立ち上げるものが外側(人 + Ansible + 金庫)から来る構造を定石として明示でき、無限後退が金庫に着地する",
+    "+ 段0-minimal は v1a で成立し(broker/allocator/Vault いずれも不要)、個人 OSS 初期利用者の軽い入口になる",
+    "+ 制御面(段0)が落ちてもデータ面(既存 VM/機器)は動き続け、復帰後に最後の理想へ自然に再収束できる",
+    "- 統合 Ceph が段0 の SPOF になり、全損時の RTO は Break Glass(Ansible + unseal key)による人手再構築になる。障害ドメイン分散を人手運用要件に含める",
+    "- コールドスタートは Vault unseal 先行の順序制約があり、段0 は片手間では回らない(sealed-on-restart で unseal 人手が要る)",
+    "- 段0-minimal は単一障害点を許容するトレードオフを明示的に受け入れる"
+  ],
+  "reversibility_cost": "medium",
+  "affects": ["reconciler", "devenv"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "devenv は Sakutei 自身で構築する(dogfooding)。段0-minimal は file SecretBackend で sealed-on-restart が無く順序制約が消える。§23 を正とする。"
+}

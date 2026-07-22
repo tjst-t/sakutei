@@ -1,0 +1,31 @@
+{
+  "id": "ADR-0005",
+  "title": "削除の非対称: pruneable:false 既定・DeletionPolicy・List完全性検証",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "level-triggered な収束は毎周・全リソースの差分を並列 Apply で埋めにいく。理想を1行間違えれば次の1サイクルで数百リソースが「差分あり」と判定され一斉に潰す。しかも level 型は毎周繰り返すため、手で戻しても次周また壊す（底なし）。削除は取り返しがつかず、observe が unknown を返しても・List がサイレントに欠損しても、素朴な実装は「理想に無い＝消す」で誤削除に直結する（volume ＝ データ消失 / VLAN ＝ 通信断）。加算は許すが減算は確信を要求する非対称原則を、削除経路の全域に型で埋め込む必要がある。",
+  "alternatives": [
+    {
+      "name": "既定で prune 可能にする",
+      "tradeoff": "1コミットの理想変更で全リソース削除が毎周ループから自動実行されるリスクがあるため却下"
+    },
+    {
+      "name": "unknown（到達不能）を absent（消えた）扱いにする",
+      "tradeoff": "到達不能を「消えた」と断じると到達性障害のたびに誤削除が起きるため却下（unknown ≠ absent）"
+    }
+  ],
+  "decision": "削除を「現実にある集合 − 理想にある集合」の集合演算とし、DeletionPolicy を ExplicitAbsentOnly（open-world）と PruneWithinScope（closed-world・Lister 必須）の2モードに分ける。破壊的型（volume/VM）は pruneable:false を既定とし managed:true だけでは消さず追加の opt-in を要求する。prune の根拠である List にはページング完走検証（complete-or-error）・前回比の件数急減 halt・ListStatus 三値を課し、完全性を実行時に検証する。",
+  "consequences": [
+    "+ 毎周ループが破壊的型に DROP 相当を自動実行しない（closed-world の「消せる」と「消してよい」を二段構えで分ける）",
+    "+ List のサイレント欠損（ページング打ち切り・レプリカ遅延）が誤削除に直結せず、保守側（prune 保留）に倒れる",
+    "+ Release（採番返却）も現実からの消滅を List で確認してから発火し、cooldown を挟むため衝突再払い出しを防ぐ",
+    "- Lister を持たない provider には prune を許さず、削除表現が open-world の explicit absent に限定される",
+    "- 破壊的削除には opt-in・planned_change 宣言・承認ゲートといった追加の明示的意図が常に必要になる",
+    "従属: BulkObserve は prune 根拠に流用不可（ADR-0011）、planned_change 専用予算レーンが正当な大量削除を捌く"
+  ],
+  "reversibility_cost": "high",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "List 完全性検証（a/b/c）はいずれも v1a（prune 安全性の中核）。急減閾値は既定50%だが scope 単位で list_drop_threshold で上書きする。"
+}

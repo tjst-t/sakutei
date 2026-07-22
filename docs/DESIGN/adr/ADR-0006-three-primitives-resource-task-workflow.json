@@ -1,0 +1,27 @@
+{
+  "id": "ADR-0006",
+  "title": "3プリミティブ Resource/Task/Workflow と「いつ=収束/どう=手続き」",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "宣言的収束（Resource）だけでは手続き的作業（migration / firmware 更新 / ローリングアップグレード / フェイルオーバー / ベアメタル導入）を表現できない。これらは経路依存・非冪等・中断が致命的で、毎周回る収束ループに載せると破壊する。例えば理想状態に column: new_name とだけ書くと収束は rename を drop+add に化けさせデータを消しかねない。冪等性を前提に毎周 Apply を叩く収束ループの契約を、非冪等操作から型レベルで守る仕組みが要る。",
+  "alternatives": [
+    {
+      "name": "すべてを宣言的 Resource で表現する",
+      "tradeoff": "非冪等・順序依存・中断が致命的な手続き（rename/firmware/ローリング/DR）を表せず、毎周の再実行が破壊を招くため却下"
+    }
+  ],
+  "decision": "プリミティブを Resource（宣言的・収束・観測 state なし）/ Task（単一リソースの一回性手続き・進行フェーズのみ S2 永続化）/ Workflow（順序 + 不変条件 + 手動承認ゲート）の3層に分ける。共通原則は「いつ・どの順で変えるか＝収束が判定、どう変えるか＝Task/Workflow が実行」。非冪等操作を要する Resource は strategy:task を宣言し、収束は差分検知時に Task を起動するイベント発火だけを担う（RequiresTaskEvent）。",
+  "consequences": [
+    "+ 危険な一回性・順序依存の手順を毎周ループから隔離し、収束の冪等性契約を非冪等操作から守れる",
+    "+ HA 上げ本来の「順序・不変条件・失敗回復」を第一級プリミティブとして構造化できる",
+    "+ 実行中の対象は converging 扱いにして収束の介入を止められる",
+    "- Task/Workflow は進行フェーズを外部永続化（S2）する必要があり、喪失＝事故の state を持ち込む",
+    "- 多相 Task 状態機械・自動段階ロールアウトは重く需要が偏るため v2 に残る",
+    "従属: 承認ゲートは既存 Workflow の組み合わせで表現でき新プリミティブ不要"
+  ],
+  "reversibility_cost": "high",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "v1.5 で単純 Task + 最小 Workflow（直列 + 不変条件 + 手動承認ゲート）を前倒す。20構成の12が事業の核を Task/Workflow に依存させていたことが前倒しの根拠。"
+}

@@ -1,0 +1,27 @@
+{
+  "id": "ADR-0007",
+  "title": "ownership(platform/tenant)を全関心事を貫く単一軸にする",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "書込経路・remediation・rate limit・爆発半径・供給源・シャード分割境界・prune 境界を、リソースごとに個別に設計しなければならないように見える。しかし個別に導いた結論を並べると、すべてが「共有基盤か専有か」という一軸に乗る。この一致は分解が正しい証拠であり、7つの関心事を別々のポリシーとして持つ代わりに単一の所有権軸で駆動できれば、設計と実装の複雑さが桁で落ちる。",
+  "alternatives": [
+    {
+      "name": "関心事ごとに独立したポリシー軸を持つ",
+      "tradeoff": "書込経路・remediation・rate limit・爆発半径を個別設計すると組合せ爆発し、所有境界と物理シャード境界の一致という構造的性質も活かせないため却下"
+    }
+  ],
+  "decision": "ownership を platform（共有基盤・PR 必須・厳格・alert-only 寄り・halt・大爆発半径・FileSource/git・共有上流シャード）と tenant（専有・即時書込・auto 可・warn・小爆発半径・DBSource・scope で砂場を切る）の2層とし、この1軸が7つの関心事（書込経路 / remediation / rate limit / 爆発半径 / 供給源 / シャード境界 / prune 境界）を横断的に決める。",
+  "consequences": [
+    "+ 所有権の論理境界がそのままシャードの物理境界・爆発半径境界になり、安全機構の粒度がこの一軸に揃う",
+    "+ テナントは scope の砂場境界により他テナントも基盤も壊せないため、テナント内レビューは自己責任にできる",
+    "+ テナントが基盤に触れる操作（採番消費・容量消費）は authority と quota の事前枠を通し即時のまま安全、枠超えだけ platform 承認へ上がる",
+    "- 認可・quota・課金・セルフサービス窓口はコアの責務外で上位プラットフォーム / IdP に委ねる（コアは境界保証だけ）",
+    "- platform の破壊的大量変更は原因タグ A（意図）でも承認必須にする追加ゲートが要る（侵害された reconciler 対策）",
+    "従属: managed fields（フィールド単位除外）と external_owner（scope 単位除外）、合成子への ownership 伝播はこの軸の適用"
+  ],
+  "reversibility_cost": "high",
+  "affects": ["*"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "原則6（ownership がすべてを貫く）の実体。予算カウンタもシャード＝ownership＝爆発半径境界単位で持つ。"
+}

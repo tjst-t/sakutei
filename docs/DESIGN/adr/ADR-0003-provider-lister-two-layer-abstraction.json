@@ -1,0 +1,31 @@
+{
+  "id": "ADR-0003",
+  "title": "Provider/Lister 2層抽象と Provider interface 正準形（Schema/Capabilities/Read/Apply + List）",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "プロバイダの書きやすさが Sakutei の普及を直接決める（Terraform はエコシステムで勝った）。作者が書く最小を極限まで削り、面倒はコア側の SDK が引き受ける必要がある。同時に、prune（削除）は個別の Read(id) では表現できず「現実にある集合 − 理想にある集合」という集合演算を要するため、集合列挙を個別操作と型レベルで分離しておかないと、削除の安全性を担保する List 完全性検証（ADR-0005）が成立しない。v2.2 では §4.1 と §5.1 で Provider 署名が食い違っており（Diff を持つ / 持たない）、実装者が誤った契約を書く危険があったため正準形の一本化が要った。",
+  "alternatives": [
+    {
+      "name": "単層 Provider に prune を内包（集合列挙を個別操作に混ぜる）",
+      "tradeoff": "集合列挙（List = ID 集合）と個別操作（Read = 状態）の分離が崩れ、BulkObserve を prune 根拠に誤用する経路を型で塞げなくなるため却下"
+    },
+    {
+      "name": "Provider に Diff を実装させる",
+      "tradeoff": "フィールド比較は車輪の再発明かつバグの温床。Schema 駆動でコアが汎用実装する方が安全なため却下"
+    }
+  ],
+  "decision": "コア抽象を Provider（Schema / Capabilities / Read / Apply の4関数）と、prune を許す場合に足す Lister（List）の2層とする。Diff は Provider に実装させず、コアが Schema 駆動で汎用実装する。Read は desired を知らず Observation を返し、Apply は create/update/delete を1関数に統合する。",
+  "consequences": [
+    "+ 作者が書くのは約4関数（+ prune 用 List）に削られ、diff・秘匿マスク・managed 除外・version 埋込・エラー分類・テストハーネスは SDK が担う",
+    "+ 集合列挙（List）と個別状態（Read / BulkObserve）が型分離され、prune 根拠の誤用を型で塞げる",
+    "+ Capabilities による機械的縮退で、書ける範囲での参加とコア側の安全な縮退が両立する",
+    "- Schema を正しく書くことが実装の重さの本体になり、secret/managed/ordered/identity の宣言ミスが安全保証を黙って無効化する",
+    "- interface はコア型に食い込むため、正準形の後からの変更は全 provider に波及する（high コスト）",
+    "従属: Capabilities 縮退・階級（完全/標準/最小）・BulkObserve・DeletionPolicy は本抽象の上に載る"
+  ],
+  "reversibility_cost": "high",
+  "affects": ["provider-sdk", "reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "正準形は §5.1 に一本化済み。Schema 設計が最難関であることを SDK の Schema lint（ロード拒否レベル）で補強する。"
+}

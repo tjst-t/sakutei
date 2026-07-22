@@ -1,0 +1,204 @@
+{
+  "performance": [
+    {
+      "metric": "収束周期（reconcile 間隔）",
+      "target": "既定 reconcile 間隔 30s・Observe 予算 10s（早期警戒線）。jitter sleep で周期を回す",
+      "rationale": "§16.2 の上限台数算術は「reconcile 間隔 30s に対し Observe 予算 10s、並列度 16」を早期警戒線とする。この予算を超えると単一デーモンの天井（§16.1 = Observe 時間）に接近するサイン。",
+      "confidence": "medium",
+      "drives_adr": []
+    },
+    {
+      "metric": "early-convergence の追加レイテンシ",
+      "target": "秒オーダー（Watch ヒント → scoped run の合流〜render→Observe→Diff→Apply の追加分）",
+      "rationale": "§16.6/§21.2 の watch 併用ハイブリッド・早期収束パスは「いつ収束するかの最適化」であり、ヒント欠落は遅延のみで正しさに影響しない。追加レイテンシは周期（秒オーダー）に収まる。",
+      "confidence": "medium",
+      "drives_adr": []
+    },
+    {
+      "metric": "1回の Observe レイテンシ階級（実機）",
+      "target": "高速REST 0.15s / Proxmox REST 0.3s / vCenter govmomi 0.8s / NETCONF・gNMI 1.5s / CLI scrape 4.0s / Ansible module 6.0s",
+      "rationale": "§16.2 実機レイテンシ階級表。天井は単一の数字では表せず provider 階級で1桁以上違う。単一デーモンの天井 ≒ Observe 時間（§16.1）。",
+      "confidence": "high",
+      "drives_adr": []
+    }
+  ],
+  "availability": [
+    {
+      "metric": "衛星停止時の縮退目標（定常収束の生存条件）",
+      "target": "衛星の停止は変化を止めるが維持を止めない。定常状態の収束ループは衛星コールゼロで回る（設計保証）。v1 では衛星がすべて落ちても既存インフラの維持収束は回り続ける",
+      "rationale": "§22.4 衛星停止影響表・§19.6 QPS 算術。allocator 停止は新規採番のみ（waiting-allocation）、Vault 停止は secret を持つ Apply のみ（alert-only 縮退）を止め、いずれも定常収束は Lookup キャッシュ／last-resolved+TTL キャッシュで継続する。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0012"]
+    },
+    {
+      "metric": "credential-broker（v2）の可用性順位",
+      "target": "可用性要件は最上位（reconciler 以上）。段0 の VM-HA 保護対象（Vault・reconciler と同列）",
+      "rationale": "§20.4/§22.4。broker 断は認証が要る全ターゲットの Observe が止まる＝システム全盲であり Vault 断より重い。core が broker に依存する（下位）ため、可用性を core 以上に積む。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0012"]
+    },
+    {
+      "metric": "allocator の可用性目標",
+      "target": "reconciler 以上。段0 の VM-HA 上に active/standby + fencing token で保護。ただし HA は「変化（新規採番）の可用性」のためであり「維持（定常収束）の可用性」のためではない",
+      "rationale": "§19.8。allocator は外出しした共有 state の権威でその喪失が最も痛い（§19.7）。定常収束は allocator 停止中も Lookup キャッシュで回る（§19.6）ため、HA は早期収束の UX を守る投資。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0012"]
+    },
+    {
+      "metric": "段0 の SPOF と段0-minimal のトレードオフ",
+      "target": "段0 は統合 Ceph 全損で Vault/broker/reconciler が同時に落ちる単一障害点を持つ（RTO は Break Glass による人手再構築）。段0-minimal（単一ノード・Ceph/Vault なし）は単一障害点を明示的に許容し、復帰後に最後の理想へ自然に再収束する",
+      "rationale": "§23.5 段0 の SPOF・§23.6 段0-minimal。制御面が落ちてもデータ面（既存 VM/機器）は動き続ける（観測 state レス + level-triggered）ため、1〜2 台構成では許容できるトレードオフ。緩和は Ceph 障害ドメイン分散（別ラック/別電源/別空調）。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0017"]
+    },
+    {
+      "metric": "Vault 断の MTTR（sealed-on-restart）",
+      "target": "MTTR は人間の unseal 時間を含む（Raft HA でも sealed-on-restart は解消しない）。緩和は資格キャッシュと alert-only 縮退。段0 に限り auto-unseal（HSM/Transit/cloud KMS）を選択肢に採り、日常再起動 unseal を MTTR から外す",
+      "rationale": "§23.3/§23.5。VM-HA でも Vault は再起動で sealed に戻り unseal はオペレータ起動。断中は §20.3 の last-resolved + TTL キャッシュで secure に縮退する。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0017"]
+    }
+  ],
+  "consistency": [
+    {
+      "metric": "drift 検出の盲点",
+      "target": "盲点ゼロ。毎周期リアルを再観測して desired と actual を再導出する（観測 state レス）",
+      "rationale": "§16.1/§4/§8。キャッシュした「現在状態」を持たず毎周全リソースを再観測するため、Terraform の three-way-diff / state ドリフト問題を構造的に排除する。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0002"]
+    },
+    {
+      "metric": "S2（進行 state）の永続化保証",
+      "target": "quorum ストアに永続化し fencing token で二重 claim を検知。喪失＝事故",
+      "rationale": "§25.3/§13.2/§4。観測 state は毎周再導出できるが、承認ゲート待ち・rolling 進行位置・invariant 状態・累積破壊予算カウンタは喪失すると二重実行や穴の復活を招く。DR の claim ハンドオフ時も fencing で split-brain を防ぐ。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0015"]
+    },
+    {
+      "metric": "シャード間の整合性モデル",
+      "target": "結果整合。シャード同士は互いに問い合わせず、相手の作った現実を Observe して gate する（観測 ready 待ち）。強い順序保証はシャード内に閉じたときのみ成立",
+      "rationale": "§18.1/§18.2/§17.2。シャード間 RPC / 状態交換は正しさに一切関与しない（交換した状態を信じることは排除したはずの観測 state を持つのと同じ罠）。運んでよいのはヒントだけ、真実は必ず現実を Observe して得る。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0010", "ADR-0002"]
+    }
+  ],
+  "scalability": [
+    {
+      "metric": "単一デーモンの天井（Observe 時間律速）",
+      "target": "天井 ≒ Observe 時間。上限台数 ≈ Observe 予算 10s × 並列度 16 / 1回のレイテンシ。実機階級別：高速REST ~1,067 / Proxmox ~533 / vCenter 0.8s ~200 / NETCONF 1.5s ~107 / CLI 4.0s ~40 / Ansible 6.0s ~27",
+      "rationale": "§16.1/§16.2。収束ループは毎周・全リソースを再観測するため、1周の時間はリソース数 × 1回の Observe レイテンシで決まる。実機レイテンシで書き直した値。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0011", "ADR-0010"]
+    },
+    {
+      "metric": "BulkObserve による API 系のスケール",
+      "target": "バルク API を持つ層（REST/クラウド/CMDB 系）は「1 リソース1コール」前提を突き抜け、API 系で単一デーモン1万規模へ届く（vCenter PropertyCollector / Proxmox /cluster/resources / AWS Describe* を 1コール/scope に畳む）",
+      "rationale": "§16.3。毎周・全量再観測の原則は不変（取り方が N コール→1コールに変わるだけ）。バルク結果は当該周期でのみ使用し周期またぎ再利用は禁止。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0011"]
+    },
+    {
+      "metric": "並列度（同時 Observe 上限）",
+      "target": "既定 16（相手 API への礼儀として semaphore で上限を課す）。NW 機器は同時セッション 2〜8 制限機種が多く機器単位で並列度を上げられない",
+      "rationale": "§16.1/§3（part3 §8）。並列化で Observe コストは最遅 Observe に漸近するが、上限 16 を課す。上限台数算術の分子（10s × 16）に効く。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0011"]
+    },
+    {
+      "metric": "バルク非対応層の台数有界性",
+      "target": "生 NW 機器（NETCONF/CLI）・BMC はバルク非対応だが台数が物理的に有界（1ラック 48 ポート等）。「バルクも無く台数が無限に伸びる」象限は現実にほぼ存在しない",
+      "rationale": "§16.4。バルクを持つ層は数が伸びるが1コールで畳め、持たない層はそもそも数が伸びない。この非対称が天井問題を実際上緩める。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0011"]
+    },
+    {
+      "metric": "スケール段階（規模→構成）と claim シャーディング",
+      "target": "〜数千：単一デーモン・毎周全 Observe / 数千〜数万：単一 + Observe 間引き・watch 併用・BulkObserve / 数万〜：静的シャーディング（--claim, tenant/site/cluster）/ 地理分散：サイトごとシャード + claim の git 配布 + S2-free シャード。300 拠点 × sparse fetch/60s = 5 fetch/s（ミラー1対で捌ける）",
+      "rationale": "§16.7/§17。分散の前に単一を延ばし数万まで届かせてから分割。シャードは shared-nothing の独立収束器で、共有物は衛星に外出し済み。二重 claim は fencing token で検知。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0010", "ADR-0011"]
+    },
+    {
+      "metric": "tier 別 Observe 頻度（間引き・v1b）/ watch 併用（v2）",
+      "target": "安定リソースは N 周に1回へ間引く最小形を v1b の Observe スケジューラ seam として入れる。既定は毎周全部を維持し tier で上書き。完全な間引き最適化と watch 併用ハイブリッドは v2",
+      "rationale": "§16.5/§16.6。間引きは drift 検知が数周遅れるが許容。watch はヒント（触られた scope）だけを流し真実は運ばず、取りこぼしても定期周期が正しさを保証する。",
+      "confidence": "medium",
+      "drives_adr": ["ADR-0011"]
+    },
+    {
+      "metric": "共有衛星の QPS（次の天井は変更レートに比例）",
+      "target": "allocator/Vault への QPS はフリート規模ではなく変更レート（churn）に比例。例：10,000 リソース・日次 churn 1% = 新規採番 ~100 件/日 ≒ 無負荷（定常の 9,900 は Lookup キャッシュヒット）。sizing は churn + ポータル申請ピークで行う",
+      "rationale": "§19.6/§18.3。割当事実は Release まで不変で Lookup をシャードローカルに無期限キャッシュしてよく、定常収束は衛星コールゼロで回る。「シャード数を増やすと衛星が詰まる」を数値で否定。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0010", "ADR-0012"]
+    }
+  ],
+  "security": [
+    {
+      "metric": "secret 値の非収束",
+      "target": "secret の値は収束しない。収束が扱うのは参照・存在・鮮度だけ（値の diff は取れない）。値・動的発行・rotation は Vault に委譲",
+      "rationale": "§20.1/§22.1。理想状態（git）に値は書けず、値を持てば漏洩面が広がる。存在・鮮度（rotation: every 90d）は収束対象、値は Vault の責務。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0016"]
+    },
+    {
+      "metric": "SecretRef 自動マスクと JIT 解決",
+      "target": "SecretRef 専用型：String() が *** を返し自動マスク、実値取得は .Resolve(ctx) のみ。実値化は Apply 直前・provider に渡す瞬間だけで使用後にメモリから消す（Zero()）。git への書き戻しループなし",
+      "rationale": "§20.2。早すぎる展開はログ・Event・ダンプに漏れる。世代フィールドは render フェーズ1が Vault KV v2 metadata から解決して注入し、値を隠したまま rotate を検知する。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0016"]
+    },
+    {
+      "metric": "資格の局所性（爆発半径 = 当該拠点）",
+      "target": "店舗ローカル file SecretBackend に当該店舗の機器分の資格だけを常駐させ、中央の全店舗資格を配らない。1 店舗の資格漏洩は 1 店舗にしか及ばない。鮮度は中央からの定期 rotate 収束で維持",
+      "rationale": "§20.5。WAN 断中も局所資格で自店舗の機器へ Apply/Observe でき自律収束が回る。動的発行（層A：SSH 署名証明書/PKI で保存ゼロ）と静的資格（層B：Vault 保存 + 定期 rotate）を統一 interface の裏で振り分ける。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0016"]
+    },
+    {
+      "metric": "監査（S4）の改竄耐性",
+      "target": "append-only + 連鎖ハッシュ。外部 SIEM/WORM/append-only 専用サービスへ即時（毎周 or 毎時）push し head アンカー間隔を短縮（日次アンカーの最大 24h 改竄窓を塞ぐ）。監査書き込みは reconciler と別権限・別プロセス",
+      "rationale": "§26.3。連鎖ハッシュ単体は head を外部固定しないと全体書き換えで改竄可能。enforcement をアプリの規律でなくストレージ層（WORM / 外部即時 push）で担保し、侵害ホストが自分の犯行ログを改竄できないようにする。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0014"]
+    },
+    {
+      "metric": "破壊的変更のデフォルト halt",
+      "target": "デフォルトは halt、明示的意図で進む。unknown ≠ absent、破壊的型は pruneable:false が既定。ownership:platform の破壊的大量変更は原因タグ A（意図）でも承認必須",
+      "rationale": "§15.5/§13.2/§12.3。速く収束する力は速く壊す力の裏返し。侵害された reconciler は A タグとして安全機構を素通りできるため、大量破壊は意図でも人の承認を要求する。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0014"]
+    }
+  ],
+  "compliance": [],
+  "operational": [
+    {
+      "metric": "検証の4段（chaos が最重要）",
+      "target": "1. ユニット + fake Provider（秒・主戦場・開発の8割・毎コミット CI）/ 2. 単一 Provider 統合（分・CoreDNS/Podman/nftables）/ 3. devenv フルスタック E2E（時間・Proxmox ネスト/containerlab）/ 4. chaos（意図的破壊・最重要・常設先は twin）",
+      "rationale": "§26.1。本システムの肝は「壊れそうで止まる」ことなので壊す検証（爆発半径制御・alert-only 縮退・oscillation 検知・unknown≠absent が効くか）が最重要。fake Provider は seam 設計の副産物で障害注入が自由・高速・決定的。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0014"]
+    },
+    {
+      "metric": "適合レポート（status）と CLI verb",
+      "target": "sakutei（常駐）/ plan（dry-run, Diff で止める）/ reconcile（1回収束, --expect-revision）/ status（drifted 一覧＝適合レポート）/ import（現実を intent として書き出し）/ --claim（静的シャーディング）。plan と reconcile はそれぞれ独立に Observe する",
+      "rationale": "§26.4/§26.6。適合（宣言どおり在るか）は収束ループが常時判定し status で人・監査向けに切り出す。plan の観測を reconcile に持ち越すと観測 state を再導入するため両者は別々に現実を見る。apply は主動詞にしない。",
+      "confidence": "high",
+      "drives_adr": []
+    },
+    {
+      "metric": "remediation schedule（時間帯連動 mode 切替）",
+      "target": "remediation mode（auto / alert-only）を時間帯連動で自動切替（例：保守窓 Sat 02:00-04:00 のみ auto、他は alert-only）。most-restrictive-wins で解決、global freeze が最優先。既定は最も保守的な alert-only",
+      "rationale": "§14.1/§14.2/§14.3。手動 freeze/unfreeze のみだと保守窓文化の SLA 環境でヒューマンエラーが残る。どこか1つでも「止めろ」と言えば止まる（安全側への非対称）。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0014"]
+    },
+    {
+      "metric": "運用プロファイル（solo / team / enterprise）",
+      "target": "solo：cooling-off（遅延実行, 例 2h）で承認代替・自己マージ可（段0-minimal 既定）/ team（既定）：PR 必須・単一承認 / enterprise：N-of-M + separation（申請者≠承認者）を既定化。プロファイルは既定値セットで個別上書き可能",
+      "rationale": "§14.5。規模別の既定値セットで ownership 書込ポリシー・承認ゲート・remediation の既定を切り替える。1名運用では「他者レビュー」を「時間差 + 自己による中断機会」で置き換える方が実効的な安全になる。",
+      "confidence": "high",
+      "drives_adr": ["ADR-0014"]
+    }
+  ]
+}

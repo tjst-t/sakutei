@@ -1,0 +1,27 @@
+{
+  "id": "ADR-0008",
+  "title": "cause tag A〜E と intent_revision/rendered_revision 分離",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "収束ループが見るのは「desired ≠ actual」という結果だけで原因を区別しない。だが同じ差分でも、なぜ生じたかで危険度と対応が正反対である——人の意図的変更（適用してよい）、現実の drift（自己修復かアラート）、provider のツール更新による解釈変化（ghost diff・最も危険で見逃されやすい）、依存波及、外部入力変化（シークレット rotate / 割当変更 / inventory 変更）。desired は人の commit なしでも変わるため、人の意図（commit）と解決済み外部入力を型で分離しないと、外部入力変化を意図と混同したり、ghost diff を drift として自動適用したりする。",
+  "alternatives": [
+    {
+      "name": "差分の原因を区別しない（desired ≠ actual を一律に扱う）",
+      "tradeoff": "ghost diff（正規化ロジック修正で全リソースが再適用）を drift と誤認して自動適用し、外部入力変化を人の意図と混同するため却下"
+    }
+  ],
+  "decision": "差分1件ごとに原因タグ A（意図 / intent_revision 変化）・B（drift / 消去法）・C（ツール更新 / provider_version 変化・ghost diff）・D（カスケード）・E（外部入力変化 / rendered_revision は変化したが intent_revision は不変）を per-resource で帰属させる。intent_revision（人の commit）と rendered_revision（intent + 解決済み外部入力のハッシュ）を型で分離し、各リソースの diff 入力ハッシュを intent 由来 / 外部入力由来 / provider_version 由来に分解してタグを確定する。",
+  "consequences": [
+    "+ A/E 混在 Cycle でも、E 由来（CMDB バグ等）の破壊が無関係な人の小 commit に相乗りして A の緩い扱いで通過する穴を塞げる",
+    "+ C（ghost diff）を provider_version を diff 入力に含めて検知し、自動適用せず ProviderUpgradeDiff Event で人の確認を挟める",
+    "+ rate limit の重み付けが原因の不明度に応じて破壊的側に倒せる（E は不明度が高いので加重）",
+    "- provider_version は手動でなくソースハッシュを SDK が自動算出し、未埋め込み provider は起動時登録を拒否（fail-closed）する必要がある",
+    "- rendered_revision は TTL ヒット/ミスや列挙順で揺れてはならず、decision-relevant な入力のみの決定的ハッシュとして厳密に規定する必要がある",
+    "従属: last-seen リング（S3・非永続）が B の「いつからズレたか」を補い、rendered_revision は scope 単位で算出する"
+  ],
+  "reversibility_cost": "high",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "B は観測 state レスの代償で消去法（否定形）でしか判定できない。rendered_revision の scope 単位算出は部分収束と shared-nothing 独立収束の両方の前提（ADR-0009 / ADR-0010）。"
+}

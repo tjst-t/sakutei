@@ -1,0 +1,30 @@
+{
+  "id": "ADR-0001",
+  "title": "spec を設計の正とし DESIGN/ JSON は派生射影とする",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "設計は v2.2 から v3.1 までパッチ改訂を重ね、日本語・分冊形式の spec（docs/architecture/spec/）が唯一の「設計の正」に収束した。一方で autopilot / sprint といった自動化スキルは機械可読な設計判断の射影を必要とする。両者を独立に手で保つと二重管理になり、必ず乖離する。どちらを正とするかを最初に固定しなければ、以降のすべての ADR・system.json・sprint 計画が拠り所を失う。",
+  "alternatives": [
+    {
+      "name": "JSON を正・spec を背景資料に降格",
+      "tradeoff": "spec の散文が持つ深さ（力学・原則・見送り理由）は JSON の粒度に圧縮できず失われるため不可"
+    },
+    {
+      "name": "spec のみでスキル非対応（機械可読射影を作らない）",
+      "tradeoff": "autopilot / sprint が設計判断を読めず起動できないため却下"
+    }
+  ],
+  "decision": "spec（docs/architecture/spec/）を唯一の設計の正とし、矛盾時は常に spec が勝つ。DESIGN/ 配下の JSON は spec からの一方向の派生射影であり、変更は spec → JSON の一方向にのみ流す。",
+  "consequences": [
+    "+ 二重管理が構造的に排除され、設計判断の唯一の権威が spec に一元化される",
+    "+ autopilot / sprint が機械可読な射影（ADR / system.json）を読んで自走できる",
+    "- JSON は独立に編集してはならず、spec 改訂のたびに再射影する運用負荷が生じる",
+    "- design refresh 時に spec と JSON の乖離を検出する仕組みが前提となる",
+    "従属: 全 ADR・system.json は本 ADR の一方向射影規律に従う"
+  ],
+  "reversibility_cost": "low",
+  "affects": ["*"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "spec を改訂したら DESIGN/ の JSON を必ず再射影する。design refresh で乖離が検出されたら spec を正として JSON 側を直す。"
+}

@@ -1,0 +1,30 @@
+{
+  "id": "ADR-0012",
+  "title": "衛星の停止は変化を止めるが維持を止めない",
+  "status": "accepted",
+  "date": "2026-07-22",
+  "context": "早期収束(採番が UX 直結)と claim シャーディング(全シャードが共有衛星に依存)の合流点として、「allocator/Vault の QPS・可用性が単一デーモンの次の天井になる」という論点が繰り返し指摘された。これを HA やキャッシュという部品追加だけでなく、原則として塞ぐ必要がある。維持(定常収束)と変化(新規採番)を分離し、衛星の可用性が守るのは変化だけであることを設計保証に格上げする。",
+  "alternatives": [
+    {
+      "name": "毎周期 allocator に問い合わせて割当を確認する",
+      "tradeoff": "定常収束のたびに衛星コールが発生し QPS がフリート規模に比例して天井になる。早期収束の UX にも直結して詰まる。割当 Lookup キャッシュ(S3)で回避する方が構造的に軽い"
+    },
+    {
+      "name": "割当 Lookup キャッシュを永続化(S2 化)する",
+      "tradeoff": "割当事実は allocator に Lookup し直せば再取得可能なので S2 の重い保証は不要。永続化は観測 state レスの看板に近づき、喪失時の縮退が『一度問い直す』だけの割に過剰"
+    }
+  ],
+  "decision": "定常状態の収束ループは衛星コールゼロで回ることを設計保証にする。割当事実は Release まで不変なので Lookup 結果をシャードローカルに無期限キャッシュ(S3・再取得可能)し、衛星への QPS はフリート規模ではなく変更レート(churn)に比例させ、allocator 停止時は新規採番が要るリソースだけを waiting-allocation に縮退させる。",
+  "consequences": [
+    "+ allocator/Vault がスケール天井という誤解を churn ベースの sizing 算術で潰せる(例: 1万リソース・日次 churn 1% = 新規採番 ~100 件/日 ≒ 無負荷)",
+    "+ v1 では衛星が全部落ちても既存インフラの維持収束は回り続ける",
+    "+ allocator HA は『変化の可用性』のためだけに積めばよく、維持の可用性は観測 state レスと局所キャッシュが担保する",
+    "- 新規採番のバーストはポータル申請ピークで上限されるため、allocator の sizing は churn + 申請ピークで見積もる必要がある",
+    "- allocator 停止中は新規採番リソースが waiting-allocation で遅延する(正しさは損なわれないが UX に遅延が出る)"
+  ],
+  "reversibility_cost": "medium",
+  "affects": ["allocator", "reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "secret も同型: last-resolved 保持 + TTL キャッシュで定常収束を衛星ゼロで回す。§16.7 注記・§19.6・§19.9・§22.4 を正とする。"
+}
