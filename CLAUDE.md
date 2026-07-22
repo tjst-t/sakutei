@@ -19,11 +19,14 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── design/
-    │   ├── sakutei-design-v3.0.md             # ★設計の正（source of truth）8部29節
-    │   ├── CHANGELOG-v3.0.md                  # v2.6→v3.0 構成対応マップ（内容等価の全面再構成）
-    │   ├── sakutei-design-v2.2〜v2.6.md       # 旧版（歴史として保持・編集しない）
-    │   ├── CHANGELOG-v2.3〜v2.6.md            # 各改訂の変更一覧（見送り理由つき）
-    │   └── reconciler-design-v1.md            # コアの初期設計メモ（背景資料）
+    │   ├── spec/                              # ★設計の正（source of truth）v3.0 分冊
+    │   │   ├── README.md                      #   索引（版・改訂規約・目次・§→ファイル対応）
+    │   │   └── part1〜part8-*.md              #   8部29節の本文（§番号は全部で一意）
+    │   ├── CHANGELOG-v3.0.md                  # v2.6→v3.0 構成対応マップ+分冊化の記録
+    │   └── old/                               # 旧版アーカイブ（編集しない）
+    │       ├── sakutei-design-v2.2〜v2.6.md   #   旧版設計書
+    │       ├── CHANGELOG-v2.3〜v2.6.md        #   各改訂の変更一覧（見送り理由つき）
+    │       └── reconciler-design-v1.md        #   コアの初期設計メモ（背景資料）
     ├── examples/
     │   └── proxmox-mysql-dbaas-schema.md      # Provider/合成リソースの worked example
     ├── review/
@@ -35,20 +38,20 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `sakutei-design-v3.0.md` が唯一の「設計の正」（v2.6 と内容等価の全面再構成）。v2.2〜v2.6 は旧版（編集しない）、`reconciler-design-v1.md` は詳細だが古く、矛盾時は **v3.0 が優先**。すべて日本語で書かれている。
+**権威関係:** `docs/design/spec/`（README.md + part1〜8）が唯一の「設計の正」v3.0（v2.6 と内容等価の全面再構成）。`old/` は旧版（編集しない）、矛盾時は **v3.0 が優先**。すべて日本語で書かれている。
 
-## v3.0 の構成（8部29節）
+## v3.0 の構成（8部29節・分冊）
 
-| 部 | 節 | 内容 |
-| --- | --- | --- |
-| I 思想と境界 | §1-3 | 課題認識 / 作る・委譲する・捨てる / **八つの原則**と適用境界 |
-| II 中核モデル | §4-7 | 正準型と状態分類 S1-S4 / Provider 抽象 / 3プリミティブ / 所有と境界 |
-| III 収束機構 | §8-11 | 収束ループ+早期収束パス / render / 差分と原因（cause tags）/ 多周期収束 |
-| IV 安全機構 | §12-15 | 削除の規律 / 変更予算+planned_change / 修復の統制+プロファイル / 隔離と防御（fencing）|
-| V スケールと分散 | §16-18 | 天井算術（BulkObserve）/ claim シャーディング+S2-free / 分散の原則 |
-| VI 衛星と外部世界 | §19-22 | allocator / secret と資格 / DesiredSource と catalog / 委譲と停止影響表 |
-| VII 運用ライフサイクル | §23-26 | 段0・段0-minimal / ブラウンフィールド / 災害と復旧（DRモード）/ 検証と監査 |
-| VIII 実装 | §27-29 | スライス v1a/v1b/v1.5/v2 / Provider SDK / 残る課題と既知の限界 |
+| 部 | 節 | ファイル | 内容 |
+| --- | --- | --- | --- |
+| I 思想と境界 | §1-3 | part1-philosophy.md | 課題認識 / 作る・委譲する・捨てる / **八つの原則**と適用境界 |
+| II 中核モデル | §4-7 | part2-core-model.md | 正準型と状態分類 S1-S4 / Provider 抽象 / 3プリミティブ / 所有と境界 |
+| III 収束機構 | §8-11 | part3-convergence.md | 収束ループ+早期収束パス / render / 差分と原因（cause tags）/ 多周期収束 |
+| IV 安全機構 | §12-15 | part4-safety.md | 削除の規律 / 変更予算+planned_change / 修復の統制+プロファイル / 隔離と防御（fencing）|
+| V スケールと分散 | §16-18 | part5-scale.md | 天井算術（BulkObserve）/ claim シャーディング+S2-free / 分散の原則 |
+| VI 衛星と外部世界 | §19-22 | part6-satellites.md | allocator / secret と資格 / DesiredSource と catalog / 委譲と停止影響表 |
+| VII 運用ライフサイクル | §23-26 | part7-operations.md | 段0・段0-minimal / ブラウンフィールド / 災害と復旧（DRモード）/ 検証と監査 |
+| VIII 実装 | §27-29 | part8-implementation.md | スライス v1a/v1b/v1.5/v2 / Provider SDK / 残る課題と既知の限界 |
 
 ## 設計を貫く八つの原則（§3）
 
@@ -115,7 +118,7 @@ sakutei import       # 既存リアルを intent として書き出す  --scope 
 ## 作業時の指針
 
 - ドキュメントはすべて日本語。追記・修正時も**日本語**で、既存の用語（英語機能名の component 名、庭園メタファの別名: 関守/台帳/図面/坪庭/縮景）を踏襲する。
-- 設計に関する記述を変更するときは `docs/design/sakutei-design-v3.0.md` を正とする。旧版やサンプルとの矛盾は v3.0 に寄せる。設計を改訂するときは新バージョンのファイルを作り、旧版は編集せず残し、CHANGELOG を添える。
+- 設計に関する記述を変更するときは `docs/design/spec/` を正とする。旧版やサンプルとの矛盾は v3.0 に寄せる。**改訂は分冊（part1〜8）を直接編集**し、`CHANGELOG-vX.Y.md` を `docs/design/` に追加して `spec/README.md` の版番号を上げる（版ごとのファイル複製はしない。履歴は git）。大規模再構成時のみ `spec/` 一式を `old/vX.Y/` にスナップショットする。
 - `generated/` は自動生成専用（ヘッダ必須・直接コミット拒否）、`intent/` は人が書く intent の出力先（claim シャーディング時は `intent/<scope>/` 規約）。
 - **Schema 設計が最難関**（secret/managed/ordered/identity の誤宣言は安全保証を黙って無効化する。identity は運用上の変更頻度で選ぶ）。
 - コンポーネント名は機能的な英語名（reconciler / credential-broker / allocator / catalog）を使う。固有名詞は「Sakutei」のみ。

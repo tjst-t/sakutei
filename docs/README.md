@@ -6,18 +6,10 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 
 | ドキュメント | 位置づけ | 状態 |
 | --- | --- | --- |
-| [design/sakutei-design-v3.0.md](design/sakutei-design-v3.0.md) | **設計の正（source of truth）。** 全 8 部 29 節の全面再構成版（v2.6 と内容等価）。決定済みの設計のみを記録する。 | v3.0（最新・権威） |
-| [design/CHANGELOG-v3.0.md](design/CHANGELOG-v3.0.md) | v2.6 → v3.0 の構成対応マップ（内容等価の全面再構成・統合時調整の記録）。 | — |
-| [design/sakutei-design-v2.6.md](design/sakutei-design-v2.6.md) | 旧版（歴史として保持、編集しない）。v3.0 全面再構成前の最終パッチ版。 | v2.6（旧版） |
-| [design/CHANGELOG-v2.6.md](design/CHANGELOG-v2.6.md) | v2.5 → v2.6 の変更一覧（計画変更宣言・承認ゲート N-of-M・DR モード・運用プロファイル・§26 カテゴリ A の最終消し込み）。 | — |
-| [design/sakutei-design-v2.5.md](design/sakutei-design-v2.5.md) | 旧版（歴史として保持、編集しない）。 | v2.5（旧版） |
-| [design/CHANGELOG-v2.5.md](design/CHANGELOG-v2.5.md) | v2.4 → v2.5 の変更一覧（衛星の天井・BulkObserve 一貫性契約・claim の git 配布と S2-free シャード）。 | — |
-| [design/sakutei-design-v2.4.md](design/sakutei-design-v2.4.md) | 旧版（歴史として保持、編集しない）。 | v2.4（旧版） |
-| [design/CHANGELOG-v2.4.md](design/CHANGELOG-v2.4.md) | v2.3 → v2.4 の変更一覧（早期収束パス・BulkObserve・claim-as-intent）。 | — |
-| [design/sakutei-design-v2.3.md](design/sakutei-design-v2.3.md) | 旧版（歴史として保持、編集しない）。 | v2.3（旧版） |
-| [design/CHANGELOG-v2.3.md](design/CHANGELOG-v2.3.md) | v2.2 → v2.3 の変更一覧（20 件、対応レビュー指摘・見送り理由つき）。 | — |
-| [design/sakutei-design-v2.2.md](design/sakutei-design-v2.2.md) | 旧版（歴史として保持、編集しない）。 | v2.2（旧版） |
-| [design/reconciler-design-v1.md](design/reconciler-design-v1.md) | 収束エンジンコア（reconciler）の初期設計メモ。コアの制御ループ・型・実装判断がより詳細。矛盾する場合は **v3.0 が優先**。 | v1（背景資料） |
+| [design/spec/README.md](design/spec/README.md) | **設計の正（source of truth）の索引。** v3.0 は 8 部 29 節の分冊構成（part1〜part8）。§番号は全部を通して一意。 | v3.0（最新・権威） |
+| design/spec/part1〜8-\*.md | 各部の本文（思想と境界 / 中核モデル / 収束機構 / 安全機構 / スケールと分散 / 衛星と外部世界 / 運用ライフサイクル / 実装）。 | v3.0 |
+| [design/CHANGELOG-v3.0.md](design/CHANGELOG-v3.0.md) | v2.6 → v3.0 の構成対応マップ（内容等価の全面再構成・統合時調整・分冊化の記録）。 | — |
+| design/old/ | 旧版アーカイブ（歴史として保持、編集しない）: `sakutei-design-v2.2〜v2.6.md`、各 `CHANGELOG-v2.x.md`、`reconciler-design-v1.md`（コアの初期設計メモ・背景資料）。矛盾する場合は **v3.0 が優先**。 | 旧版 |
 
 ## 実装例（examples/）
 
@@ -50,8 +42,8 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 
 ## 読む順序の推奨
 
-1. `design/sakutei-design-v3.0.md` — 設計の正。全 8 部 29 節（思想→モデル→収束→安全→スケール→衛星→運用→実装）
-2. `design/reconciler-design-v1.md` — コアの制御ループと型を深掘り（背景資料）
+1. `design/spec/README.md` — 設計の正の索引。ここから 8 部（思想→モデル→収束→安全→スケール→衛星→運用→実装）を辿る
+2. `design/old/reconciler-design-v1.md` — コアの制御ループと型を深掘り（背景資料）
 3. `examples/proxmox-mysql-dbaas-schema.md` — Provider / 合成リソースの具体像
 4. `review/v2.6/README.md` — 適用可能性の到達点（最終判定分布）と収束宣言
-5. 設計の変遷を追う場合: `design/CHANGELOG-v2.3〜v3.0.md` を順に
+5. 設計の変遷を追う場合: `design/old/CHANGELOG-v2.3〜v2.6.md` → `design/CHANGELOG-v3.0.md` を順に
