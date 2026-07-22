@@ -1,6 +1,8 @@
-# Sakutei 設計レビュー・適用可能性検討 総括
+# Sakutei 設計レビュー・適用可能性検討 総括（第 1 ラウンド、対象: v2.2）
 
-実施日: 2026-07-22。対象: `docs/design/sakutei-design-v2.2.md`（設計の正）。
+> **注:** 本レビューの指摘は `docs/design/sakutei-design-v2.3.md` に反映済み（変更内容は [CHANGELOG-v2.3](../design/CHANGELOG-v2.3.md)）。v2.3 を前提とした 20 構成の再検討は [v2.3/README.md](v2.3/README.md) を参照。
+
+実施日: 2026-07-22。対象: `docs/design/sakutei-design-v2.2.md`（当時の設計の正）。
 
 2 部構成:
 1. **設計レビュー**（3 観点: 整合性・安全性・実装可能性）

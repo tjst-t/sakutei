@@ -19,15 +19,22 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── design/
-    │   ├── sakutei-design-v2.2.md             # ★設計の正（source of truth）
+    │   ├── sakutei-design-v2.3.md             # ★設計の正（source of truth）
+    │   ├── CHANGELOG-v2.3.md                  # v2.2→v2.3 の変更一覧（20件・見送り理由つき）
+    │   ├── sakutei-design-v2.2.md             # 旧版（歴史として保持・編集しない）
     │   └── reconciler-design-v1.md            # コアの初期設計メモ（背景資料）
     ├── examples/
     │   └── proxmox-mysql-dbaas-schema.md      # Provider/合成リソースの worked example
+    ├── review/
+    │   ├── README.md                          # 第1ラウンド総括（対象: v2.2）
+    │   ├── 01〜03-*-review.md                 # 設計レビュー（整合性/安全性/実装可能性）
+    │   ├── scenarios/01〜20-*.md              # 20構成の適用可能性検討（対象: v2.2）
+    │   └── v2.3/                              # 第2ラウンド（対象: v2.3）: README.md + scenarios/
     └── web/
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `sakutei-design-v2.2.md` が唯一の「設計の正」。`reconciler-design-v1.md` は詳細だが古く、矛盾時は **v2.2 が優先**。すべて日本語で書かれている。
+**権威関係:** `sakutei-design-v2.3.md` が唯一の「設計の正」。v2.2 は旧版（編集しない）、`reconciler-design-v1.md` は詳細だが古く、矛盾時は **v2.3 が優先**。すべて日本語で書かれている。
 
 ## アーキテクチャ（設計）
 
@@ -92,15 +99,18 @@ sakutei import       # 既存リアルを intent として書き出す（ブラ�
 - **plan と reconcile はそれぞれ独立に Observe する**（plan の観測を reconcile に持ち越すと観測 state を再導入してしまう）。
 - **ブラウンフィールドは read-only/alert-only から**始めて信頼を得る（import → alert-only → スコープごとに昇格）。人の変更を早々に自動で巻き戻さない。
 
-## v1 スコープと未決事項
+## 実装スコープ（v2.3 で再スライス）と未決事項
 
-- **v1 実装対象:** コア 10 interface/型、収束ループ（DAG/wave/非同期 Apply/in-flight/backoff）、`tier: foundation`、render パイプライン、rate-limit+halt、Event 型 + JSON ログ、適合レポート、FileSource(git)+YAML/JSON Loader+JSON Schema、Vault SecretBackend 1 つ、`sakutei import`、ScopeMode/Sync Mode、ready_condition、capacity gate、render フェーズ2 テンプレート展開、Provider SDK。
-- **v2+ 先送り:** Task/Workflow、承認ゲート、段階ロールアウト、canary、Prometheus exporter、DBSource、allocator、credential-broker、分散 Executor、sharding、intent UI。
-- **実装前に必ず決める（§26 カテゴリ A、全 Provider に波及）:** コア型 `State`/`Plan`/`ID`(namespace)/`Scope`/`Event`。最優先は `ID` namespace（global-unique か `(provider, scope, id)` 複合か）と `Plan` の内容（破壊性フラグ + cause tag）。
+- **v1a（コア実証 ≈10人月）:** コア型+収束ループ+安全機構（累積時間窓予算・List 完全性検証含む）+最小 SDK+Provider 2 個+devenv。allocation は非採番のみ。
+- **v1b（brownfield 導入・採番連携）:** `sakutei import`/Sync Mode、tier 別 Observe 頻度（間引き）、採番連携、inventory 検証。
+- **v1.5（v2 から前倒し）:** 単純 Task+最小 Workflow（直列+不変条件+手動承認ゲート）+remediation schedule（時間帯連動 mode 切替）。
+- **v2+ のまま:** 多相 Task 状態機械、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、sharding 本体、intent UI。
+- **v2.3 の主要新概念:** `external_owner`（外部オーケストレータ所有 scope の除外宣言+協調 seam）、段0-minimal（1 ノード縮退形）、`ledger_only`/`observability:none`（観測不能資産の階級）、fencing token。詳細は `docs/design/CHANGELOG-v2.3.md`。
+- **実装前に必ず決める（§26 カテゴリ A）:** コア型 `State`/`Plan`/`ID`(namespace)/`Scope`/`Event`、Provider interface 正準形（§5.1 に一本化済み）、rendered_revision 算出定義、S2 永続化先（quorum ストア+fencing）。
 - **非技術的未決:** 実装前に雇用主の IP / OSS 公開規程の確認が必要（§26.5）。自組織 社内利用が主目的、OSS 化はボーナス。
 
 ## 作業時の指針
 
 - ドキュメントはすべて日本語。追記・修正時も**日本語**で、既存の用語（英語機能名の component 名、庭園メタファの別名）を踏襲する。
-- 設計に関する記述を変更するときは `docs/design/sakutei-design-v2.2.md` を正とする。v1 やサンプルとの矛盾は v2.2 に寄せる。
+- 設計に関する記述を変更するときは `docs/design/sakutei-design-v2.3.md` を正とする。旧版やサンプルとの矛盾は v2.3 に寄せる。設計を改訂するときは新バージョンのファイルを作り、旧版は編集せず残し、CHANGELOG を添える。
 - コンポーネント名は機能的な英語名（reconciler / credential-broker / allocator / catalog）を使う。固有名詞は「Sakutei」のみ。
