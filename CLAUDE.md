@@ -19,7 +19,9 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── design/
-    │   ├── sakutei-design-v2.3.md             # ★設計の正（source of truth）
+    │   ├── sakutei-design-v2.4.md             # ★設計の正（source of truth）
+    │   ├── CHANGELOG-v2.4.md                  # v2.3→v2.4（早期収束パス・BulkObserve・claim）
+    │   ├── sakutei-design-v2.3.md             # 旧版（歴史として保持・編集しない）
     │   ├── CHANGELOG-v2.3.md                  # v2.2→v2.3 の変更一覧（20件・見送り理由つき）
     │   ├── sakutei-design-v2.2.md             # 旧版（歴史として保持・編集しない）
     │   └── reconciler-design-v1.md            # コアの初期設計メモ（背景資料）
@@ -29,12 +31,13 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
     │   ├── README.md                          # 第1ラウンド総括（対象: v2.2）
     │   ├── 01〜03-*-review.md                 # 設計レビュー（整合性/安全性/実装可能性）
     │   ├── scenarios/01〜20-*.md              # 20構成の適用可能性検討（対象: v2.2）
-    │   └── v2.3/                              # 第2ラウンド（対象: v2.3）: README.md + scenarios/
+    │   ├── v2.3/                              # 第2ラウンド（対象: v2.3）: README.md + scenarios/
+    │   └── v2.4/                              # 第3ラウンド（対象: v2.4）: README.md + scenarios/（7構成）
     └── web/
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `sakutei-design-v2.3.md` が唯一の「設計の正」。v2.2 は旧版（編集しない）、`reconciler-design-v1.md` は詳細だが古く、矛盾時は **v2.3 が優先**。すべて日本語で書かれている。
+**権威関係:** `sakutei-design-v2.4.md` が唯一の「設計の正」。v2.2/v2.3 は旧版（編集しない）、`reconciler-design-v1.md` は詳細だが古く、矛盾時は **v2.4 が優先**。すべて日本語で書かれている。
 
 ## アーキテクチャ（設計）
 
@@ -66,6 +69,8 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 - **状態クラス S1〜S4** — S1 観測（保持しない）/ **S2 進捗（外部永続必須・喪失=事故）** / S3 履歴（メモリのみ）/ S4 監査（append-only）。
 - **SecretRef** — 専用型。`String()` は `***` を返し自動マスク、値は Apply 直前に JIT 解決。git への書き戻しループなし。
 - **devenv（坪庭）/ twin（縮景）** — 隔離検証 DC / デジタルツイン（render の外部入力を差し替えて本番プールに触れない）。
+- **早期収束パス（§6.8）** — 「edge-triggered な起床、level-triggered な真実」。`DesiredSource.Watch()` のヒント（revision+scope のみ、状態は運ばない）で影響サブ DAG だけ即時に新鮮な Observe→Diff→Apply。cause A/E のみ・集合差 prune 禁止・予算カウンタは定期経路と共有。ヒント喪失=次周期が拾う。
+- **BulkObserve（§5.7）/ claim-as-intent（§12.4）** — スケールの 3 段: ①バルク観測でスケール算術を桁で改善（API 系は単一デーモン 1 万規模）→ ②`--claim <scope-selector>` の静的シャーディング（割当自体を git の intent として宣言、二重 claim は fencing で検知、ルーター不要）→ ③動的ルーター/リバランスのみ v2。**シャード間協調は現実を介して行う**（相手の作った現実を Observe して gate。シャード間 RPC は正しさに関与しない）。
 
 ## CLI（設計上の verb）
 
@@ -101,12 +106,13 @@ sakutei import       # 既存リアルを intent として書き出す（ブラ�
 
 ## 実装スコープ（v2.3 で再スライス）と未決事項
 
-- **v1a（コア実証 ≈10人月）:** コア型+収束ループ+安全機構（累積時間窓予算・List 完全性検証含む）+最小 SDK+Provider 2 個+devenv。allocation は非採番のみ。
-- **v1b（brownfield 導入・採番連携）:** `sakutei import`/Sync Mode、tier 別 Observe 頻度（間引き）、採番連携、inventory 検証。
+- **v1a（コア実証 ≈10人月）:** コア型+収束ループ+安全機構（累積時間窓予算・List 完全性検証含む）+最小 SDK+Provider 2 個+devenv。allocation は非採番のみ。v2.4 で追加: `DesiredSource.Watch` seam+scoped run+合流キュー（早期収束）、`BulkObserve`/`--claim` の型切り（実装は v1b 以降）。
+- **v1b（brownfield 導入・採番連携）:** `sakutei import`/Sync Mode、tier 別 Observe 頻度（間引き）、採番連携、inventory 検証、静的シャーディング（claim-as-intent）実装。
 - **v1.5（v2 から前倒し）:** 単純 Task+最小 Workflow（直列+不変条件+手動承認ゲート）+remediation schedule（時間帯連動 mode 切替）。
-- **v2+ のまま:** 多相 Task 状態機械、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、sharding 本体、intent UI。
+- **v2+ のまま:** 多相 Task 状態機械、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、動的シャードルーター/リバランス、intent UI。
 - **v2.3 の主要新概念:** `external_owner`（外部オーケストレータ所有 scope の除外宣言+協調 seam）、段0-minimal（1 ノード縮退形）、`ledger_only`/`observability:none`（観測不能資産の階級）、fencing token。詳細は `docs/design/CHANGELOG-v2.3.md`。
-- **実装前に必ず決める（§26 カテゴリ A）:** コア型 `State`/`Plan`/`ID`(namespace)/`Scope`/`Event`、Provider interface 正準形（§5.1 に一本化済み）、rendered_revision 算出定義、S2 永続化先（quorum ストア+fencing）。
+- **v2.4 の主要新概念:** 早期収束パス（§6.8）、BulkObserve（§5.7）、claim-as-intent 静的シャーディング（§12.4）、`DesiredSource.Watch`（§13.5）。詳細は `docs/design/CHANGELOG-v2.4.md`。
+- **実装前に必ず決める（§26 カテゴリ A）:** コア型 `State`/`Plan`/`Scope`/`Event`、Provider interface 正準形（§5.1 に一本化済み）、S2 永続化先（quorum ストア+fencing）。v2.4 で確定済み: `ID`=`(provider, scope, id)` 複合、rendered_revision は scope 単位で算出、予算カウンタはシャード単位。
 - **非技術的未決:** 実装前に雇用主の IP / OSS 公開規程の確認が必要（§26.5）。自組織 社内利用が主目的、OSS 化はボーナス。
 
 ## 作業時の指針
