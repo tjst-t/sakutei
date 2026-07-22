@@ -109,7 +109,7 @@ sakutei import       # 既存リアルを intent として書き出す  --scope 
 - **v1.5:** 単純 Task+最小 Workflow（直列+不変条件+N-of-M 手動承認）+remediation schedule+planned_change。
 - **v2+:** 多相 Task、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、動的ルーター、watch 併用、intent UI。
 - **実装着手前に決めるべき事項（旧 §26 カテゴリ A）は全て決定済み**（正準型・rendered_revision 算出・S2 永続化先ほか）。実装中に決める残課題と既知の限界は §29。
-- **非技術的未決:** 実装前に雇用主の IP / OSS 公開規程の確認が必要（§29）。自組織 社内利用が主目的、OSS 化はボーナス。
+- **位置づけ:** OSS 個人プロジェクトが第一歩（作者個人が開発。将来の業務利用はありうる）。ライセンス **Apache-2.0**。雇用主 IP 規程による着手制約はなし（§29.4 でクリア）。この前提により Provider SDK 公開 API 設計と段0-minimal が第一級に昇格。
 
 ## 検証の履歴（設計の信頼根拠）
 

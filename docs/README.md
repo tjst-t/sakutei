@@ -6,9 +6,9 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 
 | ドキュメント | 位置づけ | 状態 |
 | --- | --- | --- |
-| [architecture/spec/README.md](architecture/spec/README.md) | **設計の正（source of truth）の索引。** v3.0 は 8 部 29 節の分冊構成（part1〜part8）。§番号は全部を通して一意。 | v3.0（最新・権威） |
+| [architecture/spec/README.md](architecture/spec/README.md) | **設計の正（source of truth）の索引。** v3.1（骨格は v3.0）。8 部 29 節の分冊構成（part1〜part8）。§番号は全部を通して一意。 | v3.0（最新・権威） |
 | architecture/spec/part1〜8-\*.md | 各部の本文（思想と境界 / 中核モデル / 収束機構 / 安全機構 / スケールと分散 / 衛星と外部世界 / 運用ライフサイクル / 実装）。 | v3.0 |
-| [architecture/CHANGELOG-v3.0.md](architecture/CHANGELOG-v3.0.md) | v2.6 → v3.0 の構成対応マップ（内容等価の全面再構成・統合時調整・分冊化の記録）。 | — |
+| [architecture/CHANGELOG-v3.1.md](architecture/CHANGELOG-v3.1.md) / [v3.0](architecture/CHANGELOG-v3.0.md) | v3.0→v3.1（位置づけを OSS 個人・Apache-2.0 に確定）／ v2.6→v3.0 の構成対応マップ。 | — |
 | architecture/old/ | 旧版アーカイブ（歴史として保持、編集しない）: `sakutei-design-v2.2〜v2.6.md`、各 `CHANGELOG-v2.x.md`、`reconciler-design-v1.md`（コアの初期設計メモ・背景資料）。矛盾する場合は **v3.0 が優先**。 | 旧版 |
 
 ## 実装例（examples/）
