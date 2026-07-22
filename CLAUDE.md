@@ -19,40 +19,38 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── design/
-    │   ├── sakutei-design-v2.5.md             # ★設計の正（source of truth）
-    │   ├── CHANGELOG-v2.5.md                  # v2.4→v2.5（衛星の天井・BulkObserve契約・S2-free）
-    │   ├── sakutei-design-v2.4.md             # 旧版（歴史として保持・編集しない）
-    │   ├── CHANGELOG-v2.4.md                  # v2.3→v2.4（早期収束パス・BulkObserve・claim）
-    │   ├── sakutei-design-v2.3.md             # 旧版
-    │   ├── CHANGELOG-v2.3.md                  # v2.2→v2.3 の変更一覧（20件・見送り理由つき）
-    │   ├── sakutei-design-v2.2.md             # 旧版
+    │   ├── sakutei-design-v3.0.md             # ★設計の正（source of truth）8部29節
+    │   ├── CHANGELOG-v3.0.md                  # v2.6→v3.0 構成対応マップ（内容等価の全面再構成）
+    │   ├── sakutei-design-v2.2〜v2.6.md       # 旧版（歴史として保持・編集しない）
+    │   ├── CHANGELOG-v2.3〜v2.6.md            # 各改訂の変更一覧（見送り理由つき）
     │   └── reconciler-design-v1.md            # コアの初期設計メモ（背景資料）
     ├── examples/
     │   └── proxmox-mysql-dbaas-schema.md      # Provider/合成リソースの worked example
     ├── review/
-    │   ├── README.md                          # 第1ラウンド総括（対象: v2.2）
-    │   ├── 01〜03-*-review.md                 # 設計レビュー（整合性/安全性/実装可能性）
-    │   ├── scenarios/01〜20-*.md              # 20構成の適用可能性検討（対象: v2.2）
-    │   ├── v2.3/                              # 第2ラウンド（対象: v2.3）: README.md + scenarios/
-    │   ├── v2.4/                              # 第3ラウンド（対象: v2.4）: 7構成の差分再判定
-    │   └── v2.5/                              # 第4ラウンド（対象: v2.5）: 7構成の差分再判定
+    │   ├── README.md, 01〜03-*-review.md      # 第1ラウンド: 設計レビュー3観点（対象: v2.2）
+    │   ├── scenarios/                         # 第1ラウンド: 20構成の適用可能性検討
+    │   ├── v2.3/ v2.4/ v2.5/ v2.6/            # 第2〜5ラウンド（差分再判定。v2.6 で収束宣言）
+    │   └── v3.0-audit-*.md                    # v3.0 の網羅性・整合性監査（反映済み）
     └── web/
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `sakutei-design-v2.5.md` が唯一の「設計の正」。v2.2〜v2.4 は旧版（編集しない）、`reconciler-design-v1.md` は詳細だが古く、矛盾時は **v2.5 が優先**。すべて日本語で書かれている。
+**権威関係:** `sakutei-design-v3.0.md` が唯一の「設計の正」（v2.6 と内容等価の全面再構成）。v2.2〜v2.6 は旧版（編集しない）、`reconciler-design-v1.md` は詳細だが古く、矛盾時は **v3.0 が優先**。すべて日本語で書かれている。
 
-## アーキテクチャ（設計）
+## v3.0 の構成（8部29節）
 
-- **reconciler（収束コア）** — 単一バイナリ・単一デーモン。収束ループ（Observe→Diff→Apply/prune）、DAG/wave 依存解決（Kahn 法・wave 単位で並列）、render パイプライン（2 フェーズ）、3 プリミティブ、安全機構、Event bus。
-- **衛星群（別プロセス・別ソフトウェア）** — ライフサイクル/可用性/攻撃面の都合で分離:
-  - **credential-broker**（関守）— ターゲット認証の一元化（JIT 短命クレデンシャル発行）。reconciler が実行時に依存。
-  - **allocator**（台帳）— VLAN/IP/ASN プールの採番権威。state（冪等性の記憶）を持つ。
-  - **catalog**（図面）— intent 用の薄い UI。独自の DB を持たず git が真実の源。
-- **外部委譲（作らない）** — Vault（シークレット値）、IdP/SSO（人の認証）、Prometheus/Alertmanager（監視/通知）、DRS/ハイパーバイザ（配置最適化）、上位テナント基盤（認可/quota/課金）、git（intent 履歴/レビュー/監査）、k8s（アプリ層）、Ansible modules（ロングテール実行）。
-- **ブートストラップ:** 段0（人が Ansible + 金庫で構築する不変の土台: Proxmox 3ノード + Ceph + VM-HA 上に Vault/credential-broker/reconciler）→ 段1以降は自律収束。
+| 部 | 節 | 内容 |
+| --- | --- | --- |
+| I 思想と境界 | §1-3 | 課題認識 / 作る・委譲する・捨てる / **八つの原則**と適用境界 |
+| II 中核モデル | §4-7 | 正準型と状態分類 S1-S4 / Provider 抽象 / 3プリミティブ / 所有と境界 |
+| III 収束機構 | §8-11 | 収束ループ+早期収束パス / render / 差分と原因（cause tags）/ 多周期収束 |
+| IV 安全機構 | §12-15 | 削除の規律 / 変更予算+planned_change / 修復の統制+プロファイル / 隔離と防御（fencing）|
+| V スケールと分散 | §16-18 | 天井算術（BulkObserve）/ claim シャーディング+S2-free / 分散の原則 |
+| VI 衛星と外部世界 | §19-22 | allocator / secret と資格 / DesiredSource と catalog / 委譲と停止影響表 |
+| VII 運用ライフサイクル | §23-26 | 段0・段0-minimal / ブラウンフィールド / 災害と復旧（DRモード）/ 検証と監査 |
+| VIII 実装 | §27-29 | スライス v1a/v1b/v1.5/v2 / Provider SDK / 残る課題と既知の限界 |
 
-## 設計を貫く原則
+## 設計を貫く八つの原則（§3）
 
 1. **level-triggered + 観測 state レス** — 毎周期 desired と actual を再導出し、観測状態を保持しない。
 2. **いつ = 収束 / どう = 手続き** — 「いつ・どの順で変えるか」は収束が決め、「どう変えるか」は Task/Workflow が実行する。
@@ -60,69 +58,64 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 4. **持たない・委譲する** — 値/配置/予測/認可は自前で持たず外部に委ねる。
 5. **seam は今切る、split は後** — 拡張/分離の接点となる interface を早期に定義し、コアは変えずに後で分割する。
 6. **ownership がすべてを貫く** — `platform`（PR 必須・厳格）か `tenant`（即時書込・緩い）かの 1 軸が、書込経路/remediation/レート制限/blast-radius/source/シャード境界を決める。
+7. **シャード間協調は現実を介して行う** — シャード同士は問い合わせない。相手の作った現実を Observe して gate する。シャード間 RPC は正しさに関与しない。
+8. **衛星の停止は、変化を止めるが、維持を止めない** — 定常収束は衛星コールゼロで回る（割当事実は Release まで不変＝キャッシュ可）。allocator QPS は churn 比例。
 
-## 中核の用語
+## 中核の用語（v3.0 の§参照つき）
 
-- **Provider / Lister** — 2 層のコア抽象。`Provider`（`Schema`/`Capabilities`/`Observe`/`Diff`/`Apply`）はリソース単位、`Lister`（`List`）は集合列挙で **prune の前提**。
-- **Observation vs ConvergenceStatus** — Observe は Availability（`ok`/`unknown`/`converging`）+ State を返し desired を知らない。`drifted`/`converged` は Diff から**導出**される報告用状態。
-- **3 プリミティブ** — **Resource**（宣言的・収束）/ **Task**（単一リソースの手続き）/ **Workflow**（複数リソースの順序付き手続き + 不変条件）。
-- **render パイプライン** — フェーズ1（外部入力解決・副作用あり: inventory 合成・Vault メタデータ解決・allocation）+ フェーズ2（合成リソースの決定的展開）。
-- **cause tag（A〜E）** — 差分の原因分類。A 意図的 / B ドリフト / C ツール更新（ghost diff）/ D 波及 / E 外部入力変化。`intent_revision`（人のコミット）と `rendered_revision`（intent + 解決済み外部入力のハッシュ）の差で検出。
-- **DeletionPolicy** — `ExplicitAbsentOnly`（open-world）vs `PruneWithinScope`（closed-world、Lister 必須）。破壊的型は `pruneable:false` がデフォルト。
-- **状態クラス S1〜S4** — S1 観測（保持しない）/ **S2 進捗（外部永続必須・喪失=事故）** / S3 履歴（メモリのみ）/ S4 監査（append-only）。
-- **SecretRef** — 専用型。`String()` は `***` を返し自動マスク、値は Apply 直前に JIT 解決。git への書き戻しループなし。
-- **devenv（坪庭）/ twin（縮景）** — 隔離検証 DC / デジタルツイン（render の外部入力を差し替えて本番プールに触れない）。
-- **早期収束パス（§6.8）** — 「edge-triggered な起床、level-triggered な真実」。`DesiredSource.Watch()` のヒント（revision+scope のみ、状態は運ばない）で影響サブ DAG だけ即時に新鮮な Observe→Diff→Apply。cause A/E のみ・集合差 prune 禁止・予算カウンタは定期経路と共有。ヒント喪失=次周期が拾う。
-- **BulkObserve（§5.7-5.8）/ claim-as-intent（§12.4-12.5）** — スケールの 3 段: ①バルク観測でスケール算術を桁で改善（API 系は単一デーモン 1 万規模。§5.8 一貫性契約: 非アトミック宣言・complete-or-error・**prune 非流用の型分離**・SDK 等価性テスト）→ ②`--claim <scope-selector>` の静的シャーディング（割当自体を git の intent として宣言、`intent/<scope>/` パス規約+sparse checkout+ミラー中継、二重 claim は fencing で検知、ルーター不要）→ ③動的ルーター/リバランスのみ v2。**シャード間協調は現実を介して行う**（相手の作った現実を Observe して gate。シャード間 RPC は正しさに関与しない）。
-- **衛星停止原則（§16.7-16.8）** — 「**衛星の停止は、変化を止めるが、維持を止めない**」。割当事実は Release まで不変なので Lookup はローカルキャッシュ可（S3 扱い）→ 定常収束は衛星コールゼロ、allocator QPS はフリート規模でなく churn に比例。停止時は新規採番リソースのみ waiting-allocation（converging 類似）。衛星停止影響表は §19.9。
-- **S2-free シャード（§12.5）** — エッジ/店舗 claim は Resource 収束のみを担い ローカル S2 を持たない（ホスト全損でも再イメージ→pull→収束で完全復旧）。Task/Workflow は中央 claim で実行するか完了マーカーを現実側に置く。開店/閉店=claim 変更 PR による所有権ハンドオフ。write 資格は拠点ローカル file SecretBackend（爆発半径=当該拠点、§15.7）。
+- **Provider / Lister**（§5）— `Schema`/`Capabilities`/`Read`/`Apply` + 集合列挙 `List`（prune の前提、complete-or-error）。階級: 完全/標準/最小 + 観測不能階級（`ledger_only`/`observability:none`）。
+- **BulkObserve**（§5）— バルク観測 capability。一貫性契約: 非アトミック宣言・complete-or-error・**prune 非流用の型分離**・SDK 等価性テスト。API 系ターゲットは単一デーモン1万規模に。
+- **Observation vs ConvergenceStatus**（§4, §10）— Observe は Availability（`ok`/`unknown`/`converging`）+ State を返し desired を知らない。`drifted`/`converged` は Diff から導出。
+- **3 プリミティブ**（§6）— Resource（宣言的・収束）/ Task（単純=v1.5、多相=v2）/ Workflow（順序+不変条件+承認ゲート。N-of-M・申請者≠承認者対応）。
+- **render パイプライン**（§9）— フェーズ1（外部入力解決・副作用あり）+ フェーズ2（決定的展開）。外部権威到達不能時は前回解決値を保持（空 desired を出さない）。
+- **cause tag A〜E**（§10）— A 意図 / B ドリフト / C ツール更新（ghost diff）/ D 波及 / E 外部入力。`intent_revision` と `rendered_revision`（scope 単位算出）の差で検出。
+- **早期収束パス**（§8）— 「edge-triggered な起床、level-triggered な真実」。`DesiredSource.Watch()` の ChangeHint（revision+scope のみ）で影響サブ DAG だけ即時に新鮮な Observe→Diff→Apply。cause A/E 限定・集合差 prune 禁止・予算共有。
+- **planned_change**（§13）— 大量正当作業の宣言（scope/種別/上限/窓/承認）。専用予算レーン（バイパスでなく別枠）。List 急減 halt と連動。`kind: reimage` で再イメージの delete 誤計上を回避。
+- **運用プロファイル**（§14）— solo（cooling-off で承認代替）/ team（既定）/ enterprise（N-of-M 既定）。remediation schedule（時間帯連動）との優先は most-restrictive-wins。
+- **claim-as-intent / S2-free シャード**（§17）— シャード割当を git の intent として宣言（`intent/<scope>/` 規約+sparse checkout+ミラー中継）。エッジは Resource 収束のみで S2 レス（全損→再イメージ→pull→復旧）。開店/閉店=claim 変更 PR のハンドオフ。
+- **external_owner**（§7）— 外部オーケストレータ（Heat/operator/VNFM/MHA 等）所有 scope の除外宣言+「観測して待つ」一方向協調 seam。
+- **SecretRef / 資格局所性**（§20）— 値は収束しない。自動マスク・JIT 解決。エッジの write 資格は拠点ローカル file SecretBackend（爆発半径=当該拠点）。
+- **DR モード**（§25）— DR intent プリステージ+書込 break-glass（署名付きローカルコミット・必ず検出・事後合流）。
+- **状態クラス S1〜S4**（§4）— S1 観測（保持しない）/ S2 進捗（quorum ストア+fencing で外部永続）/ S3 履歴（メモリ）/ S4 監査（append-only+WORM/外部即時 push）。
+- **devenv（坪庭）/ twin（縮景）**（§26）— 隔離検証 DC / デジタルツイン（render の外部入力差し替えで本番プールに触れない）。
 
-## CLI（設計上の verb）
+## CLI（設計上の verb、§26）
 
 ```
-sakutei              # 常駐して回り続ける（本来の姿）
+sakutei              # 常駐して回り続ける（本来の姿）  --claim <scope-selector>
 sakutei plan         # dry-run: 何が変わるか（Diff で止まる）
 sakutei reconcile    # 1 回収束（手動キック）  --expect-revision <rev>
 sakutei status       # drifted の一覧（適合レポート）
-sakutei import       # 既存リアルを intent として書き出す（ブラウンフィールド）
-                     #   --scope <範囲> --out intent/
+sakutei import       # 既存リアルを intent として書き出す  --scope <範囲> --out intent/
 ```
-`apply` は意図的に主 verb にしない（「叩く道具」ではなく「回り続けるもの」）。承認ゲート API: `POST /workflows/{id}/gates/{gate}/approve`。
+`apply` は意図的に主 verb にしない。承認ゲート API: `POST /workflows/{id}/gates/{gate}/approve`。
 
 ## 想定技術スタック
 
 - **言語:** Go（全 interface 定義が Go）。単一 `sakutei` バイナリ + サブコマンド。
 - **設定形式:** YAML + JSON（`Loader` 経由）、JSON Schema で検証。将来 CUE を検討（Starlark は round-trip 不可のため却下）。
-- **状態保存:** メモリ + file(git) が主。将来 `DesiredStore` として bbolt / SQLite。**etcd や必須 DB プロセスなし。**
-- **シークレット:** HashiCorp Vault（KV v2）。
-- **ブートストラップ:** Proxmox 3ノード + Ceph + VM-HA、Ansible で段0 構築/unseal。
-- **検証:** fake Provider（主戦場）、containerlab、Podman、nftables、Proxmox nesting など。
+- **状態保存:** メモリ + file(git) が主。S2 のみ quorum ストア+fencing。**etcd や必須 DB プロセスなし。**
+- **シークレット:** HashiCorp Vault（KV v2）。段0-minimal は file SecretBackend。
+- **ブートストラップ:** 段0 = Proxmox 3ノード + Ceph + VM-HA を Ansible + 金庫で構築（1〜2台は段0-minimal）。
+- **検証:** fake Provider（主戦場）、containerlab、Podman、nftables、Proxmox nesting、chaos テスト（最重要）。
 
-## 実装に関する規約・注意
+## 実装スコープ（§27）
 
-- **`generated/` は自動生成専用** — RenderedSource / Sync Mode の出力先。自動生成ヘッダ必須、直接コミットは拒否（二重管理防止）。人が編集しない。
-- **`intent/` は人が書く intent の出力先。**
-- **seam interface が実質的なモジュール境界:** `Provider`/`Lister`・`Executor`・`Loader`・`DesiredSource`・`DesiredStore`・`SecretBackend`・`AllocationAuthority`・`CredentialProvider`。
-- **Provider 作成のしやすさが採用を決める**（Terraform はエコシステムで勝った）。作者は約 4 関数（+ prune 用 `List`）を書き、SDK が diff/秘匿マスク/managed 除外/バージョン埋込/エラー分類/テストハーネスを担う。
-- **Schema 設計が最難関** — secret/managed/ordered/identity の宣言を誤ると安全保証が黙って無効化される。identity は運用上の変更頻度で選ぶ（シリアルより `leaf03-p12` のような物理トポロジ座標）。
-- **安全機構は level-triggered の要**（速く収束する力は速く壊す力、しかも毎周期）。remediation mode（`auto`/`alert-only`）・レート制限（破壊的変更に加重）・段階ロールアウト。デフォルトは halt、明示的意図で進む。global `freeze` で全体を一括 alert-only に。**「1 commit で全 VM 削除」を止める rate-limit+halt と remediation-mode は v1 必須。**
-- **plan と reconcile はそれぞれ独立に Observe する**（plan の観測を reconcile に持ち越すと観測 state を再導入してしまう）。
-- **ブラウンフィールドは read-only/alert-only から**始めて信頼を得る（import → alert-only → スコープごとに昇格）。人の変更を早々に自動で巻き戻さない。
+- **v1a（コア実証 ≈10人月）:** コア型+収束ループ+安全機構（累積予算・List 完全性）+早期収束 seam+BulkObserve/--claim 型切り+最小 SDK+Provider 2 個（DNS が第一号）+devenv。
+- **v1b（brownfield・採番・分割）:** import/Sync Mode、tier 別 Observe 頻度、採番連携、静的シャーディング実装、inventory 検証。
+- **v1.5:** 単純 Task+最小 Workflow（直列+不変条件+N-of-M 手動承認）+remediation schedule+planned_change。
+- **v2+:** 多相 Task、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、動的ルーター、watch 併用、intent UI。
+- **実装着手前に決めるべき事項（旧 §26 カテゴリ A）は全て決定済み**（正準型・rendered_revision 算出・S2 永続化先ほか）。実装中に決める残課題と既知の限界は §29。
+- **非技術的未決:** 実装前に雇用主の IP / OSS 公開規程の確認が必要（§29）。自組織 社内利用が主目的、OSS 化はボーナス。
 
-## 実装スコープ（v2.3 で再スライス）と未決事項
+## 検証の履歴（設計の信頼根拠）
 
-- **v1a（コア実証 ≈10人月）:** コア型+収束ループ+安全機構（累積時間窓予算・List 完全性検証含む）+最小 SDK+Provider 2 個+devenv。allocation は非採番のみ。v2.4 で追加: `DesiredSource.Watch` seam+scoped run+合流キュー（早期収束）、`BulkObserve`/`--claim` の型切り（実装は v1b 以降）。
-- **v1b（brownfield 導入・採番連携）:** `sakutei import`/Sync Mode、tier 別 Observe 頻度（間引き）、採番連携、inventory 検証、静的シャーディング（claim-as-intent）実装。
-- **v1.5（v2 から前倒し）:** 単純 Task+最小 Workflow（直列+不変条件+手動承認ゲート）+remediation schedule（時間帯連動 mode 切替）。
-- **v2+ のまま:** 多相 Task 状態機械、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、動的シャードルーター/リバランス、intent UI。
-- **v2.3 の主要新概念:** `external_owner`（外部オーケストレータ所有 scope の除外宣言+協調 seam）、段0-minimal（1 ノード縮退形）、`ledger_only`/`observability:none`（観測不能資産の階級）、fencing token。詳細は `docs/design/CHANGELOG-v2.3.md`。
-- **v2.4 の主要新概念:** 早期収束パス（§6.8）、BulkObserve（§5.7）、claim-as-intent 静的シャーディング（§12.4）、`DesiredSource.Watch`（§13.5）。詳細は `docs/design/CHANGELOG-v2.4.md`。
-- **v2.5 の主要新概念:** 衛星停止原則（§16.7-16.8, §19.9）、BulkObserve 一貫性契約（§5.8）、claim の git 配布規約+S2-free シャード（§12.5）、エッジ資格局所性（§15.7）。詳細は `docs/design/CHANGELOG-v2.5.md`。
-- **実装前に必ず決める（§26 カテゴリ A）:** コア型 `State`/`Plan`/`Scope`/`Event`、Provider interface 正準形（§5.1 に一本化済み）、S2 永続化先（quorum ストア+fencing）。v2.4 で確定済み: `ID`=`(provider, scope, id)` 複合、rendered_revision は scope 単位で算出、予算カウンタはシャード単位。
-- **非技術的未決:** 実装前に雇用主の IP / OSS 公開規程の確認が必要（§26.5）。自組織 社内利用が主目的、OSS 化はボーナス。
+20 の多様な構成（ホームラボ〜数百台 DC〜マルチサイト〜IaaS/SDN/PaaS/エッジ/金融/レガシー）に対する適用可能性検討を 5 ラウンド実施し、**v2.6 で収束を宣言**（2 ラウンド連続で新規設計ギャップゼロ）。最終判定: **◎6 / ○10 / △2 / ✗0**（△の 2 つは機器 API の制約と Sakutei 責務外の要素で、設計の到達上限として確定）。詳細は `docs/review/v2.6/README.md`。
 
 ## 作業時の指針
 
-- ドキュメントはすべて日本語。追記・修正時も**日本語**で、既存の用語（英語機能名の component 名、庭園メタファの別名）を踏襲する。
-- 設計に関する記述を変更するときは `docs/design/sakutei-design-v2.3.md` を正とする。旧版やサンプルとの矛盾は v2.3 に寄せる。設計を改訂するときは新バージョンのファイルを作り、旧版は編集せず残し、CHANGELOG を添える。
+- ドキュメントはすべて日本語。追記・修正時も**日本語**で、既存の用語（英語機能名の component 名、庭園メタファの別名: 関守/台帳/図面/坪庭/縮景）を踏襲する。
+- 設計に関する記述を変更するときは `docs/design/sakutei-design-v3.0.md` を正とする。旧版やサンプルとの矛盾は v3.0 に寄せる。設計を改訂するときは新バージョンのファイルを作り、旧版は編集せず残し、CHANGELOG を添える。
+- `generated/` は自動生成専用（ヘッダ必須・直接コミット拒否）、`intent/` は人が書く intent の出力先（claim シャーディング時は `intent/<scope>/` 規約）。
+- **Schema 設計が最難関**（secret/managed/ordered/identity の誤宣言は安全保証を黙って無効化する。identity は運用上の変更頻度で選ぶ）。
 - コンポーネント名は機能的な英語名（reconciler / credential-broker / allocator / catalog）を使う。固有名詞は「Sakutei」のみ。
