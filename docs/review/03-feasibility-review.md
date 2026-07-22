@@ -308,7 +308,7 @@ commit-confirm 未実装の間、NW 機器 provider は**「Apply 不可・観�
 
 ### M-5. 学習コストが高い — 概念数が Terraform/Ansible より多い
 
-**内容**:運用者(自組織 社内インフラ運用チーム想定)が習得すべき概念:3プリミティブ・DeletionPolicy 2種・
+**内容**:運用者(社内インフラ運用チーム想定)が習得すべき概念:3プリミティブ・DeletionPolicy 2種・
 pruneable・ownership 2層・原因タグ5分類・Capabilities 4項目 + 階級3種・ScopeMode 2種・
 remediation mode・rate limit/capacity gate・tier: foundation・managed/computed/identity/secret/ordered・
 ready_condition・SecretRef・render 2フェーズ。**Terraform(resource/state/plan/apply)や Ansible
