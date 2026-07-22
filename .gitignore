@@ -1,0 +1,11 @@
+# ephemeral sprint/autopilot working state
+docs/sprint-logs/
+.claude/worktrees/
+.claude/autopilot-*.lock
+
+# Go build artifacts (engine implementation)
+/sakutei
+/bin/
+*.test
+*.out
+coverage.*
