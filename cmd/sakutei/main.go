@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Command sakutei is the single binary for the Sakutei declarative
-// infrastructure convergence engine (作庭).
+// infrastructure convergence engine.
 //
 // Usage:
 //
@@ -78,7 +78,7 @@ func notYetImplemented(sub string) {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stdout, `sakutei — declarative infrastructure convergence engine (作庭)
+	fmt.Fprintf(os.Stdout, `sakutei — declarative infrastructure convergence engine
 
 Usage:
   sakutei              run continuously, converging on every cycle

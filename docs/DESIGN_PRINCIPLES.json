@@ -49,7 +49,8 @@
     "固有名詞はプロジェクト名 Sakutei のみとし、コンポーネントは機能的な英語名（reconciler / credential-broker / allocator / catalog）を正とする。庭園メタファは別名として保持する（関守=credential-broker / 台帳=allocator / 図面=catalog / 坪庭=devenv / 縮景=twin）",
     "provider 実装は『まず Schema、次に Read/Apply』の順で書く。作者が書くのは約4関数（Schema / Capabilities / Read / Apply）+ 任意の List / BulkObserve に留め、diff・マスキング・managed 除外・version 埋込・エラー分類・テストは SDK が担う",
     "Event は単一型 + kind enum + scope/resource/revision 参照で表し、構造化ログ（JSON）で出力する",
-    "CLI 動詞は業界標準を用いる（plan / reconcile / status / import）。apply は主動詞に置かない（『回り続けるもの』を名前で表明する）"
+    "CLI 動詞は業界標準を用いる（plan / reconcile / status / import）。apply は主動詞に置かない（『回り続けるもの』を名前で表明する）",
+    "CLI / ユーザー向け出力（stdout/stderr のメッセージ）は英語で統一する。ドキュメント・設計 spec・コードコメントの spec 用語は日本語のまま（CLAUDE.md 準拠）。"
   ],
   "ui_ux": [],
   "architecture": [

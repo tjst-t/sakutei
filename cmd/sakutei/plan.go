@@ -36,7 +36,7 @@ import (
 //
 // Exit codes:
 //
-//	0 — plan completed (with or without diffs; no-diff prints "収束済み（差分なし）")
+//	0 — plan completed (with or without diffs; no-diff prints "Converged (no changes)")
 //	1 — error (flag parse error, intent load failure, observe error, etc.)
 func runPlan(args []string) {
 	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
@@ -86,7 +86,7 @@ func runPlan(args []string) {
 
 	// Print plan output.
 	if len(allOps) == 0 {
-		fmt.Println("収束済み（差分なし）")
+		fmt.Println("Converged (no changes)")
 		os.Exit(0)
 	}
 

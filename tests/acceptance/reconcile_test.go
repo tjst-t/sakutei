@@ -169,8 +169,8 @@ func TestReconcile_Idempotent(t *testing.T) {
 	if strings.Contains(stdout2, "CREATE") || strings.Contains(stdout2, "UPDATE") {
 		t.Errorf("[AC-Sead944-3-2] second reconcile must not report CREATE/UPDATE; got:\n%s", stdout2)
 	}
-	if !strings.Contains(stdout2, "収束済み") {
-		t.Errorf("[AC-Sead944-3-2] second reconcile must print '収束済み（差分なし）'; got:\n%s", stdout2)
+	if !strings.Contains(stdout2, "Converged (no changes)") {
+		t.Errorf("[AC-Sead944-3-2] second reconcile must print 'Converged (no changes)'; got:\n%s", stdout2)
 	}
 
 	// State file must be byte-for-byte identical after the second reconcile.
@@ -337,7 +337,7 @@ func TestReconcile_MissingIntentFlag(t *testing.T) {
 }
 
 // TestReconcile_EmptyIntentDir verifies that an empty intent dir exits 0 with
-// "収束済み（差分なし）" (nothing to reconcile).
+// "Converged (no changes)" (nothing to reconcile).
 func TestReconcile_EmptyIntentDir(t *testing.T) {
 	tmp := t.TempDir()
 	intentDir := filepath.Join(tmp, "intent")
@@ -350,7 +350,7 @@ func TestReconcile_EmptyIntentDir(t *testing.T) {
 	if code != 0 {
 		t.Errorf("expected exit 0 for empty intent dir, got %d", code)
 	}
-	if !strings.Contains(stdout, "収束済み") {
-		t.Errorf("expected '収束済み（差分なし）' for empty intent; got:\n%s", stdout)
+	if !strings.Contains(stdout, "Converged (no changes)") {
+		t.Errorf("expected 'Converged (no changes)' for empty intent; got:\n%s", stdout)
 	}
 }

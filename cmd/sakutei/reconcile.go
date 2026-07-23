@@ -119,7 +119,7 @@ func runReconcile(args []string) {
 	}
 
 	if appliedCount == 0 {
-		fmt.Println("収束済み（差分なし）")
+		fmt.Println("Converged (no changes)")
 	} else {
 		fmt.Printf("Reconcile: %d change(s) applied\n", appliedCount)
 	}

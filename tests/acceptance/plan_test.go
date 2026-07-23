@@ -23,7 +23,7 @@
 //
 //	AC-Sead944-2-1 — Create diff is displayed when reality is empty
 //	AC-Sead944-2-2 — plan does NOT modify the fake provider state file (Apply not called)
-//	AC-Sead944-2-3 — "収束済み（差分なし）" printed and exit 0 when reality matches desired
+//	AC-Sead944-2-3 — "Converged (no changes)" printed and exit 0 when reality matches desired
 package acceptance
 
 import (
@@ -169,8 +169,8 @@ func TestPlan_CreateDiff(t *testing.T) {
 		t.Errorf("[AC-Sead944-2-1] stdout should mention resource id 'test-vm'; got:\n%s", stdout)
 	}
 	// Must NOT contain the "converged" message when there are diffs.
-	if strings.Contains(stdout, "収束済み") {
-		t.Errorf("[AC-Sead944-2-1] stdout must not contain '収束済み' when diffs exist; got:\n%s", stdout)
+	if strings.Contains(stdout, "Converged (no changes)") {
+		t.Errorf("[AC-Sead944-2-1] stdout must not contain 'Converged (no changes)' when diffs exist; got:\n%s", stdout)
 	}
 	t.Logf("[AC-Sead944-2-1] plan output:\n%s", stdout)
 }
@@ -263,7 +263,7 @@ func TestPlan_DoesNotModifyState(t *testing.T) {
 // TestPlan_ConvergedWhenRealityMatchesDesired verifies scenario-Sead944-2 / step 3.
 //
 // [AC-Sead944-2-3] When the state file already reflects the desired state,
-// "sakutei plan" must exit 0 and print "収束済み（差分なし）".
+// "sakutei plan" must exit 0 and print "Converged (no changes)".
 func TestPlan_ConvergedWhenRealityMatchesDesired(t *testing.T) {
 	// [AC-Sead944-2-3]
 	tmp := t.TempDir()
@@ -309,8 +309,8 @@ func TestPlan_ConvergedWhenRealityMatchesDesired(t *testing.T) {
 	if code != 0 {
 		t.Errorf("[AC-Sead944-2-3] expected exit 0, got %d; stderr: %s", code, stderr)
 	}
-	if !strings.Contains(stdout, "収束済み") {
-		t.Errorf("[AC-Sead944-2-3] expected '収束済み（差分なし）' in stdout; got:\n%s", stdout)
+	if !strings.Contains(stdout, "Converged (no changes)") {
+		t.Errorf("[AC-Sead944-2-3] expected 'Converged (no changes)' in stdout; got:\n%s", stdout)
 	}
 	if strings.Contains(stdout, "CREATE") || strings.Contains(stdout, "UPDATE") {
 		t.Errorf("[AC-Sead944-2-3] unexpected diff ops in stdout when already converged; got:\n%s", stdout)
@@ -401,7 +401,7 @@ func TestPlan_EmptyIntentDir(t *testing.T) {
 	if code != 0 {
 		t.Errorf("expected exit 0 for empty intent dir, got %d", code)
 	}
-	if !strings.Contains(stdout, "収束済み") {
-		t.Errorf("expected '収束済み（差分なし）' for empty intent; got:\n%s", stdout)
+	if !strings.Contains(stdout, "Converged (no changes)") {
+		t.Errorf("expected 'Converged (no changes)' for empty intent; got:\n%s", stdout)
 	}
 }
