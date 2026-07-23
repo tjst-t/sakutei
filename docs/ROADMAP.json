@@ -494,6 +494,20 @@
       "description": "多相 Task 状態機械、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、動的シャードルーター/リバランス、watch 併用、intent UI(catalog)。",
       "added_in": "roadmap",
       "reason": "スケール上位・高度な自律運用。v1 系の実地検証を経てから着手する。"
+    },
+    {
+      "title": "[bug] fake provider Apply(UPDATE) が未変更フィールドを保持しない",
+      "kind": "bug",
+      "description": "UPDATE の Apply が FieldDiff の変更フィールドのみで resource を再構築し、未変更フィールド(例: name)を落とす。demo で size ドリフト修復時に name が消えることを確認。field-level Apply は変更フィールドをマージし他を保持すべき。Sprint 2(S94f1f9 ドリフト・ループ)で即ヒットするため優先。",
+      "added_in": "Sead944",
+      "reason": "Sprint 1 の AC(create/冪等/独立Observe)には非該当のため run 内で未修正。ドリフト修復を本格実装する S94f1f9 で対処。"
+    },
+    {
+      "title": "[chore] cmd/ の provider 選択を registry/DI 化",
+      "kind": "chore",
+      "description": "cmd/sakutei の plan.go/reconcile.go が internal/fakeprovider を直接 import している。実 provider(S62dbba DNS)を差し込む際に provider registry / DI の接続点が要る。Executor seam と同様に provider 選択の seam を切る。",
+      "added_in": "Sead944",
+      "reason": "Sprint 1 は fake のみで許容。実 provider 導入 Sprint の前提として記録。"
     }
   ]
 }
