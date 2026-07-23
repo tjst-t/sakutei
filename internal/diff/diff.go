@@ -22,14 +22,17 @@
 //   - Update: resource present in both; one or more field values differ → OpKindUpdate
 //   - Delete: not implemented in this story (no prune scope yet)
 //
-// Managed-field exclusion, cause-tag attribution, and ghost-diff filtering
-// (CauseTagC) are deferred to subsequent Sprints.
+// Scb0ecd-2 additions:
+//   - CauseContext is accepted by Diff(); the cause package classifies each Op.
+//   - A/B/C are fully active; D/E are seams (always false in v1a).
+//   - Managed-field exclusion is handled by diffFields().
 package diff
 
 import (
 	"fmt"
 	"sort"
 
+	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -72,6 +75,11 @@ func New(schema provider.Schema) *Engine {
 //
 // obs is the output of Provider.Read for this resource.
 // desired is the intent declaration for this resource.
+// ctx is the per-cycle cause context used to classify the root cause of any
+// diff (§10.2, ADR-0008, Scb0ecd-2).  Pass a zero-value CauseContext to get
+// the original A-placeholder behaviour (first-run: IntentPrevRevision is empty
+// so intent always "changed", yielding tag A — which is correct for first-run
+// creates and updates that have no prior state to compare).
 //
 // Diff returns a Plan containing zero or one Op:
 //   - If obs.Availability != Ok: no Op (unknown ≠ absent; do not create/delete).
@@ -79,9 +87,8 @@ func New(schema provider.Schema) *Engine {
 //   - If obs.State is non-nil and all fields match: no Op (already converged).
 //   - If obs.State is non-nil and fields differ: OpKindUpdate.
 //
-// CauseTag is set to CauseTagA for all Ops in this Sprint (cause attribution
-// is a follow-on Story; A is the safest placeholder for "operator intent").
-func (e *Engine) Diff(obs core.Observation, desired DesiredResource) core.Plan {
+// CauseTag is determined by cause.Classify(ctx) per-resource (§10.3).
+func (e *Engine) Diff(obs core.Observation, desired DesiredResource, ctx cause.CauseContext) core.Plan {
 	// If the target is unreachable or mid-convergence, skip this resource.
 	// unknown ≠ absent (ADR-0002; §3 asymmetry principle).
 	if obs.Availability != core.AvailabilityOk {
@@ -90,6 +97,7 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource) core.Plan {
 
 	// Resource absent in reality → Create.
 	if obs.State == nil {
+		tag := cause.Classify(true, ctx)
 		fields := desiredFieldDiffs(desired.Fields)
 		diagnostic := fmt.Sprintf("resource %s does not exist in reality; will create", desired.ID)
 		return core.Plan{
@@ -98,7 +106,7 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource) core.Plan {
 					Kind:        core.OpKindCreate,
 					Target:      desired.ID,
 					Destructive: false,
-					Cause:       core.CauseTagA,
+					Cause:       tag,
 					Diagnostic:  diagnostic,
 					Fields:      fields,
 				},
@@ -113,6 +121,7 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource) core.Plan {
 		return core.Plan{}
 	}
 
+	tag := cause.Classify(true, ctx)
 	diagnostic := fmt.Sprintf("resource %s has %d field(s) out of sync", desired.ID, len(fieldDiffs))
 	return core.Plan{
 		Ops: []core.Op{
@@ -120,7 +129,7 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource) core.Plan {
 				Kind:        core.OpKindUpdate,
 				Target:      desired.ID,
 				Destructive: false,
-				Cause:       core.CauseTagA,
+				Cause:       tag,
 				Diagnostic:  diagnostic,
 				Fields:      fieldDiffs,
 			},

@@ -70,6 +70,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/budget"
+	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/loader"
@@ -427,7 +428,14 @@ func runCycleAsync(
 			unobservable[local] = true
 			continue
 		}
-		plans[local] = engine.Diff(obs, res)
+		// Scb0ecd-2: the daemon loop uses a zero-value CauseContext for now.
+		// The daemon's persistent in-memory cause state (prev revision tracking)
+		// is deferred to the full daemon path in a later Story; for v1a the
+		// one-shot CLI paths (plan/reconcile) are the primary cause-tag surface.
+		// A zero-value CauseContext means IntentPrevRevision = "" → first-run A,
+		// which is acceptable for the daemon in v1a (same as the pre-Scb0ecd-2
+		// behaviour where CauseTagA was the static placeholder).
+		plans[local] = engine.Diff(obs, res, cause.CauseContext{})
 	}
 
 	// Phase 2a: Compute prune ops (dry-run, no Apply yet).

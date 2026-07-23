@@ -91,6 +91,14 @@ type storedResource struct {
 // normal prune path can be exercised.  This is a type-level property, so it is
 // a single boolean, not a per-resource map.
 // This is a test-only mechanism; production providers do not use this field.
+//
+// ProviderVersion is a string that represents the fake provider's
+// diff/normalisation source hash (see §10.4, ADR-0008).  In production, the
+// SDK computes this automatically from the provider source.  For the fake, tests
+// write this field to simulate a provider upgrade (cause-tag C).  Default ""
+// (empty) means no version is embedded; the Scb0ecd-3 fail-closed guard is not
+// yet enforced, so empty is accepted here as "unknown/stable".
+// This is a test-only mechanism; production providers do not use this field.
 type stateFile struct {
 	Resources           map[string]storedResource `json:"resources"`
 	FailInject          map[string]string         `json:"fail_inject,omitempty"`
@@ -99,6 +107,7 @@ type stateFile struct {
 	ApplyCount          map[string]int            `json:"apply_count,omitempty"`
 	ListPartial         bool                      `json:"list_partial,omitempty"`
 	PruneableCapability bool                      `json:"pruneable_capability,omitempty"`
+	ProviderVersion     string                    `json:"provider_version,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
@@ -423,6 +432,35 @@ func (p *Provider) SetPruneable(pruneable bool) error {
 // StatePath returns the path of the underlying state file.
 func (p *Provider) StatePath() string {
 	return p.statePath
+}
+
+// ProviderVersion returns the provider_version stored in the state file.
+// An empty string means no version is embedded (Scb0ecd-3 will enforce
+// fail-closed for empty versions; here we return "" gracefully).
+// This is a test-only accessor for Scb0ecd-2 cause-tag C verification.
+func (p *Provider) ProviderVersion() string {
+	p.mu.Lock()
+	sf, err := p.load()
+	p.mu.Unlock()
+	if err != nil {
+		return ""
+	}
+	return sf.ProviderVersion
+}
+
+// SetProviderVersion writes the provider_version into the state file.
+// Tests call this to simulate a provider upgrade that triggers cause-tag C
+// (ghost diff: the provider's normalisation logic changed, §10.4, ADR-0008).
+// This is a test-only helper for Scb0ecd-2 ([AC-Scb0ecd-2-3]).
+func (p *Provider) SetProviderVersion(version string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sf, err := p.load()
+	if err != nil {
+		return fmt.Errorf("fakeprovider: load state for provider version: %w", err)
+	}
+	sf.ProviderVersion = version
+	return p.save(sf)
 }
 
 // SetFailInject writes a set of Local IDs that should fail on Apply into the

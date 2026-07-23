@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/budget"
+	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
@@ -46,6 +47,15 @@ import (
 // Upstream failure skips downstream resources for this cycle.
 // Cyclic depends_on is rejected at intent load time.
 //
+// Scb0ecd-2: cause-tag classification (A/B/C active, D/E seam).
+//   - --cause-state <file>: optional JSON file holding previous-cycle revision
+//     and provider_version values.  Written at end of invocation so the next
+//     run can compare.  Absent = first-run (all ops tagged A, correct).
+//   - Ops with cause: C are NOT Applied (ProviderUpgradeDiff gate, §10.4):
+//     they are logged as ProviderUpgradeDiff Events and filtered from the Apply
+//     set for this cycle.  The operator must review and re-run with the new
+//     provider version locked in (or revert).
+//
 // D-1 (unobservable-upstream safety, ADR-0002 / §3): a resource whose Observe
 // returns an error OR Availability != Ok is treated as failed/unknown, NOT
 // converged.  It and its transitive downstream are skipped this cycle
@@ -67,6 +77,9 @@ func runReconcile(args []string) {
 	intentDir := fs.String("intent", "", "directory containing intent JSON files (required)")
 	statePath := fs.String("state", "sakutei-fake-state.json",
 		"path to the fake provider state file (default: sakutei-fake-state.json)")
+	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
+	causeStatePath := fs.String("cause-state", "",
+		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
 
 	// Scf7762-2: change-budget flags (§13).
 	maxDestructivePerCycle := fs.Int("max-destructive-per-cycle", 0,
@@ -153,12 +166,36 @@ func runReconcile(args []string) {
 	// Create the fake provider backed by the state file.
 	// Declare fp as provider.Provider so interface checks (.(provider.Lister))
 	// work without the concrete type getting in the way.
-	var fp provider.Provider = fakeprovider.New(*statePath)
+	fpConcrete := fakeprovider.New(*statePath)
+	var fp provider.Provider = fpConcrete
 	engine := diff.New(fp.Schema())
 	// Depend on the Executor seam (interface), not the concrete LocalExecutor,
 	// so later Stories can swap in other implementations without touching this
 	// call site (§6 seam principle).
 	var exec executor.Executor = executor.New()
+
+	// Scb0ecd-2: load cause state (previous-cycle revision + provider_version).
+	prevState, csErr := loadCauseState(*causeStatePath)
+	if csErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: warn: load cause-state %q: %v (treating as first-run)\n",
+			*causeStatePath, csErr)
+		prevState = causeStateFile{}
+	}
+	curProviderVersion := fpConcrete.ProviderVersion()
+
+	// Build the per-cycle CauseContext.  All resources in this invocation
+	// share the same revision signals (§10.3: grlobal revision for candidate
+	// narrowing; per-resource diff is the final arbiter).
+	causeCtx := cause.CauseContext{
+		IntentPrevRevision:   prevState.PrevIntentRevision,
+		IntentCurRevision:    rev.IntentRevision,
+		RenderedPrevRevision: prevState.PrevRenderedRevision,
+		RenderedCurRevision:  rev.RenderedRevision,
+		ProviderPrevVersion:  prevState.PrevProviderVersion,
+		ProviderCurVersion:   curProviderVersion,
+		// UpstreamChanged:          false (seam, v1a)
+		// RenderedRevisionChanged:  false (seam, v1a; rendered == intent)
+	}
 
 	ctx := context.Background()
 
@@ -194,7 +231,44 @@ func runReconcile(args []string) {
 			unobservable[res.ID.Local] = true
 			continue
 		}
-		plans[res.ID.Local] = engine.Diff(obs, res)
+		resourcePlan := engine.Diff(obs, res, causeCtx)
+		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff),
+		// and filter them out of the Apply set (§10.4, task Scb0ecd-2-2).
+		// C ops are shown in plan output but NOT applied; the operator must
+		// confirm the provider upgrade before applying.
+		var nonCOps []core.Op
+		for _, op := range resourcePlan.Ops {
+			if op.Cause == core.CauseTagC {
+				fmt.Fprintf(os.Stderr,
+					"sakutei reconcile: ProviderUpgradeDiff: %s [cause: C] provider_version changed (%s → %s); NOT applying (review required)\n",
+					op.Target, prevState.PrevProviderVersion, curProviderVersion)
+			} else {
+				nonCOps = append(nonCOps, op)
+			}
+		}
+		if len(nonCOps) > 0 {
+			plans[res.ID.Local] = core.Plan{Ops: nonCOps}
+		} else if len(resourcePlan.Ops) > 0 && len(nonCOps) == 0 {
+			// All ops were C (ghost diff); store an empty plan so that the
+			// resource is not treated as "no diff" (it is drifted, just not
+			// applied this cycle). In current flow no plan entry = converged,
+			// which is acceptable: ghost diff resources will show in plan
+			// output but not be applied. The cause: C flag in printed ops
+			// already communicates this to the operator.
+			// NOTE: we intentionally do NOT add to plans here so that
+			// reconcile.ApplyWaves sees it as "already converged" for the wave
+			// scheduler (do not attempt Apply, do not skip downstream).
+		}
+	}
+
+	// Scb0ecd-2: persist current revision + provider_version as "previous" for
+	// the next invocation.  Non-fatal on failure (S3 semantics).
+	if saveErr := saveCauseState(*causeStatePath, causeStateFile{
+		PrevIntentRevision:   rev.IntentRevision,
+		PrevRenderedRevision: rev.RenderedRevision,
+		PrevProviderVersion:  curProviderVersion,
+	}); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: warn: save cause-state %q: %v\n", *causeStatePath, saveErr)
 	}
 
 	// Phase 2a: Compute prune ops (dry-run, no Apply yet — Scf7762-2 budget gate).
