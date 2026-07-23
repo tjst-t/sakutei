@@ -73,7 +73,7 @@
         },
         "Sead944-2": {
           "title": "sakutei plan（Diff で停止）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "運用者として、fake Provider に対して `sakutei plan` を実行し、理想と現実の差分を適用せずに確認したい。なぜなら、破壊的操作の前に何が変わるか知りたいから。",
@@ -82,36 +82,36 @@
               "id": "AC-Sead944-2-1",
               "description": "`sakutei plan` は fake Provider を Observe し desired と比較して差分(Create/Update/Delete)を表示する",
               "test": "[AC-Sead944-2-1] in tests/acceptance/plan_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Sead944-2-2",
               "description": "plan は Apply を一切呼ばず現実を変更しない",
               "test": "[AC-Sead944-2-2] in tests/acceptance/plan_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Sead944-2-3",
               "description": "差分がゼロなら「収束済み」と報告する",
               "test": "[AC-Sead944-2-3] in tests/acceptance/plan_test.go",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "Sead944-2-1": {
               "title": "fake in-memory Provider",
               "description": "テストの主戦場となる fake Provider（Read/Apply/List、任意状態を注入可能）を実装",
-              "status": "pending"
+              "status": "done"
             },
             "Sead944-2-2": {
               "title": "Diff エンジン",
               "description": "desired と Observation から Plan を導出（managed 除外は後続 Sprint、ここは素の field diff）",
-              "status": "pending"
+              "status": "done"
             },
             "Sead944-2-3": {
               "title": "sakutei plan サブコマンド",
               "description": "Loader で intent を読み、Observe→Diff して表示、Apply は呼ばない",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
