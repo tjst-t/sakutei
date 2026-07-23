@@ -52,8 +52,13 @@ type storedResource struct {
 // The map key is the resource Local identifier (provider-local, Scope-unqualified);
 // Sprint 1 resources share an empty Scope. When multi-Scope support lands, extend
 // the key to "<scope>/<local>" together with the code that reads/writes it.
+//
+// FailInject is a set of Local IDs for which Apply should return an error.
+// This is a test-only mechanism; production providers do not use this field.
+// Tests write this field before launching the binary to simulate Apply failures.
 type stateFile struct {
-	Resources map[string]storedResource `json:"resources"`
+	Resources  map[string]storedResource `json:"resources"`
+	FailInject map[string]string         `json:"fail_inject,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
@@ -143,6 +148,11 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 // IMPORTANT: plan (sakutei plan) MUST NEVER call Apply.  Apply is the
 // reconcile path only (ADR-0002); AC-Sead944-2-2 verifies this at the CLI
 // level (state file unchanged after plan), not via Apply's return value.
+//
+// S94f1f9-2: Apply checks the FailInject map in the state file.  If the
+// target Local ID appears in FailInject, Apply returns a synthetic error
+// instead of writing the resource.  This is a test-only mechanism to simulate
+// Apply failures for acceptance tests ([AC-S94f1f9-2-2]).
 func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
 	sf, err := p.load()
 	if err != nil {
@@ -151,6 +161,14 @@ func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
 
 	for _, op := range plan.Ops {
 		key := op.Target.Local
+
+		// Failure injection: if this resource is listed in FailInject, return
+		// an error without modifying the state (simulates an Apply failure).
+		if sf.FailInject != nil {
+			if reason, ok := sf.FailInject[key]; ok {
+				return provider.NewTransientError(fmt.Errorf("fakeprovider: injected failure for %s: %s", key, reason))
+			}
+		}
 		switch op.Kind {
 		case core.OpKindCreate:
 			// Create: resource did not exist; write all desired fields.
@@ -207,6 +225,18 @@ func (p *Provider) List(_ context.Context, _ core.Scope) ([]core.ID, error) {
 // StatePath returns the path of the underlying state file.
 func (p *Provider) StatePath() string {
 	return p.statePath
+}
+
+// SetFailInject writes a set of Local IDs that should fail on Apply into the
+// state file.  Pass nil or an empty map to clear all injected failures.
+// This is a test-only helper; production code must not call it.
+func (p *Provider) SetFailInject(failMap map[string]string) error {
+	sf, err := p.load()
+	if err != nil {
+		return fmt.Errorf("fakeprovider: load state for fail inject: %w", err)
+	}
+	sf.FailInject = failMap
+	return p.save(sf)
 }
 
 // SeedResource writes a resource directly into the state file.  This is a

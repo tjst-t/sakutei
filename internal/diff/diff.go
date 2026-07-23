@@ -43,6 +43,10 @@ type DesiredResource struct {
 	// String representation is used at this layer; the diff engine converts
 	// both sides to strings for comparison in this Sprint.
 	Fields map[string]string
+	// DependsOn is the list of provider-local IDs (same intent scope) that
+	// this resource depends on.  Populated from the "depends_on" field in
+	// the intent file (Story S94f1f9-2, provisional; formal Loader is S33266e).
+	DependsOn []string
 }
 
 // Engine holds the provider schema used to drive the diff.

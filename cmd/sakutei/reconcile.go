@@ -24,21 +24,22 @@ import (
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/internal/reconcile"
+	"github.com/tjst-t/sakutei/pkg/core"
 )
 
 // runReconcile implements "sakutei reconcile".
 //
-// It performs a single convergence pass: Observe → Diff → Apply.
+// It performs a single convergence pass: Observe → Diff → Apply (wave order).
 //
 // ADR-0002 contract (観測 state レス): reconcile MUST observe reality itself.
 // It MUST NOT reuse any observations produced by a prior "sakutei plan" run or
 // any other invocation.  Each call to fp.Read below is a fresh, independent
 // observation.
 //
-// Convergence scope (Story Sead944-3):
-//   - Single pass (one Observe→Diff→Apply per resource)
-//   - No daemon loop, no DAG/wave scheduling, no safety mechanisms
-//   - Those are deferred to subsequent Stories
+// S94f1f9-2: Apply is now ordered by the depends_on DAG using Kahn waves.
+// Upstream failure skips downstream resources for this cycle.
+// Cyclic depends_on is rejected at intent load time.
 //
 // Exit codes:
 //
@@ -64,6 +65,8 @@ func runReconcile(args []string) {
 	}
 
 	// Load desired resources from intent directory.
+	// loader.LoadDir also performs cycle detection (S94f1f9-2): cyclic
+	// depends_on is rejected here with a non-zero exit before any Apply.
 	desired, err := loader.LoadDir(*intentDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: load intent: %v\n", err)
@@ -79,10 +82,10 @@ func runReconcile(args []string) {
 	var exec executor.Executor = executor.New()
 
 	ctx := context.Background()
-	// appliedCount tallies applied Ops, where 1 Op == 1 resource operation
-	// (create/update). When Delete lands, each pruned resource is likewise 1 Op.
-	appliedCount := 0
 
+	// Phase 1: Observe + Diff (fresh per resource — ADR-0002).
+	// Collect plans for all resources before applying any of them.
+	plans := make(map[string]core.Plan, len(desired))
 	for _, res := range desired {
 		// ADR-0002: Observe independently for each resource.
 		//
@@ -95,33 +98,42 @@ func runReconcile(args []string) {
 			fmt.Fprintf(os.Stderr, "sakutei reconcile: observe %s: %v\n", res.ID, err)
 			os.Exit(1)
 		}
+		plans[res.ID.Local] = engine.Diff(obs, res)
+	}
 
-		plan := engine.Diff(obs, res)
+	// Phase 2: Apply in dependency (wave) order via Kahn decomposition.
+	// reconcile.ApplyWaves ensures that:
+	//   - Resources with depends_on are applied after their dependencies.
+	//   - If a dependency fails, its transitive dependents are skipped.
+	//   - appliedIDs contains the Local IDs of resources that were successfully applied.
+	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, fp, exec, desired, plans, os.Stderr)
+	if waveErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: wave apply: %v\n", waveErr)
+		os.Exit(1)
+	}
 
-		// Skip resources that are already converged (no Ops needed).
-		// This is the idempotency path: if reality already matches desired,
-		// Apply is not called at all for this resource.
-		if len(plan.Ops) == 0 {
+	// Report skipped resources (upstream failures) to stderr.
+	for _, sk := range skipped {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: skip %s (upstream failure; will retry next cycle)\n", sk)
+	}
+
+	// Report applied ops: only for resources whose Apply succeeded.
+	appliedOps := 0
+	for _, res := range desired {
+		if !appliedIDs[res.ID.Local] {
 			continue
 		}
-
-		// Apply the plan through the Executor seam.
-		if err := exec.Execute(ctx, fp, plan); err != nil {
-			fmt.Fprintf(os.Stderr, "sakutei reconcile: apply %s: %v\n", res.ID, err)
-			os.Exit(1)
-		}
-
-		// Report each applied Op.
+		plan := plans[res.ID.Local]
 		for _, op := range plan.Ops {
-			printOp(op) // shared with plan.go (same package)
-			appliedCount++
+			printOp(op)
+			appliedOps++
 		}
 	}
 
-	if appliedCount == 0 {
+	if appliedOps == 0 {
 		fmt.Println("Converged (no changes)")
 	} else {
-		fmt.Printf("Reconcile: %d change(s) applied\n", appliedCount)
+		fmt.Printf("Reconcile: %d change(s) applied\n", appliedOps)
 	}
 	os.Exit(0)
 }

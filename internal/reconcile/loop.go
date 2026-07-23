@@ -20,8 +20,13 @@
 //   - Graceful shutdown: SIGTERM/SIGINT stops the loop at cycle boundary
 //   - Observation state-less: Provider.Read called fresh every cycle (ADR-0002)
 //
-// Out of scope for this Story (deferred to S94f1f9-2 and S94f1f9-3):
-//   - DAG/wave scheduling (Kahn decomposition)
+// Story S94f1f9-2 additions:
+//   - DAG/wave scheduling: Kahn decomposition (dag.go)
+//   - depends_on propagated from intent through loader/diff.DesiredResource
+//   - Upstream failure causes transitive downstream skip for this cycle
+//   - Cycle detection happens at load time (loader.LoadDir)
+//
+// Out of scope (deferred to S94f1f9-3 and later):
 //   - Async Apply / in-flight tracking
 //   - Per-resource backoff
 //   - Safety mechanisms (rate limit, blast-radius guard)
@@ -39,8 +44,9 @@ import (
 
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
-	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/pkg/core"
 )
 
 // Config holds the configuration for the convergence loop.
@@ -139,14 +145,53 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 }
 
+// CycleResult holds the summary of one convergence cycle.
+type CycleResult struct {
+	Observed int
+	Applied  int
+	Skipped  []string
+}
+
+// RunOnce executes a single convergence cycle with the given Config.
+//
+// This is the shared implementation used both by the periodic loop (Run) and
+// the one-shot "sakutei reconcile" command.  Using a common path guarantees
+// that wave ordering and cycle detection are consistent between the two entry
+// points (§8.1).
+//
+// The caller is responsible for creating and setting up the output writers.
+func RunOnce(ctx context.Context, cfg Config) (CycleResult, error) {
+	if cfg.Out == nil {
+		cfg.Out = os.Stdout
+	}
+	if cfg.ErrOut == nil {
+		cfg.ErrOut = os.Stderr
+	}
+
+	fp := fakeprovider.New(cfg.StatePath)
+	engine := diff.New(fp.Schema())
+	var exec executor.Executor = executor.New()
+
+	observed, applied, err := runCycle(ctx, engine, fp, exec, cfg)
+	if err != nil {
+		return CycleResult{}, err
+	}
+	return CycleResult{Observed: observed, Applied: applied}, nil
+}
+
 // runCycle executes one convergence cycle: load intent, observe each resource
-// (fresh — ADR-0002), diff, apply.
+// (fresh — ADR-0002), diff, apply in dependency (wave) order.
 //
 // Returns the number of resources observed, the number of ops applied, and any
 // error that aborted the cycle.
 //
 // ADR-0002 note: every call to fp.Read in the inner loop is a fresh observation.
 // No observation result from a prior cycle or from "sakutei plan" is carried in.
+//
+// S94f1f9-2: Apply is now driven by applyWaves (dag.go), which decomposes the
+// depends_on DAG via Kahn's algorithm and applies wave by wave.  On per-resource
+// Apply failure the transitive dependents are skipped for this cycle; the
+// level-triggered loop naturally retries them on the next cycle.
 func runCycle(
 	ctx context.Context,
 	engine *diff.Engine,
@@ -155,34 +200,34 @@ func runCycle(
 	cfg Config,
 ) (observed, applied int, err error) {
 	// Load desired state fresh each cycle.
+	// loader.LoadDir also performs cycle detection (S94f1f9-2).
 	desired, loadErr := loader.LoadDir(cfg.IntentDir)
 	if loadErr != nil {
 		return 0, 0, fmt.Errorf("load intent: %w", loadErr)
 	}
 
+	// Phase 1: Observe all resources fresh (ADR-0002).
+	plans := make(map[string]core.Plan, len(desired))
 	for _, res := range desired {
 		// ADR-0002: fresh observation per resource per cycle.
-		// No prior observation result is reused here.
 		obs, readErr := fp.Read(ctx, res.ID.Local)
 		if readErr != nil {
-			// Log and skip; do not abort the entire cycle for one resource.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
 			continue
 		}
 		observed++
-
-		plan := engine.Diff(obs, res)
-		if len(plan.Ops) == 0 {
-			// Already converged for this resource.
-			continue
-		}
-
-		if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
-			fmt.Fprintf(cfg.ErrOut, "sakutei: apply %s: %v\n", res.ID, applyErr)
-			continue
-		}
-		applied += len(plan.Ops)
+		plans[res.ID.Local] = engine.Diff(obs, res)
 	}
 
-	return observed, applied, nil
+	// Phase 2: Apply in dependency (wave) order.
+	appliedCount, _, skipped, waveErr := applyWaves(ctx, fp, exec, desired, plans, cfg.ErrOut)
+	if waveErr != nil {
+		return observed, 0, waveErr
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(cfg.ErrOut, "sakutei: %d resource(s) skipped this cycle due to upstream failure: %v\n",
+			len(skipped), skipped)
+	}
+
+	return observed, appliedCount, nil
 }

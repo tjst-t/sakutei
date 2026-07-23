@@ -30,6 +30,7 @@
 //	      "provider": "fake",
 //	      "scope": {"site": "tokyo"},   // optional; omit or {} for root scope
 //	      "id": "my-resource",
+//	      "depends_on": ["other-resource"],  // optional; S94f1f9-2 provisional
 //	      "fields": {
 //	        "name": "my-resource",
 //	        "size": "10"
@@ -66,6 +67,9 @@ type intentResource struct {
 	Scope map[string]string `json:"scope"`
 	// ID is the provider-local identifier (Local part of composite ID).
 	ID string `json:"id"`
+	// DependsOn is the list of provider-local IDs (same intent file scope)
+	// that this resource depends on.  Provisional format; S33266e formalises.
+	DependsOn []string `json:"depends_on"`
 	// Fields is the map of field name → desired value (string).
 	Fields map[string]string `json:"fields"`
 }
@@ -75,6 +79,11 @@ type intentResource struct {
 // Files are processed in lexicographic order for deterministic output.
 // Non-JSON files (by extension) are silently skipped.
 // Subdirectories are not traversed.
+//
+// S94f1f9-2: cycle detection is performed after all files are loaded.
+// If depends_on forms a cycle among the loaded resources, LoadDir returns an
+// explicit error and the caller must not begin convergence.  This implements
+// the "循環検出は理想状態ロード時に一度" contract (§8.1).
 func LoadDir(dir string) ([]diff.DesiredResource, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -98,7 +107,78 @@ func LoadDir(dir string) ([]diff.DesiredResource, error) {
 		}
 		resources = append(resources, loaded...)
 	}
+
+	// S94f1f9-2: reject cyclic depends_on graphs at load time.
+	if err := detectCycles(resources); err != nil {
+		return nil, fmt.Errorf("loader: %w", err)
+	}
+
 	return resources, nil
+}
+
+// detectCycles runs Kahn's algorithm over the depends_on graph.  If any cycle
+// exists (i.e. not all nodes can be topologically sorted), it returns an error
+// naming the involved IDs.
+//
+// Only Local IDs are used here because depends_on names are local within the
+// same intent scope (§8.1, §21).
+func detectCycles(resources []diff.DesiredResource) error {
+	// Build ID → index map.
+	idx := make(map[string]int, len(resources))
+	for i, r := range resources {
+		idx[r.ID.Local] = i
+	}
+
+	// Build in-degree and adjacency list.
+	inDeg := make([]int, len(resources))
+	adj := make([][]int, len(resources))
+	for i, r := range resources {
+		for _, dep := range r.DependsOn {
+			j, ok := idx[dep]
+			if !ok {
+				// depends_on references an unknown ID — let the DAG builder
+				// catch this at apply time; cycle detection only needs the
+				// graph structure.
+				continue
+			}
+			// Edge: dep → r (r depends on dep; dep must come before r).
+			adj[j] = append(adj[j], i)
+			inDeg[i]++
+		}
+	}
+
+	// Kahn's algorithm: enqueue all in-degree-0 nodes.
+	queue := make([]int, 0, len(resources))
+	for i, d := range inDeg {
+		if d == 0 {
+			queue = append(queue, i)
+		}
+	}
+
+	processed := 0
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		processed++
+		for _, m := range adj[n] {
+			inDeg[m]--
+			if inDeg[m] == 0 {
+				queue = append(queue, m)
+			}
+		}
+	}
+
+	if processed < len(resources) {
+		// Collect IDs that are part of the cycle (still have in-degree > 0).
+		var cyclic []string
+		for i, d := range inDeg {
+			if d > 0 {
+				cyclic = append(cyclic, resources[i].ID.Local)
+			}
+		}
+		return fmt.Errorf("cyclic dependency detected among resources: %s", strings.Join(cyclic, ", "))
+	}
+	return nil
 }
 
 // loadFile parses a single intent JSON file and returns its resources.
@@ -130,9 +210,15 @@ func loadFile(path string) ([]diff.DesiredResource, error) {
 			fields = map[string]string{}
 		}
 
+		dependsOn := r.DependsOn
+		if dependsOn == nil {
+			dependsOn = []string{}
+		}
+
 		resources = append(resources, diff.DesiredResource{
-			ID:     id,
-			Fields: fields,
+			ID:        id,
+			Fields:    fields,
+			DependsOn: dependsOn,
 		})
 	}
 	return resources, nil
