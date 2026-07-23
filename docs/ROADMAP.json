@@ -289,7 +289,7 @@
         },
         "Scf7762-2": {
           "title": "変更予算（rate limit・累積時間窓・デフォルト halt）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "運用者として、1 コミットで大量破壊が走らないよう予算で止めてほしい。なぜなら、速く収束する力は速く壊す力でもあるから。",
@@ -298,19 +298,19 @@
               "id": "AC-Scf7762-2-1",
               "description": "1 周期あたりの破壊的変更が rate limit（絶対数/割合）を超えたら halt する",
               "test": "[AC-Scf7762-2-1] in tests/acceptance/budget_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Scf7762-2-2",
               "description": "累積時間窓予算（例 24h）を超える破壊的変更を止める",
               "test": "[AC-Scf7762-2-2] in tests/acceptance/budget_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Scf7762-2-3",
               "description": "既定は halt で、明示的意図（承認フラグ）があるときのみ進む",
               "test": "[AC-Scf7762-2-3] in tests/acceptance/budget_test.go",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {}
@@ -529,6 +529,13 @@
       "description": "並行/周期テスト(Inflight/Loop/DAG)で稀に timing flake が観測された(18+回で再現せず)。interval/deadline の余白拡大や決定的な同期点でflakinessを更に下げる。",
       "added_in": "S94f1f9",
       "reason": "verify中に1度観測。低優先。"
+    },
+    {
+      "title": "[enhancement] in-flight op 種別を記録し破壊的のみ予算計上",
+      "kind": "enhancement",
+      "description": "現状 in-flight を一律 destructive として rate-limit に計上（安全方向だが Create-heavy で偽陽性 halt しうる）。InFlightSet に op 種別を記録し destructive のみ数えるよう精緻化。",
+      "added_in": "Scf7762",
+      "reason": "Scf7762-2 review B。安全方向のため非ブロッカー。"
     }
   ]
 }
