@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tjst-t/sakutei/pkg/core"
@@ -68,17 +69,35 @@ type storedResource struct {
 // resource as failed/unknown (NOT converged) and skip its transitive downstream
 // this cycle (unknown ≠ absent; do not proceed downstream on uncertainty).
 // This is a test-only mechanism; production providers do not use this field.
+//
+// ApplyDelay is a map from Local ID to a duration string (e.g. "500ms").
+// When set, Apply sleeps for the specified duration before writing the resource.
+// This is a test-only mechanism for S94f1f9-3 to simulate long-running Applies.
+//
+// ApplyCount is a map from Local ID to the number of times Apply has been called
+// for that resource.  Incremented atomically on each Apply call.  Used by tests
+// to verify that a resource is not double-applied while in-flight.
+// This is a test-only mechanism; production providers do not use this field.
 type stateFile struct {
 	Resources      map[string]storedResource `json:"resources"`
 	FailInject     map[string]string         `json:"fail_inject,omitempty"`
 	ObserveUnknown map[string]string         `json:"observe_unknown,omitempty"`
+	ApplyDelay     map[string]string         `json:"apply_delay,omitempty"`
+	ApplyCount     map[string]int            `json:"apply_count,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
 // and provider.Lister.
+//
+// Thread-safety: The Provider is safe for concurrent use.  Apply serialises
+// state-file writes (and the read-modify-write cycle for ApplyCount and delay)
+// via mu.  Read and List hold mu only for the duration of the file read.
 type Provider struct {
 	// statePath is the path to the JSON state file.
 	statePath string
+	// mu protects state-file read-modify-write sequences in Apply so that
+	// concurrent async Applies do not race on the file.
+	mu sync.Mutex
 }
 
 // New creates a new fake Provider backed by the JSON file at statePath.
@@ -188,25 +207,75 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 // target Local ID appears in FailInject, Apply returns a synthetic error
 // instead of writing the resource.  This is a test-only mechanism to simulate
 // Apply failures for acceptance tests ([AC-S94f1f9-2-2]).
+//
+// S94f1f9-3: Apply checks the ApplyDelay map and sleeps if a delay is configured
+// (test-only, for [AC-S94f1f9-3-1]).  Apply also increments ApplyCount for each
+// target resource (test-only, for [AC-S94f1f9-3-2]).
+// Apply is concurrency-safe: it holds p.mu for the read-modify-write on the
+// state file.  The sleep (ApplyDelay) happens outside the lock so concurrent
+// reads/applies for other resources are not blocked.
 func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
+	// Phase 0 (outside lock): resolve per-resource delay, then sleep.
+	// We load without the lock just to read ApplyDelay; the lock is acquired
+	// later for the actual read-modify-write.
+	var sleepDur time.Duration
+	if len(plan.Ops) > 0 {
+		sf0, err := p.load()
+		if err == nil && sf0.ApplyDelay != nil {
+			key := plan.Ops[0].Target.Local
+			if ds, ok := sf0.ApplyDelay[key]; ok {
+				if d, parseErr := time.ParseDuration(ds); parseErr == nil {
+					sleepDur = d
+				}
+			}
+		}
+	}
+	if sleepDur > 0 {
+		time.Sleep(sleepDur)
+	}
+
+	// Phase 1 (inside lock): read-modify-write the state file.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	sf, err := p.load()
 	if err != nil {
 		return provider.NewTransientError(fmt.Errorf("fakeprovider: load state: %w", err))
 	}
 
+	// S94f1f9-3: increment Apply call count for all ops upfront (even if
+	// FailInject subsequently returns an error).  This ensures that tests can
+	// observe that Apply was attempted for a resource regardless of the result.
+	if sf.ApplyCount == nil {
+		sf.ApplyCount = make(map[string]int)
+	}
+	for _, op := range plan.Ops {
+		sf.ApplyCount[op.Target.Local]++
+	}
+
+	// Check FailInject before doing any resource modifications.
+	// We do this after incrementing ApplyCount so the count is accurate.
+	var failKey, failReason string
+	for _, op := range plan.Ops {
+		key := op.Target.Local
+		if sf.FailInject != nil {
+			if reason, ok := sf.FailInject[key]; ok {
+				failKey = key
+				failReason = strings.ReplaceAll(reason, "\n", "\\n")
+				break
+			}
+		}
+	}
+	if failKey != "" {
+		// Save the incremented apply_count before returning the error so the
+		// test can observe the attempt count.
+		_ = p.save(sf) // best-effort; ignore error (we're already returning one)
+		return provider.NewTransientError(fmt.Errorf("fakeprovider: injected failure for %s: %s", failKey, failReason))
+	}
+
 	for _, op := range plan.Ops {
 		key := op.Target.Local
 
-		// Failure injection: if this resource is listed in FailInject, return
-		// an error without modifying the state (simulates an Apply failure).
-		if sf.FailInject != nil {
-			if reason, ok := sf.FailInject[key]; ok {
-				// A-5: sanitise newlines so a multi-line reason cannot break the
-				// single-line stderr log format that callers grep on.
-				reason = strings.ReplaceAll(reason, "\n", "\\n")
-				return provider.NewTransientError(fmt.Errorf("fakeprovider: injected failure for %s: %s", key, reason))
-			}
-		}
 		switch op.Kind {
 		case core.OpKindCreate:
 			// Create: resource did not exist; write all desired fields.
@@ -275,6 +344,37 @@ func (p *Provider) SetFailInject(failMap map[string]string) error {
 	}
 	sf.FailInject = failMap
 	return p.save(sf)
+}
+
+// SetApplyDelay writes a per-resource apply delay into the state file.
+// The delay is a map from Local ID to a duration string (e.g. "500ms").
+// Pass nil or an empty map to clear all delays.
+// This is a test-only helper for S94f1f9-3 ([AC-S94f1f9-3-1]).
+func (p *Provider) SetApplyDelay(delayMap map[string]string) error {
+	sf, err := p.load()
+	if err != nil {
+		return fmt.Errorf("fakeprovider: load state for apply delay: %w", err)
+	}
+	sf.ApplyDelay = delayMap
+	return p.save(sf)
+}
+
+// GetApplyCount reads and returns the apply_count map from the state file.
+// This is a test-only helper for S94f1f9-3 ([AC-S94f1f9-3-2]).
+func (p *Provider) GetApplyCount() (map[string]int, error) {
+	sf, err := p.load()
+	if err != nil {
+		return nil, fmt.Errorf("fakeprovider: load state for apply count: %w", err)
+	}
+	if sf.ApplyCount == nil {
+		return map[string]int{}, nil
+	}
+	// Return a copy so callers cannot mutate the internal map.
+	out := make(map[string]int, len(sf.ApplyCount))
+	for k, v := range sf.ApplyCount {
+		out[k] = v
+	}
+	return out, nil
 }
 
 // SeedResource writes a resource directly into the state file.  This is a

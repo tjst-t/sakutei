@@ -26,10 +26,19 @@
 //   - Upstream failure causes transitive downstream skip for this cycle
 //   - Cycle detection happens at load time (loader.LoadDir)
 //
-// Out of scope (deferred to S94f1f9-3 and later):
-//   - Async Apply / in-flight tracking
-//   - Per-resource backoff
-//   - Safety mechanisms (rate limit, blast-radius guard)
+// Story S94f1f9-3 additions:
+//   - Async Apply + in-flight set: Apply goroutines are launched per-resource;
+//     in-flight resources are treated as converging (re-plan suppressed,
+//     downstream skipped) on subsequent cycles.
+//   - Per-resource in-flight exclusion: a resource already in-flight is not
+//     re-launched until the previous Apply completes.
+//   - Per-resource backoff: Apply failures are subject to (resource, error-kind)
+//     exponential backoff + jitter (inflight.go).  Permanent errors cause "stuck"
+//     state (very long backoff).
+//   - Cycles do not accumulate: Observe/Diff always runs each interval;
+//     only Apply is asynchronous.
+//   - Graceful shutdown: Run waits up to 30 s for in-flight Applies to finish
+//     before returning.
 package reconcile
 
 import (
@@ -48,6 +57,10 @@ import (
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/pkg/core"
 )
+
+// gracefulShutdownWait is the maximum time Run will wait for in-flight Apply
+// goroutines to complete during graceful shutdown.
+const gracefulShutdownWait = 30 * time.Second
 
 // Config holds the configuration for the convergence loop.
 type Config struct {
@@ -73,13 +86,20 @@ const DefaultInterval = 10 * time.Second
 // The loop follows the ADR-0002 observation state-less contract: every cycle
 // calls Provider.Read fresh; no observation result is carried across cycles.
 //
+// S94f1f9-3: Apply is asynchronous.  Each wave resource that needs an Apply is
+// launched in its own goroutine.  Resources in-flight from a previous cycle are
+// treated as converging (no re-plan, no re-Apply, downstream skipped).  Cycles
+// do not accumulate — the Observe/Diff portion of each cycle runs every interval
+// regardless of how long Apply takes.
+//
 // Exit behaviour:
 //   - Returns nil after a graceful shutdown (signal received at cycle boundary).
+//     Before returning, waits up to gracefulShutdownWait for in-flight Applies.
 //   - Returns a non-nil error if a fatal configuration error occurs.
 //
 // Apply errors within a cycle are logged but do not terminate the loop; the
-// next cycle will re-observe and retry.  This reflects the level-triggered
-// model: "fail in a cycle, the next cycle heals it."
+// next cycle will re-observe and retry (level-triggered resilience).  Repeated
+// failures are subject to per-resource exponential backoff (inflight.go).
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Out == nil {
 		cfg.Out = os.Stdout
@@ -98,38 +118,55 @@ func Run(ctx context.Context, cfg Config) error {
 	fmt.Fprintf(cfg.Out, "sakutei: convergence loop started (interval=%s, intent=%s, state=%s)\n",
 		cfg.Interval, cfg.IntentDir, cfg.StatePath)
 
+	// S94f1f9-3: shared in-flight set + backoff table for the lifetime of this
+	// daemon run.  These are S3 state (memory only, ADR-0015): reset on restart,
+	// not a violation of observation state-less (they record self-initiated
+	// Applies, not cached observations of reality).
+	ifl := NewInFlightSet()
+
+	fp := fakeprovider.New(cfg.StatePath)
+	engine := diff.New(fp.Schema())
+	var exec executor.Executor = executor.New()
+
 	cycleNum := 0
 	for {
 		// Check for shutdown before each cycle.
 		select {
 		case <-ctx.Done():
 			fmt.Fprintf(cfg.Out, "sakutei: shutdown signal received; stopping after cycle %d\n", cycleNum)
+			// Graceful shutdown: wait for in-flight Applies to complete.
+			ifl.Wait(gracefulShutdownWait)
 			return nil
 		default:
 		}
 
 		cycleNum++
-		// RunOnce is the shared single-cycle path (also used by "sakutei
-		// reconcile"), so wave ordering and D-1 unobservable-skip behaviour are
-		// identical between the loop and the one-shot command.
-		res, cycleErr := RunOnce(ctx, cfg)
+		res, cycleErr := runCycleAsync(ctx, engine, fp, exec, ifl, cfg)
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
-			// D-1: a load/observe/wave error means we could not safely converge
-			// this cycle; continue to the next cycle (retry) rather than proceed.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
-		} else if res.Applied == 0 {
+		} else if res.Applied == 0 && res.Launched == 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d converged (no changes)\n",
 				cycleNum, res.Observed)
 		} else {
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d applied=%d\n",
-				cycleNum, res.Observed, res.Applied)
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d applied=%d launched=%d\n",
+				cycleNum, res.Observed, res.Applied, res.Launched)
+		}
+		if len(res.InFlight) > 0 {
+			// S94f1f9-3: in-flight resources from a prior async Apply are still
+			// running; they are treated as converging for this cycle.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: in-flight (converging): %v\n",
+				cycleNum, res.InFlight)
 		}
 		if len(res.Skipped) > 0 {
-			// D-1/A-2: surface skips (unobservable upstream or Apply failure).
-			// The level-triggered loop retries them on the next cycle.
+			// D-1/A-2: surface skips.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: %d resource(s) skipped (retry next cycle): %v\n",
 				cycleNum, len(res.Skipped), res.Skipped)
+		}
+		if len(res.BackedOff) > 0 {
+			// S94f1f9-3: resources suppressed by per-resource backoff.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d resource(s) in backoff (will retry later): %v\n",
+				cycleNum, len(res.BackedOff), res.BackedOff)
 		}
 
 		// Jitter sleep: base interval + up to 10%.
@@ -145,6 +182,7 @@ func Run(ctx context.Context, cfg Config) error {
 		select {
 		case <-ctx.Done():
 			fmt.Fprintf(cfg.Out, "sakutei: shutdown signal received; stopping after cycle %d\n", cycleNum)
+			ifl.Wait(gracefulShutdownWait)
 			return nil
 		case <-time.After(sleep):
 			// Next cycle.
@@ -157,6 +195,17 @@ type CycleResult struct {
 	Observed int
 	Applied  int
 	Skipped  []string
+
+	// S94f1f9-3 fields (async Apply mode only):
+
+	// Launched is the number of async Apply goroutines started this cycle.
+	Launched int
+	// InFlight is the list of resource Local IDs that had an active async Apply
+	// from a prior cycle (treated as converging; not re-planned this cycle).
+	InFlight []string
+	// BackedOff is the list of resource Local IDs that were suppressed because
+	// they are in a per-resource backoff cooldown period.
+	BackedOff []string
 }
 
 // RunOnce executes a single convergence cycle with the given Config.
@@ -253,3 +302,270 @@ func runCycle(
 
 	return CycleResult{Observed: observed, Applied: appliedCount, Skipped: skipped}, nil
 }
+
+// runCycleAsync executes one async-Apply convergence cycle for the daemon loop
+// (S94f1f9-3).
+//
+// Differences from runCycle (the synchronous one-shot path):
+//   - Resources currently in the in-flight set are treated as converging for
+//     this cycle: they are excluded from the plan and their downstream is
+//     skipped (same semantics as an unobservable upstream).
+//   - Resources in backoff cooldown are suppressed (no Apply launched).
+//   - Resources that need Apply are launched as goroutines; they are added to
+//     the in-flight set before launch and removed when the goroutine finishes
+//     (whether the Apply succeeds or fails).
+//
+// The in-flight set and backoff table (ifl) are shared across cycles for the
+// life of the daemon.  Access is protected by ifl's internal mutex.
+//
+// Observation state-less invariant (ADR-0002): the Observe phase is always
+// fresh, regardless of the in-flight set.  The in-flight set records self-
+// initiated Applies (S3 state), not cached observations.
+func runCycleAsync(
+	ctx context.Context,
+	engine *diff.Engine,
+	fp *fakeprovider.Provider,
+	exec executor.Executor,
+	ifl *InFlightSet,
+	cfg Config,
+) (CycleResult, error) {
+	// Load desired state fresh each cycle.
+	desired, loadErr := loader.LoadDir(cfg.IntentDir)
+	if loadErr != nil {
+		return CycleResult{}, fmt.Errorf("load intent: %w", loadErr)
+	}
+
+	// Phase 1: Observe all resources fresh (ADR-0002).
+	// Resources in-flight are observed but excluded from the plan (they are
+	// still converging from a prior cycle's Apply).
+	observed := 0
+	plans := make(map[string]core.Plan, len(desired))
+	// unobservable = truly unobservable (D-1) + in-flight (treated as converging)
+	unobservable := make(map[string]bool)
+	var inFlightThisCycle []string
+	var backedOff []string
+
+	for _, res := range desired {
+		local := res.ID.Local
+
+		// S94f1f9-3: in-flight resources are converging — skip re-plan.
+		if ifl.IsInFlight(local) {
+			inFlightThisCycle = append(inFlightThisCycle, local)
+			unobservable[local] = true // propagate skip to downstream
+			continue
+		}
+
+		// ADR-0002: fresh observation per resource per cycle.
+		obs, readErr := fp.Read(ctx, local)
+		if readErr != nil {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
+			unobservable[local] = true
+			continue
+		}
+		observed++
+		if obs.Availability != core.AvailabilityOk {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: availability=%v (not Ok); treating as unobservable this cycle\n",
+				res.ID, obs.Availability)
+			unobservable[local] = true
+			continue
+		}
+		plans[local] = engine.Diff(obs, res)
+	}
+
+	// Phase 2: Determine which resources need Apply.
+	// applyWavesAsync replaces the synchronous applyWaves: instead of calling
+	// exec.Execute directly it launches goroutines.
+	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
+		ctx, fp, exec, ifl, desired, plans, unobservable, cfg.ErrOut)
+	backedOff = backedOffList
+	if waveErr != nil {
+		return CycleResult{Observed: observed}, waveErr
+	}
+
+	return CycleResult{
+		Observed:  observed,
+		Applied:   appliedCount,
+		Launched:  launched,
+		InFlight:  inFlightThisCycle,
+		BackedOff: backedOff,
+		Skipped:   skipped,
+	}, nil
+}
+
+// applyWavesAsync is the async-Apply version of applyWaves (S94f1f9-3).
+//
+// For resources that have a non-empty plan and are NOT in-flight or backoff:
+//   - The resource is added to ifl (in-flight set).
+//   - A goroutine is launched that calls exec.Execute.
+//   - On success: ifl clears the backoff for the resource.
+//   - On failure: ifl records the failure (advances backoff); the resource is
+//     removed from in-flight.
+//
+// For resources that ARE in backoff this cycle, Apply is suppressed and the
+// resource is reported in backedOff.
+//
+// The function returns immediately after launching all goroutines; it does NOT
+// wait for them.  The in-flight set tracks their completion.
+//
+// Returns:
+//   - applied:    number of Ops reported by synchronous (immediate) Applies.
+//     For async Applies this is 0 — the goroutine reports completion outside the
+//     cycle.  We return len(plan.Ops) as "launched ops" instead via launched.
+//   - launched:   number of goroutines started this cycle.
+//   - backedOff:  list of resource Local IDs suppressed by backoff.
+//   - skipped:    list of resource Local IDs skipped (upstream failed / in-flight).
+//   - err:        only set for unrecoverable structural errors.
+func applyWavesAsync(
+	ctx context.Context,
+	fp *fakeprovider.Provider,
+	exec executor.Executor,
+	ifl *InFlightSet,
+	desired []diff.DesiredResource,
+	plans map[string]core.Plan,
+	unobservable map[string]bool,
+	errOut io.Writer,
+) (applied, launched int, backedOff, skipped []string, err error) {
+	n := len(desired)
+	if n == 0 {
+		return 0, 0, nil, nil, nil
+	}
+
+	// Build local-ID → index map.
+	localIdx := make(map[string]int, n)
+	for i, r := range desired {
+		localIdx[r.ID.Local] = i
+	}
+
+	// Build adjacency list and in-degree from depends_on.
+	inDeg := make([]int, n)
+	adj := make([][]int, n)
+	for i, r := range desired {
+		for _, dep := range r.DependsOn {
+			j, ok := localIdx[dep]
+			if !ok {
+				continue
+			}
+			adj[j] = append(adj[j], i)
+			inDeg[i]++
+		}
+	}
+
+	// failed tracks Local IDs whose Apply failed or were skipped.
+	failed := make(map[string]bool, n)
+
+	// Kahn wave traversal.
+	queue := make([]int, 0, n)
+	for i, d := range inDeg {
+		if d == 0 {
+			queue = append(queue, i)
+		}
+	}
+
+	for len(queue) > 0 {
+		wave := queue
+		queue = nil
+
+		for _, idx := range wave {
+			r := desired[idx]
+			local := r.ID.Local
+
+			// In-flight or unobservable: treat as failed for downstream propagation.
+			if unobservable[local] {
+				skipped = append(skipped, local)
+				fmt.Fprintf(errOut, "sakutei: skip %s: in-flight or unobservable this cycle\n", r.ID)
+				failed[local] = true
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
+			// Check upstream failure.
+			if up := upstreamFailed(r.DependsOn, failed); up != "" {
+				skipped = append(skipped, local)
+				fmt.Fprintf(errOut, "sakutei: skip %s: upstream %q failed/in-flight\n", r.ID, up)
+				failed[local] = true
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
+			// Check plan.
+			plan, hasPlan := plans[local]
+			if !hasPlan || len(plan.Ops) == 0 {
+				// Already converged; advance downstream.
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
+			// S94f1f9-3: per-resource backoff gate.
+			if ifl.InBackoff(local) {
+				backedOff = append(backedOff, local)
+				fmt.Fprintf(errOut, "sakutei: backoff %s: suppressing Apply (in cooldown)\n", r.ID)
+				// Do NOT mark as failed — downstream can still proceed if their
+				// own plan is non-empty and they have no hard dependency on this
+				// resource converging.  The backoff resource itself is not applied;
+				// its value in reality is unchanged.
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
+			// S94f1f9-3: per-resource in-flight exclusion.
+			// Add to in-flight BEFORE launching the goroutine to ensure that a
+			// concurrent Cycle cannot launch a second goroutine for the same resource.
+			ifl.Add(local)
+
+			// Launch async Apply.
+			launched++
+			localCopy := local
+			planCopy := plan
+			idCopy := r.ID
+
+			go func() {
+				defer ifl.Remove(localCopy)
+
+				if applyErr := exec.Execute(ctx, fp, planCopy); applyErr != nil {
+					fmt.Fprintf(errOut, "sakutei: apply %s: %v\n", idCopy, applyErr)
+					ifl.RecordFailure(localCopy, applyErr)
+				} else {
+					// Success: clear any prior backoff for this resource.
+					ifl.ClearBackoff(localCopy)
+				}
+			}()
+
+			// Downstream: we optimistically advance downstream (they were waiting
+			// on this node to be processed, not necessarily to succeed).  The
+			// downstream will be skipped on the next cycle if this Apply fails
+			// because the resource will still be drifted (level-triggered).
+			for _, m := range adj[idx] {
+				inDeg[m]--
+				if inDeg[m] == 0 {
+					queue = append(queue, m)
+				}
+			}
+		}
+	}
+
+	// For async mode, applied is always 0 (we do not know the result yet).
+	// launched counts goroutines started; backedOff and skipped are reported.
+	_ = applied // keep return signature consistent with sync path
+	return 0, launched, backedOff, skipped, nil
+}
+
