@@ -225,7 +225,7 @@
         },
         "S94f1f9-3": {
           "title": "非同期 Apply と in-flight・backoff",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "運用者として、時間のかかる Apply があっても収束周期が積み重ならないでほしい。なぜなら、周期が詰まると観測が古くなるから。",
@@ -234,19 +234,19 @@
               "id": "AC-S94f1f9-3-1",
               "description": "Apply は非同期で in-flight 集合に入り、次周期は再 plan せず converging 扱いする",
               "test": "[AC-S94f1f9-3-1] in tests/acceptance/inflight_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S94f1f9-3-2",
               "description": "同一リソースへの同時 Apply は per-resource 排他で防ぐ",
               "test": "[AC-S94f1f9-3-2] in tests/acceptance/inflight_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S94f1f9-3-3",
               "description": "失敗リソースは (リソース, エラー種別) 単位の指数 backoff + jitter で再試行する",
               "test": "[AC-S94f1f9-3-3] in tests/acceptance/inflight_test.go",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {}
@@ -515,6 +515,13 @@
       "description": "本環境は gcc 不在で -race 未実行。並行(ループ/非同期Apply/in-flight)が増える S94f1f9-3 以降に向け、CGO 有効な CI で race テストを回せるようにする。",
       "added_in": "S94f1f9",
       "reason": "S94f1f9-1 review D-1。並行度が上がる前に整備したい。"
+    },
+    {
+      "title": "[enhancement] 非同期 wave の同一サイクル内バリア（楽観的 downstream launch 窓の縮小）",
+      "kind": "enhancement",
+      "description": "async Apply では、上流 A を launch した同じサイクルで、A の失敗が記録される前に下流 B が1回だけ楽観的に launch されうる（apply_count<=1）。level-triggered で次周期に自己修復し DD-1 で steady-state は skip されるが、厳密な cross-wave async バリア（上流 wave の in-flight 完了まで下流 wave を起動しない）にすれば1サイクルの窓も消せる。安全機構(Sprint 3)や段階ロールアウトと合わせて検討。",
+      "added_in": "S94f1f9",
+      "reason": "S94f1f9-3 review DD-1 の残差。review-cap 到達のため次段で対応。bounded かつ自己修復するため非ブロッカー。"
     }
   ]
 }
