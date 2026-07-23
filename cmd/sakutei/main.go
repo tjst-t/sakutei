@@ -36,6 +36,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 )
@@ -95,6 +96,20 @@ func runDaemon() {
 	intervalStr := fs.String("interval", "",
 		"convergence cycle interval, e.g. 200ms or 30s (default: 10s)")
 
+	// Scf7762-2: change-budget flags (§13).
+	maxDestructivePerCycle := fs.Int("max-destructive-per-cycle", 0,
+		"maximum destructive ops per cycle; 0=unlimited (§13.1)")
+	maxChangesPerCycleAbsolute := fs.Int("max-changes-per-cycle", 0,
+		"maximum total ops per cycle; 0=unlimited (§13.1)")
+	maxDestructivePerWindow := fs.Int("max-destructive-per-window", 0,
+		"maximum destructive ops in rolling time window; 0=unlimited (§13.2)")
+	windowDurationStr := fs.String("window-duration", "",
+		"rolling window for cumulative budget, e.g. 24h, 10m (default: 24h) (§13.2)")
+	onExceedStr := fs.String("on-exceed", "halt-all",
+		"budget exceeded action: halt-all | halt-destructive-only (§13.1)")
+	approveLargeChange := fs.Int("approve-large-change", 0,
+		"explicitly approve up to N destructive changes this invocation")
+
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// "-h"/"--help" makes flag.Parse return flag.ErrHelp after printing
 		// usage; that is a successful, user-requested help display, not an
@@ -121,14 +136,40 @@ func runDaemon() {
 		interval = d
 	}
 
+	// Parse budget configuration (Scf7762-2).
+	budgetCfg := budget.Config{
+		MaxDestructivePerCycle:     *maxDestructivePerCycle,
+		MaxChangesPerCycleAbsolute: *maxChangesPerCycleAbsolute,
+		MaxDestructivePerWindow:    *maxDestructivePerWindow,
+		ApproveLargeChange:         *approveLargeChange,
+	}
+	if *windowDurationStr != "" {
+		d, err := time.ParseDuration(*windowDurationStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei: invalid --window-duration %q: %v\n", *windowDurationStr, err)
+			os.Exit(1)
+		}
+		budgetCfg.WindowDuration = d
+	}
+	switch *onExceedStr {
+	case "halt-destructive-only":
+		budgetCfg.OnExceed = budget.OnExceedHaltDestructiveOnly
+	case "halt-all", "":
+		budgetCfg.OnExceed = budget.OnExceedHaltAll
+	default:
+		fmt.Fprintf(os.Stderr, "sakutei: unknown --on-exceed value %q; use halt-all or halt-destructive-only\n", *onExceedStr)
+		os.Exit(1)
+	}
+
 	// Construct the concrete provider here (cmd layer) and inject it via the
 	// provider.Provider seam; the reconcile core stays free of concrete
 	// provider types (F-1).
 	cfg := reconcile.Config{
-		IntentDir: *intentDir,
-		StatePath: *statePath,
-		Provider:  fakeprovider.New(*statePath),
-		Interval:  interval,
+		IntentDir:    *intentDir,
+		StatePath:    *statePath,
+		Provider:     fakeprovider.New(*statePath),
+		Interval:     interval,
+		BudgetConfig: budgetCfg,
 	}
 
 	if err := reconcile.Run(context.Background(), cfg); err != nil {

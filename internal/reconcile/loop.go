@@ -39,6 +39,14 @@
 //     only Apply is asynchronous.
 //   - Graceful shutdown: Run waits up to 30 s for in-flight Applies to finish
 //     before returning.
+//
+// Story Scf7762-2 additions:
+//   - Change budget gate: rate-limit (per-cycle absolute/percentage + in-flight)
+//     and cumulative time-window budget (§13).  Budget is checked BEFORE any
+//     Apply or prune Delete is issued.  Excess destructive ops are blocked; the
+//     decision is logged with a clear HALTED message.  The cumulative window
+//     counter (S3, memory-only) is advanced only for ops that are actually
+//     applied.
 package reconcile
 
 import (
@@ -51,6 +59,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/loader"
@@ -81,6 +90,9 @@ type Config struct {
 	Out io.Writer
 	// ErrOut is where error lines are written.  Defaults to os.Stderr.
 	ErrOut io.Writer
+	// BudgetConfig holds the change-budget configuration (§13, Scf7762-2).
+	// Zero value means no budget limits are enforced (unlimited).
+	BudgetConfig budget.Config
 }
 
 // DefaultInterval is the default convergence cycle period.
@@ -153,6 +165,11 @@ func Run(ctx context.Context, cfg Config) error {
 		pruneEngine = prune.New()
 	}
 
+	// Scf7762-2: create the budget Engine ONCE per daemon run so the cumulative
+	// time-window counter (S3, memory-only) accumulates across cycles.  Resetting
+	// on restart is intentional: the first post-restart window starts fresh.
+	budgetEngine := budget.New(cfg.BudgetConfig)
+
 	cycleNum := 0
 	for {
 		// Check for shutdown before each cycle.
@@ -166,7 +183,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 
 		cycleNum++
-		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, fp, exec, ifl, cfg)
+		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, cfg)
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
@@ -202,6 +219,11 @@ func Run(ctx context.Context, cfg Config) error {
 			// Scf7762-1: a prune safety guard halted deletion this cycle.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: prune HALTED (safety guard); no orphan deleted this cycle\n",
 				cycleNum)
+		}
+		if res.BudgetHalted {
+			// Scf7762-2: change budget gate blocked ops this cycle.
+			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: BUDGET HALTED: %s\n",
+				cycleNum, res.BudgetReason)
 		}
 
 		// Jitter sleep: base interval + up to 10%.
@@ -250,6 +272,14 @@ type CycleResult struct {
 	// PruneHalted is true when a prune safety guard (ListStatus / count-drop)
 	// halted prune for this cycle so that NO orphan was deleted.
 	PruneHalted bool
+
+	// Scf7762-2 budget fields:
+
+	// BudgetHalted is true when the change-budget gate blocked one or more ops
+	// this cycle.
+	BudgetHalted bool
+	// BudgetReason is the human-readable explanation of the budget halt.
+	BudgetReason string
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -283,10 +313,17 @@ type CycleResult struct {
 // observation for it, so no cached observation state is introduced.  The
 // in-flight set records self-initiated Applies (S3 state, memory only), not
 // cached observations of reality.
+//
+// Scf7762-2: the budget gate is evaluated BEFORE any Apply or prune Delete is
+// issued.  Both the Apply plans and the computed prune ops are collected first,
+// then CheckCycle decides whether to proceed, halt destructive-only, or halt
+// all.  CommitOps is called after successful Applies to advance the cumulative
+// window counter.
 func runCycleAsync(
 	ctx context.Context,
 	engine *diff.Engine,
 	pruneEngine *prune.Engine,
+	budgetEngine *budget.Engine,
 	fp provider.Provider,
 	exec executor.Executor,
 	ifl *InFlightSet,
@@ -335,67 +372,147 @@ func runCycleAsync(
 		plans[local] = engine.Diff(obs, res)
 	}
 
-	// Phase 2: Determine which resources need Apply.
-	// applyWavesAsync replaces the synchronous applyWaves: instead of calling
-	// exec.Execute directly it launches goroutines.
+	// Phase 2a: Compute prune ops (dry-run, no Apply yet).
+	//
+	// Scf7762-2: the budget gate must see ALL planned ops — both Apply-phase plans
+	// and prune Delete ops — before any op is executed.  We call ComputePrune here
+	// to collect the approved Delete ops without executing them.  The actual
+	// execution happens in Phase 3 below, after the budget gate passes.
+	var pruneResult prune.PruneResult
+	if pruneEngine != nil {
+		pruneResult = computeDaemonPrune(ctx, pruneEngine, fp, desired, unobservable, cfg.ErrOut)
+	}
+
+	// Phase 2b: Collect all planned Apply ops (from Diff phase).
+	//
+	// Flatten the per-resource plans into a single slice so the budget engine
+	// can count destructive vs. additive ops across the whole cycle.
+	var allPlannedOps []core.Op
+	for _, res := range desired {
+		local := res.ID.Local
+		if unobservable[local] {
+			continue
+		}
+		if plan, ok := plans[local]; ok {
+			allPlannedOps = append(allPlannedOps, plan.Ops...)
+		}
+	}
+	// Append prune Delete ops (they are destructive by definition).
+	allPlannedOps = append(allPlannedOps, pruneResult.DeleteOps...)
+
+	// Phase 2c: Budget gate (§13, Scf7762-2).
+	//
+	// Evaluate rate-limit (cycle unit, including in-flight) and cumulative
+	// time-window budget before issuing ANY Apply or prune Delete.
+	inFlightDestructive := 0
+	for _, local := range inFlightThisCycle {
+		_ = local // in-flight items are already unobservable; count them as 1
+		inFlightDestructive++ // conservative: count each in-flight as destructive
+	}
+	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, inFlightDestructive, len(desired))
+	budgetHalted := budgetDecision.HaltAll || budgetDecision.HaltDestructive
+	budgetReason := budgetDecision.Reason
+	if budgetHalted {
+		fmt.Fprintf(cfg.ErrOut, "sakutei: BUDGET HALTED: %s\n", budgetReason)
+	}
+
+	// Filter prune ops through the budget decision.
+	var allowedPruneOps []core.Op
+	if !pruneResult.Halted {
+		allowed, blocked := budgetDecision.FilterOps(pruneResult.DeleteOps)
+		allowedPruneOps = allowed
+		for _, op := range blocked {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: budget: blocked destructive op DELETE %s (budget limit)\n", op.Target)
+		}
+	}
+
+	// Phase 2d: Apply (async waves) — but filter out destructive ops if halted.
+	//
+	// When budget fires with halt-destructive-only, we filter the per-resource
+	// plans to remove destructive ops before passing them to applyWavesAsync.
+	// When budget fires with halt-all, we pass an empty plans map.
+	filteredPlans := filterPlansByBudget(plans, budgetDecision)
+
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
-		ctx, fp, exec, ifl, desired, plans, unobservable, cfg.ErrOut)
+		ctx, fp, exec, ifl, desired, filteredPlans, unobservable, cfg.ErrOut,
+		budgetEngine.CommitOps)
 	backedOff = backedOffList
 	if waveErr != nil {
 		return CycleResult{Observed: observed}, waveErr
 	}
 
-	// Phase 3: Prune (§12, ADR-0005, Scf7762-1).
+	// Phase 3: Execute approved prune Delete ops.
 	//
-	// After the additive Apply phase, compute the set-difference (reality −
-	// desired) for any PruneWithinScope scope and delete approved orphans.  The
-	// prune engine is shared across cycles (created once in Run) so its count-drop
-	// baseline persists — that is the whole point of running prune in the daemon.
+	// Scf7762-1: prune engine guards (ListStatus / count-drop / pruneable /
+	// unknown≠absent) already ran in Phase 2a.  Here we only execute the ops
+	// that survived both the prune guards and the budget gate.
 	//
-	// Safety note: prune runs every cycle, but its Deletes are only ever emitted
-	// after the engine's guards (ListStatus / count-drop / type-pruneable /
-	// unknown≠absent) pass.  We pass the SAME unobservable set the Apply phase
-	// used so a target that could not be observed this cycle is never treated as
-	// absent (unknown ≠ absent).  Change budget / remediation mode (later Stories)
-	// will wrap this phase; for now prune executes its approved Deletes directly.
-	pruned, pruneHalted := runDaemonPrune(ctx, pruneEngine, fp, exec, desired, unobservable, cfg.ErrOut)
+	// CommitOps is called for each successfully applied Delete to advance the
+	// cumulative window counter (S3, §13.2).
+	pruned, pruneHalted := executePruneOps(ctx, pruneResult, allowedPruneOps, fp, exec, budgetEngine, cfg.ErrOut)
 
 	return CycleResult{
-		Observed:    observed,
-		Applied:     appliedCount,
-		Launched:    launched,
-		InFlight:    inFlightThisCycle,
-		BackedOff:   backedOff,
-		Skipped:     skipped,
-		Pruned:      pruned,
-		PruneHalted: pruneHalted,
+		Observed:     observed,
+		Applied:      appliedCount,
+		Launched:     launched,
+		InFlight:     inFlightThisCycle,
+		BackedOff:    backedOff,
+		Skipped:      skipped,
+		Pruned:       pruned,
+		PruneHalted:  pruneHalted,
+		BudgetHalted: budgetHalted,
+		BudgetReason: budgetReason,
 	}, nil
 }
 
-// runDaemonPrune runs the prune phase for one daemon cycle using the shared,
-// long-lived prune engine.  It returns the number of Delete ops successfully
-// applied and whether prune was halted by a safety guard this cycle.
+// filterPlansByBudget filters the plans map according to the budget decision.
 //
-// If pruneEngine is nil (the provider is not a Lister), prune is a no-op.
+// When halt-all: returns an empty map (no ops execute this cycle).
+// When halt-destructive-only: returns plans with destructive ops removed.
+// When no halt: returns the original plans unchanged.
+func filterPlansByBudget(plans map[string]core.Plan, decision budget.CycleDecision) map[string]core.Plan {
+	if !decision.HaltAll && !decision.HaltDestructive {
+		return plans
+	}
+	filtered := make(map[string]core.Plan, len(plans))
+	for local, plan := range plans {
+		var allowed []core.Op
+		for _, op := range plan.Ops {
+			if !decision.IsHalted(op) {
+				allowed = append(allowed, op)
+			}
+		}
+		if len(allowed) > 0 {
+			filtered[local] = core.Plan{Ops: allowed}
+		}
+	}
+	return filtered
+}
+
+// computeDaemonPrune runs the prune computation (§12, ADR-0005) for one daemon
+// cycle using the shared, long-lived prune engine.  It returns the PruneResult
+// WITHOUT executing any Delete ops — execution is deferred to executePruneOps
+// so the budget gate can evaluate the full op set first (Scf7762-2).
 //
-// Unlike the one-shot "sakutei reconcile" prune (cmd/sakutei/reconcile.go), the
-// engine here lives for the whole daemon run, so the count-drop halt (§12.4b)
-// works across cycles.
-func runDaemonPrune(
+// If pruneEngine is nil (the provider is not a Lister), it returns an empty
+// (no-op) result.
+//
+// Unlike the one-shot "sakutei reconcile" prune, the engine here lives for the
+// whole daemon run, so the count-drop halt (§12.4b) works across cycles.
+func computeDaemonPrune(
 	ctx context.Context,
 	pruneEngine *prune.Engine,
 	fp provider.Provider,
-	exec executor.Executor,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 	errOut io.Writer,
-) (pruned int, halted bool) {
+) prune.PruneResult {
 	if pruneEngine == nil {
-		return 0, false
+		return prune.PruneResult{}
 	}
 	lister, ok := fp.(provider.Lister)
 	if !ok {
-		return 0, false
+		return prune.PruneResult{}
 	}
 
 	// Reject PruneWithinScope declared against a non-Lister provider (defensive;
@@ -403,7 +520,7 @@ func runDaemonPrune(
 	// covers a future mix of providers).
 	if err := prune.ValidatePrunePolicy(desired, fp); err != nil {
 		fmt.Fprintf(errOut, "sakutei: prune policy error: %v\n", err)
-		return 0, false
+		return prune.PruneResult{}
 	}
 
 	// Empty scope for the fake provider (Sprint 1 simplification, mirrors the
@@ -413,25 +530,43 @@ func runDaemonPrune(
 	result, err := pruneEngine.ComputePrune(ctx, lister, fp, scope, desired, unobservable, errOut)
 	if err != nil {
 		fmt.Fprintf(errOut, "sakutei: prune compute error: %v\n", err)
-		return 0, false
+		return prune.PruneResult{}
 	}
 	if result.Halted {
 		fmt.Fprintf(errOut, "sakutei: prune halted this cycle: %s\n", result.HaltReason)
-		return 0, true
 	}
 	for _, id := range result.Deferred {
 		fmt.Fprintf(errOut, "sakutei: prune deferred for %s (safety guard: type not pruneable or unknown≠absent)\n", id)
 	}
+	return result
+}
 
-	// Apply each approved Delete op.  A failure is logged and the loop continues;
-	// the next cycle re-observes and retries (level-triggered).
-	for _, op := range result.DeleteOps {
+// executePruneOps applies the subset of prune Delete ops that survived both the
+// prune-engine guards and the budget gate.
+//
+// allowedOps is the budget-filtered subset of pruneResult.DeleteOps.
+// budgetEngine is called with CommitOps for each successfully applied Delete.
+func executePruneOps(
+	ctx context.Context,
+	pruneResult prune.PruneResult,
+	allowedOps []core.Op,
+	fp provider.Provider,
+	exec executor.Executor,
+	budgetEngine *budget.Engine,
+	errOut io.Writer,
+) (pruned int, halted bool) {
+	if pruneResult.Halted {
+		return 0, true
+	}
+	for _, op := range allowedOps {
 		plan := core.Plan{Ops: []core.Op{op}}
 		if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
 			fmt.Fprintf(errOut, "sakutei: prune apply %s: %v\n", op.Target, applyErr)
 			continue
 		}
 		fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; PruneWithinScope)\n", op.Target)
+		// Scf7762-2: advance the cumulative window counter for applied destructive ops.
+		budgetEngine.CommitOps([]core.Op{op})
 		pruned++
 	}
 	return pruned, false
@@ -442,7 +577,8 @@ func runDaemonPrune(
 // For resources that have a non-empty plan and are NOT in-flight or backoff:
 //   - The resource is added to ifl (in-flight set).
 //   - A goroutine is launched that calls exec.Execute.
-//   - On success: ifl clears the backoff for the resource.
+//   - On success: ifl clears the backoff for the resource; commitFn is called
+//     with the applied ops so the caller can advance the budget window counter.
 //   - On failure: ifl records the failure (advances backoff); the resource is
 //     removed from in-flight.
 //
@@ -455,6 +591,9 @@ func runDaemonPrune(
 //
 // The function returns immediately after launching all goroutines; it does NOT
 // wait for them.  The in-flight set tracks their completion.
+//
+// commitFn is called (in the goroutine) for each successfully applied plan so
+// the budget engine can count committed ops (Scf7762-2).  May be nil (no-op).
 //
 // Returns:
 //   - applied:    number of Ops reported by synchronous (immediate) Applies.
@@ -473,6 +612,7 @@ func applyWavesAsync(
 	plans map[string]core.Plan,
 	unobservable map[string]bool,
 	errOut io.Writer,
+	commitFn func([]core.Op),
 ) (applied, launched int, backedOff, skipped []string, err error) {
 	n := len(desired)
 	if n == 0 {
@@ -591,6 +731,10 @@ func applyWavesAsync(
 				} else {
 					// Success: clear any prior backoff for this resource.
 					ifl.ClearBackoff(localCopy)
+					// Scf7762-2: advance the cumulative window counter for committed ops.
+					if commitFn != nil {
+						commitFn(planCopy.Ops)
+					}
 				}
 			}()
 

@@ -19,7 +19,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
@@ -65,6 +67,20 @@ func runReconcile(args []string) {
 	statePath := fs.String("state", "sakutei-fake-state.json",
 		"path to the fake provider state file (default: sakutei-fake-state.json)")
 
+	// Scf7762-2: change-budget flags (§13).
+	maxDestructivePerCycle := fs.Int("max-destructive-per-cycle", 0,
+		"maximum destructive (Delete/destructive-Update) ops per cycle; 0=unlimited (§13.1)")
+	maxChangesPerCycleAbsolute := fs.Int("max-changes-per-cycle", 0,
+		"maximum total (additive+destructive) ops per cycle; 0=unlimited (§13.1)")
+	maxDestructivePerWindow := fs.Int("max-destructive-per-window", 0,
+		"maximum destructive ops in the rolling time window; 0=unlimited (§13.2)")
+	windowDurationStr := fs.String("window-duration", "",
+		"rolling window duration for cumulative budget, e.g. 24h, 10m (default: 24h) (§13.2)")
+	onExceedStr := fs.String("on-exceed", "halt-all",
+		"action when budget is exceeded: halt-all | halt-destructive-only (§13.1)")
+	approveLargeChange := fs.Int("approve-large-change", 0,
+		"explicitly approve up to N destructive changes this cycle (overrides per-cycle rate limit)")
+
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
 		os.Exit(1)
@@ -76,6 +92,32 @@ func runReconcile(args []string) {
 		os.Exit(1)
 	}
 
+	// Parse budget configuration.
+	budgetCfg := budget.Config{
+		MaxDestructivePerCycle:     *maxDestructivePerCycle,
+		MaxChangesPerCycleAbsolute: *maxChangesPerCycleAbsolute,
+		MaxDestructivePerWindow:    *maxDestructivePerWindow,
+		ApproveLargeChange:         *approveLargeChange,
+	}
+	if *windowDurationStr != "" {
+		d, err := time.ParseDuration(*windowDurationStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei reconcile: invalid --window-duration %q: %v\n", *windowDurationStr, err)
+			os.Exit(1)
+		}
+		budgetCfg.WindowDuration = d
+	}
+	switch *onExceedStr {
+	case "halt-destructive-only":
+		budgetCfg.OnExceed = budget.OnExceedHaltDestructiveOnly
+	case "halt-all", "":
+		budgetCfg.OnExceed = budget.OnExceedHaltAll
+	default:
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: unknown --on-exceed value %q; use halt-all or halt-destructive-only\n", *onExceedStr)
+		os.Exit(1)
+	}
+	budgetEngine := budget.New(budgetCfg)
+
 	// Load desired resources from intent directory.
 	// loader.LoadDir also performs cycle detection (S94f1f9-2): cyclic
 	// depends_on is rejected here with a non-zero exit before any Apply.
@@ -86,7 +128,9 @@ func runReconcile(args []string) {
 	}
 
 	// Create the fake provider backed by the state file.
-	fp := fakeprovider.New(*statePath)
+	// Declare fp as provider.Provider so interface checks (.(provider.Lister))
+	// work without the concrete type getting in the way.
+	var fp provider.Provider = fakeprovider.New(*statePath)
 	engine := diff.New(fp.Schema())
 	// Depend on the Executor seam (interface), not the concrete LocalExecutor,
 	// so later Stories can swap in other implementations without touching this
@@ -130,13 +174,62 @@ func runReconcile(args []string) {
 		plans[res.ID.Local] = engine.Diff(obs, res)
 	}
 
+	// Phase 2a: Compute prune ops (dry-run, no Apply yet — Scf7762-2 budget gate).
+	//
+	// The budget gate needs to see ALL planned ops (Apply + prune) before any is
+	// executed.  We therefore compute the prune set here (without executing it)
+	// so the budget engine can count destructive ops across the whole cycle.
+	var precomputedPruneOps []core.Op
+	var pruneWasHaltedBySafetyGuard bool
+	if _, isLister := fp.(provider.Lister); isLister {
+		precomputedPruneOps, pruneWasHaltedBySafetyGuard = computePrune(ctx, fp, desired, unobservable)
+	}
+
+	// Phase 2b: Collect all planned Apply ops (from Diff phase).
+	var allPlannedOps []core.Op
+	for _, res := range desired {
+		if unobservable[res.ID.Local] {
+			continue
+		}
+		if plan, ok := plans[res.ID.Local]; ok {
+			allPlannedOps = append(allPlannedOps, plan.Ops...)
+		}
+	}
+	allPlannedOps = append(allPlannedOps, precomputedPruneOps...)
+
+	// Phase 2c: Budget gate (§13, Scf7762-2).
+	//
+	// Evaluate rate-limit and cumulative time-window budget.  For the one-shot
+	// reconcile, in-flight is always 0 (synchronous Apply, no prior goroutines).
+	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, 0, len(desired))
+	budgetHalted := budgetDecision.HaltAll || budgetDecision.HaltDestructive
+	if budgetHalted {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: BUDGET HALTED: %s\n", budgetDecision.Reason)
+	}
+
+	// Filter per-resource plans through the budget decision.
+	filteredPlans := make(map[string]core.Plan, len(plans))
+	for local, plan := range plans {
+		var allowed []core.Op
+		for _, op := range plan.Ops {
+			if !budgetDecision.IsHalted(op) {
+				allowed = append(allowed, op)
+			} else {
+				fmt.Fprintf(os.Stderr, "sakutei reconcile: budget: blocked %v op for %s\n", op.Kind, op.Target)
+			}
+		}
+		if len(allowed) > 0 {
+			filteredPlans[local] = core.Plan{Ops: allowed}
+		}
+	}
+
 	// Phase 2: Apply in dependency (wave) order via Kahn decomposition.
 	// reconcile.ApplyWaves ensures that:
 	//   - Resources with depends_on are applied after their dependencies.
 	//   - If a dependency fails OR is unobservable (D-1), its transitive
 	//     dependents are skipped.
 	//   - appliedIDs contains the Local IDs of resources that were successfully applied.
-	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, fp, exec, desired, plans, unobservable, os.Stderr)
+	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, fp, exec, desired, filteredPlans, unobservable, os.Stderr)
 	if waveErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: wave apply: %v\n", waveErr)
 		os.Exit(1)
@@ -145,6 +238,16 @@ func runReconcile(args []string) {
 	// Report skipped resources (upstream failure or unobservable) to stderr.
 	for _, sk := range skipped {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: skip %s (unobservable or upstream failure; not converged this cycle)\n", sk)
+	}
+
+	// Advance the cumulative window counter for applied ops.
+	for _, res := range desired {
+		if !appliedIDs[res.ID.Local] {
+			continue
+		}
+		if plan, ok := filteredPlans[res.ID.Local]; ok {
+			budgetEngine.CommitOps(plan.Ops)
+		}
 	}
 
 	// Report applied ops: only for resources whose Apply succeeded.
@@ -160,20 +263,18 @@ func runReconcile(args []string) {
 		}
 	}
 
-	// Phase 3: Prune (§12, ADR-0005, Scf7762-1).
+	// Phase 3: Prune (§12, ADR-0005, Scf7762-1 + Scf7762-2).
 	//
-	// For any scope that declares PruneWithinScope, compute the set-difference
-	// (reality − desired) and apply approved Delete ops.
-	//
-	// Safety guards in the prune engine:
-	//   - DeletionPolicy gate: only PruneWithinScope resources participate.
-	//   - Pruneable gate: pruneable:false (default) suppresses deletion.
-	//   - ListStatus gate: only ListComplete results allow prune.
-	//   - Drop-rate gate: >50% list-count drop halts prune for this cycle.
-	//   - unknown ≠ absent: resources with non-Ok Observe are skipped.
-	pruneOps, pruneHalted := runPrune(ctx, fp, desired, unobservable, exec)
+	// Apply the subset of precomputed prune Delete ops that survived the budget gate.
+	allowedPruneOps, blockedPruneOps := budgetDecision.FilterOps(precomputedPruneOps)
+	for _, op := range blockedPruneOps {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: budget: blocked destructive op DELETE %s (budget limit)\n", op.Target)
+	}
+
+	pruneOps, pruneHalted := runPruneWithPrecomputed(ctx, fp, exec, precomputedPruneOps, allowedPruneOps, pruneWasHaltedBySafetyGuard)
 	for _, op := range pruneOps {
 		printOp(op)
+		budgetEngine.CommitOps([]core.Op{op})
 		appliedOps++
 	}
 	if pruneHalted {
@@ -181,8 +282,16 @@ func runReconcile(args []string) {
 	}
 
 	switch {
+	case budgetHalted && appliedOps == 0:
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: BUDGET HALTED: %s\n", budgetDecision.Reason)
+		fmt.Printf("Reconcile: BUDGET HALTED (no changes applied): %s\n", budgetDecision.Reason)
+		os.Exit(1)
 	case appliedOps > 0:
-		fmt.Printf("Reconcile: %d change(s) applied\n", appliedOps)
+		if budgetHalted {
+			fmt.Printf("Reconcile: %d change(s) applied (budget halted some ops)\n", appliedOps)
+		} else {
+			fmt.Printf("Reconcile: %d change(s) applied\n", appliedOps)
+		}
 	case len(skipped) > 0:
 		// Do not claim convergence: some resources were skipped this cycle
 		// (unobservable upstream or upstream Apply failure).
@@ -203,31 +312,27 @@ func runReconcile(args []string) {
 			len(unobservable))
 		os.Exit(1)
 	}
+	if budgetHalted {
+		os.Exit(1)
+	}
 	os.Exit(0)
 }
 
-// runPrune executes the prune phase for the given desired resources and
-// returns the list of Delete ops that were applied and whether prune was halted.
-//
-// Only providers that implement provider.Lister can be pruned.  If the provider
-// does not implement Lister, runPrune returns immediately with no ops.
+// computePrune runs the prune engine computation (§12, ADR-0005) WITHOUT
+// executing any Delete ops.  Returns the approved Delete ops and whether the
+// prune safety guard halted prune for this cycle.
 //
 // IMPORTANT (Scf7762-1): the one-shot "sakutei reconcile" creates a FRESH
 // prune.Engine every invocation, so its List count-drop baseline (§12.4b) is
 // reset to 0 on every run and the count-drop halt can NEVER fire here — a
 // one-shot process has no "previous cycle" to compare against.  The count-drop
-// guard only works in the long-lived daemon (internal/reconcile.Run), which
-// holds a single Engine across cycles.  Running the daemon ("sakutei" with no
-// subcommand) is the intended, safe way to operate prune; the one-shot path is
-// a manual convenience that still honours the ListStatus / type-pruneable /
-// unknown≠absent guards but forgoes the cross-cycle count-drop protection.
-func runPrune(
+// guard only works in the long-lived daemon (internal/reconcile.Run).
+func computePrune(
 	ctx context.Context,
 	fp provider.Provider,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
-	exec executor.Executor,
-) (appliedOps []core.Op, halted bool) {
+) (approvedOps []core.Op, halted bool) {
 	lister, ok := fp.(provider.Lister)
 	if !ok {
 		return nil, false
@@ -259,8 +364,29 @@ func runPrune(
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune deferred for %s (safety guard: pruneable:false or unknown)\n", id)
 	}
 
-	// Apply each approved Delete op individually.
-	for _, op := range result.DeleteOps {
+	return result.DeleteOps, false
+}
+
+// runPruneWithPrecomputed executes a pre-filtered set of prune Delete ops.
+//
+// precomputed is the full set returned by computePrune (for halted-by-guard
+// detection); allowed is the budget-filtered subset that may actually execute.
+func runPruneWithPrecomputed(
+	ctx context.Context,
+	fp provider.Provider,
+	exec executor.Executor,
+	precomputed []core.Op,
+	allowed []core.Op,
+	safetyGuardHalted bool,
+) (appliedOps []core.Op, halted bool) {
+	if safetyGuardHalted {
+		return nil, true
+	}
+	_ = precomputed // reserved for future diagnostics
+	_ = fp          // interface kept for call-site symmetry
+
+	// Apply each budget-approved Delete op individually.
+	for _, op := range allowed {
 		plan := core.Plan{Ops: []core.Op{op}}
 		if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
 			fmt.Fprintf(os.Stderr, "sakutei reconcile: prune apply %s: %v\n", op.Target, applyErr)
