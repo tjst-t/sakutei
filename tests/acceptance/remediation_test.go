@@ -59,6 +59,7 @@ func seedDriftedState(t *testing.T, statePath string) {
 				},
 			},
 		},
+		"provider_version": testProviderVersion,
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
@@ -113,6 +114,7 @@ func TestAlertOnly_NoDrift(t *testing.T) {
 
 	// Desired: drift-vm size=42.
 	writeDriftIntent(t, intentDir)
+	initStateFile(t, statePath)
 
 	// First run in auto mode to converge reality to desired.
 	_, _, code := runReconcile(t, intentDir, statePath)
@@ -198,10 +200,11 @@ func TestAlertOnly_CreateDriftWithoutApply(t *testing.T) {
 	}
 	statePath := filepath.Join(tmp, "state.json")
 
-	// Intent: one resource; reality: empty (state file absent).
+	// Intent: one resource; reality: empty state (provider_version set but no resources).
 	writeDriftIntent(t, intentDir)
+	initStateFile(t, statePath)
 
-	// State file does not exist (reality is empty).
+	// Run in alert-only mode; Apply must not be called so the resources map stays empty.
 	stdout, _, code := runReconcile(t, intentDir, statePath, "--mode=alert-only")
 	if code != 0 {
 		t.Errorf("[AC-Scf7762-3-1/create] expected exit 0 in alert-only; got %d\nstdout: %s", code, stdout)
@@ -212,10 +215,13 @@ func TestAlertOnly_CreateDriftWithoutApply(t *testing.T) {
 		t.Errorf("[AC-Scf7762-3-1/create] expected drift report; got:\n%s", stdout)
 	}
 
-	// State file must NOT have been created (Apply was not called).
-	if _, err := os.Stat(statePath); err == nil {
-		data, _ := os.ReadFile(statePath)
-		t.Errorf("[AC-Scf7762-3-1/create] state file was created by alert-only — Apply was called; content:\n%s", data)
+	// State file must have no resources written (Apply was not called).
+	data, _ := os.ReadFile(statePath)
+	var sfOut map[string]any
+	if err := json.Unmarshal(data, &sfOut); err == nil {
+		if res, ok := sfOut["resources"].(map[string]any); ok && len(res) > 0 {
+			t.Errorf("[AC-Scf7762-3-1/create] state file has resources after alert-only — Apply was called; content:\n%s", data)
+		}
 	}
 
 	t.Logf("[AC-Scf7762-3-1/create] alert-only output:\n%s", stdout)

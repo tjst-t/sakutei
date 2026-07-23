@@ -77,6 +77,7 @@ func seedChaosResources(t *testing.T, statePath string, n int) {
 	sf := map[string]any{
 		"resources":            resources,
 		"pruneable_capability": true,
+		"provider_version":     testProviderVersion,
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
@@ -103,7 +104,8 @@ func seedChaosResourcesNonPruneable(t *testing.T, statePath string, n int) {
 		}
 	}
 	sf := map[string]any{
-		"resources": resources,
+		"resources":        resources,
+		"provider_version": testProviderVersion,
 		// pruneable_capability intentionally absent (defaults to false).
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")

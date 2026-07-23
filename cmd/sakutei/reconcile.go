@@ -26,6 +26,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/internal/lastseen"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/reconcile"
@@ -168,6 +169,15 @@ func runReconcile(args []string) {
 	// work without the concrete type getting in the way.
 	fpConcrete := fakeprovider.New(*statePath)
 	var fp provider.Provider = fpConcrete
+
+	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
+	// Reconcile validates so operators get an immediate error rather than
+	// running a cycle that cannot detect ghost diffs (cause C).
+	if err := provider.ValidateProvider(fp); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: provider validation failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	engine := diff.New(fp.Schema())
 	// Depend on the Executor seam (interface), not the concrete LocalExecutor,
 	// so later Stories can swap in other implementations without touching this
@@ -199,6 +209,17 @@ func runReconcile(args []string) {
 
 	ctx := context.Background()
 
+	// Scb0ecd-3: last-seen ring for one-shot reconcile.
+	//
+	// The one-shot reconcile has no "previous cycle" by definition (it is a
+	// single invocation, not a long-lived daemon).  We create the ring here
+	// so that the code path is exercised and drift B events include a last-
+	// seen note.  For one-shot, the ring always reports "no previous snapshot"
+	// because Record is called after Diff — there is nothing in the ring yet
+	// when DriftSummary is called for the same invocation.  This is correct:
+	// the ring's value is in the daemon's multi-cycle context (§10.5).
+	lastSeenRing := lastseen.NewResourceRing(lastseen.DefaultRingSize)
+
 	// Phase 1: Observe + Diff (fresh per resource — ADR-0002).
 	// Collect plans for all resources before applying any of them.
 	plans := make(map[string]core.Plan, len(desired))
@@ -206,6 +227,9 @@ func runReconcile(args []string) {
 	// != Ok (D-1).  They are NOT treated as converged: ApplyWaves marks them
 	// failed and skips their transitive downstream this cycle.
 	unobservable := make(map[string]bool)
+	// obsFields records the observed field values per resource (as strings) so
+	// we can populate the last-seen ring and report drift B diagnostics.
+	obsFields := make(map[string]map[string]string, len(desired))
 	for _, res := range desired {
 		// ADR-0002: Observe independently for each resource.
 		//
@@ -231,6 +255,14 @@ func runReconcile(args []string) {
 			unobservable[res.ID.Local] = true
 			continue
 		}
+
+		// Convert observed State to string map for last-seen ring storage.
+		curFields := make(map[string]string, len(obs.State))
+		for fname, tv := range obs.State {
+			curFields[fname] = fmt.Sprintf("%v", tv.Value)
+		}
+		obsFields[res.ID.Local] = curFields
+
 		resourcePlan := engine.Diff(obs, res, causeCtx)
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff),
 		// and filter them out of the Apply set (§10.4, task Scb0ecd-2-2).
@@ -243,6 +275,13 @@ func runReconcile(args []string) {
 					"sakutei reconcile: ProviderUpgradeDiff: %s [cause: C] provider_version changed (%s → %s); NOT applying (review required)\n",
 					op.Target, prevState.PrevProviderVersion, curProviderVersion)
 			} else {
+				// Scb0ecd-3: for cause B (drift), attach last-seen ring summary.
+				if op.Cause == core.CauseTagB {
+					summary := lastSeenRing.DriftSummary(res.ID.Local, curFields)
+					fmt.Fprintf(os.Stderr,
+						"sakutei reconcile: DriftEvent: %s [cause: B] %s\n",
+						op.Target, summary)
+				}
 				nonCOps = append(nonCOps, op)
 			}
 		}
@@ -259,6 +298,20 @@ func runReconcile(args []string) {
 			// reconcile.ApplyWaves sees it as "already converged" for the wave
 			// scheduler (do not attempt Apply, do not skip downstream).
 		}
+	}
+
+	// Scb0ecd-3: populate the last-seen ring AFTER Diff so the ring records
+	// the current cycle's observations.  The ring is read on the NEXT cycle
+	// (in the daemon) to produce the "prev cycle snapshot" message.
+	// For the one-shot reconcile, populating here means the ring is only ever
+	// consulted with zero prior entries (so DriftSummary returns "no previous
+	// snapshot"), which is the correct S3-non-persistent behaviour.
+	for localID, fields := range obsFields {
+		lastSeenRing.Record(localID, lastseen.Snapshot{
+			LocalID:    localID,
+			ObservedAt: time.Now(),
+			Fields:     fields,
+		})
 	}
 
 	// Scb0ecd-2: persist current revision + provider_version as "previous" for

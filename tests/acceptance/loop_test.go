@@ -153,6 +153,8 @@ func TestLoop_CreatesResource(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(tmp, "state.json")
+	// Scb0ecd-3: initialize state file with provider_version for fail-closed gate.
+	initStateFile(t, statePath)
 
 	// Intent: one fake resource with name and size.
 	writeIntentFile(t, intentDir, map[string]any{
@@ -210,6 +212,8 @@ func TestLoop_DriftCorrection(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(tmp, "state.json")
+	// Scb0ecd-3: initialize state file with provider_version for fail-closed gate.
+	initStateFile(t, statePath)
 
 	// Desired: name="drift-loop-vm", size=20.
 	writeIntentFile(t, intentDir, map[string]any{
@@ -351,6 +355,7 @@ func TestLoop_GracefulStop(t *testing.T) {
 		},
 	})
 
+	initStateFile(t, statePath)
 	cmd, stdout := startDaemon(t, intentDir, statePath, "200ms")
 	// Ensure the daemon is not orphaned if waitForStateFile Fatalf's below.
 	// Harmless if the SIGTERM path already stopped the process.
@@ -438,6 +443,7 @@ func TestLoop_StatelessObservation(t *testing.T) {
 		},
 	})
 
+	initStateFile(t, statePath)
 	cmd, stdout := startDaemon(t, intentDir, statePath, "200ms")
 	defer func() {
 		_ = cmd.Process.Kill()
@@ -497,7 +503,7 @@ func TestFieldMerge_UpdatePreservesUnchangedFields(t *testing.T) {
 	})
 
 	// Seed reality: name="merge-vm", size=99 (drift on size only).
-	seedState := map[string]any{
+	seedStateData := map[string]any{
 		"resources": map[string]any{
 			"merge-vm": map[string]any{
 				"fields": map[string]any{
@@ -506,8 +512,9 @@ func TestFieldMerge_UpdatePreservesUnchangedFields(t *testing.T) {
 				},
 			},
 		},
+		"provider_version": testProviderVersion,
 	}
-	seedData, _ := json.MarshalIndent(seedState, "", "  ")
+	seedData, _ := json.MarshalIndent(seedStateData, "", "  ")
 	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}

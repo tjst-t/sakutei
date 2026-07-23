@@ -131,8 +131,19 @@ func anyTagEquals(tags []string, want string) bool {
 	return false
 }
 
+// testProviderVersion is the default provider_version written by seedState and
+// initStateFile for tests that are NOT testing C (ghost diff) detection.
+// Scb0ecd-3: the fail-closed gate requires a non-empty provider_version; all
+// tests that do not explicitly test version changes must supply one.
+const testProviderVersion = "v-test-1.0.0"
+
 // seedState writes a fake-provider state JSON with the given resource fields.
 // This simulates "reality already has this resource" without going through Apply.
+//
+// Scb0ecd-3: seedState always writes testProviderVersion so that the
+// fail-closed provider_version validation passes in tests that are NOT testing
+// C (ghost-diff) detection.  Tests that DO exercise provider_version changes
+// call setProviderVersion explicitly to override.
 func seedState(t *testing.T, statePath string, resources map[string]map[string]any) {
 	t.Helper()
 	sf := map[string]any{
@@ -143,6 +154,7 @@ func seedState(t *testing.T, statePath string, resources map[string]map[string]a
 			}
 			return m
 		}(),
+		"provider_version": testProviderVersion,
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
@@ -150,6 +162,38 @@ func seedState(t *testing.T, statePath string, resources map[string]map[string]a
 	}
 	if err := os.WriteFile(statePath, data, 0600); err != nil {
 		t.Fatalf("seedState: write: %v", err)
+	}
+}
+
+// initStateFile creates a minimal state file with no resources but a valid
+// provider_version.  Used by tests that start with an empty reality but still
+// need the fail-closed gate to pass (Scb0ecd-3).
+func initStateFile(t *testing.T, statePath string) {
+	t.Helper()
+	seedState(t, statePath, nil)
+}
+
+// seedStateNoVersion writes a fake-provider state JSON with the given resource
+// fields but WITHOUT setting provider_version.  Used exclusively by fail-closed
+// tests (TestProviderVersion_FailClosed_*) that need the gate to fire.
+func seedStateNoVersion(t *testing.T, statePath string, resources map[string]map[string]any) {
+	t.Helper()
+	sf := map[string]any{
+		"resources": func() map[string]any {
+			m := make(map[string]any, len(resources))
+			for id, fields := range resources {
+				m[id] = map[string]any{"fields": fields}
+			}
+			return m
+		}(),
+		// provider_version intentionally absent — triggers fail-closed gate.
+	}
+	data, err := json.MarshalIndent(sf, "", "  ")
+	if err != nil {
+		t.Fatalf("seedStateNoVersion: marshal: %v", err)
+	}
+	if err := os.WriteFile(statePath, data, 0600); err != nil {
+		t.Fatalf("seedStateNoVersion: write: %v", err)
 	}
 }
 
@@ -206,6 +250,7 @@ func TestCauseTag_A_IntentChange(t *testing.T) {
 			},
 		},
 	})
+	initStateFile(t, statePath)
 	stdout1, stderr1, code1 := runPlan(t, intentDir, statePath, "--cause-state", causeStatePath)
 	if code1 != 0 {
 		t.Fatalf("[AC-Scb0ecd-2-1] first plan exited %d; stderr: %s", code1, stderr1)
@@ -277,6 +322,7 @@ func TestCauseTag_A_ReconcileIntentChange(t *testing.T) {
 			},
 		},
 	})
+	initStateFile(t, statePath)
 	stdout1, _, code1 := runReconcile(t, intentDir, statePath, "--cause-state", causeStatePath)
 	if code1 != 0 {
 		t.Fatalf("[AC-Scb0ecd-2-1] first reconcile exited %d", code1)
@@ -340,6 +386,7 @@ func TestCauseTag_B_RealityDrift(t *testing.T) {
 			},
 		},
 	})
+	initStateFile(t, statePath)
 	stdout1, _, code1 := runReconcile(t, intentDir, statePath, "--cause-state", causeStatePath)
 	if code1 != 0 {
 		t.Fatalf("[AC-Scb0ecd-2-2] setup reconcile exited %d; stdout: %s", code1, stdout1)
@@ -395,6 +442,7 @@ func TestCauseTag_B_ReconcileDrift(t *testing.T) {
 	}
 	writeIntentFile(t, intentDir, intent)
 
+	initStateFile(t, statePath)
 	// Cycle 1: reconcile to establish cause-state.
 	_, _, code1 := runReconcile(t, intentDir, statePath, "--cause-state", causeStatePath)
 	if code1 != 0 {
@@ -583,6 +631,7 @@ func TestCauseTag_E_SeamNeverFiresInV1a(t *testing.T) {
 			},
 		},
 	})
+	initStateFile(t, statePath)
 	_, _, code0 := runReconcile(t, intentDir, statePath, "--cause-state", causeStatePath)
 	if code0 != 0 {
 		t.Fatalf("[AC-Scb0ecd-2-4] setup reconcile failed")
@@ -650,6 +699,7 @@ func TestCauseTag_D_SeamNeverFiresInV1a(t *testing.T) {
 		},
 	})
 
+	initStateFile(t, statePath)
 	// Cycle 1: reconcile to establish cause-state.
 	_, _, code0 := runReconcile(t, intentDir, statePath, "--cause-state", causeStatePath)
 	if code0 != 0 {

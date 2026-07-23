@@ -142,6 +142,9 @@ func TestPlan_CreateDiff(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(tmp, "state.json")
+	// Scb0ecd-3: write a minimal state file with provider_version so the
+	// fail-closed gate passes; reality is still empty (no resources).
+	initStateFile(t, statePath)
 
 	// Write intent: one resource "test-vm" with name and size.
 	writeIntentFile(t, intentDir, map[string]any{
@@ -188,21 +191,28 @@ func TestPlan_CreateDiff(t *testing.T) {
 //     must be byte-for-byte identical afterwards — plan must not rewrite it.
 func TestPlan_DoesNotModifyState(t *testing.T) {
 	// [AC-Sead944-2-2]
+	// Scb0ecd-3: both seed cases must include a provider_version so the
+	// fail-closed gate passes.  The key invariant (plan must not call Apply)
+	// is still verified: the state file must be byte-for-byte identical before
+	// and after plan.
 	cases := []struct {
 		name string
 		// seed is the exact bytes to write to the state file before plan.
-		// A nil seed means the state file does not exist before plan.
+		// A nil seed is no longer used: Scb0ecd-3 requires a provider_version,
+		// so a completely absent state file triggers fail-closed rejection.
 		seed []byte
 	}{
 		{
-			name: "absent",
-			seed: nil,
+			name: "absent-with-version",
+			// Minimal state file: no resources, but a valid provider_version.
+			// plan must leave these exact bytes untouched.
+			seed: []byte(`{"provider_version":"v-test-1.0.0","resources":{}}`),
 		},
 		{
 			name: "existing",
-			// Arbitrary pre-existing content: an empty (but valid) state.
+			// Pre-existing content with resources and a valid provider_version.
 			// plan must leave these exact bytes untouched.
-			seed: []byte(`{"resources":{}}`),
+			seed: []byte(`{"provider_version":"v-test-1.0.0","resources":{}}`),
 		},
 	}
 
@@ -288,9 +298,9 @@ func TestPlan_ConvergedWhenRealityMatchesDesired(t *testing.T) {
 	})
 
 	// Seed the state file so reality matches desired.
-	// The fake provider stores size as "20" (float64 → int64 on read, but
-	// in the state file it is stored as the string "20" to match desired).
-	seedState := map[string]any{
+	// Scb0ecd-3: include provider_version so fail-closed gate passes.
+	seedStateData := map[string]any{
+		"provider_version": testProviderVersion,
 		"resources": map[string]any{
 			"synced-vm": map[string]any{
 				"fields": map[string]any{
@@ -300,7 +310,7 @@ func TestPlan_ConvergedWhenRealityMatchesDesired(t *testing.T) {
 			},
 		},
 	}
-	seedData, _ := json.MarshalIndent(seedState, "", "  ")
+	seedData, _ := json.MarshalIndent(seedStateData, "", "  ")
 	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +356,9 @@ func TestPlan_UpdateDiff(t *testing.T) {
 	})
 
 	// Reality: size=10 (drift).
-	seedState := map[string]any{
+	// Scb0ecd-3: include provider_version so fail-closed gate passes.
+	seedStateData := map[string]any{
+		"provider_version": testProviderVersion,
 		"resources": map[string]any{
 			"drift-vm": map[string]any{
 				"fields": map[string]any{
@@ -356,7 +368,7 @@ func TestPlan_UpdateDiff(t *testing.T) {
 			},
 		},
 	}
-	seedData, _ := json.MarshalIndent(seedState, "", "  ")
+	seedData, _ := json.MarshalIndent(seedStateData, "", "  ")
 	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -396,6 +408,8 @@ func TestPlan_EmptyIntentDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(tmp, "state.json")
+	// Scb0ecd-3: provide a valid state file so the fail-closed gate passes.
+	initStateFile(t, statePath)
 
 	stdout, _, code := runPlan(t, intentDir, statePath)
 	if code != 0 {

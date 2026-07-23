@@ -14,6 +14,8 @@
 
 package provider
 
+import "fmt"
+
 // Capabilities declares what a Provider can do (§5.3).
 //
 // The controller uses this struct to apply machine-readable degradation
@@ -30,6 +32,13 @@ package provider
 //     (§12.3, ADR-0005).
 //   - BulkObserve:true → the executor uses the BulkObserver path; the SDK
 //     falls back transparently to per-resource Read for non-declaring providers.
+//   - ProviderVersion:"" → provider did not embed a diff/normalisation source
+//     hash; reconcile startup MUST reject such providers (fail-closed, §10.4,
+//     Scb0ecd-3).  An empty string is treated as "unknown", and unknown is
+//     unsafe: a ghost diff (cause C) cannot be detected for an unversioned
+//     provider, so its diffs would silently be misclassified as B (drift) and
+//     auto-applied — which is the dangerous outcome the version contract exists
+//     to prevent.
 //
 // Provider authors pick the tier that honestly reflects their implementation.
 // The core degrades safely for every unclaimed capability.
@@ -71,4 +80,38 @@ type Capabilities struct {
 	// BulkObserve indicates the provider implements the BulkObserver interface,
 	// allowing a single call to observe all resources in a scope (§5.7).
 	BulkObserve bool
+
+	// ProviderVersion is the diff/normalisation source hash for this provider
+	// (§10.4, ADR-0008, Scb0ecd-3).  The SDK (S62dbba) will compute this
+	// automatically from the provider's source; until then, providers set it
+	// manually (the fake sets it from its state file).
+	//
+	// MUST NOT be empty.  The reconcile startup validator (ValidateProvider)
+	// rejects any provider whose Capabilities().ProviderVersion is empty
+	// (fail-closed, §10.4).  An empty version means ghost diffs (cause C)
+	// cannot be detected, so the provider's diffs would be silently
+	// misclassified as drift B and auto-applied — the very safety hole this
+	// field exists to close.
+	ProviderVersion string
+}
+
+// ValidateProvider checks whether p satisfies the startup invariants that the
+// reconcile loop requires.  It is called once at loop startup, before the first
+// cycle.  Returning a non-nil error means the loop MUST NOT start (fail-closed).
+//
+// Current checks (Scb0ecd-3):
+//
+//  1. ProviderVersion must not be empty (§10.4, ADR-0008, fail-closed ghost-diff
+//     detection).  An empty version means cause C cannot be distinguished from
+//     cause B, so ghost diffs would be silently auto-applied.
+//
+// Future checks (SDK, S62dbba):
+//   - Schema lint: required fields declared, secret/managed/identity flags valid.
+//   - ProviderVersion must match the SDK-computed source hash.
+func ValidateProvider(p Provider) error {
+	caps := p.Capabilities()
+	if caps.ProviderVersion == "" {
+		return fmt.Errorf("provider version is empty: provider_version must be set before registration (fail-closed, §10.4); ghost diffs (cause C) cannot be detected for an unversioned provider")
+	}
+	return nil
 }

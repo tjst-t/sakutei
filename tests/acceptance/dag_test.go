@@ -110,6 +110,7 @@ func TestDAG_WaveOrder(t *testing.T) {
 		},
 	})
 
+	initStateFile(t, statePath)
 	stdout, stderr, code := runReconcile(t, intentDir, statePath)
 	if code != 0 {
 		t.Fatalf("[AC-S94f1f9-2-1] expected exit 0, got %d; stderr: %s stdout: %s",
@@ -183,6 +184,7 @@ func TestDAG_WaveOrder_ReverseDeclarationOrder(t *testing.T) {
 		},
 	})
 
+	initStateFile(t, statePath)
 	stdout, stderr, code := runReconcile(t, intentDir, statePath)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; stderr: %s stdout: %s", code, stderr, stdout)
@@ -255,6 +257,7 @@ func TestDAG_UpstreamFailureSkipsDownstream(t *testing.T) {
 		"fail_inject": map[string]string{
 			"fail-a": "simulated Apply failure for test [AC-S94f1f9-2-2]",
 		},
+		"provider_version": testProviderVersion,
 	}
 	seedData, _ := json.MarshalIndent(seedState, "", "  ")
 	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
@@ -340,8 +343,9 @@ func TestDAG_UpstreamFailureNextCycleRetries(t *testing.T) {
 
 	// First "cycle": inject failure for retry-a.
 	seedState := map[string]any{
-		"resources":   map[string]any{},
-		"fail_inject": map[string]string{"retry-a": "cycle-1 failure"},
+		"resources":        map[string]any{},
+		"fail_inject":      map[string]string{"retry-a": "cycle-1 failure"},
+		"provider_version": testProviderVersion,
 	}
 	seedData, _ := json.MarshalIndent(seedState, "", "  ")
 	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
@@ -361,7 +365,8 @@ func TestDAG_UpstreamFailureNextCycleRetries(t *testing.T) {
 
 	// Second "cycle": remove fail_inject.
 	clearState := map[string]any{
-		"resources": map[string]any{},
+		"resources":        map[string]any{},
+		"provider_version": testProviderVersion,
 		// fail_inject omitted → no injected failures
 	}
 	clearData, _ := json.MarshalIndent(clearState, "", "  ")
@@ -448,6 +453,7 @@ func TestDAG_UnobservableUpstreamSkipsDownstream(t *testing.T) {
 		"observe_unknown": map[string]string{
 			"obs-a": "unknown",
 		},
+		"provider_version": testProviderVersion,
 	}
 	seedData, _ := json.MarshalIndent(seedState, "", "  ")
 	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
@@ -525,6 +531,7 @@ func TestDAG_ObserveErrorUpstreamSkipsDownstream(t *testing.T) {
 		"observe_unknown": map[string]string{
 			"err-a": "error",
 		},
+		"provider_version": testProviderVersion,
 	}
 	seedData, _ := json.MarshalIndent(seedState, "", "  ")
 	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
@@ -690,6 +697,7 @@ func TestDAG_NoDeps_StillApplied(t *testing.T) {
 		},
 	})
 
+	initStateFile(t, statePath)
 	_, stderr, code := runReconcile(t, intentDir, statePath)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr)

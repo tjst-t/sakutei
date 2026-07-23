@@ -112,6 +112,7 @@ func TestRevision_PlanOutputContainsRevisionHeader(t *testing.T) {
 	statePath := filepath.Join(tmp, "state.json")
 
 	writeIntentJSON(t, intentDir, oneResourceIntent("vm-rev-test", "10"))
+	initStateFile(t, statePath)
 
 	stdout, stderr, code := runPlan(t, intentDir, statePath)
 	if code != 0 {
@@ -147,6 +148,7 @@ func TestRevision_ReconcileOutputContainsRevisionHeader(t *testing.T) {
 	statePath := filepath.Join(tmp, "state.json")
 
 	writeIntentJSON(t, intentDir, oneResourceIntent("vm-reconcile-rev", "20"))
+	initStateFile(t, statePath)
 
 	stdout, stderr, code := runReconcile(t, intentDir, statePath)
 	// reconcile may exit 0 (converged) or 0 (applied); either is acceptable here.
@@ -184,6 +186,7 @@ func TestRevision_RenderedEqualsIntentInV1a(t *testing.T) {
 	statePath := filepath.Join(tmp, "state.json")
 
 	writeIntentJSON(t, intentDir, oneResourceIntent("vm-eq-test", "5"))
+	initStateFile(t, statePath)
 
 	stdout, _, _ := runPlan(t, intentDir, statePath)
 	intentRev, renderedRev := extractRevisions(stdout)
@@ -217,6 +220,7 @@ func TestRevision_IntentChangeCausesRevisionChange(t *testing.T) {
 
 	// Step 1: write initial intent, capture revision.
 	writeIntentJSON(t, intentDir, oneResourceIntent("vm-change-test", "10"))
+	initStateFile(t, statePath)
 	stdout1, stderr1, code1 := runPlan(t, intentDir, statePath)
 	if code1 != 0 {
 		t.Fatalf("[AC-Scb0ecd-1-3] first plan exited %d; stderr: %s", code1, stderr1)
@@ -269,6 +273,7 @@ func TestRevision_Deterministic(t *testing.T) {
 	statePath := filepath.Join(tmp, "state.json")
 
 	writeIntentJSON(t, intentDir, oneResourceIntent("vm-determinism", "15"))
+	initStateFile(t, statePath)
 
 	// First invocation.
 	stdout1, _, code1 := runPlan(t, intentDir, statePath)
@@ -308,6 +313,7 @@ func TestRevision_EmptyIntent(t *testing.T) {
 	statePath := filepath.Join(tmp, "state.json")
 
 	// No intent files written.
+	initStateFile(t, statePath)
 	stdout, _, code := runPlan(t, intentDir, statePath)
 	if code != 0 {
 		t.Fatalf("empty-intent revision test: plan exited %d", code)

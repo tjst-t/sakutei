@@ -73,6 +73,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
+	"github.com/tjst-t/sakutei/internal/lastseen"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/remediation"
@@ -191,6 +192,15 @@ func Run(ctx context.Context, cfg Config) error {
 	// on restart is intentional: the first post-restart window starts fresh.
 	budgetEngine := budget.New(cfg.BudgetConfig)
 
+	// Scb0ecd-3: last-seen ring (S3, memory-only, non-persistent, §10.5,
+	// ADR-0008).  Created ONCE per daemon run so it survives across cycles.
+	// Reset on restart is correct: the first post-restart cycle reports
+	// "no previous snapshot", which is the correct S3 non-persistent behaviour
+	// (scenario-Scb0ecd-3 step 3).
+	// Accessed only from the single-threaded Observe/Diff phase in
+	// runCycleAsync; async Apply goroutines do not touch it.
+	lastSeenRing := lastseen.NewResourceRing(lastseen.DefaultRingSize)
+
 	cycleNum := 0
 	for {
 		// Check for shutdown before each cycle.
@@ -204,7 +214,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 
 		cycleNum++
-		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, cfg)
+		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, lastSeenRing, cfg)
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
@@ -381,6 +391,7 @@ func runCycleAsync(
 	fp provider.Provider,
 	exec executor.Executor,
 	ifl *InFlightSet,
+	lsRing *lastseen.ResourceRing,
 	cfg Config,
 ) (CycleResult, error) {
 	// Load desired state fresh each cycle.
@@ -428,6 +439,13 @@ func runCycleAsync(
 			unobservable[local] = true
 			continue
 		}
+
+		// Scb0ecd-3: convert observed State to string map for last-seen ring.
+		curFields := make(map[string]string, len(obs.State))
+		for fname, tv := range obs.State {
+			curFields[fname] = fmt.Sprintf("%v", tv.Value)
+		}
+
 		// Scb0ecd-2: the daemon loop uses a zero-value CauseContext for now.
 		// The daemon's persistent in-memory cause state (prev revision tracking)
 		// is deferred to the full daemon path in a later Story; for v1a the
@@ -435,7 +453,29 @@ func runCycleAsync(
 		// A zero-value CauseContext means IntentPrevRevision = "" → first-run A,
 		// which is acceptable for the daemon in v1a (same as the pre-Scb0ecd-2
 		// behaviour where CauseTagA was the static placeholder).
-		plans[local] = engine.Diff(obs, res, cause.CauseContext{})
+		plan := engine.Diff(obs, res, cause.CauseContext{})
+
+		// Scb0ecd-3: for cause B (drift), emit a DriftEvent with the last-seen
+		// ring's previous-cycle snapshot diff.  The ring is read BEFORE we record
+		// the current snapshot so we are comparing current against last cycle.
+		for _, op := range plan.Ops {
+			if op.Cause == core.CauseTagB {
+				summary := lsRing.DriftSummary(local, curFields)
+				fmt.Fprintf(cfg.ErrOut, "sakutei: DriftEvent: %s [cause: B] %s\n", res.ID, summary)
+			}
+		}
+
+		// Record the current snapshot into the ring AFTER reading it (above).
+		// The next cycle will see this as the "previous" snapshot.
+		if lsRing != nil {
+			lsRing.Record(local, lastseen.Snapshot{
+				LocalID:    local,
+				ObservedAt: time.Now(),
+				Fields:     curFields,
+			})
+		}
+
+		plans[local] = plan
 	}
 
 	// Phase 2a: Compute prune ops (dry-run, no Apply yet).

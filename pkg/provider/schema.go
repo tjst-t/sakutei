@@ -46,6 +46,20 @@ type FieldSpec struct {
 	// Computed means the field is observed-only: the core never expects it in
 	// desired state and will not diff it in the Apply direction.
 	Computed bool
+
+	// ContentAddressed marks a field whose value is a content-address reference
+	// (e.g. "image@sha256:...").  When true, the diff engine compares the full
+	// reference verbatim (hash wins; a name-only change without a hash change
+	// is not a diff, and a hash change with the same name IS a diff).
+	//
+	// In v1a the diff engine already compares field values as strings, so a
+	// sha256-qualified reference is automatically compared correctly.
+	// ContentAddressed is therefore a SEAM (§10.6, Scb0ecd-3-3): it declares
+	// the intent in the schema type today so future normalisation logic (e.g.
+	// resolving a tag name to its digest before comparison) can be inserted at
+	// this flag without changing the schema contract.  The flag has no
+	// behavioural effect until that normalisation logic lands.
+	ContentAddressed bool
 }
 
 // Schema describes the shape of a resource type managed by a Provider (§5.2).

@@ -66,6 +66,7 @@ func seedManyPruneableResources(t *testing.T, statePath string, n int) {
 	sf := map[string]any{
 		"resources":            resources,
 		"pruneable_capability": true,
+		"provider_version":     testProviderVersion,
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {

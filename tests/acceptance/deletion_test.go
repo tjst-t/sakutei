@@ -62,6 +62,7 @@ func seedStateWithResources(t *testing.T, statePath string, resources map[string
 			}
 			return m
 		}(),
+		"provider_version": testProviderVersion,
 	}, "", "  ")
 	if err != nil {
 		t.Fatalf("seedStateWithResources: marshal: %v", err)

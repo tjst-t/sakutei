@@ -170,13 +170,16 @@ func (p *Provider) Capabilities() provider.Capabilities {
 	sf, err := p.load()
 	p.mu.Unlock()
 	pruneable := false
+	providerVersion := ""
 	if err == nil {
 		pruneable = sf.PruneableCapability
+		providerVersion = sf.ProviderVersion
 	}
 	return provider.Capabilities{
-		TrueObserve: true,
-		List:        true,
-		Pruneable:   pruneable,
+		TrueObserve:     true,
+		List:            true,
+		Pruneable:       pruneable,
+		ProviderVersion: providerVersion,
 	}
 }
 

@@ -84,6 +84,14 @@ func runPlan(args []string) {
 	// Create the fake provider backed by the state file.
 	fp := fakeprovider.New(*statePath)
 
+	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
+	// plan also validates so that operators get an immediate error rather than
+	// silently producing plans that cannot be cause-C–attributed.
+	if err := provider.ValidateProvider(fp); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei plan: provider validation failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Scb0ecd-2: load cause state (previous-cycle revision + provider_version).
 	prevState, csErr := loadCauseState(*causeStatePath)
 	if csErr != nil {

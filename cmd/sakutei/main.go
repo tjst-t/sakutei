@@ -40,6 +40,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
+	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
 // version is the build-time version string.  It is expected to be injected
@@ -182,10 +183,21 @@ func runDaemon() {
 	// Construct the concrete provider here (cmd layer) and inject it via the
 	// provider.Provider seam; the reconcile core stays free of concrete
 	// provider types (F-1).
+	fp := fakeprovider.New(*statePath)
+
+	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
+	// A provider without a version cannot support ghost-diff (cause C) detection;
+	// starting the loop would silently misclassify ghost diffs as drift (B) and
+	// auto-apply them — the dangerous outcome this gate exists to prevent.
+	if err := provider.ValidateProvider(fp); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: provider validation failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	cfg := reconcile.Config{
 		IntentDir:    *intentDir,
 		StatePath:    *statePath,
-		Provider:     fakeprovider.New(*statePath),
+		Provider:     fp,
 		Interval:     interval,
 		BudgetConfig: budgetCfg,
 		Remediation:  remCfg,

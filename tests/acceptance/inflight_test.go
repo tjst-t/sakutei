@@ -88,8 +88,9 @@ func TestInflight_CyclesDoNotAccumulate(t *testing.T) {
 	// The daemon interval is 150ms; so at least 4-5 cycles should run while
 	// the Apply is in progress.
 	initState := map[string]any{
-		"resources":   map[string]any{},
-		"apply_delay": map[string]string{"slow-vm": "700ms"},
+		"resources":        map[string]any{},
+		"apply_delay":      map[string]string{"slow-vm": "700ms"},
+		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
 	if err := os.WriteFile(statePath, initData, 0600); err != nil {
@@ -189,8 +190,9 @@ func TestInflight_NoConcurrentApplyForSameResource(t *testing.T) {
 
 	// Seed state with apply_delay of 600ms.
 	initState := map[string]any{
-		"resources":   map[string]any{},
-		"apply_delay": map[string]string{"exclusive-vm": "600ms"},
+		"resources":        map[string]any{},
+		"apply_delay":      map[string]string{"exclusive-vm": "600ms"},
+		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
 	if err := os.WriteFile(statePath, initData, 0600); err != nil {
@@ -326,6 +328,7 @@ func TestInflight_BackoffAfterApplyFailure(t *testing.T) {
 		"fail_inject": map[string]string{
 			"backoff-vm": "injected-failure-for-backoff-test",
 		},
+		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
 	if err := os.WriteFile(statePath, initData, 0600); err != nil {
@@ -446,6 +449,7 @@ func TestInflight_BackoffDoesNotBlockUnrelatedResources(t *testing.T) {
 		"fail_inject": map[string]string{
 			"fail-x": "injected-failure",
 		},
+		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
 	if err := os.WriteFile(statePath, initData, 0600); err != nil {
@@ -550,6 +554,7 @@ func TestInflight_BackedOffUpstreamSkipsDownstream(t *testing.T) {
 		"fail_inject": map[string]string{
 			"dd1-up": "injected-failure-for-DD1-test",
 		},
+		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
 	if err := os.WriteFile(statePath, initData, 0600); err != nil {

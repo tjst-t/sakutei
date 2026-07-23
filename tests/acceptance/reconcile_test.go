@@ -72,6 +72,8 @@ func TestReconcile_CreatesResource(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(tmp, "state.json")
+	// Scb0ecd-3: initialize state file with provider_version for fail-closed gate.
+	initStateFile(t, statePath)
 
 	// Intent: one fake resource "reconcile-vm" with name and size.
 	writeIntentFile(t, intentDir, map[string]any{
@@ -133,6 +135,8 @@ func TestReconcile_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(tmp, "state.json")
+	// Scb0ecd-3: initialize state file with provider_version for fail-closed gate.
+	initStateFile(t, statePath)
 
 	writeIntentFile(t, intentDir, map[string]any{
 		"resources": []map[string]any{
@@ -207,6 +211,9 @@ func TestReconcile_ObservesIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(tmp, "state.json")
+	// Scb0ecd-3: initialize state file with provider_version for fail-closed gate.
+	// reality is empty (no resources), but the state file exists for the version.
+	initStateFile(t, statePath)
 
 	writeIntentFile(t, intentDir, map[string]any{
 		"resources": []map[string]any{
@@ -221,15 +228,19 @@ func TestReconcile_ObservesIndependently(t *testing.T) {
 		},
 	})
 
+	// Snapshot state before plan (only has provider_version, no resources).
+	beforePlan := readStateFile(t, statePath)
+
 	// Step A: run "sakutei plan" — dry-run only. Reality remains empty.
 	_, stderrPlan, codePlan := runPlan(t, intentDir, statePath)
 	if codePlan != 0 {
 		t.Fatalf("[AC-Sead944-3-3] plan failed (exit %d); stderr: %s", codePlan, stderrPlan)
 	}
 
-	// Plan must NOT have created the state file (Apply never called).
-	if data := readStateFile(t, statePath); data != nil {
-		t.Fatalf("[AC-Sead944-3-3] plan created the state file — Apply was called; content: %s", data)
+	// Plan must NOT have modified the state file (Apply never called).
+	afterPlan := readStateFile(t, statePath)
+	if string(beforePlan) != string(afterPlan) {
+		t.Fatalf("[AC-Sead944-3-3] plan modified the state file — Apply was called\nbefore: %s\nafter: %s", beforePlan, afterPlan)
 	}
 
 	// Step B: run "sakutei reconcile". Must re-observe that resource is absent
@@ -286,7 +297,9 @@ func TestReconcile_UpdatesDriftedResource(t *testing.T) {
 	})
 
 	// Reality: size=50 (drift).
-	seedState := map[string]any{
+	// Scb0ecd-3: include provider_version so fail-closed gate passes.
+	seedStateData := map[string]any{
+		"provider_version": testProviderVersion,
 		"resources": map[string]any{
 			"drifted-vm": map[string]any{
 				"fields": map[string]any{
@@ -296,7 +309,7 @@ func TestReconcile_UpdatesDriftedResource(t *testing.T) {
 			},
 		},
 	}
-	seedData, _ := json.MarshalIndent(seedState, "", "  ")
+	seedData, _ := json.MarshalIndent(seedStateData, "", "  ")
 	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -345,6 +358,8 @@ func TestReconcile_EmptyIntentDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(tmp, "state.json")
+	// Scb0ecd-3: provide a valid state file so the fail-closed gate passes.
+	initStateFile(t, statePath)
 
 	stdout, _, code := runReconcile(t, intentDir, statePath)
 	if code != 0 {
