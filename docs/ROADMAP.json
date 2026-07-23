@@ -317,7 +317,7 @@
         },
         "Scf7762-3": {
           "title": "remediation mode（alert-only / freeze）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "運用者として、収束を『検知のみ』モードで回せるようにしたい。なぜなら、ブラウンフィールドではまず人の変更を巻き戻さず観測したいから。",
@@ -326,19 +326,19 @@
               "id": "AC-Scf7762-3-1",
               "description": "remediation mode alert-only では Apply せず Event で差分を報告する",
               "test": "[AC-Scf7762-3-1] in tests/acceptance/remediation_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Scf7762-3-2",
               "description": "global freeze で全体を一括 alert-only にできる",
               "test": "[AC-Scf7762-3-2] in tests/acceptance/remediation_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Scf7762-3-3",
               "description": "auto モードでのみ実際に Apply する",
               "test": "[AC-Scf7762-3-3] in tests/acceptance/remediation_test.go",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {}
