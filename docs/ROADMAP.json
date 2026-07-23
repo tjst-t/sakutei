@@ -5,8 +5,8 @@
     "current_sprint": "Scb0ecd",
     "total": 9,
     "done": 3,
-    "in_progress": 0,
-    "remaining": 6,
+    "in_progress": 1,
+    "remaining": 5,
     "percentage": 33
   },
   "execution_order": [
@@ -375,11 +375,155 @@
     },
     "Scb0ecd": {
       "title": "差分の原因区別 — cause tag A〜E と revision 分離",
-      "status": "pending",
+      "status": "in_progress",
       "description": "cause tag A〜E、intent_revision と rendered_revision(scope 単位)の分離、provider_version の diff 埋め込みと fail-closed、last-seen リング。ADR-0008。",
       "milestone": false,
-      "detail_level": "coarse",
-      "stories": {}
+      "detail_level": "detailed",
+      "stories": {
+        "Scb0ecd-1": {
+          "title": "intent_revision / rendered_revision の算出と保持",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "運用者として、差分の原因を正確に分類するための revision 基盤（intent_revision と rendered_revision）を収束ループが保持してほしい。なぜなら、人の意図変更と外部入力変化を型で区別しないと A と E が混同され、CMDB バグ由来の破壊が人の小コミットに相乗りして通過する穴が生まれるから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-Scb0ecd-1-1",
+              "description": "DesiredSource.Fetch() は intent_revision（ファイル内容の決定的ハッシュ）を返し、loader が読み込んだリソース集合と共に reconcile コアに渡る",
+              "test": "[AC-Scb0ecd-1-1] in tests/acceptance/revision_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scb0ecd-1-2",
+              "description": "rendered_revision は scope 単位で算出され、v1a では外部入力がないため intent のハッシュと同値になる（seam を切り S5 で差が生じる）",
+              "test": "[AC-Scb0ecd-1-2] in tests/acceptance/revision_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scb0ecd-1-3",
+              "description": "intent ファイルを変更して plan/reconcile を実行すると intent_revision が変化したことが sakutei plan の出力に現れる",
+              "test": "[AC-Scb0ecd-1-3] in tests/acceptance/revision_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "Scb0ecd-1-1": {
+              "title": "RevisionInfo 型と loader への組み込み",
+              "description": "pkg/core に RevisionInfo{IntentRevision, RenderedRevision string} を定義。loader.LoadDir の返り値に RevisionInfo を添える（IntentRevision はファイル内容の SHA-256 ハッシュで暫定算出。git hash への差し替えは S33266e の Loader 正式化で行う）。",
+              "status": "pending"
+            },
+            "Scb0ecd-1-2": {
+              "title": "RenderedRevision の scope 単位算出 seam",
+              "description": "v1a では外部入力ゼロのため rendered_revision = intent ハッシュ（同値）。ただし scope 単位に算出する関数シグネチャ ComputeRenderedRevision(scope, intentHash, externalInputs) string を今切っておく。S5 の render で externalInputs が埋まると差が生じる。",
+              "status": "pending"
+            },
+            "Scb0ecd-1-3": {
+              "title": "sakutei plan / reconcile の出力に revision を表示",
+              "description": "plan と reconcile の出力ヘッダに intent_revision と rendered_revision（v1a では同値）を表示する。例: intent_revision=abc123 rendered_revision=abc123。",
+              "status": "pending"
+            }
+          }
+        },
+        "Scb0ecd-2": {
+          "title": "cause tag 分類ロジックの実装（A/B/C 実動作、D/E seam）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "運用者として、sakutei plan と sakutei reconcile の差分表示に原因タグ（cause: A/B/C）が正しく表示されてほしい。なぜなら、同じ差分でも人の意図変更か現実のドリフトかツール更新による ghost diff かで対応が正反対で、誤認すると意図しない自動適用や ghost diff の素通りを招くから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-Scb0ecd-2-1",
+              "description": "sakutei plan の出力で各 Op の cause タグが正しく cause: A（intent_revision 変化）/ cause: B（消去法）/ cause: C（provider_version 変化）と表示される",
+              "test": "[AC-Scb0ecd-2-1] in tests/acceptance/cause_tag_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scb0ecd-2-2",
+              "description": "intent ファイルを変更せず fake provider の現実を手動でドリフトさせると cause: B が付く（消去法: intent_revision / provider_version / rendered_revision がいずれも不変で diff が存在）",
+              "test": "[AC-Scb0ecd-2-2] in tests/acceptance/cause_tag_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scb0ecd-2-3",
+              "description": "provider_version が変化した fake Provider を使うと cause: C が付き ProviderUpgradeDiff イベントがログに出る（自動 Apply しない）",
+              "test": "[AC-Scb0ecd-2-3] in tests/acceptance/cause_tag_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scb0ecd-2-4",
+              "description": "D（カスケード）と E（外部入力変化）の OpCause フィールドは seam として存在し、現時点では未分類（tag D または E のプレースホルダ）のまま表示される（完全動作は S5 以降）",
+              "test": "[AC-Scb0ecd-2-4] in tests/acceptance/cause_tag_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "Scb0ecd-2-1": {
+              "title": "diff.CauseContext 型と diff.Engine への組み込み",
+              "description": "diff パッケージに CauseContext{PrevIntentRevision, CurIntentRevision, PrevRenderedRevision, CurRenderedRevision, PrevProviderVersion, CurProviderVersion, UpstreamChanged, RenderedRevisionChanged string/bool} を定義。Engine.Diff() に CauseContext を渡して CauseTag を決定する。判定ロジック: intent_revision 変化 → A、provider_version 変化 → C、その他（消去法）→ B。D は UpstreamChanged=true で seam、E は RenderedRevisionChanged=true で seam（両フラグ v1a では false 固定）。",
+              "status": "pending"
+            },
+            "Scb0ecd-2-2": {
+              "title": "C 検知時の ProviderUpgradeDiff イベントと Apply 停止",
+              "description": "cause: C の Op が存在する場合、その Op に限り自動 Apply を行わず ProviderUpgradeDiff Event をログに出す。C 以外の Op は通常通り適用する（per-resource 制御。既存の filterPlansByBudget と同様のフィルタ関数を追加）。",
+              "status": "pending"
+            },
+            "Scb0ecd-2-3": {
+              "title": "plan / reconcile 表示への cause タグ反映",
+              "description": "既存の plan 出力と reconcile の Op 表示に cause タグを追加する。例: UPDATE vm-1 [cause: B] size: 10→20。diff.go のプレースホルダ CauseTagA をすべて CauseContext 判定に差し替える。",
+              "status": "pending"
+            },
+            "Scb0ecd-2-4": {
+              "title": "D/E seam の型定義",
+              "description": "CauseContext に UpstreamChanged bool（D 用）と RenderedRevisionChanged bool（E 用）フィールドを切る。v1a では両フラグ false 固定。コメントで D は S072a14 の render DAG で上流変化フラグが入る、E は S072a14 の rendered_revision 差分で判定、と明記する。",
+              "status": "pending"
+            }
+          }
+        },
+        "Scb0ecd-3": {
+          "title": "provider_version fail-closed と last-seen リング",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "運用者として、provider のバージョン未埋め込みを起動時に拒否してほしく、またドリフト B 検知時に前周は X だったという追跡情報がログに出てほしい。なぜなら、provider_version の付け忘れは C 検知漏れ＝ghost diff が B に化けて自動適用という危険側に倒れる契約不履行であり、B の原因究明に前周スナップショットがないと運用者が根拠なく推測するしかないから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-Scb0ecd-3-1",
+              "description": "provider_version が空の Provider を登録しようとすると起動時に拒否される（fail-closed）。fake Provider のテスト variant で確認する",
+              "test": "[AC-Scb0ecd-3-1] in tests/acceptance/provider_version_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scb0ecd-3-2",
+              "description": "ドリフト B 検知時の Event ログに last-seen リングの直近スナップショット差分が添えられる（例: drift B: size was 10 prev cycle now 20）",
+              "test": "[AC-Scb0ecd-3-2] in tests/acceptance/last_seen_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scb0ecd-3-3",
+              "description": "last-seen リングはメモリのみ（S3）で永続化しない。再起動後の最初の周期で観測 state レスの看板を守りながら再初期化される",
+              "test": "[AC-Scb0ecd-3-3] in tests/acceptance/last_seen_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "Scb0ecd-3-1": {
+              "title": "provider_version の必須化と fail-closed バリデーション",
+              "description": "Capabilities に ProviderVersion string フィールドを追加。reconcile ループの起動時（provider 登録フェーズ）に version が空文字列なら起動を拒否する（fail-closed）。fake Provider にテスト用の version フィールドを追加し、空版との比較テストを書く。SDK（S62dbba）でソースハッシュ自動算出に置き換わるまでは手動設定。",
+              "status": "pending"
+            },
+            "Scb0ecd-3-2": {
+              "title": "last-seen リングの実装（S3 インメモリ・非永続）",
+              "description": "internal/lastseen パッケージ: Ring{size int, entries []Snapshot}。Snapshot は {LocalID string, ObservedAt time.Time, Fields map[string]string}。各 Cycle の Observe 完了時に最新スナップショットを Ring に積む（上書きリング、デフォルト N=5 周）。drift B 検知時に Ring から前周スナップショットを取り出して FieldDiff 形式で差分を Event に添える。永続化なし（S3 定義通り）。",
+              "status": "pending"
+            },
+            "Scb0ecd-3-3": {
+              "title": "content-address 参照の seam（ContentAddressed フラグ）",
+              "description": "Schema の FieldSpec に ContentAddressed bool フラグを追加する（§10.6）。true のフィールドは diff 時にハッシュそのものを比較する（現行の string 比較と実質同じだが、将来の名前→sha 正規化を差し込む接点を型で宣言する）。実 provider や完全な正規化ロジックは S62dbba（SDK）以降。",
+              "status": "pending"
+            }
+          }
+        }
+      }
     },
     "S072a14": {
       "title": "render パイプライン — 2 フェーズと合成リソース",
