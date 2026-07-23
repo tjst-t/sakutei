@@ -2,12 +2,12 @@
   "project": "Sakutei",
   "description": "宣言的インフラ収束エンジン（観測 state レス・level-triggered）。本ロードマップは v1a（コア実証）を対象とし、v1b/v1.5/v2 は backlog に置く。",
   "progress": {
-    "current_sprint": "S94f1f9",
+    "current_sprint": "Scf7762",
     "total": 9,
-    "done": 1,
-    "in_progress": 1,
+    "done": 2,
+    "in_progress": 0,
     "remaining": 7,
-    "percentage": 11
+    "percentage": 22
   },
   "execution_order": [
     "Sead944",
@@ -163,7 +163,7 @@
     },
     "S94f1f9": {
       "title": "収束ループと依存解決 — 周期・DAG/wave・非同期 Apply",
-      "status": "in_progress",
+      "status": "done",
       "description": "level-triggered な常駐ループ（Observe 全並列→Diff→サブ DAG→Kahn wave 並列 Apply→jitter sleep）、依存解決、非同期 Apply と in-flight 集合、per-resource backoff。ADR-0002 の本体。",
       "milestone": false,
       "stories": {
@@ -522,6 +522,13 @@
       "description": "async Apply では、上流 A を launch した同じサイクルで、A の失敗が記録される前に下流 B が1回だけ楽観的に launch されうる（apply_count<=1）。level-triggered で次周期に自己修復し DD-1 で steady-state は skip されるが、厳密な cross-wave async バリア（上流 wave の in-flight 完了まで下流 wave を起動しない）にすれば1サイクルの窓も消せる。安全機構(Sprint 3)や段階ロールアウトと合わせて検討。",
       "added_in": "S94f1f9",
       "reason": "S94f1f9-3 review DD-1 の残差。review-cap 到達のため次段で対応。bounded かつ自己修復するため非ブロッカー。"
+    },
+    {
+      "title": "[chore] タイミング依存の受入テストの堅牢化",
+      "kind": "chore",
+      "description": "並行/周期テスト(Inflight/Loop/DAG)で稀に timing flake が観測された(18+回で再現せず)。interval/deadline の余白拡大や決定的な同期点でflakinessを更に下げる。",
+      "added_in": "S94f1f9",
+      "reason": "verify中に1度観測。低優先。"
     }
   ]
 }
