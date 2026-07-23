@@ -117,7 +117,7 @@
         },
         "Sead944-3": {
           "title": "sakutei reconcile（単発収束）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "運用者として、`sakutei reconcile` を1回実行して fake リソースを理想状態へ収束させたい。なぜなら、宣言した状態が実際に適用されることを確かめたいから。",
@@ -126,36 +126,36 @@
               "id": "AC-Sead944-3-1",
               "description": "`sakutei reconcile` は Observe→Diff→Apply を1巡実行しリソースを desired に一致させる",
               "test": "[AC-Sead944-3-1] in tests/acceptance/reconcile_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Sead944-3-2",
               "description": "2回目の reconcile は差分ゼロ（冪等）",
               "test": "[AC-Sead944-3-2] in tests/acceptance/reconcile_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Sead944-3-3",
               "description": "reconcile と plan はそれぞれ独立に Observe する（plan の観測を reconcile に持ち越さない＝観測 state レス）",
               "test": "[AC-Sead944-3-3] in tests/acceptance/reconcile_test.go",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "Sead944-3-1": {
               "title": "Executor(LocalExecutor) と Apply 経路",
               "description": "Provider.Apply を呼ぶ LocalExecutor seam を定義し reconcile から呼ぶ",
-              "status": "pending"
+              "status": "done"
             },
             "Sead944-3-2": {
               "title": "sakutei reconcile サブコマンド",
               "description": "Observe→Diff→Apply を1巡。plan と共有せず独立に Observe する",
-              "status": "pending"
+              "status": "done"
             },
             "Sead944-3-3": {
               "title": "冪等性・観測 state レスの受入テスト",
               "description": "2回目差分ゼロ、plan の観測が reconcile に漏れないことを検証",
-              "status": "pending"
+              "status": "done"
             }
           }
         }
