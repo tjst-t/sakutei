@@ -23,7 +23,9 @@ import (
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
 // runPlan implements "sakutei plan".
@@ -71,6 +73,9 @@ func runPlan(args []string) {
 	ctx := context.Background()
 	var allOps []core.Op
 
+	// Track unobservable resources for the prune phase (unknown ≠ absent).
+	unobservable := make(map[string]bool)
+
 	for _, res := range desired {
 		// ADR-0002: Observe independently for each resource.  Each call to
 		// Read is fresh; no observation is carried across resources or cycles.
@@ -79,10 +84,18 @@ func runPlan(args []string) {
 			fmt.Fprintf(os.Stderr, "sakutei plan: observe %s: %v\n", res.ID, err)
 			os.Exit(1)
 		}
+		if obs.Availability != core.AvailabilityOk {
+			unobservable[res.ID.Local] = true
+			continue
+		}
 
 		plan := engine.Diff(obs, res)
 		allOps = append(allOps, plan.Ops...)
 	}
+
+	// Prune phase (dry-run): show what would be deleted (§12, ADR-0005).
+	// plan does NOT call Apply; it only computes and displays the Delete ops.
+	allOps = append(allOps, planPruneOps(ctx, fp, desired, unobservable)...)
 
 	// Print plan output.
 	if len(allOps) == 0 {
@@ -95,6 +108,28 @@ func runPlan(args []string) {
 		printOp(op)
 	}
 	os.Exit(0)
+}
+
+// planPruneOps computes the Delete ops that would be emitted by the prune engine
+// for the given desired resources.  No Apply is called (dry-run).
+func planPruneOps(
+	ctx context.Context,
+	fp provider.Provider,
+	desired []diff.DesiredResource,
+	unobservable map[string]bool,
+) []core.Op {
+	lister, ok := fp.(provider.Lister)
+	if !ok {
+		return nil
+	}
+
+	scope := core.NewScope(nil)
+	engine := prune.New()
+	result, err := engine.ComputePrune(ctx, lister, fp, scope, desired, unobservable, os.Stderr)
+	if err != nil || result.Halted {
+		return nil
+	}
+	return result.DeleteOps
 }
 
 // printOp formats a single Op for human-readable plan output.

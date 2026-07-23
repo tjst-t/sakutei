@@ -47,6 +47,15 @@ type DesiredResource struct {
 	// this resource depends on.  Populated from the "depends_on" field in
 	// the intent file (Story S94f1f9-2, provisional; formal Loader is S33266e).
 	DependsOn []string
+	// DeletionPolicy controls how the engine handles resources in reality that
+	// are absent from the intent (§12.2, ADR-0005).  Defaults to
+	// ExplicitAbsentOnly (open-world) when not declared.
+	DeletionPolicy core.DeletionPolicy
+	// Pruneable declares whether this resource may be automatically deleted by
+	// the prune engine.  Defaults to false (§12.3, ADR-0005): destructive
+	// operations require explicit opt-in.  Only meaningful when DeletionPolicy
+	// is PruneWithinScope.
+	Pruneable bool
 }
 
 // Engine holds the provider schema used to drive the diff.

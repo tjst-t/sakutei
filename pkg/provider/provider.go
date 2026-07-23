@@ -93,14 +93,19 @@ type Provider interface {
 //
 // List completeness is the safety foundation of prune: "List missed one →
 // prune deletes it" is a production outage.  Implementations must guarantee
-// complete-or-error: return an error if pagination cannot be fully completed
-// rather than returning a partial result as success (§5.4).
+// complete-or-error: paginate to exhaustion and return ListPartial (or an
+// error) rather than returning a truncated result as ListComplete (§5.4,
+// §12.4a).  The prune engine only acts on ListComplete results.
 type Lister interface {
-	// List returns all resource IDs in the given scope.
+	// List returns all resource IDs in the given scope together with a
+	// completeness assertion (core.ListStatus).
 	//
 	// Constraints:
-	//   - Must be complete: paginate to exhaustion; return error on partial.
+	//   - Paginate to exhaustion.  If pagination cannot be completed, return
+	//     ListPartial (or an error) rather than a truncated ListComplete result.
 	//   - The returned IDs are the basis for set-difference prune; any ID
-	//     omitted from the result is a candidate for deletion.
-	List(ctx context.Context, scope core.Scope) ([]core.ID, error)
+	//     omitted from a ListComplete result is a candidate for deletion.
+	//   - Return ListPartial or ListUnknown when completeness cannot be
+	//     guaranteed; the prune engine will defer deletion for this cycle.
+	List(ctx context.Context, scope core.Scope) (core.ListResult, error)
 }

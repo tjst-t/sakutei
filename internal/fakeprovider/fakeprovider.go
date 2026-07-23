@@ -78,12 +78,18 @@ type storedResource struct {
 // for that resource.  Incremented atomically on each Apply call.  Used by tests
 // to verify that a resource is not double-applied while in-flight.
 // This is a test-only mechanism; production providers do not use this field.
+//
+// ListPartial is a boolean that, when true, causes List to return ListPartial
+// status instead of ListComplete.  Used by Scf7762-1 tests to simulate an
+// incomplete List result triggering the prune-halt safety guard.
+// This is a test-only mechanism; production providers do not use this field.
 type stateFile struct {
 	Resources      map[string]storedResource `json:"resources"`
 	FailInject     map[string]string         `json:"fail_inject,omitempty"`
 	ObserveUnknown map[string]string         `json:"observe_unknown,omitempty"`
 	ApplyDelay     map[string]string         `json:"apply_delay,omitempty"`
 	ApplyCount     map[string]int            `json:"apply_count,omitempty"`
+	ListPartial    bool                      `json:"list_partial,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
@@ -328,15 +334,22 @@ func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
 	return p.save(sf)
 }
 
-// List returns all resource local IDs in the given scope.
-func (p *Provider) List(_ context.Context, _ core.Scope) ([]core.ID, error) {
+// List returns all resource local IDs in the given scope together with a
+// completeness status (core.ListResult).
+//
+// In normal operation, the fake returns ListComplete (all resources in the
+// state file are returned).  When ListPartial is set in the state file (via
+// SetListPartial), the fake returns ListPartial to simulate an incomplete List
+// result — triggering the prune-halt safety guard in the prune engine (§12.4c,
+// Scf7762-1 [AC-Scf7762-1-2]).
+func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error) {
 	// Hold mu for the file read (see Read): an in-flight Apply from a prior cycle
 	// may be writing the state file concurrently.
 	p.mu.Lock()
 	sf, err := p.load()
 	p.mu.Unlock()
 	if err != nil {
-		return nil, provider.NewTransientError(fmt.Errorf("fakeprovider: load state: %w", err))
+		return core.ListResult{}, provider.NewTransientError(fmt.Errorf("fakeprovider: load state: %w", err))
 	}
 
 	scope := core.NewScope(nil) // fake uses empty scope for simplicity in tests
@@ -344,7 +357,26 @@ func (p *Provider) List(_ context.Context, _ core.Scope) ([]core.ID, error) {
 	for local := range sf.Resources {
 		ids = append(ids, core.NewID(ProviderName, scope, local))
 	}
-	return ids, nil
+
+	status := core.ListComplete
+	if sf.ListPartial {
+		status = core.ListPartial
+	}
+
+	return core.ListResult{IDs: ids, Status: status}, nil
+}
+
+// SetListPartial writes the list_partial flag into the state file.
+// When true, subsequent List calls will return ListPartial status to simulate
+// an incomplete List (triggering prune-halt safety guard, §12.4c).
+// This is a test-only helper for Scf7762-1 ([AC-Scf7762-1-2]).
+func (p *Provider) SetListPartial(partial bool) error {
+	sf, err := p.load()
+	if err != nil {
+		return fmt.Errorf("fakeprovider: load state for list partial: %w", err)
+	}
+	sf.ListPartial = partial
+	return p.save(sf)
 }
 
 // StatePath returns the path of the underlying state file.

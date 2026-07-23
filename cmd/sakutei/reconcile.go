@@ -24,8 +24,10 @@ import (
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
 // runReconcile implements "sakutei reconcile".
@@ -158,6 +160,26 @@ func runReconcile(args []string) {
 		}
 	}
 
+	// Phase 3: Prune (§12, ADR-0005, Scf7762-1).
+	//
+	// For any scope that declares PruneWithinScope, compute the set-difference
+	// (reality − desired) and apply approved Delete ops.
+	//
+	// Safety guards in the prune engine:
+	//   - DeletionPolicy gate: only PruneWithinScope resources participate.
+	//   - Pruneable gate: pruneable:false (default) suppresses deletion.
+	//   - ListStatus gate: only ListComplete results allow prune.
+	//   - Drop-rate gate: >50% list-count drop halts prune for this cycle.
+	//   - unknown ≠ absent: resources with non-Ok Observe are skipped.
+	pruneOps, pruneHalted := runPrune(ctx, fp, desired, unobservable, exec)
+	for _, op := range pruneOps {
+		printOp(op)
+		appliedOps++
+	}
+	if pruneHalted {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune halted this cycle (safety guard triggered); see above for reason\n")
+	}
+
 	switch {
 	case appliedOps > 0:
 		fmt.Printf("Reconcile: %d change(s) applied\n", appliedOps)
@@ -182,4 +204,61 @@ func runReconcile(args []string) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+// runPrune executes the prune phase for the given desired resources and
+// returns the list of Delete ops that were applied and whether prune was halted.
+//
+// Only providers that implement provider.Lister can be pruned.  If the provider
+// does not implement Lister, runPrune returns immediately with no ops.
+func runPrune(
+	ctx context.Context,
+	fp provider.Provider,
+	desired []diff.DesiredResource,
+	unobservable map[string]bool,
+	exec executor.Executor,
+) (appliedOps []core.Op, halted bool) {
+	lister, ok := fp.(provider.Lister)
+	if !ok {
+		return nil, false
+	}
+
+	// Validate PruneWithinScope declarations against Lister capability.
+	if err := prune.ValidatePrunePolicy(desired, fp); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune policy error: %v\n", err)
+		return nil, false
+	}
+
+	// Use empty scope for the fake provider (Sprint 1 simplification).
+	scope := core.NewScope(nil)
+
+	engine := prune.New()
+	result, err := engine.ComputePrune(ctx, lister, fp, scope, desired, unobservable, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune compute error: %v\n", err)
+		return nil, false
+	}
+
+	if result.Halted {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune halted: %s\n", result.HaltReason)
+		return nil, true
+	}
+
+	// Log deferred resources.
+	for _, id := range result.Deferred {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune deferred for %s (safety guard: pruneable:false or unknown)\n", id)
+	}
+
+	// Apply each approved Delete op individually.
+	for _, op := range result.DeleteOps {
+		plan := core.Plan{Ops: []core.Op{op}}
+		if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
+			fmt.Fprintf(os.Stderr, "sakutei reconcile: prune apply %s: %v\n", op.Target, applyErr)
+			// Continue with remaining ops (level-triggered: retry next cycle).
+			continue
+		}
+		appliedOps = append(appliedOps, op)
+	}
+
+	return appliedOps, false
 }

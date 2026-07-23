@@ -54,6 +54,19 @@ import (
 	"github.com/tjst-t/sakutei/pkg/core"
 )
 
+// parseDeletionPolicy converts the string form used in intent files to the
+// core.DeletionPolicy enum.  Unknown strings map to ExplicitAbsentOnly (the
+// safe default).
+func parseDeletionPolicy(s string) core.DeletionPolicy {
+	switch strings.TrimSpace(s) {
+	case "PruneWithinScope":
+		return core.PruneWithinScope
+	default:
+		// "ExplicitAbsentOnly" or empty string → safe default.
+		return core.ExplicitAbsentOnly
+	}
+}
+
 // intentFile is the on-disk representation of a single intent file.
 type intentFile struct {
 	Resources []intentResource `json:"resources"`
@@ -72,6 +85,14 @@ type intentResource struct {
 	DependsOn []string `json:"depends_on"`
 	// Fields is the map of field name → desired value (string).
 	Fields map[string]string `json:"fields"`
+	// DeletionPolicy controls how the engine handles resources absent from
+	// the intent.  "ExplicitAbsentOnly" (default) or "PruneWithinScope".
+	// Story Scf7762-1.
+	DeletionPolicy string `json:"deletion_policy"`
+	// Pruneable opts this resource in to automatic deletion.  Must be true for
+	// prune to emit a Delete op (§12.3, ADR-0005).  Default false.
+	// Story Scf7762-1.
+	Pruneable bool `json:"pruneable"`
 }
 
 // LoadDir reads all JSON files in dir and returns the desired resources.
@@ -242,9 +263,11 @@ func loadFile(path string) ([]diff.DesiredResource, error) {
 		}
 
 		resources = append(resources, diff.DesiredResource{
-			ID:        id,
-			Fields:    fields,
-			DependsOn: dependsOn,
+			ID:             id,
+			Fields:         fields,
+			DependsOn:      dependsOn,
+			DeletionPolicy: parseDeletionPolicy(r.DeletionPolicy),
+			Pruneable:      r.Pruneable,
 		})
 	}
 	return resources, nil
