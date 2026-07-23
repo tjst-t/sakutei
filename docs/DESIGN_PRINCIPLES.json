@@ -50,7 +50,8 @@
     "provider 実装は『まず Schema、次に Read/Apply』の順で書く。作者が書くのは約4関数（Schema / Capabilities / Read / Apply）+ 任意の List / BulkObserve に留め、diff・マスキング・managed 除外・version 埋込・エラー分類・テストは SDK が担う",
     "Event は単一型 + kind enum + scope/resource/revision 参照で表し、構造化ログ（JSON）で出力する",
     "CLI 動詞は業界標準を用いる（plan / reconcile / status / import）。apply は主動詞に置かない（『回り続けるもの』を名前で表明する）",
-    "CLI / ユーザー向け出力（stdout/stderr のメッセージ）は英語で統一する。ドキュメント・設計 spec・コードコメントの spec 用語は日本語のまま（CLAUDE.md 準拠）。"
+    "CLI / ユーザー向け出力（stdout/stderr のメッセージ）は英語で統一する。ドキュメント・設計 spec・コードコメントの spec 用語は日本語のまま（CLAUDE.md 準拠）。",
+    "ソースファイルの著作権ヘッダは実名でなく \"The Sakutei Authors\" を使う（Apache-2.0、per-file ヘッダ）。git identity は tjst-t(noreply)。"
   ],
   "ui_ux": [],
   "architecture": [
