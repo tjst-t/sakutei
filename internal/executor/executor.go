@@ -40,9 +40,10 @@ import (
 type Executor interface {
 	// Execute applies the given Plan using the given Provider.
 	//
-	// Execute is called once per resource per reconcile cycle.
-	// Implementations MUST be idempotent: the reconcile loop may call Execute
-	// even when the plan has zero Ops (no-op apply is valid and must not error).
+	// Apply is invoked only when plan.Ops is non-empty; the reconcile loop
+	// skips resources that are already converged and does not call Execute
+	// for them.  Even so, implementations SHOULD remain idempotent, since a
+	// no-op apply is valid and must not error.
 	Execute(ctx context.Context, p provider.Provider, plan core.Plan) error
 }
 
@@ -55,13 +56,19 @@ type Executor interface {
 // responsible for their own concurrency guarantees.
 type LocalExecutor struct{}
 
+// Compile-time assertion that LocalExecutor satisfies the Executor seam.
+var _ Executor = (*LocalExecutor)(nil)
+
 // New returns a new LocalExecutor.
 func New() *LocalExecutor {
 	return &LocalExecutor{}
 }
 
 // Execute calls provider.Apply with the given plan.
-// If plan.Ops is empty, Apply is still called (idempotent no-op expected).
+//
+// The reconcile loop only calls Execute when plan.Ops is non-empty (already
+// converged resources are skipped by the caller), so Apply here always has
+// work to do.  A no-op apply would still be valid and must not error.
 func (e *LocalExecutor) Execute(ctx context.Context, p provider.Provider, plan core.Plan) error {
 	return p.Apply(ctx, plan)
 }

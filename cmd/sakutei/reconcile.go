@@ -73,9 +73,14 @@ func runReconcile(args []string) {
 	// Create the fake provider backed by the state file.
 	fp := fakeprovider.New(*statePath)
 	engine := diff.New(fp.Schema())
-	exec := executor.New()
+	// Depend on the Executor seam (interface), not the concrete LocalExecutor,
+	// so later Stories can swap in other implementations without touching this
+	// call site (§6 seam principle).
+	var exec executor.Executor = executor.New()
 
 	ctx := context.Background()
+	// appliedCount tallies applied Ops, where 1 Op == 1 resource operation
+	// (create/update). When Delete lands, each pruned resource is likewise 1 Op.
 	appliedCount := 0
 
 	for _, res := range desired {
