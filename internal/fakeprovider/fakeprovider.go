@@ -89,14 +89,20 @@ type stateFile struct {
 // Provider is the fake implementation.  It satisfies both provider.Provider
 // and provider.Lister.
 //
-// Thread-safety: The Provider is safe for concurrent use.  Apply serialises
-// state-file writes (and the read-modify-write cycle for ApplyCount and delay)
-// via mu.  Read and List hold mu only for the duration of the file read.
+// Thread-safety: The Provider is safe for concurrent use.  Apply, Read, and
+// List all serialise their state-file access via mu, so no two goroutines touch
+// the file concurrently.  This matters for the daemon (S94f1f9-3): an async
+// Apply goroutine launched by a prior cycle may still be in flight when the next
+// cycle calls Read/List, so Read and Apply can run concurrently in-process.
+// Holding mu around every file access prevents that file-level race.
+//
+// The Apply delay (ApplyDelay sleep) is taken OUTSIDE mu so a slow Apply for one
+// resource does not block Read/List or Applies for other resources.
 type Provider struct {
 	// statePath is the path to the JSON state file.
 	statePath string
-	// mu protects state-file read-modify-write sequences in Apply so that
-	// concurrent async Applies do not race on the file.
+	// mu serialises all state-file access (Apply read-modify-write, Read, List)
+	// so concurrent in-process goroutines never race on the file.
 	mu sync.Mutex
 }
 
@@ -140,7 +146,12 @@ func (p *Provider) Capabilities() provider.Capabilities {
 // that the diff engine can distinguish it from AvailabilityUnknown (target
 // unreachable).  The diff engine checks len(obs.State) == 0 to detect absent.
 func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) {
+	// Hold mu for the file read so an in-flight Apply goroutine (from a prior
+	// cycle) cannot race us on the state file.  The load result is a private
+	// copy, so we can unlock immediately and compute the Observation lock-free.
+	p.mu.Lock()
 	sf, err := p.load()
+	p.mu.Unlock()
 	if err != nil {
 		return core.Observation{
 			Availability: core.AvailabilityUnknown,
@@ -215,12 +226,15 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 // state file.  The sleep (ApplyDelay) happens outside the lock so concurrent
 // reads/applies for other resources are not blocked.
 func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
-	// Phase 0 (outside lock): resolve per-resource delay, then sleep.
-	// We load without the lock just to read ApplyDelay; the lock is acquired
-	// later for the actual read-modify-write.
+	// Phase 0: resolve per-resource delay, then sleep OUTSIDE the lock so a slow
+	// Apply for one resource does not block Read/List or Applies for others.
+	// The delay-lookup file read is itself serialised under mu (a concurrent
+	// Apply may be writing the file); we release mu before sleeping.
 	var sleepDur time.Duration
 	if len(plan.Ops) > 0 {
+		p.mu.Lock()
 		sf0, err := p.load()
+		p.mu.Unlock()
 		if err == nil && sf0.ApplyDelay != nil {
 			key := plan.Ops[0].Target.Local
 			if ds, ok := sf0.ApplyDelay[key]; ok {
@@ -316,7 +330,11 @@ func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
 
 // List returns all resource local IDs in the given scope.
 func (p *Provider) List(_ context.Context, _ core.Scope) ([]core.ID, error) {
+	// Hold mu for the file read (see Read): an in-flight Apply from a prior cycle
+	// may be writing the state file concurrently.
+	p.mu.Lock()
 	sf, err := p.load()
+	p.mu.Unlock()
 	if err != nil {
 		return nil, provider.NewTransientError(fmt.Errorf("fakeprovider: load state: %w", err))
 	}

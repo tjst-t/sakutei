@@ -402,7 +402,11 @@ func runCycleAsync(
 //     removed from in-flight.
 //
 // For resources that ARE in backoff this cycle, Apply is suppressed and the
-// resource is reported in backedOff.
+// resource is reported in backedOff.  DD-1: a backed-off resource is an
+// unconverged upstream (its last Apply failed and we are waiting to retry), so
+// it is also marked failed and its transitive downstream is skipped this cycle
+// — the same safety invariant used for Apply failures (D) and unobservable
+// upstreams (D-1).
 //
 // The function returns immediately after launching all goroutines; it does NOT
 // wait for them.  The in-flight set tracks their completion.
@@ -510,14 +514,26 @@ func applyWavesAsync(
 				continue
 			}
 
-			// S94f1f9-3: per-resource backoff gate.
+			// S94f1f9-3 / DD-1: per-resource backoff gate.
+			//
+			// A resource in backoff is NOT converged: it drifted, its last Apply
+			// failed, and we are deliberately waiting before retrying.  It is
+			// therefore an unconverged upstream, exactly like an Apply failure or
+			// an unobservable target (D-1).  We MUST mark it failed so its
+			// transitive downstream is skipped this cycle.
+			//
+			// Rationale (DD-1): building downstream on top of a broken upstream is
+			// unsafe even when the downstream has its own non-empty plan — the
+			// upstream is a declared dependency precisely because downstream needs
+			// it to be converged.  Blocking downstream for the whole (possibly
+			// long, e.g. 24h for Permanent) backoff window is the correct,
+			// halt-default behaviour: do not create downstream on top of a broken
+			// upstream.  This unifies the safety invariant across all three
+			// unconverged-upstream causes: Apply failure / unobservable / backoff.
 			if ifl.InBackoff(local) {
 				backedOff = append(backedOff, local)
-				fmt.Fprintf(errOut, "sakutei: backoff %s: suppressing Apply (in cooldown)\n", r.ID)
-				// Do NOT mark as failed — downstream can still proceed if their
-				// own plan is non-empty and they have no hard dependency on this
-				// resource converging.  The backoff resource itself is not applied;
-				// its value in reality is unchanged.
+				fmt.Fprintf(errOut, "sakutei: backoff %s: suppressing Apply (in cooldown); downstream skipped this cycle\n", r.ID)
+				failed[local] = true // DD-1: unconverged upstream → skip downstream
 				for _, m := range adj[idx] {
 					inDeg[m]--
 					if inDeg[m] == 0 {

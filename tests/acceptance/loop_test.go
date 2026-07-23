@@ -84,6 +84,46 @@ func waitForStateFile(t *testing.T, statePath, key string, deadline time.Duratio
 	return nil
 }
 
+// waitForResourceInState polls the state file until the given local ID appears
+// as a key under the top-level "resources" object (i.e. it has actually been
+// applied to reality), or the deadline is exceeded.  Returns the raw file
+// content on success, or fails the test.
+//
+// This differs from waitForStateFile, which does a naive substring match: a
+// local ID such as "slow-vm" also appears under "apply_delay"/"fail_inject"
+// before the resource is applied, so a substring match would return prematurely
+// (Finding #2).  This helper requires the ID to be present specifically under
+// "resources", which only happens once Apply has written it.
+func waitForResourceInState(t *testing.T, statePath, local string, deadline time.Duration) []byte {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		data, err := os.ReadFile(statePath)
+		if err == nil && resourceInState(data, local) {
+			return data
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	data, _ := os.ReadFile(statePath)
+	t.Fatalf("waitForResourceInState: resource %q not found under \"resources\" in %s within %s; content:\n%s",
+		local, statePath, deadline, data)
+	return nil
+}
+
+// resourceInState reports whether local is a key under the top-level
+// "resources" object of the given state-file JSON.  Malformed or partial JSON
+// (e.g. a state file caught mid-write) is treated as "not yet present".
+func resourceInState(data []byte, local string) bool {
+	var sf struct {
+		Resources map[string]json.RawMessage `json:"resources"`
+	}
+	if err := json.Unmarshal(data, &sf); err != nil {
+		return false
+	}
+	_, ok := sf.Resources[local]
+	return ok
+}
+
 // waitForCondition polls fn until it returns true or the deadline passes.
 func waitForCondition(deadline time.Duration, fn func() bool) bool {
 	end := time.Now().Add(deadline)

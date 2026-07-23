@@ -32,6 +32,12 @@
 //     value (24 h). The operator must change desired state to clear it.
 //   - Both tables live in memory only (S3 state class per ADR-0015).
 //     A restart resets them; the next Cycle will re-observe fresh (ADR-0002).
+//   - DD-1: a resource in backoff is an unconverged upstream (its last Apply
+//     failed and we are waiting to retry).  While it is in backoff its
+//     transitive downstream is skipped — the same halt-default invariant used
+//     for Apply failures and unobservable upstreams (D-1).  This applies even to
+//     a 24 h Permanent-error backoff: downstream is not created on top of a
+//     broken upstream.
 
 package reconcile
 

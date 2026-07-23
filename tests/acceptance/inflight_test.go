@@ -104,8 +104,12 @@ func TestInflight_CyclesDoNotAccumulate(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	// Wait up to 5 seconds for the resource to appear (Apply finishes after ~700ms).
-	data := waitForStateFile(t, statePath, "slow-vm", 5*time.Second)
+	// Wait up to 5 seconds for the resource to be APPLIED (Apply finishes after
+	// ~700ms).  Finding #2: we must wait for "slow-vm" to appear under the
+	// top-level "resources" object — not merely as a substring, because
+	// "slow-vm" is also present under "apply_delay" from the seed state, so a
+	// naive substring match (waitForStateFile) would return before Apply ran.
+	data := waitForResourceInState(t, statePath, "slow-vm", 5*time.Second)
 	t.Logf("[AC-S94f1f9-3-1] state file after slow Apply:\n%s", data)
 
 	// Give the daemon a couple more cycles to log "in-flight" or converged.
@@ -132,9 +136,10 @@ func TestInflight_CyclesDoNotAccumulate(t *testing.T) {
 		t.Errorf("[AC-S94f1f9-3-1] expected 'in-flight' in log (resource must be tracked as converging while Apply runs); log:\n%s", log)
 	}
 
-	// The resource must have been written to the state file (Apply completed).
-	if !strings.Contains(string(data), "slow-vm") {
-		t.Errorf("[AC-S94f1f9-3-1] 'slow-vm' not found in state file after Apply; state:\n%s", data)
+	// The resource must have been written under "resources" (Apply completed),
+	// not merely present as a substring in the seed's apply_delay map.
+	if !resourceInState(data, "slow-vm") {
+		t.Errorf("[AC-S94f1f9-3-1] 'slow-vm' not found under \"resources\" after Apply; state:\n%s", data)
 	}
 }
 
@@ -150,10 +155,14 @@ func TestInflight_CyclesDoNotAccumulate(t *testing.T) {
 // Strategy:
 //   - One resource "exclusive-vm" with apply_delay of 600ms.
 //   - Daemon interval 100ms (6 cycles during the delay).
-//   - apply_count in the state file is incremented by the fake provider
-//     each time Apply is called.
-//   - During the 600ms Apply, apply_count must stay at 1.
-//   - After Apply completes, apply_count may reach 1 (success, then converged).
+//   - apply_count in the state file is incremented by the fake provider once per
+//     Apply call, inside the lock AFTER the delay sleep (see fakeprovider.Apply).
+//   - Finding #3: therefore, while the single Apply is still sleeping in its
+//     delay, apply_count is 0 (the increment has not happened yet).  It only
+//     becomes 1 once that Apply wakes up and writes.  The invariant this test
+//     enforces is that apply_count NEVER exceeds 1 during the delay window: the
+//     in-flight exclusion must prevent a second concurrent Apply from being
+//     launched (which would drive the count to ≥2).
 //
 // [AC-S94f1f9-3-2]
 func TestInflight_NoConcurrentApplyForSameResource(t *testing.T) {
@@ -219,8 +228,9 @@ func TestInflight_NoConcurrentApplyForSameResource(t *testing.T) {
 		}
 	}
 
-	// Wait for Apply to complete.
-	waitForStateFile(t, statePath, "exclusive-vm", 5*time.Second)
+	// Wait for Apply to complete (resource written under "resources", not merely
+	// present as a substring under apply_delay — see Finding #2).
+	waitForResourceInState(t, statePath, "exclusive-vm", 5*time.Second)
 
 	// Stop daemon.
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -394,12 +404,18 @@ func TestInflight_BackoffAfterApplyFailure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestInflight_BackoffDoesNotBlockUnrelatedResources verifies that a resource
-// in backoff does not prevent an unrelated resource (no shared dependency) from
-// being applied.
+// in backoff does not prevent an UNRELATED resource (no depends_on relationship)
+// from being applied.
 //
-// This guards the design decision: backoff suppresses only the failing resource
-// itself, not its downstream (which has its own Plan and should be applied on
-// its own merits once its direct dependencies are clear).
+// This is the complement of TestInflight_BackedOffUpstreamSkipsDownstream
+// (DD-1).  Together they draw the line precisely:
+//   - A resource that DEPENDS ON the backed-off one is skipped (DD-1: do not
+//     build on top of a broken/unconverged upstream).
+//   - A resource that does NOT depend on it is unaffected and applied on its own
+//     merits.
+//
+// The blast radius of a backed-off resource is exactly its transitive
+// downstream — no wider.
 func TestInflight_BackoffDoesNotBlockUnrelatedResources(t *testing.T) {
 	tmp := t.TempDir()
 	intentDir := filepath.Join(tmp, "intent")
@@ -465,4 +481,148 @@ func TestInflight_BackoffDoesNotBlockUnrelatedResources(t *testing.T) {
 
 	t.Logf("[backoff-isolation] state:\n%s", data)
 	t.Logf("[backoff-isolation] log:\n%s", stdout.String())
+}
+
+// ---------------------------------------------------------------------------
+// [AC-S94f1f9-3-3] (DD-1 regression) A backed-off upstream skips its downstream
+// ---------------------------------------------------------------------------
+
+// TestInflight_BackedOffUpstreamSkipsDownstream is the DD-1 regression test.
+//
+// DD-1 unifies the safety invariant across all three unconverged-upstream
+// causes: an upstream is "not converged" if its last Apply FAILED, if it is
+// UNOBSERVABLE (D-1), or if it is in per-resource BACKOFF (this test).  In every
+// case its transitive downstream must be skipped for the cycle — do not build a
+// resource on top of a broken/unconverged upstream.
+//
+// Before the fix, the backoff gate advanced downstream without marking the
+// upstream failed, so a resource that depends_on a backed-off (repeatedly
+// failing) upstream could be applied while the upstream was still broken — the
+// same hole D-1 closed for unobservable upstreams.
+//
+// Setup:
+//   - "dd1-up" always fails Apply (fail_inject) → enters per-resource backoff.
+//   - "dd1-down" depends_on "dd1-up".
+//   - Daemon interval 80ms; run ~2.5s (≈30 cycles).
+//
+// The distinguishing DD-1 signal: while "dd1-up" is in backoff, every cycle must
+// log a skip of "dd1-down" attributed to the failed/in-flight upstream.  Without
+// the fix, "dd1-up" would NOT be marked failed during backoff, so "dd1-down"
+// would be evaluated on its own (and, being converged after its one optimistic
+// cycle-1 launch, would silently produce no skip line at all).  The presence of
+// MANY "skip … dd1-down: upstream … dd1-up" lines is therefore only possible
+// when DD-1 is active.
+//
+// Contrast with TestInflight_BackoffDoesNotBlockUnrelatedResources: a resource
+// with NO depends_on on the failing one is unaffected by its backoff; a resource
+// that DOES depend on it is skipped.  The two tests together demonstrate the
+// distinction (dependency ⇒ skip; independence ⇒ unaffected).
+//
+// [AC-S94f1f9-3-3] (DD-1 / D-1 regression)
+func TestInflight_BackedOffUpstreamSkipsDownstream(t *testing.T) {
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	// Intent: dd1-up (no deps, always fails) → dd1-down (depends_on dd1-up).
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{
+				"provider": "fake",
+				"id":       "dd1-up",
+				"fields":   map[string]string{"name": "dd1-up", "size": "1"},
+			},
+			{
+				"provider":   "fake",
+				"id":         "dd1-down",
+				"depends_on": []string{"dd1-up"},
+				"fields":     map[string]string{"name": "dd1-down", "size": "2"},
+			},
+		},
+	})
+
+	// Seed state: dd1-up always fails Apply so it enters and stays in backoff.
+	initState := map[string]any{
+		"resources": map[string]any{},
+		"fail_inject": map[string]string{
+			"dd1-up": "injected-failure-for-DD1-test",
+		},
+	}
+	initData, _ := json.MarshalIndent(initState, "", "  ")
+	if err := os.WriteFile(statePath, initData, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fast interval so we accumulate many backoff cycles.
+	cmd, stdout := startDaemon(t, intentDir, statePath, "80ms")
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	// Let it run through several backoff cycles.
+	time.Sleep(2500 * time.Millisecond)
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Logf("[DD-1] SIGTERM: %v", err)
+	}
+	_ = cmd.Wait()
+
+	log := stdout.String()
+	t.Logf("[DD-1] daemon log:\n%s", log)
+
+	// Read final state.
+	finalData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("[DD-1] read final state: %v", err)
+	}
+	t.Logf("[DD-1] final state:\n%s", finalData)
+
+	// (1) Core: the always-failing upstream must NEVER reach reality.
+	if resourceInState(finalData, "dd1-up") {
+		t.Errorf("[DD-1] dd1-up must NOT be in reality (its Apply always fails); state:\n%s", finalData)
+	}
+
+	// (2) DD-1 signal: while dd1-up is in backoff, dd1-down must be actively
+	// skipped because of the failed/in-flight upstream — on many cycles.  This
+	// line is only produced when the backoff gate marks the upstream failed
+	// (the DD-1 fix).  Without the fix, dd1-down converges silently after its
+	// cycle-1 launch and no such skip line appears.
+	skipDownLines := strings.Count(log, "skip fake//dd1-down: upstream")
+	t.Logf("[DD-1] 'skip dd1-down: upstream …' lines: %d", skipDownLines)
+	if skipDownLines < 3 {
+		t.Errorf("[DD-1] expected many 'skip fake//dd1-down: upstream …' lines while dd1-up is backed off (DD-1: backed-off upstream skips downstream); got %d; log:\n%s",
+			skipDownLines, log)
+	}
+
+	// (3) The upstream must actually be in backoff (precondition for the signal).
+	if !strings.Contains(log, "backoff fake//dd1-up") {
+		t.Errorf("[DD-1] expected dd1-up to enter backoff; log:\n%s", log)
+	}
+
+	// (4) dd1-down must not be re-applied every cycle while its upstream is
+	// broken.  It may be applied at most once (the unavoidable optimistic
+	// cycle-1 launch before dd1-up's first failure is recorded); DD-1 prevents
+	// any further applies during the backoff window.  Assert apply_count stays
+	// tiny (≤1) despite ~30 cycles — without DD-1 a still-drifted downstream
+	// would be retried far more often.
+	var finalSF map[string]any
+	if err := json.Unmarshal(finalData, &finalSF); err != nil {
+		t.Fatalf("[DD-1] parse final state: %v", err)
+	}
+	applyCount, _ := finalSF["apply_count"].(map[string]any)
+	downCount := 0
+	if applyCount != nil {
+		if cnt, ok := applyCount["dd1-down"].(float64); ok {
+			downCount = int(cnt)
+		}
+	}
+	t.Logf("[DD-1] dd1-down apply_count over ~30 cycles: %d", downCount)
+	if downCount > 1 {
+		t.Errorf("[DD-1] dd1-down was applied %d times while upstream dd1-up was broken (expected ≤1: the optimistic cycle-1 launch only); DD-1 must skip downstream during backoff; log:\n%s",
+			downCount, log)
+	}
 }
