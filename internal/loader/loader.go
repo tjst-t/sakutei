@@ -88,11 +88,13 @@ type intentResource struct {
 	// DeletionPolicy controls how the engine handles resources absent from
 	// the intent.  "ExplicitAbsentOnly" (default) or "PruneWithinScope".
 	// Story Scf7762-1.
+	//
+	// NOTE: there is deliberately no "pruneable" field here.  As of Scf7762-1,
+	// pruneability is a TYPE-level property declared by the provider via
+	// Capabilities().Pruneable (ADR-0005), not a per-instance intent flag.  A
+	// legacy "pruneable" key in an intent file is silently ignored (provisional
+	// format; S33266e will formalise the schema and reject unknown keys).
 	DeletionPolicy string `json:"deletion_policy"`
-	// Pruneable opts this resource in to automatic deletion.  Must be true for
-	// prune to emit a Delete op (§12.3, ADR-0005).  Default false.
-	// Story Scf7762-1.
-	Pruneable bool `json:"pruneable"`
 }
 
 // LoadDir reads all JSON files in dir and returns the desired resources.
@@ -267,7 +269,6 @@ func loadFile(path string) ([]diff.DesiredResource, error) {
 			Fields:         fields,
 			DependsOn:      dependsOn,
 			DeletionPolicy: parseDeletionPolicy(r.DeletionPolicy),
-			Pruneable:      r.Pruneable,
 		})
 	}
 	return resources, nil

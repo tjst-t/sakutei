@@ -211,6 +211,16 @@ func runReconcile(args []string) {
 //
 // Only providers that implement provider.Lister can be pruned.  If the provider
 // does not implement Lister, runPrune returns immediately with no ops.
+//
+// IMPORTANT (Scf7762-1): the one-shot "sakutei reconcile" creates a FRESH
+// prune.Engine every invocation, so its List count-drop baseline (§12.4b) is
+// reset to 0 on every run and the count-drop halt can NEVER fire here — a
+// one-shot process has no "previous cycle" to compare against.  The count-drop
+// guard only works in the long-lived daemon (internal/reconcile.Run), which
+// holds a single Engine across cycles.  Running the daemon ("sakutei" with no
+// subcommand) is the intended, safe way to operate prune; the one-shot path is
+// a manual convenience that still honours the ListStatus / type-pruneable /
+// unknown≠absent guards but forgoes the cross-cycle count-drop protection.
 func runPrune(
 	ctx context.Context,
 	fp provider.Provider,

@@ -22,8 +22,11 @@
 //
 //  1. DeletionPolicy gate: PruneWithinScope required (open-world resources are
 //     never pruned by the engine).
-//  2. Pruneable gate: the resource must declare pruneable:true; the default is
-//     false (§12.3, ADR-0005).
+//  2. Pruneable gate (TYPE-level): the provider's Capabilities().Pruneable must
+//     be true.  This is a property of the resource TYPE, not of an individual
+//     intent declaration: ADR-0005 says "destructive TYPES default to
+//     pruneable:false".  The default is false, so a provider that says nothing
+//     is never a source of automatic destructive deletion (§12.3, ADR-0005).
 //  3. List completeness gate (§12.4b): if the List result is not ListComplete,
 //     prune is deferred for this cycle.
 //  4. List drop-rate gate (§12.4b): if the current List count has dropped more
@@ -190,22 +193,31 @@ func (e *Engine) ComputePrune(
 	// Update last count for the next cycle.
 	e.lastListCount = currentCount
 
+	// (2) Pruneable gate — TYPE level (§12.3, ADR-0005).
+	//
+	// pruneable is a property of the provider's resource TYPE, not of an
+	// individual intent declaration: "破壊的型は pruneable:false 既定".  If the
+	// provider does not declare its type pruneable, the engine NEVER issues a
+	// Delete for an orphan of that type — even when the scope is PruneWithinScope
+	// and every safety gate above passed.  This is evaluated once, up front,
+	// because it applies uniformly to every orphan of this provider.
+	typePruneable := observer.Capabilities().Pruneable
+
 	// Build the desired set for set-difference computation.
 	// Key: Local ID (same provider+scope assumption).
+	//
+	// Only PruneWithinScope declarations mark a Local as "desired for prune
+	// purposes": under ExplicitAbsentOnly (open-world) the intent does not claim
+	// to enumerate the scope, so absence from it is not evidence for deletion.
 	desiredSet := make(map[string]bool, len(desired))
-	pruneableSet := make(map[string]bool, len(desired))
 	for _, res := range desired {
-		local := res.ID.Local
 		if res.DeletionPolicy == core.PruneWithinScope {
-			desiredSet[local] = true
-			if res.Pruneable {
-				pruneableSet[local] = true
-			}
+			desiredSet[res.ID.Local] = true
 		}
 	}
 
 	// If no desired resource in this batch declares PruneWithinScope, there is
-	// nothing to prune.
+	// nothing to prune (the scope is open-world for this cycle).
 	if len(desiredSet) == 0 {
 		return PruneResult{}, nil
 	}
@@ -251,23 +263,17 @@ func (e *Engine) ComputePrune(
 			continue
 		}
 
-		// (2) Pruneable gate (§12.3, ADR-0005): destructive types require opt-in.
-		// A resource absent from the intent with DeletionPolicy=PruneWithinScope
-		// on other resources — but not pruneable — is reported but not deleted.
-		// Note: "pruneableSet" only contains resources that are in desired AND pruneable.
-		// For resources in reality but not in desired at all, we check whether
-		// any desired resource in this scope explicitly enables prune.
-		// Design decision: pruneable:true on at least one desired resource of the
-		// same scope signals that the scope as a whole permits pruning.
-		scopePermitsPrune := false
-		for _, res := range desired {
-			if res.DeletionPolicy == core.PruneWithinScope && res.Pruneable {
-				scopePermitsPrune = true
-				break
-			}
-		}
-		if !scopePermitsPrune {
-			fmt.Fprintf(errOut, "sakutei: prune defer %s: no pruneable:true resource in scope (pruneable defaults to false)\n", realID)
+		// (2) Pruneable gate — TYPE level (§12.3, ADR-0005).
+		//
+		// The orphan's provider type must declare Capabilities().Pruneable ==
+		// true.  Destructive types default to false, so an orphan of a
+		// non-pruneable type is reported (Deferred) but never deleted — even
+		// when the scope is PruneWithinScope.  This is the type-level replacement
+		// for the previous (buggy) scope-level "any pruneable in scope" gate,
+		// which could delete an orphan of a pruneable:false type merely because
+		// some other pruneable:true type shared the scope.
+		if !typePruneable {
+			fmt.Fprintf(errOut, "sakutei: prune defer %s: provider type is not pruneable (pruneable:false default; §12.3, ADR-0005)\n", realID)
 			result.Deferred = append(result.Deferred, realID)
 			continue
 		}

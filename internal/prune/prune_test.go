@@ -52,10 +52,18 @@ func (f *fakePartialList) List(_ context.Context, _ core.Scope) (core.ListResult
 
 // fakeObserver is a minimal provider.Provider that reports all resources as
 // AvailabilityOk with an empty state (sufficient for prune candidate observation).
-type fakeObserver struct{}
+//
+// pruneable controls the TYPE-level Capabilities().Pruneable the observer
+// reports (Scf7762-1): the prune engine consults it to decide whether an orphan
+// of this type may be deleted.  Default (zero value) false matches ADR-0005.
+type fakeObserver struct {
+	pruneable bool
+}
 
-func (f *fakeObserver) Schema() provider.Schema           { return provider.Schema{} }
-func (f *fakeObserver) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+func (f *fakeObserver) Schema() provider.Schema { return provider.Schema{} }
+func (f *fakeObserver) Capabilities() provider.Capabilities {
+	return provider.Capabilities{List: true, Pruneable: f.pruneable}
+}
 func (f *fakeObserver) Read(_ context.Context, _ string) (core.Observation, error) {
 	return core.Observation{
 		Availability: core.AvailabilityOk,
@@ -65,19 +73,25 @@ func (f *fakeObserver) Read(_ context.Context, _ string) (core.Observation, erro
 }
 func (f *fakeObserver) Apply(_ context.Context, _ core.Plan) error { return nil }
 
+// pruneableObserver returns a fakeObserver whose TYPE is pruneable (opt-in).
+func pruneableObserver() *fakeObserver { return &fakeObserver{pruneable: true} }
+
 // makeID constructs a simple ID for test use.
 func makeID(local string) core.ID {
 	return core.NewID("fake", core.NewScope(nil), local)
 }
 
 // pruneDesired builds a minimal DesiredResource slice for prune tests.
+//
+// Scf7762-1: pruneability is now a TYPE-level provider capability, not a
+// per-resource intent flag, so DesiredResource no longer carries a Pruneable
+// field.  Tests opt the type in via pruneableObserver().
 func pruneDesired(locals ...string) []diff.DesiredResource {
 	res := make([]diff.DesiredResource, len(locals))
 	for i, local := range locals {
 		res[i] = diff.DesiredResource{
 			ID:             makeID(local),
 			DeletionPolicy: core.PruneWithinScope,
-			Pruneable:      true,
 		}
 	}
 	return res
@@ -195,21 +209,24 @@ func TestPruneEngine_CountDrop_BelowThreshold_Proceeds(t *testing.T) {
 // §12.3: pruneable:false default
 // ---------------------------------------------------------------------------
 
-// TestPruneEngine_PruneableDefaultFalse verifies that resources absent from
-// desired with pruneable:false (the default) are deferred, not deleted
-// ([AC-Scf7762-1-1]).
+// TestPruneEngine_PruneableDefaultFalse verifies that orphans of a
+// non-pruneable TYPE (the default) are deferred, not deleted ([AC-Scf7762-1-1]).
+//
+// Scf7762-1: pruneability is a TYPE-level provider capability.  Here the
+// observer reports Capabilities().Pruneable == false (default), so the orphan
+// is deferred even though the scope is PruneWithinScope.
 func TestPruneEngine_PruneableDefaultFalse(t *testing.T) {
 	engine := prune.New()
 
 	// Reality has orphan-vm.
 	lister := &fakeCompleteList{ids: []core.ID{makeID("desired-vm"), makeID("orphan-vm")}}
 
-	// Desired: desired-vm with PruneWithinScope but pruneable:false.
+	// Desired: desired-vm with PruneWithinScope.  The provider TYPE is NOT
+	// pruneable (default false observer), so nothing is deleted.
 	desired := []diff.DesiredResource{
 		{
 			ID:             makeID("desired-vm"),
 			DeletionPolicy: core.PruneWithinScope,
-			Pruneable:      false, // explicit false (also the default)
 		},
 	}
 
@@ -246,7 +263,7 @@ func TestPruneEngine_UnknownNotAbsent(t *testing.T) {
 	// Desired: only desired-vm with PruneWithinScope + pruneable:true.
 	desired := pruneDesired("desired-vm")
 
-	result, err := engine.ComputePrune(context.Background(), lister, &fakeObserver{}, core.NewScope(nil), desired, unobservable, &bytes.Buffer{})
+	result, err := engine.ComputePrune(context.Background(), lister, pruneableObserver(), core.NewScope(nil), desired, unobservable, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("ComputePrune error: %v", err)
 	}
@@ -283,7 +300,8 @@ func TestPruneEngine_NormalDelete(t *testing.T) {
 	lister := &fakeCompleteList{ids: []core.ID{makeID("desired-vm"), makeID("orphan-vm")}}
 	desired := pruneDesired("desired-vm") // orphan-vm absent from desired
 
-	result, err := engine.ComputePrune(context.Background(), lister, &fakeObserver{}, core.NewScope(nil), desired, nil, &bytes.Buffer{})
+	// Type is pruneable (opt-in), so orphan-vm is approved for deletion.
+	result, err := engine.ComputePrune(context.Background(), lister, pruneableObserver(), core.NewScope(nil), desired, nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("ComputePrune error: %v", err)
 	}
@@ -301,5 +319,76 @@ func TestPruneEngine_NormalDelete(t *testing.T) {
 	}
 	if !result.DeleteOps[0].Destructive {
 		t.Errorf("expected Destructive=true for Delete op")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mixed-type safety (DD-1): a non-pruneable TYPE's orphan is never deleted,
+// even when a pruneable TYPE shares the scope.
+// ---------------------------------------------------------------------------
+
+// TestPruneEngine_MixedType_NonPruneableTypeNotDeleted verifies the type-level
+// safety guarantee introduced by Scf7762-1 (DD-1).
+//
+// The OLD (buggy) engine used a scope-level "any pruneable:true resource in the
+// scope permits pruning" gate, so an orphan of a pruneable:false type could be
+// deleted merely because another pruneable:true resource shared the scope.  The
+// new engine gates on the orphan's own provider TYPE (Capabilities().Pruneable),
+// so a non-pruneable type is protected regardless of what else is in the scope.
+//
+// We model "two types share the scope" by running two prune passes over the
+// SAME reality (same List) with two providers: one pruneable, one not.  The
+// non-pruneable provider's pass must delete nothing (all orphans deferred); the
+// pruneable provider's pass may delete.  The critical assertion is the first:
+// the non-pruneable pass never emits a Delete even though pruneable orphans
+// coexist in the very same reality set.
+func TestPruneEngine_MixedType_NonPruneableTypeNotDeleted(t *testing.T) {
+	// Reality contains orphans of both a "vm" type and a "record" type, none of
+	// which are in desired.  We represent both in a single List (same scope).
+	realityIDs := []core.ID{
+		makeID("desired-vm"),
+		makeID("vm-orphan"),     // would belong to the non-pruneable type
+		makeID("record-orphan"), // would belong to the pruneable type
+	}
+
+	desired := pruneDesired("desired-vm") // PruneWithinScope; both orphans absent
+
+	// Pass A: the NON-pruneable provider type.  Its Capabilities().Pruneable is
+	// false, so NO orphan may be deleted — not vm-orphan, and crucially not
+	// record-orphan either, even though a pruneable type also has orphans here.
+	engineA := prune.New()
+	listerA := &fakeCompleteList{ids: realityIDs}
+	resultA, err := engineA.ComputePrune(
+		context.Background(), listerA, &fakeObserver{ /* pruneable:false */ },
+		core.NewScope(nil), desired, nil, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("pass A ComputePrune error: %v", err)
+	}
+	if resultA.Halted {
+		t.Fatalf("pass A unexpectedly halted: %s", resultA.HaltReason)
+	}
+	if len(resultA.DeleteOps) != 0 {
+		t.Errorf("mixed-type safety violated: non-pruneable TYPE must delete nothing; got %d DeleteOps: %v",
+			len(resultA.DeleteOps), resultA.DeleteOps)
+	}
+	// Both orphans must be reported as deferred (reported, not deleted).
+	if len(resultA.Deferred) != 2 {
+		t.Errorf("expected both orphans deferred under non-pruneable type; got Deferred=%v", resultA.Deferred)
+	}
+
+	// Pass B: the pruneable provider type over the SAME reality.  This confirms
+	// the scope genuinely contains deletable orphans, so pass A's zero-deletion
+	// result is due to the type gate, not an empty candidate set.
+	engineB := prune.New()
+	listerB := &fakeCompleteList{ids: realityIDs}
+	resultB, err := engineB.ComputePrune(
+		context.Background(), listerB, pruneableObserver(),
+		core.NewScope(nil), desired, nil, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("pass B ComputePrune error: %v", err)
+	}
+	if len(resultB.DeleteOps) != 2 {
+		t.Errorf("pass B (pruneable type) should delete both orphans; got %d: %v",
+			len(resultB.DeleteOps), resultB.DeleteOps)
 	}
 }

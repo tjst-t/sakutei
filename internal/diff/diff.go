@@ -50,12 +50,12 @@ type DesiredResource struct {
 	// DeletionPolicy controls how the engine handles resources in reality that
 	// are absent from the intent (§12.2, ADR-0005).  Defaults to
 	// ExplicitAbsentOnly (open-world) when not declared.
+	//
+	// NOTE: pruneability is deliberately NOT a field here.  As of Scf7762-1 it
+	// is a TYPE-level property declared by the provider via
+	// Capabilities().Pruneable (ADR-0005: "破壊的型は pruneable:false 既定"), not
+	// a per-instance intent flag.  See internal/prune.
 	DeletionPolicy core.DeletionPolicy
-	// Pruneable declares whether this resource may be automatically deleted by
-	// the prune engine.  Defaults to false (§12.3, ADR-0005): destructive
-	// operations require explicit opt-in.  Only meaningful when DeletionPolicy
-	// is PruneWithinScope.
-	Pruneable bool
 }
 
 // Engine holds the provider schema used to drive the diff.

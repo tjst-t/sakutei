@@ -39,9 +39,11 @@ package acceptance
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -88,6 +90,33 @@ func seedStateListPartial(t *testing.T, statePath string) {
 	}
 	if err := os.WriteFile(statePath, data, 0600); err != nil {
 		t.Fatalf("seedStateListPartial: write: %v", err)
+	}
+}
+
+// seedStatePruneableCapability sets the pruneable_capability flag in an existing
+// state file, opting the fake provider TYPE in to automatic deletion.
+//
+// Scf7762-1: pruneability is a TYPE-level provider capability
+// (Capabilities().Pruneable), not a per-instance intent flag.  CLI tests that
+// exercise the deletion path therefore opt the type in here rather than via a
+// "pruneable":true field in the intent (which is now ignored).
+func seedStatePruneableCapability(t *testing.T, statePath string) {
+	t.Helper()
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("seedStatePruneableCapability: read: %v", err)
+	}
+	var sf map[string]any
+	if err := json.Unmarshal(raw, &sf); err != nil {
+		t.Fatalf("seedStatePruneableCapability: unmarshal: %v", err)
+	}
+	sf["pruneable_capability"] = true
+	data, err := json.MarshalIndent(sf, "", "  ")
+	if err != nil {
+		t.Fatalf("seedStatePruneableCapability: marshal: %v", err)
+	}
+	if err := os.WriteFile(statePath, data, 0600); err != nil {
+		t.Fatalf("seedStatePruneableCapability: write: %v", err)
 	}
 }
 
@@ -145,8 +174,10 @@ func resourceExistsInState(t *testing.T, statePath, localID string) bool {
 // TestDeletion_PruneableDefaultFalse verifies [AC-Scf7762-1-1].
 //
 // Setup: reality contains "orphan-vm" (not in desired).
-//        desired declares "desired-vm" with DeletionPolicy=PruneWithinScope
-//        but WITHOUT pruneable:true (default false).
+//        desired declares "desired-vm" with DeletionPolicy=PruneWithinScope.
+//        The fake provider TYPE is NOT opted in to pruning (no
+//        pruneable_capability flag → Capabilities().Pruneable defaults to
+//        false, ADR-0005).
 // Expected: reconcile exits 0, "orphan-vm" remains in the state file.
 func TestDeletion_PruneableDefaultFalse(t *testing.T) {
 	// [AC-Scf7762-1-1]
@@ -170,7 +201,7 @@ func TestDeletion_PruneableDefaultFalse(t *testing.T) {
 				"provider":        "fake",
 				"id":              "desired-vm",
 				"deletion_policy": "PruneWithinScope",
-				// pruneable not set → defaults to false
+				// Type is not opted in to pruning → Capabilities().Pruneable=false.
 				"fields": map[string]string{
 					"name": "desired-vm",
 					"size": "10",
@@ -231,8 +262,11 @@ func TestDeletion_ListDropHalt(t *testing.T) {
 
 	// Mark List as partial (ListPartial status) — simulates an incomplete List.
 	seedStateListPartial(t, statePath)
+	// Opt the TYPE in to pruning so the List-status halt is the ONLY reason no
+	// resource is deleted (isolates the guard under test).
+	seedStatePruneableCapability(t, statePath)
 
-	// Desired: only "vm-01" with PruneWithinScope + pruneable:true.
+	// Desired: only "vm-01" with PruneWithinScope.
 	// Without the halt guard, "vm-02"..."vm-05" would be deletion candidates.
 	writeIntentFile(t, intentDir, map[string]any{
 		"resources": []map[string]any{
@@ -240,7 +274,6 @@ func TestDeletion_ListDropHalt(t *testing.T) {
 				"provider":        "fake",
 				"id":              "vm-01",
 				"deletion_policy": "PruneWithinScope",
-				"pruneable":       true,
 				"fields": map[string]string{
 					"name": "vm-01",
 					"size": "1",
@@ -268,30 +301,177 @@ func TestDeletion_ListDropHalt(t *testing.T) {
 	t.Logf("[AC-Scf7762-1-2] PASS: no resources deleted (List drop halt). stdout=%s stderr=%s", stdout, stderr)
 }
 
-// TestDeletion_CountDropHalt verifies [AC-Scf7762-1-2] via the count-drop path.
+// TestDeletion_CountDropHalt_Daemon verifies [AC-Scf7762-1-2] via the
+// cross-cycle List count-drop path, exercised against the long-lived DAEMON.
 //
-// We simulate a >50% drop by having N resources in reality on cycle 1 (establishing
-// baseline), then reducing the state to a much smaller set and running reconcile
-// again.  The prune engine should halt rather than deleting the "dropped" resources.
+// The count-drop guard (§12.4b) is inherently cross-cycle: it compares this
+// cycle's List count against the previous cycle's.  Only the daemon holds a
+// single prune.Engine across cycles (the one-shot "sakutei reconcile" resets the
+// baseline every process, so its count-drop guard can never fire — see
+// cmd/sakutei/reconcile.go).  We therefore drive the daemon subprocess:
 //
-// For the fake provider, List always returns all resources in the state file, so
-// we can simulate a count drop by running a first reconcile to set the baseline
-// and then a second reconcile with a state file that has fewer resources — but
-// WITHOUT actually having removed them from the intent (so the drop appears to
-// be on the List side, not the intent side).
+//	cycle 1: List returns N=6 (baseline recorded), nothing pruned (type not yet
+//	         pruneable, so the 5 non-desired resources are merely deferred).
+//	then:    reality is externally shrunk to 2 resources (a >50% drop) and the
+//	         type is opted in to pruning, introducing a fresh pruneable orphan.
+//	next cycle: List returns 2 → 67% drop > 50% threshold → prune HALTS; the
+//	         orphan is NOT deleted this cycle.
 //
-// Note: The prune.Engine is process-scoped (S3 state).  The first reconcile
-// subprocess sets lastListCount=N.  The second subprocess starts fresh
-// (lastListCount=0) so the count-drop guard doesn't fire between processes.
+// We assert on BOTH the log (the HALT line) AND reality (the orphan survives),
+// and we measure the daemon by killing it directly — no pipe, no "| head", so
+// the check is not confused by shell plumbing.  The process is always killed.
+func TestDeletion_CountDropHalt_Daemon(t *testing.T) {
+	// [AC-Scf7762-1-2]
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	// Desired declares ONLY "keep-a" with PruneWithinScope.  Crucially, the
+	// resources we later drop are NOT in desired, so the additive Apply phase
+	// never re-creates them — keeping the post-drop List count stable at 2 and
+	// making the halt deterministic.
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{
+				"provider":        "fake",
+				"id":              "keep-a",
+				"deletion_policy": "PruneWithinScope",
+				"fields": map[string]string{
+					"name": "keep-a",
+					"size": "1",
+				},
+			},
+		},
+	})
+
+	// Baseline reality: keep-a + 5 others (List count = 6).  The type is NOT yet
+	// pruneable, so cycle 1 prunes nothing (the 5 non-desired resources are
+	// deferred) and the baseline is recorded as 6.
+	baseline := map[string]map[string]any{
+		"keep-a": {"name": "keep-a", "size": "1"},
+	}
+	for _, c := range []string{"b", "c", "d", "e", "f"} {
+		baseline["pad-"+c] = map[string]any{"name": "pad-" + c, "size": "1"}
+	}
+	seedStateWithResources(t, statePath, baseline)
+	// pruneable_capability deliberately NOT set here → default false for cycle 1.
+
+	// Launch the daemon with its merged stdout/stderr written to a FILE (not an
+	// in-memory buffer), so the test can poll the log without racing the
+	// subprocess's writer goroutine on a shared bytes.Buffer.
+	logPath := filepath.Join(tmp, "daemon.log")
+	cmd, waitCmd := startDaemonToFile(t, intentDir, statePath, "300ms", logPath)
+	killed := false
+	defer func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = waitCmd()
+		}
+	}()
+
+	// Wait until cycle 1 has completed so the baseline (List=6) is recorded.
+	// We key on the first cycle summary line the daemon prints each cycle.
+	if !waitForLogFile(logPath, "cycle 1:", 5*time.Second) {
+		t.Fatalf("[AC-Scf7762-1-2] daemon did not complete cycle 1 in time; log:\n%s", readFileString(logPath))
+	}
+
+	// Now externally shrink reality to 2 resources (keep-a + a fresh pruneable
+	// orphan) AND opt the type in to pruning.  List count drops 6 → 2 (67%).
+	// Without the count-drop guard, "orphan-target" would be deleted.
+	seedStateWithResources(t, statePath, map[string]map[string]any{
+		"keep-a":        {"name": "keep-a", "size": "1"},
+		"orphan-target": {"name": "orphan-target", "size": "9"},
+	})
+	seedStatePruneableCapability(t, statePath)
+
+	// Wait for the daemon to observe the drop and HALT prune.  We kill the daemon
+	// as soon as we see the HALT so the assertion is made while prune is halted
+	// (a later cycle would compare 2→2 = 0% drop and could then prune).
+	if !waitForLogFile(logPath, "prune HALT", 5*time.Second) {
+		t.Fatalf("[AC-Scf7762-1-2] expected a count-drop prune HALT in the daemon log; log:\n%s", readFileString(logPath))
+	}
+	// Stop the daemon directly and measure its state — no shell pipe involved,
+	// exit is observed via cmd.Wait, not through any "| head" plumbing.
+	_ = cmd.Process.Kill()
+	_ = waitCmd()
+	killed = true
+
+	logStr := readFileString(logPath)
+
+	// Reality check: the orphan must still exist (halt prevented its deletion).
+	if !resourceExistsInState(t, statePath, "orphan-target") {
+		t.Errorf("[AC-Scf7762-1-2] orphan-target was deleted despite a >50%% List count drop; count-drop halt must prevent this. log:\n%s", logStr)
+	}
+	// keep-a (desired) must also still exist.
+	if !resourceExistsInState(t, statePath, "keep-a") {
+		t.Errorf("[AC-Scf7762-1-2] keep-a was unexpectedly removed")
+	}
+
+	// The halt must be reported in the log with the drop ratio.
+	if !strings.Contains(logStr, "dropped from 6 to 2") {
+		t.Errorf("[AC-Scf7762-1-2] expected the halt log to report the 6→2 count drop; log:\n%s", logStr)
+	}
+	t.Logf("[AC-Scf7762-1-2] PASS: count-drop halt fired; orphan-target retained.")
+}
+
+// startDaemonToFile launches "sakutei --intent ... --state ... --interval ..."
+// with merged stdout+stderr written to logPath.  It returns the *exec.Cmd and a
+// wait closure.  Writing to a file (rather than an in-memory buffer) lets the
+// test poll the log via the filesystem without racing the subprocess writer.
 //
-// To test the count-drop gate in-process we use a unit-style test instead.
-// This test validates the List-status gate which achieves the same protective
-// outcome (§12.4c) and is observable at the CLI level.
-func TestDeletion_CountDropHalt_ViaListStatus(t *testing.T) {
-	// [AC-Scf7762-1-2] — list-status gate variant (count-drop unit test is in prune_test)
-	// This is structurally identical to TestDeletion_ListDropHalt but uses a
-	// comment to clarify scope.  See prune_test.go for the count-drop unit test.
-	t.Skip("Covered by TestDeletion_ListDropHalt (list_partial status gate); count-drop gate tested in internal/prune")
+// The caller MUST ensure the process is eventually killed and waited on.
+func startDaemonToFile(t *testing.T, intentDir, statePath, interval, logPath string) (*exec.Cmd, func() error) {
+	t.Helper()
+	bin := buildBinary(t)
+
+	logF, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("startDaemonToFile: create log file: %v", err)
+	}
+
+	cmd := exec.Command(bin,
+		"--intent", intentDir,
+		"--state", statePath,
+		"--interval", interval,
+	)
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+
+	if err := cmd.Start(); err != nil {
+		_ = logF.Close()
+		t.Fatalf("startDaemonToFile: Start: %v", err)
+	}
+	// wait closes the log file after the process exits so all output is flushed.
+	wait := func() error {
+		err := cmd.Wait()
+		_ = logF.Close()
+		return err
+	}
+	return cmd, wait
+}
+
+// waitForLogFile polls logPath until its content contains substr or the deadline
+// passes.  Returns true on match.
+func waitForLogFile(logPath, substr string, deadline time.Duration) bool {
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		data, err := os.ReadFile(logPath)
+		if err == nil && strings.Contains(string(data), substr) {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// readFileString reads logPath and returns its content as a string (empty on
+// error).  Used only for diagnostic messages.
+func readFileString(logPath string) string {
+	data, _ := os.ReadFile(logPath)
+	return string(data)
 }
 
 // ---------------------------------------------------------------------------
@@ -320,8 +500,11 @@ func TestDeletion_UnknownNotAbsent(t *testing.T) {
 
 	// Mark "unreachable-vm" as observe-unknown (simulates target unreachable).
 	seedStateObserveUnknown(t, statePath, "unreachable-vm")
+	// Opt the TYPE in to pruning so the unknown≠absent gate is the ONLY reason
+	// "unreachable-vm" survives (isolates the guard under test).
+	seedStatePruneableCapability(t, statePath)
 
-	// Desired: only "desired-vm" with PruneWithinScope + pruneable:true.
+	// Desired: only "desired-vm" with PruneWithinScope.
 	// "unreachable-vm" is absent from desired; without the unknown≠absent guard
 	// it would be a deletion candidate.
 	writeIntentFile(t, intentDir, map[string]any{
@@ -330,7 +513,6 @@ func TestDeletion_UnknownNotAbsent(t *testing.T) {
 				"provider":        "fake",
 				"id":              "desired-vm",
 				"deletion_policy": "PruneWithinScope",
-				"pruneable":       true,
 				"fields": map[string]string{
 					"name": "desired-vm",
 					"size": "10",
@@ -375,15 +557,16 @@ func TestDeletion_PruneWithinScope_NormalPath(t *testing.T) {
 		"desired-vm":   {"name": "desired-vm", "size": "10"},
 		"to-delete-vm": {"name": "to-delete-vm", "size": "5"},
 	})
+	// Opt the fake TYPE in to pruning (Capabilities().Pruneable=true).
+	seedStatePruneableCapability(t, statePath)
 
-	// Desired: only "desired-vm" with PruneWithinScope + pruneable:true.
+	// Desired: only "desired-vm" with PruneWithinScope.
 	writeIntentFile(t, intentDir, map[string]any{
 		"resources": []map[string]any{
 			{
 				"provider":        "fake",
 				"id":              "desired-vm",
 				"deletion_policy": "PruneWithinScope",
-				"pruneable":       true,
 				"fields": map[string]string{
 					"name": "desired-vm",
 					"size": "10",

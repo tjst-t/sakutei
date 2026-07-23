@@ -83,13 +83,22 @@ type storedResource struct {
 // status instead of ListComplete.  Used by Scf7762-1 tests to simulate an
 // incomplete List result triggering the prune-halt safety guard.
 // This is a test-only mechanism; production providers do not use this field.
+//
+// PruneableCapability is a boolean that controls what Capabilities().Pruneable
+// reports for the fake provider TYPE.  Default false (matching ADR-0005's
+// "destructive types default to pruneable:false").  Tests set it to true (via
+// SetPruneable) to opt the whole fake type in to automatic deletion so the
+// normal prune path can be exercised.  This is a type-level property, so it is
+// a single boolean, not a per-resource map.
+// This is a test-only mechanism; production providers do not use this field.
 type stateFile struct {
-	Resources      map[string]storedResource `json:"resources"`
-	FailInject     map[string]string         `json:"fail_inject,omitempty"`
-	ObserveUnknown map[string]string         `json:"observe_unknown,omitempty"`
-	ApplyDelay     map[string]string         `json:"apply_delay,omitempty"`
-	ApplyCount     map[string]int            `json:"apply_count,omitempty"`
-	ListPartial    bool                      `json:"list_partial,omitempty"`
+	Resources           map[string]storedResource `json:"resources"`
+	FailInject          map[string]string         `json:"fail_inject,omitempty"`
+	ObserveUnknown      map[string]string         `json:"observe_unknown,omitempty"`
+	ApplyDelay          map[string]string         `json:"apply_delay,omitempty"`
+	ApplyCount          map[string]int            `json:"apply_count,omitempty"`
+	ListPartial         bool                      `json:"list_partial,omitempty"`
+	PruneableCapability bool                      `json:"pruneable_capability,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
@@ -136,11 +145,29 @@ func (p *Provider) Schema() provider.Schema {
 	}
 }
 
-// Capabilities declares the fake as a fully-capable provider for testing.
+// Capabilities declares the fake's capabilities for testing.
+//
+// TrueObserve and List are always true (the fake fully observes and enumerates
+// its in-memory reality).  Pruneable is TYPE-level and defaults to false
+// (ADR-0005): the fake reports its type as non-pruneable unless a test opts in
+// via SetPruneable, which flips the pruneable_capability flag in the state
+// file.  Reading the flag from the state file (rather than a struct field) lets
+// a subprocess-launched daemon observe the setting written by the parent test.
+//
+// If the state file cannot be read, Capabilities falls back to the safe default
+// (Pruneable:false): an unreadable state is never a licence to delete.
 func (p *Provider) Capabilities() provider.Capabilities {
+	p.mu.Lock()
+	sf, err := p.load()
+	p.mu.Unlock()
+	pruneable := false
+	if err == nil {
+		pruneable = sf.PruneableCapability
+	}
 	return provider.Capabilities{
 		TrueObserve: true,
 		List:        true,
+		Pruneable:   pruneable,
 	}
 }
 
@@ -376,6 +403,20 @@ func (p *Provider) SetListPartial(partial bool) error {
 		return fmt.Errorf("fakeprovider: load state for list partial: %w", err)
 	}
 	sf.ListPartial = partial
+	return p.save(sf)
+}
+
+// SetPruneable writes the pruneable_capability flag into the state file.
+// When true, subsequent Capabilities() calls report Pruneable:true, opting the
+// fake provider TYPE in to automatic deletion by the prune engine (ADR-0005).
+// Default (unset) is false — destructive types are not pruneable unless the
+// author opts in.  This is a test-only helper for Scf7762-1.
+func (p *Provider) SetPruneable(pruneable bool) error {
+	sf, err := p.load()
+	if err != nil {
+		return fmt.Errorf("fakeprovider: load state for pruneable capability: %w", err)
+	}
+	sf.PruneableCapability = pruneable
 	return p.save(sf)
 }
 

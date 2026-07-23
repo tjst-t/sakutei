@@ -54,6 +54,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -137,6 +138,21 @@ func Run(ctx context.Context, cfg Config) error {
 	engine := diff.New(fp.Schema())
 	var exec executor.Executor = executor.New()
 
+	// Scf7762-1: create the prune Engine ONCE, here, outside the cycle loop, so
+	// its S3 baseline (lastListCount) survives across cycles for the whole daemon
+	// lifetime.  This is what makes the List count-drop halt (§12.4b) work: cycle
+	// N records the baseline, and cycle N+1 compares against it.  If the engine
+	// were recreated each cycle (as the one-shot "sakutei reconcile" is forced to
+	// do, per process), the baseline would reset every cycle and the count-drop
+	// gate could never fire.  The daemon is the intended home for prune.
+	//
+	// This is memory-only S3 state (ADR-0015): it resets on daemon restart, which
+	// is correct — the first post-restart cycle re-establishes the baseline.
+	var pruneEngine *prune.Engine
+	if _, isLister := fp.(provider.Lister); isLister {
+		pruneEngine = prune.New()
+	}
+
 	cycleNum := 0
 	for {
 		// Check for shutdown before each cycle.
@@ -150,7 +166,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 
 		cycleNum++
-		res, cycleErr := runCycleAsync(ctx, engine, fp, exec, ifl, cfg)
+		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, fp, exec, ifl, cfg)
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
@@ -176,6 +192,16 @@ func Run(ctx context.Context, cfg Config) error {
 			// S94f1f9-3: resources suppressed by per-resource backoff.
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d resource(s) in backoff (will retry later): %v\n",
 				cycleNum, len(res.BackedOff), res.BackedOff)
+		}
+		if res.Pruned > 0 {
+			// Scf7762-1: orphans deleted by the prune phase this cycle.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: pruned=%d orphan(s) (reality − desired)\n",
+				cycleNum, res.Pruned)
+		}
+		if res.PruneHalted {
+			// Scf7762-1: a prune safety guard halted deletion this cycle.
+			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: prune HALTED (safety guard); no orphan deleted this cycle\n",
+				cycleNum)
 		}
 
 		// Jitter sleep: base interval + up to 10%.
@@ -215,6 +241,15 @@ type CycleResult struct {
 	// BackedOff is the list of resource Local IDs that were suppressed because
 	// they are in a per-resource backoff cooldown period.
 	BackedOff []string
+
+	// Scf7762-1 prune fields:
+
+	// Pruned is the number of orphan resources deleted this cycle by the prune
+	// phase (reality − desired under PruneWithinScope).
+	Pruned int
+	// PruneHalted is true when a prune safety guard (ListStatus / count-drop)
+	// halted prune for this cycle so that NO orphan was deleted.
+	PruneHalted bool
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -251,6 +286,7 @@ type CycleResult struct {
 func runCycleAsync(
 	ctx context.Context,
 	engine *diff.Engine,
+	pruneEngine *prune.Engine,
 	fp provider.Provider,
 	exec executor.Executor,
 	ifl *InFlightSet,
@@ -309,14 +345,96 @@ func runCycleAsync(
 		return CycleResult{Observed: observed}, waveErr
 	}
 
+	// Phase 3: Prune (§12, ADR-0005, Scf7762-1).
+	//
+	// After the additive Apply phase, compute the set-difference (reality −
+	// desired) for any PruneWithinScope scope and delete approved orphans.  The
+	// prune engine is shared across cycles (created once in Run) so its count-drop
+	// baseline persists — that is the whole point of running prune in the daemon.
+	//
+	// Safety note: prune runs every cycle, but its Deletes are only ever emitted
+	// after the engine's guards (ListStatus / count-drop / type-pruneable /
+	// unknown≠absent) pass.  We pass the SAME unobservable set the Apply phase
+	// used so a target that could not be observed this cycle is never treated as
+	// absent (unknown ≠ absent).  Change budget / remediation mode (later Stories)
+	// will wrap this phase; for now prune executes its approved Deletes directly.
+	pruned, pruneHalted := runDaemonPrune(ctx, pruneEngine, fp, exec, desired, unobservable, cfg.ErrOut)
+
 	return CycleResult{
-		Observed:  observed,
-		Applied:   appliedCount,
-		Launched:  launched,
-		InFlight:  inFlightThisCycle,
-		BackedOff: backedOff,
-		Skipped:   skipped,
+		Observed:    observed,
+		Applied:     appliedCount,
+		Launched:    launched,
+		InFlight:    inFlightThisCycle,
+		BackedOff:   backedOff,
+		Skipped:     skipped,
+		Pruned:      pruned,
+		PruneHalted: pruneHalted,
 	}, nil
+}
+
+// runDaemonPrune runs the prune phase for one daemon cycle using the shared,
+// long-lived prune engine.  It returns the number of Delete ops successfully
+// applied and whether prune was halted by a safety guard this cycle.
+//
+// If pruneEngine is nil (the provider is not a Lister), prune is a no-op.
+//
+// Unlike the one-shot "sakutei reconcile" prune (cmd/sakutei/reconcile.go), the
+// engine here lives for the whole daemon run, so the count-drop halt (§12.4b)
+// works across cycles.
+func runDaemonPrune(
+	ctx context.Context,
+	pruneEngine *prune.Engine,
+	fp provider.Provider,
+	exec executor.Executor,
+	desired []diff.DesiredResource,
+	unobservable map[string]bool,
+	errOut io.Writer,
+) (pruned int, halted bool) {
+	if pruneEngine == nil {
+		return 0, false
+	}
+	lister, ok := fp.(provider.Lister)
+	if !ok {
+		return 0, false
+	}
+
+	// Reject PruneWithinScope declared against a non-Lister provider (defensive;
+	// this daemon only reaches here when fp IS a Lister, but the validation also
+	// covers a future mix of providers).
+	if err := prune.ValidatePrunePolicy(desired, fp); err != nil {
+		fmt.Fprintf(errOut, "sakutei: prune policy error: %v\n", err)
+		return 0, false
+	}
+
+	// Empty scope for the fake provider (Sprint 1 simplification, mirrors the
+	// one-shot path).  Multi-scope prune is a later Story.
+	scope := core.NewScope(nil)
+
+	result, err := pruneEngine.ComputePrune(ctx, lister, fp, scope, desired, unobservable, errOut)
+	if err != nil {
+		fmt.Fprintf(errOut, "sakutei: prune compute error: %v\n", err)
+		return 0, false
+	}
+	if result.Halted {
+		fmt.Fprintf(errOut, "sakutei: prune halted this cycle: %s\n", result.HaltReason)
+		return 0, true
+	}
+	for _, id := range result.Deferred {
+		fmt.Fprintf(errOut, "sakutei: prune deferred for %s (safety guard: type not pruneable or unknown≠absent)\n", id)
+	}
+
+	// Apply each approved Delete op.  A failure is logged and the loop continues;
+	// the next cycle re-observes and retries (level-triggered).
+	for _, op := range result.DeleteOps {
+		plan := core.Plan{Ops: []core.Op{op}}
+		if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
+			fmt.Fprintf(errOut, "sakutei: prune apply %s: %v\n", op.Target, applyErr)
+			continue
+		}
+		fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; PruneWithinScope)\n", op.Target)
+		pruned++
+	}
+	return pruned, false
 }
 
 // applyWavesAsync is the async-Apply version of applyWaves (S94f1f9-3).

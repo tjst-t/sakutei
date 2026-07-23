@@ -24,6 +24,10 @@ package provider
 //     true (assume dangerous; non-symmetric principle).
 //   - List:false       → DeletionPolicy: PruneWithinScope is rejected at
 //     load time; open-world (ExplicitAbsentOnly) only.
+//   - Pruneable:false  → the engine never issues a Delete for an orphan of this
+//     type, even under PruneWithinScope.  Destructive types (volume/VM) default
+//     to false; deletion of the type is an explicit, per-provider opt-in
+//     (§12.3, ADR-0005).
 //   - BulkObserve:true → the executor uses the BulkObserver path; the SDK
 //     falls back transparently to per-resource Read for non-declaring providers.
 //
@@ -38,6 +42,23 @@ type Capabilities struct {
 	// List indicates the provider implements the Lister interface, enabling
 	// closed-world (prune) deletion semantics.
 	List bool
+
+	// Pruneable declares whether this provider's resource TYPE may be
+	// automatically deleted by the prune engine when an instance is orphaned
+	// (present in reality, absent from desired) under DeletionPolicy
+	// PruneWithinScope.
+	//
+	// It is a type-level property, not a per-instance one: ADR-0005 says
+	// "destructive TYPES default to pruneable:false".  The provider author
+	// decides once, for the whole type, whether losing an orphan to automatic
+	// deletion is acceptable.  Non-destructive types (e.g. a DNS record whose
+	// re-creation is cheap and reversible) may set this to true; destructive
+	// types (volume = data loss, VM, VLAN = outage) leave it false and require
+	// a deliberate opt-in in code before the engine will ever delete them.
+	//
+	// The default (false) is the safe one: a provider that says nothing is
+	// never a source of automatic destructive deletion.
+	Pruneable bool
 
 	// Converging indicates the provider can detect when the remote system is
 	// itself mid-convergence and return AvailabilityConverging (§4.5).
