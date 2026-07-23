@@ -431,7 +431,6 @@ func TestDaemonAlertOnly_NeverApplies(t *testing.T) {
 	before := stateFileBytes(t, statePath)
 
 	// Start daemon in alert-only mode with a fast interval.
-	var logBuf bytes.Buffer
 	cmd, _ := startDaemonWithFlags(t, filepath.Join(tmp, "daemon.log"),
 		"--intent", intentDir,
 		"--state", statePath,
@@ -474,7 +473,7 @@ func TestDaemonAlertOnly_NeverApplies(t *testing.T) {
 	if err != nil {
 		t.Logf("[AC-Scf7762-3-1/daemon] could not read log: %v", err)
 	}
-	log := string(logData) + logBuf.String()
+	log := string(logData)
 	if !strings.Contains(log, "alert-only") {
 		t.Errorf("[AC-Scf7762-3-1/daemon] expected 'alert-only' in daemon log; got:\n%s", log)
 	}

@@ -203,10 +203,17 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 
 		cycleNum++
-		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, cfg, cfg.Remediation)
+		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, cfg)
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
+		} else if res.AlertOnly && res.DriftCount > 0 {
+			// Scf7762-3: in alert-only mode drift was detected but nothing was
+			// applied — do NOT print "converged (no changes)" (it contradicts the
+			// "alert-only: N drifted" line emitted below).  The alert-only block
+			// further down carries the detailed drift report.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d drifted (alert-only, no changes)\n",
+				cycleNum, res.Observed)
 		} else if res.Applied == 0 && res.Launched == 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d converged (no changes)\n",
 				cycleNum, res.Observed)
@@ -374,7 +381,6 @@ func runCycleAsync(
 	exec executor.Executor,
 	ifl *InFlightSet,
 	cfg Config,
-	rem remediation.Config,
 ) (CycleResult, error) {
 	// Load desired state fresh each cycle.
 	desired, loadErr := loader.LoadDir(cfg.IntentDir)
@@ -435,7 +441,7 @@ func runCycleAsync(
 	// alert-only / freeze: do NOT Apply or prune.  Report drift Events and
 	// return immediately.  The budget gate (Phase 2c) is skipped entirely —
 	// there is nothing to count because no op will execute.
-	if rem.IsAlertOnly() {
+	if cfg.Remediation.IsAlertOnly() {
 		var driftEvents []string
 		driftCount := 0
 		for _, res := range desired {
@@ -460,7 +466,7 @@ func runCycleAsync(
 				default:
 					kindStr = "OP"
 				}
-				driftEvents = append(driftEvents, fmt.Sprintf("%s %s (would be %s)", kindStr, op.Target, kindStr))
+				driftEvents = append(driftEvents, fmt.Sprintf("would be %s %s", kindStr, op.Target))
 			}
 		}
 		// Also report prune candidates as drift.

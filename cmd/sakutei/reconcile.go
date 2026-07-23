@@ -231,7 +231,7 @@ func runReconcile(args []string) {
 				default:
 					kindStr = "OP"
 				}
-				driftEvents = append(driftEvents, fmt.Sprintf("%s %s (would be %s)", kindStr, op.Target, kindStr))
+				driftEvents = append(driftEvents, fmt.Sprintf("would be %s %s", kindStr, op.Target))
 			}
 		}
 		for _, op := range precomputedPruneOps {
