@@ -204,3 +204,226 @@ VET exit: 0
 PASS
 ok  	github.com/tjst-t/sakutei/tests/acceptance	1.040s
 TEST exit: 0
+==========================================
+S94f1f9-1 review fixes build log
+2026-07-23T08:35:04Z
+==========================================
+
+### go build ./...
+build exit=0
+
+### go vet ./...
+vet exit=0
+
+### go test ./... -count=1
+?   	github.com/tjst-t/sakutei/cmd/sakutei	[no test files]
+?   	github.com/tjst-t/sakutei/internal/diff	[no test files]
+?   	github.com/tjst-t/sakutei/internal/executor	[no test files]
+?   	github.com/tjst-t/sakutei/internal/fakeprovider	[no test files]
+?   	github.com/tjst-t/sakutei/internal/loader	[no test files]
+?   	github.com/tjst-t/sakutei/internal/reconcile	[no test files]
+?   	github.com/tjst-t/sakutei/pkg/core	[no test files]
+?   	github.com/tjst-t/sakutei/pkg/provider	[no test files]
+ok  	github.com/tjst-t/sakutei/tests/acceptance	1.037s
+test exit=0
+
+### go test ./... -count=1 -v (for --- PASS count)
+?   	github.com/tjst-t/sakutei/cmd/sakutei	[no test files]
+?   	github.com/tjst-t/sakutei/internal/diff	[no test files]
+?   	github.com/tjst-t/sakutei/internal/executor	[no test files]
+?   	github.com/tjst-t/sakutei/internal/fakeprovider	[no test files]
+?   	github.com/tjst-t/sakutei/internal/loader	[no test files]
+?   	github.com/tjst-t/sakutei/internal/reconcile	[no test files]
+?   	github.com/tjst-t/sakutei/pkg/core	[no test files]
+?   	github.com/tjst-t/sakutei/pkg/provider	[no test files]
+=== RUN   TestCompositeID_Equality
+--- PASS: TestCompositeID_Equality (0.00s)
+=== RUN   TestCompositeID_StringContainsAllComponents
+--- PASS: TestCompositeID_StringContainsAllComponents (0.00s)
+=== RUN   TestCompositeID_EmptyScopeIsValid
+--- PASS: TestCompositeID_EmptyScopeIsValid (0.00s)
+=== RUN   TestScope_Path_Deterministic
+--- PASS: TestScope_Path_Deterministic (0.00s)
+=== RUN   TestState_TypedValues
+--- PASS: TestState_TypedValues (0.00s)
+=== RUN   TestObservation_Availability
+--- PASS: TestObservation_Availability (0.00s)
+=== RUN   TestObservation_ThreeValuesDistinct
+--- PASS: TestObservation_ThreeValuesDistinct (0.00s)
+=== RUN   TestPlan_OpsAndDestructive
+--- PASS: TestPlan_OpsAndDestructive (0.00s)
+=== RUN   TestPlan_DeleteIsDestructive
+--- PASS: TestPlan_DeleteIsDestructive (0.00s)
+=== RUN   TestPlan_UpdateOp
+--- PASS: TestPlan_UpdateOp (0.00s)
+=== RUN   TestPlan_CauseTags
+--- PASS: TestPlan_CauseTags (0.00s)
+=== RUN   TestPlan_OpKinds
+--- PASS: TestPlan_OpKinds (0.00s)
+=== RUN   TestProviderCapabilities_ZeroValue
+--- PASS: TestProviderCapabilities_ZeroValue (0.00s)
+=== RUN   TestProviderSchema_ZeroValue
+--- PASS: TestProviderSchema_ZeroValue (0.00s)
+=== RUN   TestTransientAndPermanentError
+--- PASS: TestTransientAndPermanentError (0.00s)
+=== RUN   TestLoop_CreatesResource
+    loop_test.go:140: [AC-S94f1f9-1-1] state file after creation:
+        {
+          "resources": {
+            "loop-vm": {
+              "fields": {
+                "name": "loop-vm",
+                "size": "20"
+              }
+            }
+          }
+        }
+    loop_test.go:141: [AC-S94f1f9-1-1] daemon output so far:
+        sakutei: convergence loop started (interval=200ms, intent=/tmp/TestLoop_CreatesResource653310992/001/intent, state=/tmp/TestLoop_CreatesResource653310992/001/state.json)
+        sakutei: cycle 1: observed=1 applied=1
+--- PASS: TestLoop_CreatesResource (0.03s)
+=== RUN   TestLoop_DriftCorrection
+    loop_test.go:216: [AC-S94f1f9-1-2] injected drift: size→999
+    loop_test.go:273: [AC-S94f1f9-1-2] drift corrected; name="drift-loop-vm" size="20"
+    loop_test.go:274: [AC-S94f1f9-1-2] daemon output:
+        sakutei: convergence loop started (interval=200ms, intent=/tmp/TestLoop_DriftCorrection567942049/001/intent, state=/tmp/TestLoop_DriftCorrection567942049/001/state.json)
+        sakutei: cycle 1: observed=1 applied=1
+        sakutei: cycle 2: observed=1 applied=1
+--- PASS: TestLoop_DriftCorrection (0.24s)
+=== RUN   TestLoop_GracefulStop
+    loop_test.go:349: [AC-S94f1f9-1-3] daemon exited after SIGTERM; output:
+        sakutei: convergence loop started (interval=200ms, intent=/tmp/TestLoop_GracefulStop434797187/001/intent, state=/tmp/TestLoop_GracefulStop434797187/001/state.json)
+        sakutei: cycle 1: observed=1 applied=1
+        sakutei: shutdown signal received; stopping after cycle 1
+--- PASS: TestLoop_GracefulStop (0.03s)
+=== RUN   TestLoop_StatelessObservation
+    loop_test.go:419: [AC-S94f1f9-1-3] final state:
+        {
+          "resources": {
+            "stateless-loop-vm": {
+              "fields": {
+                "name": "stateless-loop-vm",
+                "size": "42"
+              }
+            }
+          }
+        }
+    loop_test.go:420: [AC-S94f1f9-1-3] daemon output:
+        sakutei: convergence loop started (interval=200ms, intent=/tmp/TestLoop_StatelessObservation3510214405/001/intent, state=/tmp/TestLoop_StatelessObservation3510214405/001/state.json)
+        sakutei: cycle 1: observed=1 applied=1
+        sakutei: cycle 2: observed=1 converged (no changes)
+        sakutei: cycle 3: observed=1 converged (no changes)
+--- PASS: TestLoop_StatelessObservation (0.53s)
+=== RUN   TestFieldMerge_UpdatePreservesUnchangedFields
+    loop_test.go:507: field-merge: name="merge-vm" size="50" (both correct)
+--- PASS: TestFieldMerge_UpdatePreservesUnchangedFields (0.00s)
+=== RUN   TestPlan_CreateDiff
+    plan_test.go:175: [AC-Sead944-2-1] plan output:
+        Plan: 1 change(s)
+        
+        + CREATE fake//test-vm
+          reason: resource fake//test-vm does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "test-vm"
+          + size                  (new) → "10"
+        
+--- PASS: TestPlan_CreateDiff (0.00s)
+=== RUN   TestPlan_DoesNotModifyState
+=== RUN   TestPlan_DoesNotModifyState/absent
+    plan_test.go:258: [AC-Sead944-2-2] state file unchanged (before=0 bytes, after=0 bytes)
+=== RUN   TestPlan_DoesNotModifyState/existing
+    plan_test.go:258: [AC-Sead944-2-2] state file unchanged (before=16 bytes, after=16 bytes)
+--- PASS: TestPlan_DoesNotModifyState (0.01s)
+    --- PASS: TestPlan_DoesNotModifyState/absent (0.00s)
+    --- PASS: TestPlan_DoesNotModifyState/existing (0.00s)
+=== RUN   TestPlan_ConvergedWhenRealityMatchesDesired
+    plan_test.go:318: [AC-Sead944-2-3] plan output:
+        Converged (no changes)
+--- PASS: TestPlan_ConvergedWhenRealityMatchesDesired (0.00s)
+=== RUN   TestPlan_UpdateDiff
+    plan_test.go:374: plan output:
+        Plan: 1 change(s)
+        
+        ~ UPDATE fake//drift-vm
+          reason: resource fake//drift-vm has 1 field(s) out of sync
+          cause:  A
+          ~ size                  "10" → "20"
+        
+--- PASS: TestPlan_UpdateDiff (0.00s)
+=== RUN   TestPlan_MissingIntentFlag
+--- PASS: TestPlan_MissingIntentFlag (0.00s)
+=== RUN   TestPlan_EmptyIntentDir
+--- PASS: TestPlan_EmptyIntentDir (0.00s)
+=== RUN   TestReconcile_CreatesResource
+    reconcile_test.go:119: [AC-Sead944-3-1] reconcile output:
+        + CREATE fake//reconcile-vm
+          reason: resource fake//reconcile-vm does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "reconcile-vm"
+          + size                  (new) → "42"
+        
+        Reconcile: 1 change(s) applied
+    reconcile_test.go:120: [AC-Sead944-3-1] state file after reconcile:
+        {
+          "resources": {
+            "reconcile-vm": {
+              "fields": {
+                "name": "reconcile-vm",
+                "size": "42"
+              }
+            }
+          }
+        }
+--- PASS: TestReconcile_CreatesResource (0.00s)
+=== RUN   TestReconcile_Idempotent
+    reconcile_test.go:183: [AC-Sead944-3-2] second reconcile output:
+        Converged (no changes)
+    reconcile_test.go:184: [AC-Sead944-3-2] state file (unchanged after second reconcile):
+        {
+          "resources": {
+            "idempotent-vm": {
+              "fields": {
+                "name": "idempotent-vm",
+                "size": "8"
+              }
+            }
+          }
+        }
+--- PASS: TestReconcile_Idempotent (0.00s)
+=== RUN   TestReconcile_ObservesIndependently
+    reconcile_test.go:256: [AC-Sead944-3-3] reconcile output:
+        + CREATE fake//stateless-vm
+          reason: resource fake//stateless-vm does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "stateless-vm"
+          + size                  (new) → "16"
+        
+        Reconcile: 1 change(s) applied
+    reconcile_test.go:257: [AC-Sead944-3-3] state file after reconcile:
+        {
+          "resources": {
+            "stateless-vm": {
+              "fields": {
+                "name": "stateless-vm",
+                "size": "16"
+              }
+            }
+          }
+        }
+--- PASS: TestReconcile_ObservesIndependently (0.00s)
+=== RUN   TestReconcile_UpdatesDriftedResource
+    reconcile_test.go:322: reconcile update output:
+        ~ UPDATE fake//drifted-vm
+          reason: resource fake//drifted-vm has 1 field(s) out of sync
+          cause:  A
+          ~ size                  "50" → "100"
+        
+        Reconcile: 1 change(s) applied
+--- PASS: TestReconcile_UpdatesDriftedResource (0.00s)
+=== RUN   TestReconcile_MissingIntentFlag
+--- PASS: TestReconcile_MissingIntentFlag (0.00s)
+=== RUN   TestReconcile_EmptyIntentDir
+--- PASS: TestReconcile_EmptyIntentDir (0.00s)
+PASS
+ok  	github.com/tjst-t/sakutei/tests/acceptance	1.061s
+test -v exit=0

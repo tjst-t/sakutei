@@ -119,8 +119,14 @@ func Run(ctx context.Context, cfg Config) error {
 				cycleNum, observed, applied)
 		}
 
-		// Jitter sleep: base interval ± up to 10%.
-		jitter := time.Duration(rand.Int63n(int64(cfg.Interval) / 10))
+		// Jitter sleep: base interval + up to 10%.
+		// Guard rand.Int63n against a zero/negative argument, which panics.
+		// This happens when Interval is smaller than 10ns (10% rounds to 0).
+		n := int64(cfg.Interval) / 10
+		if n <= 0 {
+			n = 1
+		}
+		jitter := time.Duration(rand.Int63n(n))
 		sleep := cfg.Interval + jitter
 
 		select {

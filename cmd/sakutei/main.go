@@ -30,6 +30,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -94,6 +95,12 @@ func runDaemon() {
 		"convergence cycle interval, e.g. 200ms or 30s (default: 10s)")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		// "-h"/"--help" makes flag.Parse return flag.ErrHelp after printing
+		// usage; that is a successful, user-requested help display, not an
+		// error, so exit 0.
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
 		os.Exit(1)
 	}
 

@@ -312,6 +312,12 @@ func TestLoop_GracefulStop(t *testing.T) {
 	})
 
 	cmd, stdout := startDaemon(t, intentDir, statePath, "200ms")
+	// Ensure the daemon is not orphaned if waitForStateFile Fatalf's below.
+	// Harmless if the SIGTERM path already stopped the process.
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
 
 	// Wait for first creation so we know the loop is running.
 	waitForStateFile(t, statePath, "graceful-vm", 3*time.Second)
