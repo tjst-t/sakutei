@@ -2,12 +2,12 @@
   "project": "Sakutei",
   "description": "宣言的インフラ収束エンジン（観測 state レス・level-triggered）。本ロードマップは v1a（コア実証）を対象とし、v1b/v1.5/v2 は backlog に置く。",
   "progress": {
-    "current_sprint": "Sead944",
+    "current_sprint": "S94f1f9",
     "total": 9,
-    "done": 0,
-    "in_progress": 1,
+    "done": 1,
+    "in_progress": 0,
     "remaining": 8,
-    "percentage": 0
+    "percentage": 11
   },
   "execution_order": [
     "Sead944",
@@ -23,7 +23,7 @@
   "sprints": {
     "Sead944": {
       "title": "収束コアの骨格 — 正準型・単発収束・fake Provider",
-      "status": "in_progress",
+      "status": "done",
       "description": "MVP。コア型（ID/Scope/State/Plan/Observation）と Provider/Lister インターフェースを定義し、fake in-memory Provider に対して `sakutei plan`（Diff で停止）と `sakutei reconcile`（Observe→Diff→Apply を1巡）が CLI から動く最小の実行可能増分。ADR-0002/0003/0004 の土台を敷く。",
       "milestone": false,
       "stories": {
