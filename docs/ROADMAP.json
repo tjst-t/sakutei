@@ -2,12 +2,12 @@
   "project": "Sakutei",
   "description": "宣言的インフラ収束エンジン（観測 state レス・level-triggered）。本ロードマップは v1a（コア実証）を対象とし、v1b/v1.5/v2 は backlog に置く。",
   "progress": {
-    "current_sprint": "Scf7762",
+    "current_sprint": "Scb0ecd",
     "total": 9,
-    "done": 2,
+    "done": 3,
     "in_progress": 0,
-    "remaining": 7,
-    "percentage": 22
+    "remaining": 6,
+    "percentage": 33
   },
   "execution_order": [
     "Sead944",
@@ -255,7 +255,7 @@
     },
     "Scf7762": {
       "title": "安全機構の中核 — 壊れる前に止まる",
-      "status": "partial",
+      "status": "done",
       "description": "[MILESTONE] pruneable:false 既定・DeletionPolicy・List 完全性検証・rate limit・累積時間窓予算・デフォルト halt・remediation mode(auto/alert-only)。chaos テストで『壊れる前に止まる』を実証する。エンジンの存在意義を証明する MVP マイルストーン。ADR-0005/0014 の v1a サブセット。",
       "milestone": true,
       "stories": {
@@ -345,8 +345,8 @@
         },
         "Scf7762-4": {
           "title": "chaos テスト — 壊れる前に止まる",
-          "status": "needs_user_review",
-          "user_review_required": true,
+          "status": "done",
+          "user_review_required": false,
           "review_reason": "エンジンの存在意義（安全機構が実際に破壊を止める）を実証する最重要検証。マイルストーンでの人間確認が要る。",
           "user_story": "開発者として、安全機構が chaos テストで実証されることを確認したい。なぜなら『壊れる前に止まる』ことがこのエンジンの存在意義だから。",
           "acceptance_criteria": [
