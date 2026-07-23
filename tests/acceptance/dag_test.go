@@ -144,6 +144,14 @@ func TestDAG_WaveOrder(t *testing.T) {
 // TestDAG_WaveOrder_ReverseDeclarationOrder verifies that wave ordering holds
 // even when B is declared before A in the intent file (topological sort must
 // not depend on declaration order).
+//
+// A-4 note: the stdout op-print order is *declaration* order (the reconcile
+// command iterates `desired` when printing applied ops), which is a known,
+// benign cosmetic detail — stdout order is NOT the proof of wave ordering here.
+// The wave-order guarantee is verified through the state-file contents instead:
+// B can only appear in the state file if A was applied first (the DAG makes B's
+// Apply reachable only after A's Apply succeeds).  We therefore assert on the
+// state file, not on stdout ordering.
 func TestDAG_WaveOrder_ReverseDeclarationOrder(t *testing.T) {
 	tmp := t.TempDir()
 	intentDir := filepath.Join(tmp, "intent")
@@ -380,6 +388,171 @@ func TestDAG_UpstreamFailureNextCycleRetries(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// [AC-S94f1f9-2-2] (D-1 safety) Unobservable upstream skips downstream
+// ---------------------------------------------------------------------------
+
+// TestDAG_UnobservableUpstreamSkipsDownstream is the D-1 regression test.
+//
+// D-1: when an upstream resource's Observe returns Availability != Ok (target
+// unreachable), the reconciler MUST NOT treat it as "converged" and proceed to
+// Apply its downstream.  unknown ≠ absent; the downstream must be skipped this
+// cycle (ADR-0002 / §3 asymmetry principle; halt-default).
+//
+// This is the safety-side counterpart of AC-S94f1f9-2-2 (which covers an Apply
+// failure).  Here the *Observe* is what is unavailable.  Before the fix, an
+// unobservable upstream produced an empty Plan indistinguishable from
+// "converged", so the downstream was applied — a silent safety violation.
+//
+// Setup: A (no deps) is injected as observe-unknown; B depends_on A.
+// Expected:
+//   - B must NOT appear in the state file (it was skipped).
+//   - A skip message must be printed.
+//   - The one-shot reconcile exits non-zero (unobservable ⇒ convergence
+//     incomplete; D-1 exit policy).
+func TestDAG_UnobservableUpstreamSkipsDownstream(t *testing.T) {
+	// [AC-S94f1f9-2-2] (D-1 regression: unobservable upstream, not Apply failure)
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	// Intent: A (no deps) and B (depends_on A).
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{
+				"provider": "fake",
+				"id":       "obs-a",
+				"fields": map[string]string{
+					"name": "obs-a",
+					"size": "1",
+				},
+			},
+			{
+				"provider":   "fake",
+				"id":         "obs-b",
+				"depends_on": []string{"obs-a"},
+				"fields": map[string]string{
+					"name": "obs-b",
+					"size": "2",
+				},
+			},
+		},
+	})
+
+	// Seed the state file so that Observe of obs-a returns AvailabilityUnknown
+	// (reachable-but-unknown, no error): "unknown" mode in observe_unknown.
+	seedState := map[string]any{
+		"resources": map[string]any{},
+		"observe_unknown": map[string]string{
+			"obs-a": "unknown",
+		},
+	}
+	seedData, _ := json.MarshalIndent(seedState, "", "  ")
+	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runReconcileFull(t, intentDir, statePath)
+
+	// D-1 exit policy: unobservable upstream ⇒ non-zero exit.
+	if code == 0 {
+		t.Errorf("[AC-S94f1f9-2-2/D-1] expected non-zero exit when an upstream is unobservable; got 0; stdout:\n%s\nstderr:\n%s",
+			stdout, stderr)
+	}
+
+	// A skip message must be present.
+	combined := stdout + stderr
+	if !strings.Contains(combined, "skip") {
+		t.Errorf("[AC-S94f1f9-2-2/D-1] expected a skip message; got stdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+
+	// The critical safety assertion: obs-b MUST NOT be applied when its upstream
+	// obs-a was unobservable.
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("[AC-S94f1f9-2-2/D-1] read state file: %v", err)
+	}
+	var sf map[string]any
+	if err := json.Unmarshal(data, &sf); err != nil {
+		t.Fatalf("[AC-S94f1f9-2-2/D-1] parse state file: %v", err)
+	}
+	resources, _ := sf["resources"].(map[string]any)
+	if _, ok := resources["obs-b"]; ok {
+		t.Errorf("[AC-S94f1f9-2-2/D-1] obs-b must NOT be applied when upstream obs-a is unobservable (unknown ≠ absent); state:\n%s", data)
+	}
+	// obs-a must not be applied either (it was never observable to diff).
+	if _, ok := resources["obs-a"]; ok {
+		t.Errorf("[AC-S94f1f9-2-2/D-1] obs-a must NOT be applied (it was unobservable); state:\n%s", data)
+	}
+
+	t.Logf("[AC-S94f1f9-2-2/D-1] stdout:\n%s", stdout)
+	t.Logf("[AC-S94f1f9-2-2/D-1] stderr:\n%s", stderr)
+}
+
+// TestDAG_ObserveErrorUpstreamSkipsDownstream is the D-1 companion covering the
+// Observe-*error* case (as opposed to AvailabilityUnknown without an error).
+// Both must be treated identically: unobservable upstream ⇒ downstream skipped.
+func TestDAG_ObserveErrorUpstreamSkipsDownstream(t *testing.T) {
+	// [AC-S94f1f9-2-2/D-1]
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{
+				"provider": "fake",
+				"id":       "err-a",
+				"fields":   map[string]string{"name": "err-a", "size": "1"},
+			},
+			{
+				"provider":   "fake",
+				"id":         "err-b",
+				"depends_on": []string{"err-a"},
+				"fields":     map[string]string{"name": "err-b", "size": "2"},
+			},
+		},
+	})
+
+	// "error" mode: Observe of err-a returns a transient error.
+	seedState := map[string]any{
+		"resources": map[string]any{},
+		"observe_unknown": map[string]string{
+			"err-a": "error",
+		},
+	}
+	seedData, _ := json.MarshalIndent(seedState, "", "  ")
+	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runReconcileFull(t, intentDir, statePath)
+	if code == 0 {
+		t.Errorf("[AC-S94f1f9-2-2/D-1] expected non-zero exit on Observe error upstream; got 0; stderr:\n%s", stderr)
+	}
+
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var sf map[string]any
+	if err := json.Unmarshal(data, &sf); err != nil {
+		t.Fatalf("parse state file: %v", err)
+	}
+	resources, _ := sf["resources"].(map[string]any)
+	if _, ok := resources["err-b"]; ok {
+		t.Errorf("[AC-S94f1f9-2-2/D-1] err-b must NOT be applied when upstream err-a's Observe errored; state:\n%s", data)
+	}
+
+	t.Logf("[AC-S94f1f9-2-2/D-1] stdout:\n%s\nstderr:\n%s", stdout, stderr)
+}
+
+// ---------------------------------------------------------------------------
 // [AC-S94f1f9-2-3] Cyclic depends_on is rejected at load time
 // ---------------------------------------------------------------------------
 
@@ -557,4 +730,44 @@ func TestDAG_SelfDependency(t *testing.T) {
 		t.Errorf("expected cycle error; got stderr:\n%s", stderr)
 	}
 	t.Logf("stderr:\n%s", stderr)
+}
+
+// TestDAG_DuplicateLocalIDRejected verifies D-2: two resources declaring the
+// same Local ID are rejected at load time (silent overwrite would otherwise
+// shadow one resource).  The reconcile command must exit non-zero with an
+// explicit "duplicate" error, and no state file may be created.
+func TestDAG_DuplicateLocalIDRejected(t *testing.T) {
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{
+				"provider": "fake",
+				"id":       "dup",
+				"fields":   map[string]string{"name": "dup", "size": "1"},
+			},
+			{
+				"provider": "fake",
+				"id":       "dup",
+				"fields":   map[string]string{"name": "dup", "size": "2"},
+			},
+		},
+	})
+
+	_, stderr, code := runReconcile(t, intentDir, statePath)
+	if code == 0 {
+		t.Errorf("[D-2] expected non-zero exit for duplicate Local ID; got exit 0")
+	}
+	if !strings.Contains(strings.ToLower(stderr), "duplicate") {
+		t.Errorf("[D-2] expected 'duplicate' error; got stderr:\n%s", stderr)
+	}
+	if data := readStateFile(t, statePath); data != nil {
+		t.Errorf("[D-2] state file must not be created when a duplicate ID is detected; content:\n%s", data)
+	}
+	t.Logf("[D-2] stderr:\n%s", stderr)
 }

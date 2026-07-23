@@ -41,10 +41,20 @@ import (
 // Upstream failure skips downstream resources for this cycle.
 // Cyclic depends_on is rejected at intent load time.
 //
+// D-1 (unobservable-upstream safety, ADR-0002 / §3): a resource whose Observe
+// returns an error OR Availability != Ok is treated as failed/unknown, NOT
+// converged.  It and its transitive downstream are skipped this cycle
+// (unknown ≠ absent; halt-default).  Policy, unified with the loop path:
+// the one-shot reconcile still processes every observable resource, but if any
+// resource was skipped it exits non-zero to signal an incomplete convergence.
+// (The loop path instead retries on the next cycle — same skip semantics,
+// different follow-up because a daemon has a "next cycle" and a one-shot does not.)
+//
 // Exit codes:
 //
-//	0 — reconcile completed (with or without changes applied)
-//	1 — error (flag parse, intent load, observe error, apply error, etc.)
+//	0 — reconcile completed, nothing skipped (with or without changes applied)
+//	1 — error (flag parse, intent load, apply error) OR one or more resources
+//	    were skipped this cycle (unobservable upstream / upstream Apply failure)
 func runReconcile(args []string) {
 	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -86,6 +96,10 @@ func runReconcile(args []string) {
 	// Phase 1: Observe + Diff (fresh per resource — ADR-0002).
 	// Collect plans for all resources before applying any of them.
 	plans := make(map[string]core.Plan, len(desired))
+	// unobservable holds Local IDs whose Observe failed or returned Availability
+	// != Ok (D-1).  They are NOT treated as converged: ApplyWaves marks them
+	// failed and skips their transitive downstream this cycle.
+	unobservable := make(map[string]bool)
 	for _, res := range desired {
 		// ADR-0002: Observe independently for each resource.
 		//
@@ -95,8 +109,21 @@ func runReconcile(args []string) {
 		// the state file directly, re-reading reality at this moment in time.
 		obs, err := fp.Read(ctx, res.ID.Local)
 		if err != nil {
+			// D-1: Observe error → unobservable, not converged.  Do not exit
+			// immediately: record it, keep observing the rest, and let ApplyWaves
+			// skip this resource and its downstream.  A non-zero exit is emitted
+			// below if anything was skipped (unified skip policy with the loop).
 			fmt.Fprintf(os.Stderr, "sakutei reconcile: observe %s: %v\n", res.ID, err)
-			os.Exit(1)
+			unobservable[res.ID.Local] = true
+			continue
+		}
+		if obs.Availability != core.AvailabilityOk {
+			// D-1: reachable-but-unknown/converging is still not "converged".
+			// unknown ≠ absent: do not proceed downstream on uncertainty.
+			fmt.Fprintf(os.Stderr, "sakutei reconcile: observe %s: availability=%v (not Ok); treating as unobservable\n",
+				res.ID, obs.Availability)
+			unobservable[res.ID.Local] = true
+			continue
 		}
 		plans[res.ID.Local] = engine.Diff(obs, res)
 	}
@@ -104,17 +131,18 @@ func runReconcile(args []string) {
 	// Phase 2: Apply in dependency (wave) order via Kahn decomposition.
 	// reconcile.ApplyWaves ensures that:
 	//   - Resources with depends_on are applied after their dependencies.
-	//   - If a dependency fails, its transitive dependents are skipped.
+	//   - If a dependency fails OR is unobservable (D-1), its transitive
+	//     dependents are skipped.
 	//   - appliedIDs contains the Local IDs of resources that were successfully applied.
-	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, fp, exec, desired, plans, os.Stderr)
+	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, fp, exec, desired, plans, unobservable, os.Stderr)
 	if waveErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: wave apply: %v\n", waveErr)
 		os.Exit(1)
 	}
 
-	// Report skipped resources (upstream failures) to stderr.
+	// Report skipped resources (upstream failure or unobservable) to stderr.
 	for _, sk := range skipped {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: skip %s (upstream failure; will retry next cycle)\n", sk)
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: skip %s (unobservable or upstream failure; not converged this cycle)\n", sk)
 	}
 
 	// Report applied ops: only for resources whose Apply succeeded.
@@ -130,10 +158,28 @@ func runReconcile(args []string) {
 		}
 	}
 
-	if appliedOps == 0 {
-		fmt.Println("Converged (no changes)")
-	} else {
+	switch {
+	case appliedOps > 0:
 		fmt.Printf("Reconcile: %d change(s) applied\n", appliedOps)
+	case len(skipped) > 0:
+		// Do not claim convergence: some resources were skipped this cycle
+		// (unobservable upstream or upstream Apply failure).
+		fmt.Printf("Reconcile: no changes applied; %d resource(s) skipped\n", len(skipped))
+	default:
+		fmt.Println("Converged (no changes)")
+	}
+
+	// D-1 exit policy: an *unobservable* upstream is a safety failure — the
+	// one-shot reconcile could not establish that reality is what we think, so
+	// it exits non-zero to signal an incomplete/unsafe convergence.  Skips that
+	// stem only from an upstream *Apply* failure remain exit 0 (level-triggered:
+	// the resource was observable, the failure is transient and self-healing on
+	// a subsequent reconcile) — this preserves AC-S94f1f9-2-2's exit-0 contract.
+	if len(unobservable) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"sakutei reconcile: %d resource(s) were unobservable this cycle; convergence incomplete\n",
+			len(unobservable))
+		os.Exit(1)
 	}
 	os.Exit(0)
 }

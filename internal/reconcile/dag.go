@@ -46,19 +46,15 @@ import (
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
-// applyNode holds the per-resource apply state within one cycle.
-type applyNode struct {
-	res     diff.DesiredResource
-	plan    core.Plan
-	// skipReason is set when this node should be skipped this cycle.
-	// Empty string means "not skipped".
-	skipReason string
-}
-
 // ApplyWaves is the exported entry point for the Kahn-wave apply phase.
 // It is used by both the periodic loop (loop.go) and the one-shot
 // "sakutei reconcile" command so that wave ordering is consistent between
 // both entry points (§8.1, "plan と reconcile はそれぞれ独立に Observe する").
+//
+// unobservable is the set of resource Local IDs whose Observe failed or returned
+// Availability != Ok this cycle (D-1).  Such resources are pre-marked as failed
+// so their transitive downstream is skipped: "unknown ≠ absent; do not proceed
+// downstream on uncertainty" (ADR-0002, §3 asymmetry principle).
 //
 // Returns:
 //   - applied: total number of Ops applied.
@@ -73,9 +69,10 @@ func ApplyWaves(
 	exec executor.Executor,
 	desired []diff.DesiredResource,
 	plans map[string]core.Plan,
+	unobservable map[string]bool,
 	errOut io.Writer,
 ) (applied int, appliedIDs map[string]bool, skipped []string, err error) {
-	return applyWaves(ctx, fp, exec, desired, plans, errOut)
+	return applyWaves(ctx, fp, exec, desired, plans, unobservable, errOut)
 }
 
 // applyWaves runs the DAG/Kahn-wave apply phase for a single convergence cycle.
@@ -88,10 +85,17 @@ func ApplyWaves(
 // built over *all* desired resources so that depends_on edges from non-drifted
 // (converged) resources are still honoured for topological ordering.
 //
+// unobservable is the set of Local IDs whose Observe failed or returned
+// Availability != Ok this cycle.  These resources — and their transitive
+// dependents — are skipped: an unobservable upstream is treated as failed/unknown,
+// never as converged (D-1; unknown ≠ absent).  Note that an unobservable resource
+// that has *no* dependents is itself reported in skipped so callers can surface it.
+//
 // Returns:
 //   - applied: count of Ops applied this cycle.
 //   - appliedIDs: set of resource Local IDs whose Apply succeeded this cycle.
-//   - skipped: list of resource Local IDs that were skipped due to upstream failure.
+//   - skipped: list of resource Local IDs that were skipped due to upstream failure
+//     (including unobservable resources themselves).
 //   - err: only set for unrecoverable errors (never for per-resource Apply errors).
 func applyWaves(
 	ctx context.Context,
@@ -99,6 +103,7 @@ func applyWaves(
 	exec executor.Executor,
 	desired []diff.DesiredResource,
 	plans map[string]core.Plan,
+	unobservable map[string]bool,
 	errOut io.Writer,
 ) (applied int, appliedIDs map[string]bool, skipped []string, err error) {
 	n := len(desired)
@@ -158,6 +163,23 @@ func applyWaves(
 			r := desired[idx]
 			local := r.ID.Local
 			processedCount++
+
+			// D-1: an unobservable resource (Observe error or Availability != Ok)
+			// is treated as failed/unknown, NOT converged.  Mark it failed so its
+			// transitive dependents are skipped, and report the resource itself as
+			// skipped so callers can surface it (unknown ≠ absent; halt-default).
+			if unobservable[local] {
+				skipped = append(skipped, local)
+				fmt.Fprintf(errOut, "sakutei: skip %s: unobservable this cycle (Observe error or Availability != Ok)\n", r.ID)
+				failed[local] = true
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
 
 			// Check whether any dependency failed.
 			upstream := upstreamFailed(r.DependsOn, failed)

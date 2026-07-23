@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/pkg/core"
@@ -56,9 +57,21 @@ type storedResource struct {
 // FailInject is a set of Local IDs for which Apply should return an error.
 // This is a test-only mechanism; production providers do not use this field.
 // Tests write this field before launching the binary to simulate Apply failures.
+//
+// ObserveUnknown is a set of Local IDs for which Read (Observe) should behave as
+// if the target is unreachable.  The value selects the injected behaviour:
+//   - "error"   → Read returns a transient error (Observe failed).
+//   - anything else (e.g. "unknown", "") → Read returns AvailabilityUnknown with
+//     no error (target unreachable but the call itself succeeded).
+//
+// Both cases are "unobservable upstream" for D-1: the reconciler must treat the
+// resource as failed/unknown (NOT converged) and skip its transitive downstream
+// this cycle (unknown ≠ absent; do not proceed downstream on uncertainty).
+// This is a test-only mechanism; production providers do not use this field.
 type stateFile struct {
-	Resources  map[string]storedResource `json:"resources"`
-	FailInject map[string]string         `json:"fail_inject,omitempty"`
+	Resources      map[string]storedResource `json:"resources"`
+	FailInject     map[string]string         `json:"fail_inject,omitempty"`
+	ObserveUnknown map[string]string         `json:"observe_unknown,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
@@ -117,6 +130,28 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 	}
 
 	key := id
+
+	// Observe-failure injection (test-only, D-1): if this resource is listed in
+	// ObserveUnknown, simulate an unreachable target.  Value "error" injects a
+	// Read error; any other value injects AvailabilityUnknown without an error.
+	// Reason strings are sanitised to a single line to keep stderr logs intact.
+	if sf.ObserveUnknown != nil {
+		if mode, ok := sf.ObserveUnknown[key]; ok {
+			reason := strings.ReplaceAll(mode, "\n", "\\n")
+			if reason == "error" {
+				return core.Observation{
+						Availability: core.AvailabilityUnknown,
+						ObservedAt:   time.Now(),
+					}, provider.NewTransientError(
+						fmt.Errorf("fakeprovider: injected observe error for %s", key))
+			}
+			return core.Observation{
+				Availability: core.AvailabilityUnknown,
+				ObservedAt:   time.Now(),
+			}, nil
+		}
+	}
+
 	res, ok := sf.Resources[key]
 	if !ok {
 		// Resource does not exist in reality.  Return Ok with nil State so
@@ -166,6 +201,9 @@ func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
 		// an error without modifying the state (simulates an Apply failure).
 		if sf.FailInject != nil {
 			if reason, ok := sf.FailInject[key]; ok {
+				// A-5: sanitise newlines so a multi-line reason cannot break the
+				// single-line stderr log format that callers grep on.
+				reason = strings.ReplaceAll(reason, "\n", "\\n")
 				return provider.NewTransientError(fmt.Errorf("fakeprovider: injected failure for %s: %s", key, reason))
 			}
 		}

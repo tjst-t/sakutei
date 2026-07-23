@@ -108,12 +108,38 @@ func LoadDir(dir string) ([]diff.DesiredResource, error) {
 		resources = append(resources, loaded...)
 	}
 
+	// D-2: reject duplicate Local IDs.  Two resources sharing a Local ID would
+	// otherwise be indistinguishable to Observe/Diff/Apply (which key on the
+	// Local ID) and to depends_on resolution, causing one to silently shadow the
+	// other.  Fail loudly instead of picking a winner.
+	//
+	// NOTE: Sprint 1 keys purely on Local ID (Scope is empty for the fake).
+	// When multi-Scope support lands (S33266e), extend this check to the full
+	// composite ID so that the same Local ID under different Scopes is allowed.
+	if err := detectDuplicateLocalIDs(resources); err != nil {
+		return nil, fmt.Errorf("loader: %w", err)
+	}
+
 	// S94f1f9-2: reject cyclic depends_on graphs at load time.
 	if err := detectCycles(resources); err != nil {
 		return nil, fmt.Errorf("loader: %w", err)
 	}
 
 	return resources, nil
+}
+
+// detectDuplicateLocalIDs returns an error if two loaded resources share the
+// same Local ID (D-2).  The first duplicate encountered is named in the error.
+func detectDuplicateLocalIDs(resources []diff.DesiredResource) error {
+	seen := make(map[string]struct{}, len(resources))
+	for _, r := range resources {
+		local := r.ID.Local
+		if _, dup := seen[local]; dup {
+			return fmt.Errorf("duplicate resource id %q (declared more than once)", local)
+		}
+		seen[local] = struct{}{}
+	}
+	return nil
 }
 
 // detectCycles runs Kahn's algorithm over the depends_on graph.  If any cycle
