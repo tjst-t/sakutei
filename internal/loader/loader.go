@@ -41,6 +41,9 @@
 //
 // All field values are strings in this provisional format.  The diff engine
 // converts both desired and actual to strings for comparison.
+//
+// Scb0ecd-1: LoadDir now also computes and returns a core.RevisionInfo.
+// See internal/revision for the computation details.
 package loader
 
 import (
@@ -51,6 +54,7 @@ import (
 	"strings"
 
 	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
 )
 
@@ -97,7 +101,8 @@ type intentResource struct {
 	DeletionPolicy string `json:"deletion_policy"`
 }
 
-// LoadDir reads all JSON files in dir and returns the desired resources.
+// LoadDir reads all JSON files in dir and returns the desired resources and
+// revision information.
 //
 // Files are processed in lexicographic order for deterministic output.
 // Non-JSON files (by extension) are silently skipped.
@@ -107,10 +112,18 @@ type intentResource struct {
 // If depends_on forms a cycle among the loaded resources, LoadDir returns an
 // explicit error and the caller must not begin convergence.  This implements
 // the "循環検出は理想状態ロード時に一度" contract (§8.1).
-func LoadDir(dir string) ([]diff.DesiredResource, error) {
+//
+// Scb0ecd-1: LoadDir now also computes core.RevisionInfo:
+//   - intent_revision: SHA-256 of all intent file contents (sorted by name).
+//   - rendered_revision: equal to intent_revision in v1a (seam for S072a14).
+//
+// The revision is computed over the root scope (empty Scope) because the
+// provisional loader does not yet support multi-scope intent directories.
+// Multi-scope revision computation is deferred to S33266e.
+func LoadDir(dir string) ([]diff.DesiredResource, core.RevisionInfo, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("loader: read intent dir %s: %w", dir, err)
+		return nil, core.RevisionInfo{}, fmt.Errorf("loader: read intent dir %s: %w", dir, err)
 	}
 
 	var resources []diff.DesiredResource
@@ -126,7 +139,7 @@ func LoadDir(dir string) ([]diff.DesiredResource, error) {
 		path := filepath.Join(dir, name)
 		loaded, err := loadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("loader: %w", err)
+			return nil, core.RevisionInfo{}, fmt.Errorf("loader: %w", err)
 		}
 		resources = append(resources, loaded...)
 	}
@@ -140,15 +153,24 @@ func LoadDir(dir string) ([]diff.DesiredResource, error) {
 	// When multi-Scope support lands (S33266e), extend this check to the full
 	// composite ID so that the same Local ID under different Scopes is allowed.
 	if err := detectDuplicateLocalIDs(resources); err != nil {
-		return nil, fmt.Errorf("loader: %w", err)
+		return nil, core.RevisionInfo{}, fmt.Errorf("loader: %w", err)
 	}
 
 	// S94f1f9-2: reject cyclic depends_on graphs at load time.
 	if err := detectCycles(resources); err != nil {
-		return nil, fmt.Errorf("loader: %w", err)
+		return nil, core.RevisionInfo{}, fmt.Errorf("loader: %w", err)
 	}
 
-	return resources, nil
+	// Scb0ecd-1: compute revision info after all validation passes so that only
+	// valid intent contributes to the hash.  Use the root scope (empty labels)
+	// for the provisional single-scope loader.
+	rootScope := core.NewScope(nil)
+	rev, err := revision.Compute(dir, rootScope)
+	if err != nil {
+		return nil, core.RevisionInfo{}, fmt.Errorf("loader: revision: %w", err)
+	}
+
+	return resources, rev, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the

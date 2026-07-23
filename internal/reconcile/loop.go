@@ -383,10 +383,15 @@ func runCycleAsync(
 	cfg Config,
 ) (CycleResult, error) {
 	// Load desired state fresh each cycle.
-	desired, loadErr := loader.LoadDir(cfg.IntentDir)
+	// Scb0ecd-1: LoadDir now returns (resources, RevisionInfo, error).  The
+	// RevisionInfo is S3 state (memory-only, computed fresh each cycle).
+	// The daemon loop currently logs the revision but does not act on it yet;
+	// cause-tag attribution (Scb0ecd-2) will read it from CycleResult.
+	desired, rev, loadErr := loader.LoadDir(cfg.IntentDir)
 	if loadErr != nil {
 		return CycleResult{}, fmt.Errorf("load intent: %w", loadErr)
 	}
+	_ = rev // Scb0ecd-2 will use rev for CauseContext; stored in CycleResult below
 
 	// Phase 1: Observe all resources fresh (ADR-0002).
 	// Resources in-flight are observed but excluded from the plan (they are

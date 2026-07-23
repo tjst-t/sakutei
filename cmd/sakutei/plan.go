@@ -60,11 +60,17 @@ func runPlan(args []string) {
 	}
 
 	// Load desired resources from intent directory.
-	desired, err := loader.LoadDir(*intentDir)
+	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
+	desired, rev, err := loader.LoadDir(*intentDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei plan: load intent: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Scb0ecd-1: print revision header so the caller can observe revision values.
+	// In v1a rendered_revision = intent_revision (no external inputs yet; seam
+	// for S072a14 where external inputs enter the rendered hash).
+	fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
 
 	// Create the fake provider backed by the state file.
 	fp := fakeprovider.New(*statePath)

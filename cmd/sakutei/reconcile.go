@@ -139,11 +139,16 @@ func runReconcile(args []string) {
 	// Load desired resources from intent directory.
 	// loader.LoadDir also performs cycle detection (S94f1f9-2): cyclic
 	// depends_on is rejected here with a non-zero exit before any Apply.
-	desired, err := loader.LoadDir(*intentDir)
+	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
+	desired, rev, err := loader.LoadDir(*intentDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: load intent: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Scb0ecd-1: print revision header so the caller can observe revision values.
+	// In v1a rendered_revision = intent_revision (seam for S072a14).
+	fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
 
 	// Create the fake provider backed by the state file.
 	// Declare fp as provider.Provider so interface checks (.(provider.Lister))
