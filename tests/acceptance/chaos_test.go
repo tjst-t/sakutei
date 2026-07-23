@@ -27,8 +27,14 @@
 //
 //	[AC-Scf7762-4-1] Mass-delete injected → budget/halt stops destruction before
 //	                  it happens; orphans remain in the state file (reality intact).
-//	[AC-Scf7762-4-2] List shrink (count-drop) injected → List completeness guard
-//	                  halts prune in the daemon across cycles; no orphan deleted.
+//	[AC-Scf7762-4-2] List guards halt prune in the daemon across cycles; no orphan
+//	                  deleted.  Two distinct gates are exercised:
+//	                    - ListStatus(Partial) gate (§12.4c): an incomplete List
+//	                      halts prune every cycle
+//	                      (TestChaos_ListPartialHaltsDaemonPrune).
+//	                    - count-drop gate (§12.4b): a >50% drop vs the prior
+//	                      cycle's baseline count halts prune
+//	                      (TestChaos_CountDropHaltsDaemonPrune).
 //	[AC-Scf7762-4-3] alert-only + mass drift → drift reported but Apply never
 //	                  executes; state file is byte-for-byte unchanged.
 //
@@ -234,19 +240,25 @@ func TestChaos_MassDeleteHaltedByBudget(t *testing.T) {
 	t.Logf("[AC-Scf7762-4-1] combined output:\n%s", combined)
 }
 
-// TestChaos_MassDeleteHaltedByWindowBudget verifies [AC-Scf7762-4-1] via the
-// cumulative time-window budget path.
+// TestChaos_MassDeleteHaltedByPerCycleRateLimit verifies [AC-Scf7762-4-1] via
+// the PER-CYCLE rate limit path exercised across two one-shot reconcile calls.
 //
-// This exercises the "progressive bulk-delete" attack vector: multiple reconcile
-// calls each deleting a few resources until everything is gone.  The window
-// budget catches it by accumulating cross-invocation destructive counts.
+// NAMING/ACCURACY (Scf7762-4 verify fix): this test does NOT prove the
+// cumulative cross-invocation time-window budget.  Each "sakutei reconcile" is a
+// fresh process that builds a new budget.Engine, so the window counter resets
+// every invocation; the two runs here only re-exercise the per-cycle rate limit
+// (max destructive ops per cycle) twice.  The TRUE cumulative window-budget
+// proof — where the counter accumulates across cycles of a single long-lived
+// process — lives in TestBudget_ProgressiveDestruction_Daemon (budget_test.go),
+// which drives the DAEMON so one budget.Engine spans multiple cycles.
 //
-// Setup: 10 resources, keep 1, budget window = max 2 total destructive ops.
+// What this test DOES prove: two independent reconcile invocations, each capped
+// at 2 destructive ops per cycle, can never bulk-delete all candidates; the
+// per-cycle rate limit bounds each run and the desired resource is never pruned.
 //
-// First reconcile: deletes 2 (within budget).
-// Second reconcile: window budget exhausted → halts; remaining resources survive.
-func TestChaos_MassDeleteHaltedByWindowBudget(t *testing.T) {
-	// [AC-Scf7762-4-1] cross-invocation window budget path
+// Setup: 10 resources, keep 1, per-cycle limit = 2 destructive ops.
+func TestChaos_MassDeleteHaltedByPerCycleRateLimit(t *testing.T) {
+	// [AC-Scf7762-4-1] per-cycle rate limit across two one-shot invocations
 	tmp := t.TempDir()
 	intentDir := filepath.Join(tmp, "intent")
 	if err := os.MkdirAll(intentDir, 0755); err != nil {
@@ -317,7 +329,8 @@ func TestChaos_MassDeleteHaltedByWindowBudget(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// [AC-Scf7762-4-2] List shrink → List completeness guard halts prune in daemon
+// [AC-Scf7762-4-2] List guards halt prune in daemon: ListStatus(Partial) gate
+// (§12.4c) and count-drop gate (§12.4b).
 // ---------------------------------------------------------------------------
 
 // TestChaos_ListShrinkHaltsDaemonPrune verifies [AC-Scf7762-4-2]:
@@ -414,27 +427,29 @@ func TestChaos_ListShrinkHaltsDaemonPrune(t *testing.T) {
 	t.Logf("[AC-Scf7762-4-2] daemon log:\n%s", log)
 }
 
-// TestChaos_ListDropRateHaltsDaemon verifies [AC-Scf7762-4-2] via the
-// count-drop path (§12.4b) rather than the ListStatus path.
+// TestChaos_ListPartialHaltsDaemonPrune verifies [AC-Scf7762-4-2] via the
+// ListStatus(Partial) gate (§12.4c) — NOT the count-drop gate (§12.4b).
 //
-// The count-drop guard fires when the current List count drops more than 50%
-// versus the prior cycle's count.  This requires the daemon (long-lived prune
-// engine) because a one-shot process has no "prior cycle".
+// NAMING/ACCURACY (Scf7762-4 verify fix): this test was previously named
+// TestChaos_ListDropRateHaltsDaemon and claimed to test the "count-drop path",
+// but it never exercised that gate.  It injects list_partial=true BEFORE the
+// daemon starts, so every List call returns ListPartial status and the prune
+// engine halts on the ListStatus check — which runs BEFORE the count-drop
+// comparison and never records/updates a baseline count.  The count-drop gate
+// (previous-cycle count vs this-cycle count, >50% drop) therefore never fires
+// here.  The TRUE count-drop chaos scenario lives in
+// TestChaos_CountDropHaltsDaemonPrune below.
+//
+// This test's job: prove the ListStatus(Partial) gate halts prune every cycle
+// in the daemon so a permanently-incomplete List can never bulk-delete orphans.
 //
 // Setup:
-//  1. Seed 20 pruneable resources; desired keeps only 1.
-//  2. Start the daemon (NO budget limits — isolate the prune count-drop guard).
-//  3. Let the first cycle run and record baseline=20.
-//  4. Inject list_partial=true so the subsequent List call returns ListPartial
-//     status.  Because ListPartial causes an early halt (before updating the
-//     last count), the baseline stays at the true value.  When list_partial is
-//     cleared later and 18 resources remain (after one normal delete cycle),
-//     the drop would be 2/20=10%, which is under the 50% threshold — not enough
-//     to trigger the count-drop gate.
-//     Instead, we inject list_partial permanently to prevent ANY deletion from
-//     happening.  After several cycles all resources must survive.
-func TestChaos_ListDropRateHaltsDaemon(t *testing.T) {
-	// [AC-Scf7762-4-2] count-drop path
+//  1. Seed 20 pruneable resources; desired keeps only 1 (19 prune candidates).
+//  2. Inject list_partial=true so List returns ListPartial on cycle 1 onward.
+//  3. Start the daemon (NO budget limits — isolate the prune ListStatus guard).
+//  4. After several cycles all 20 resources must survive.
+func TestChaos_ListPartialHaltsDaemonPrune(t *testing.T) {
+	// [AC-Scf7762-4-2] daemon path — ListStatus(Partial) gate
 	tmp := t.TempDir()
 	intentDir := filepath.Join(tmp, "intent")
 	if err := os.MkdirAll(intentDir, 0755); err != nil {
@@ -446,7 +461,7 @@ func TestChaos_ListDropRateHaltsDaemon(t *testing.T) {
 	const total = 20
 	// Seed 20 pruneable resources.  Inject list_partial=true BEFORE starting
 	// the daemon so the very first List call returns ListPartial status.
-	// This means the prune engine never sets a baseline and never deletes.
+	// This means the prune engine halts on the ListStatus gate and never deletes.
 	seedChaosResources(t, statePath, total)
 	// Immediately inject list_partial so the engine sees it on cycle 1.
 	seedStateListPartial(t, statePath)
@@ -469,7 +484,7 @@ func TestChaos_ListDropRateHaltsDaemon(t *testing.T) {
 
 	// Send SIGTERM.
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("[AC-Scf7762-4-2/drop] send SIGTERM: %v", err)
+		t.Fatalf("[AC-Scf7762-4-2/partial] send SIGTERM: %v", err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -477,7 +492,7 @@ func TestChaos_ListDropRateHaltsDaemon(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		_ = cmd.Process.Kill()
-		t.Fatal("[AC-Scf7762-4-2/drop] daemon did not exit within 5s after SIGTERM")
+		t.Fatal("[AC-Scf7762-4-2/partial] daemon did not exit within 5s after SIGTERM")
 	}
 
 	logData, _ := os.ReadFile(logPath)
@@ -486,19 +501,159 @@ func TestChaos_ListDropRateHaltsDaemon(t *testing.T) {
 	// PROOF: ALL 20 resources must still exist (prune halted every cycle).
 	remaining := countChaosResources(t, statePath)
 	if remaining < total {
-		t.Errorf("[AC-Scf7762-4-2/drop] DESTRUCTION LEAKED: expected %d resources, got %d.\nstate:\n%s\nlog:\n%s",
+		t.Errorf("[AC-Scf7762-4-2/partial] DESTRUCTION LEAKED: expected %d resources, got %d.\nstate:\n%s\nlog:\n%s",
 			total, remaining, string(chaosStateBytes(t, statePath)), log)
 	}
 
 	for i := 2; i <= total; i++ {
 		id := fmt.Sprintf("chaos-vm-%02d", i)
 		if !resourceExistsInState(t, statePath, id) {
-			t.Errorf("[AC-Scf7762-4-2/drop] orphan %s was deleted despite list_partial guard!", id)
+			t.Errorf("[AC-Scf7762-4-2/partial] orphan %s was deleted despite ListPartial guard!", id)
 		}
 	}
 
-	t.Logf("[AC-Scf7762-4-2/drop] PASS: List drop guard preserved %d/%d resources", remaining, total)
-	t.Logf("[AC-Scf7762-4-2/drop] daemon log:\n%s", log)
+	t.Logf("[AC-Scf7762-4-2/partial] PASS: ListPartial gate preserved %d/%d resources", remaining, total)
+	t.Logf("[AC-Scf7762-4-2/partial] daemon log:\n%s", log)
+}
+
+// TestChaos_CountDropHaltsDaemonPrune verifies [AC-Scf7762-4-2] via the TRUE
+// count-drop gate (§12.4b): after a baseline List count is established, a >50%
+// drop in the current cycle's List count halts prune to prevent the mass
+// deletion of orphans that vanished from the listing.
+//
+// This is the adversarial "orphan flood then sudden reality shrink" scenario:
+// a large fleet exists in reality, then reality is violently shrunk (e.g. a
+// storage/inventory backend hiccup returns a fraction of the fleet).  Without
+// the count-drop gate, the reconciler would interpret every vanished resource
+// as an orphan and bulk-delete the survivors' peers.  The gate must halt first.
+//
+// Why this needs the DAEMON: the count-drop gate is inherently cross-cycle — it
+// compares this cycle's List count against the previous cycle's.  Only the
+// long-lived daemon holds a single prune.Engine whose baseline (lastListCount,
+// S3 memory-only) survives across cycles.  A one-shot "sakutei reconcile" builds
+// a fresh engine each process, so its baseline resets and the gate can never
+// fire (see cmd/sakutei/reconcile.go).
+//
+// Flow:
+//
+//	cycle 1: List returns N=12 (baseline recorded).  The type is NOT yet
+//	         pruneable, so nothing is deleted — the 11 non-desired resources are
+//	         merely deferred and the baseline is honestly established at 12.
+//	then:    reality is violently shrunk to 4 (a 67% drop) AND a fresh pruneable
+//	         orphan is introduced by opting the type in to pruning.  Without the
+//	         count-drop gate, "orphan-flood-target" would be deleted next cycle.
+//	next cycle: List returns 4 → 8/12 = 67% drop > 50% threshold → prune HALTS;
+//	         the pruneable orphan is NOT deleted this cycle.
+//
+// We assert on BOTH the daemon log (the count-drop HALT line reporting the
+// 12→4 drop) AND reality (the orphan survives).  We measure the daemon by
+// killing it directly — no shell pipe — and always kill the process.  We kill
+// as soon as the HALT is observed so a later 4→4 (0% drop) cycle cannot then
+// prune, keeping the assertion deterministic and flake-free.
+func TestChaos_CountDropHaltsDaemonPrune(t *testing.T) {
+	// [AC-Scf7762-4-2] daemon path — count-drop gate (§12.4b)
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+	logPath := filepath.Join(tmp, "daemon.log")
+
+	// Desired declares ONLY "keep-a" under PruneWithinScope.  The resources we
+	// later drop are NOT in desired, so the additive Apply phase never re-creates
+	// them — keeping the post-drop List count stable at 4 and the halt
+	// deterministic.
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{
+				"provider":        "fake",
+				"id":              "keep-a",
+				"deletion_policy": "PruneWithinScope",
+				"fields": map[string]string{
+					"name": "keep-a",
+					"size": "1",
+				},
+			},
+		},
+	})
+
+	// Baseline reality: keep-a + 11 chaos orphans (List count = 12).  The type is
+	// NOT yet pruneable, so cycle 1 prunes nothing (the 11 non-desired resources
+	// are deferred) and the baseline is recorded as 12.
+	const baselineCount = 12
+	baseline := map[string]map[string]any{
+		"keep-a": {"name": "keep-a", "size": "1"},
+	}
+	for i := 1; i <= baselineCount-1; i++ {
+		id := fmt.Sprintf("chaos-orphan-%02d", i)
+		baseline[id] = map[string]any{"name": id, "size": fmt.Sprintf("%d", i)}
+	}
+	seedStateWithResources(t, statePath, baseline)
+	// pruneable_capability deliberately NOT set → default false for cycle 1.
+
+	// Launch the daemon; merged stdout+stderr go to a FILE so the test can poll
+	// the log without racing the subprocess writer goroutine.
+	cmd, waitCmd := startDaemonToFile(t, intentDir, statePath, "300ms", logPath)
+	killed := false
+	defer func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = waitCmd()
+		}
+	}()
+
+	// Wait until cycle 1 has completed so the baseline (List=12) is recorded.
+	if !waitForLogFile(logPath, "cycle 1:", 5*time.Second) {
+		t.Fatalf("[AC-Scf7762-4-2/count-drop] daemon did not complete cycle 1 in time; log:\n%s", readFileString(logPath))
+	}
+
+	// Now VIOLENTLY shrink reality to 4 resources (keep-a + 3 survivors incl. a
+	// fresh pruneable orphan) AND opt the type in to pruning.  List count drops
+	// 12 → 4 (67%).  Without the count-drop gate, "chaos-orphan-flood" would be
+	// deleted next cycle.
+	seedStateWithResources(t, statePath, map[string]map[string]any{
+		"keep-a":             {"name": "keep-a", "size": "1"},
+		"chaos-orphan-flood": {"name": "chaos-orphan-flood", "size": "9"},
+		"chaos-survivor-a":   {"name": "chaos-survivor-a", "size": "2"},
+		"chaos-survivor-b":   {"name": "chaos-survivor-b", "size": "3"},
+	})
+	seedStatePruneableCapability(t, statePath)
+
+	// Wait for the daemon to observe the drop and HALT prune via the count-drop
+	// gate.  We key on the engine's count-drop HALT log line (not the generic
+	// "prune HALTED" cycle summary) to be certain it is the COUNT-DROP gate that
+	// fired, not the ListStatus gate (list_partial is never set in this test).
+	if !waitForLogFile(logPath, "count dropped from", 5*time.Second) {
+		t.Fatalf("[AC-Scf7762-4-2/count-drop] expected a count-drop prune HALT in the daemon log; log:\n%s", readFileString(logPath))
+	}
+	// Stop the daemon directly and measure its state while prune is still halted
+	// (a later 4→4 = 0% drop cycle could otherwise prune).  Exit is observed via
+	// cmd.Wait — no shell "| head" plumbing.
+	_ = cmd.Process.Kill()
+	_ = waitCmd()
+	killed = true
+
+	logStr := readFileString(logPath)
+
+	// PROOF (reality): the pruneable orphan must still exist — the count-drop gate
+	// halted before its deletion.
+	if !resourceExistsInState(t, statePath, "chaos-orphan-flood") {
+		t.Errorf("[AC-Scf7762-4-2/count-drop] chaos-orphan-flood was deleted despite a >50%% List count drop; the count-drop gate must prevent this. log:\n%s", logStr)
+	}
+	// keep-a (desired) must also survive.
+	if !resourceExistsInState(t, statePath, "keep-a") {
+		t.Errorf("[AC-Scf7762-4-2/count-drop] keep-a was unexpectedly removed")
+	}
+
+	// PROOF (log): the halt must be the COUNT-DROP gate reporting the 12→4 drop —
+	// distinguishing it from the ListStatus(Partial) gate.  The engine emits
+	// "List count dropped from 12 to 4 (...)" (internal/prune/prune.go §12.4b).
+	if !strings.Contains(logStr, "dropped from 12 to 4") {
+		t.Errorf("[AC-Scf7762-4-2/count-drop] expected the halt log to report the 12→4 count drop (count-drop gate, not ListStatus); log:\n%s", logStr)
+	}
+
+	t.Logf("[AC-Scf7762-4-2/count-drop] PASS: count-drop gate fired (12→4); chaos-orphan-flood retained.")
 }
 
 // ---------------------------------------------------------------------------

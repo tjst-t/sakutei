@@ -431,6 +431,17 @@ func runCycleAsync(
 	// and prune Delete ops — before any op is executed.  We call ComputePrune here
 	// to collect the approved Delete ops without executing them.  The actual
 	// execution happens in Phase 3 below, after the budget gate passes.
+	//
+	// Scf7762-4 (design intent, DELIBERATE): Phase 2a runs BEFORE the alert-only
+	// mode gate (Phase 2b) on purpose.  ComputePrune performs the List that
+	// updates the count-drop baseline (prune.Engine.lastListCount, §12.4b).  We
+	// keep calling it even in alert-only / freeze so that baseline stays fresh
+	// while alerting is active — otherwise, the first cycle AFTER alert-only is
+	// lifted would compare against a stale (or zero) baseline and could either
+	// miss a real count drop or false-halt on a phantom one.  This has NO
+	// destructive side effect: computeDaemonPrune never executes a Delete (that
+	// is executePruneOps in Phase 3), and Phase 2b returns early before Phase 3,
+	// so in alert-only the List runs but Apply/prune never do.
 	var pruneResult prune.PruneResult
 	if pruneEngine != nil {
 		pruneResult = computeDaemonPrune(ctx, pruneEngine, fp, desired, unobservable, cfg.ErrOut)
