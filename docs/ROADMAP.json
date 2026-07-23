@@ -197,7 +197,7 @@
         },
         "S94f1f9-2": {
           "title": "依存解決（DAG / Kahn wave）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "開発者として、リソース間の依存を宣言して依存順に収束させたい。なぜなら、DNS より先に VM を作る等の順序が要るから。",
@@ -206,19 +206,19 @@
               "id": "AC-S94f1f9-2-1",
               "description": "depends_on を宣言したリソースは Kahn 法で wave に分解され、in-degree 0 の wave から並列 Apply される",
               "test": "[AC-S94f1f9-2-1] in tests/acceptance/dag_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S94f1f9-2-2",
               "description": "上流の Apply 失敗時は下流を skip して次周期に回す",
               "test": "[AC-S94f1f9-2-2] in tests/acceptance/dag_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S94f1f9-2-3",
               "description": "依存に循環があればロード時に拒否する",
               "test": "[AC-S94f1f9-2-3] in tests/acceptance/dag_test.go",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {}
