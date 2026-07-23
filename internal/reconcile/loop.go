@@ -408,13 +408,19 @@ func runCycleAsync(
 	for _, local := range inFlightThisCycle {
 		_ = local // in-flight items are already unobservable; count them as 1
 		inFlightDestructive++ // conservative: count each in-flight as destructive
+		// B (backlog): counting every in-flight op as destructive is safe (biases
+		// toward halt) but can false-positive halt a Create-heavy cycle.  Future
+		// improvement: record each in-flight op's kind in InFlightSet and count
+		// only the destructive ones here (not fixed in Scf7762-2).
 	}
 	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, inFlightDestructive, len(desired))
 	budgetHalted := budgetDecision.HaltAll || budgetDecision.HaltDestructive
 	budgetReason := budgetDecision.Reason
-	if budgetHalted {
-		fmt.Fprintf(cfg.ErrOut, "sakutei: BUDGET HALTED: %s\n", budgetReason)
-	}
+	// E (Scf7762-2): do NOT log BUDGET HALTED here.  This helper has no cycle
+	// number; the single, cycle-numbered "cycle N: BUDGET HALTED" line is emitted
+	// by Run() from the returned CycleResult (BudgetHalted / BudgetReason).  A
+	// second, number-less line here was pure duplication and made the daemon log
+	// report each halt twice.
 
 	// Filter prune ops through the budget decision.
 	var allowedPruneOps []core.Op

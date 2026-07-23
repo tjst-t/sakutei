@@ -798,3 +798,852 @@ ok  	github.com/tjst-t/sakutei/internal/prune	0.002s
 --- PASS: TestReconcile_EmptyIntentDir (0.00s)
 PASS
 ok  	github.com/tjst-t/sakutei/tests/acceptance	8.171s
+
+===================================================================
+Scf7762-2 FIX RUN — progressive-destruction window test + filtered op display + dedup halt logging
+Date: 2026-07-23T11:36:57Z
+Go: go version go1.23.4 linux/amd64
+===================================================================
+
+--- Changes in this run ---
+D  (core): added cross-cycle cumulative-window tests (the Story's core scenario).
+     - internal/budget/budget_test.go (NEW, unit, white-box, injectable clock):
+         TestWindowBudget_ProgressiveDestruction_AccumulatesAcrossCycles
+         TestWindowBudget_EvictOld_ReopensBudgetAfterWindowElapses
+         TestWindowBudget_PartialDecay_FreesProportionalBudget
+         TestWindowBudget_ApproveLargeChange_DoesNotBypassWindow
+     - tests/acceptance/budget_test.go (NEW daemon test):
+         TestBudget_ProgressiveDestruction_Daemon [AC-Scf7762-2-2]
+         (2 real deletes across cycles, then window budget halts the 3rd)
+C  (latent bug): cmd/sakutei/reconcile.go op display/count now reads filteredPlans
+     (same source as CommitOps/ApplyWaves) instead of unfiltered plans.
+A  (dedup): removed duplicate stderr BUDGET HALTED in reconcile.go (kept single stderr + stdout summary).
+E  (dedup): removed number-less BUDGET HALTED in loop.go; kept the cycle-numbered line via CycleResult.
+B  (backlog note only): added comment in loop.go re: future InFlightSet op-kind recording.
+
+--- go build ./... ---
+BUILD OK
+
+--- go vet ./... ---
+VET OK
+
+--- go test ./... -count=1 -v (summary) ---
+?   	github.com/tjst-t/sakutei/cmd/sakutei	[no test files]
+?   	github.com/tjst-t/sakutei/internal/diff	[no test files]
+?   	github.com/tjst-t/sakutei/internal/loader	[no test files]
+?   	github.com/tjst-t/sakutei/internal/executor	[no test files]
+?   	github.com/tjst-t/sakutei/internal/fakeprovider	[no test files]
+=== RUN   TestWindowBudget_ProgressiveDestruction_AccumulatesAcrossCycles
+    budget_test.go:129: [AC-Scf7762-2-2] PASS: window accumulated 2→3 across cycles then halted the 4th destructive op
+--- PASS: TestWindowBudget_ProgressiveDestruction_AccumulatesAcrossCycles (0.00s)
+=== RUN   TestWindowBudget_EvictOld_ReopensBudgetAfterWindowElapses
+    budget_test.go:171: [AC-Scf7762-2-2] PASS: evictOld reopened the window budget after WindowDuration elapsed
+--- PASS: TestWindowBudget_EvictOld_ReopensBudgetAfterWindowElapses (0.00s)
+=== RUN   TestWindowBudget_PartialDecay_FreesProportionalBudget
+    budget_test.go:207: [AC-Scf7762-2-2] PASS: partial decay evicted only the out-of-window entry
+--- PASS: TestWindowBudget_PartialDecay_FreesProportionalBudget (0.00s)
+=== RUN   TestWindowBudget_ApproveLargeChange_DoesNotBypassWindow
+    budget_test.go:237: [AC-Scf7762-2-2] PASS: approve-large-change raised the per-cycle gate but not the window budget
+--- PASS: TestWindowBudget_ApproveLargeChange_DoesNotBypassWindow (0.00s)
+PASS
+ok  	github.com/tjst-t/sakutei/internal/budget	0.001s
+?   	github.com/tjst-t/sakutei/internal/reconcile	[no test files]
+?   	github.com/tjst-t/sakutei/pkg/core	[no test files]
+?   	github.com/tjst-t/sakutei/pkg/provider	[no test files]
+=== RUN   TestPruneEngine_ListPartial_Halts
+--- PASS: TestPruneEngine_ListPartial_Halts (0.00s)
+=== RUN   TestPruneEngine_CountDrop_Halts
+    prune_test.go:172: halt log: sakutei: prune HALT: List count dropped from 10 to 4 (60% > threshold 50%); halting prune to prevent accidental bulk delete
+--- PASS: TestPruneEngine_CountDrop_Halts (0.00s)
+=== RUN   TestPruneEngine_CountDrop_BelowThreshold_Proceeds
+--- PASS: TestPruneEngine_CountDrop_BelowThreshold_Proceeds (0.00s)
+=== RUN   TestPruneEngine_PruneableDefaultFalse
+--- PASS: TestPruneEngine_PruneableDefaultFalse (0.00s)
+=== RUN   TestPruneEngine_UnknownNotAbsent
+--- PASS: TestPruneEngine_UnknownNotAbsent (0.00s)
+=== RUN   TestPruneEngine_NormalDelete
+--- PASS: TestPruneEngine_NormalDelete (0.00s)
+=== RUN   TestPruneEngine_MixedType_NonPruneableTypeNotDeleted
+--- PASS: TestPruneEngine_MixedType_NonPruneableTypeNotDeleted (0.00s)
+PASS
+ok  	github.com/tjst-t/sakutei/internal/prune	0.001s
+=== RUN   TestBudget_PerCycleRateLimit
+    budget_test.go:236: [AC-Scf7762-2-1] PASS: rate-limit halted. remaining=10 code=1
+--- PASS: TestBudget_PerCycleRateLimit (0.00s)
+=== RUN   TestBudget_PerCycleRateLimit_HaltDestructiveOnly
+    budget_test.go:309: [AC-Scf7762-2-1-hdo] PASS: halt-destructive-only; vm-new created; remaining=6 code=1
+--- PASS: TestBudget_PerCycleRateLimit_HaltDestructiveOnly (0.00s)
+=== RUN   TestBudget_CumulativeWindowBudget_Daemon
+    budget_test.go:400: [AC-Scf7762-2-2] PASS: cumulative window budget halted progressive deletion; deleted=0 remaining=4
+--- PASS: TestBudget_CumulativeWindowBudget_Daemon (0.02s)
+=== RUN   TestBudget_ProgressiveDestruction_Daemon
+    budget_test.go:519: [AC-Scf7762-2-2] PASS: progressive destruction across cycles (deleted vm-05 then vm-04 for real), then window budget halted vm-03; remaining=3
+--- PASS: TestBudget_ProgressiveDestruction_Daemon (0.93s)
+=== RUN   TestBudget_DefaultHalt_WithoutApproval
+    budget_test.go:554: [AC-Scf7762-2-3-no-approval] PASS: default halt fires without --approve-large-change. code=1
+--- PASS: TestBudget_DefaultHalt_WithoutApproval (0.00s)
+=== RUN   TestBudget_ApproveLargeChange
+    budget_test.go:595: [AC-Scf7762-2-3-approval] PASS: approve-large-change=4 allowed 4 deletes. remaining=1 code=0
+--- PASS: TestBudget_ApproveLargeChange (0.00s)
+=== RUN   TestBudget_ApproveLargeChange_DoesNotBypassWindowBudget
+    budget_test.go:634: [AC-Scf7762-2-3-window] PASS: window budget halts even with approve-large-change. code=1
+--- PASS: TestBudget_ApproveLargeChange_DoesNotBypassWindowBudget (0.00s)
+=== RUN   TestCompositeID_Equality
+--- PASS: TestCompositeID_Equality (0.00s)
+=== RUN   TestCompositeID_StringContainsAllComponents
+--- PASS: TestCompositeID_StringContainsAllComponents (0.00s)
+=== RUN   TestCompositeID_EmptyScopeIsValid
+--- PASS: TestCompositeID_EmptyScopeIsValid (0.00s)
+=== RUN   TestScope_Path_Deterministic
+--- PASS: TestScope_Path_Deterministic (0.00s)
+=== RUN   TestState_TypedValues
+--- PASS: TestState_TypedValues (0.00s)
+=== RUN   TestObservation_Availability
+--- PASS: TestObservation_Availability (0.00s)
+=== RUN   TestObservation_ThreeValuesDistinct
+--- PASS: TestObservation_ThreeValuesDistinct (0.00s)
+=== RUN   TestPlan_OpsAndDestructive
+--- PASS: TestPlan_OpsAndDestructive (0.00s)
+=== RUN   TestPlan_DeleteIsDestructive
+--- PASS: TestPlan_DeleteIsDestructive (0.00s)
+=== RUN   TestPlan_UpdateOp
+--- PASS: TestPlan_UpdateOp (0.00s)
+=== RUN   TestPlan_CauseTags
+--- PASS: TestPlan_CauseTags (0.00s)
+=== RUN   TestPlan_OpKinds
+--- PASS: TestPlan_OpKinds (0.00s)
+=== RUN   TestProviderCapabilities_ZeroValue
+--- PASS: TestProviderCapabilities_ZeroValue (0.00s)
+=== RUN   TestProviderSchema_ZeroValue
+--- PASS: TestProviderSchema_ZeroValue (0.00s)
+=== RUN   TestTransientAndPermanentError
+--- PASS: TestTransientAndPermanentError (0.00s)
+=== RUN   TestDAG_WaveOrder
+    dag_test.go:140: [AC-S94f1f9-2-1] stdout:
+        + CREATE fake//res-a
+          reason: resource fake//res-a does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "res-a"
+          + size                  (new) → "1"
+        
+        + CREATE fake//res-b
+          reason: resource fake//res-b does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "res-b"
+          + size                  (new) → "2"
+        
+        Reconcile: 2 change(s) applied
+    dag_test.go:141: [AC-S94f1f9-2-1] state:
+        {
+          "resources": {
+            "res-a": {
+              "fields": {
+                "name": "res-a",
+                "size": "1"
+              }
+            },
+            "res-b": {
+              "fields": {
+                "name": "res-b",
+                "size": "2"
+              }
+            }
+          },
+          "apply_count": {
+            "res-a": 1,
+            "res-b": 1
+          }
+        }
+--- PASS: TestDAG_WaveOrder (0.00s)
+=== RUN   TestDAG_WaveOrder_ReverseDeclarationOrder
+    dag_test.go:202: stdout:
+        + CREATE fake//rev-b
+          reason: resource fake//rev-b does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "rev-b"
+          + size                  (new) → "20"
+        
+        + CREATE fake//rev-a
+          reason: resource fake//rev-a does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "rev-a"
+          + size                  (new) → "10"
+        
+        Reconcile: 2 change(s) applied
+--- PASS: TestDAG_WaveOrder_ReverseDeclarationOrder (0.00s)
+=== RUN   TestDAG_UpstreamFailureSkipsDownstream
+    dag_test.go:301: [AC-S94f1f9-2-2] stdout:
+        Reconcile: no changes applied; 1 resource(s) skipped
+    dag_test.go:302: [AC-S94f1f9-2-2] stderr:
+        sakutei: apply fake//fail-a: transient: fakeprovider: injected failure for fail-a: simulated Apply failure for test [AC-S94f1f9-2-2]
+        sakutei: skip fake//fail-b: upstream "fail-a" failed
+        sakutei reconcile: skip fail-b (unobservable or upstream failure; not converged this cycle)
+    dag_test.go:303: [AC-S94f1f9-2-2] state:
+        {
+          "resources": {},
+          "fail_inject": {
+            "fail-a": "simulated Apply failure for test [AC-S94f1f9-2-2]"
+          },
+          "apply_count": {
+            "fail-a": 1
+          }
+        }
+--- PASS: TestDAG_UpstreamFailureSkipsDownstream (0.00s)
+=== RUN   TestDAG_UpstreamFailureNextCycleRetries
+    dag_test.go:386: cycle 2 stdout:
+        + CREATE fake//retry-a
+          reason: resource fake//retry-a does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "retry-a"
+          + size                  (new) → "1"
+        
+        + CREATE fake//retry-b
+          reason: resource fake//retry-b does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "retry-b"
+          + size                  (new) → "2"
+        
+        Reconcile: 2 change(s) applied
+    dag_test.go:387: state after cycle 2:
+        {
+          "resources": {
+            "retry-a": {
+              "fields": {
+                "name": "retry-a",
+                "size": "1"
+              }
+            },
+            "retry-b": {
+              "fields": {
+                "name": "retry-b",
+                "size": "2"
+              }
+            }
+          },
+          "apply_count": {
+            "retry-a": 1,
+            "retry-b": 1
+          }
+        }
+--- PASS: TestDAG_UpstreamFailureNextCycleRetries (0.00s)
+=== RUN   TestDAG_UnobservableUpstreamSkipsDownstream
+    dag_test.go:490: [AC-S94f1f9-2-2/D-1] stdout:
+        Reconcile: no changes applied; 2 resource(s) skipped
+    dag_test.go:491: [AC-S94f1f9-2-2/D-1] stderr:
+        sakutei reconcile: observe fake//obs-a: availability=1 (not Ok); treating as unobservable
+        sakutei: skip fake//obs-a: unobservable this cycle (Observe error or Availability != Ok)
+        sakutei: skip fake//obs-b: upstream "obs-a" failed
+        sakutei reconcile: skip obs-a (unobservable or upstream failure; not converged this cycle)
+        sakutei reconcile: skip obs-b (unobservable or upstream failure; not converged this cycle)
+        sakutei reconcile: 1 resource(s) were unobservable this cycle; convergence incomplete
+--- PASS: TestDAG_UnobservableUpstreamSkipsDownstream (0.00s)
+=== RUN   TestDAG_ObserveErrorUpstreamSkipsDownstream
+    dag_test.go:552: [AC-S94f1f9-2-2/D-1] stdout:
+        Reconcile: no changes applied; 2 resource(s) skipped
+        
+        stderr:
+        sakutei reconcile: observe fake//err-a: transient: fakeprovider: injected observe error for err-a
+        sakutei: skip fake//err-a: unobservable this cycle (Observe error or Availability != Ok)
+        sakutei: skip fake//err-b: upstream "err-a" failed
+        sakutei reconcile: skip err-a (unobservable or upstream failure; not converged this cycle)
+        sakutei reconcile: skip err-b (unobservable or upstream failure; not converged this cycle)
+        sakutei reconcile: 1 resource(s) were unobservable this cycle; convergence incomplete
+--- PASS: TestDAG_ObserveErrorUpstreamSkipsDownstream (0.00s)
+=== RUN   TestDAG_CyclicDependsOnIsRejected
+    dag_test.go:619: [AC-S94f1f9-2-3] stderr:
+        sakutei reconcile: load intent: loader: cyclic dependency detected among resources: cycle-a, cycle-b
+    dag_test.go:620: [AC-S94f1f9-2-3] exit code: 1
+--- PASS: TestDAG_CyclicDependsOnIsRejected (0.00s)
+=== RUN   TestDAG_CyclicDependsOnRejectedBySakuteiPlan
+    dag_test.go:666: stderr:
+        sakutei plan: load intent: loader: cyclic dependency detected among resources: tri-a, tri-b, tri-c
+--- PASS: TestDAG_CyclicDependsOnRejectedBySakuteiPlan (0.00s)
+=== RUN   TestDAG_NoDeps_StillApplied
+--- PASS: TestDAG_NoDeps_StillApplied (0.00s)
+=== RUN   TestDAG_SelfDependency
+    dag_test.go:732: stderr:
+        sakutei reconcile: load intent: loader: cyclic dependency detected among resources: self-ref
+--- PASS: TestDAG_SelfDependency (0.00s)
+=== RUN   TestDAG_DuplicateLocalIDRejected
+    dag_test.go:772: [D-2] stderr:
+        sakutei reconcile: load intent: loader: duplicate resource id "dup" (declared more than once)
+--- PASS: TestDAG_DuplicateLocalIDRejected (0.00s)
+=== RUN   TestDeletion_PruneableDefaultFalse
+    deletion_test.go:227: [AC-Scf7762-1-1] PASS: orphan-vm not deleted (pruneable:false default). stdout=Converged (no changes)
+         stderr=
+--- PASS: TestDeletion_PruneableDefaultFalse (0.00s)
+=== RUN   TestDeletion_ListDropHalt
+    deletion_test.go:301: [AC-Scf7762-1-2] PASS: no resources deleted (List drop halt). stdout=Converged (no changes)
+         stderr=
+--- PASS: TestDeletion_ListDropHalt (0.00s)
+=== RUN   TestDeletion_CountDropHalt_Daemon
+    deletion_test.go:417: [AC-Scf7762-1-2] PASS: count-drop halt fired; orphan-target retained.
+--- PASS: TestDeletion_CountDropHalt_Daemon (0.35s)
+=== RUN   TestDeletion_UnknownNotAbsent
+    deletion_test.go:537: [AC-Scf7762-1-3] PASS: unreachable-vm not deleted (unknown ≠ absent). stdout=Converged (no changes)
+         stderr=
+--- PASS: TestDeletion_UnknownNotAbsent (0.00s)
+=== RUN   TestDeletion_PruneWithinScope_NormalPath
+    deletion_test.go:597: PruneWithinScope normal path PASS: to-delete-vm deleted. stdout=- DELETE fake//to-delete-vm [DESTRUCTIVE]
+          reason: resource fake//to-delete-vm present in reality but absent from desired state (PruneWithinScope)
+          cause:  A
+        
+        Reconcile: 1 change(s) applied
+         stderr=
+--- PASS: TestDeletion_PruneWithinScope_NormalPath (0.00s)
+=== RUN   TestDeletion_ExplicitAbsentOnly_NoPrune
+    deletion_test.go:648: ExplicitAbsentOnly PASS: extra-vm not deleted. stdout=Converged (no changes)
+         stderr=
+--- PASS: TestDeletion_ExplicitAbsentOnly_NoPrune (0.00s)
+=== RUN   TestInflight_CyclesDoNotAccumulate
+    inflight_test.go:113: [AC-S94f1f9-3-1] state file after slow Apply:
+        {
+          "resources": {
+            "slow-vm": {
+              "fields": {
+                "name": "slow-vm",
+                "size": "10"
+              }
+            }
+          },
+          "apply_delay": {
+            "slow-vm": "700ms"
+          },
+          "apply_count": {
+            "slow-vm": 1
+          }
+        }
+    inflight_test.go:125: [AC-S94f1f9-3-1] daemon log:
+        sakutei: convergence loop started (interval=150ms, intent=/tmp/TestInflight_CyclesDoNotAccumulate3346166452/001/intent, state=/tmp/TestInflight_CyclesDoNotAccumulate3346166452/001/state.json)
+        sakutei: cycle 1: observed=1 applied=0 launched=1
+        sakutei: skip fake//slow-vm: in-flight or unobservable this cycle
+        sakutei: cycle 2: observed=0 converged (no changes)
+        sakutei: cycle 2: in-flight (converging): [slow-vm]
+        sakutei: cycle 2: 1 resource(s) skipped (retry next cycle): [slow-vm]
+        sakutei: skip fake//slow-vm: in-flight or unobservable this cycle
+        sakutei: cycle 3: observed=0 converged (no changes)
+        sakutei: cycle 3: in-flight (converging): [slow-vm]
+        sakutei: cycle 3: 1 resource(s) skipped (retry next cycle): [slow-vm]
+        sakutei: skip fake//slow-vm: in-flight or unobservable this cycle
+        sakutei: cycle 4: observed=0 converged (no changes)
+        sakutei: cycle 4: in-flight (converging): [slow-vm]
+        sakutei: cycle 4: 1 resource(s) skipped (retry next cycle): [slow-vm]
+        sakutei: skip fake//slow-vm: in-flight or unobservable this cycle
+        sakutei: cycle 5: observed=0 converged (no changes)
+        sakutei: cycle 5: in-flight (converging): [slow-vm]
+        sakutei: cycle 5: 1 resource(s) skipped (retry next cycle): [slow-vm]
+        sakutei: cycle 6: observed=1 converged (no changes)
+        sakutei: cycle 7: observed=1 converged (no changes)
+        sakutei: cycle 8: observed=1 converged (no changes)
+        sakutei: shutdown signal received; stopping after cycle 8
+--- PASS: TestInflight_CyclesDoNotAccumulate (1.13s)
+=== RUN   TestInflight_NoConcurrentApplyForSameResource
+    inflight_test.go:241: [AC-S94f1f9-3-2] max observed apply_count during delay: 0
+    inflight_test.go:242: [AC-S94f1f9-3-2] daemon log:
+        sakutei: convergence loop started (interval=100ms, intent=/tmp/TestInflight_NoConcurrentApplyForSameResource1060957570/001/intent, state=/tmp/TestInflight_NoConcurrentApplyForSameResource1060957570/001/state.json)
+        sakutei: cycle 1: observed=1 applied=0 launched=1
+        sakutei: skip fake//exclusive-vm: in-flight or unobservable this cycle
+        sakutei: cycle 2: observed=0 converged (no changes)
+        sakutei: cycle 2: in-flight (converging): [exclusive-vm]
+        sakutei: cycle 2: 1 resource(s) skipped (retry next cycle): [exclusive-vm]
+        sakutei: skip fake//exclusive-vm: in-flight or unobservable this cycle
+        sakutei: cycle 3: observed=0 converged (no changes)
+        sakutei: cycle 3: in-flight (converging): [exclusive-vm]
+        sakutei: cycle 3: 1 resource(s) skipped (retry next cycle): [exclusive-vm]
+        sakutei: skip fake//exclusive-vm: in-flight or unobservable this cycle
+        sakutei: cycle 4: observed=0 converged (no changes)
+        sakutei: cycle 4: in-flight (converging): [exclusive-vm]
+        sakutei: cycle 4: 1 resource(s) skipped (retry next cycle): [exclusive-vm]
+        sakutei: skip fake//exclusive-vm: in-flight or unobservable this cycle
+        sakutei: cycle 5: observed=0 converged (no changes)
+        sakutei: cycle 5: in-flight (converging): [exclusive-vm]
+        sakutei: cycle 5: 1 resource(s) skipped (retry next cycle): [exclusive-vm]
+        sakutei: skip fake//exclusive-vm: in-flight or unobservable this cycle
+        sakutei: cycle 6: observed=0 converged (no changes)
+        sakutei: cycle 6: in-flight (converging): [exclusive-vm]
+        sakutei: cycle 6: 1 resource(s) skipped (retry next cycle): [exclusive-vm]
+        sakutei: shutdown signal received; stopping after cycle 6
+    inflight_test.go:268: [AC-S94f1f9-3-2] final apply_count: 1
+--- PASS: TestInflight_NoConcurrentApplyForSameResource (0.63s)
+=== RUN   TestInflight_BackoffAfterApplyFailure
+    inflight_test.go:353: [AC-S94f1f9-3-3] daemon log:
+        sakutei: convergence loop started (interval=80ms, intent=/tmp/TestInflight_BackoffAfterApplyFailure4118532670/001/intent, state=/tmp/TestInflight_BackoffAfterApplyFailure4118532670/001/state.json)
+        sakutei: cycle 1: observed=1 applied=0 launched=1
+        sakutei: apply fake//backoff-vm: transient: fakeprovider: injected failure for backoff-vm: injected-failure-for-backoff-test
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 2: observed=1 converged (no changes)
+        sakutei: cycle 2: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 3: observed=1 converged (no changes)
+        sakutei: cycle 3: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 4: observed=1 converged (no changes)
+        sakutei: cycle 4: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 5: observed=1 converged (no changes)
+        sakutei: cycle 5: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 6: observed=1 converged (no changes)
+        sakutei: cycle 6: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 7: observed=1 converged (no changes)
+        sakutei: cycle 7: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 8: observed=1 converged (no changes)
+        sakutei: cycle 8: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 9: observed=1 converged (no changes)
+        sakutei: cycle 9: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 10: observed=1 converged (no changes)
+        sakutei: cycle 10: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 11: observed=1 converged (no changes)
+        sakutei: cycle 11: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 12: observed=1 converged (no changes)
+        sakutei: cycle 12: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 13: observed=1 converged (no changes)
+        sakutei: cycle 13: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: cycle 14: observed=1 applied=0 launched=1
+        sakutei: apply fake//backoff-vm: transient: fakeprovider: injected failure for backoff-vm: injected-failure-for-backoff-test
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 15: observed=1 converged (no changes)
+        sakutei: cycle 15: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 16: observed=1 converged (no changes)
+        sakutei: cycle 16: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 17: observed=1 converged (no changes)
+        sakutei: cycle 17: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 18: observed=1 converged (no changes)
+        sakutei: cycle 18: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 19: observed=1 converged (no changes)
+        sakutei: cycle 19: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 20: observed=1 converged (no changes)
+        sakutei: cycle 20: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 21: observed=1 converged (no changes)
+        sakutei: cycle 21: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 22: observed=1 converged (no changes)
+        sakutei: cycle 22: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 23: observed=1 converged (no changes)
+        sakutei: cycle 23: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 24: observed=1 converged (no changes)
+        sakutei: cycle 24: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 25: observed=1 converged (no changes)
+        sakutei: cycle 25: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 26: observed=1 converged (no changes)
+        sakutei: cycle 26: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 27: observed=1 converged (no changes)
+        sakutei: cycle 27: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 28: observed=1 converged (no changes)
+        sakutei: cycle 28: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 29: observed=1 converged (no changes)
+        sakutei: cycle 29: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: backoff fake//backoff-vm: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: cycle 30: observed=1 converged (no changes)
+        sakutei: cycle 30: 1 resource(s) in backoff (will retry later): [backoff-vm]
+        sakutei: shutdown signal received; stopping after cycle 30
+    inflight_test.go:375: [AC-S94f1f9-3-3] apply_count (attempts past backoff gate) = 2 in 2.5s (≈31 cycles without backoff)
+    inflight_test.go:379: [AC-S94f1f9-3-3] 'backoff' log mentions: 118
+    inflight_test.go:399: [AC-S94f1f9-3-3] final state:
+        {
+          "resources": {},
+          "fail_inject": {
+            "backoff-vm": "injected-failure-for-backoff-test"
+          },
+          "apply_count": {
+            "backoff-vm": 2
+          }
+        }
+--- PASS: TestInflight_BackoffAfterApplyFailure (2.50s)
+=== RUN   TestInflight_BackoffDoesNotBlockUnrelatedResources
+    inflight_test.go:482: [backoff-isolation] state:
+        {
+          "resources": {
+            "ok-y": {
+              "fields": {
+                "name": "ok-y",
+                "size": "2"
+              }
+            }
+          },
+          "fail_inject": {
+            "fail-x": "injected-failure"
+          },
+          "apply_count": {
+            "fail-x": 1,
+            "ok-y": 1
+          }
+        }
+    inflight_test.go:483: [backoff-isolation] log:
+        sakutei: convergence loop started (interval=150ms, intent=/tmp/TestInflight_BackoffDoesNotBlockUnrelatedResources2354640686/001/intent, state=/tmp/TestInflight_BackoffDoesNotBlockUnrelatedResources2354640686/001/state.json)
+        sakutei: cycle 1: observed=2 applied=0 launched=2
+        sakutei: apply fake//fail-x: transient: fakeprovider: injected failure for fail-x: injected-failure
+        sakutei: shutdown signal received; stopping after cycle 1
+--- PASS: TestInflight_BackoffDoesNotBlockUnrelatedResources (0.03s)
+=== RUN   TestInflight_BackedOffUpstreamSkipsDownstream
+    inflight_test.go:575: [DD-1] daemon log:
+        sakutei: convergence loop started (interval=80ms, intent=/tmp/TestInflight_BackedOffUpstreamSkipsDownstream3152233602/001/intent, state=/tmp/TestInflight_BackedOffUpstreamSkipsDownstream3152233602/001/state.json)
+        sakutei: cycle 1: observed=2 applied=0 launched=2
+        sakutei: apply fake//dd1-up: transient: fakeprovider: injected failure for dd1-up: injected-failure-for-DD1-test
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 2: observed=2 converged (no changes)
+        sakutei: cycle 2: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 2: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 3: observed=2 converged (no changes)
+        sakutei: cycle 3: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 3: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 4: observed=2 converged (no changes)
+        sakutei: cycle 4: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 4: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 5: observed=2 converged (no changes)
+        sakutei: cycle 5: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 5: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 6: observed=2 converged (no changes)
+        sakutei: cycle 6: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 6: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 7: observed=2 converged (no changes)
+        sakutei: cycle 7: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 7: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 8: observed=2 converged (no changes)
+        sakutei: cycle 8: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 8: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 9: observed=2 converged (no changes)
+        sakutei: cycle 9: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 9: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 10: observed=2 converged (no changes)
+        sakutei: cycle 10: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 10: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 11: observed=2 converged (no changes)
+        sakutei: cycle 11: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 11: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 12: observed=2 converged (no changes)
+        sakutei: cycle 12: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 12: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: cycle 13: observed=2 applied=0 launched=1
+        sakutei: apply fake//dd1-up: transient: fakeprovider: injected failure for dd1-up: injected-failure-for-DD1-test
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 14: observed=2 converged (no changes)
+        sakutei: cycle 14: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 14: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 15: observed=2 converged (no changes)
+        sakutei: cycle 15: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 15: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 16: observed=2 converged (no changes)
+        sakutei: cycle 16: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 16: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 17: observed=2 converged (no changes)
+        sakutei: cycle 17: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 17: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 18: observed=2 converged (no changes)
+        sakutei: cycle 18: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 18: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 19: observed=2 converged (no changes)
+        sakutei: cycle 19: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 19: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 20: observed=2 converged (no changes)
+        sakutei: cycle 20: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 20: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 21: observed=2 converged (no changes)
+        sakutei: cycle 21: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 21: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 22: observed=2 converged (no changes)
+        sakutei: cycle 22: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 22: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 23: observed=2 converged (no changes)
+        sakutei: cycle 23: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 23: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 24: observed=2 converged (no changes)
+        sakutei: cycle 24: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 24: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 25: observed=2 converged (no changes)
+        sakutei: cycle 25: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 25: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 26: observed=2 converged (no changes)
+        sakutei: cycle 26: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 26: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 27: observed=2 converged (no changes)
+        sakutei: cycle 27: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 27: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 28: observed=2 converged (no changes)
+        sakutei: cycle 28: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 28: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 29: observed=2 converged (no changes)
+        sakutei: cycle 29: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 29: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: backoff fake//dd1-up: suppressing Apply (in cooldown); downstream skipped this cycle
+        sakutei: skip fake//dd1-down: upstream "dd1-up" failed/in-flight
+        sakutei: cycle 30: observed=2 converged (no changes)
+        sakutei: cycle 30: 1 resource(s) skipped (retry next cycle): [dd1-down]
+        sakutei: cycle 30: 1 resource(s) in backoff (will retry later): [dd1-up]
+        sakutei: shutdown signal received; stopping after cycle 30
+    inflight_test.go:582: [DD-1] final state:
+        {
+          "resources": {
+            "dd1-down": {
+              "fields": {
+                "name": "dd1-down",
+                "size": "2"
+              }
+            }
+          },
+          "fail_inject": {
+            "dd1-up": "injected-failure-for-DD1-test"
+          },
+          "apply_count": {
+            "dd1-down": 1,
+            "dd1-up": 2
+          }
+        }
+    inflight_test.go:595: [DD-1] 'skip dd1-down: upstream …' lines: 28
+    inflight_test.go:623: [DD-1] dd1-down apply_count over ~30 cycles: 1
+--- PASS: TestInflight_BackedOffUpstreamSkipsDownstream (2.50s)
+=== RUN   TestLoop_CreatesResource
+    loop_test.go:180: [AC-S94f1f9-1-1] state file after creation:
+        {
+          "resources": {
+            "loop-vm": {
+              "fields": {
+                "name": "loop-vm",
+                "size": "20"
+              }
+            }
+          },
+          "apply_count": {
+            "loop-vm": 1
+          }
+        }
+    loop_test.go:181: [AC-S94f1f9-1-1] daemon output so far:
+        sakutei: convergence loop started (interval=200ms, intent=/tmp/TestLoop_CreatesResource4036780876/001/intent, state=/tmp/TestLoop_CreatesResource4036780876/001/state.json)
+        sakutei: cycle 1: observed=1 applied=0 launched=1
+--- PASS: TestLoop_CreatesResource (0.03s)
+=== RUN   TestLoop_DriftCorrection
+    loop_test.go:256: [AC-S94f1f9-1-2] injected drift: size→999
+    loop_test.go:313: [AC-S94f1f9-1-2] drift corrected; name="drift-loop-vm" size="20"
+    loop_test.go:314: [AC-S94f1f9-1-2] daemon output:
+        sakutei: convergence loop started (interval=200ms, intent=/tmp/TestLoop_DriftCorrection386083595/001/intent, state=/tmp/TestLoop_DriftCorrection386083595/001/state.json)
+        sakutei: cycle 1: observed=1 applied=0 launched=1
+        sakutei: cycle 2: observed=1 applied=0 launched=1
+--- PASS: TestLoop_DriftCorrection (0.21s)
+=== RUN   TestLoop_GracefulStop
+    loop_test.go:389: [AC-S94f1f9-1-3] daemon exited after SIGTERM; output:
+        sakutei: convergence loop started (interval=200ms, intent=/tmp/TestLoop_GracefulStop264580426/001/intent, state=/tmp/TestLoop_GracefulStop264580426/001/state.json)
+        sakutei: cycle 1: observed=1 applied=0 launched=1
+        sakutei: shutdown signal received; stopping after cycle 1
+--- PASS: TestLoop_GracefulStop (0.03s)
+=== RUN   TestLoop_StatelessObservation
+    loop_test.go:459: [AC-S94f1f9-1-3] final state:
+        {
+          "resources": {
+            "stateless-loop-vm": {
+              "fields": {
+                "name": "stateless-loop-vm",
+                "size": "42"
+              }
+            }
+          },
+          "apply_count": {
+            "stateless-loop-vm": 1
+          }
+        }
+    loop_test.go:460: [AC-S94f1f9-1-3] daemon output:
+        sakutei: convergence loop started (interval=200ms, intent=/tmp/TestLoop_StatelessObservation1711959370/001/intent, state=/tmp/TestLoop_StatelessObservation1711959370/001/state.json)
+        sakutei: cycle 1: observed=1 applied=0 launched=1
+        sakutei: cycle 2: observed=1 converged (no changes)
+        sakutei: cycle 3: observed=1 converged (no changes)
+--- PASS: TestLoop_StatelessObservation (0.53s)
+=== RUN   TestFieldMerge_UpdatePreservesUnchangedFields
+    loop_test.go:547: field-merge: name="merge-vm" size="50" (both correct)
+--- PASS: TestFieldMerge_UpdatePreservesUnchangedFields (0.00s)
+=== RUN   TestPlan_CreateDiff
+    plan_test.go:175: [AC-Sead944-2-1] plan output:
+        Plan: 1 change(s)
+        
+        + CREATE fake//test-vm
+          reason: resource fake//test-vm does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "test-vm"
+          + size                  (new) → "10"
+        
+--- PASS: TestPlan_CreateDiff (0.00s)
+=== RUN   TestPlan_DoesNotModifyState
+=== RUN   TestPlan_DoesNotModifyState/absent
+    plan_test.go:258: [AC-Sead944-2-2] state file unchanged (before=0 bytes, after=0 bytes)
+=== RUN   TestPlan_DoesNotModifyState/existing
+    plan_test.go:258: [AC-Sead944-2-2] state file unchanged (before=16 bytes, after=16 bytes)
+--- PASS: TestPlan_DoesNotModifyState (0.00s)
+    --- PASS: TestPlan_DoesNotModifyState/absent (0.00s)
+    --- PASS: TestPlan_DoesNotModifyState/existing (0.00s)
+=== RUN   TestPlan_ConvergedWhenRealityMatchesDesired
+    plan_test.go:318: [AC-Sead944-2-3] plan output:
+        Converged (no changes)
+--- PASS: TestPlan_ConvergedWhenRealityMatchesDesired (0.00s)
+=== RUN   TestPlan_UpdateDiff
+    plan_test.go:374: plan output:
+        Plan: 1 change(s)
+        
+        ~ UPDATE fake//drift-vm
+          reason: resource fake//drift-vm has 1 field(s) out of sync
+          cause:  A
+          ~ size                  "10" → "20"
+        
+--- PASS: TestPlan_UpdateDiff (0.00s)
+=== RUN   TestPlan_MissingIntentFlag
+--- PASS: TestPlan_MissingIntentFlag (0.00s)
+=== RUN   TestPlan_EmptyIntentDir
+--- PASS: TestPlan_EmptyIntentDir (0.00s)
+=== RUN   TestReconcile_CreatesResource
+    reconcile_test.go:119: [AC-Sead944-3-1] reconcile output:
+        + CREATE fake//reconcile-vm
+          reason: resource fake//reconcile-vm does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "reconcile-vm"
+          + size                  (new) → "42"
+        
+        Reconcile: 1 change(s) applied
+    reconcile_test.go:120: [AC-Sead944-3-1] state file after reconcile:
+        {
+          "resources": {
+            "reconcile-vm": {
+              "fields": {
+                "name": "reconcile-vm",
+                "size": "42"
+              }
+            }
+          },
+          "apply_count": {
+            "reconcile-vm": 1
+          }
+        }
+--- PASS: TestReconcile_CreatesResource (0.00s)
+=== RUN   TestReconcile_Idempotent
+    reconcile_test.go:183: [AC-Sead944-3-2] second reconcile output:
+        Converged (no changes)
+    reconcile_test.go:184: [AC-Sead944-3-2] state file (unchanged after second reconcile):
+        {
+          "resources": {
+            "idempotent-vm": {
+              "fields": {
+                "name": "idempotent-vm",
+                "size": "8"
+              }
+            }
+          },
+          "apply_count": {
+            "idempotent-vm": 1
+          }
+        }
+--- PASS: TestReconcile_Idempotent (0.00s)
+=== RUN   TestReconcile_ObservesIndependently
+    reconcile_test.go:256: [AC-Sead944-3-3] reconcile output:
+        + CREATE fake//stateless-vm
+          reason: resource fake//stateless-vm does not exist in reality; will create
+          cause:  A
+          + name                  (new) → "stateless-vm"
+          + size                  (new) → "16"
+        
+        Reconcile: 1 change(s) applied
+    reconcile_test.go:257: [AC-Sead944-3-3] state file after reconcile:
+        {
+          "resources": {
+            "stateless-vm": {
+              "fields": {
+                "name": "stateless-vm",
+                "size": "16"
+              }
+            }
+          },
+          "apply_count": {
+            "stateless-vm": 1
+          }
+        }
+--- PASS: TestReconcile_ObservesIndependently (0.00s)
+=== RUN   TestReconcile_UpdatesDriftedResource
+    reconcile_test.go:322: reconcile update output:
+        ~ UPDATE fake//drifted-vm
+          reason: resource fake//drifted-vm has 1 field(s) out of sync
+          cause:  A
+          ~ size                  "50" → "100"
+        
+        Reconcile: 1 change(s) applied
+--- PASS: TestReconcile_UpdatesDriftedResource (0.00s)
+=== RUN   TestReconcile_MissingIntentFlag
+--- PASS: TestReconcile_MissingIntentFlag (0.00s)
+=== RUN   TestReconcile_EmptyIntentDir
+--- PASS: TestReconcile_EmptyIntentDir (0.00s)
+PASS
+ok  	github.com/tjst-t/sakutei/tests/acceptance	9.102s
+
+--- summary counts ---
+PASS=74 FAIL=0 SKIP=0
+
+--- flakiness: go test ./tests/acceptance/ ./internal/budget/ -count=5 (daemon/concurrent) ---
+COUNT5_EXIT=0 (all ok; see below)
+ok  	github.com/tjst-t/sakutei/tests/acceptance	44.920s
+ok  	github.com/tjst-t/sakutei/internal/budget	0.002s

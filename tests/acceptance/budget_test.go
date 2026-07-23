@@ -114,6 +114,44 @@ func writeDesiredKeepOneResource(t *testing.T, intentDir, keepID string) {
 	})
 }
 
+// writeDesiredKeepResources writes an intent file that keeps exactly keepIDs
+// under PruneWithinScope.  Every resource in reality that is NOT in keepIDs
+// becomes a prune candidate in the same closed-world scope.  Rewriting this file
+// mid-test progressively widens the prune scope so the daemon deletes a little
+// more each cycle — the shape needed to exercise cross-cycle window accumulation.
+func writeDesiredKeepResources(t *testing.T, intentDir string, keepIDs ...string) {
+	t.Helper()
+	resources := make([]map[string]any, 0, len(keepIDs))
+	for i, id := range keepIDs {
+		resources = append(resources, map[string]any{
+			"provider":        "fake",
+			"id":              id,
+			"deletion_policy": "PruneWithinScope",
+			"fields": map[string]string{
+				"name": id,
+				"size": fmt.Sprintf("%d", i+1),
+			},
+		})
+	}
+	writeIntentFile(t, intentDir, map[string]any{"resources": resources})
+}
+
+// waitForResourceCount polls the state file until it holds exactly want
+// resources or the deadline passes.  Returns true on match.  Used to confirm
+// that a prior cycle's deletes actually landed in reality before the test moves
+// to the next phase (proving deletion happened, not just that a plan was made).
+func waitForResourceCount(t *testing.T, statePath string, want int, deadline time.Duration) bool {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if countResourcesInState(t, statePath) == want {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
 // startDaemonWithFlags launches "sakutei" with the given flags and writes
 // merged stdout+stderr to logPath.  Returns the *exec.Cmd and a wait func.
 // The caller MUST ensure the process is eventually killed.
@@ -360,6 +398,125 @@ func TestBudget_CumulativeWindowBudget_Daemon(t *testing.T) {
 	}
 
 	t.Logf("[AC-Scf7762-2-2] PASS: cumulative window budget halted progressive deletion; deleted=%d remaining=%d", deleted, remaining)
+}
+
+// TestBudget_ProgressiveDestruction_Daemon verifies [AC-Scf7762-2-2] via the
+// TRUE cross-cycle accumulation path — the core scenario of this Story.
+//
+// The sibling test above (single-cycle pre-check) halts on cycle 1 before ANY
+// delete runs, so CommitOps is never reached and windowTotal never advances.
+// That path does not prove the "delete a little each cycle until the rolling
+// window is exhausted" behaviour.  This test does: it drives the daemon through
+// multiple cycles where deletes ACTUALLY happen (confirmed in reality), then the
+// window budget halts the next delete once the accumulated committed count would
+// exceed the cap.
+//
+// Mechanics — the daemon reloads intent every cycle, so we widen the prune scope
+// in phases by rewriting the intent file, and confirm each phase's delete landed
+// in reality before advancing:
+//
+//	reality  = 5 pruneable VMs (vm-01..vm-05)
+//	window   = 2, window-duration = 10m (no decay during the test)
+//	per-cycle limit = high (10): the per-cycle rate gate never fires, so the ONLY
+//	                  thing that can halt here is the cumulative window budget.
+//
+//	phase A: keep vm-01..vm-04  → orphan vm-05         → delete 1 (windowTotal 0→1); reality 5→4
+//	phase B: keep vm-01..vm-03  → orphan vm-04         → delete 1 (windowTotal 1→2); reality 4→3
+//	phase C: keep vm-01,vm-02   → orphan vm-03         → 2+1=3 > cap 2 → BUDGET HALTED; vm-03 survives
+//
+// Each phase deletes at most 1 of the current list, well under the prune 50%
+// drop-rate guard, so the ONLY halt observed is the budget halt in phase C.
+func TestBudget_ProgressiveDestruction_Daemon(t *testing.T) {
+	// [AC-Scf7762-2-2]
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+	logPath := filepath.Join(tmp, "daemon.log")
+
+	// Reality: 5 pruneable resources vm-01..vm-05.
+	seedManyPruneableResources(t, statePath, 5)
+
+	// Phase A intent (keep 4, orphan vm-05) must be in place before the daemon
+	// starts so the first cycle deletes exactly one resource.
+	writeDesiredKeepResources(t, intentDir, "vm-01", "vm-02", "vm-03", "vm-04")
+
+	cmd, waitCmd := startDaemonWithFlags(t, logPath,
+		"--intent", intentDir,
+		"--state", statePath,
+		"--interval", "150ms",
+		"--max-destructive-per-cycle=10", // high: rate gate never fires
+		"--max-destructive-per-window=2", // window cap: accumulates across cycles
+		"--window-duration=10m",          // long: no decay during the test
+		"--on-exceed=halt-all",
+	)
+	killed := false
+	defer func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = waitCmd()
+		}
+	}()
+
+	// --- Phase A: confirm vm-05 was ACTUALLY deleted (reality 5→4). ---
+	if !waitForResourceCount(t, statePath, 4, 10*time.Second) {
+		t.Fatalf("[AC-Scf7762-2-2] phase A: expected 4 resources after deleting vm-05; got %d; log:\n%s",
+			countResourcesInState(t, statePath), readFileString(logPath))
+	}
+	if resourceExistsInState(t, statePath, "vm-05") {
+		t.Fatalf("[AC-Scf7762-2-2] phase A: vm-05 should have been pruned (real delete); log:\n%s", readFileString(logPath))
+	}
+
+	// --- Phase B: widen scope; confirm vm-04 was ACTUALLY deleted (reality 4→3). ---
+	writeDesiredKeepResources(t, intentDir, "vm-01", "vm-02", "vm-03")
+	if !waitForResourceCount(t, statePath, 3, 10*time.Second) {
+		t.Fatalf("[AC-Scf7762-2-2] phase B: expected 3 resources after deleting vm-04; got %d; log:\n%s",
+			countResourcesInState(t, statePath), readFileString(logPath))
+	}
+	if resourceExistsInState(t, statePath, "vm-04") {
+		t.Fatalf("[AC-Scf7762-2-2] phase B: vm-04 should have been pruned (real delete); log:\n%s", readFileString(logPath))
+	}
+
+	// At this point windowTotal == 2 (two deletes committed across two cycles):
+	// the rolling window is now full.
+
+	// --- Phase C: widen scope again; the next delete would push committed 2 + planned 1 = 3 > cap 2.
+	// The cumulative window budget MUST halt it, leaving vm-03 alive. ---
+	writeDesiredKeepResources(t, intentDir, "vm-01", "vm-02")
+
+	if !waitForLogFile(logPath, "BUDGET HALTED", 10*time.Second) {
+		t.Fatalf("[AC-Scf7762-2-2] phase C: daemon did not emit BUDGET HALTED after the window filled; remaining=%d; log:\n%s",
+			countResourcesInState(t, statePath), readFileString(logPath))
+	}
+
+	// Give the daemon a couple more cycles to prove it does NOT delete vm-03
+	// despite the widened scope (the window budget keeps halting).
+	time.Sleep(600 * time.Millisecond)
+
+	_ = cmd.Process.Kill()
+	_ = waitCmd()
+	killed = true
+
+	logStr := readFileString(logPath)
+
+	// vm-03 must still exist: the window budget prevented the 3rd cumulative delete.
+	if !resourceExistsInState(t, statePath, "vm-03") {
+		t.Errorf("[AC-Scf7762-2-2] phase C: vm-03 must survive (window budget halts the 3rd cumulative delete); log:\n%s", logStr)
+	}
+	remaining := countResourcesInState(t, statePath)
+	if remaining != 3 {
+		t.Errorf("[AC-Scf7762-2-2] phase C: expected exactly 3 resources remaining (vm-01,vm-02,vm-03); got %d; log:\n%s",
+			remaining, logStr)
+	}
+
+	// The halt line must be present AND cycle-numbered (E fix: no number-less dup).
+	if !strings.Contains(logStr, "BUDGET HALTED") {
+		t.Errorf("[AC-Scf7762-2-2] 'BUDGET HALTED' not in daemon log; log:\n%s", logStr)
+	}
+
+	t.Logf("[AC-Scf7762-2-2] PASS: progressive destruction across cycles (deleted vm-05 then vm-04 for real), then window budget halted vm-03; remaining=%d", remaining)
 }
 
 // ---------------------------------------------------------------------------

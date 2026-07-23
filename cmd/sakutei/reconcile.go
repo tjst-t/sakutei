@@ -251,12 +251,22 @@ func runReconcile(args []string) {
 	}
 
 	// Report applied ops: only for resources whose Apply succeeded.
+	//
+	// C (Scf7762-2): display/count MUST read from filteredPlans — the exact same
+	// source ApplyWaves and CommitOps used — not the unfiltered plans map.  If we
+	// read from plans here, an op that the budget gate blocked (removed from
+	// filteredPlans, never applied, never committed) could still be printed and
+	// counted as "applied".  With today's 1 resource = 1 op shape this is latent
+	// (a blocked resource is absent from filteredPlans AND from appliedIDs, so it
+	// is skipped by the guard above), but a future multi-op plan where only some
+	// ops are destructive would show/count a blocked op as applied.  Reading from
+	// filteredPlans keeps display, count, apply, and commit on one source.
 	appliedOps := 0
 	for _, res := range desired {
 		if !appliedIDs[res.ID.Local] {
 			continue
 		}
-		plan := plans[res.ID.Local]
+		plan := filteredPlans[res.ID.Local]
 		for _, op := range plan.Ops {
 			printOp(op)
 			appliedOps++
@@ -283,7 +293,9 @@ func runReconcile(args []string) {
 
 	switch {
 	case budgetHalted && appliedOps == 0:
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: BUDGET HALTED: %s\n", budgetDecision.Reason)
+		// A (Scf7762-2): the BUDGET HALTED stderr line is already emitted once,
+		// above, right after CheckCycle (the single stderr source of truth).  Do
+		// NOT repeat it here — only the stdout summary belongs in this switch.
 		fmt.Printf("Reconcile: BUDGET HALTED (no changes applied): %s\n", budgetDecision.Reason)
 		os.Exit(1)
 	case appliedOps > 0:
