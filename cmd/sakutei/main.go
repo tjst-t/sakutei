@@ -47,7 +47,7 @@ func main() {
 	case "plan":
 		runPlan(os.Args[2:])
 	case "reconcile":
-		notYetImplemented("reconcile")
+		runReconcile(os.Args[2:])
 	case "status":
 		notYetImplemented("status")
 	case "import":
