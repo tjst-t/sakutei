@@ -39,6 +39,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/reconcile"
+	"github.com/tjst-t/sakutei/internal/remediation"
 )
 
 // version is the build-time version string.  It is expected to be injected
@@ -110,6 +111,12 @@ func runDaemon() {
 	approveLargeChange := fs.Int("approve-large-change", 0,
 		"explicitly approve up to N destructive changes this invocation")
 
+	// Scf7762-3: remediation mode flags (§14.1).
+	modeStr := fs.String("mode", "auto",
+		"remediation mode: auto | alert-only (§14.1); alert-only detects drift but does not Apply")
+	freeze := fs.Bool("freeze", false,
+		"global freeze: override to alert-only regardless of --mode (§14.3 escape hatch)")
+
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// "-h"/"--help" makes flag.Parse return flag.ErrHelp after printing
 		// usage; that is a successful, user-requested help display, not an
@@ -161,6 +168,17 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
+	// Parse remediation configuration (Scf7762-3, §14.1).
+	mode, modeErr := remediation.ParseMode(*modeStr)
+	if modeErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: invalid --mode %q: %v\n", *modeStr, modeErr)
+		os.Exit(1)
+	}
+	remCfg := remediation.Config{
+		Mode:   mode,
+		Freeze: *freeze,
+	}
+
 	// Construct the concrete provider here (cmd layer) and inject it via the
 	// provider.Provider seam; the reconcile core stays free of concrete
 	// provider types (F-1).
@@ -170,6 +188,7 @@ func runDaemon() {
 		Provider:     fakeprovider.New(*statePath),
 		Interval:     interval,
 		BudgetConfig: budgetCfg,
+		Remediation:  remCfg,
 	}
 
 	if err := reconcile.Run(context.Background(), cfg); err != nil {

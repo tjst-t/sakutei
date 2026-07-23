@@ -28,6 +28,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/reconcile"
+	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -81,6 +82,12 @@ func runReconcile(args []string) {
 	approveLargeChange := fs.Int("approve-large-change", 0,
 		"explicitly approve up to N destructive changes this cycle (overrides per-cycle rate limit)")
 
+	// Scf7762-3: remediation mode flags (§14.1).
+	modeStr := fs.String("mode", "auto",
+		"remediation mode: auto | alert-only (§14.1); alert-only detects drift but does not Apply")
+	freeze := fs.Bool("freeze", false,
+		"global freeze: override to alert-only regardless of --mode (§14.3 escape hatch)")
+
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
 		os.Exit(1)
@@ -90,6 +97,17 @@ func runReconcile(args []string) {
 		fmt.Fprintln(os.Stderr, "sakutei reconcile: --intent <dir> is required")
 		fs.Usage()
 		os.Exit(1)
+	}
+
+	// Parse remediation configuration (Scf7762-3, §14.1).
+	remMode, remModeErr := remediation.ParseMode(*modeStr)
+	if remModeErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: invalid --mode %q: %v\n", *modeStr, remModeErr)
+		os.Exit(1)
+	}
+	remCfg := remediation.Config{
+		Mode:   remMode,
+		Freeze: *freeze,
 	}
 
 	// Parse budget configuration.
@@ -185,7 +203,58 @@ func runReconcile(args []string) {
 		precomputedPruneOps, pruneWasHaltedBySafetyGuard = computePrune(ctx, fp, desired, unobservable)
 	}
 
-	// Phase 2b: Collect all planned Apply ops (from Diff phase).
+	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3).
+	//
+	// alert-only / freeze: do NOT Apply or prune.  Report drift and exit 0.
+	// The budget gate (Phase 2c) is skipped — nothing is applied.
+	if remCfg.IsAlertOnly() {
+		driftCount := 0
+		var driftEvents []string
+		for _, res := range desired {
+			if unobservable[res.ID.Local] {
+				continue
+			}
+			plan, ok := plans[res.ID.Local]
+			if !ok || len(plan.Ops) == 0 {
+				continue
+			}
+			driftCount++
+			for _, op := range plan.Ops {
+				var kindStr string
+				switch op.Kind {
+				case core.OpKindCreate:
+					kindStr = "CREATE"
+				case core.OpKindUpdate:
+					kindStr = "UPDATE"
+				case core.OpKindDelete:
+					kindStr = "DELETE"
+				default:
+					kindStr = "OP"
+				}
+				driftEvents = append(driftEvents, fmt.Sprintf("%s %s (would be %s)", kindStr, op.Target, kindStr))
+			}
+		}
+		for _, op := range precomputedPruneOps {
+			driftCount++
+			driftEvents = append(driftEvents, fmt.Sprintf("DELETE %s (orphan; would be pruned)", op.Target))
+		}
+		modeLabel := "alert-only"
+		if remCfg.Freeze {
+			modeLabel = "alert-only [FROZEN]"
+		}
+		if driftCount == 0 {
+			fmt.Printf("Reconcile (%s): no drift detected\n", modeLabel)
+		} else {
+			fmt.Printf("Reconcile (%s): %d drifted resource(s) detected — no changes applied\n", modeLabel, driftCount)
+			for _, ev := range driftEvents {
+				fmt.Printf("  DRIFT EVENT: %s\n", ev)
+			}
+		}
+		// alert-only exits 0: detection without action is not a failure.
+		os.Exit(0)
+	}
+
+	// Phase 2c: Collect all planned Apply ops (from Diff phase).
 	var allPlannedOps []core.Op
 	for _, res := range desired {
 		if unobservable[res.ID.Local] {
@@ -197,7 +266,7 @@ func runReconcile(args []string) {
 	}
 	allPlannedOps = append(allPlannedOps, precomputedPruneOps...)
 
-	// Phase 2c: Budget gate (§13, Scf7762-2).
+	// Phase 2d: Budget gate (§13, Scf7762-2).
 	//
 	// Evaluate rate-limit and cumulative time-window budget.  For the one-shot
 	// reconcile, in-flight is always 0 (synchronous Apply, no prior goroutines).

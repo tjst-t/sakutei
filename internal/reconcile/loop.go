@@ -47,6 +47,16 @@
 //     decision is logged with a clear HALTED message.  The cumulative window
 //     counter (S3, memory-only) is advanced only for ops that are actually
 //     applied.
+//
+// Story Scf7762-3 additions:
+//   - Remediation mode gate (§14.1, ADR-0014 v1a subset): Config.Remediation
+//     controls whether Apply and prune Delete are executed.
+//     - alert-only: no Apply, no prune Delete; drift is reported via log Events.
+//     - global freeze: overrides mode to alert-only (most-restrictive-wins, §14.3).
+//   - Mode gate is evaluated BEFORE the budget gate — if we are in alert-only
+//     there is no need to evaluate the budget at all (nothing is applied).
+//   - Both the daemon path (Run/runCycleAsync) and the one-shot path
+//     (cmd/sakutei/reconcile.go) respect the mode via the same Config field.
 package reconcile
 
 import (
@@ -64,6 +74,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
+	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -93,6 +104,9 @@ type Config struct {
 	// BudgetConfig holds the change-budget configuration (§13, Scf7762-2).
 	// Zero value means no budget limits are enforced (unlimited).
 	BudgetConfig budget.Config
+	// Remediation holds the remediation mode configuration (§14.1, Scf7762-3).
+	// Zero value (ModeAuto, Freeze=false) means Apply and prune execute normally.
+	Remediation remediation.Config
 }
 
 // DefaultInterval is the default convergence cycle period.
@@ -133,8 +147,14 @@ func Run(ctx context.Context, cfg Config) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	fmt.Fprintf(cfg.Out, "sakutei: convergence loop started (interval=%s, intent=%s, state=%s)\n",
-		cfg.Interval, cfg.IntentDir, cfg.StatePath)
+	effectiveMode := cfg.Remediation.EffectiveMode()
+	if cfg.Remediation.Freeze {
+		fmt.Fprintf(cfg.Out, "sakutei: convergence loop started (interval=%s, intent=%s, state=%s, mode=alert-only [FROZEN])\n",
+			cfg.Interval, cfg.IntentDir, cfg.StatePath)
+	} else {
+		fmt.Fprintf(cfg.Out, "sakutei: convergence loop started (interval=%s, intent=%s, state=%s, mode=%s)\n",
+			cfg.Interval, cfg.IntentDir, cfg.StatePath, effectiveMode)
+	}
 
 	// S94f1f9-3: shared in-flight set + backoff table for the lifetime of this
 	// daemon run.  These are S3 state (memory only, ADR-0015): reset on restart,
@@ -183,7 +203,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 
 		cycleNum++
-		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, cfg)
+		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, cfg, cfg.Remediation)
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
@@ -224,6 +244,20 @@ func Run(ctx context.Context, cfg Config) error {
 			// Scf7762-2: change budget gate blocked ops this cycle.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: BUDGET HALTED: %s\n",
 				cycleNum, res.BudgetReason)
+		}
+		if res.AlertOnly {
+			// Scf7762-3: alert-only mode — no Apply was executed; drifted resources
+			// are reported via the DriftEvents list.
+			if cfg.Remediation.Freeze {
+				fmt.Fprintf(cfg.Out, "sakutei: cycle %d: FROZEN (alert-only): %d drifted resource(s) detected — no changes applied\n",
+					cycleNum, res.DriftCount)
+			} else {
+				fmt.Fprintf(cfg.Out, "sakutei: cycle %d: alert-only: %d drifted resource(s) detected — no changes applied\n",
+					cycleNum, res.DriftCount)
+			}
+			for _, ev := range res.DriftEvents {
+				fmt.Fprintf(cfg.Out, "sakutei: cycle %d: DRIFT EVENT: %s\n", cycleNum, ev)
+			}
 		}
 
 		// Jitter sleep: base interval + up to 10%.
@@ -280,6 +314,18 @@ type CycleResult struct {
 	BudgetHalted bool
 	// BudgetReason is the human-readable explanation of the budget halt.
 	BudgetReason string
+
+	// Scf7762-3 remediation mode fields:
+
+	// AlertOnly is true when the cycle ran in alert-only or frozen mode.
+	// No Apply or prune Delete was executed.
+	AlertOnly bool
+	// DriftCount is the number of drifted resources detected this cycle
+	// (only meaningful when AlertOnly is true).
+	DriftCount int
+	// DriftEvents is the list of drift event strings for drifted resources
+	// (only populated when AlertOnly is true).
+	DriftEvents []string
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -328,6 +374,7 @@ func runCycleAsync(
 	exec executor.Executor,
 	ifl *InFlightSet,
 	cfg Config,
+	rem remediation.Config,
 ) (CycleResult, error) {
 	// Load desired state fresh each cycle.
 	desired, loadErr := loader.LoadDir(cfg.IntentDir)
@@ -383,7 +430,55 @@ func runCycleAsync(
 		pruneResult = computeDaemonPrune(ctx, pruneEngine, fp, desired, unobservable, cfg.ErrOut)
 	}
 
-	// Phase 2b: Collect all planned Apply ops (from Diff phase).
+	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3).
+	//
+	// alert-only / freeze: do NOT Apply or prune.  Report drift Events and
+	// return immediately.  The budget gate (Phase 2c) is skipped entirely —
+	// there is nothing to count because no op will execute.
+	if rem.IsAlertOnly() {
+		var driftEvents []string
+		driftCount := 0
+		for _, res := range desired {
+			local := res.ID.Local
+			if unobservable[local] {
+				continue
+			}
+			plan, ok := plans[local]
+			if !ok || len(plan.Ops) == 0 {
+				continue
+			}
+			driftCount++
+			for _, op := range plan.Ops {
+				var kindStr string
+				switch op.Kind {
+				case core.OpKindCreate:
+					kindStr = "CREATE"
+				case core.OpKindUpdate:
+					kindStr = "UPDATE"
+				case core.OpKindDelete:
+					kindStr = "DELETE"
+				default:
+					kindStr = "OP"
+				}
+				driftEvents = append(driftEvents, fmt.Sprintf("%s %s (would be %s)", kindStr, op.Target, kindStr))
+			}
+		}
+		// Also report prune candidates as drift.
+		for _, op := range pruneResult.DeleteOps {
+			driftCount++
+			driftEvents = append(driftEvents, fmt.Sprintf("DELETE %s (orphan; would be pruned)", op.Target))
+		}
+		return CycleResult{
+			Observed:    observed,
+			InFlight:    inFlightThisCycle,
+			BackedOff:   backedOff,
+			AlertOnly:   true,
+			DriftCount:  driftCount,
+			DriftEvents: driftEvents,
+		}, nil
+	}
+
+	// Phase 2c: Collect all planned Apply ops (from Diff phase).
 	//
 	// Flatten the per-resource plans into a single slice so the budget engine
 	// can count destructive vs. additive ops across the whole cycle.
@@ -400,7 +495,7 @@ func runCycleAsync(
 	// Append prune Delete ops (they are destructive by definition).
 	allPlannedOps = append(allPlannedOps, pruneResult.DeleteOps...)
 
-	// Phase 2c: Budget gate (§13, Scf7762-2).
+	// Phase 2e: Budget gate (§13, Scf7762-2).
 	//
 	// Evaluate rate-limit (cycle unit, including in-flight) and cumulative
 	// time-window budget before issuing ANY Apply or prune Delete.
@@ -432,7 +527,7 @@ func runCycleAsync(
 		}
 	}
 
-	// Phase 2d: Apply (async waves) — but filter out destructive ops if halted.
+	// Phase 2f: Apply (async waves) — but filter out destructive ops if halted.
 	//
 	// When budget fires with halt-destructive-only, we filter the per-resource
 	// plans to remove destructive ops before passing them to applyWavesAsync.
