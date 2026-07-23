@@ -45,7 +45,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "plan":
-		notYetImplemented("plan")
+		runPlan(os.Args[2:])
 	case "reconcile":
 		notYetImplemented("reconcile")
 	case "status":
