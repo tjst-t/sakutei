@@ -53,9 +53,9 @@ import (
 
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
 // gracefulShutdownWait is the maximum time Run will wait for in-flight Apply
@@ -66,8 +66,13 @@ const gracefulShutdownWait = 30 * time.Second
 type Config struct {
 	// IntentDir is the directory containing intent JSON files.
 	IntentDir string
-	// StatePath is the path to the fake provider state file.
+	// StatePath is the path to the provider state file (used only for logging;
+	// the caller constructs Provider from it).
 	StatePath string
+	// Provider is the target Provider the loop converges against.  It is injected
+	// by the caller (cmd layer) so the reconcile core depends only on the
+	// provider.Provider seam, never on a concrete provider type (F-1).
+	Provider provider.Provider
 	// Interval is the base duration between convergence cycles.
 	// A random jitter of up to 10% of Interval is added to each sleep.
 	Interval time.Duration
@@ -124,7 +129,11 @@ func Run(ctx context.Context, cfg Config) error {
 	// Applies, not cached observations of reality).
 	ifl := NewInFlightSet()
 
-	fp := fakeprovider.New(cfg.StatePath)
+	// F-1: the daemon depends on the provider.Provider seam, not any concrete
+	// provider type.  The caller (cmd layer) injects cfg.Provider; the concrete
+	// type never leaks into the reconcile core.  Swapping in a real provider is a
+	// call-site change only.
+	fp := cfg.Provider
 	engine := diff.New(fp.Schema())
 	var exec executor.Executor = executor.New()
 
@@ -208,105 +217,20 @@ type CycleResult struct {
 	BackedOff []string
 }
 
-// RunOnce executes a single convergence cycle with the given Config.
-//
-// This is the shared implementation used both by the periodic loop (Run) and
-// the one-shot "sakutei reconcile" command.  Using a common path guarantees
-// that wave ordering and cycle detection are consistent between the two entry
-// points (§8.1).
-//
-// The caller is responsible for creating and setting up the output writers.
-func RunOnce(ctx context.Context, cfg Config) (CycleResult, error) {
-	if cfg.Out == nil {
-		cfg.Out = os.Stdout
-	}
-	if cfg.ErrOut == nil {
-		cfg.ErrOut = os.Stderr
-	}
-
-	fp := fakeprovider.New(cfg.StatePath)
-	engine := diff.New(fp.Schema())
-	var exec executor.Executor = executor.New()
-
-	return runCycle(ctx, engine, fp, exec, cfg)
-}
-
-// runCycle executes one convergence cycle: load intent, observe each resource
-// (fresh — ADR-0002), diff, apply in dependency (wave) order.
-//
-// Returns a CycleResult (observed count, applied ops, skipped resource IDs) and
-// any error that aborted the whole cycle.
-//
-// ADR-0002 note: every call to fp.Read in the inner loop is a fresh observation.
-// No observation result from a prior cycle or from "sakutei plan" is carried in.
-//
-// S94f1f9-2: Apply is driven by applyWaves (dag.go), which decomposes the
-// depends_on DAG via Kahn's algorithm and applies wave by wave.  On per-resource
-// Apply failure the transitive dependents are skipped for this cycle; the
-// level-triggered loop naturally retries them on the next cycle.
-//
-// D-1 (unobservable-upstream safety, ADR-0002 / §3): a resource whose Observe
-// returned an error OR Availability != Ok is NOT treated as converged.  It is
-// recorded in the "unobservable" set and handed to applyWaves, which marks it
-// failed and skips its transitive downstream this cycle.  This enforces
-// "unknown ≠ absent; do not proceed downstream on uncertainty" — the same
-// halt-default policy used for Apply failures.
-func runCycle(
-	ctx context.Context,
-	engine *diff.Engine,
-	fp *fakeprovider.Provider,
-	exec executor.Executor,
-	cfg Config,
-) (CycleResult, error) {
-	// Load desired state fresh each cycle.
-	// loader.LoadDir also performs cycle detection (S94f1f9-2).
-	desired, loadErr := loader.LoadDir(cfg.IntentDir)
-	if loadErr != nil {
-		return CycleResult{}, fmt.Errorf("load intent: %w", loadErr)
-	}
-
-	// Phase 1: Observe all resources fresh (ADR-0002).
-	observed := 0
-	plans := make(map[string]core.Plan, len(desired))
-	// unobservable holds Local IDs whose Observe failed or returned
-	// Availability != Ok this cycle (D-1).  They are handed to applyWaves so
-	// their transitive downstream is skipped instead of proceeding.
-	unobservable := make(map[string]bool)
-	for _, res := range desired {
-		// ADR-0002: fresh observation per resource per cycle.
-		obs, readErr := fp.Read(ctx, res.ID.Local)
-		if readErr != nil {
-			// D-1: Observe error → unobservable, not converged.
-			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
-			unobservable[res.ID.Local] = true
-			continue
-		}
-		observed++
-		if obs.Availability != core.AvailabilityOk {
-			// D-1: reachable-but-unknown/converging is still not "converged".
-			// unknown ≠ absent: do not proceed downstream on uncertainty.
-			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: availability=%v (not Ok); treating as unobservable this cycle\n",
-				res.ID, obs.Availability)
-			unobservable[res.ID.Local] = true
-			continue
-		}
-		plans[res.ID.Local] = engine.Diff(obs, res)
-	}
-
-	// Phase 2: Apply in dependency (wave) order.  unobservable resources and
-	// their transitive downstream are skipped (D-1).
-	appliedCount, _, skipped, waveErr := applyWaves(ctx, fp, exec, desired, plans, unobservable, cfg.ErrOut)
-	if waveErr != nil {
-		return CycleResult{Observed: observed}, waveErr
-	}
-
-	return CycleResult{Observed: observed, Applied: appliedCount, Skipped: skipped}, nil
-}
+// F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
+// not go through this package's cycle helper — it inlines its own Observe/Diff
+// loop and calls the exported ApplyWaves (dag.go) directly, because it needs
+// reconcile-specific reporting (per-op printing, distinct exit codes for
+// unobservable vs. Apply-failure skips).  A previous "shared RunOnce" entry
+// point was therefore dead code advertising an API nobody called; it has been
+// removed so the package does not lie about a shared path.  Wave ordering and
+// cycle detection stay consistent because both callers use the same
+// loader.LoadDir + ApplyWaves seam.
 
 // runCycleAsync executes one async-Apply convergence cycle for the daemon loop
 // (S94f1f9-3).
 //
-// Differences from runCycle (the synchronous one-shot path):
+// Behaviour (vs. the synchronous ApplyWaves path used by "sakutei reconcile"):
 //   - Resources currently in the in-flight set are treated as converging for
 //     this cycle: they are excluded from the plan and their downstream is
 //     skipped (same semantics as an unobservable upstream).
@@ -318,13 +242,16 @@ func runCycle(
 // The in-flight set and backoff table (ifl) are shared across cycles for the
 // life of the daemon.  Access is protected by ifl's internal mutex.
 //
-// Observation state-less invariant (ADR-0002): the Observe phase is always
-// fresh, regardless of the in-flight set.  The in-flight set records self-
-// initiated Applies (S3 state), not cached observations.
+// Observation state-less invariant (ADR-0002): every cycle, each resource that
+// is NOT in-flight is observed fresh.  An in-flight resource skips its Observe
+// for this cycle and is treated as converging — we do NOT reuse a prior cycle's
+// observation for it, so no cached observation state is introduced.  The
+// in-flight set records self-initiated Applies (S3 state, memory only), not
+// cached observations of reality.
 func runCycleAsync(
 	ctx context.Context,
 	engine *diff.Engine,
-	fp *fakeprovider.Provider,
+	fp provider.Provider,
 	exec executor.Executor,
 	ifl *InFlightSet,
 	cfg Config,
@@ -421,7 +348,7 @@ func runCycleAsync(
 //   - err:        only set for unrecoverable structural errors.
 func applyWavesAsync(
 	ctx context.Context,
-	fp *fakeprovider.Provider,
+	fp provider.Provider,
 	exec executor.Executor,
 	ifl *InFlightSet,
 	desired []diff.DesiredResource,
@@ -434,25 +361,8 @@ func applyWavesAsync(
 		return 0, 0, nil, nil, nil
 	}
 
-	// Build local-ID → index map.
-	localIdx := make(map[string]int, n)
-	for i, r := range desired {
-		localIdx[r.ID.Local] = i
-	}
-
-	// Build adjacency list and in-degree from depends_on.
-	inDeg := make([]int, n)
-	adj := make([][]int, n)
-	for i, r := range desired {
-		for _, dep := range r.DependsOn {
-			j, ok := localIdx[dep]
-			if !ok {
-				continue
-			}
-			adj[j] = append(adj[j], i)
-			inDeg[i]++
-		}
-	}
+	// Build the depends_on sub-DAG (shared with applyWaves via buildDAG).
+	_, inDeg, adj := buildDAG(desired)
 
 	// failed tracks Local IDs whose Apply failed or were skipped.
 	failed := make(map[string]bool, n)

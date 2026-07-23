@@ -111,30 +111,9 @@ func applyWaves(
 		return 0, nil, nil, nil
 	}
 
-	// Build local-ID → index map.
-	localIdx := make(map[string]int, n)
-	for i, r := range desired {
-		localIdx[r.ID.Local] = i
-	}
-
-	// Build adjacency list and in-degree from depends_on.
+	// Build the depends_on sub-DAG (shared with applyWavesAsync via buildDAG).
 	// Edge direction: dep → r means "dep must be applied before r".
-	inDeg := make([]int, n)
-	adj := make([][]int, n)
-	for i, r := range desired {
-		for _, dep := range r.DependsOn {
-			j, ok := localIdx[dep]
-			if !ok {
-				// depends_on references an ID that is not in the current desired
-				// set.  This can happen when the dependency is already converged
-				// and not in the Apply set, but still referenced in depends_on.
-				// We skip the edge — the dependency is already satisfied.
-				continue
-			}
-			adj[j] = append(adj[j], i)
-			inDeg[i]++
-		}
-	}
+	_, inDeg, adj := buildDAG(desired)
 
 	// failed tracks Local IDs whose Apply failed or were skipped this cycle;
 	// their transitive dependents will be skipped.
@@ -245,6 +224,44 @@ func applyWaves(
 	// not applied this cycle.
 
 	return applied, succeededIDs, skipped, nil
+}
+
+// buildDAG constructs the depends_on sub-DAG shared by both the synchronous
+// apply path (applyWaves) and the async apply path (applyWavesAsync).
+//
+// It returns:
+//   - localIdx: map from each resource's Local ID to its index in desired.
+//   - inDeg:    per-index in-degree (number of unsatisfied upstream deps).
+//   - adj:      adjacency list; adj[j] holds the indices of resources that
+//     depend on desired[j] (edge direction: dep → r means "dep must be applied
+//     before r").
+//
+// Callers seed the Kahn queue with the in-degree-0 indices and drain adj as
+// each node is processed.  Behaviour is identical for both paths.
+func buildDAG(desired []diff.DesiredResource) (localIdx map[string]int, inDeg []int, adj [][]int) {
+	n := len(desired)
+	localIdx = make(map[string]int, n)
+	for i, r := range desired {
+		localIdx[r.ID.Local] = i
+	}
+
+	inDeg = make([]int, n)
+	adj = make([][]int, n)
+	for i, r := range desired {
+		for _, dep := range r.DependsOn {
+			j, ok := localIdx[dep]
+			if !ok {
+				// depends_on references an ID that is not in the current desired
+				// set.  This can happen when the dependency is already converged
+				// and not in the Apply set, but still referenced in depends_on.
+				// We skip the edge — the dependency is already satisfied.
+				continue
+			}
+			adj[j] = append(adj[j], i)
+			inDeg[i]++
+		}
+	}
+	return localIdx, inDeg, adj
 }
 
 // upstreamFailed returns the first dep in deps that is marked as failed, or

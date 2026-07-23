@@ -36,6 +36,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 )
 
@@ -120,9 +121,13 @@ func runDaemon() {
 		interval = d
 	}
 
+	// Construct the concrete provider here (cmd layer) and inject it via the
+	// provider.Provider seam; the reconcile core stays free of concrete
+	// provider types (F-1).
 	cfg := reconcile.Config{
 		IntentDir: *intentDir,
 		StatePath: *statePath,
+		Provider:  fakeprovider.New(*statePath),
 		Interval:  interval,
 	}
 
