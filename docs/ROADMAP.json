@@ -5,8 +5,8 @@
     "current_sprint": "Scf7762",
     "total": 9,
     "done": 2,
-    "in_progress": 1,
-    "remaining": 6,
+    "in_progress": 0,
+    "remaining": 7,
     "percentage": 22
   },
   "execution_order": [
@@ -255,7 +255,7 @@
     },
     "Scf7762": {
       "title": "安全機構の中核 — 壊れる前に止まる",
-      "status": "in_progress",
+      "status": "partial",
       "description": "[MILESTONE] pruneable:false 既定・DeletionPolicy・List 完全性検証・rate limit・累積時間窓予算・デフォルト halt・remediation mode(auto/alert-only)。chaos テストで『壊れる前に止まる』を実証する。エンジンの存在意義を証明する MVP マイルストーン。ADR-0005/0014 の v1a サブセット。",
       "milestone": true,
       "stories": {
@@ -345,7 +345,7 @@
         },
         "Scf7762-4": {
           "title": "chaos テスト — 壊れる前に止まる",
-          "status": "pending",
+          "status": "needs_user_review",
           "user_review_required": true,
           "review_reason": "エンジンの存在意義（安全機構が実際に破壊を止める）を実証する最重要検証。マイルストーンでの人間確認が要る。",
           "user_story": "開発者として、安全機構が chaos テストで実証されることを確認したい。なぜなら『壊れる前に止まる』ことがこのエンジンの存在意義だから。",
@@ -354,19 +354,19 @@
               "id": "AC-Scf7762-4-1",
               "description": "fake Provider に大量削除を注入すると halt し破壊が止まる",
               "test": "[AC-Scf7762-4-1] in tests/acceptance/chaos_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Scf7762-4-2",
               "description": "List を人為的に欠損させると誤 prune せず halt する",
               "test": "[AC-Scf7762-4-2] in tests/acceptance/chaos_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-Scf7762-4-3",
               "description": "alert-only 下ではドリフトを報告するが Apply しない",
               "test": "[AC-Scf7762-4-3] in tests/acceptance/chaos_test.go",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {}
