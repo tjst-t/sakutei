@@ -152,14 +152,35 @@ func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
 	for _, op := range plan.Ops {
 		key := op.Target.Local
 		switch op.Kind {
-		case core.OpKindCreate, core.OpKindUpdate:
-			// Reconstruct fields from the Op's FieldDiff list.
-			// For Create, From is empty; To holds the desired value string.
+		case core.OpKindCreate:
+			// Create: resource did not exist; write all desired fields.
+			// From is empty for every FieldDiff; To holds the desired value.
 			fields := make(map[string]any, len(op.Fields))
 			for _, fd := range op.Fields {
 				fields[fd.Field] = fd.To
 			}
 			sf.Resources[key] = storedResource{Fields: fields}
+		case core.OpKindUpdate:
+			// Update: resource already exists; merge only the changed fields.
+			//
+			// Bug fix (S94f1f9-1 fold-in): the previous implementation
+			// reconstructed the resource from op.Fields alone, which only
+			// contains the *changed* fields.  Unchanged fields (e.g. "name"
+			// when only "size" drifted) were silently dropped.
+			//
+			// Correct behaviour: start from the existing stored resource and
+			// overlay only the fields that appear in the FieldDiff list.
+			existing := sf.Resources[key]
+			merged := make(map[string]any, len(existing.Fields)+len(op.Fields))
+			// Copy all currently-stored fields first.
+			for k, v := range existing.Fields {
+				merged[k] = v
+			}
+			// Overlay only the changed fields with their new (To) values.
+			for _, fd := range op.Fields {
+				merged[fd.Field] = fd.To
+			}
+			sf.Resources[key] = storedResource{Fields: merged}
 		case core.OpKindDelete:
 			delete(sf.Resources, key)
 		}
