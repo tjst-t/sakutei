@@ -179,48 +179,85 @@ func TestPlan_CreateDiff(t *testing.T) {
 //
 // [AC-Sead944-2-2] After running "sakutei plan", the fake provider state
 // file must be unchanged (Apply was not called).
+//
+// Two cases are covered so both the "file does not exist yet" and the
+// "file already exists" paths are exercised:
+//   - absent:   the state file does not exist before plan and must remain
+//     absent (byte-for-byte, nil) afterwards — plan must not create it.
+//   - existing: the state file exists with arbitrary content before plan and
+//     must be byte-for-byte identical afterwards — plan must not rewrite it.
 func TestPlan_DoesNotModifyState(t *testing.T) {
 	// [AC-Sead944-2-2]
-	tmp := t.TempDir()
-	intentDir := filepath.Join(tmp, "intent")
-	if err := os.MkdirAll(intentDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	statePath := filepath.Join(tmp, "state.json")
-
-	// Write intent declaring one resource.
-	writeIntentFile(t, intentDir, map[string]any{
-		"resources": []map[string]any{
-			{
-				"provider": "fake",
-				"id":       "no-apply-vm",
-				"fields": map[string]string{
-					"name": "no-apply-vm",
-					"size": "5",
-				},
-			},
+	cases := []struct {
+		name string
+		// seed is the exact bytes to write to the state file before plan.
+		// A nil seed means the state file does not exist before plan.
+		seed []byte
+	}{
+		{
+			name: "absent",
+			seed: nil,
 		},
-	})
-
-	// Snapshot state before plan (file does not exist yet → nil).
-	beforePlan := readStateFile(t, statePath)
-
-	// Run plan.
-	_, _, code := runPlan(t, intentDir, statePath)
-	if code != 0 {
-		t.Fatalf("[AC-Sead944-2-2] plan exited %d", code)
+		{
+			name: "existing",
+			// Arbitrary pre-existing content: an empty (but valid) state.
+			// plan must leave these exact bytes untouched.
+			seed: []byte(`{"resources":{}}`),
+		},
 	}
 
-	// Snapshot state after plan.
-	afterPlan := readStateFile(t, statePath)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// [AC-Sead944-2-2]
+			tmp := t.TempDir()
+			intentDir := filepath.Join(tmp, "intent")
+			if err := os.MkdirAll(intentDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			statePath := filepath.Join(tmp, "state.json")
 
-	// The state file must not have been created or modified by plan.
-	// Both nil (absent) or identical byte-for-byte content is acceptable.
-	if string(beforePlan) != string(afterPlan) {
-		t.Errorf("[AC-Sead944-2-2] state file changed after plan — Apply must not be called by plan\nbefore: %s\nafter:  %s",
-			beforePlan, afterPlan)
+			// Write intent declaring one resource.
+			writeIntentFile(t, intentDir, map[string]any{
+				"resources": []map[string]any{
+					{
+						"provider": "fake",
+						"id":       "no-apply-vm",
+						"fields": map[string]string{
+							"name": "no-apply-vm",
+							"size": "5",
+						},
+					},
+				},
+			})
+
+			// Seed the state file (or leave it absent for the "absent" case).
+			if tc.seed != nil {
+				if err := os.WriteFile(statePath, tc.seed, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// Snapshot state before plan.
+			beforePlan := readStateFile(t, statePath)
+
+			// Run plan.
+			_, _, code := runPlan(t, intentDir, statePath)
+			if code != 0 {
+				t.Fatalf("[AC-Sead944-2-2] plan exited %d", code)
+			}
+
+			// Snapshot state after plan.
+			afterPlan := readStateFile(t, statePath)
+
+			// The state file must not have been created or modified by plan.
+			// Both nil (absent) or identical byte-for-byte content is acceptable.
+			if string(beforePlan) != string(afterPlan) {
+				t.Errorf("[AC-Sead944-2-2] state file changed after plan — Apply must not be called by plan\nbefore: %s\nafter:  %s",
+					beforePlan, afterPlan)
+			}
+			t.Logf("[AC-Sead944-2-2] state file unchanged (before=%d bytes, after=%d bytes)", len(beforePlan), len(afterPlan))
+		})
 	}
-	t.Logf("[AC-Sead944-2-2] state file unchanged (before=%d bytes, after=%d bytes)", len(beforePlan), len(afterPlan))
 }
 
 // TestPlan_ConvergedWhenRealityMatchesDesired verifies scenario-Sead944-2 / step 3.

@@ -77,7 +77,7 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource) core.Plan {
 
 	// Resource absent in reality → Create.
 	if obs.State == nil {
-		fields := desiredFieldDiffs(nil, desired.Fields)
+		fields := desiredFieldDiffs(desired.Fields)
 		diagnostic := fmt.Sprintf("resource %s does not exist in reality; will create", desired.ID)
 		return core.Plan{
 			Ops: []core.Op{
@@ -171,7 +171,7 @@ func diffFields(actual core.State, desired map[string]string, schema provider.Sc
 
 // desiredFieldDiffs creates FieldDiff entries for all desired fields in a
 // Create operation (From is always empty because nothing existed before).
-func desiredFieldDiffs(actual core.State, desired map[string]string) []core.FieldDiff {
+func desiredFieldDiffs(desired map[string]string) []core.FieldDiff {
 	names := make([]string, 0, len(desired))
 	for name := range desired {
 		names = append(names, name)

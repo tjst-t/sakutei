@@ -224,6 +224,10 @@ func (p *Provider) load() (*stateFile, error) {
 
 // save serialises the stateFile and writes it atomically-ish (write + rename
 // would be ideal but for test simplicity we write directly).
+//
+// NOTE: a production Provider MUST persist state via an atomic write to a temp
+// file followed by os.Rename onto the target path, so a crash mid-write can
+// never leave a truncated/corrupt state file (S2 progress; loss = incident).
 func (p *Provider) save(sf *stateFile) error {
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
