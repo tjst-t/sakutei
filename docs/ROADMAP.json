@@ -5,33 +5,70 @@
     "current_sprint": "Sead944",
     "total": 9,
     "done": 0,
-    "in_progress": 0,
-    "remaining": 9,
+    "in_progress": 1,
+    "remaining": 8,
     "percentage": 0
   },
-  "execution_order": ["Sead944", "S94f1f9", "Scf7762", "Scb0ecd", "S072a14", "S62dbba", "Sf6a62f", "S33266e", "Sc7a647"],
+  "execution_order": [
+    "Sead944",
+    "S94f1f9",
+    "Scf7762",
+    "Scb0ecd",
+    "S072a14",
+    "S62dbba",
+    "Sf6a62f",
+    "S33266e",
+    "Sc7a647"
+  ],
   "sprints": {
     "Sead944": {
       "title": "収束コアの骨格 — 正準型・単発収束・fake Provider",
-      "status": "pending",
+      "status": "in_progress",
       "description": "MVP。コア型（ID/Scope/State/Plan/Observation）と Provider/Lister インターフェースを定義し、fake in-memory Provider に対して `sakutei plan`（Diff で停止）と `sakutei reconcile`（Observe→Diff→Apply を1巡）が CLI から動く最小の実行可能増分。ADR-0002/0003/0004 の土台を敷く。",
       "milestone": false,
       "stories": {
         "Sead944-1": {
           "title": "コア型と Provider/Lister インターフェース",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "開発者として、コア型（ID/Scope/State/Plan/Observation）と Provider/Lister インターフェースを使ってリソースの現在状態と理想状態を表現したい。なぜなら、収束の全機構がこの型の上に築かれるから。",
           "acceptance_criteria": [
-            {"id": "AC-Sead944-1-1", "description": "ID は (provider, scope, id) の複合として一意にリソースを識別できる", "test": "[AC-Sead944-1-1] in tests/acceptance/core_types_test.go", "status": "pending"},
-            {"id": "AC-Sead944-1-2", "description": "State は Schema 付き map として型付き値を保持でき、Observation は Availability(ok/unknown/converging)+State+ObservedAt を返す", "test": "[AC-Sead944-1-2] in tests/acceptance/core_types_test.go", "status": "pending"},
-            {"id": "AC-Sead944-1-3", "description": "Plan は操作列(Create/Update/Delete)・破壊性フラグ・対象 ID を保持する", "test": "[AC-Sead944-1-3] in tests/acceptance/core_types_test.go", "status": "pending"}
+            {
+              "id": "AC-Sead944-1-1",
+              "description": "ID は (provider, scope, id) の複合として一意にリソースを識別できる",
+              "test": "[AC-Sead944-1-1] in tests/acceptance/core_types_test.go",
+              "status": "pass"
+            },
+            {
+              "id": "AC-Sead944-1-2",
+              "description": "State は Schema 付き map として型付き値を保持でき、Observation は Availability(ok/unknown/converging)+State+ObservedAt を返す",
+              "test": "[AC-Sead944-1-2] in tests/acceptance/core_types_test.go",
+              "status": "pass"
+            },
+            {
+              "id": "AC-Sead944-1-3",
+              "description": "Plan は操作列(Create/Update/Delete)・破壊性フラグ・対象 ID を保持する",
+              "test": "[AC-Sead944-1-3] in tests/acceptance/core_types_test.go",
+              "status": "pass"
+            }
           ],
           "tasks": {
-            "Sead944-1-1": {"title": "Go module 初期化とリポジトリ骨格", "description": "go.mod、cmd/sakutei、internal/ のパッケージ骨格、LICENSE(Apache-2.0) を置く", "status": "pending"},
-            "Sead944-1-2": {"title": "正準型の定義", "description": "ID/Scope/State/Plan/Observation/Op を data.json の sketch に沿って Go 型として定義（ADR-0004: ID は複合）", "status": "pending"},
-            "Sead944-1-3": {"title": "Provider/Lister インターフェース", "description": "Provider(Schema/Capabilities/Read/Apply) と Lister(List) を ADR-0003 の正準形で定義", "status": "pending"}
+            "Sead944-1-1": {
+              "title": "Go module 初期化とリポジトリ骨格",
+              "description": "go.mod、cmd/sakutei、internal/ のパッケージ骨格、LICENSE(Apache-2.0) を置く",
+              "status": "done"
+            },
+            "Sead944-1-2": {
+              "title": "正準型の定義",
+              "description": "ID/Scope/State/Plan/Observation/Op を data.json の sketch に沿って Go 型として定義（ADR-0004: ID は複合）",
+              "status": "done"
+            },
+            "Sead944-1-3": {
+              "title": "Provider/Lister インターフェース",
+              "description": "Provider(Schema/Capabilities/Read/Apply) と Lister(List) を ADR-0003 の正準形で定義",
+              "status": "done"
+            }
           }
         },
         "Sead944-2": {
@@ -41,14 +78,41 @@
           "review_reason": null,
           "user_story": "運用者として、fake Provider に対して `sakutei plan` を実行し、理想と現実の差分を適用せずに確認したい。なぜなら、破壊的操作の前に何が変わるか知りたいから。",
           "acceptance_criteria": [
-            {"id": "AC-Sead944-2-1", "description": "`sakutei plan` は fake Provider を Observe し desired と比較して差分(Create/Update/Delete)を表示する", "test": "[AC-Sead944-2-1] in tests/acceptance/plan_test.go", "status": "pending"},
-            {"id": "AC-Sead944-2-2", "description": "plan は Apply を一切呼ばず現実を変更しない", "test": "[AC-Sead944-2-2] in tests/acceptance/plan_test.go", "status": "pending"},
-            {"id": "AC-Sead944-2-3", "description": "差分がゼロなら「収束済み」と報告する", "test": "[AC-Sead944-2-3] in tests/acceptance/plan_test.go", "status": "pending"}
+            {
+              "id": "AC-Sead944-2-1",
+              "description": "`sakutei plan` は fake Provider を Observe し desired と比較して差分(Create/Update/Delete)を表示する",
+              "test": "[AC-Sead944-2-1] in tests/acceptance/plan_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sead944-2-2",
+              "description": "plan は Apply を一切呼ばず現実を変更しない",
+              "test": "[AC-Sead944-2-2] in tests/acceptance/plan_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sead944-2-3",
+              "description": "差分がゼロなら「収束済み」と報告する",
+              "test": "[AC-Sead944-2-3] in tests/acceptance/plan_test.go",
+              "status": "pending"
+            }
           ],
           "tasks": {
-            "Sead944-2-1": {"title": "fake in-memory Provider", "description": "テストの主戦場となる fake Provider（Read/Apply/List、任意状態を注入可能）を実装", "status": "pending"},
-            "Sead944-2-2": {"title": "Diff エンジン", "description": "desired と Observation から Plan を導出（managed 除外は後続 Sprint、ここは素の field diff）", "status": "pending"},
-            "Sead944-2-3": {"title": "sakutei plan サブコマンド", "description": "Loader で intent を読み、Observe→Diff して表示、Apply は呼ばない", "status": "pending"}
+            "Sead944-2-1": {
+              "title": "fake in-memory Provider",
+              "description": "テストの主戦場となる fake Provider（Read/Apply/List、任意状態を注入可能）を実装",
+              "status": "pending"
+            },
+            "Sead944-2-2": {
+              "title": "Diff エンジン",
+              "description": "desired と Observation から Plan を導出（managed 除外は後続 Sprint、ここは素の field diff）",
+              "status": "pending"
+            },
+            "Sead944-2-3": {
+              "title": "sakutei plan サブコマンド",
+              "description": "Loader で intent を読み、Observe→Diff して表示、Apply は呼ばない",
+              "status": "pending"
+            }
           }
         },
         "Sead944-3": {
@@ -58,14 +122,41 @@
           "review_reason": null,
           "user_story": "運用者として、`sakutei reconcile` を1回実行して fake リソースを理想状態へ収束させたい。なぜなら、宣言した状態が実際に適用されることを確かめたいから。",
           "acceptance_criteria": [
-            {"id": "AC-Sead944-3-1", "description": "`sakutei reconcile` は Observe→Diff→Apply を1巡実行しリソースを desired に一致させる", "test": "[AC-Sead944-3-1] in tests/acceptance/reconcile_test.go", "status": "pending"},
-            {"id": "AC-Sead944-3-2", "description": "2回目の reconcile は差分ゼロ（冪等）", "test": "[AC-Sead944-3-2] in tests/acceptance/reconcile_test.go", "status": "pending"},
-            {"id": "AC-Sead944-3-3", "description": "reconcile と plan はそれぞれ独立に Observe する（plan の観測を reconcile に持ち越さない＝観測 state レス）", "test": "[AC-Sead944-3-3] in tests/acceptance/reconcile_test.go", "status": "pending"}
+            {
+              "id": "AC-Sead944-3-1",
+              "description": "`sakutei reconcile` は Observe→Diff→Apply を1巡実行しリソースを desired に一致させる",
+              "test": "[AC-Sead944-3-1] in tests/acceptance/reconcile_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sead944-3-2",
+              "description": "2回目の reconcile は差分ゼロ（冪等）",
+              "test": "[AC-Sead944-3-2] in tests/acceptance/reconcile_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sead944-3-3",
+              "description": "reconcile と plan はそれぞれ独立に Observe する（plan の観測を reconcile に持ち越さない＝観測 state レス）",
+              "test": "[AC-Sead944-3-3] in tests/acceptance/reconcile_test.go",
+              "status": "pending"
+            }
           ],
           "tasks": {
-            "Sead944-3-1": {"title": "Executor(LocalExecutor) と Apply 経路", "description": "Provider.Apply を呼ぶ LocalExecutor seam を定義し reconcile から呼ぶ", "status": "pending"},
-            "Sead944-3-2": {"title": "sakutei reconcile サブコマンド", "description": "Observe→Diff→Apply を1巡。plan と共有せず独立に Observe する", "status": "pending"},
-            "Sead944-3-3": {"title": "冪等性・観測 state レスの受入テスト", "description": "2回目差分ゼロ、plan の観測が reconcile に漏れないことを検証", "status": "pending"}
+            "Sead944-3-1": {
+              "title": "Executor(LocalExecutor) と Apply 経路",
+              "description": "Provider.Apply を呼ぶ LocalExecutor seam を定義し reconcile から呼ぶ",
+              "status": "pending"
+            },
+            "Sead944-3-2": {
+              "title": "sakutei reconcile サブコマンド",
+              "description": "Observe→Diff→Apply を1巡。plan と共有せず独立に Observe する",
+              "status": "pending"
+            },
+            "Sead944-3-3": {
+              "title": "冪等性・観測 state レスの受入テスト",
+              "description": "2回目差分ゼロ、plan の観測が reconcile に漏れないことを検証",
+              "status": "pending"
+            }
           }
         }
       }
@@ -83,9 +174,24 @@
           "review_reason": null,
           "user_story": "運用者として、`sakutei` をデーモンとして常駐させ毎周期リアルを再観測して理想へ収束し続けたい。なぜなら、ドリフトを検出して自動修復してほしいから。",
           "acceptance_criteria": [
-            {"id": "AC-S94f1f9-1-1", "description": "`sakutei`（引数なし）は周期ループ（Observe 全並列→Diff→Apply→jitter sleep）を回り続ける", "test": "[AC-S94f1f9-1-1] in tests/acceptance/loop_test.go", "status": "pending"},
-            {"id": "AC-S94f1f9-1-2", "description": "手動で fake リソースをドリフトさせると次周期で理想へ戻す", "test": "[AC-S94f1f9-1-2] in tests/acceptance/loop_test.go", "status": "pending"},
-            {"id": "AC-S94f1f9-1-3", "description": "観測状態をキャッシュせず毎周期再 Observe する（観測 state レス）", "test": "[AC-S94f1f9-1-3] in tests/acceptance/loop_test.go", "status": "pending"}
+            {
+              "id": "AC-S94f1f9-1-1",
+              "description": "`sakutei`（引数なし）は周期ループ（Observe 全並列→Diff→Apply→jitter sleep）を回り続ける",
+              "test": "[AC-S94f1f9-1-1] in tests/acceptance/loop_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S94f1f9-1-2",
+              "description": "手動で fake リソースをドリフトさせると次周期で理想へ戻す",
+              "test": "[AC-S94f1f9-1-2] in tests/acceptance/loop_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S94f1f9-1-3",
+              "description": "観測状態をキャッシュせず毎周期再 Observe する（観測 state レス）",
+              "test": "[AC-S94f1f9-1-3] in tests/acceptance/loop_test.go",
+              "status": "pending"
+            }
           ],
           "tasks": {}
         },
@@ -96,9 +202,24 @@
           "review_reason": null,
           "user_story": "開発者として、リソース間の依存を宣言して依存順に収束させたい。なぜなら、DNS より先に VM を作る等の順序が要るから。",
           "acceptance_criteria": [
-            {"id": "AC-S94f1f9-2-1", "description": "depends_on を宣言したリソースは Kahn 法で wave に分解され、in-degree 0 の wave から並列 Apply される", "test": "[AC-S94f1f9-2-1] in tests/acceptance/dag_test.go", "status": "pending"},
-            {"id": "AC-S94f1f9-2-2", "description": "上流の Apply 失敗時は下流を skip して次周期に回す", "test": "[AC-S94f1f9-2-2] in tests/acceptance/dag_test.go", "status": "pending"},
-            {"id": "AC-S94f1f9-2-3", "description": "依存に循環があればロード時に拒否する", "test": "[AC-S94f1f9-2-3] in tests/acceptance/dag_test.go", "status": "pending"}
+            {
+              "id": "AC-S94f1f9-2-1",
+              "description": "depends_on を宣言したリソースは Kahn 法で wave に分解され、in-degree 0 の wave から並列 Apply される",
+              "test": "[AC-S94f1f9-2-1] in tests/acceptance/dag_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S94f1f9-2-2",
+              "description": "上流の Apply 失敗時は下流を skip して次周期に回す",
+              "test": "[AC-S94f1f9-2-2] in tests/acceptance/dag_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S94f1f9-2-3",
+              "description": "依存に循環があればロード時に拒否する",
+              "test": "[AC-S94f1f9-2-3] in tests/acceptance/dag_test.go",
+              "status": "pending"
+            }
           ],
           "tasks": {}
         },
@@ -109,9 +230,24 @@
           "review_reason": null,
           "user_story": "運用者として、時間のかかる Apply があっても収束周期が積み重ならないでほしい。なぜなら、周期が詰まると観測が古くなるから。",
           "acceptance_criteria": [
-            {"id": "AC-S94f1f9-3-1", "description": "Apply は非同期で in-flight 集合に入り、次周期は再 plan せず converging 扱いする", "test": "[AC-S94f1f9-3-1] in tests/acceptance/inflight_test.go", "status": "pending"},
-            {"id": "AC-S94f1f9-3-2", "description": "同一リソースへの同時 Apply は per-resource 排他で防ぐ", "test": "[AC-S94f1f9-3-2] in tests/acceptance/inflight_test.go", "status": "pending"},
-            {"id": "AC-S94f1f9-3-3", "description": "失敗リソースは (リソース, エラー種別) 単位の指数 backoff + jitter で再試行する", "test": "[AC-S94f1f9-3-3] in tests/acceptance/inflight_test.go", "status": "pending"}
+            {
+              "id": "AC-S94f1f9-3-1",
+              "description": "Apply は非同期で in-flight 集合に入り、次周期は再 plan せず converging 扱いする",
+              "test": "[AC-S94f1f9-3-1] in tests/acceptance/inflight_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S94f1f9-3-2",
+              "description": "同一リソースへの同時 Apply は per-resource 排他で防ぐ",
+              "test": "[AC-S94f1f9-3-2] in tests/acceptance/inflight_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S94f1f9-3-3",
+              "description": "失敗リソースは (リソース, エラー種別) 単位の指数 backoff + jitter で再試行する",
+              "test": "[AC-S94f1f9-3-3] in tests/acceptance/inflight_test.go",
+              "status": "pending"
+            }
           ],
           "tasks": {}
         }
@@ -130,9 +266,24 @@
           "review_reason": null,
           "user_story": "運用者として、確信が持てない削除を勝手に実行しないでほしい。なぜなら、unknown を absent と誤認した誤削除は取り返しがつかないから。",
           "acceptance_criteria": [
-            {"id": "AC-Scf7762-1-1", "description": "破壊的型は pruneable:false が既定で、opt-in なしに削除しない", "test": "[AC-Scf7762-1-1] in tests/acceptance/deletion_test.go", "status": "pending"},
-            {"id": "AC-Scf7762-1-2", "description": "prune は Lister.List を前提とし、List が前回比で急減したら halt する", "test": "[AC-Scf7762-1-2] in tests/acceptance/deletion_test.go", "status": "pending"},
-            {"id": "AC-Scf7762-1-3", "description": "unknown な Observation は absent として扱わない（削除しない）", "test": "[AC-Scf7762-1-3] in tests/acceptance/deletion_test.go", "status": "pending"}
+            {
+              "id": "AC-Scf7762-1-1",
+              "description": "破壊的型は pruneable:false が既定で、opt-in なしに削除しない",
+              "test": "[AC-Scf7762-1-1] in tests/acceptance/deletion_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scf7762-1-2",
+              "description": "prune は Lister.List を前提とし、List が前回比で急減したら halt する",
+              "test": "[AC-Scf7762-1-2] in tests/acceptance/deletion_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scf7762-1-3",
+              "description": "unknown な Observation は absent として扱わない（削除しない）",
+              "test": "[AC-Scf7762-1-3] in tests/acceptance/deletion_test.go",
+              "status": "pending"
+            }
           ],
           "tasks": {}
         },
@@ -143,9 +294,24 @@
           "review_reason": null,
           "user_story": "運用者として、1 コミットで大量破壊が走らないよう予算で止めてほしい。なぜなら、速く収束する力は速く壊す力でもあるから。",
           "acceptance_criteria": [
-            {"id": "AC-Scf7762-2-1", "description": "1 周期あたりの破壊的変更が rate limit（絶対数/割合）を超えたら halt する", "test": "[AC-Scf7762-2-1] in tests/acceptance/budget_test.go", "status": "pending"},
-            {"id": "AC-Scf7762-2-2", "description": "累積時間窓予算（例 24h）を超える破壊的変更を止める", "test": "[AC-Scf7762-2-2] in tests/acceptance/budget_test.go", "status": "pending"},
-            {"id": "AC-Scf7762-2-3", "description": "既定は halt で、明示的意図（承認フラグ）があるときのみ進む", "test": "[AC-Scf7762-2-3] in tests/acceptance/budget_test.go", "status": "pending"}
+            {
+              "id": "AC-Scf7762-2-1",
+              "description": "1 周期あたりの破壊的変更が rate limit（絶対数/割合）を超えたら halt する",
+              "test": "[AC-Scf7762-2-1] in tests/acceptance/budget_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scf7762-2-2",
+              "description": "累積時間窓予算（例 24h）を超える破壊的変更を止める",
+              "test": "[AC-Scf7762-2-2] in tests/acceptance/budget_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scf7762-2-3",
+              "description": "既定は halt で、明示的意図（承認フラグ）があるときのみ進む",
+              "test": "[AC-Scf7762-2-3] in tests/acceptance/budget_test.go",
+              "status": "pending"
+            }
           ],
           "tasks": {}
         },
@@ -156,9 +322,24 @@
           "review_reason": null,
           "user_story": "運用者として、収束を『検知のみ』モードで回せるようにしたい。なぜなら、ブラウンフィールドではまず人の変更を巻き戻さず観測したいから。",
           "acceptance_criteria": [
-            {"id": "AC-Scf7762-3-1", "description": "remediation mode alert-only では Apply せず Event で差分を報告する", "test": "[AC-Scf7762-3-1] in tests/acceptance/remediation_test.go", "status": "pending"},
-            {"id": "AC-Scf7762-3-2", "description": "global freeze で全体を一括 alert-only にできる", "test": "[AC-Scf7762-3-2] in tests/acceptance/remediation_test.go", "status": "pending"},
-            {"id": "AC-Scf7762-3-3", "description": "auto モードでのみ実際に Apply する", "test": "[AC-Scf7762-3-3] in tests/acceptance/remediation_test.go", "status": "pending"}
+            {
+              "id": "AC-Scf7762-3-1",
+              "description": "remediation mode alert-only では Apply せず Event で差分を報告する",
+              "test": "[AC-Scf7762-3-1] in tests/acceptance/remediation_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scf7762-3-2",
+              "description": "global freeze で全体を一括 alert-only にできる",
+              "test": "[AC-Scf7762-3-2] in tests/acceptance/remediation_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scf7762-3-3",
+              "description": "auto モードでのみ実際に Apply する",
+              "test": "[AC-Scf7762-3-3] in tests/acceptance/remediation_test.go",
+              "status": "pending"
+            }
           ],
           "tasks": {}
         },
@@ -169,9 +350,24 @@
           "review_reason": "エンジンの存在意義（安全機構が実際に破壊を止める）を実証する最重要検証。マイルストーンでの人間確認が要る。",
           "user_story": "開発者として、安全機構が chaos テストで実証されることを確認したい。なぜなら『壊れる前に止まる』ことがこのエンジンの存在意義だから。",
           "acceptance_criteria": [
-            {"id": "AC-Scf7762-4-1", "description": "fake Provider に大量削除を注入すると halt し破壊が止まる", "test": "[AC-Scf7762-4-1] in tests/acceptance/chaos_test.go", "status": "pending"},
-            {"id": "AC-Scf7762-4-2", "description": "List を人為的に欠損させると誤 prune せず halt する", "test": "[AC-Scf7762-4-2] in tests/acceptance/chaos_test.go", "status": "pending"},
-            {"id": "AC-Scf7762-4-3", "description": "alert-only 下ではドリフトを報告するが Apply しない", "test": "[AC-Scf7762-4-3] in tests/acceptance/chaos_test.go", "status": "pending"}
+            {
+              "id": "AC-Scf7762-4-1",
+              "description": "fake Provider に大量削除を注入すると halt し破壊が止まる",
+              "test": "[AC-Scf7762-4-1] in tests/acceptance/chaos_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scf7762-4-2",
+              "description": "List を人為的に欠損させると誤 prune せず halt する",
+              "test": "[AC-Scf7762-4-2] in tests/acceptance/chaos_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scf7762-4-3",
+              "description": "alert-only 下ではドリフトを報告するが Apply しない",
+              "test": "[AC-Scf7762-4-3] in tests/acceptance/chaos_test.go",
+              "status": "pending"
+            }
           ],
           "tasks": {}
         }
@@ -227,18 +423,77 @@
     }
   },
   "dependencies": {
-    "S94f1f9": {"depends_on": ["Sead944"], "reason": "周期ループは Sead944 の型・Provider・単発収束の上に築く"},
-    "Scf7762": {"depends_on": ["S94f1f9"], "reason": "安全機構は収束ループの Apply 経路に挿入する"},
-    "Scb0ecd": {"depends_on": ["Scf7762"], "reason": "原因タグは差分と安全機構の判定基盤の上に載る"},
-    "S072a14": {"depends_on": ["Scb0ecd"], "reason": "render は rendered_revision と原因タグ E を前提とする"},
-    "S62dbba": {"depends_on": ["S072a14"], "reason": "SDK と実 provider は render・合成リソースの枠組みの上に作る"},
-    "Sf6a62f": {"depends_on": ["S62dbba"], "reason": "早期収束と BulkObserve は Provider/DesiredSource seam の拡張"},
-    "S33266e": {"depends_on": ["S62dbba"], "reason": "secret/Loader は実 provider の実行経路に必要"},
-    "Sc7a647": {"depends_on": ["Sf6a62f", "S33266e"], "reason": "v1a 完成は早期収束・secret・複数 provider が揃って初めて締められる"}
+    "S94f1f9": {
+      "depends_on": [
+        "Sead944"
+      ],
+      "reason": "周期ループは Sead944 の型・Provider・単発収束の上に築く"
+    },
+    "Scf7762": {
+      "depends_on": [
+        "S94f1f9"
+      ],
+      "reason": "安全機構は収束ループの Apply 経路に挿入する"
+    },
+    "Scb0ecd": {
+      "depends_on": [
+        "Scf7762"
+      ],
+      "reason": "原因タグは差分と安全機構の判定基盤の上に載る"
+    },
+    "S072a14": {
+      "depends_on": [
+        "Scb0ecd"
+      ],
+      "reason": "render は rendered_revision と原因タグ E を前提とする"
+    },
+    "S62dbba": {
+      "depends_on": [
+        "S072a14"
+      ],
+      "reason": "SDK と実 provider は render・合成リソースの枠組みの上に作る"
+    },
+    "Sf6a62f": {
+      "depends_on": [
+        "S62dbba"
+      ],
+      "reason": "早期収束と BulkObserve は Provider/DesiredSource seam の拡張"
+    },
+    "S33266e": {
+      "depends_on": [
+        "S62dbba"
+      ],
+      "reason": "secret/Loader は実 provider の実行経路に必要"
+    },
+    "Sc7a647": {
+      "depends_on": [
+        "Sf6a62f",
+        "S33266e"
+      ],
+      "reason": "v1a 完成は早期収束・secret・複数 provider が揃って初めて締められる"
+    }
   },
   "backlog": [
-    {"title": "v1b: ブラウンフィールド導入と採番・静的シャーディング", "kind": "feature", "description": "`sakutei import`/Sync Mode、tier 別 Observe 頻度（間引き）、allocator 採番連携、静的シャーディング（claim-as-intent）実装、inventory 検証。ADR-0010/0012/0021。", "added_in": "roadmap", "reason": "v1a のコア実証が済んでから。導入体験と採番連携は実 provider が複数揃ってから価値が出る。"},
-    {"title": "v1.5: 単純 Task・最小 Workflow・planned_change・remediation schedule", "kind": "feature", "description": "単純 Task＋最小 Workflow（直列＋不変条件＋N-of-M 手動承認ゲート）、planned_change 宣言、時間帯連動 remediation schedule、運用プロファイル(solo/team/enterprise)。ADR-0006/0014。", "added_in": "roadmap", "reason": "手続きプリミティブは多くの構成で必要だが、収束コアと安全機構の実証後に前倒しする。"},
-    {"title": "v2: 多相 Task・自動段階ロールアウト・分散・衛星本体・UI", "kind": "feature", "description": "多相 Task 状態機械、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、動的シャードルーター/リバランス、watch 併用、intent UI(catalog)。", "added_in": "roadmap", "reason": "スケール上位・高度な自律運用。v1 系の実地検証を経てから着手する。"}
+    {
+      "title": "v1b: ブラウンフィールド導入と採番・静的シャーディング",
+      "kind": "feature",
+      "description": "`sakutei import`/Sync Mode、tier 別 Observe 頻度（間引き）、allocator 採番連携、静的シャーディング（claim-as-intent）実装、inventory 検証。ADR-0010/0012/0021。",
+      "added_in": "roadmap",
+      "reason": "v1a のコア実証が済んでから。導入体験と採番連携は実 provider が複数揃ってから価値が出る。"
+    },
+    {
+      "title": "v1.5: 単純 Task・最小 Workflow・planned_change・remediation schedule",
+      "kind": "feature",
+      "description": "単純 Task＋最小 Workflow（直列＋不変条件＋N-of-M 手動承認ゲート）、planned_change 宣言、時間帯連動 remediation schedule、運用プロファイル(solo/team/enterprise)。ADR-0006/0014。",
+      "added_in": "roadmap",
+      "reason": "手続きプリミティブは多くの構成で必要だが、収束コアと安全機構の実証後に前倒しする。"
+    },
+    {
+      "title": "v2: 多相 Task・自動段階ロールアウト・分散・衛星本体・UI",
+      "kind": "feature",
+      "description": "多相 Task 状態機械、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、動的シャードルーター/リバランス、watch 併用、intent UI(catalog)。",
+      "added_in": "roadmap",
+      "reason": "スケール上位・高度な自律運用。v1 系の実地検証を経てから着手する。"
+    }
   ]
 }
