@@ -1,0 +1,7 @@
+{
+  "commands": [
+    { "name": "build", "command": "go build ./..." },
+    { "name": "vet", "command": "go vet ./..." },
+    { "name": "unit", "command": "go test ./... -count=1" }
+  ]
+}

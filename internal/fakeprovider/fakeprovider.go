@@ -49,7 +49,9 @@ type storedResource struct {
 }
 
 // stateFile is the on-disk representation of the fake provider's reality.
-// The map key is "<scope>/<local>" encoded as a composite string.
+// The map key is the resource Local identifier (provider-local, Scope-unqualified);
+// Sprint 1 resources share an empty Scope. When multi-Scope support lands, extend
+// the key to "<scope>/<local>" together with the code that reads/writes it.
 type stateFile struct {
 	Resources map[string]storedResource `json:"resources"`
 }
@@ -134,13 +136,13 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 }
 
 // Apply writes the desired state from plan into the state file.
-//
-// This implements the Create and Update operations.  Delete is not implemented
-// in this Story (no prune scope yet); a Delete Op produces an error so tests
-// can verify it is not called by plan.
+// It handles Create, Update, and Delete Ops (Delete removes the resource).
+// Note: the diff engine does not yet emit Delete Ops (prune lands in a later
+// Sprint), so in Sprint 1 Apply only ever sees Create/Update in practice.
 //
 // IMPORTANT: plan (sakutei plan) MUST NEVER call Apply.  Apply is the
-// reconcile path only (ADR-0002).
+// reconcile path only (ADR-0002); AC-Sead944-2-2 verifies this at the CLI
+// level (state file unchanged after plan), not via Apply's return value.
 func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
 	sf, err := p.load()
 	if err != nil {
