@@ -169,7 +169,7 @@
       "stories": {
         "S94f1f9-1": {
           "title": "常駐収束ループ（観測 state レス）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "運用者として、`sakutei` をデーモンとして常駐させ毎周期リアルを再観測して理想へ収束し続けたい。なぜなら、ドリフトを検出して自動修復してほしいから。",
@@ -178,19 +178,19 @@
               "id": "AC-S94f1f9-1-1",
               "description": "`sakutei`（引数なし）は周期ループ（Observe 全並列→Diff→Apply→jitter sleep）を回り続ける",
               "test": "[AC-S94f1f9-1-1] in tests/acceptance/loop_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S94f1f9-1-2",
               "description": "手動で fake リソースをドリフトさせると次周期で理想へ戻す",
               "test": "[AC-S94f1f9-1-2] in tests/acceptance/loop_test.go",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S94f1f9-1-3",
               "description": "観測状態をキャッシュせず毎周期再 Observe する（観測 state レス）",
               "test": "[AC-S94f1f9-1-3] in tests/acceptance/loop_test.go",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {}
@@ -508,6 +508,13 @@
       "description": "cmd/sakutei の plan.go/reconcile.go が internal/fakeprovider を直接 import している。実 provider(S62dbba DNS)を差し込む際に provider registry / DI の接続点が要る。Executor seam と同様に provider 選択の seam を切る。",
       "added_in": "Sead944",
       "reason": "Sprint 1 は fake のみで許容。実 provider 導入 Sprint の前提として記録。"
+    },
+    {
+      "title": "[chore] CI に race detector (CGO_ENABLED=1 go test -race) を追加",
+      "kind": "chore",
+      "description": "本環境は gcc 不在で -race 未実行。並行(ループ/非同期Apply/in-flight)が増える S94f1f9-3 以降に向け、CGO 有効な CI で race テストを回せるようにする。",
+      "added_in": "S94f1f9",
+      "reason": "S94f1f9-1 review D-1。並行度が上がる前に整備したい。"
     }
   ]
 }
