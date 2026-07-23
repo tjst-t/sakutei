@@ -45,6 +45,22 @@ func NewScope(labels map[string]string) Scope {
 	return Scope{Labels: cp}
 }
 
+// sortedParts returns the label set as a deterministic "k=v" slice, with keys
+// sorted lexicographically so the same label set always yields the same order.
+// It is the single source of the ordering shared by Path and String.
+func (s Scope) sortedParts() []string {
+	keys := make([]string, 0, len(s.Labels))
+	for k := range s.Labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, s.Labels[k]))
+	}
+	return parts
+}
+
 // Path returns a deterministic string derived from the label set, suitable
 // for use as an intent/<scope>/... directory path and as the unit of
 // rendered_revision computation.
@@ -55,16 +71,7 @@ func (s Scope) Path() string {
 	if len(s.Labels) == 0 {
 		return "intent/_root"
 	}
-	keys := make([]string, 0, len(s.Labels))
-	for k := range s.Labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, s.Labels[k]))
-	}
-	return "intent/" + strings.Join(parts, ",")
+	return "intent/" + strings.Join(s.sortedParts(), ",")
 }
 
 // String returns a compact human-readable representation of the scope,
@@ -73,16 +80,7 @@ func (s Scope) String() string {
 	if len(s.Labels) == 0 {
 		return ""
 	}
-	keys := make([]string, 0, len(s.Labels))
-	for k := range s.Labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, s.Labels[k]))
-	}
-	return strings.Join(parts, ",")
+	return strings.Join(s.sortedParts(), ",")
 }
 
 // Equal reports whether two Scopes have identical label sets.

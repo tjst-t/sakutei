@@ -53,13 +53,21 @@ type Provider interface {
 
 	// Read observes the current state of the resource identified by id.
 	//
+	// The signature Read(ctx, id) is the canonical form per spec §5.1 and is
+	// bound by ADR-0003; it does not change.
+	//
 	// Constraints:
 	//   - MUST NOT consult desired state (ADR-0002).
 	//   - Returns Availability in {Ok, Unknown, Converging}; never conflates
 	//     Unknown with absent (unknown ≠ absent).
 	//   - State is valid only when Availability == Ok.
-	//   - ObservedAt on the returned Observation must be set by the caller
-	//     (passed in via context or as a parameter from the executor layer).
+	//   - ObservedAt on the returned Observation MUST be set by the provider
+	//     implementation (e.g. time.Now()).  The core does not inject a clock.
+	//
+	// If a later Story needs a cycle clock injected so cross-cycle reuse can be
+	// detected, the convergence-loop Story will pass it through ctx (context
+	// value) rather than changing this signature.  That is a follow-on concern
+	// and does not block freezing this interface.
 	//
 	// Errors returned from Read should be wrapped with NewTransientError or
 	// NewPermanentError so the controller can back off appropriately (§5.5).
