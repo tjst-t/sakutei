@@ -5,8 +5,8 @@
     "current_sprint": "S94f1f9",
     "total": 9,
     "done": 1,
-    "in_progress": 0,
-    "remaining": 8,
+    "in_progress": 1,
+    "remaining": 7,
     "percentage": 11
   },
   "execution_order": [
@@ -163,7 +163,7 @@
     },
     "S94f1f9": {
       "title": "収束ループと依存解決 — 周期・DAG/wave・非同期 Apply",
-      "status": "pending",
+      "status": "in_progress",
       "description": "level-triggered な常駐ループ（Observe 全並列→Diff→サブ DAG→Kahn wave 並列 Apply→jitter sleep）、依存解決、非同期 Apply と in-flight 集合、per-resource backoff。ADR-0002 の本体。",
       "milestone": false,
       "stories": {
