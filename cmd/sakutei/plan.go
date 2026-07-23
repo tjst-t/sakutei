@@ -109,7 +109,7 @@ func runPlan(args []string) {
 	//
 	// In v1a UpstreamChanged and RenderedRevisionChanged are always false
 	// (seams for S072a14).
-	ctx_cause := cause.CauseContext{
+	causeCtx := cause.CauseContext{
 		IntentPrevRevision:   prevState.PrevIntentRevision,
 		IntentCurRevision:    rev.IntentRevision,
 		RenderedPrevRevision: prevState.PrevRenderedRevision,
@@ -141,7 +141,7 @@ func runPlan(args []string) {
 			continue
 		}
 
-		plan := engine.Diff(obs, res, ctx_cause)
+		plan := engine.Diff(obs, res, causeCtx)
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff).
 		for _, op := range plan.Ops {
 			if op.Cause == core.CauseTagC {

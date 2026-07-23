@@ -194,7 +194,7 @@ func runReconcile(args []string) {
 	curProviderVersion := fpConcrete.ProviderVersion()
 
 	// Build the per-cycle CauseContext.  All resources in this invocation
-	// share the same revision signals (§10.3: grlobal revision for candidate
+	// share the same revision signals (§10.3: global revision for candidate
 	// narrowing; per-resource diff is the final arbiter).
 	causeCtx := cause.CauseContext{
 		IntentPrevRevision:   prevState.PrevIntentRevision,

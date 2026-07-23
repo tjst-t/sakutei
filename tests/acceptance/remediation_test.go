@@ -218,10 +218,15 @@ func TestAlertOnly_CreateDriftWithoutApply(t *testing.T) {
 	// State file must have no resources written (Apply was not called).
 	data, _ := os.ReadFile(statePath)
 	var sfOut map[string]any
-	if err := json.Unmarshal(data, &sfOut); err == nil {
-		if res, ok := sfOut["resources"].(map[string]any); ok && len(res) > 0 {
-			t.Errorf("[AC-Scf7762-3-1/create] state file has resources after alert-only — Apply was called; content:\n%s", data)
-		}
+	// F-4: a malformed state file must fail the test, not silently skip the
+	// resources-empty assertion.  Guarding the check with "err == nil" meant an
+	// unparseable state file would pass this test without ever verifying that
+	// Apply did not run.
+	if err := json.Unmarshal(data, &sfOut); err != nil {
+		t.Fatalf("[AC-Scf7762-3-1/create] state file is not valid JSON after alert-only: %v; content:\n%s", err, data)
+	}
+	if res, ok := sfOut["resources"].(map[string]any); ok && len(res) > 0 {
+		t.Errorf("[AC-Scf7762-3-1/create] state file has resources after alert-only — Apply was called; content:\n%s", data)
 	}
 
 	t.Logf("[AC-Scf7762-3-1/create] alert-only output:\n%s", stdout)

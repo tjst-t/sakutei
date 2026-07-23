@@ -201,6 +201,26 @@ func Run(ctx context.Context, cfg Config) error {
 	// runCycleAsync; async Apply goroutines do not touch it.
 	lastSeenRing := lastseen.NewResourceRing(lastseen.DefaultRingSize)
 
+	// F-5 (Scb0ecd-2 daemon wiring): previous-cycle revision + provider_version,
+	// held in memory for the daemon's lifetime (S3, memory-only, ADR-0015 —
+	// alongside budget/prune/inflight/last-seen).  These are the "prev" side of
+	// the CauseContext that lets cause.Classify distinguish A (intent commit) /
+	// B (drift) / C (provider upgrade / ghost diff) in the daemon path.
+	// runCycleAsync reads them to build the context, then advances them: the
+	// intent/rendered baseline every cycle, the provider_version baseline only
+	// on a cycle with no outstanding ghost diff (the sticky-baseline rule
+	// documented inside runCycleAsync).
+	//
+	// Reset-on-restart is the correct S3 behaviour: the first post-restart cycle
+	// sees empty prev values → first-run A for whatever is not yet converged,
+	// then subsequent cycles compare against the just-recorded values.  This is
+	// the same "record self-initiated signals, not cached observations of
+	// reality" property that keeps the daemon observation-state-less (ADR-0002):
+	// the tracked values are hashes of intent files and the provider's own
+	// version, never a cached snapshot of what reality looked like.
+	var prevRev core.RevisionInfo
+	var prevProviderVersion string
+
 	cycleNum := 0
 	for {
 		// Check for shutdown before each cycle.
@@ -214,7 +234,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 
 		cycleNum++
-		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, lastSeenRing, cfg)
+		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, lastSeenRing, &prevRev, &prevProviderVersion, cfg)
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
@@ -262,6 +282,15 @@ func Run(ctx context.Context, cfg Config) error {
 			// Scf7762-2: change budget gate blocked ops this cycle.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: BUDGET HALTED: %s\n",
 				cycleNum, res.BudgetReason)
+		}
+		if res.GhostDiffs > 0 {
+			// F-5 (Scb0ecd-2 daemon wiring): one or more resources produced a
+			// cause-C ghost diff (provider_version changed).  They were reported
+			// as ProviderUpgradeDiff Events and NOT applied this cycle.  Surface a
+			// single cycle-numbered summary line so the daemon log makes the
+			// ghost-diff gate visible.
+			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: %d ghost diff(s) held (cause C, provider upgrade); NOT applied — review provider version\n",
+				cycleNum, res.GhostDiffs)
 		}
 		if res.AlertOnly {
 			// Scf7762-3: alert-only mode — no Apply was executed; drifted resources
@@ -344,6 +373,15 @@ type CycleResult struct {
 	// DriftEvents is the list of drift event strings for drifted resources
 	// (only populated when AlertOnly is true).
 	DriftEvents []string
+
+	// F-5 (Scb0ecd-2 daemon wiring) cause-classification field:
+
+	// GhostDiffs is the number of resources whose diff this cycle was classified
+	// as cause C (ghost diff / provider upgrade).  These ops are filtered out of
+	// the Apply and prune sets (the ghost-diff gate, §10.4, ADR-0008): the
+	// provider's interpretation changed but intent and reality did not, so
+	// applying would be an unreviewed side effect of a provider upgrade.
+	GhostDiffs int
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -392,18 +430,57 @@ func runCycleAsync(
 	exec executor.Executor,
 	ifl *InFlightSet,
 	lsRing *lastseen.ResourceRing,
+	prevRev *core.RevisionInfo,
+	prevProviderVersion *string,
 	cfg Config,
 ) (CycleResult, error) {
 	// Load desired state fresh each cycle.
 	// Scb0ecd-1: LoadDir now returns (resources, RevisionInfo, error).  The
 	// RevisionInfo is S3 state (memory-only, computed fresh each cycle).
-	// The daemon loop currently logs the revision but does not act on it yet;
-	// cause-tag attribution (Scb0ecd-2) will read it from CycleResult.
 	desired, rev, loadErr := loader.LoadDir(cfg.IntentDir)
 	if loadErr != nil {
 		return CycleResult{}, fmt.Errorf("load intent: %w", loadErr)
 	}
-	_ = rev // Scb0ecd-2 will use rev for CauseContext; stored in CycleResult below
+
+	// F-5 (Scb0ecd-2 daemon wiring): build the per-cycle CauseContext from this
+	// cycle's revision + provider_version and the previous cycle's values held in
+	// memory by Run().  Passing an actual CauseContext (rather than the old
+	// zero value) is what activates A/B/C classification in the daemon path:
+	//   - A: intent_revision changed since last cycle (operator committed intent).
+	//   - B: everything revision-stable but a diff exists (real-world drift).
+	//   - C: provider_version changed (ghost diff / provider upgrade).
+	// D/E stay dormant seams in v1a (UpstreamChanged / RenderedRevisionChanged
+	// are false; rendered_revision == intent_revision).
+	//
+	// provider_version comes from the provider.Provider seam
+	// (Capabilities().ProviderVersion), so the daemon never depends on a concrete
+	// provider type (F-1 discipline preserved).
+	curProviderVersion := fp.Capabilities().ProviderVersion
+	causeCtx := cause.CauseContext{
+		IntentPrevRevision:   prevRev.IntentRevision,
+		IntentCurRevision:    rev.IntentRevision,
+		RenderedPrevRevision: prevRev.RenderedRevision,
+		RenderedCurRevision:  rev.RenderedRevision,
+		ProviderPrevVersion:  *prevProviderVersion,
+		ProviderCurVersion:   curProviderVersion,
+		// UpstreamChanged:          false (seam, v1a)
+		// RenderedRevisionChanged:  false (seam, v1a; rendered == intent)
+	}
+
+	// Advance the in-memory intent/rendered baseline to this cycle's values so
+	// the NEXT cycle compares against them.  Updated here (right after computing
+	// the context) rather than at end-of-cycle so an early return (alert-only)
+	// still advances the baseline — the same rationale that keeps the prune
+	// count-drop baseline fresh during alert-only (Phase 2a comment).
+	//
+	// The provider_version baseline is advanced DIFFERENTLY: see the "sticky
+	// baseline" note where ghostDiffs is finalised below.  Advancing it here
+	// unconditionally would make the ghost-diff gate a single-cycle hold in the
+	// daemon (next cycle prev==cur → the same diff re-classifies as B and
+	// auto-applies), which is exactly the unsafe outcome F-5 exists to prevent:
+	// a fast daemon would "hold" a ghost diff for a few milliseconds and then
+	// apply it with no chance of operator review.
+	*prevRev = rev
 
 	// Phase 1: Observe all resources fresh (ADR-0002).
 	// Resources in-flight are observed but excluded from the plan (they are
@@ -414,6 +491,8 @@ func runCycleAsync(
 	unobservable := make(map[string]bool)
 	var inFlightThisCycle []string
 	var backedOff []string
+	// F-5: count resources whose diff was a cause-C ghost diff (held, not applied).
+	ghostDiffs := 0
 
 	for _, res := range desired {
 		local := res.ID.Local
@@ -446,14 +525,9 @@ func runCycleAsync(
 			curFields[fname] = fmt.Sprintf("%v", tv.Value)
 		}
 
-		// Scb0ecd-2: the daemon loop uses a zero-value CauseContext for now.
-		// The daemon's persistent in-memory cause state (prev revision tracking)
-		// is deferred to the full daemon path in a later Story; for v1a the
-		// one-shot CLI paths (plan/reconcile) are the primary cause-tag surface.
-		// A zero-value CauseContext means IntentPrevRevision = "" → first-run A,
-		// which is acceptable for the daemon in v1a (same as the pre-Scb0ecd-2
-		// behaviour where CauseTagA was the static placeholder).
-		plan := engine.Diff(obs, res, cause.CauseContext{})
+		// F-5 (Scb0ecd-2 daemon wiring): classify this resource's diff with the
+		// real CauseContext so A/B/C are attributed correctly in the daemon path.
+		plan := engine.Diff(obs, res, causeCtx)
 
 		// Scb0ecd-3: for cause B (drift), emit a DriftEvent with the last-seen
 		// ring's previous-cycle snapshot diff.  The ring is read BEFORE we record
@@ -475,7 +549,58 @@ func runCycleAsync(
 			})
 		}
 
-		plans[local] = plan
+		// F-5 ghost-diff gate (§10.4, ADR-0008): filter out cause-C ops before
+		// they reach the Apply/prune sets.  A ghost diff is a diff produced only
+		// because the provider's normalisation/interpretation changed
+		// (provider_version bumped) while intent and reality are unchanged;
+		// applying it would be an unreviewed side effect of a provider upgrade,
+		// silently mutating reality across ALL affected resources every cycle.
+		// The operator must review and re-run with the new version locked in.
+		// C ops are reported as ProviderUpgradeDiff Events and excluded here.
+		var nonCOps []core.Op
+		for _, op := range plan.Ops {
+			if op.Cause == core.CauseTagC {
+				ghostDiffs++
+				fmt.Fprintf(cfg.ErrOut,
+					"sakutei: ProviderUpgradeDiff: %s [cause: C] provider_version changed (%s → %s); NOT applying (review required)\n",
+					op.Target, causeCtx.ProviderPrevVersion, causeCtx.ProviderCurVersion)
+				continue
+			}
+			nonCOps = append(nonCOps, op)
+		}
+		// Only store a plan when at least one non-C op survives.  A resource whose
+		// diff was entirely ghost (all C) is intentionally left out of plans so
+		// the wave scheduler treats it as converged for this cycle: it is NOT
+		// applied and its downstream is NOT skipped (the ghost diff is not a real
+		// unconverged upstream).
+		if len(nonCOps) > 0 {
+			plans[local] = core.Plan{Ops: nonCOps}
+		}
+	}
+
+	// F-5 ghost-diff gate — sticky provider_version baseline.
+	//
+	// Advance the in-memory provider_version baseline to the current version
+	// ONLY when NO ghost diff was held this cycle.  While a ghost diff is
+	// outstanding we deliberately keep the baseline pinned at the OLD version so
+	// that every subsequent cycle continues to classify the same diff as cause C
+	// (held), instead of flipping to B and auto-applying it once prev==cur.
+	//
+	// Rationale: the one-shot reconcile advances its (file-backed) cause-state
+	// version each invocation because a human is expected to review the
+	// ProviderUpgradeDiff and decide between runs.  The daemon has no human
+	// between cycles, so "advance every cycle" would collapse the gate to a
+	// sub-second hold followed by an automatic B-apply — the precise ADR-0008
+	// danger F-5 closes.  Pinning the baseline makes "ghost diff がデーモンで止まる"
+	// literally true: the diff stays held until the operator resolves it (revert
+	// the reality change, update intent to match, or otherwise remove the diff),
+	// at which point a clean cycle advances the baseline to the new version.
+	//
+	// This is memory-only S3 state and resets on restart, which is safe: the
+	// first post-restart cycle re-establishes the baseline from the current
+	// version and re-detects any still-outstanding ghost diff on the next change.
+	if ghostDiffs == 0 {
+		*prevProviderVersion = curProviderVersion
 	}
 
 	// Phase 2a: Compute prune ops (dry-run, no Apply yet).
@@ -545,6 +670,7 @@ func runCycleAsync(
 			AlertOnly:   true,
 			DriftCount:  driftCount,
 			DriftEvents: driftEvents,
+			GhostDiffs:  ghostDiffs,
 		}, nil
 	}
 
@@ -633,6 +759,7 @@ func runCycleAsync(
 		PruneHalted:  pruneHalted,
 		BudgetHalted: budgetHalted,
 		BudgetReason: budgetReason,
+		GhostDiffs:   ghostDiffs,
 	}, nil
 }
 
