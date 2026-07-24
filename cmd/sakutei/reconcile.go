@@ -33,6 +33,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -86,6 +87,11 @@ func runReconcile(args []string) {
 	// S072a14-1: generated/ output directory for render phase 2 (§9.6).
 	generatedDir := fs.String("generated", "",
 		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
+	// S072a14-2: render phase 1 — external input resolver flags.
+	inventoryHash := fs.String("inventory-hash", "",
+		"S072a14-2: inject deterministic inventory hash into rendered_revision (fake phase 1; empty=no external input)")
+	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
+		"S072a14-2: simulate an unreachable ExternalInputResolver (triggers last-value-on-unreachable path §9.2)")
 
 	// Scf7762-2: change-budget flags (§13).
 	maxDestructivePerCycle := fs.Int("max-destructive-per-cycle", 0,
@@ -169,6 +175,30 @@ func runReconcile(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: load intent: %v\n", err)
 		os.Exit(1)
+	}
+
+	// S072a14-2: render phase 1 — external input resolution (§9.1 フェーズ1).
+	if *inventoryHash != "" || *inventoryUnreachable {
+		fakeResolver := &render.FakeInventoryResolver{
+			Hash: *inventoryHash,
+			Fail: *inventoryUnreachable,
+		}
+		cache := render.NewResolverCache(fakeResolver, 0)
+		phase1Result := render.ResolveExternalInputs(context.Background(), cache)
+		if phase1Result.UnreachableFallback {
+			fmt.Fprintf(os.Stderr,
+				"sakutei reconcile: ExternalInputUnreachable: resolver returned error; using last cached value (§9.2 last-value-on-unreachable)\n")
+		}
+		if phase1Result.FirstCallFailed {
+			fmt.Fprintf(os.Stderr,
+				"sakutei reconcile: ExternalInputUnreachable (first call): %v\n"+
+					"  No prior cached value available; convergence not advanced (halt-safe, §9.2)\n",
+				phase1Result.Err)
+			os.Exit(1)
+		}
+		rootScope := core.NewScope(nil)
+		rev.RenderedRevision = revision.ComputeRenderedRevision(
+			rootScope, rev.IntentRevision, phase1Result.ExternalInputHashes)
 	}
 
 	// S072a14-1: render phase 2 — expand composite resources (§9.5).

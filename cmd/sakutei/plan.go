@@ -27,6 +27,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -62,6 +63,15 @@ func runPlan(args []string) {
 	// Default: sibling of --intent named "generated" (e.g. ./generated when intent=./intent).
 	generatedDir := fs.String("generated", "",
 		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
+	// S072a14-2: render phase 1 — external input resolver flags.
+	// --inventory-hash injects a deterministic hash into the rendered_revision
+	// computation (simulating a FakeInventoryResolver for acceptance tests).
+	// --inventory-unreachable simulates an unreachable external authority to test
+	// the §9.2 last-value-on-unreachable safety path.
+	inventoryHash := fs.String("inventory-hash", "",
+		"S072a14-2: inject deterministic inventory hash into rendered_revision (fake phase 1; empty=no external input)")
+	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
+		"S072a14-2: simulate an unreachable ExternalInputResolver (triggers last-value-on-unreachable path §9.2)")
 
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
@@ -86,6 +96,46 @@ func runPlan(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei plan: load intent: %v\n", err)
 		os.Exit(1)
+	}
+
+	// S072a14-2: render phase 1 — external input resolution (§9.1 フェーズ1).
+	// Build a FakeInventoryResolver from the --inventory-hash and
+	// --inventory-unreachable flags, then resolve through a zero-TTL cache.
+	//
+	// When --inventory-hash is empty AND --inventory-unreachable is false, no
+	// resolver is configured and phase 1 is a no-op (v1a default: rendered ==
+	// intent).  This preserves backward compatibility with existing tests.
+	if *inventoryHash != "" || *inventoryUnreachable {
+		fakeResolver := &render.FakeInventoryResolver{
+			Hash: *inventoryHash,
+			Fail: *inventoryUnreachable,
+		}
+		// Use a zero-TTL cache: every plan invocation resolves fresh.
+		cache := render.NewResolverCache(fakeResolver, 0)
+		ctx := context.Background()
+		phase1Result := render.ResolveExternalInputs(ctx, cache)
+		if phase1Result.UnreachableFallback {
+			fmt.Fprintf(os.Stderr,
+				"sakutei plan: ExternalInputUnreachable: resolver returned error; using last cached value (§9.2 last-value-on-unreachable)\n")
+		}
+		if phase1Result.FirstCallFailed {
+			// No prior value — halt-safe: do not converge (§9.2).
+			fmt.Fprintf(os.Stderr,
+				"sakutei plan: ExternalInputUnreachable (first call): %v\n"+
+					"  No prior cached value available; convergence not advanced (halt-safe, §9.2)\n",
+				phase1Result.Err)
+			os.Exit(1)
+		}
+		// Recompute rendered_revision with the external inputs so that a change
+		// in inventory hash causes rendered_revision to diverge from
+		// intent_revision (cause tag E activation basis, §9.4, ADR-0008).
+		//
+		// IMPORTANT — rendered_revision 算出定義は §26 カテゴリ A.
+		// The v1a canonical definition is provisional: only inventory_hash is
+		// included.  Vault secret generations and allocator epochs are v1b/S8.
+		rootScope := core.NewScope(nil)
+		rev.RenderedRevision = revision.ComputeRenderedRevision(
+			rootScope, rev.IntentRevision, phase1Result.ExternalInputHashes)
 	}
 
 	// S072a14-1: render phase 2 — expand composite resources into concrete
