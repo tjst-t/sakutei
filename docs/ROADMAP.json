@@ -2,12 +2,12 @@
   "project": "Sakutei",
   "description": "宣言的インフラ収束エンジン（観測 state レス・level-triggered）。本ロードマップは v1a（コア実証）を対象とし、v1b/v1.5/v2 は backlog に置く。",
   "progress": {
-    "current_sprint": "S33266e",
+    "current_sprint": "Sc7a647",
     "total": 9,
-    "done": 7,
+    "done": 8,
     "in_progress": 0,
-    "remaining": 2,
-    "percentage": 78
+    "remaining": 1,
+    "percentage": 89
   },
   "execution_order": [
     "Sead944",
@@ -1032,11 +1032,166 @@
     },
     "S33266e": {
       "title": "devenv・secret・設定ローダ",
-      "status": "pending",
+      "status": "done",
       "description": "devenv(坪庭)の最小形、SecretRef(自動マスク・JIT 解決・値は収束しない)と Vault SecretBackend seam、Loader(YAML/JSON round-trip + JSON Schema 検証)。ADR-0016/0019。",
       "milestone": false,
-      "detail_level": "coarse",
-      "stories": {}
+      "detail_level": "fine",
+      "stories": {
+        "S33266e-1": {
+          "title": "SecretRef の自動マスク・JIT 解決・値非収束 + file SecretBackend（段0-minimal）",
+          "status": "done",
+          "user_review_required": true,
+          "review_reason": "SecretRef 公開型（String() が *** を返す自動マスク／実値化は .Resolve(ctx) 経由のみ／Zero() で消去）と、その値が diff/converge 経路に一切入らない不変条件は、provider・operator・ログ/監査が依存する一方向ドアの公開契約である。SecretRef の公開シェイプ（メソッド集合）と『値は収束せず世代/メタデータのみが収束する』契約の形をユーザに確認してほしい（ADR-0016 / §20.2）。既存 phase1 の SecretBackend interface シグネチャ（GenerationOf のみ）は変更せずその裏に file 実装を差し込む。",
+          "user_story": "運用者として、シークレットを参照（SecretRef）として理想状態に載せ、実値は Apply 直前に JIT 解決して使用後に消し、値そのものは収束させたくない。なぜなら値を収束エンジンに知らせるとログ・Event・ダンプ・git 履歴に平文で漏れる面が広がり、値の diff は取れないから。段0-minimal では Vault を建てず、店舗ローカルの file SecretBackend で当該拠点分のみを局所常駐させ爆発半径を局所化する（ADR-0016 / §20.2 / §20.5 / §23.6）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S33266e-1-1",
+              "description": "core.SecretRef 専用型が存在し、String()/フォーマット出力が実値ではなく *** を返して自動マスクされる。実値取得は明示 .Resolve(ctx) 経由のみで、SecretRef は生成された値フィールドを平文で公開しない（文字列化・%v・%s いずれでもマスクされる）",
+              "test": "[AC-S33266e-1-1] in tests/acceptance/secret_ref_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S33266e-1-2",
+              "description": "SAFETY: secret フラグ付きフィールドを含むリソースについて plan/status/diff/ログの全シリアライズ出力を生成し、その出力を実シークレット値で grep して不在（値が一度も現れない）ことを検証する。diff は SecretRef 参照同士（世代/メタデータ）でのみ取られ、実値は converge 経路に入らない",
+              "test": "[AC-S33266e-1-2] in tests/acceptance/secret_ref_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S33266e-1-3",
+              "description": "JIT 解決: 実値化は Apply 直前（provider へ渡す瞬間）にのみ .Resolve(ctx) で起こり、値はキャッシュされず使用後に Zero() でメモリから消える。Resolve 前後で SecretRef の文字列表現は常に ***（解決しても平文化されない）",
+              "test": "[AC-S33266e-1-3] in tests/acceptance/secret_ref_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S33266e-1-4",
+              "description": "file SecretBackend（段0-minimal）が既存 phase1 の SecretBackend seam の裏で GenerationOf を実装し、ローカルファイルから世代/メタデータのみを解決して SecretRef に注入する（値は読まない）。世代変化は rendered_revision の差（原因タグ E）として検出され、git 書き戻しループを生じない。Vault backend は seam（interface + 文書化された stub）のまま v1b 以降に残す",
+              "test": "[AC-S33266e-1-4] in tests/acceptance/secret_ref_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S33266e-1-1": {
+              "title": "core.SecretRef 専用型（自動マスク・Resolve・Zero）",
+              "description": "pkg/core に SecretRef 型を新設する。String()／fmt.Stringer／MarshalJSON／MarshalText が *** を返し自動マスク、実値取得は .Resolve(ctx) 経由のみ、使用後 .Zero() でメモリ消去。値フィールドは非公開にし平文露出をコンパイル時に防ぐ。ドキュメントコメントに『値は収束しない・参照/存在/鮮度のみ』（ADR-0016 / §20.2）を明記。既存 FieldKindSecretRef と整合。stdlib のみ、Apache-2.0 ヘッダ。",
+              "status": "pending"
+            },
+            "S33266e-1-2": {
+              "title": "secret フィールドの全出力自動マスク配線",
+              "description": "pkg/provider Schema の Secret フラグ（既存）と pkg/sdk/lint.go の secret ルールを土台に、diff・plan・status・ログの各シリアライズ経路で secret フィールド値を SecretRef 経由の *** に置換する。実値が出力・diff・converge のどの経路にも入らないことを配線で保証（値は SecretRef 参照同士で diff）。stdlib のみ。",
+              "status": "pending"
+            },
+            "S33266e-1-3": {
+              "title": "JIT 解決フックの Apply 直前配線",
+              "description": "internal/executor（Apply 実行経路）で provider へ渡す瞬間にのみ SecretRef.Resolve(ctx) を呼び、使用後 Zero() する経路を配線する。値をキャッシュ・永続化・ログしない規律を実装（§20.2 の『Apply 直前のみ実値化』）。credential-broker/CredentialProvider 経路は v2 のため本 story では扱わない。stdlib のみ。",
+              "status": "pending"
+            },
+            "S33266e-1-4": {
+              "title": "file SecretBackend（段0-minimal）を phase1 seam の裏に実装",
+              "description": "internal/render/phase1.go の SecretBackend interface（GenerationOf のみ、シグネチャ不変）の裏に file 実装を新設する。ローカルファイルから世代/メタデータのみを読み SecretRef に注入（値は読まない）。爆発半径を当該拠点に閉じる局所常駐（§20.5）。Vault 実装は offline+stdlib-only 制約により seam の文書化 stub のまま v1b/v2 に残す。stdlib のみ、Apache-2.0 ヘッダ。",
+              "status": "pending"
+            }
+          }
+        },
+        "S33266e-2": {
+          "title": "Loader — YAML/JSON round-trip + JSON Schema 検証",
+          "status": "done",
+          "user_review_required": false,
+          "review_reason": "受理 YAML サブセットの拡張は後方互換のため one-way door ではない。保守的最小サブセットで開始（decisions.json）。",
+          "user_story": "運用者およびカタログ機械経路として、同じ理想状態木を YAML（人の手編集）と JSON（API write）の双方から供給し、ロード時に JSON Schema で検証し、round-trip（load→emit→load が等価）を保証したい。なぜなら人経路とAPI経路が同一の木を安全に往復でき、YAML の型曖昧性（Norway 問題等）や pruneable/scope/enum 欠落を封じる必要があるから（ADR-0019 / §21.3）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S33266e-2-1",
+              "description": "LoadDir が JSON と YAML の両方を受理し、同一意味の JSON と YAML 入力が同一の DesiredResource 列を生成する（JSON = 機械経路、YAML = 人経路が同じ木を吐く）",
+              "test": "[AC-S33266e-2-1] in tests/acceptance/loader_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S33266e-2-2",
+              "description": "round-trip 安定性: 理想状態木を load→emit→load しても等価な木が得られる（YAML について round-trip を配慮。JSON は決定的シリアライズ）",
+              "test": "[AC-S33266e-2-2] in tests/acceptance/loader_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S33266e-2-3",
+              "description": "JSON Schema 検証がロード時に強制され、pruneable/scope/enum の必須化と型曖昧性（例: version は文字列必須）違反・未知キーを含む不正 intent を明確なエラーで拒否し、収束を開始させない",
+              "test": "[AC-S33266e-2-3] in tests/acceptance/loader_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S33266e-2-4",
+              "description": "YAML はサポートするサブセット（スカラー/マップ/リスト・snake_case キー）の範囲内で受理され、サブセット外の構文（アンカー/エイリアス/複数ドキュメント等）は黙って誤解釈せず明確なエラーで拒否する（stdlib のみの最小サブセットである旨をエラー/ドキュメントで示す）",
+              "test": "[AC-S33266e-2-4] in tests/acceptance/loader_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S33266e-2-1": {
+              "title": "Loader seam と JSON/YAML シリアライザ分離",
+              "description": "internal/loader/loader.go を拡張し、同じ木を吐く別シリアライザとして Loader seam の下に JSON（既存・機械経路の正）と YAML（人経路）を置く。CUE への差し替え余地を残す（ADR-0019）。キーは snake_case を正とし Go フィールド名へ変換（depends_on/dependsOn の吸収）。stdlib のみ。",
+              "status": "pending"
+            },
+            "S33266e-2-2": {
+              "title": "stdlib-only 最小 YAML サブセットパーサ",
+              "description": "gopkg.in/yaml 等の外部依存が使えない（オフライン+stdlib-only）ため、スカラー/マップ/リストに限定した最小 YAML サブセットパーサを internal/loader 配下に実装する。Norway 問題等の型曖昧性を封じる（version 等はスキーマで文字列必須）。サブセット外構文（アンカー/エイリアス/複数ドキュメント/複雑スカラー）は誤解釈せず拒否。round-trip 用の emit も同サブセットに限定。制約/リスクとしてドキュメントコメントに明記。stdlib のみ、Apache-2.0 ヘッダ。",
+              "status": "pending"
+            },
+            "S33266e-2-3": {
+              "title": "JSON Schema 検証をロード時に外付け強制",
+              "description": "ロード時に JSON Schema で理想状態木を検証する（pruneable/scope/enum 必須化・未知キー拒否・型曖昧性封じ）。stdlib のみで表現できる範囲の JSON Schema サブセット検証器を実装。不正 intent は明確なエラーで拒否し収束を開始させない。既存の重複ID・循環検出（LoadDir 内）と統合。stdlib のみ。",
+              "status": "pending"
+            },
+            "S33266e-2-4": {
+              "title": "round-trip 等価性の保証と回帰テスト",
+              "description": "load→emit→load が等価な木を返すことを保証し、決定的な emit（キー順ソート等）を実装。YAML/JSON 双方向の等価性回帰を tests/acceptance/loader_test.go に配置。stdlib のみ。",
+              "status": "pending"
+            }
+          }
+        },
+        "S33266e-3": {
+          "title": "devenv（坪庭）最小形 — render 外部入力差し替え",
+          "status": "done",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "開発者として、devenv 実行では render の外部入力（inventory/allocation/secret）をフェイク/差し替え版に切り替え、本番プールを消費せず本番シークレットも展開せずに検証したい。なぜなら devenv（坪庭）は本番の内側に隔離された同じ材料の小さな庭であり、本物と同じ宣言を同じ reconciler で流しつつ本番資源に触れてはならないから（ADR-0016 / §26.2 / §23.6）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S33266e-3-1",
+              "description": "devenv 実行モードが render 外部入力の差し替え点（ExternalInputResolver / SecretBackend / AllocationAuthority）をフェイク/専用実装に切り替え、同一 intent を同一 reconciler で収束できる",
+              "test": "[AC-S33266e-3-1] in tests/acceptance/devenv_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S33266e-3-2",
+              "description": "SAFETY: devenv 実行は本番プール（inventory/allocation）を消費せず本番 SecretBackend を叩かない。フェイク resolver/backend のみが呼ばれ、本番実装が一度も呼ばれないことを検証する（本番 SecretBackend 呼び出し=テスト失敗）",
+              "test": "[AC-S33266e-3-2] in tests/acceptance/devenv_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S33266e-3-3",
+              "description": "devenv は既存の FakeInventoryResolver / ResolverCache 経路の上に構築され、render 第一級化した『入力の差し替え点』として外部入力の交換のみで表現される（reconciler 本体を分岐させない）",
+              "test": "[AC-S33266e-3-3] in tests/acceptance/devenv_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S33266e-3-1": {
+              "title": "devenv 外部入力差し替えの配線",
+              "description": "既存 internal/render/phase1.go の ExternalInputResolver（FakeInventoryResolver）/ SecretBackend / AllocationAuthority seam を束ねて『render 外部入力を差し替えた環境』として devenv 実行を構成する。reconciler 本体を分岐させず入力の交換のみで表現（§26.2）。stdlib のみ、Apache-2.0 ヘッダ。",
+              "status": "pending"
+            },
+            "S33266e-3-2": {
+              "title": "本番プール/本番 secret 非接触ガード",
+              "description": "devenv 実行が本番プール（inventory/allocation）を消費せず本番 SecretBackend を叩かないことを保証するガードを実装。story 1 の file SecretBackend のフェイク/専用インスタンスを使い本番資源に触れない（§26.2『本番プールを消費せず本番シークレットも展開しない』）。stdlib のみ。",
+              "status": "pending"
+            },
+            "S33266e-3-3": {
+              "title": "devenv 受け入れテスト",
+              "description": "tests/acceptance/devenv_test.go に、フェイク外部入力での収束・本番非接触・入力差し替え点のみでの表現を検証するテストを配置し [AC-S33266e-3-*] でタグ付けする。stdlib のみ。",
+              "status": "pending"
+            }
+          }
+        }
+      }
     },
     "Sc7a647": {
       "title": "v1a 完成 — 2 つ目の provider・全 chaos スイート・適合レポート",
