@@ -17,7 +17,11 @@
 // every provider, so their structure is frozen here (§4).
 package core
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // ID is the canonical resource identifier. It is a composite key of
 // (Provider, Scope, Local) as specified in ADR-0004 (§4.1).
@@ -53,4 +57,62 @@ func (id ID) Equal(other ID) bool {
 // components, e.g. "proxmox_vm/site=tokyo,cluster=prod/orders-db".
 func (id ID) String() string {
 	return fmt.Sprintf("%s/%s/%s", id.Provider, id.Scope.String(), id.Local)
+}
+
+// IDKey is a comparable, canonical key derived from an ID, suitable for use as
+// a Go map key (§4.1).
+//
+// ID itself is NOT comparable — its Scope embeds a label map — so it cannot be
+// a map key directly.  IDKey is the canonical, collision-free stand-in: it is
+// derived from the same (Provider, Scope, Local) components with the scope
+// labels in sorted order, so two IDs are Equal iff their Keys are equal — in
+// BOTH directions (Equal(a,b) ⇔ a.Key()==b.Key()).
+type IDKey string
+
+// Key returns the canonical, collision-free comparable key for this ID (IDKey).
+//
+// Collision-freedom (FIX #8):
+//
+// String() is for humans and is NOT injective: it joins Provider, Scope, and
+// Local with '/', and joins scope labels with ','/'='.  A value containing one
+// of those separators makes distinct IDs share the same String() — e.g.
+// scope {site:"x/a"}+local "b" vs scope {site:"x"}+local "a/b", or a label value
+// containing ',' or '='.  Using String() as the key therefore ALIASES distinct
+// IDs (the "Equal iff Keys equal" claim fails in the reverse direction).
+//
+// Key() instead builds a length-delimited encoding — mirroring
+// internal/revision's "<name>:<len>\n<value>" technique — so no separator in any
+// component can be mistaken for a delimiter.  Every component (and every scope
+// label key/value) is emitted as "<len>:<bytes>", with scope labels canonicalised
+// in sorted key order (the same order as Scope.String()/Path()).  Because the
+// byte length precedes the bytes, the decoder boundary is unambiguous regardless
+// of the bytes' content, so distinct IDs always yield distinct keys and Equal IDs
+// always yield identical keys.
+func (id ID) Key() IDKey {
+	var b strings.Builder
+	writeLenPrefixed(&b, id.Provider)
+	// Scope labels in canonical (sorted key) order — same order as
+	// Scope.String()/Path(), so equal label sets always serialise identically.
+	keys := make([]string, 0, len(id.Scope.Labels))
+	for k := range id.Scope.Labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	// Prefix the label count so that a scope with N labels cannot be confused
+	// with one that has a different number of labels but the same byte tail.
+	writeLenPrefixed(&b, fmt.Sprintf("%d", len(keys)))
+	for _, k := range keys {
+		writeLenPrefixed(&b, k)
+		writeLenPrefixed(&b, id.Scope.Labels[k])
+	}
+	writeLenPrefixed(&b, id.Local)
+	return IDKey(b.String())
+}
+
+// writeLenPrefixed appends a length-delimited encoding of s ("<len>:<bytes>") to
+// b.  The explicit byte length makes the component boundary unambiguous no matter
+// what bytes s contains, which is what makes IDKey collision-free (see Key()).
+func writeLenPrefixed(b *strings.Builder, s string) {
+	b.WriteString(fmt.Sprintf("%d:", len(s)))
+	b.WriteString(s)
 }

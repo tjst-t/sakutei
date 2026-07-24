@@ -426,7 +426,10 @@ func planPruneOpsMulti(
 		scope := core.NewScope(nil)
 		engine := prune.New()
 		provDesired := byProvider[name]
-		result, err := engine.ComputePrune(ctx, lister, fp, scope, provDesired, unobservable, os.Stderr)
+		// FIX #6: plan does not (yet) accept --claim, so the claim selector is
+		// empty here — an empty selector matches every scope, keeping plan's
+		// whole-world prune preview behaviour unchanged.
+		result, err := engine.ComputePrune(ctx, lister, fp, scope, core.NewScope(nil), provDesired, unobservable, os.Stderr)
 		if err != nil || result.Halted {
 			continue
 		}

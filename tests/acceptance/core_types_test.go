@@ -99,6 +99,73 @@ func TestCompositeID_EmptyScopeIsValid(t *testing.T) {
 	}
 }
 
+// TestIDKey_EqualIffKeysEqual verifies the collision-free invariant of
+// ID.Key() in BOTH directions (FIX #8):
+//
+//	(a) Equal IDs  → equal Keys.
+//	(b) distinct IDs → distinct Keys, even when a separator character
+//	    ('/', '=', ',') appears inside a scope-label value or the local ID and
+//	    would make String() alias them.
+//
+// The doc for IDKey claims "two IDs are Equal iff their Keys are equal"; before
+// FIX #8, Key() was IDKey(id.String()), which aliased the pairs below (the
+// reverse direction failed).  Key() now uses a length-delimited encoding so no
+// separator ambiguity can exist.
+//
+// [AC-Sead944-1-1]
+func TestIDKey_EqualIffKeysEqual(t *testing.T) {
+	// (a) Equal IDs must yield equal Keys.
+	scope := core.NewScope(map[string]string{"site": "tokyo", "cluster": "prod"})
+	a := core.NewID("fake", scope, "orders-db")
+	b := core.NewID("fake", core.NewScope(map[string]string{"cluster": "prod", "site": "tokyo"}), "orders-db")
+	if !a.Equal(b) {
+		t.Fatalf("[AC-Sead944-1-1] precondition: a and b should be Equal")
+	}
+	if a.Key() != b.Key() {
+		t.Errorf("[AC-Sead944-1-1] Equal IDs must have equal Keys; got %q vs %q", a.Key(), b.Key())
+	}
+
+	// keysDistinct is a table of ID pairs that are NOT Equal but which, under the
+	// old String()-based key, collided.  Each pair must now have DISTINCT keys.
+	type pair struct {
+		name string
+		x, y core.ID
+	}
+	pairs := []pair{
+		{
+			// scope {site:"x/a"}+local "b"  vs  scope {site:"x"}+local "a/b".
+			// String() → "fake/site=x/a/b" for BOTH → collision under old Key().
+			name: "slash-in-scope-value-vs-local",
+			x:    core.NewID("fake", core.NewScope(map[string]string{"site": "x/a"}), "b"),
+			y:    core.NewID("fake", core.NewScope(map[string]string{"site": "x"}), "a/b"),
+		},
+		{
+			// A label VALUE containing ',' and '=' must not alias a two-label scope.
+			// {site:"x,cluster=y"} vs {site:"x", cluster:"y"} both render to the
+			// same "cluster=y,site=x"-ish String() tail depending on ordering.
+			name: "comma-and-equals-in-label-value",
+			x:    core.NewID("fake", core.NewScope(map[string]string{"site": "x,cluster=y"}), "z"),
+			y:    core.NewID("fake", core.NewScope(map[string]string{"site": "x", "cluster": "y"}), "z"),
+		},
+		{
+			// A label KEY/value split ambiguity: value "b=c" under key "a" vs
+			// value "c" under key "a=b" would collide via '='-join.
+			name: "equals-in-value-vs-key",
+			x:    core.NewID("fake", core.NewScope(map[string]string{"a": "b=c"}), "l"),
+			y:    core.NewID("fake", core.NewScope(map[string]string{"a=b": "c"}), "l"),
+		},
+	}
+	for _, p := range pairs {
+		if p.x.Equal(p.y) {
+			t.Fatalf("[AC-Sead944-1-1] %s: precondition failed — pair must NOT be Equal", p.name)
+		}
+		if p.x.Key() == p.y.Key() {
+			t.Errorf("[AC-Sead944-1-1] %s: distinct IDs collided on Key()=%q (String() x=%q y=%q)",
+				p.name, p.x.Key(), p.x.String(), p.y.String())
+		}
+	}
+}
+
 // TestScope_Path_Deterministic verifies that Path() is deterministic
 // regardless of map iteration order.
 func TestScope_Path_Deterministic(t *testing.T) {

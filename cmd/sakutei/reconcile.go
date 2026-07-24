@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/budget"
@@ -121,6 +122,15 @@ func runReconcile(args []string) {
 		"remediation mode: auto | alert-only (§14.1); alert-only detects drift but does not Apply")
 	freeze := fs.Bool("freeze", false,
 		"global freeze: override to alert-only regardless of --mode (§14.3 escape hatch)")
+
+	// Sf6a62f-3: --claim scope-selector (§17.1).  Restricts convergence to the
+	// resources whose scope matches the selector; out-of-scope resources are
+	// excluded from Observe/plan/Apply (a shard only converges its own claim).
+	// Syntax: comma-separated key=value pairs, e.g. --claim site=tokyo,cluster=prod.
+	// Empty (default) = no restriction (single-shard: the whole world is claimed).
+	// Real sparse checkout / git distribution is v1b (§17.4); this is the seam.
+	claim := fs.String("claim", "",
+		"scope-selector restricting convergence to a claim, e.g. site=tokyo,cluster=prod (§17.1); empty=whole world")
 
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
@@ -232,12 +242,36 @@ func runReconcile(args []string) {
 		os.Exit(1)
 	}
 
+	// Sf6a62f-3: parse the --claim scope-selector into a core.Scope matcher.
+	claimSelector, claimErr := parseClaimSelector(*claim)
+	if claimErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: invalid --claim %q: %v\n", *claim, claimErr)
+		os.Exit(1)
+	}
+
 	// Build the desired slice: only non-composite resources enter Diff/Apply.
+	//
+	// Sf6a62f-3: a resource whose scope does not match the claim selector is
+	// EXCLUDED here — before Observe/Diff/Apply — so an out-of-claim resource is
+	// never even observed (§17.1: "claim に含まれない scope は Observe すらしない").
+	// With an empty selector Matches is always true, so this is a no-op filter
+	// in the default single-shard case.
 	desired := make([]diff.DesiredResource, 0, len(expanded))
+	excludedByClaim := 0
 	for _, r := range expanded {
-		if !r.IsComposite {
-			desired = append(desired, r.DesiredResource)
+		if r.IsComposite {
+			continue
 		}
+		if !r.DesiredResource.ID.Scope.Matches(claimSelector) {
+			excludedByClaim++
+			continue
+		}
+		desired = append(desired, r.DesiredResource)
+	}
+	if len(claimSelector.Labels) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"sakutei reconcile: --claim %s: %d resource(s) in claim, %d excluded (out of scope)\n",
+			claimSelector.String(), len(desired), excludedByClaim)
 	}
 
 	// Scb0ecd-1: print revision header so the caller can observe revision values.
@@ -468,7 +502,7 @@ func runReconcile(args []string) {
 	}
 	for name, fp := range providers {
 		if _, isLister := fp.(provider.Lister); isLister {
-			ops, halted := computePruneForProvider(ctx, fp, byProvider[name], unobservable)
+			ops, halted := computePruneForProvider(ctx, fp, claimSelector, byProvider[name], unobservable)
 			precomputedPruneOps = append(precomputedPruneOps, ops...)
 			if halted {
 				pruneWasHaltedBySafetyGuard = true
@@ -680,6 +714,38 @@ func runReconcile(args []string) {
 	os.Exit(0)
 }
 
+// parseClaimSelector parses a --claim scope-selector string into a core.Scope
+// used as a claim matcher (§17.1, Sf6a62f-3).
+//
+// Syntax: comma-separated "key=value" pairs, e.g. "site=tokyo,cluster=prod".
+// An empty string yields an empty selector (matches every scope: no claim
+// restriction).  Whitespace around keys/values is trimmed.
+//
+// This is the seam parser: it turns the CLI flag into the same Scope vocabulary
+// the loader assigns to each resource, so Scope.Matches can decide in/out of
+// claim.  The real selector SOURCE (sparse checkout of intent/<scope>/) is v1b.
+func parseClaimSelector(s string) (core.Scope, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return core.NewScope(nil), nil
+	}
+	labels := map[string]string{}
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(part, "=")
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if !ok || k == "" {
+			return core.Scope{}, fmt.Errorf("selector term %q is not a key=value pair", part)
+		}
+		labels[k] = v
+	}
+	return core.NewScope(labels), nil
+}
+
 // computePruneForProvider runs the prune engine computation (§12, ADR-0005) for
 // a single provider WITHOUT executing any Delete ops.  Returns the approved
 // Delete ops and whether the prune safety guard halted prune.
@@ -692,6 +758,7 @@ func runReconcile(args []string) {
 func computePruneForProvider(
 	ctx context.Context,
 	fp provider.Provider,
+	claim core.Scope,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 ) (approvedOps []core.Op, halted bool) {
@@ -709,8 +776,12 @@ func computePruneForProvider(
 	// Use empty scope for the fake provider (Sprint 1 simplification).
 	scope := core.NewScope(nil)
 
+	// FIX #6: pass the --claim selector so the prune set-difference is scoped to
+	// the claim.  Reality IDs outside the claim are dropped before set-difference,
+	// so an out-of-claim resource is never treated as an orphan (§17.1, 原則3).
+	// An empty selector matches everything → unchanged single-shard behaviour.
 	engine := prune.New()
-	result, err := engine.ComputePrune(ctx, lister, fp, scope, desired, unobservable, os.Stderr)
+	result, err := engine.ComputePrune(ctx, lister, fp, scope, claim, desired, unobservable, os.Stderr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune compute error: %v\n", err)
 		return nil, false

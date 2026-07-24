@@ -114,6 +114,7 @@ func TestPruneEngine_ListPartial_Halts(t *testing.T) {
 		lister,
 		&fakeObserver{},
 		core.NewScope(nil),
+		core.NewScope(nil),
 		pruneDesired("desired-only"),
 		nil,
 		&bytes.Buffer{},
@@ -149,7 +150,7 @@ func TestPruneEngine_CountDrop_Halts(t *testing.T) {
 	lister1 := &fakeCompleteList{ids: cycle1IDs}
 
 	desired1 := pruneDesired("vm-a") // keep vm-a; rest are orphans
-	_, err := engine.ComputePrune(context.Background(), lister1, &fakeObserver{}, core.NewScope(nil), desired1, nil, &bytes.Buffer{})
+	_, err := engine.ComputePrune(context.Background(), lister1, &fakeObserver{}, core.NewScope(nil), core.NewScope(nil), desired1, nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("cycle 1 ComputePrune error: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestPruneEngine_CountDrop_Halts(t *testing.T) {
 	lister2 := &fakeCompleteList{ids: cycle2IDs}
 	desired2 := pruneDesired("vm-a")
 	buf := &bytes.Buffer{}
-	result2, err := engine.ComputePrune(context.Background(), lister2, &fakeObserver{}, core.NewScope(nil), desired2, nil, buf)
+	result2, err := engine.ComputePrune(context.Background(), lister2, &fakeObserver{}, core.NewScope(nil), core.NewScope(nil), desired2, nil, buf)
 	if err != nil {
 		t.Fatalf("cycle 2 ComputePrune error: %v", err)
 	}
@@ -187,7 +188,7 @@ func TestPruneEngine_CountDrop_BelowThreshold_Proceeds(t *testing.T) {
 	}
 	lister1 := &fakeCompleteList{ids: cycle1IDs}
 	desired1 := pruneDesired("vm-a")
-	_, err := engine.ComputePrune(context.Background(), lister1, &fakeObserver{}, core.NewScope(nil), desired1, nil, &bytes.Buffer{})
+	_, err := engine.ComputePrune(context.Background(), lister1, &fakeObserver{}, core.NewScope(nil), core.NewScope(nil), desired1, nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("cycle 1 error: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestPruneEngine_CountDrop_BelowThreshold_Proceeds(t *testing.T) {
 	cycle2IDs := cycle1IDs[:8]
 	lister2 := &fakeCompleteList{ids: cycle2IDs}
 	desired2 := pruneDesired("vm-a")
-	result2, err := engine.ComputePrune(context.Background(), lister2, &fakeObserver{}, core.NewScope(nil), desired2, nil, &bytes.Buffer{})
+	result2, err := engine.ComputePrune(context.Background(), lister2, &fakeObserver{}, core.NewScope(nil), core.NewScope(nil), desired2, nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("cycle 2 error: %v", err)
 	}
@@ -230,7 +231,7 @@ func TestPruneEngine_PruneableDefaultFalse(t *testing.T) {
 		},
 	}
 
-	result, err := engine.ComputePrune(context.Background(), lister, &fakeObserver{}, core.NewScope(nil), desired, nil, &bytes.Buffer{})
+	result, err := engine.ComputePrune(context.Background(), lister, &fakeObserver{}, core.NewScope(nil), core.NewScope(nil), desired, nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("ComputePrune error: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestPruneEngine_UnknownNotAbsent(t *testing.T) {
 	// Desired: only desired-vm with PruneWithinScope + pruneable:true.
 	desired := pruneDesired("desired-vm")
 
-	result, err := engine.ComputePrune(context.Background(), lister, pruneableObserver(), core.NewScope(nil), desired, unobservable, &bytes.Buffer{})
+	result, err := engine.ComputePrune(context.Background(), lister, pruneableObserver(), core.NewScope(nil), core.NewScope(nil), desired, unobservable, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("ComputePrune error: %v", err)
 	}
@@ -301,7 +302,7 @@ func TestPruneEngine_NormalDelete(t *testing.T) {
 	desired := pruneDesired("desired-vm") // orphan-vm absent from desired
 
 	// Type is pruneable (opt-in), so orphan-vm is approved for deletion.
-	result, err := engine.ComputePrune(context.Background(), lister, pruneableObserver(), core.NewScope(nil), desired, nil, &bytes.Buffer{})
+	result, err := engine.ComputePrune(context.Background(), lister, pruneableObserver(), core.NewScope(nil), core.NewScope(nil), desired, nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("ComputePrune error: %v", err)
 	}
@@ -360,7 +361,7 @@ func TestPruneEngine_MixedType_NonPruneableTypeNotDeleted(t *testing.T) {
 	listerA := &fakeCompleteList{ids: realityIDs}
 	resultA, err := engineA.ComputePrune(
 		context.Background(), listerA, &fakeObserver{ /* pruneable:false */ },
-		core.NewScope(nil), desired, nil, &bytes.Buffer{})
+		core.NewScope(nil), core.NewScope(nil), desired, nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("pass A ComputePrune error: %v", err)
 	}
@@ -383,7 +384,7 @@ func TestPruneEngine_MixedType_NonPruneableTypeNotDeleted(t *testing.T) {
 	listerB := &fakeCompleteList{ids: realityIDs}
 	resultB, err := engineB.ComputePrune(
 		context.Background(), listerB, pruneableObserver(),
-		core.NewScope(nil), desired, nil, &bytes.Buffer{})
+		core.NewScope(nil), core.NewScope(nil), desired, nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("pass B ComputePrune error: %v", err)
 	}

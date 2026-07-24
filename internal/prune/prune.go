@@ -133,7 +133,15 @@ type PruneResult struct {
 //	               (unknown ≠ absent: candidates with non-Ok availability are
 //	               excluded from deletion; §12.4, ADR-0002).
 //	scope        — the scope boundary for the List call.
-//	desired      — the full desired-resource set for this cycle.
+//	claim        — the --claim scope-selector (§17.1, FIX #6).  Reality IDs whose
+//	               scope does NOT match the claim are dropped BEFORE the
+//	               set-difference, so an out-of-claim resource is never treated as
+//	               an orphan (and never Read by this path).  An empty selector (no
+//	               labels) matches every scope — the default single-shard case, so
+//	               behaviour is unchanged when --claim is absent.
+//	desired      — the desired-resource set for this cycle (already claim-narrowed
+//	               by the caller; the claim filter here re-establishes the SAME
+//	               boundary on the reality side so the set-difference is symmetric).
 //	unobservable — Local IDs whose Observe already returned non-Ok this cycle
 //	               (from the main desired-resource observation loop).
 //	               Used to avoid a duplicate Read for resources already known
@@ -146,6 +154,7 @@ func (e *Engine) ComputePrune(
 	lister provider.Lister,
 	observer provider.Provider,
 	scope core.Scope,
+	claim core.Scope,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 	errOut io.Writer,
@@ -167,6 +176,26 @@ func (e *Engine) ComputePrune(
 			HaltReason: fmt.Sprintf("List status is not Complete (%v); deferring prune", listResult.Status),
 		}, nil
 	}
+
+	// FIX #6 (§17.1): scope the prune boundary to the claim.
+	//
+	// lister.List returns ALL reality (List cannot itself be trusted to honour an
+	// arbitrary selector — many providers list the whole world).  Without this
+	// filter, an out-of-claim resource present in reality but (correctly) absent
+	// from the claim-narrowed `desired` would look like an orphan and be DELETED —
+	// data loss that violates §17.1 ("claim にマッチしない scope は Observe すらしない")
+	// and 原則3 (確信なき減算はしない).  We therefore drop every listed ID whose
+	// scope does not match the claim BEFORE the set-difference, so out-of-claim
+	// reality is never an orphan candidate and is never Read by this path.  This
+	// gate runs AFTER the completeness/drop-rate guards (which reason about the
+	// provider's own full List) but BEFORE the set-difference and any Read.
+	filteredIDs := listResult.IDs[:0:0]
+	for _, id := range listResult.IDs {
+		if id.Scope.Matches(claim) {
+			filteredIDs = append(filteredIDs, id)
+		}
+	}
+	listResult.IDs = filteredIDs
 
 	// (b) Drop-rate gate (§12.4b): compare with last observed count.
 	currentCount := len(listResult.IDs)

@@ -99,15 +99,25 @@ type storedResource struct {
 // (empty) means no version is embedded; the Scb0ecd-3 fail-closed guard is not
 // yet enforced, so empty is accepted here as "unknown/stable".
 // This is a test-only mechanism; production providers do not use this field.
+// Scopes is a test-only map from Local ID to the scope label set that List
+// should attach to that resource's ID.  The fake keys everything by Local for
+// simplicity, so by default List returns empty-scope IDs (all resources share
+// the root scope).  When a test needs List to report reality WITH scopes — e.g.
+// to exercise the --claim prune-boundary filter (FIX #6) — it seeds this map so
+// List can hand back properly-scoped IDs and the claim filter has something to
+// match against.  Absent (nil) → every listed ID carries the empty root scope,
+// preserving the historical behaviour of every existing test.
+// This is a test-only mechanism; production providers do not use this field.
 type stateFile struct {
-	Resources           map[string]storedResource `json:"resources"`
-	FailInject          map[string]string         `json:"fail_inject,omitempty"`
-	ObserveUnknown      map[string]string         `json:"observe_unknown,omitempty"`
-	ApplyDelay          map[string]string         `json:"apply_delay,omitempty"`
-	ApplyCount          map[string]int            `json:"apply_count,omitempty"`
-	ListPartial         bool                      `json:"list_partial,omitempty"`
-	PruneableCapability bool                      `json:"pruneable_capability,omitempty"`
-	ProviderVersion     string                    `json:"provider_version,omitempty"`
+	Resources           map[string]storedResource    `json:"resources"`
+	FailInject          map[string]string            `json:"fail_inject,omitempty"`
+	ObserveUnknown      map[string]string            `json:"observe_unknown,omitempty"`
+	ApplyDelay          map[string]string            `json:"apply_delay,omitempty"`
+	ApplyCount          map[string]int               `json:"apply_count,omitempty"`
+	Scopes              map[string]map[string]string `json:"scopes,omitempty"`
+	ListPartial         bool                         `json:"list_partial,omitempty"`
+	PruneableCapability bool                         `json:"pruneable_capability,omitempty"`
+	ProviderVersion     string                       `json:"provider_version,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
@@ -128,6 +138,13 @@ type Provider struct {
 	// mu serialises all state-file access (Apply read-modify-write, Read, List)
 	// so concurrent in-process goroutines never race on the file.
 	mu sync.Mutex
+
+	// readMu guards readCount, the in-memory per-resource Observe counter
+	// (test-only, Sf6a62f-2).  Kept separate from the state file so Read never
+	// mutates observable reality (see Read).  Not persisted; visible only to the
+	// in-process test that holds this Provider value.
+	readMu    sync.Mutex
+	readCount map[string]int
 }
 
 // New creates a new fake Provider backed by the JSON file at statePath.
@@ -194,6 +211,20 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 	// Hold mu for the file read so an in-flight Apply goroutine (from a prior
 	// cycle) cannot race us on the state file.  The load result is a private
 	// copy, so we can unlock immediately and compute the Observation lock-free.
+	// Record the Observe (test-only, Sf6a62f-2): increment the per-resource read
+	// count so tests can assert which resources were freshly Observed.  The count
+	// is kept in an IN-MEMORY field, NOT the state file, so Read remains faithful
+	// to its design contract ("Read never touches state"): a read must not mutate
+	// the observable reality, or freeze/alert-only invariants that assert the
+	// state file is byte-identical before/after would break.  In-process tests
+	// (the scoped reconcile path) share this counter directly.
+	p.readMu.Lock()
+	if p.readCount == nil {
+		p.readCount = make(map[string]int)
+	}
+	p.readCount[id]++
+	p.readMu.Unlock()
+
 	p.mu.Lock()
 	sf, err := p.load()
 	p.mu.Unlock()
@@ -391,9 +422,17 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 		return core.ListResult{}, provider.NewTransientError(fmt.Errorf("fakeprovider: load state: %w", err))
 	}
 
-	scope := core.NewScope(nil) // fake uses empty scope for simplicity in tests
+	// By default the fake uses the empty root scope for every resource (Sprint 1
+	// simplification, most tests).  When the state file seeds a per-resource scope
+	// (sf.Scopes[local]), List attaches THAT scope so callers can exercise the
+	// --claim prune-boundary filter (FIX #6): reality is reported with real scopes,
+	// and out-of-claim IDs can be recognised and excluded before set-difference.
 	ids := make([]core.ID, 0, len(sf.Resources))
 	for local := range sf.Resources {
+		scope := core.NewScope(nil)
+		if labels, ok := sf.Scopes[local]; ok {
+			scope = core.NewScope(labels)
+		}
 		ids = append(ids, core.NewID(ProviderName, scope, local))
 	}
 
@@ -504,6 +543,23 @@ func (p *Provider) GetApplyCount() (map[string]int, error) {
 	// Return a copy so callers cannot mutate the internal map.
 	out := make(map[string]int, len(sf.ApplyCount))
 	for k, v := range sf.ApplyCount {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// GetReadCount returns a copy of the in-memory per-resource Observe counter.
+// This is a test-only helper for Sf6a62f-2 (scoped reconcile Observe scoping):
+// tests assert that resources outside the impacted sub-DAG have a read count of
+// zero after a scoped run.  The counter is in-memory (not the state file), so it
+// is only meaningful within the process that owns this Provider value — which is
+// exactly the in-process scoped-path tests.  It returns nil error to keep a
+// uniform signature with the other Get* accessors.
+func (p *Provider) GetReadCount() (map[string]int, error) {
+	p.readMu.Lock()
+	defer p.readMu.Unlock()
+	out := make(map[string]int, len(p.readCount))
+	for k, v := range p.readCount {
 		out[k] = v
 	}
 	return out, nil

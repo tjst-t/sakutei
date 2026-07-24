@@ -129,6 +129,15 @@ type Config struct {
 	// Zero value (ModeAuto, Freeze=false) means Apply and prune execute normally.
 	Remediation remediation.Config
 
+	// Claim is the --claim scope-selector (§17.1, FIX #6).  It scopes the prune
+	// boundary: reality IDs whose scope does not match the claim are dropped
+	// before the set-difference, so an out-of-claim resource is never treated as
+	// an orphan.  The zero value (empty Scope, no labels) matches every scope —
+	// the daemon's default single-shard behaviour — so leaving it unset preserves
+	// whole-world prune.  (The daemon does not yet narrow `desired` by claim; this
+	// field keeps the prune boundary symmetric for when it does.)
+	Claim core.Scope
+
 	// S072a14-3: render pipeline configuration.
 
 	// GeneratedDir is the directory to write render phase 2 output (§9.6).
@@ -792,7 +801,7 @@ func runCycleAsync(
 	// so in alert-only the List runs but Apply/prune never do.
 	var pruneResult prune.PruneResult
 	if pruneEngine != nil {
-		pruneResult = computeDaemonPrune(ctx, pruneEngine, fp, desired, unobservable, cfg.ErrOut)
+		pruneResult = computeDaemonPrune(ctx, pruneEngine, fp, cfg.Claim, desired, unobservable, cfg.ErrOut)
 	}
 
 	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3).
@@ -971,6 +980,7 @@ func computeDaemonPrune(
 	ctx context.Context,
 	pruneEngine *prune.Engine,
 	fp provider.Provider,
+	claim core.Scope,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 	errOut io.Writer,
@@ -995,7 +1005,7 @@ func computeDaemonPrune(
 	// one-shot path).  Multi-scope prune is a later Story.
 	scope := core.NewScope(nil)
 
-	result, err := pruneEngine.ComputePrune(ctx, lister, fp, scope, desired, unobservable, errOut)
+	result, err := pruneEngine.ComputePrune(ctx, lister, fp, scope, claim, desired, unobservable, errOut)
 	if err != nil {
 		fmt.Fprintf(errOut, "sakutei: prune compute error: %v\n", err)
 		return prune.PruneResult{}

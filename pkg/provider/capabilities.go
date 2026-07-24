@@ -105,6 +105,12 @@ type Capabilities struct {
 //     detection).  An empty version means cause C cannot be distinguished from
 //     cause B, so ghost diffs would be silently auto-applied.
 //
+//  2. Capability/interface consistency (Sf6a62f-3): a provider that declares a
+//     capability flag must implement the matching optional interface, or the
+//     flag is a silent lie that the executor would act on.
+//     - List:true        → must implement Lister (prune set-difference source).
+//     - BulkObserve:true  → must implement BulkObserver (§5.7, §16.3, ADR-0011).
+//
 // Future checks (SDK, S62dbba):
 //   - Schema lint: required fields declared, secret/managed/identity flags valid.
 //   - ProviderVersion must match the SDK-computed source hash.
@@ -112,6 +118,16 @@ func ValidateProvider(p Provider) error {
 	caps := p.Capabilities()
 	if caps.ProviderVersion == "" {
 		return fmt.Errorf("provider version is empty: provider_version must be set before registration (fail-closed, §10.4); ghost diffs (cause C) cannot be detected for an unversioned provider")
+	}
+	if caps.List {
+		if _, ok := p.(Lister); !ok {
+			return fmt.Errorf("provider declares Capabilities.List=true but does not implement provider.Lister (§5.4, ADR-0005)")
+		}
+	}
+	if caps.BulkObserve {
+		if _, ok := p.(BulkObserver); !ok {
+			return fmt.Errorf("provider declares Capabilities.BulkObserve=true but does not implement provider.BulkObserver (§5.7, §16.3, ADR-0011)")
+		}
 	}
 	return nil
 }

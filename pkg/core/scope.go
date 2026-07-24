@@ -83,6 +83,31 @@ func (s Scope) String() string {
 	return strings.Join(s.sortedParts(), ",")
 }
 
+// Matches reports whether this scope satisfies the given selector (§17.1).
+//
+// A selector is itself a Scope whose Labels express the claim constraint,
+// e.g. --claim {site: tokyo} → NewScope({"site": "tokyo"}).  This scope
+// matches when it carries EVERY label in the selector with the same value
+// (subset / superset semantics): the selector is a filter, and a resource
+// scope is in the claim iff it agrees with the filter on all selector keys.
+// Labels present on this scope but absent from the selector are ignored —
+// they are finer-grained routing keys the claim does not constrain.
+//
+// An empty selector (no labels) matches every scope: "--claim" was not set,
+// so the whole world is in scope (the daemon's default single-shard behaviour).
+//
+// This is the one matcher shared by the claim boundary; the sparse-checkout /
+// git-distribution machinery that computes WHICH selector a shard holds is
+// v1b (§17.4).  Here Matches is the seam that decides in-scope vs out-of-scope.
+func (s Scope) Matches(selector Scope) bool {
+	for k, v := range selector.Labels {
+		if s.Labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // Equal reports whether two Scopes have identical label sets.
 func (s Scope) Equal(other Scope) bool {
 	if len(s.Labels) != len(other.Labels) {
