@@ -65,7 +65,7 @@ func main() {
 	case "reconcile":
 		runReconcile(os.Args[2:])
 	case "status":
-		notYetImplemented("status")
+		runStatus(os.Args[2:])
 	case "import":
 		notYetImplemented("import")
 	case "version", "--version", "-v":
