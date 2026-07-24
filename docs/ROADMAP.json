@@ -2,12 +2,12 @@
   "project": "Sakutei",
   "description": "宣言的インフラ収束エンジン（観測 state レス・level-triggered）。本ロードマップは v1a（コア実証）を対象とし、v1b/v1.5/v2 は backlog に置く。",
   "progress": {
-    "current_sprint": "S62dbba",
+    "current_sprint": "Sf6a62f",
     "total": 9,
-    "done": 5,
-    "in_progress": 1,
+    "done": 6,
+    "in_progress": 0,
     "remaining": 3,
-    "percentage": 55
+    "percentage": 67
   },
   "execution_order": [
     "Sead944",
@@ -689,7 +689,7 @@
     },
     "S62dbba": {
       "title": "Provider SDK と DNS provider（初の実 provider）",
-      "status": "in_progress",
+      "status": "done",
       "description": "Provider 作者が約4関数+List を書けば SDK が横断保証(diff/秘匿マスク/managed 除外/バージョン埋込/エラー分類/テストハーネス/Schema lint)を担う。第一号の実 provider は DNS レコード。ADR-0022。",
       "milestone": false,
       "detail_level": "detailed",
