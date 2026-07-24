@@ -15,6 +15,7 @@
 package registry
 
 import (
+	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -26,9 +27,10 @@ import (
 //     config["state"] is the path to the state file.  Defaults to
 //     "sakutei-fake-state.json" when the key is absent.
 //
-// S62dbba-3: the "dnszone" provider will be registered here when that Story
-// lands.  The registration site (this function) is the only place that knows
-// about concrete provider packages; cmd/ depends only on the registry seam.
+//   - "dnszone": RFC1035 zone-file provider (dnszone.New, S62dbba-3).
+//     config["zone"] is the path to the zone file.  If absent, defaults to
+//     "sakutei-zone.db".  Manages A/AAAA/CNAME/TXT/MX/… records; SOA and NS
+//     are excluded (management boundary, decisions.json S62dbba).
 func DefaultRegistry() *ProviderRegistry {
 	r := New()
 
@@ -40,6 +42,22 @@ func DefaultRegistry() *ProviderRegistry {
 			statePath = "sakutei-fake-state.json"
 		}
 		return fakeprovider.New(statePath), nil
+	})
+
+	// "dnszone" — RFC1035 zone-file provider (S62dbba-3).
+	// config["zone"] is the path to the zone file.
+	// config["state"] is accepted as an alias for "zone" so that the common
+	// --state flag can be used for both providers without extra CLI plumbing.
+	r.Register("dnszone", func(config map[string]string) (provider.Provider, error) {
+		zonePath := config["zone"]
+		if zonePath == "" {
+			// Accept --state as an alias (CLI passes --state for all providers).
+			zonePath = config["state"]
+		}
+		if zonePath == "" {
+			zonePath = "sakutei-zone.db"
+		}
+		return dnszone.New(zonePath), nil
 	})
 
 	return r
