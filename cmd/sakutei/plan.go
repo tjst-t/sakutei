@@ -19,12 +19,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
+	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -56,6 +58,10 @@ func runPlan(args []string) {
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
+	// S072a14-1: generated/ output directory for render phase 2 (§9.6).
+	// Default: sibling of --intent named "generated" (e.g. ./generated when intent=./intent).
+	generatedDir := fs.String("generated", "",
+		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
 
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
@@ -68,12 +74,50 @@ func runPlan(args []string) {
 		os.Exit(1)
 	}
 
+	// Resolve generated/ directory (S072a14-1: §9.6).
+	genDir := *generatedDir
+	if genDir == "" {
+		genDir = filepath.Join(filepath.Dir(*intentDir), "generated")
+	}
+
 	// Load desired resources from intent directory.
 	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
-	desired, rev, err := loader.LoadDir(*intentDir)
+	intentResources, rev, err := loader.LoadDir(*intentDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei plan: load intent: %v\n", err)
 		os.Exit(1)
+	}
+
+	// S072a14-1: render phase 2 — expand composite resources into concrete
+	// children (§9.5).  Composites themselves are NOT passed to Diff/Apply;
+	// only their expanded children enter the convergence loop.
+	registry := render.DefaultRegistry()
+	expanded, expandErr := render.ExpandAll(registry, intentResources)
+	if expandErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei plan: render phase 2: %v\n", expandErr)
+		os.Exit(1)
+	}
+
+	// §9.6: validate the existing generated/ file for direct human edits.
+	// A missing file is fine; a file without _generated:true triggers a warning.
+	genFilePath := filepath.Join(genDir, render.GeneratedFileName)
+	if valErr := render.ValidateGeneratedFile(genFilePath); valErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei plan: WARNING: %v\n", valErr)
+	}
+
+	// §9.6: write expanded children to generated/expanded.json.
+	if writeErr := render.WriteGenerated(genDir, expanded); writeErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei plan: write generated/: %v\n", writeErr)
+		os.Exit(1)
+	}
+
+	// Build the desired slice: only non-composite resources enter Diff/Apply.
+	// Composite parents are excluded (children represent them in the DAG).
+	desired := make([]diff.DesiredResource, 0, len(expanded))
+	for _, r := range expanded {
+		if !r.IsComposite {
+			desired = append(desired, r.DesiredResource)
+		}
 	}
 
 	// Scb0ecd-1: print revision header so the caller can observe revision values.

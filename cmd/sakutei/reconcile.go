@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/budget"
@@ -31,6 +32,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
+	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -81,6 +83,9 @@ func runReconcile(args []string) {
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
+	// S072a14-1: generated/ output directory for render phase 2 (§9.6).
+	generatedDir := fs.String("generated", "",
+		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
 
 	// Scf7762-2: change-budget flags (§13).
 	maxDestructivePerCycle := fs.Int("max-destructive-per-cycle", 0,
@@ -150,14 +155,50 @@ func runReconcile(args []string) {
 	}
 	budgetEngine := budget.New(budgetCfg)
 
+	// Resolve generated/ directory (S072a14-1: §9.6).
+	genDir := *generatedDir
+	if genDir == "" {
+		genDir = filepath.Join(filepath.Dir(*intentDir), "generated")
+	}
+
 	// Load desired resources from intent directory.
 	// loader.LoadDir also performs cycle detection (S94f1f9-2): cyclic
 	// depends_on is rejected here with a non-zero exit before any Apply.
 	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
-	desired, rev, err := loader.LoadDir(*intentDir)
+	intentResources, rev, err := loader.LoadDir(*intentDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: load intent: %v\n", err)
 		os.Exit(1)
+	}
+
+	// S072a14-1: render phase 2 — expand composite resources (§9.5).
+	registry := render.DefaultRegistry()
+	expanded, expandErr := render.ExpandAll(registry, intentResources)
+	if expandErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: render phase 2: %v\n", expandErr)
+		os.Exit(1)
+	}
+
+	// §9.6: validate existing generated/ file and warn on direct human edits.
+	genFilePath := filepath.Join(genDir, render.GeneratedFileName)
+	if valErr := render.ValidateGeneratedFile(genFilePath); valErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: WARNING: %v\n", valErr)
+	}
+
+	// §9.6: write expanded children to generated/expanded.json (overwrites any
+	// prior contents — render is deterministic so the result is identical each
+	// time for the same intent, preventing two-management drift).
+	if writeErr := render.WriteGenerated(genDir, expanded); writeErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: write generated/: %v\n", writeErr)
+		os.Exit(1)
+	}
+
+	// Build the desired slice: only non-composite resources enter Diff/Apply.
+	desired := make([]diff.DesiredResource, 0, len(expanded))
+	for _, r := range expanded {
+		if !r.IsComposite {
+			desired = append(desired, r.DesiredResource)
+		}
 	}
 
 	// Scb0ecd-1: print revision header so the caller can observe revision values.
