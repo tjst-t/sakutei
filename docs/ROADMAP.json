@@ -2,12 +2,12 @@
   "project": "Sakutei",
   "description": "宣言的インフラ収束エンジン（観測 state レス・level-triggered）。本ロードマップは v1a（コア実証）を対象とし、v1b/v1.5/v2 は backlog に置く。",
   "progress": {
-    "current_sprint": "Sc7a647",
+    "current_sprint": null,
     "total": 9,
-    "done": 8,
+    "done": 9,
     "in_progress": 0,
-    "remaining": 1,
-    "percentage": 89
+    "remaining": 0,
+    "percentage": 100
   },
   "execution_order": [
     "Sead944",
@@ -1195,11 +1195,155 @@
     },
     "Sc7a647": {
       "title": "v1a 完成 — 2 つ目の provider・全 chaos スイート・適合レポート",
-      "status": "pending",
+      "status": "done",
       "description": "[MILESTONE] 2 つ目の実 provider、chaos テストスイートの拡充、`sakutei status`(適合レポート／drifted 一覧)。v1a（コア実証）の完成マイルストーン。",
       "milestone": true,
-      "detail_level": "coarse",
-      "stories": {}
+      "detail_level": "fine",
+      "stories": {
+        "Sc7a647-1": {
+          "title": "2 つ目の実 provider — nftables ruleset ファイル（順序付きルール）",
+          "status": "done",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "運用者として、DNS に続く 2 つ目の実 provider として nftables ruleset ファイルを収束対象にしたい。なぜなら §27 の v1a provider 群（DNS + VM + FW〈順序付き〉）のうち FW カテゴリを最小コードで実証でき、かつ DNS が使わなかった Schema の `ordered` フラグ（順序が意味を持つ list フィールド）を end-to-end で行使できるからである。宣言する現実は『管理された ruleset ファイルそのもの』とし、`nft` バイナリの呼び出しには依存せず、ファイルを parse（Read）・atomic write（Apply）する——dnszone が zone ファイルに対して行うのと同じ設計に揃える（stdlib のみ・offline・CI 検証可）。この選択は、実バイナリ非依存で `ordered` の diff 意味論（並べ替えそのものが diff／full-replacement）を honest に実証できる点で最良だからである。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-Sc7a647-1-1",
+              "description": "nftables provider の Schema が `ordered` list フィールド（ルール列）を宣言し、現実の ruleset ファイルと desired でルール順序だけが異なる場合に diff（Update）が検出される——並べ替えが差分として扱われる（`ordered` フラグ end-to-end）。順序が一致すれば diff ゼロ。",
+              "test": "[AC-Sc7a647-1-1] in tests/acceptance/nftables_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sc7a647-1-2",
+              "description": "Read は管理 ruleset ファイルのみを parse し desired を一切参照しない。ファイル非存在は absent（Availability=Ok, State=nil）、parse 不能は AvailabilityUnknown（transient・unknown≠absent）を返す。Apply は temp+rename の atomic write で、途中クラッシュしても ruleset が truncate されない。Apply を二度適用してもファイル内容が同一（idempotent）。",
+              "test": "[AC-Sc7a647-1-2] in tests/acceptance/nftables_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sc7a647-1-3",
+              "description": "provider が SDK の ContractTester（idempotency / absent→Create→Read / List 完全性）を全て pass する。List は complete-or-error（parse 失敗時は truncated な ListComplete を返さずエラー）。Capabilities は honest に宣言される（List=true、ProviderVersion 設定、Pruneable は破壊性型判定に基づき宣言）。",
+              "test": "[AC-Sc7a647-1-3] in tests/acceptance/nftables_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sc7a647-1-4",
+              "description": "provider が pkg/registry の DefaultRegistry に名前付きで登録され、CLI（plan/reconcile）から config でルールセットファイルパスを指定して駆動できる。dnszone と混在した状態でも各 provider が独立に Observe/Apply される。",
+              "test": "[AC-Sc7a647-1-4] in tests/acceptance/nftables_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "Sc7a647-1-1": {
+              "title": "nftables ruleset provider 本体（Schema・Read・Apply・List）",
+              "description": "internal/nftables/nftables.go に provider.Provider + provider.Lister 実装を追加する。Schema は識別フィールド（チェイン/テーブル等の identity）+ `Ordered:true` の list フィールド（ルール列）を宣言。Read は管理 ruleset ファイルを bufio.Scanner + strings で parse し desired を参照しない（ファイル非存在=absent、parse 不能=AvailabilityUnknown の transient）。Apply は os.CreateTemp+os.Rename の atomic write。List は complete-or-error。dnszone.go の構造・Apache-2.0 ヘッダ・doc コメント様式に揃える。stdlib のみ・go1.22。",
+              "status": "pending"
+            },
+            "Sc7a647-1-2": {
+              "title": "Capabilities の honest 宣言と ProviderVersion",
+              "description": "Capabilities() で TrueObserve=true・List=true・ProviderVersion（ソースハッシュ相当の固定値、正規化/diff ロジック変更時に増分）を返し、Pruneable は FW ルールの破壊性型判定（ADR-0005 分類）に基づいて honest に宣言する（判断根拠を doc コメントに明記）。managed 除外境界（外部管理チェイン等があれば skip）を dnszone の SOA/NS skip に倣って規定。",
+              "status": "pending"
+            },
+            "Sc7a647-1-3": {
+              "title": "registry 登録と CLI 駆動",
+              "description": "pkg/registry/default.go に nftables provider を名前付きで Register する（config でルールセットファイルパスを受け取り、--state を alias として許容する dnszone と同じ CLI plumbing）。fail-closed の Schema lint / version ゲート（§28）を pass することを確認する。",
+              "status": "pending"
+            },
+            "Sc7a647-1-4": {
+              "title": "受け入れテスト（ContractTester + ordered end-to-end + registry 混在）",
+              "description": "tests/acceptance/nftables_test.go に AC-Sc7a647-1-1..4 を実装する。SDK ContractTester.RunAll を通す。`ordered` の並べ替え=diff、順序一致=diff ゼロを実ファイルで検証。unknown≠absent・atomic write・idempotency・complete-or-error を assert。dnszone と混在した registry から plan/reconcile を駆動し独立収束を確認。各テストに [AC-...] タグ。",
+              "status": "pending"
+            }
+          }
+        },
+        "Sc7a647-2": {
+          "title": "chaos スイート拡充 — 両 provider・実 fault injection で安全不変条件を実証",
+          "status": "done",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "開発者として、既存 chaos スイート（Scf7762-4）を敵対的シナリオで拡充したい。なぜなら『壊れそうで止まる』ことがこのエンジンの存在意義であり（CLAUDE.md：chaos が最重要・§26.1 検証の4段）、happy-path ではなく実際の fault injection で安全不変条件（unknown≠abs: 誤 prune しない／List 不完全 complete-or-error で prune halt／予算枯渇 halt／振動検知／部分 Apply 後の再観測収束／secret backend down で漏洩せず縮退）を、DNS と nftables の両 provider にまたがって証明する必要があるからである。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-Sc7a647-2-1",
+              "description": "サイクル途中で provider を到達不能にする（Read が transient error / AvailabilityUnknown を返す）と、unknown が absent として扱われず、誤った prune（削除）が発生しない。halt 後も現実（state ファイル / ruleset ファイル）の孤児は保持される。両 provider で実証。",
+              "test": "[AC-Sc7a647-2-1] in tests/acceptance/chaos_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sc7a647-2-2",
+              "description": "部分 Apply（一部の Op だけ成功し途中で失敗）を注入した後、次サイクルの再観測で残差だけが再計画され収束に向かう（観測 state を持ち越さず level-triggered に自己修復する）。secret backend を down させても raw secret がログ/出力に漏れず、degrade（縮退）して halt する。",
+              "test": "[AC-Sc7a647-2-2] in tests/acceptance/chaos_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sc7a647-2-3",
+              "description": "振動（oscillation）を誘発する条件（desired と現実が毎サイクル入れ替わる／幽霊 diff の反復）を注入すると、振動が検知されて alert/halt に昇格し、無限の破壊的 Apply ループに陥らない。budget 途中枯渇（予算窓を Apply の最中に超過）でも halt-all で残りの破壊的 Op が実行されない。",
+              "test": "[AC-Sc7a647-2-3] in tests/acceptance/chaos_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "Sc7a647-2-1": {
+              "title": "provider 到達不能（unknown≠absent）fault injection",
+              "description": "chaos_test.go に、サイクル途中で provider の Read を transient error / AvailabilityUnknown にするシナリオを追加。fake・dnszone・nftables のいずれでも『観測不能な孤児を absent とみなして prune する』事故が起きないことを、現実ファイルを直接読んで孤児残存で証明する。ログの halt 行だけを証拠にしない（現実の bytes/件数で証明）。",
+              "status": "pending"
+            },
+            "Sc7a647-2-2": {
+              "title": "部分 Apply 後の再観測収束 + secret backend down 縮退",
+              "description": "一部 Op 成功→途中失敗を注入し、次サイクルの再観測で残差のみ再計画され収束することを assert（観測 state レスの level 意味論）。別シナリオで secret backend を down させ、raw secret が stdout/stderr/ログに一切現れず（マスキング）degrade して halt することを検証。",
+              "status": "pending"
+            },
+            "Sc7a647-2-3": {
+              "title": "振動検知 + budget 途中枯渇 halt（両 provider）",
+              "description": "毎サイクル入れ替わる desired↔現実（または反復幽霊 diff）で oscillation 検知→昇格を誘発し、無限破壊ループに陥らないことを assert。Apply 最中の budget 窓超過で halt-all が残りの破壊的 Op を止めることを、両 provider の現実状態で証明。各テストに [AC-...] タグ。stdlib のみ。",
+              "status": "pending"
+            }
+          }
+        },
+        "Sc7a647-3": {
+          "title": "`sakutei status` — 適合レポート / drifted 一覧（デバッグ体験）",
+          "status": "done",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "運用者として、`sakutei status` で『宣言どおり在るか』の適合レポート（drifted 一覧）を read-only に取得したい。なぜなら §26.4 の conformance は収束ループ内で常時判定されているが、それを人向け・監査向けに切り出すデバッグ体験こそ v1a のデリバラブルだからである（§27 line 50）。出力には drifted リソース一覧 + 原因タグ（A〜E）+ provider 階級表示（Capabilities tier）+ 軽量 last-seen リング（S3・非永続で『前周は X だった』を添える）+ 下流波及 D を含める。status は現実を観測して desired と diff するだけで、Apply は絶対に行わない（health/canary とは別の『チェック』であり混同しない）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-Sc7a647-3-1",
+              "description": "`sakutei status` が現実を観測し desired と diff して drifted リソース一覧を出力する。各 drifted 項目に原因タグ（A/B/C/D/E）が付く。desired と現実が一致していれば『適合（drift なし）』を報告する。dnszone・nftables・fake いずれの provider でも動作する。",
+              "test": "[AC-Sc7a647-3-1] in tests/acceptance/status_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sc7a647-3-2",
+              "description": "status は read-only である——実行前後で現実（state ファイル / ruleset ファイル / zone ファイル）が byte-for-byte 不変で、Apply 系の出力行（CREATE/UPDATE/DELETE・applied）を一切出さない（Apply が呼ばれていないことを証明する）。",
+              "test": "[AC-Sc7a647-3-2] in tests/acceptance/status_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Sc7a647-3-3",
+              "description": "status 出力が provider 階級（Capabilities tier: TrueObserve/List/Pruneable/ProviderVersion）を表示し、last-seen リング（内部 lastseen パッケージ）由来の『前周は X だった』を drifted 項目に添える（リングが空＝初回/再起動後は『前周スナップショットなし』と表示・S3 非永続）。下流波及（D）が依存変更として一覧に反映される。",
+              "test": "[AC-Sc7a647-3-3] in tests/acceptance/status_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "Sc7a647-3-1": {
+              "title": "cmd/sakutei/status.go — 観測 + diff + drifted 一覧",
+              "description": "cmd/sakutei/status.go を新規追加し、main.go にサブコマンド status を配線する。plan と独立に現実を Observe し desired と diff して drifted 一覧を組み立てる（既存の diff/cause 分類機構と causeState を再利用）。原因タグ A〜E を各項目に付す。Apache-2.0 ヘッダ・既存 CLI コマンド様式に揃える。Apply には一切分岐しない（read-only を構造で保証）。stdlib のみ・go1.22。",
+              "status": "pending"
+            },
+            "Sc7a647-3-2": {
+              "title": "provider 階級表示 + last-seen リング + 下流波及 D の表示",
+              "description": "status 出力に各 drifted 項目の provider Capabilities tier（TrueObserve/List/Pruneable/ProviderVersion）を表示し、internal/lastseen の ResourceRing/DriftSummary から『前周は X だった』（空なら『前周スナップショットなし』）を添える。下流波及 D（依存変更由来）を一覧に反映する。conformance のみを扱い health/canary と混同しない旨を doc コメントに明記。",
+              "status": "pending"
+            },
+            "Sc7a647-3-3": {
+              "title": "受け入れテスト（drifted 一覧 + read-only 保証 + tier/last-seen/D）",
+              "description": "tests/acceptance/status_test.go に AC-Sc7a647-3-1..3 を実装する。dnszone/nftables/fake で drifted 一覧と原因タグを検証。実行前後の現実ファイル byte 比較と Apply 系出力行の不在で read-only を証明。tier 表示・last-seen『前周は X』・空リング時の表示・下流波及 D を assert。各テストに [AC-...] タグ。",
+              "status": "pending"
+            }
+          }
+        }
+      }
     }
   },
   "dependencies": {
