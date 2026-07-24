@@ -1,0 +1,41 @@
+{
+  "sprint": "S072a14",
+  "touched_adrs": ["ADR-0008", "ADR-0002", "ADR-0003", "ADR-0005", "ADR-0007", "ADR-0015", "ADR-0021"],
+  "decisions": [
+    {
+      "topic": "allocation / secret を seam に留める（S5 では実装しない）",
+      "decision": "render フェーズ1 の外部入力のうち allocation（採番: v1b）と secret backend/Vault（S8）は v1a/S5 のスコープ外。S5 では ExternalInputResolver インターフェース seam を切り、実装は FakeInventoryResolver（inventory 相当の最小外部入力）だけにとどめる。allocation の AllocationAuthority.Resolve() と SecretBackend.GenerationOf() の関数シグネチャは seam として型定義するが、実体を持つ実装は作らない。これにより S5 で rendered_revision を外部入力ハッシュを含む形に更新でき、E 活動化に必要な最小の footprint に留めつつ、将来の採番・secret 連携の接続点を型で確保する。ADR-0021（v1a/v1b スライス）に準拠。",
+      "adr_ref": "ADR-0021"
+    },
+    {
+      "topic": "render フェーズ2（合成リソース展開）が S5 の主眼",
+      "decision": "フェーズ2（決定的展開: 合成リソース → 実子リソース）が S072a14 の本体。intent に書いた合成型を ExpanderRegistry に登録した Expander が展開し、子リソースを generated/ に出力する。Expander は同じ入力から常に同じ出力を返す（決定性必須）。展開結果は generated/ 専用に限定し、人が編集する intent/ とは型レベルで分離する（§9.6）。子は親に managed_by フィールドで紐づき、所有継承・親削除時の巻き取り・prune 境界の一貫性を保証する（§7.5）。",
+      "adr_ref": "ADR-0008"
+    },
+    {
+      "topic": "generated/ 規約の実装方針",
+      "decision": "generated/ への出力には自動生成ヘッダを必須とする（例: {\"_generated\": true, \"_generated_by\": \"sakutei render\", \"_do_not_edit\": true}）。ローダは generated/ 内のファイルを読み込む際に _generated フラグを確認し、人が直接コミットしたと疑われる変更（_generated がないまたは false）を拒否する（二重管理防止）。人の書く intent と生成物を同一ディレクトリに混在させない。生成の決定性を rendered_revision 算出の前提とする（TTL ヒット/ミスで生成物が揺れてはならない）。",
+      "adr_ref": "ADR-0008"
+    },
+    {
+      "topic": "rendered_revision の決定的ハッシュへの外部入力混入（seam 活動化）",
+      "decision": "S4（Scb0ecd）で切った ComputeRenderedRevision(scope, intentHash, externalInputs) seam を S5 で活動化する。externalInputs には FakeInventoryResolver が返す決定的ハッシュを渡す。TTL キャッシュのヒット/ミスで rendered_revision が揺れないよう、externalInputs は sorted して混入する（既存実装で確保済み）。これにより intent_revision ≠ rendered_revision の状態が初めて生じ、cause tag E（RenderedRevisionChanged=true）が実際に発火できる。S4 で both flags=false 固定だった CauseContext.RenderedRevisionChanged が true になる経路を S5 でコードに追加する。",
+      "adr_ref": "ADR-0008"
+    },
+    {
+      "topic": "cause tag D（カスケード）の活動化 seam の完成",
+      "decision": "合成親の desired が変化した周期に、展開された子リソースの CauseContext.UpstreamChanged を true にセットする。S4 では v1a=false 固定だったこのフラグを、render フェーズ2 の Expander が「どの子が、どの親から展開されたか」の管理情報を reconcile ループに伝えることで活動化する。UpstreamChanged=true は expand された子かつ親の intent_revision/rendered_revision が今周期変化した場合のみ立てる。B（消去法）との衝突は優先順位（C>D>A>E>B）で解決済み。",
+      "adr_ref": "ADR-0008"
+    },
+    {
+      "topic": "ステータス集約（最悪優先）の実装スコープ",
+      "decision": "合成リソースの上位ステータスは §9.7 の全順序（unknown > stuck > oscillating > drifted > blocked > converging > converged）で子の最悪が支配する。S5 では plan / reconcile の出力と sakutei plan のヘッダに合成リソースの集約ステータスを表示する。oscillating / stuck は v1a では発生しにくいが全順序は今定義する。katalog や sakutei status（Sc7a647）へのフィードはステータス型で揃えておく。fake_composite の受入テストで「子 1 件が unknown なら composite も unknown」を検証する。",
+      "adr_ref": "ADR-0008"
+    },
+    {
+      "topic": "実行モデル（3 story の wave 構成）",
+      "decision": "Wave 1（S072a14-1: render フェーズ2 合成展開 + generated/ 規約 + managed_by）→ Wave 2（S072a14-2: フェーズ1 ExternalInputResolver seam + TTL キャッシュ + 不達時前回保持 + rendered_revision 活動化）→ Wave 3（S072a14-3: cause tag E/D 活動化 + ステータス集約）の直列 3 wave で in-tree 実装。Wave 2 は Wave 1 の合成展開（子リソースが存在すること）に依存。Wave 3 は Wave 2 の rendered_revision 活動化（E が発火できる環境）と Wave 1 の親子関係（D の波及追跡）の両方に依存するため直列必須。全 story user_review_required=false（milestone でない）。",
+      "adr_ref": "none"
+    }
+  ]
+}

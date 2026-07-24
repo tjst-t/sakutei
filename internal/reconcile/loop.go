@@ -138,8 +138,23 @@ type Config struct {
 	// ExternalInputResolver is the render phase 1 external input resolver (§9.1).
 	// If nil, render phase 1 is skipped and rendered_revision = intent_revision
 	// (v1a default, backward compatible).
-	// The cache (TTL, last-value-on-unreachable) is managed by the caller;
-	// pass a *render.ResolverCache here for production use.
+	//
+	// D-2 (seam decision, DELIBERATE): this field is the CONCRETE
+	// *render.ResolverCache, not the render.ExternalInputResolver interface, and
+	// this is intentional — not a missed seam.  The §9.2 safety semantics that
+	// the daemon depends on (TTL caching, last-value-on-unreachable, and the
+	// halt-safe first-call-unreachable signal) live in ResolverCache, NOT in the
+	// bare ExternalInputResolver.  The interface's Resolve returns only
+	// (map, err); ResolverCache.Resolve returns (map, unreachableFallback, err),
+	// and render.ResolveExternalInputs — the function this field is passed to —
+	// accepts *ResolverCache specifically to read that fallback signal.  Widening
+	// this to the interface would DROP those safety semantics, so interface-ing
+	// here would be over-engineering that loses correctness.  The swappable seam
+	// is the ExternalInputResolver the caller wraps INSIDE the cache
+	// (render.NewResolverCache(resolver, ttl)); the cache itself is a fixed piece
+	// of the safety mechanism.  The one-shot plan/reconcile paths make the same
+	// choice (both construct a *render.ResolverCache and pass it), so all three
+	// execution paths are consistent.
 	ExternalInputResolver *render.ResolverCache
 
 	// ExpanderRegistry is the render phase 2 expander registry (§9.5).

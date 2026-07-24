@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
@@ -320,8 +321,11 @@ func runPlan(args []string) {
 		// Even if no ops, print composite status if there are composites.
 		if len(compositeSummaries) > 0 {
 			fmt.Println("Composite status:")
-			for parentID, summary := range compositeSummaries {
-				fmt.Printf("  composite %s: %s\n", parentID, summary.AggregatedStatus)
+			// F-3: sort parent IDs so the output order is deterministic
+			// (map iteration order is randomised in Go).
+			parentIDs := sortedCompositeParentIDs(compositeSummaries)
+			for _, parentID := range parentIDs {
+				fmt.Printf("  composite %s: %s\n", parentID, compositeSummaries[parentID].AggregatedStatus)
 			}
 		}
 		fmt.Println("Converged (no changes)")
@@ -336,11 +340,29 @@ func runPlan(args []string) {
 	// S072a14-3: print composite status aggregation (§9.7).
 	if len(compositeSummaries) > 0 {
 		fmt.Println("Composite status (§9.7 worst-first):")
-		for parentID, summary := range compositeSummaries {
-			fmt.Printf("  composite %s: %s\n", parentID, summary.AggregatedStatus)
+		// F-3: sort parent IDs so the output order is deterministic
+		// (map iteration order is randomised in Go).
+		parentIDs := sortedCompositeParentIDs(compositeSummaries)
+		for _, parentID := range parentIDs {
+			fmt.Printf("  composite %s: %s\n", parentID, compositeSummaries[parentID].AggregatedStatus)
 		}
 	}
 	os.Exit(0)
+}
+
+// sortedCompositeParentIDs returns the parent Local IDs of the given composite
+// status summaries in ascending (sort.Strings) order.
+//
+// F-3: composite status is printed by iterating this slice rather than ranging
+// over the map directly, so the CLI output order is deterministic across runs
+// (Go randomises map iteration order).
+func sortedCompositeParentIDs(summaries map[string]render.CompositeStatusSummary) []string {
+	ids := make([]string, 0, len(summaries))
+	for parentID := range summaries {
+		ids = append(ids, parentID)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // planPruneOps computes the Delete ops that would be emitted by the prune engine

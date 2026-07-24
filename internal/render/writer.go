@@ -82,7 +82,12 @@ func WriteGenerated(generatedDir string, expanded []ExpandedResource) error {
 	// Collect only non-composite, managed children (those with ManagedBy set).
 	// Resources that are plain (not expanded children) are NOT written to
 	// generated/ — they live in intent/ and are not re-exported here.
-	var children []generatedResource
+	//
+	// F-1: initialise as an empty (non-nil) slice so that when there are no
+	// synthetic children the JSON output is "resources": [] rather than
+	// "resources": null (a nil slice marshals to null).  An empty array keeps
+	// the generated file well-formed and diff-stable across cycles.
+	children := make([]generatedResource, 0)
 	for _, r := range expanded {
 		if r.IsComposite {
 			continue // composite parents are not written to generated/
@@ -166,14 +171,16 @@ func ValidateGeneratedFile(path string) error {
 }
 
 // sortedMapCopy returns a copy of m with keys in a stable order.
-// This is used for deterministic JSON output (sort.Map → json.Marshal preserves
-// insertion order for json.RawMessage but not plain map[string]string).
+// This is used for deterministic JSON output: Go's encoding/json already emits
+// the keys of a map[string]string in alphabetical order, so the copy is a
+// belt-and-suspenders measure that makes the deterministic-output contract
+// explicit at the call site rather than relying on that behaviour implicitly.
 func sortedMapCopy(m map[string]string) map[string]string {
 	if len(m) == 0 {
 		return nil
 	}
-	// json.Marshal for map[string]string already sorts keys alphabetically in Go,
-	// but we return a copy anyway to make the contract explicit.
+	// Go's encoding/json emits map[string]string keys in alphabetical order,
+	// but we return a copy anyway to make the deterministic-output contract explicit.
 	out := make(map[string]string, len(m))
 	for k, v := range m {
 		out[k] = v

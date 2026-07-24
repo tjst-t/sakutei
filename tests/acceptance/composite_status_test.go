@@ -328,3 +328,92 @@ func TestCompositeStatus_NoComposites_NoStatusSection(t *testing.T) {
 	}
 	t.Logf("PASS: no composites → no composite status section")
 }
+
+// TestCompositeStatus_DeterministicOrder verifies F-3: when several composites
+// are present, the "Composite status" lines are emitted in a deterministic
+// (sorted) order — not the randomised order of Go map iteration.  It runs the
+// same plan several times and asserts the composite-line order is identical and
+// ascending every time.
+//
+// [AC-S072a14-3-M]
+func TestCompositeStatus_DeterministicOrder(t *testing.T) {
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	generatedDir := filepath.Join(tmp, "generated")
+	statePath := filepath.Join(tmp, "state.json")
+
+	// Three composites whose IDs are deliberately NOT in insertion order, so a
+	// map-iteration bug would surface as a non-sorted / unstable order.
+	compositeIDs := []string{"cs-zebra", "cs-alpha", "cs-mike"}
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": func() []map[string]any {
+			out := make([]map[string]any, 0, len(compositeIDs))
+			for _, id := range compositeIDs {
+				out = append(out, map[string]any{
+					"provider": "fake",
+					"id":       id,
+					"fields": map[string]string{
+						"name":  id,
+						"kind":  "composite",
+						"extra": "v1",
+					},
+				})
+			}
+			return out
+		}(),
+	})
+	initStateFile(t, statePath)
+
+	// Expected sorted order of composite lines.
+	wantOrder := []string{"cs-alpha", "cs-mike", "cs-zebra"}
+
+	extractOrder := func(stdout string) []string {
+		var got []string
+		for _, line := range strings.Split(stdout, "\n") {
+			line = strings.TrimSpace(line)
+			const prefix = "composite "
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			rest := strings.TrimPrefix(line, prefix)
+			// rest is "<id>: <status>"
+			if idx := strings.IndexByte(rest, ':'); idx >= 0 {
+				got = append(got, rest[:idx])
+			}
+		}
+		return got
+	}
+
+	var firstOrder []string
+	for i := 0; i < 5; i++ {
+		stdout, stderr, code := runPlan(t, intentDir, statePath, "--generated", generatedDir)
+		if code != 0 {
+			t.Fatalf("F-3: plan run %d exited %d; stderr=%s stdout=%s", i, code, stderr, stdout)
+		}
+		got := extractOrder(stdout)
+		if len(got) != len(wantOrder) {
+			t.Fatalf("F-3: run %d expected %d composite lines, got %d; stdout:\n%s",
+				i, len(wantOrder), len(got), stdout)
+		}
+		for j := range wantOrder {
+			if got[j] != wantOrder[j] {
+				t.Fatalf("F-3: run %d composite order not sorted: got %v want %v; stdout:\n%s",
+					i, got, wantOrder, stdout)
+			}
+		}
+		if firstOrder == nil {
+			firstOrder = got
+		} else {
+			for j := range firstOrder {
+				if got[j] != firstOrder[j] {
+					t.Fatalf("F-3: composite order not stable across runs: run0=%v run%d=%v",
+						firstOrder, i, got)
+				}
+			}
+		}
+	}
+	t.Logf("F-3: PASS composite status printed in deterministic sorted order %v across 5 runs", firstOrder)
+}

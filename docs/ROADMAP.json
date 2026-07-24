@@ -834,6 +834,20 @@
       "description": "現状 in-flight を一律 destructive として rate-limit に計上（安全方向だが Create-heavy で偽陽性 halt しうる）。InFlightSet に op 種別を記録し destructive のみ数えるよう精緻化。",
       "added_in": "Scf7762",
       "reason": "Scf7762-2 review B。安全方向のため非ブロッカー。"
+    },
+    {
+      "title": "[enhancement] cause D の per-composite 変更追跡（現状グローバル intent_revision で複数合成間の誤帰属）",
+      "kind": "enhancement",
+      "description": "cause D は現状グローバルな intent_revision/rendered_revision の変化を見て、変化があった周期に全合成親の子へ一律 UpstreamChanged=true を立てる。そのため複数の合成親が存在する場合、実際には変更していない親の子にも D が付く（誤帰属）。v1a は単一 fake scope 前提のため低影響で、D も A もどちらも意図的変更であり破壊挙動（rate-limit/prune/halt）には影響しない（診断精度のみの問題）。v1b で per-composite 変更追跡（親単位の rendered 寄与ハッシュ、または親フィールドの前周期比較）に移行し、変更した親の子だけに D を付けるようにする。",
+      "added_in": "S072a14",
+      "reason": "S5 review D-1。v1a単一scopeで低影響・診断精度のみ。安全性の穴ではない（D/A はどちらも意図的変更で破壊挙動に影響しない）。"
+    },
+    {
+      "title": "[enhancement] デーモン外部入力不達スキップの上限・通知",
+      "kind": "enhancement",
+      "description": "デーモン（internal/reconcile.Run/runCycleAsync）は外部入力の初回不達（FirstCallFailed）時に前回キャッシュ値がないと当該サイクルを halt-safe にスキップするが、連続スキップに上限・通知がない。外部権威が長時間不達だと収束が静かに止まり続ける恐れがある。CycleResult に SkippedDueToUnreachable フラグを追加し、Run 側で連続スキップ回数をカウント／ログし、S9（sakutei status）の適合レポートと接続して運用者に可視化する。",
+      "added_in": "S072a14",
+      "reason": "S5 review D-3。S9 status と接続。運用者への可視化が要る。"
     }
   ]
 }

@@ -442,5 +442,19 @@ func TestRenderExpand_PlainResourcesUnchanged(t *testing.T) {
 		t.Errorf("plain-resource case: expected 0 entries in generated/expanded.json (no composites), got %d", len(resources))
 	}
 
+	// F-1: when there are no synthetic children the "resources" value MUST be an
+	// empty JSON array [], never null.  json.Unmarshal decodes both [] and null
+	// to an empty slice, so assert on the raw bytes to distinguish them.
+	rawGen, err := os.ReadFile(filepath.Join(generatedDir, "expanded.json"))
+	if err != nil {
+		t.Fatalf("F-1: read generated/expanded.json: %v", err)
+	}
+	if strings.Contains(string(rawGen), `"resources": null`) {
+		t.Errorf("F-1: generated file has \"resources\": null (want empty array []); content:\n%s", rawGen)
+	}
+	if !strings.Contains(string(rawGen), `"resources": []`) {
+		t.Errorf("F-1: generated file does not contain \"resources\": []; content:\n%s", rawGen)
+	}
+
 	t.Logf("[AC-S072a14-1-M] plain resource stdout:\n%s", stdout)
 }
