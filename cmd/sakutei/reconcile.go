@@ -36,6 +36,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
 // runReconcile implements "sakutei reconcile".
@@ -244,7 +245,7 @@ func runReconcile(args []string) {
 	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
 	// Reconcile validates so operators get an immediate error rather than
 	// running a cycle that cannot detect ghost diffs (cause C).
-	if err := provider.ValidateProvider(fp); err != nil {
+	if err := sdk.ValidateProvider(fp); err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: provider validation failed: %v\n", err)
 		os.Exit(1)
 	}

@@ -42,7 +42,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
 // version is the build-time version string.  It is expected to be injected
@@ -198,7 +198,7 @@ func runDaemon() {
 	// A provider without a version cannot support ghost-diff (cause C) detection;
 	// starting the loop would silently misclassify ghost diffs as drift (B) and
 	// auto-apply them — the dangerous outcome this gate exists to prevent.
-	if err := provider.ValidateProvider(fp); err != nil {
+	if err := sdk.ValidateProvider(fp); err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei: provider validation failed: %v\n", err)
 		os.Exit(1)
 	}
