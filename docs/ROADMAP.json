@@ -5,8 +5,8 @@
     "current_sprint": "S62dbba",
     "total": 9,
     "done": 5,
-    "in_progress": 0,
-    "remaining": 4,
+    "in_progress": 1,
+    "remaining": 3,
     "percentage": 55
   },
   "execution_order": [
@@ -689,11 +689,183 @@
     },
     "S62dbba": {
       "title": "Provider SDK と DNS provider（初の実 provider）",
-      "status": "pending",
+      "status": "in_progress",
       "description": "Provider 作者が約4関数+List を書けば SDK が横断保証(diff/秘匿マスク/managed 除外/バージョン埋込/エラー分類/テストハーネス/Schema lint)を担う。第一号の実 provider は DNS レコード。ADR-0022。",
       "milestone": false,
-      "detail_level": "coarse",
-      "stories": {}
+      "detail_level": "detailed",
+      "stories": {
+        "S62dbba-1": {
+          "title": "Provider SDK — Schema lint・diff ヘルパー・エラー分類・テストハーネス",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "開発者（provider 作者）として、Schema / Capabilities / Read / Apply の4関数を書くだけで、diff・secret マスキング・managed 除外・provider_version 埋込・エラー分類・Schema lint・契約テストを SDK が自動で担ってほしい。なぜなら、これらを毎回自前で書くと参入障壁が高くなりエコシステムが広がらないから（ADR-0022）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S62dbba-1-1",
+              "description": "SDK の SchemaLinter が secret/managed/ordered/identity の誤宣言（identity フィールド未指定・secret フィールドに Identity 二重指定等）をロード拒否レベルで検出し、LoadDir 時にエラーを返す",
+              "test": "[AC-S62dbba-1-1] in tests/acceptance/sdk_schema_lint_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-1-2",
+              "description": "SDK の ContractTester が fake provider に対して「Read/Apply の冪等性」「absent→Create→Read で State 一致」「List 完全性（List 返却済み ID は全て Read で ok）」の3契約を自動検証し、違反 provider はテスト失敗する",
+              "test": "[AC-S62dbba-1-2] in tests/acceptance/sdk_contract_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-1-3",
+              "description": "ValidateProvider（既存）に Schema lint を統合し、identity フィールドが1件もない Schema を持つ provider を起動前に reject する（fail-closed）",
+              "test": "[AC-S62dbba-1-3] in tests/acceptance/sdk_schema_lint_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-1-4",
+              "description": "SDK のエラー分類ヘルパー（IsTransient / IsPermanent）が TransientError / PermanentError を正しく識別し、その判定で fake provider の挙動をテストできる",
+              "test": "[AC-S62dbba-1-4] in tests/acceptance/sdk_contract_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S62dbba-1-1": {
+              "title": "pkg/sdk パッケージ骨格と SchemaLinter",
+              "description": "pkg/sdk/ パッケージを新設する。SchemaLinter 関数を実装: (1) identity フィールドが1件もない場合は拒否 (2) secret + identity の二重宣言は警告/拒否 (3) computed + required の矛盾を拒否 (4) ordered が List のない provider で宣言されている場合は警告。ValidateProvider に SchemaLint 呼び出しを組み込み、lint 失敗を fail-closed エラーとする（§28.4）。stdlib のみ使用。",
+              "status": "pending"
+            },
+            "S62dbba-1-2": {
+              "title": "ContractTester — 契約テスト自動生成",
+              "description": "pkg/sdk/contract_test_harness.go に ContractTester 構造体を実装する。RunAll(t, provider, lister, scope, sampleDesired) メソッドが以下を自動実行: (1) 冪等性テスト: Apply を2回実行して Read 結果が同一 (2) absent→Create→Read: 存在しない ID に Create Plan を Apply して Read が ok+State 一致 (3) List 完全性: List で返した全 ID を Read して全て Availability=ok (4) unknown!=absent: 到達不能インジェクション時に absent と誤認して Delete plan が出ないこと。testing.T を引数に取るが stdlib の testing パッケージのみ使用。",
+              "status": "pending"
+            },
+            "S62dbba-1-3": {
+              "title": "エラー分類ヘルパーと SDK 公開 API 整備",
+              "description": "pkg/sdk に IsTransient(err error) bool と IsPermanent(err error) bool ヘルパーを実装する（errors.As ラッパー）。pkg/sdk/doc.go で SDK の公開 API を整理し、provider 作者が参照するエントリポイントを明記: ValidateProvider → SchemaLinter → ContractTester → エラーヘルパー の順に使う golden path をコメントで説明する。",
+              "status": "pending"
+            },
+            "S62dbba-1-4": {
+              "title": "SDK 受入テスト",
+              "description": "tests/acceptance/sdk_schema_lint_test.go: SchemaLinter が identity 未指定・secret+identity 二重・computed+required 矛盾を検出することを確認（各ケース個別テスト）。tests/acceptance/sdk_contract_test.go: ContractTester を fakeprovider に対して実行し全契約を pass することを確認。また intent に identity 未指定の provider を記述したときに LoadDir がエラーで返ることを確認（AC-S62dbba-1-1/1-3 の CLI 経路）。",
+              "status": "pending"
+            }
+          }
+        },
+        "S62dbba-2": {
+          "title": "Provider registry / DI — cmd/ の provider ハードコード import を解消",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "開発者として、cmd/sakutei の plan.go / reconcile.go / main.go が fakeprovider を直接 import しているのを、provider registry に provider 名→ファクトリを登録して intent の provider フィールドで実 provider を選べるようにしたい。なぜなら、DNS ゾーンファイル provider を差し込む際にコア（cmd/）を変えずに済ませ、新しい provider を追加するたびに cmd/ を書き換えなくて済むから（backlog chore: cmd/ の provider 選択を registry/DI 化 の解消）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S62dbba-2-1",
+              "description": "ProviderRegistry に provider 名→ProviderFactory を登録する API があり、sakutei plan --intent dir において intent ファイルの provider フィールドが \"fake\" なら fakeprovider を、\"dnszone\" なら DNS ゾーンファイル provider を使う",
+              "test": "[AC-S62dbba-2-1] in tests/acceptance/registry_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-2-2",
+              "description": "cmd/sakutei/plan.go と cmd/sakutei/reconcile.go が fakeprovider を直接 import せず、ProviderRegistry 経由で provider を取得する（import 行の確認）",
+              "test": "[AC-S62dbba-2-2] in tests/acceptance/registry_test.go（grep でも可）",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-2-3",
+              "description": "intent の provider フィールドで未登録の provider 名を指定すると sakutei plan が起動時にエラー（\"unknown provider: xxx\"）を返す",
+              "test": "[AC-S62dbba-2-3] in tests/acceptance/registry_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-2-4",
+              "description": "既存の全受入テスト（tests/acceptance/）が provider registry 導入後も pass する（回帰なし）",
+              "test": "[AC-S62dbba-2-4] go test ./tests/acceptance/... で確認",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S62dbba-2-1": {
+              "title": "pkg/registry パッケージと ProviderRegistry",
+              "description": "pkg/registry/ パッケージを新設する。ProviderFactory 型は func(scope core.Scope, config map[string]string) (provider.Provider, error)。ProviderRegistry は map[string]ProviderFactory のラッパーで Register(name, factory) / Lookup(name) / MustLookup(name) を持つ。DefaultRegistry() はデフォルト登録済みの singleton を返す（fake と dnszone が登録済み）。stdlib のみ使用。",
+              "status": "pending"
+            },
+            "S62dbba-2-2": {
+              "title": "cmd/ の provider 選択を registry/DI 経由に切り替え",
+              "description": "cmd/sakutei/plan.go・reconcile.go・main.go の fakeprovider 直接 import を削除し、registry.DefaultRegistry().Lookup(providerName) に差し替える。provider 名は intent ファイルの provider フィールドから取得（LoadDir が返す DesiredResource.ID.Provider を使う）。同一 intent ファイルに複数 provider が混在する場合は名前ごとにインスタンスを1つ生成して再利用する。fakeprovider の --state フラグは \"fake\" provider に特化した config として registry 経由で渡す。",
+              "status": "pending"
+            },
+            "S62dbba-2-3": {
+              "title": "registry 受入テスト",
+              "description": "tests/acceptance/registry_test.go を新設。AC-S62dbba-2-1: intent に provider=\"fake\" と provider=\"dnszone\" を混在させて sakutei plan を実行し両 provider が選ばれることを確認。AC-S62dbba-2-3: provider=\"unknown-xyz\" を指定して sakutei plan がエラー終了することを確認。AC-S62dbba-2-4: 既存テスト全件を go test ./... で実行して回帰なしを確認。",
+              "status": "pending"
+            }
+          }
+        },
+        "S62dbba-3": {
+          "title": "DNS ゾーンファイル provider（stdlib のみ・初の実 provider）",
+          "status": "pending",
+          "user_review_required": true,
+          "review_reason": "初の実 provider（fake でない・実システム状態を管理）として DNS ゾーンファイルに対して Read/Apply/List が動くことを人が確認する。SDK（S62dbba-1）を使って書かれており、Schema lint・ContractTester を通ることを実証する。v1a の「DNS が第一号」（§27.2）の達成確認。",
+          "user_story": "運用者として、RFC1035 形式の DNS ゾーンファイルに対して sakutei plan / sakutei reconcile を実行し、宣言した DNS レコード（A/CNAME/TXT）をゾーンファイルに収束させたい。なぜなら、DNS レコードの宣言的管理が Sakutei の「触っていないのに勝手に戻る」体験を最小コードで実証できる第一号 provider だから（§27.2・§28.1）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S62dbba-3-1",
+              "description": "DNS ゾーンファイル provider の Schema lint が通る（identity=name+type で運用変更頻度が低い物理座標相当、secret フィールドなし、managed フィールドなし）。ValidateProvider がエラーを返さない",
+              "test": "[AC-S62dbba-3-1] in tests/acceptance/dnszone_provider_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-3-2",
+              "description": "sakutei plan --intent intent/ --state <zonefile> が RFC1035 形式のゾーンファイルを Read（パース）して、intent と差分があれば CREATE/UPDATE を表示し、Apply を一切呼ばない",
+              "test": "[AC-S62dbba-3-2] in tests/acceptance/dnszone_provider_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-3-3",
+              "description": "sakutei reconcile --intent intent/ --state <zonefile> が実際にゾーンファイルを更新し、2回目の reconcile で差分ゼロ（冪等）。Read はゾーンファイルをパースして State を返し、Apply はゾーンファイルにレコードを書き込む",
+              "test": "[AC-S62dbba-3-3] in tests/acceptance/dnszone_provider_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-3-4",
+              "description": "SDK の ContractTester が dnszone provider に対して全契約（冪等性・absent→Create→Read・List 完全性）を pass する",
+              "test": "[AC-S62dbba-3-4] in tests/acceptance/dnszone_provider_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S62dbba-3-5",
+              "description": "List がゾーンファイル内の全レコード ID を返し、intent にないレコードが prune（sakutei reconcile + pruneable:true）で Delete される（ゾーンファイルから行が消える）",
+              "test": "[AC-S62dbba-3-5] in tests/acceptance/dnszone_provider_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S62dbba-3-1": {
+              "title": "dnszone provider の Schema 設計（最難関・まず Schema）",
+              "description": "§28.4「まず Schema、次に Read/Apply」の方針に従い Schema を先に固める。フィールド: name(string, identity=true, required=true), type(string, identity=true, required=true, 値は A/AAAA/CNAME/TXT/MX/NS), ttl(int, required=false), value(string, required=true)。identity={name, type} — レコード名+タイプで個体を識別（同名で A と CNAME は別レコード）。TTL は identity にしない（変更頻度が高いが同一レコードの属性なので）。secret フィールドなし（DNS レコードは平文）。ordered フィールドなし（DNS レコード順序は非意味的）。managed フィールドなし（SOA/NS は scope 外扱い＝desire に書かない）。Capabilities: TrueObserve=true, List=true, Pruneable=true（DNS レコードは安価に再作成可能）, ProviderVersion を埋め込む。stdlib のみ（bufio, strings, fmt, os）。",
+              "status": "pending"
+            },
+            "S62dbba-3-2": {
+              "title": "RFC1035 ゾーンファイル parser（Read 実装）",
+              "description": "internal/dnszone/ パッケージを新設する。ParseZoneFile(path string) ([]Record, error) を bufio.Scanner + strings.Fields で実装する。対応行: A/AAAA/CNAME/TXT/MX/NS レコード行（name ttl class type value 形式。class IN は省略可。TTL 省略時は $TTL ディレクティブを使う）。SOA・$ORIGIN・$TTL ディレクティブはパースするが State には含めない（provider が管理しない）。コメント行と空行はスキップ。外部ライブラリ不使用（miekg/dns 等は Incus オフライン環境で追加 DL 不可）。Read(ctx, id) は ParseZoneFile を呼び、id=\"{name}/{type}\" でレコードを検索して Observation を返す。存在しないレコードは Availability=Ok, State=nil（absent 扱い）。",
+              "status": "pending"
+            },
+            "S62dbba-3-3": {
+              "title": "ゾーンファイル書き込み（Apply 実装）と List 実装",
+              "description": "Apply(ctx, plan) はゾーンファイルを読んで全行を保持し、各 Op を適用してから atomic 書き込み（os.WriteFile + tmpfile + os.Rename）する。Create: 末尾に新行追加。Update: 該当行を置換。Delete: 該当行を削除。SOA・$ORIGIN・$TTL・NS 行は apply で変更しない（管理外）。List(ctx, scope) は ParseZoneFile を呼び全 A/AAAA/CNAME/TXT/MX/NS レコードの ID を返す（SOA/NS 行除外）。完全に読み切れた場合は ListComplete、read エラー時は ListPartial を返す。",
+              "status": "pending"
+            },
+            "S62dbba-3-4": {
+              "title": "provider registry への dnszone 登録と CLI 統合",
+              "description": "registry.DefaultRegistry() に \"dnszone\" provider を登録する。factory は config[\"zonefile\"] からゾーンファイルパスを受け取る（--state フラグを dnszone の場合はゾーンファイルパスとして渡す）。sakutei plan と reconcile を --state <zonefile> --intent intent/（provider=\"dnszone\"）で実行できるようにする。既存の --state フラグは fake provider の state ファイルパスと dnszone のゾーンファイルパスを兼ねる（provider 名で切り替え）。",
+              "status": "pending"
+            },
+            "S62dbba-3-5": {
+              "title": "dnszone provider 受入テストと SDK 契約テスト通過",
+              "description": "tests/acceptance/dnszone_provider_test.go を新設。AC-S62dbba-3-1: ValidateProvider が pass することを確認。AC-S62dbba-3-2: テスト用ゾーンファイル（example.com A 1.2.3.4）を用意し sakutei plan で UPDATE が表示されることを確認。AC-S62dbba-3-3: sakutei reconcile でゾーンファイルが更新され 2 回目差分ゼロを確認。AC-S62dbba-3-4: ContractTester を dnszone provider に実行して全契約 pass を確認。AC-S62dbba-3-5: intent にないレコードを事前にゾーンファイルに書き、sakutei reconcile + prune で削除されることを確認。all tests: go test -run TestDNSZone ./tests/acceptance/ で実行（外部サーバ不要・tmpdir 内のゾーンファイルのみ）。",
+              "status": "pending"
+            }
+          }
+        }
+      }
     },
     "Sf6a62f": {
       "title": "早期収束パスと BulkObserve/--claim の型切り",
@@ -799,13 +971,6 @@
       "description": "UPDATE の Apply が FieldDiff の変更フィールドのみで resource を再構築し、未変更フィールド(例: name)を落とす。demo で size ドリフト修復時に name が消えることを確認。field-level Apply は変更フィールドをマージし他を保持すべき。Sprint 2(S94f1f9 ドリフト・ループ)で即ヒットするため優先。",
       "added_in": "Sead944",
       "reason": "Sprint 1 の AC(create/冪等/独立Observe)には非該当のため run 内で未修正。ドリフト修復を本格実装する S94f1f9 で対処。"
-    },
-    {
-      "title": "[chore] cmd/ の provider 選択を registry/DI 化",
-      "kind": "chore",
-      "description": "cmd/sakutei の plan.go/reconcile.go が internal/fakeprovider を直接 import している。実 provider(S62dbba DNS)を差し込む際に provider registry / DI の接続点が要る。Executor seam と同様に provider 選択の seam を切る。",
-      "added_in": "Sead944",
-      "reason": "Sprint 1 は fake のみで許容。実 provider 導入 Sprint の前提として記録。"
     },
     {
       "title": "[chore] CI に race detector (CGO_ENABLED=1 go test -race) を追加",
