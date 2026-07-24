@@ -5,8 +5,8 @@
     "current_sprint": "S072a14",
     "total": 9,
     "done": 4,
-    "in_progress": 0,
-    "remaining": 5,
+    "in_progress": 1,
+    "remaining": 4,
     "percentage": 44
   },
   "execution_order": [
@@ -527,11 +527,165 @@
     },
     "S072a14": {
       "title": "render パイプライン — 2 フェーズと合成リソース",
-      "status": "pending",
+      "status": "in_progress",
       "description": "render フェーズ1(外部入力解決・副作用あり)＋フェーズ2(合成リソースの決定的展開)、外部権威到達不能時の前回解決値保持、generated/ 規約、ステータス集約。§9。",
       "milestone": false,
-      "detail_level": "coarse",
-      "stories": {}
+      "detail_level": "detailed",
+      "stories": {
+        "S072a14-1": {
+          "title": "render フェーズ2 — 合成リソースの決定的展開と generated/ 規約",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "開発者として、intent に書いた合成リソースを render フェーズ2 が決定的に実子リソースへ展開し、generated/ に自動生成ヘッダ付きで書き出してほしい。なぜなら、子が独立した Resource であることが rate limit・原因タグ・部分失敗の粒度を保証するから（§9.5）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S072a14-1-1",
+              "description": "ExpanderRegistry に登録された fake 合成型（fake_composite → fake_child_a + fake_child_b）が render フェーズ2 で決定的に展開され、generated/expanded.json に書き出される",
+              "test": "[AC-S072a14-1-1] in tests/acceptance/render_expand_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S072a14-1-2",
+              "description": "generated/ ファイルには自動生成ヘッダが必須であり、同じ入力から 2 回展開しても bit-for-bit 同一の出力になる（決定性）",
+              "test": "[AC-S072a14-1-2] in tests/acceptance/render_expand_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S072a14-1-3",
+              "description": "generated/ への直接編集はローダが検知して拒否または次の render で上書きされ、人が書いた intent/ と generated/ が混在しない（二重管理防止）",
+              "test": "[AC-S072a14-1-3] in tests/acceptance/render_expand_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S072a14-1-4",
+              "description": "展開された子リソースは親合成リソースの ID を managed_by に持ち、sakutei reconcile で子が desired に収束する",
+              "test": "[AC-S072a14-1-4] in tests/acceptance/render_expand_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S072a14-1-1": {
+              "title": "Expander インターフェースと ExpanderRegistry",
+              "description": "internal/render パッケージに Expander interface（Expand(parent DesiredResource) ([]DesiredResource, error)）と ExpanderRegistry（map[kind]Expander）を定義する。Expander は冪等・決定的（同じ入力 → 同じ出力、§9.1）であること。FakeCompositeExpander を fake 実装として用意し、parent 1 件から child_a + child_b の 2 件を生成する。各子には managed_by フィールドを親 ID から設定する（§7.5）。",
+              "status": "pending"
+            },
+            "S072a14-1-2": {
+              "title": "generated/ 出力と自動生成ヘッダ規約",
+              "description": "render フェーズ2 の出力先を generated/ に限定する。出力ファイルには {\"_generated\": true, \"_generated_by\": \"sakutei render\", \"_do_not_edit\": true} を必須フィールドとして埋め込む。ローダが generated/ を読む際に _generated=true を確認し、欠落時は警告 Event を発火する（二重管理防止）。intent/ と generated/ を別ディレクトリ規約で型レベルに分離する（§9.6）。",
+              "status": "pending"
+            },
+            "S072a14-1-3": {
+              "title": "render フェーズ2 の reconcile ループへの組み込み",
+              "description": "internal/reconcile/loop.go の先頭に render フェーズ2 を呼び出す経路を追加する。ループの各 Cycle で LoadDir で読んだ intent に合成型が含まれる場合は ExpanderRegistry.Expand を呼び、展開済みリソース集合（intent リソース + 生成子リソース）を Diff/Apply に渡す。generated/ への書き出しもこの経路で行う。合成型自身はループでは Observe/Diff/Apply の対象にしない（子が独立 Resource として動くため）。",
+              "status": "pending"
+            },
+            "S072a14-1-4": {
+              "title": "render フェーズ2 の受入テスト",
+              "description": "tests/acceptance/render_expand_test.go を新設。AC-S072a14-1-1〜1-4 を網羅する。fake_composite を intent に書いて plan/reconcile を実行し、generated/ 出力の存在・ヘッダ・決定性・managed_by を検証する。2 回展開して出力が同一であることを確認。generated/ を直接書き換えた場合の挙動も確認。",
+              "status": "pending"
+            }
+          }
+        },
+        "S072a14-2": {
+          "title": "render フェーズ1 seam — ExternalInputResolver + TTL キャッシュ + 不達時前回保持",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "運用者として、外部権威（inventory 等）が不達の場合でも前回解決値を保持して空の desired を生成しないでほしい。なぜなら、空の desired は全削除事故を招くから（§9.2）。また、TTL キャッシュで毎周の外部呼び出しを制限し、rendered_revision に外部入力ハッシュが含まれてほしい（§9.3/§9.4）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S072a14-2-1",
+              "description": "ExternalInputResolver を通じた外部入力ハッシュが rendered_revision に混入され、intent_revision と rendered_revision が異なる値になる",
+              "test": "[AC-S072a14-2-1] in tests/acceptance/render_phase1_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S072a14-2-2",
+              "description": "外部権威が到達不能（エラー）のとき、前回解決値を保持して rendered_revision は前回値のまま。空の desired を生成しない。ExternalInputUnreachable Event をログに出す",
+              "test": "[AC-S072a14-2-2] in tests/acceptance/render_phase1_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S072a14-2-3",
+              "description": "TTL キャッシュが有効なとき、TTL 内の 2 回目呼び出しはキャッシュヒットし rendered_revision が安定する（TTL ヒット/ミスで値が揺れない）",
+              "test": "[AC-S072a14-2-3] in tests/acceptance/render_phase1_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S072a14-2-1": {
+              "title": "ExternalInputResolver インターフェースと FakeInventoryResolver",
+              "description": "internal/render パッケージに ExternalInputResolver interface（Resolve(ctx) (hash string, err error)）を定義する。Resolve が返す hash は decision-relevant な入力の決定的ダイジェストとする（§9.4）。FakeInventoryResolver を fake 実装として用意し、返すハッシュをテストで差し替えできる。AllocationAuthority.Resolve() と SecretBackend.GenerationOf() の関数シグネチャも seam として型定義するが実体はなし（v1a スコープ外）。",
+              "status": "pending"
+            },
+            "S072a14-2-2": {
+              "title": "TTL キャッシュと不達時前回保持ロジック",
+              "description": "internal/render に TTLCache[K, V] を実装する。ExternalInputResolver の呼び出し結果を TTL 付きでキャッシュする。TTL 内はキャッシュから返し外部呼び出しを節約する。Resolve がエラーを返した場合はキャッシュ済みの前回値を保持して返す（前回値がない場合は エラーを caller に伝え、rendered_revision の算出をスキップして空 desired を出さない安全側に倒す）。ExternalInputUnreachable Event を発火する（§9.2）。",
+              "status": "pending"
+            },
+            "S072a14-2-3": {
+              "title": "rendered_revision への外部入力混入（ComputeRenderedRevision 活動化）",
+              "description": "revision.ComputeRenderedRevision の externalInputs 引数に ExternalInputResolver.Resolve の返すハッシュを渡す経路を reconcile ループの先頭（render フェーズ1）に追加する。externalInputs の並び順で rendered_revision が揺れないよう sorted してから渡す（既存の実装で保証済み）。rendered_revision が intent_revision と異なる値になる初の周期を tests で確認する。",
+              "status": "pending"
+            },
+            "S072a14-2-4": {
+              "title": "render フェーズ1 の受入テスト",
+              "description": "tests/acceptance/render_phase1_test.go を新設。AC-S072a14-2-1〜2-3 を網羅する。FakeInventoryResolver を使い、通常動作・不達フォールバック・TTL キャッシュ安定性を検証する。rendered_revision が intent_revision と異なることを plan ヘッダ出力で確認する。",
+              "status": "pending"
+            }
+          }
+        },
+        "S072a14-3": {
+          "title": "cause tag E/D 活動化 + 合成ステータス集約（最悪優先）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "運用者として、外部入力変化による差分に cause: E が付き、合成親変化の下流子に cause: D が付いてほしい。また合成リソースの集約ステータスが子の最悪状態を反映してほしい。なぜなら、差分の原因が分かると対応が正反対になるから（§10.2、§9.7）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S072a14-3-1",
+              "description": "ExternalInputResolver の返すハッシュが変化し intent_revision が不変のとき、当該リソースの Op に cause: E が付く（RenderedRevisionChanged=true の活動化）",
+              "test": "[AC-S072a14-3-1] in tests/acceptance/cause_tag_ede_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S072a14-3-2",
+              "description": "合成親の desired が変化（intent 変更）した周期に展開された子リソースの Op に cause: D が付く（UpstreamChanged=true の活動化）",
+              "test": "[AC-S072a14-3-2] in tests/acceptance/cause_tag_ede_test.go",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S072a14-3-3",
+              "description": "合成リソースの集約ステータスは §9.7 の全順序（unknown > stuck > oscillating > drifted > blocked > converging > converged）で子の最悪状態が上位を支配する（子 1 件が unknown なら composite も unknown）",
+              "test": "[AC-S072a14-3-3] in tests/acceptance/composite_status_test.go",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S072a14-3-1": {
+              "title": "cause: E の活動化（RenderedRevisionChanged フラグ配線）",
+              "description": "reconcile ループが前周期の rendered_revision を保持し、今周期の rendered_revision と比較して CauseContext.RenderedRevisionChanged を true にセットする経路を追加する。S4 で both flags=false 固定だった箇所を条件分岐に置き換える。判定式: RenderedRevisionChanged = (prev_rendered != cur_rendered) && (prev_intent == cur_intent)。RenderedRevisionChanged=true のとき cause.Classify が E を返すことは cause パッケージに実装済み（seam が活動化するのみ）。",
+              "status": "pending"
+            },
+            "S072a14-3-2": {
+              "title": "cause: D の活動化（合成親変化 → 子 UpstreamChanged 配線）",
+              "description": "render フェーズ2 が展開した parent_id → []child_ids のマップを reconcile ループに渡す。ループは今周期に parent の intent_revision または rendered_revision が前周期から変化したかを判定し、変化していた場合は当該 parent の子全員の CauseContext.UpstreamChanged を true にセットする。cause.Classify が D を返すことはすでに実装済み（seam が活動化するのみ）。D は A より優先度が低い（C>A>E>D>B）ため、親 intent 変化時に A と D が同時に立つ場合は親=A、子=D として正しく分離される。",
+              "status": "pending"
+            },
+            "S072a14-3-3": {
+              "title": "合成ステータス集約ロジック（AggregateCompositeStatus）",
+              "description": "internal/render に AggregateCompositeStatus(children []ConvergenceStatus) ConvergenceStatus 関数を実装する。§9.7 の全順序（unknown > stuck > oscillating > drifted > blocked > converging > converged）に従い子の最悪状態を返す。この関数を sakutei plan の表示経路と reconcile ループの Event 発火経路から呼ぶ。ConvergenceStatus 型は plan パッケージに既存の型を流用またはこのスプリントで追加する。",
+              "status": "pending"
+            },
+            "S072a14-3-4": {
+              "title": "cause E/D + ステータス集約の受入テスト",
+              "description": "tests/acceptance/cause_tag_ede_test.go（AC-S072a14-3-1/3-2）と tests/acceptance/composite_status_test.go（AC-S072a14-3-3）を新設する。E テスト: FakeInventoryResolver のハッシュを切り替えて plan を実行し Op に cause: E を確認。D テスト: intent を変更して plan を実行し 子 Op に cause: D・親 Op に cause: A を確認。集約テスト: 子 1 件を unknown にして composite ステータスが unknown になることを確認。",
+              "status": "pending"
+            }
+          }
+        }
+      }
     },
     "S62dbba": {
       "title": "Provider SDK と DNS provider（初の実 provider）",
