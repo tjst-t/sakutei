@@ -34,12 +34,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
+	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
@@ -97,6 +99,13 @@ func runDaemon() {
 		"path to the fake provider state file (default: sakutei-fake-state.json)")
 	intervalStr := fs.String("interval", "",
 		"convergence cycle interval, e.g. 200ms or 30s (default: 10s)")
+	// S072a14-3: render pipeline flags for the daemon.
+	generatedDir := fs.String("generated", "",
+		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
+	inventoryHash := fs.String("inventory-hash", "",
+		"S072a14-3: inject deterministic inventory hash into rendered_revision (fake phase 1; empty=no external input)")
+	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
+		"S072a14-3: simulate an unreachable ExternalInputResolver (triggers last-value-on-unreachable path §9.2)")
 
 	// Scf7762-2: change-budget flags (§13).
 	maxDestructivePerCycle := fs.Int("max-destructive-per-cycle", 0,
@@ -194,13 +203,33 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
+	// S072a14-3: resolve generated/ directory.
+	genDir := *generatedDir
+	if genDir == "" {
+		genDir = filepath.Join(filepath.Dir(*intentDir), "generated")
+	}
+
+	// S072a14-3: build render phase 1 resolver if inventory hash is configured.
+	// Uses a reconcile.DefaultTTL cache (30s) for the daemon — callers that need
+	// a different TTL can construct a ResolverCache directly and set it on Config.
+	var resolverCache *render.ResolverCache
+	if *inventoryHash != "" || *inventoryUnreachable {
+		fakeResolver := &render.FakeInventoryResolver{
+			Hash: *inventoryHash,
+			Fail: *inventoryUnreachable,
+		}
+		resolverCache = render.NewResolverCache(fakeResolver, render.DefaultTTL)
+	}
+
 	cfg := reconcile.Config{
-		IntentDir:    *intentDir,
-		StatePath:    *statePath,
-		Provider:     fp,
-		Interval:     interval,
-		BudgetConfig: budgetCfg,
-		Remediation:  remCfg,
+		IntentDir:             *intentDir,
+		StatePath:             *statePath,
+		Provider:              fp,
+		Interval:              interval,
+		BudgetConfig:          budgetCfg,
+		Remediation:           remCfg,
+		GeneratedDir:          genDir,
+		ExternalInputResolver: resolverCache,
 	}
 
 	if err := reconcile.Run(context.Background(), cfg); err != nil {

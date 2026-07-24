@@ -57,6 +57,22 @@
 //     there is no need to evaluate the budget at all (nothing is applied).
 //   - Both the daemon path (Run/runCycleAsync) and the one-shot path
 //     (cmd/sakutei/reconcile.go) respect the mode via the same Config field.
+//
+// Story S072a14-3 additions:
+//   - Render pipeline wired into the daemon cycle (§9.1, §9.5):
+//     render phase 1 (external input resolution via ResolverCache) and phase 2
+//     (composite resource expansion via ExpanderRegistry) are now executed at the
+//     start of each daemon cycle, closing the gap between the one-shot path
+//     (cmd/sakutei/plan.go and reconcile.go, which already ran render) and the
+//     daemon path (which was calling loader.LoadDir directly without render).
+//   - Cause tag E activated (§10.2, ADR-0008): the daemon now tracks
+//     rendered_revision across cycles in prevRev.  When rendered_revision changes
+//     but intent_revision is stable, CauseContext.RenderedRevisionChanged is set
+//     to true and cause.Classify returns CauseTagE.
+//   - Cause tag D activated (§10.2, ADR-0008): when a composite parent's desired
+//     state changes (intent or rendered revision changed for the parent), the
+//     daemon sets UpstreamChanged=true for each of the parent's children.
+//     cause.Classify returns CauseTagD for those children.
 package reconcile
 
 import (
@@ -66,6 +82,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -77,6 +94,8 @@ import (
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/remediation"
+	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -109,6 +128,23 @@ type Config struct {
 	// Remediation holds the remediation mode configuration (§14.1, Scf7762-3).
 	// Zero value (ModeAuto, Freeze=false) means Apply and prune execute normally.
 	Remediation remediation.Config
+
+	// S072a14-3: render pipeline configuration.
+
+	// GeneratedDir is the directory to write render phase 2 output (§9.6).
+	// If empty, defaults to a sibling of IntentDir named "generated".
+	GeneratedDir string
+
+	// ExternalInputResolver is the render phase 1 external input resolver (§9.1).
+	// If nil, render phase 1 is skipped and rendered_revision = intent_revision
+	// (v1a default, backward compatible).
+	// The cache (TTL, last-value-on-unreachable) is managed by the caller;
+	// pass a *render.ResolverCache here for production use.
+	ExternalInputResolver *render.ResolverCache
+
+	// ExpanderRegistry is the render phase 2 expander registry (§9.5).
+	// If nil, render.DefaultRegistry() is used (includes the FakeCompositeExpander).
+	ExpanderRegistry *render.ExpanderRegistry
 }
 
 // DefaultInterval is the default convergence cycle period.
@@ -434,13 +470,91 @@ func runCycleAsync(
 	prevProviderVersion *string,
 	cfg Config,
 ) (CycleResult, error) {
+	// S072a14-3: resolve generated/ directory.
+	genDir := cfg.GeneratedDir
+	if genDir == "" {
+		genDir = filepath.Join(filepath.Dir(cfg.IntentDir), "generated")
+	}
+
+	// S072a14-3 render phase 1: external input resolution (§9.1 フェーズ1).
+	//
+	// If ExternalInputResolver is configured, resolve external inputs and compute
+	// a rendered_revision that diverges from intent_revision when external inputs
+	// change.  This is what makes cause tag E fire in the daemon.
+	//
+	// If ExternalInputResolver is nil (default / backward compatible), phase 1 is
+	// a no-op and rendered_revision = intent_revision (v1a behaviour).
+	//
+	// Safety (§9.2): if the resolver is unreachable on the first call ever (no
+	// prior cached value), we skip this cycle rather than proceeding with an
+	// empty desired (halt-safe).  If a prior cached value exists, the cache
+	// returns it (last-value-on-unreachable) and we continue.
+	var phase1ExternalInputHashes []string
+	if cfg.ExternalInputResolver != nil {
+		p1 := render.ResolveExternalInputs(ctx, cfg.ExternalInputResolver)
+		if p1.UnreachableFallback {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: ExternalInputUnreachable: resolver returned error; using last cached value (§9.2 last-value-on-unreachable)\n")
+		}
+		if p1.FirstCallFailed {
+			// No prior value — halt-safe: do not advance convergence.
+			fmt.Fprintf(cfg.ErrOut, "sakutei: ExternalInputUnreachable (first call): %v\n  No prior cached value; skipping cycle (halt-safe, §9.2)\n", p1.Err)
+			return CycleResult{}, nil
+		}
+		phase1ExternalInputHashes = p1.ExternalInputHashes
+	}
+
 	// Load desired state fresh each cycle.
 	// Scb0ecd-1: LoadDir now returns (resources, RevisionInfo, error).  The
 	// RevisionInfo is S3 state (memory-only, computed fresh each cycle).
-	desired, rev, loadErr := loader.LoadDir(cfg.IntentDir)
+	intentResources, rev, loadErr := loader.LoadDir(cfg.IntentDir)
 	if loadErr != nil {
 		return CycleResult{}, fmt.Errorf("load intent: %w", loadErr)
 	}
+
+	// S072a14-3 render phase 1 (continued): recompute rendered_revision with the
+	// external inputs so that a change in external inputs causes rendered_revision
+	// to diverge from intent_revision, enabling cause tag E.
+	if len(phase1ExternalInputHashes) > 0 {
+		rootScope := core.NewScope(nil)
+		rev.RenderedRevision = revision.ComputeRenderedRevision(
+			rootScope, rev.IntentRevision, phase1ExternalInputHashes)
+	}
+
+	// S072a14-3 render phase 2: expand composite resources into concrete children
+	// (§9.5, §9.1 フェーズ2).
+	//
+	// This closes the gap that existed between the one-shot paths (plan/reconcile)
+	// and the daemon path: previously the daemon called LoadDir directly and never
+	// expanded composite resources, so composite resources in intent were never
+	// converged by the daemon.  Now the daemon runs the same render pipeline as
+	// the one-shot paths, ensuring composites work in all execution modes.
+	expRegistry := cfg.ExpanderRegistry
+	if expRegistry == nil {
+		expRegistry = render.DefaultRegistry()
+	}
+	expanded, expandErr := render.ExpandAll(expRegistry, intentResources)
+	if expandErr != nil {
+		return CycleResult{}, fmt.Errorf("render phase 2: %w", expandErr)
+	}
+
+	// Write generated/ output (§9.6).  Non-fatal on error (the daemon must keep
+	// converging even if the generated/ write fails; the file is informational).
+	if writeErr := render.WriteGenerated(genDir, expanded); writeErr != nil {
+		fmt.Fprintf(cfg.ErrOut, "sakutei: warn: write generated/: %v\n", writeErr)
+	}
+
+	// Build the desired slice: only non-composite resources enter Diff/Apply.
+	// Composite parents are excluded; their children represent them in the DAG.
+	desired := make([]diff.DesiredResource, 0, len(expanded))
+	for _, r := range expanded {
+		if !r.IsComposite {
+			desired = append(desired, r.DesiredResource)
+		}
+	}
+
+	// S072a14-3: build the parent→children map for cause D propagation.
+	// This maps composite parent Local IDs to their expanded child Local IDs.
+	parentToChildren := render.BuildParentChildMap(expanded)
 
 	// F-5 (Scb0ecd-2 daemon wiring): build the per-cycle CauseContext from this
 	// cycle's revision + provider_version and the previous cycle's values held in
@@ -449,22 +563,44 @@ func runCycleAsync(
 	//   - A: intent_revision changed since last cycle (operator committed intent).
 	//   - B: everything revision-stable but a diff exists (real-world drift).
 	//   - C: provider_version changed (ghost diff / provider upgrade).
-	// D/E stay dormant seams in v1a (UpstreamChanged / RenderedRevisionChanged
-	// are false; rendered_revision == intent_revision).
+	//
+	// S072a14-3 E/D activation:
+	//   - E: RenderedRevisionChanged = (rendered changed) && (intent stable).
+	//     Set here for the whole cycle (global signal; per-resource diff narrows
+	//     which resources actually have a diff, §10.3).
+	//   - D: UpstreamChanged is resource-specific and is set per-resource below
+	//     for children whose composite parent changed this cycle.
 	//
 	// provider_version comes from the provider.Provider seam
 	// (Capabilities().ProviderVersion), so the daemon never depends on a concrete
 	// provider type (F-1 discipline preserved).
 	curProviderVersion := fp.Capabilities().ProviderVersion
-	causeCtx := cause.CauseContext{
-		IntentPrevRevision:   prevRev.IntentRevision,
-		IntentCurRevision:    rev.IntentRevision,
-		RenderedPrevRevision: prevRev.RenderedRevision,
-		RenderedCurRevision:  rev.RenderedRevision,
-		ProviderPrevVersion:  *prevProviderVersion,
-		ProviderCurVersion:   curProviderVersion,
-		// UpstreamChanged:          false (seam, v1a)
-		// RenderedRevisionChanged:  false (seam, v1a; rendered == intent)
+
+	// S072a14-3: compute RenderedRevisionChanged flag for cause E.
+	// E fires when rendered_revision changed but intent_revision is stable.
+	renderedRevisionChanged := prevRev.RenderedRevision != "" &&
+		rev.RenderedRevision != prevRev.RenderedRevision &&
+		rev.IntentRevision == prevRev.IntentRevision
+
+	// S072a14-3: determine which composite parents changed this cycle (for cause D).
+	// A parent "changed" when its intent_revision or rendered_revision changed.
+	// Children of changed parents get UpstreamChanged=true in their CauseContext.
+	intentChanged := prevRev.IntentRevision != "" && rev.IntentRevision != prevRev.IntentRevision
+	renderedChanged := prevRev.RenderedRevision != "" && rev.RenderedRevision != prevRev.RenderedRevision
+	parentDesiredChanged := intentChanged || renderedChanged
+
+	// baseCauseCtx is the global (non-upstream-specific) cause context shared by
+	// all resources this cycle.  Per-resource UpstreamChanged overrides are
+	// applied below when building resource-specific contexts.
+	baseCauseCtx := cause.CauseContext{
+		IntentPrevRevision:      prevRev.IntentRevision,
+		IntentCurRevision:       rev.IntentRevision,
+		RenderedPrevRevision:    prevRev.RenderedRevision,
+		RenderedCurRevision:     rev.RenderedRevision,
+		ProviderPrevVersion:     *prevProviderVersion,
+		ProviderCurVersion:      curProviderVersion,
+		RenderedRevisionChanged: renderedRevisionChanged,
+		// UpstreamChanged is set per-resource below for D-tagged children.
 	}
 
 	// Advance the in-memory intent/rendered baseline to this cycle's values so
@@ -493,6 +629,17 @@ func runCycleAsync(
 	var backedOff []string
 	// F-5: count resources whose diff was a cause-C ghost diff (held, not applied).
 	ghostDiffs := 0
+
+	// S072a14-3: build a set of child Local IDs whose parent changed, for D tag.
+	// Children in this set get UpstreamChanged=true in their CauseContext.
+	childrenWithUpstreamChange := make(map[string]bool)
+	if parentDesiredChanged {
+		for _, childIDs := range parentToChildren {
+			for _, childID := range childIDs {
+				childrenWithUpstreamChange[childID] = true
+			}
+		}
+	}
 
 	for _, res := range desired {
 		local := res.ID.Local
@@ -525,9 +672,17 @@ func runCycleAsync(
 			curFields[fname] = fmt.Sprintf("%v", tv.Value)
 		}
 
+		// S072a14-3: build per-resource CauseContext, setting UpstreamChanged=true
+		// for children of composite parents that changed this cycle (cause D).
+		// All other resources use baseCauseCtx unchanged.
+		resCauseCtx := baseCauseCtx
+		if childrenWithUpstreamChange[res.ID.Local] {
+			resCauseCtx.UpstreamChanged = true
+		}
+
 		// F-5 (Scb0ecd-2 daemon wiring): classify this resource's diff with the
-		// real CauseContext so A/B/C are attributed correctly in the daemon path.
-		plan := engine.Diff(obs, res, causeCtx)
+		// real CauseContext so A/B/C/D/E are attributed correctly in the daemon path.
+		plan := engine.Diff(obs, res, resCauseCtx)
 
 		// Scb0ecd-3: for cause B (drift), emit a DriftEvent with the last-seen
 		// ring's previous-cycle snapshot diff.  The ring is read BEFORE we record
@@ -563,7 +718,7 @@ func runCycleAsync(
 				ghostDiffs++
 				fmt.Fprintf(cfg.ErrOut,
 					"sakutei: ProviderUpgradeDiff: %s [cause: C] provider_version changed (%s → %s); NOT applying (review required)\n",
-					op.Target, causeCtx.ProviderPrevVersion, causeCtx.ProviderCurVersion)
+					op.Target, baseCauseCtx.ProviderPrevVersion, baseCauseCtx.ProviderCurVersion)
 				continue
 			}
 			nonCOps = append(nonCOps, op)

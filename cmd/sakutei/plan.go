@@ -195,23 +195,44 @@ func runPlan(args []string) {
 	}
 	curProviderVersion := fp.ProviderVersion()
 
-	// Build the per-invocation CauseContext.  All resources in this invocation
+	// S072a14-3: compute RenderedRevisionChanged for cause E.
+	// E fires when rendered_revision changed but intent_revision is stable.
+	renderedRevisionChanged := prevState.PrevRenderedRevision != "" &&
+		rev.RenderedRevision != prevState.PrevRenderedRevision &&
+		rev.IntentRevision == prevState.PrevIntentRevision
+
+	// S072a14-3: build the parent→children map for cause D propagation.
+	// A parent "changed" this cycle if intent or rendered revision changed.
+	parentToChildren := render.BuildParentChildMap(expanded)
+	intentChanged := prevState.PrevIntentRevision != "" && rev.IntentRevision != prevState.PrevIntentRevision
+	renderedChanged := prevState.PrevRenderedRevision != "" && rev.RenderedRevision != prevState.PrevRenderedRevision
+	parentDesiredChanged := intentChanged || renderedChanged
+	childrenWithUpstreamChange := make(map[string]bool)
+	if parentDesiredChanged {
+		for _, childIDs := range parentToChildren {
+			for _, childID := range childIDs {
+				childrenWithUpstreamChange[childID] = true
+			}
+		}
+	}
+
+	// Build the base per-invocation CauseContext.  All resources in this invocation
 	// share the same revision signals (intent_revision, rendered_revision,
 	// provider_version); per-resource differentiation (§10.3) is structural:
 	// the same intent_revision change affects ALL resources in this intent
 	// directory (which is the correct scope unit, ADR-0008).
 	//
-	// In v1a UpstreamChanged and RenderedRevisionChanged are always false
-	// (seams for S072a14).
-	causeCtx := cause.CauseContext{
-		IntentPrevRevision:   prevState.PrevIntentRevision,
-		IntentCurRevision:    rev.IntentRevision,
-		RenderedPrevRevision: prevState.PrevRenderedRevision,
-		RenderedCurRevision:  rev.RenderedRevision,
-		ProviderPrevVersion:  prevState.PrevProviderVersion,
-		ProviderCurVersion:   curProviderVersion,
-		// UpstreamChanged:          false (seam, v1a)
-		// RenderedRevisionChanged:  false (seam, v1a; rendered == intent)
+	// S072a14-3: RenderedRevisionChanged is now activated (E), and UpstreamChanged
+	// is set per-resource below for children of composite parents that changed.
+	baseCauseCtx := cause.CauseContext{
+		IntentPrevRevision:      prevState.PrevIntentRevision,
+		IntentCurRevision:       rev.IntentRevision,
+		RenderedPrevRevision:    prevState.PrevRenderedRevision,
+		RenderedCurRevision:     rev.RenderedRevision,
+		ProviderPrevVersion:     prevState.PrevProviderVersion,
+		ProviderCurVersion:      curProviderVersion,
+		RenderedRevisionChanged: renderedRevisionChanged,
+		// UpstreamChanged is set per-resource below.
 	}
 
 	engine := diff.New(fp.Schema())
@@ -235,7 +256,14 @@ func runPlan(args []string) {
 			continue
 		}
 
-		plan := engine.Diff(obs, res, causeCtx)
+		// S072a14-3: set UpstreamChanged=true for children of composite parents
+		// whose desired state changed this cycle (cause D).
+		resCauseCtx := baseCauseCtx
+		if childrenWithUpstreamChange[res.ID.Local] {
+			resCauseCtx.UpstreamChanged = true
+		}
+
+		plan := engine.Diff(obs, res, resCauseCtx)
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff).
 		for _, op := range plan.Ops {
 			if op.Cause == core.CauseTagC {
@@ -261,8 +289,41 @@ func runPlan(args []string) {
 	// plan does NOT call Apply; it only computes and displays the Delete ops.
 	allOps = append(allOps, planPruneOps(ctx, fp, desired, unobservable)...)
 
+	// S072a14-3: compute composite status aggregation (§9.7) for reporting.
+	// Build per-resource ConvergenceStatus from diff results and unobservable set.
+	resourceStatus := make(map[string]core.ConvergenceStatus)
+	for _, res := range desired {
+		local := res.ID.Local
+		if unobservable[local] {
+			resourceStatus[local] = core.StatusUnknown
+			continue
+		}
+		// Check if this resource has any planned ops (= drifted).
+		hasPlan := false
+		for _, op := range allOps {
+			if op.Target.Local == local {
+				hasPlan = true
+				break
+			}
+		}
+		if hasPlan {
+			resourceStatus[local] = core.StatusDrifted
+		} else {
+			resourceStatus[local] = core.StatusConverged
+		}
+	}
+	// Compute composite status summaries.
+	compositeSummaries := render.AggregateCompositeStatuses(parentToChildren, resourceStatus)
+
 	// Print plan output.
 	if len(allOps) == 0 {
+		// Even if no ops, print composite status if there are composites.
+		if len(compositeSummaries) > 0 {
+			fmt.Println("Composite status:")
+			for parentID, summary := range compositeSummaries {
+				fmt.Printf("  composite %s: %s\n", parentID, summary.AggregatedStatus)
+			}
+		}
 		fmt.Println("Converged (no changes)")
 		os.Exit(0)
 	}
@@ -270,6 +331,14 @@ func runPlan(args []string) {
 	fmt.Printf("Plan: %d change(s)\n\n", len(allOps))
 	for _, op := range allOps {
 		printOp(op)
+	}
+
+	// S072a14-3: print composite status aggregation (§9.7).
+	if len(compositeSummaries) > 0 {
+		fmt.Println("Composite status (§9.7 worst-first):")
+		for parentID, summary := range compositeSummaries {
+			fmt.Printf("  composite %s: %s\n", parentID, summary.AggregatedStatus)
+		}
 	}
 	os.Exit(0)
 }

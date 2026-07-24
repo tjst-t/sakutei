@@ -24,18 +24,20 @@
 //     changes to ALL resources.  Checked first so ghost diffs are not
 //     misattributed to A or B.
 //
-//  2. A (intentional) — intent_revision changed since the last cycle.  The
+//  2. D (cascade) — an upstream resource (composite parent) desired state
+//     changed (flag injected by the render/DAG layer, S072a14-3).  D takes
+//     priority over A so that composite children report the cascade cause
+//     rather than "intent changed at scope level"; the child's own desired
+//     fields did not change directly.  In v1a this flag is always false.
+//
+//  3. A (intentional) — intent_revision changed since the last cycle.  The
 //     operator committed a new desired state.
 //
-//  3. E (external-input change) — rendered_revision changed but
+//  4. E (external-input change) — rendered_revision changed but
 //     intent_revision is stable.  In v1a (no external inputs) rendered ==
 //     intent so this branch never fires; it is a seam for S072a14.
 //
-//  4. D (cascade) — an upstream resource's desired state changed (flag
-//     injected by the DAG layer).  In v1a this flag is always false; it is
-//     a seam for the render DAG (S072a14+).
-//
-//  5. B (drift) — all three revision-stable signals are false, yet a diff
+//  5. B (drift) — all revision-stable signals are false, yet a diff
 //     exists.  Conclusion by elimination: the real world drifted away from
 //     the desired state without any human commit.  Observation-state-less
 //     systems cannot directly observe "actual changed"; B is the residual
@@ -123,7 +125,9 @@ type CauseContext struct {
 //     no-op and the caller should not attach any tag (no Op will be emitted).
 //   - ctx: the per-cycle, per-resource revision/version signals.
 //
-// The classification logic follows §10.2 (priority order: C > A > E > D > B).
+// The classification logic follows §10.2 (priority order: C > D > A > E > B).
+// D takes priority over A (S072a14-3): composite children that changed due to
+// a parent cascade should be tagged D, not A (scope-level intent change).
 //
 // When diffExists is false, Classify returns core.CauseTagB as a safe default
 // (the caller should not emit an Op in this case, so the value is irrelevant,
@@ -148,7 +152,23 @@ func Classify(diffExists bool, ctx CauseContext) core.CauseTag {
 		return core.CauseTagC
 	}
 
-	// Priority 2: A — intent_revision changed.
+	// Priority 2: D — upstream dependency / composite parent changed (cascade).
+	// When UpstreamChanged=true, this resource's change is caused by its parent
+	// composite changing, not by a direct operator intent change.  D takes
+	// priority over A so that composite children report the cascade cause rather
+	// than "intent changed" (which is technically true at scope level but
+	// misleading: the child's own desired fields did not change directly).
+	//
+	// S072a14-3: UpstreamChanged is now set by the render pipeline when a
+	// composite parent's desired state changed in the same cycle.
+	//
+	// SEAM (v1a): UpstreamChanged is always false.  Will be set by the render
+	// DAG (S072a14) when a declared dependency's desired state changed.
+	if ctx.UpstreamChanged {
+		return core.CauseTagD
+	}
+
+	// Priority 3: A — intent_revision changed.
 	// The operator committed a new desired state for this resource.
 	// On first run IntentPrevRevision is empty; intent always differs from
 	// empty, so the first cycle is tagged A (intentional: the operator
@@ -158,7 +178,7 @@ func Classify(diffExists bool, ctx CauseContext) core.CauseTag {
 		return core.CauseTagA
 	}
 
-	// Priority 3: E — rendered_revision changed but intent_revision is stable.
+	// Priority 4: E — rendered_revision changed but intent_revision is stable.
 	// SEAM (v1a): RenderedRevisionChanged is always false because
 	// rendered_revision = intent_revision (no external inputs yet).
 	// This branch exists to make the seam visible and to make the logic
@@ -174,13 +194,6 @@ func Classify(diffExists bool, ctx CauseContext) core.CauseTag {
 		ctx.RenderedCurRevision != ctx.RenderedPrevRevision &&
 		ctx.IntentCurRevision == ctx.IntentPrevRevision {
 		return core.CauseTagE
-	}
-
-	// Priority 4: D — upstream dependency changed (cascade).
-	// SEAM (v1a): UpstreamChanged is always false.  Will be set by the render
-	// DAG (S072a14) when a declared dependency's desired state changed.
-	if ctx.UpstreamChanged {
-		return core.CauseTagD
 	}
 
 	// Priority 5: B — drift (elimination).

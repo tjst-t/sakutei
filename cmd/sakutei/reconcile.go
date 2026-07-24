@@ -264,18 +264,40 @@ func runReconcile(args []string) {
 	}
 	curProviderVersion := fpConcrete.ProviderVersion()
 
-	// Build the per-cycle CauseContext.  All resources in this invocation
+	// S072a14-3: compute RenderedRevisionChanged for cause E.
+	renderedRevisionChangedRec := prevState.PrevRenderedRevision != "" &&
+		rev.RenderedRevision != prevState.PrevRenderedRevision &&
+		rev.IntentRevision == prevState.PrevIntentRevision
+
+	// S072a14-3: build parent→children map for cause D.
+	parentToChildrenRec := render.BuildParentChildMap(expanded)
+	intentChangedRec := prevState.PrevIntentRevision != "" && rev.IntentRevision != prevState.PrevIntentRevision
+	renderedChangedRec := prevState.PrevRenderedRevision != "" && rev.RenderedRevision != prevState.PrevRenderedRevision
+	parentDesiredChangedRec := intentChangedRec || renderedChangedRec
+	childrenWithUpstreamChangeRec := make(map[string]bool)
+	if parentDesiredChangedRec {
+		for _, childIDs := range parentToChildrenRec {
+			for _, childID := range childIDs {
+				childrenWithUpstreamChangeRec[childID] = true
+			}
+		}
+	}
+
+	// Build the base per-cycle CauseContext.  All resources in this invocation
 	// share the same revision signals (§10.3: global revision for candidate
 	// narrowing; per-resource diff is the final arbiter).
-	causeCtx := cause.CauseContext{
-		IntentPrevRevision:   prevState.PrevIntentRevision,
-		IntentCurRevision:    rev.IntentRevision,
-		RenderedPrevRevision: prevState.PrevRenderedRevision,
-		RenderedCurRevision:  rev.RenderedRevision,
-		ProviderPrevVersion:  prevState.PrevProviderVersion,
-		ProviderCurVersion:   curProviderVersion,
-		// UpstreamChanged:          false (seam, v1a)
-		// RenderedRevisionChanged:  false (seam, v1a; rendered == intent)
+	//
+	// S072a14-3: RenderedRevisionChanged is now activated (E), and UpstreamChanged
+	// is set per-resource below for children of composite parents that changed.
+	baseCauseCtxRec := cause.CauseContext{
+		IntentPrevRevision:      prevState.PrevIntentRevision,
+		IntentCurRevision:       rev.IntentRevision,
+		RenderedPrevRevision:    prevState.PrevRenderedRevision,
+		RenderedCurRevision:     rev.RenderedRevision,
+		ProviderPrevVersion:     prevState.PrevProviderVersion,
+		ProviderCurVersion:      curProviderVersion,
+		RenderedRevisionChanged: renderedRevisionChangedRec,
+		// UpstreamChanged is set per-resource below.
 	}
 
 	ctx := context.Background()
@@ -334,7 +356,14 @@ func runReconcile(args []string) {
 		}
 		obsFields[res.ID.Local] = curFields
 
-		resourcePlan := engine.Diff(obs, res, causeCtx)
+		// S072a14-3: set UpstreamChanged=true for children of composite parents
+		// whose desired state changed this cycle (cause D).
+		resCauseCtxRec := baseCauseCtxRec
+		if childrenWithUpstreamChangeRec[res.ID.Local] {
+			resCauseCtxRec.UpstreamChanged = true
+		}
+
+		resourcePlan := engine.Diff(obs, res, resCauseCtxRec)
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff),
 		// and filter them out of the Apply set (§10.4, task Scb0ecd-2-2).
 		// C ops are shown in plan output but NOT applied; the operator must
