@@ -236,6 +236,14 @@ func diffFields(actual core.State, desired map[string]string, schema provider.Sc
 		if secret {
 			actualStr = secretMaskField(actualStr)
 		}
+		// §10 / S c7a647a: unordered (Ordered:false) string-list フィールドは
+		// 集合として比較する。両辺を ListSep で split→sort→join して正規化し、
+		// 純粋な並べ替えを diff にしない。Ordered:true（や非 list、ListSep 未
+		// 宣言）は verbatim 比較（現行動作）。
+		if declared {
+			actualStr = normalizeUnorderedList(actualStr, spec)
+			desiredVal = normalizeUnorderedList(desiredVal, spec)
+		}
 		if actualStr != desiredVal {
 			diffs = append(diffs, core.FieldDiff{
 				Field: name,
@@ -264,8 +272,13 @@ func desiredFieldDiffs(desired map[string]string, schema provider.Schema) []core
 	diffs := make([]core.FieldDiff, 0, len(desired))
 	for _, name := range names {
 		to := desired[name]
-		if spec, ok := schema.Fields[name]; ok && spec.Secret {
-			to = secretMaskField(to)
+		if spec, ok := schema.Fields[name]; ok {
+			if spec.Secret {
+				to = secretMaskField(to)
+			}
+			// unordered set フィールドは canonical order で記録する
+			// （並べ替えが Create op の見た目に影響しないように）。
+			to = normalizeUnorderedList(to, spec)
 		}
 		diffs = append(diffs, core.FieldDiff{
 			Field: name,
@@ -287,6 +300,43 @@ func desiredFieldDiffs(desired map[string]string, schema provider.Schema) []core
 // (a raw string that slipped through) is masked before it can enter a FieldDiff.
 func typedValueToString(tv core.TypedValue) string {
 	return fmt.Sprintf("%v", tv.Value)
+}
+
+// normalizeUnorderedList canonicalises the encoded value of an UNORDERED
+// (Ordered:false) FieldKindStringList field so that a pure reorder of the set
+// is not a diff (§10, S c7a647a).
+//
+// これが `Ordered` flag を diff エンジンで実際に load-bearing にする箇所である。
+// 正規化の条件（すべて満たすとき split→sort→join する）:
+//
+//   - spec.Kind == FieldKindStringList（list フィールドのみ）
+//   - !spec.Ordered（順序が意味を持たない = set 的）
+//   - spec.ListSep != ""（provider 非依存の diff が split するために必須）
+//
+// 上記のいずれかを満たさない場合は値をそのまま返す（verbatim 比較）。とくに
+// Ordered:true（nftables rules 等）は verbatim なので並べ替えが diff になる
+// （full-replacement semantics）。ListSep が空の unordered list は、区切りを
+// 知らないため安全側に verbatim へフォールバックする（並べ替えが diff になる）。
+//
+// 決定的にするため空要素は落とし、各要素を TrimSpace してから sort する。
+func normalizeUnorderedList(v string, spec provider.FieldSpec) string {
+	if spec.Kind != core.FieldKindStringList || spec.Ordered || spec.ListSep == "" {
+		return v
+	}
+	if strings.TrimSpace(v) == "" {
+		return v
+	}
+	parts := strings.Split(v, spec.ListSep)
+	elems := make([]string, 0, len(parts))
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t == "" {
+			continue
+		}
+		elems = append(elems, t)
+	}
+	sort.Strings(elems)
+	return strings.Join(elems, spec.ListSep)
 }
 
 // secretMaskField normalises a secret-flagged field's string value to the

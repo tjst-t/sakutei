@@ -37,8 +37,36 @@ type FieldSpec struct {
 	// so that Sakutei does not fight the external system (§7.2).
 	Managed bool
 	// Ordered means ordering is semantically significant (e.g. firewall rules).
-	// The core applies full-replacement semantics for ordered list fields.
+	//
+	// この flag は FieldKindStringList のフィールドに対して diff エンジンが
+	// 実際に読み、以下の意味を持つ（S c7a647a、§10）:
+	//
+	//   - Ordered:true  — 順序が意味を持つ集合（例: firewall rules は先頭
+	//     マッチ勝ちで、並べ替えは別の現実）。diff は observed/desired の
+	//     エンコード済み値を verbatim 比較するので、並べ替えは Update diff に
+	//     なる（full-replacement semantics）。
+	//   - Ordered:false — 順序が意味を持たない集合（set 的な list）。diff は
+	//     比較前に ListSep で split→sort→join して正規化するので、純粋な
+	//     並べ替えは diff にならない。ListSep の宣言が必須（未宣言なら
+	//     正規化できず verbatim 比較にフォールバックする）。
+	//
+	// FieldKindStringList 以外の Kind では Ordered は無視される。
 	Ordered bool
+	// ListSep is the canonical separator a FieldKindStringList provider uses to
+	// join/split its list value into the single string that reaches the diff
+	// engine (intent/diff は string→string マップのため list は 1 本の文字列に
+	// エンコードされる)。
+	//
+	// diff エンジンは provider 非依存なので、Ordered:false の set 正規化
+	// （split→sort→join）を行うにはこの区切りを Schema から知る必要がある。
+	// 例: nftables provider は " ; "（RuleSep）を宣言する。
+	//
+	// Ordered:true では正規化しない（verbatim 比較）ため ListSep は不要。
+	// Ordered:false かつ ListSep が空の list フィールドは、正規化に必要な
+	// 区切りが宣言されていないので安全側に verbatim 比較へフォールバックする
+	// （並べ替えが diff になる）。set semantics を得たい provider は
+	// Ordered:false と ListSep の両方を宣言する必要がある。
+	ListSep string
 	// Identity means the field is part of the resource's identity key within
 	// its provider.  Choose identity fields by operational change-frequency,
 	// not just technical uniqueness (§5.2).
