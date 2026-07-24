@@ -423,6 +423,14 @@ func runReconcile(args []string) {
 			resCauseCtxRec.UpstreamChanged = true
 		}
 
+		// S33266e-1 (§20): reject a bare plaintext in a secret-flagged field
+		// before diffing (plaintext secret + perpetual non-converging diff).
+		// The error names the field only, never the value.
+		if err := engine.ValidateDesired(res); err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei reconcile: %v\n", err)
+			os.Exit(1)
+		}
+
 		resourcePlan := engine.Diff(obs, res, resCauseCtxRec)
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff),
 		// and filter them out of the Apply set (§10.4, task Scb0ecd-2-2).

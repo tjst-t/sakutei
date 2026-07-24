@@ -32,6 +32,9 @@ const (
 	// FieldKindMap is a key-value map of strings.
 	FieldKindMap
 	// FieldKindSecretRef is a reference to a secret (never holds the raw value).
+	// A field of this kind carries a core.SecretRef value (see secretref.go):
+	// only the ref (backend/path + generation) enters diff/convergence; the
+	// plaintext is resolved JIT at Apply and never stored/logged/diffed (§20.2).
 	FieldKindSecretRef
 )
 

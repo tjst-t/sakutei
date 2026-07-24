@@ -297,6 +297,14 @@ func ScopedReconcile(
 			continue
 		}
 
+		// S33266e-1 (§20): reject a bare plaintext in a secret-flagged field
+		// before diffing (names the field only, never the value).
+		if err := engine.ValidateDesired(r); err != nil {
+			fmt.Fprintf(errOut, "sakutei: scoped: %v\n", err)
+			unobservable[local] = true
+			continue
+		}
+
 		plan := engine.Diff(obs, r, baseCauseCtx)
 		if len(plan.Ops) == 0 {
 			continue // 既に収束。

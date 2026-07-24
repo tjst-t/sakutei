@@ -29,8 +29,10 @@
 package diff
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/pkg/core"
@@ -71,6 +73,44 @@ func New(schema provider.Schema) *Engine {
 	return &Engine{schema: schema}
 }
 
+// ValidateDesired checks a desired resource's intent fields against the Schema
+// BEFORE any diff runs (S33266e-1, §20).  It rejects a bare plaintext value in a
+// field the Schema flags `secret`: such a field MUST carry a SecretRef reference
+// form — either the "secretref:<backend>/<path>#genN" string or the
+// {"$secret":"<path>",...} JSON object — never a raw scalar.
+//
+// Why fail here rather than silently mask: a raw plaintext in a secret field is
+// (a) a plaintext secret physically sitting in an intent file, and (b) a
+// permanent non-converging diff — the desired side would mask to "***" while the
+// observed side is "secretref:...#genN", so they never compare equal.  Failing
+// loud at validate time surfaces the operator mistake before the first diff and
+// before the secret can spread.
+//
+// The returned error names the offending field and instructs the operator to use
+// a SecretRef.  It NEVER echoes the field value (it may be a real secret): the
+// value is discarded, only the field name appears.
+func (e *Engine) ValidateDesired(desired DesiredResource) error {
+	names := make([]string, 0, len(desired.Fields))
+	for name := range desired.Fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		spec, declared := e.schema.Fields[name]
+		if !declared || !spec.Secret {
+			continue
+		}
+		if _, ok := secretRefForm(desired.Fields[name]); !ok {
+			// Do NOT include the value: it may be a real plaintext secret.
+			return fmt.Errorf(
+				"resource %s: secret-flagged field %q must be a SecretRef "+
+					"(secretref:<backend>/<path>#genN or {\"$secret\":\"<path>\",...}), got a bare scalar",
+				desired.ID, name)
+		}
+	}
+	return nil
+}
+
 // Diff computes the core.Plan needed to reconcile a single resource.
 //
 // obs is the output of Provider.Read for this resource.
@@ -98,7 +138,7 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource, ctx cause.C
 	// Resource absent in reality → Create.
 	if obs.State == nil {
 		tag := cause.Classify(true, ctx)
-		fields := desiredFieldDiffs(desired.Fields)
+		fields := desiredFieldDiffs(desired.Fields, e.schema)
 		diagnostic := fmt.Sprintf("resource %s does not exist in reality; will create", desired.ID)
 		return core.Plan{
 			Ops: []core.Op{
@@ -158,15 +198,29 @@ func diffFields(actual core.State, desired map[string]string, schema provider.Sc
 
 	for _, name := range names {
 		spec, declared := schema.Fields[name]
+		secret := false
 		if declared {
 			// Skip computed and managed fields.
 			if spec.Computed || spec.Managed {
 				continue
 			}
+			secret = spec.Secret
 		}
 
+		// §20 / S33266e-1: for a secret-flagged field, both sides are normalised
+		// to the SecretRef *reference* form (secretref:<backend>/<path>#genN)
+		// BEFORE comparison.  This is the structural guarantee that the plaintext
+		// value never enters Diff / convergence: only the ref (path + generation)
+		// is compared and stored in the FieldDiff.  A generation bump (gen3→gen4)
+		// changes the ref string and therefore IS a diff (cause E); a change of
+		// the underlying value with the SAME ref+gen is invisible here (there is
+		// no value to compare).
 		desiredVal := desired[name]
 		actualTV, exists := actual[name]
+
+		if secret {
+			desiredVal = secretMaskField(desiredVal)
+		}
 
 		if !exists {
 			// Field absent in reality → differs.
@@ -179,6 +233,9 @@ func diffFields(actual core.State, desired map[string]string, schema provider.Sc
 		}
 
 		actualStr := typedValueToString(actualTV)
+		if secret {
+			actualStr = secretMaskField(actualStr)
+		}
 		if actualStr != desiredVal {
 			diffs = append(diffs, core.FieldDiff{
 				Field: name,
@@ -193,7 +250,11 @@ func diffFields(actual core.State, desired map[string]string, schema provider.Sc
 
 // desiredFieldDiffs creates FieldDiff entries for all desired fields in a
 // Create operation (From is always empty because nothing existed before).
-func desiredFieldDiffs(desired map[string]string) []core.FieldDiff {
+//
+// §20 / S33266e-1: secret-flagged fields are normalised to the SecretRef
+// reference form so a Create op never carries a plaintext secret value into its
+// FieldDiff (which is printed by printOp and could otherwise leak).
+func desiredFieldDiffs(desired map[string]string, schema provider.Schema) []core.FieldDiff {
 	names := make([]string, 0, len(desired))
 	for name := range desired {
 		names = append(names, name)
@@ -202,10 +263,14 @@ func desiredFieldDiffs(desired map[string]string) []core.FieldDiff {
 
 	diffs := make([]core.FieldDiff, 0, len(desired))
 	for _, name := range names {
+		to := desired[name]
+		if spec, ok := schema.Fields[name]; ok && spec.Secret {
+			to = secretMaskField(to)
+		}
 		diffs = append(diffs, core.FieldDiff{
 			Field: name,
 			From:  "",
-			To:    desired[name],
+			To:    to,
 		})
 	}
 	return diffs
@@ -214,6 +279,54 @@ func desiredFieldDiffs(desired map[string]string) []core.FieldDiff {
 // typedValueToString converts a TypedValue to its string representation for
 // comparison purposes.  Precision/formatting is intentionally simple in Sprint
 // 1; a full normalisation layer comes in a later Story.
+//
+// §20 / S33266e-1: if the value is a core.SecretRef, fmt routes through
+// SecretRef.String() (the masked ref form) — the plaintext is unreachable via
+// fmt by construction.  secretMaskField below is applied on top for the
+// secret-flagged path so that even a value that did NOT arrive as a SecretRef
+// (a raw string that slipped through) is masked before it can enter a FieldDiff.
 func typedValueToString(tv core.TypedValue) string {
 	return fmt.Sprintf("%v", tv.Value)
+}
+
+// secretMaskField normalises a secret-flagged field's string value to the
+// canonical SecretRef reference form so that only the ref (path + generation)
+// participates in Diff — never the plaintext value (§20).
+//
+// Accepted inputs, all producing the ref form "secretref:<backend>/<path>#genN":
+//   - the ref form itself: "secretref:file/db/root#gen3" (round-trips unchanged)
+//   - the JSON form:        {"$secret":"db/root","backend":"file","gen":3}
+//
+// Any other value (a raw plaintext that should never reach a secret field) is
+// collapsed to "***".  This is defense-in-depth: the diff engine refuses to let
+// an unrecognised secret-field value survive into a FieldDiff.  By the time a
+// value reaches here it has already passed ValidateDesired (which rejects a bare
+// plaintext at load/validate time, S33266e-1), so the "***" branch is only ever
+// hit for the *observed* (actual) side — never for a desired intent value.
+func secretMaskField(v string) string {
+	if ref, ok := secretRefForm(v); ok {
+		return ref
+	}
+	// Unrecognised: never let a raw value through.
+	return "***"
+}
+
+// secretRefForm returns the canonical SecretRef reference form of v and true if
+// v IS a recognised SecretRef (the "secretref:...#genN" string form or the
+// {"$secret":...} JSON form).  It returns ("", false) for any bare scalar — a
+// value that is NOT a SecretRef.  The plaintext is never returned in either
+// branch (the false branch discards v entirely).
+func secretRefForm(v string) (string, bool) {
+	trimmed := strings.TrimSpace(v)
+	if strings.HasPrefix(trimmed, "secretref:") {
+		// Already the ref form: keep it verbatim (it carries no value).
+		return trimmed, true
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		var ref core.SecretRef
+		if err := json.Unmarshal([]byte(trimmed), &ref); err == nil && ref.Path() != "" {
+			return ref.String(), true
+		}
+	}
+	return "", false
 }

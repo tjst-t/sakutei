@@ -704,6 +704,16 @@ func runCycleAsync(
 			resCauseCtx.UpstreamChanged = true
 		}
 
+		// S33266e-1 (§20): reject a bare plaintext in a secret-flagged field
+		// BEFORE diffing.  Such a value is a plaintext secret in the intent AND
+		// a perpetual non-converging diff.  Fail loud and skip this resource;
+		// the error names the field only, never the value.
+		if err := engine.ValidateDesired(res); err != nil {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: %v\n", err)
+			unobservable[local] = true
+			continue
+		}
+
 		// F-5 (Scb0ecd-2 daemon wiring): classify this resource's diff with the
 		// real CauseContext so A/B/C/D/E are attributed correctly in the daemon path.
 		plan := engine.Diff(obs, res, resCauseCtx)
