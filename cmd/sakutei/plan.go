@@ -83,6 +83,12 @@ func runPlan(args []string) {
 		"S072a14-2: inject deterministic inventory hash into rendered_revision (fake phase 1; empty=no external input)")
 	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
 		"S072a14-2: simulate an unreachable ExternalInputResolver (triggers last-value-on-unreachable path §9.2)")
+	// S33266e-3: devenv（坪庭）— substitute ALL render phase-1 external inputs
+	// (inventory/allocation/secret) with fakes so no production pool/secret is
+	// contacted (§26.2).  When set, phase 1 resolves through the DevenvProfile's
+	// substituted inventory cache instead of the plain --inventory-hash resolver.
+	devenv := fs.Bool("devenv", false,
+		"S33266e-3: devenv（坪庭）mode — render external inputs (inventory/allocation/secret) are substituted with fakes; no production pool/secret is touched (§26.2)")
 
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
@@ -116,13 +122,29 @@ func runPlan(args []string) {
 	// When --inventory-hash is empty AND --inventory-unreachable is false, no
 	// resolver is configured and phase 1 is a no-op (v1a default: rendered ==
 	// intent).  This preserves backward compatibility with existing tests.
-	if *inventoryHash != "" || *inventoryUnreachable {
-		fakeResolver := &render.FakeInventoryResolver{
-			Hash: *inventoryHash,
-			Fail: *inventoryUnreachable,
+	if *devenv || *inventoryHash != "" || *inventoryUnreachable {
+		var cache *render.ResolverCache
+		if *devenv {
+			// S33266e-3: devenv（坪庭）— ALL external inputs substituted with
+			// fakes.  Phase 1 runs through the DevenvProfile's substituted
+			// inventory cache (built on the same FakeInventoryResolver +
+			// ResolverCache path); no production pool/secret is contacted (§26.2).
+			// --inventory-hash, when also given, seeds the fake inventory hash.
+			opts := []render.DevenvOption{}
+			if *inventoryHash != "" {
+				opts = append(opts, render.WithDevenvInventoryHash(*inventoryHash))
+			}
+			cache = render.NewDevenvProfile(opts...).ExternalInputCache()
+			fmt.Fprintln(os.Stderr,
+				"sakutei plan: devenv（坪庭）mode — external inputs substituted with fakes; no production pool/secret contacted (§26.2)")
+		} else {
+			fakeResolver := &render.FakeInventoryResolver{
+				Hash: *inventoryHash,
+				Fail: *inventoryUnreachable,
+			}
+			// Use a zero-TTL cache: every plan invocation resolves fresh.
+			cache = render.NewResolverCache(fakeResolver, 0)
 		}
-		// Use a zero-TTL cache: every plan invocation resolves fresh.
-		cache := render.NewResolverCache(fakeResolver, 0)
 		ctx := context.Background()
 		phase1Result := render.ResolveExternalInputs(ctx, cache)
 		if phase1Result.UnreachableFallback {
@@ -294,6 +316,14 @@ func runPlan(args []string) {
 		resCauseCtx := baseCauseCtx
 		if childrenWithUpstreamChange[res.ID.Local] {
 			resCauseCtx.UpstreamChanged = true
+		}
+
+		// S33266e-1 (§20): a bare plaintext in a secret-flagged field is a fatal
+		// intent error (plaintext secret + perpetual non-converging diff).  Fail
+		// loud; the error names the field only, never the value.
+		if err := engine.ValidateDesired(res); err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei plan: %v\n", err)
+			os.Exit(1)
 		}
 
 		plan := engine.Diff(obs, res, resCauseCtx)
