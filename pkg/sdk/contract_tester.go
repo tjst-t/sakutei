@@ -101,8 +101,13 @@ type ContractTester struct {
 func (ct *ContractTester) RunAll(t TB) {
 	t.Helper()
 
-	ct.runIdempotency(t)
+	// AF-3 (S62dbba verify): runAbsentCreateRead MUST run first, while the
+	// sample resource is still genuinely absent.  Its pre-Apply Read guard
+	// (ADR-0002 "Read never peeks desired") is only meaningful against a truly
+	// absent starting point; running runIdempotency first would create the
+	// resource and turn that guard into a false positive.
 	ct.runAbsentCreateRead(t)
+	ct.runIdempotency(t)
 
 	if ct.Lister != nil {
 		ct.runListCompleteness(t)
@@ -175,9 +180,23 @@ func (ct *ContractTester) runAbsentCreateRead(t TB) {
 	t.Helper()
 	ctx := context.Background()
 
+	// AF-3 (S62dbba verify): regression guard for ADR-0002 "Read never looks at
+	// desired".  Before any Apply, a Read of the sample ID must report the
+	// resource as absent (nil State) — a provider that returns a populated State
+	// here is peeking at desired (or at the Create plan) instead of observing
+	// reality, which silently defeats the observation-state-less invariant.
+	//
+	// Best-effort: an error from this early Read is not itself a contract
+	// violation (the target may be legitimately unreachable), so it is tolerated;
+	// only a non-nil State on a successful Read is flagged.
+	if obs0, err0 := ct.Provider.Read(ctx, ct.SampleID); err0 == nil && obs0.State != nil {
+		t.Errorf("ContractTester/AbsentCreateRead: Read before Apply returned non-nil State (provider may be peeking desired; ADR-0002)")
+	}
+
 	plan := ct.buildCreatePlan()
 
-	// Apply Create (may be a no-op if resource already exists from idempotency test).
+	// Apply Create.  This runs before runIdempotency (AF-3 ordering), so the
+	// resource is created here for the first time.
 	if err := ct.Provider.Apply(ctx, plan); err != nil {
 		t.Fatalf("ContractTester/AbsentCreateRead: Apply failed: %v", err)
 		return

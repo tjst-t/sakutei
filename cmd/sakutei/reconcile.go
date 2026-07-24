@@ -85,6 +85,11 @@ func runReconcile(args []string) {
 	intentDir := fs.String("intent", "", "directory containing intent JSON files (required)")
 	statePath := fs.String("state", "sakutei-fake-state.json",
 		"path to the fake provider state file (default: sakutei-fake-state.json)")
+	// S62dbba verify: distinct file for the dnszone provider so a mixed
+	// fake+dnszone intent does not force both providers onto one path.  When
+	// empty, dnszone falls back to --state (registry alias) as before.
+	zonePath := fs.String("zone", "",
+		"path to the dnszone provider zone file (default: falls back to --state)")
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
@@ -240,9 +245,14 @@ func runReconcile(args []string) {
 	fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
 
 	// S62dbba-2: resolve providers via registry based on intent resource declarations.
-	// The --state flag is passed as the "state" config key for the "fake" provider.
+	// The --state flag is passed as the "state" config key for the "fake" provider;
+	// --zone (when set) is passed as "zone" for the dnszone provider so a mixed
+	// fake+dnszone intent can keep each provider's backing file separate.
 	reg := registry.DefaultRegistry()
 	providerConfig := map[string]string{"state": *statePath}
+	if *zonePath != "" {
+		providerConfig["zone"] = *zonePath
+	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
 	if resolveErr != nil {
 		fmt.Fprintln(os.Stderr, resolveErr)
@@ -836,10 +846,23 @@ func (m *multiProviderApply) Apply(ctx context.Context, plan core.Plan) error {
 	byProvider := make(map[string][]core.Op)
 	var providerOrder []string
 	for _, op := range plan.Ops {
+		// Resolve the owning provider for this op.
+		//
+		// AF-1 (S62dbba verify): localToProvider is built from the DESIRED
+		// resource list, so it only knows resources the operator declared.  A
+		// prune Delete op targets an ORPHAN — a resource present in reality but
+		// absent from desired — so its Local ID is NOT in localToProvider and the
+		// lookup returns "".  Falling back to an arbitrary provider here would
+		// mis-route the delete: in a mixed fake+dnszone intent, a DNS orphan
+		// delete could be dispatched to fakeprovider.Apply (the wrong provider
+		// deletes the wrong thing).  The prune engine sets op.Target.Provider
+		// from the Lister's own IDs, so prefer that; localToProvider is used only
+		// as a corroborating source for desired-derived ops.
 		name := m.localToProvider[op.Target.Local]
 		if name == "" {
-			// Unknown local ID — fall back to the default provider.
-			name = ""
+			// Orphan prune target (or otherwise not in desired): route by the
+			// provider the op's target carries, which the prune engine populates.
+			name = op.Target.Provider
 		}
 		if _, seen := byProvider[name]; !seen {
 			providerOrder = append(providerOrder, name)

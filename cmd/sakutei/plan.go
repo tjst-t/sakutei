@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
@@ -61,6 +62,11 @@ func runPlan(args []string) {
 	intentDir := fs.String("intent", "", "directory containing intent JSON files (required)")
 	statePath := fs.String("state", "sakutei-fake-state.json",
 		"path to the fake provider state file (default: sakutei-fake-state.json)")
+	// S62dbba verify: distinct file for the dnszone provider so a mixed
+	// fake+dnszone intent does not force both providers onto one path.  When
+	// empty, dnszone falls back to --state (registry alias) as before.
+	zonePath := fs.String("zone", "",
+		"path to the dnszone provider zone file (default: falls back to --state)")
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
@@ -181,9 +187,14 @@ func runPlan(args []string) {
 	fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
 
 	// S62dbba-2: resolve providers via registry based on intent resource declarations.
-	// The --state flag is passed as the "state" config key for the "fake" provider.
+	// The --state flag is passed as the "state" config key for the "fake" provider;
+	// --zone (when set) is passed as "zone" for the dnszone provider so a mixed
+	// fake+dnszone intent can keep each provider's backing file separate.
 	reg := registry.DefaultRegistry()
 	providerConfig := map[string]string{"state": *statePath}
+	if *zonePath != "" {
+		providerConfig["zone"] = *zonePath
+	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei plan")
 	if resolveErr != nil {
 		fmt.Fprintln(os.Stderr, resolveErr)
@@ -492,16 +503,9 @@ func joinedProviderVersions(providers map[string]provider.Provider) string {
 	}
 
 	// Multiple providers: "name1:v1,name2:v2".
-	var parts []string
+	parts := make([]string, 0, len(names))
 	for _, n := range names {
 		parts = append(parts, n+":"+providers[n].Capabilities().ProviderVersion)
 	}
-	result := ""
-	for i, p := range parts {
-		if i > 0 {
-			result += ","
-		}
-		result += p
-	}
-	return result
+	return strings.Join(parts, ",")
 }
