@@ -38,10 +38,10 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
@@ -90,6 +90,11 @@ func main() {
 //
 // The loop runs until SIGTERM or SIGINT is received, at which point it stops
 // at the next cycle boundary and exits 0.
+//
+// S62dbba-2: the provider is now resolved via ProviderRegistry instead of being
+// directly imported from internal/fakeprovider.  The daemon still uses a single
+// provider (the "fake" provider) for the initial implementation; multi-provider
+// daemon support is a future Story once the DNS provider (S62dbba-3) is ready.
 func runDaemon() {
 	fs := flag.NewFlagSet("sakutei", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -189,10 +194,15 @@ func runDaemon() {
 		Freeze: *freeze,
 	}
 
-	// Construct the concrete provider here (cmd layer) and inject it via the
-	// provider.Provider seam; the reconcile core stays free of concrete
-	// provider types (F-1).
-	fp := fakeprovider.New(*statePath)
+	// S62dbba-2: resolve the "fake" provider via the ProviderRegistry.
+	// The daemon currently supports a single provider (the state file path is
+	// provided via --state).  Multi-provider daemon support is a future Story.
+	reg := registry.DefaultRegistry()
+	fp, err := reg.Get("fake", map[string]string{"state": *statePath})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: provider resolution failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
 	// A provider without a version cannot support ghost-diff (cause C) detection;

@@ -24,21 +24,20 @@ import (
 
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/pkg/registry"
 )
 
 // runPlan implements "sakutei plan".
 //
 // It loads desired resources from --intent <dir>, observes actual state via
-// the fake provider backed by --state <file>, computes the diff, and prints
-// the result.
+// the provider resolved from each resource's "provider" field (via the
+// ProviderRegistry), computes the diff, and prints the result.
 //
 // ADR-0002 contract: Apply is NEVER called.  This function stops at Diff.
 //
@@ -46,6 +45,10 @@ import (
 //   - --cause-state <file>: optional JSON file holding previous-cycle revision
 //     and provider_version values.  Written at end of invocation so the next
 //     run can compare.  Absent = first-run (all ops tagged A, correct).
+//
+// S62dbba-2: provider is no longer hardcoded to fakeprovider.  The
+// ProviderRegistry resolves the correct provider for each resource based on
+// the "provider" field in the intent file.
 //
 // Exit codes:
 //
@@ -143,8 +146,8 @@ func runPlan(args []string) {
 	// S072a14-1: render phase 2 — expand composite resources into concrete
 	// children (§9.5).  Composites themselves are NOT passed to Diff/Apply;
 	// only their expanded children enter the convergence loop.
-	registry := render.DefaultRegistry()
-	expanded, expandErr := render.ExpandAll(registry, intentResources)
+	expRegistry := render.DefaultRegistry()
+	expanded, expandErr := render.ExpandAll(expRegistry, intentResources)
 	if expandErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei plan: render phase 2: %v\n", expandErr)
 		os.Exit(1)
@@ -177,16 +180,27 @@ func runPlan(args []string) {
 	// for S072a14 where external inputs enter the rendered hash).
 	fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
 
-	// Create the fake provider backed by the state file.
-	fp := fakeprovider.New(*statePath)
-
-	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
-	// plan also validates so that operators get an immediate error rather than
-	// silently producing plans that cannot be cause-C–attributed.
-	if err := sdk.ValidateProvider(fp); err != nil {
-		fmt.Fprintf(os.Stderr, "sakutei plan: provider validation failed: %v\n", err)
+	// S62dbba-2: resolve providers via registry based on intent resource declarations.
+	// The --state flag is passed as the "state" config key for the "fake" provider.
+	reg := registry.DefaultRegistry()
+	providerConfig := map[string]string{"state": *statePath}
+	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei plan")
+	if resolveErr != nil {
+		fmt.Fprintln(os.Stderr, resolveErr)
 		os.Exit(1)
 	}
+
+	// Build per-provider diff engines (each provider has its own Schema).
+	engines := make(map[string]*diff.Engine, len(providers))
+	for name, p := range providers {
+		engines[name] = diff.New(p.Schema())
+	}
+
+	// Scb0ecd-2: compute curProviderVersion for cause-state tracking.
+	// With multiple providers, concatenate all "name:version" pairs in sorted
+	// order so the combined version string is deterministic.
+	// For v1a (single "fake" provider) this reduces to the fake's version.
+	curProviderVersion := joinedProviderVersions(providers)
 
 	// Scb0ecd-2: load cause state (previous-cycle revision + provider_version).
 	prevState, csErr := loadCauseState(*causeStatePath)
@@ -195,7 +209,6 @@ func runPlan(args []string) {
 			*causeStatePath, csErr)
 		prevState = causeStateFile{}
 	}
-	curProviderVersion := fp.ProviderVersion()
 
 	// S072a14-3: compute RenderedRevisionChanged for cause E.
 	// E fires when rendered_revision changed but intent_revision is stable.
@@ -237,8 +250,6 @@ func runPlan(args []string) {
 		// UpstreamChanged is set per-resource below.
 	}
 
-	engine := diff.New(fp.Schema())
-
 	ctx := context.Background()
 	var allOps []core.Op
 
@@ -246,6 +257,15 @@ func runPlan(args []string) {
 	unobservable := make(map[string]bool)
 
 	for _, res := range desired {
+		// S62dbba-2: route Read and Diff to the provider for this resource.
+		fp, ok := providers[res.ID.Provider]
+		if !ok {
+			// Should not happen: resolveProviders already validated all names.
+			fmt.Fprintf(os.Stderr, "sakutei plan: internal error: no provider for %q\n", res.ID.Provider)
+			os.Exit(1)
+		}
+		engine := engines[res.ID.Provider]
+
 		// ADR-0002: Observe independently for each resource.  Each call to
 		// Read is fresh; no observation is carried across resources or cycles.
 		obs, err := fp.Read(ctx, res.ID.Local)
@@ -289,7 +309,9 @@ func runPlan(args []string) {
 
 	// Prune phase (dry-run): show what would be deleted (§12, ADR-0005).
 	// plan does NOT call Apply; it only computes and displays the Delete ops.
-	allOps = append(allOps, planPruneOps(ctx, fp, desired, unobservable)...)
+	// S62dbba-2: prune is computed per provider so each provider's Lister is
+	// used for the resources it manages.
+	allOps = append(allOps, planPruneOpsMulti(ctx, providers, desired, unobservable)...)
 
 	// S072a14-3: compute composite status aggregation (§9.7) for reporting.
 	// Build per-resource ConvergenceStatus from diff results and unobservable set.
@@ -366,26 +388,40 @@ func sortedCompositeParentIDs(summaries map[string]render.CompositeStatusSummary
 	return ids
 }
 
-// planPruneOps computes the Delete ops that would be emitted by the prune engine
-// for the given desired resources.  No Apply is called (dry-run).
-func planPruneOps(
+// planPruneOpsMulti computes Delete ops for the prune engine across all
+// providers.  It calls the per-provider Lister (if the provider implements
+// provider.Lister) with only the resources managed by that provider.
+//
+// No Apply is called (dry-run).
+func planPruneOpsMulti(
 	ctx context.Context,
-	fp provider.Provider,
+	providers map[string]provider.Provider,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 ) []core.Op {
-	lister, ok := fp.(provider.Lister)
-	if !ok {
-		return nil
+	var allDeleteOps []core.Op
+
+	// Group desired resources by provider.
+	byProvider := make(map[string][]diff.DesiredResource)
+	for _, r := range desired {
+		byProvider[r.ID.Provider] = append(byProvider[r.ID.Provider], r)
 	}
 
-	scope := core.NewScope(nil)
-	engine := prune.New()
-	result, err := engine.ComputePrune(ctx, lister, fp, scope, desired, unobservable, os.Stderr)
-	if err != nil || result.Halted {
-		return nil
+	for name, fp := range providers {
+		lister, ok := fp.(provider.Lister)
+		if !ok {
+			continue
+		}
+		scope := core.NewScope(nil)
+		engine := prune.New()
+		provDesired := byProvider[name]
+		result, err := engine.ComputePrune(ctx, lister, fp, scope, provDesired, unobservable, os.Stderr)
+		if err != nil || result.Halted {
+			continue
+		}
+		allDeleteOps = append(allDeleteOps, result.DeleteOps...)
 	}
-	return result.DeleteOps
+	return allDeleteOps
 }
 
 // printOp formats a single Op for human-readable plan output.
@@ -429,4 +465,43 @@ func printOp(op core.Op) {
 		}
 	}
 	fmt.Println()
+}
+
+// joinedProviderVersions returns a combined provider version string for all
+// providers in the map.  Versions are joined in sorted key order so the result
+// is deterministic.
+//
+// For a single provider "fake" this returns the fake's ProviderVersion string
+// unchanged (no separator prefix), preserving backward compatibility with
+// existing cause-state files written before S62dbba-2.
+// For multiple providers the format is "name1:v1,name2:v2".
+func joinedProviderVersions(providers map[string]provider.Provider) string {
+	if len(providers) == 0 {
+		return ""
+	}
+	// Collect sorted names for deterministic output.
+	names := make([]string, 0, len(providers))
+	for n := range providers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	if len(names) == 1 {
+		// Single provider: return its version as-is for backward compatibility.
+		return providers[names[0]].Capabilities().ProviderVersion
+	}
+
+	// Multiple providers: "name1:v1,name2:v2".
+	var parts []string
+	for _, n := range names {
+		parts = append(parts, n+":"+providers[n].Capabilities().ProviderVersion)
+	}
+	result := ""
+	for i, p := range parts {
+		if i > 0 {
+			result += ","
+		}
+		result += p
+	}
+	return result
 }

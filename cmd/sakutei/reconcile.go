@@ -26,7 +26,6 @@ import (
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/lastseen"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
@@ -36,7 +35,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/pkg/registry"
 )
 
 // runReconcile implements "sakutei reconcile".
@@ -69,6 +68,10 @@ import (
 // resource was skipped it exits non-zero to signal an incomplete convergence.
 // (The loop path instead retries on the next cycle — same skip semantics,
 // different follow-up because a daemon has a "next cycle" and a one-shot does not.)
+//
+// S62dbba-2: provider is no longer hardcoded to fakeprovider.  The
+// ProviderRegistry resolves the correct provider for each resource based on
+// the "provider" field in the intent file.
 //
 // Exit codes:
 //
@@ -203,8 +206,8 @@ func runReconcile(args []string) {
 	}
 
 	// S072a14-1: render phase 2 — expand composite resources (§9.5).
-	registry := render.DefaultRegistry()
-	expanded, expandErr := render.ExpandAll(registry, intentResources)
+	expRegistry := render.DefaultRegistry()
+	expanded, expandErr := render.ExpandAll(expRegistry, intentResources)
 	if expandErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: render phase 2: %v\n", expandErr)
 		os.Exit(1)
@@ -236,21 +239,25 @@ func runReconcile(args []string) {
 	// In v1a rendered_revision = intent_revision (seam for S072a14).
 	fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
 
-	// Create the fake provider backed by the state file.
-	// Declare fp as provider.Provider so interface checks (.(provider.Lister))
-	// work without the concrete type getting in the way.
-	fpConcrete := fakeprovider.New(*statePath)
-	var fp provider.Provider = fpConcrete
-
-	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
-	// Reconcile validates so operators get an immediate error rather than
-	// running a cycle that cannot detect ghost diffs (cause C).
-	if err := sdk.ValidateProvider(fp); err != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: provider validation failed: %v\n", err)
+	// S62dbba-2: resolve providers via registry based on intent resource declarations.
+	// The --state flag is passed as the "state" config key for the "fake" provider.
+	reg := registry.DefaultRegistry()
+	providerConfig := map[string]string{"state": *statePath}
+	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
+	if resolveErr != nil {
+		fmt.Fprintln(os.Stderr, resolveErr)
 		os.Exit(1)
 	}
 
-	engine := diff.New(fp.Schema())
+	// Build per-provider diff engines (each provider has its own Schema).
+	engines := make(map[string]*diff.Engine, len(providers))
+	for name, p := range providers {
+		engines[name] = diff.New(p.Schema())
+	}
+
+	// Scb0ecd-2: compute curProviderVersion for cause-state tracking.
+	curProviderVersion := joinedProviderVersions(providers)
+
 	// Depend on the Executor seam (interface), not the concrete LocalExecutor,
 	// so later Stories can swap in other implementations without touching this
 	// call site (§6 seam principle).
@@ -263,7 +270,6 @@ func runReconcile(args []string) {
 			*causeStatePath, csErr)
 		prevState = causeStateFile{}
 	}
-	curProviderVersion := fpConcrete.ProviderVersion()
 
 	// S072a14-3: compute RenderedRevisionChanged for cause E.
 	renderedRevisionChangedRec := prevState.PrevRenderedRevision != "" &&
@@ -325,6 +331,15 @@ func runReconcile(args []string) {
 	// we can populate the last-seen ring and report drift B diagnostics.
 	obsFields := make(map[string]map[string]string, len(desired))
 	for _, res := range desired {
+		// S62dbba-2: route Read and Diff to the provider for this resource.
+		fp, ok := providers[res.ID.Provider]
+		if !ok {
+			// Should not happen: resolveProviders already validated all names.
+			fmt.Fprintf(os.Stderr, "sakutei reconcile: internal error: no provider for %q\n", res.ID.Provider)
+			os.Exit(1)
+		}
+		engine := engines[res.ID.Provider]
+
 		// ADR-0002: Observe independently for each resource.
 		//
 		// This is a fresh observation: reconcile does NOT carry over any
@@ -430,10 +445,26 @@ func runReconcile(args []string) {
 	// The budget gate needs to see ALL planned ops (Apply + prune) before any is
 	// executed.  We therefore compute the prune set here (without executing it)
 	// so the budget engine can count destructive ops across the whole cycle.
+	//
+	// S62dbba-2: prune is computed per provider.  For the one-shot path, each
+	// provider that implements Lister gets its own prune computation over its
+	// resources.
 	var precomputedPruneOps []core.Op
 	var pruneWasHaltedBySafetyGuard bool
-	if _, isLister := fp.(provider.Lister); isLister {
-		precomputedPruneOps, pruneWasHaltedBySafetyGuard = computePrune(ctx, fp, desired, unobservable)
+	// Group desired resources by provider for per-provider prune.
+	byProvider := make(map[string][]diff.DesiredResource, len(providers))
+	for _, r := range desired {
+		byProvider[r.ID.Provider] = append(byProvider[r.ID.Provider], r)
+	}
+	for name, fp := range providers {
+		if _, isLister := fp.(provider.Lister); isLister {
+			ops, halted := computePruneForProvider(ctx, fp, byProvider[name], unobservable)
+			precomputedPruneOps = append(precomputedPruneOps, ops...)
+			if halted {
+				pruneWasHaltedBySafetyGuard = true
+			}
+		}
+		_ = name
 	}
 
 	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3).
@@ -531,7 +562,14 @@ func runReconcile(args []string) {
 	//   - If a dependency fails OR is unobservable (D-1), its transitive
 	//     dependents are skipped.
 	//   - appliedIDs contains the Local IDs of resources that were successfully applied.
-	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, fp, exec, desired, filteredPlans, unobservable, os.Stderr)
+	//
+	// S62dbba-2: ApplyWaves needs to route Apply to the right provider per resource.
+	// We use a multiProvider adapter so the existing ApplyWaves interface (which
+	// takes a single provider.Provider) continues to work without changes to
+	// internal/reconcile.  The adapter routes each Apply call to the correct
+	// per-resource provider based on the Op's target provider.
+	applyProvider := newMultiProviderApply(providers, desired)
+	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, os.Stderr)
 	if waveErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: wave apply: %v\n", waveErr)
 		os.Exit(1)
@@ -583,7 +621,7 @@ func runReconcile(args []string) {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: budget: blocked destructive op DELETE %s (budget limit)\n", op.Target)
 	}
 
-	pruneOps, pruneHalted := runPruneWithPrecomputed(ctx, fp, exec, precomputedPruneOps, allowedPruneOps, pruneWasHaltedBySafetyGuard)
+	pruneOps, pruneHalted := runPruneWithPrecomputed(ctx, applyProvider, exec, precomputedPruneOps, allowedPruneOps, pruneWasHaltedBySafetyGuard)
 	for _, op := range pruneOps {
 		printOp(op)
 		budgetEngine.CommitOps([]core.Op{op})
@@ -632,16 +670,16 @@ func runReconcile(args []string) {
 	os.Exit(0)
 }
 
-// computePrune runs the prune engine computation (§12, ADR-0005) WITHOUT
-// executing any Delete ops.  Returns the approved Delete ops and whether the
-// prune safety guard halted prune for this cycle.
+// computePruneForProvider runs the prune engine computation (§12, ADR-0005) for
+// a single provider WITHOUT executing any Delete ops.  Returns the approved
+// Delete ops and whether the prune safety guard halted prune.
 //
 // IMPORTANT (Scf7762-1): the one-shot "sakutei reconcile" creates a FRESH
 // prune.Engine every invocation, so its List count-drop baseline (§12.4b) is
 // reset to 0 on every run and the count-drop halt can NEVER fire here — a
 // one-shot process has no "previous cycle" to compare against.  The count-drop
 // guard only works in the long-lived daemon (internal/reconcile.Run).
-func computePrune(
+func computePruneForProvider(
 	ctx context.Context,
 	fp provider.Provider,
 	desired []diff.DesiredResource,
@@ -683,8 +721,9 @@ func computePrune(
 
 // runPruneWithPrecomputed executes a pre-filtered set of prune Delete ops.
 //
-// precomputed is the full set returned by computePrune (for halted-by-guard
-// detection); allowed is the budget-filtered subset that may actually execute.
+// precomputed is the full set returned by computePruneForProvider (for
+// halted-by-guard detection); allowed is the budget-filtered subset that may
+// actually execute.
 func runPruneWithPrecomputed(
 	ctx context.Context,
 	fp provider.Provider,
@@ -711,4 +750,144 @@ func runPruneWithPrecomputed(
 	}
 
 	return appliedOps, false
+}
+
+// multiProviderApply is a provider.Provider adapter that routes Read and Apply
+// to the correct per-resource provider based on the resource's provider name.
+//
+// This allows the existing reconcile.ApplyWaves (which takes a single
+// provider.Provider) to work with multiple providers without changes to the
+// internal/reconcile package.
+//
+// S62dbba-2: this is intentionally an internal cmd-layer adapter, NOT a public
+// pkg/ type.  It wires the multi-provider map to the single-provider interface
+// expected by ApplyWaves.  If multi-provider becomes a first-class concept in
+// the reconcile core, this adapter can be promoted or replaced.
+type multiProviderApply struct {
+	// providers maps provider name → provider instance.
+	providers map[string]provider.Provider
+	// localToProvider maps resource local ID → provider name.
+	// Built once at construction from the desired resource list.
+	localToProvider map[string]string
+	// fallback is used when the local ID is not found in localToProvider
+	// (should not happen in normal operation).
+	fallback provider.Provider
+}
+
+// Compile-time assertion that multiProviderApply satisfies provider.Provider.
+var _ provider.Provider = (*multiProviderApply)(nil)
+
+// newMultiProviderApply creates a multiProviderApply from the given providers
+// map and the desired resource list.
+func newMultiProviderApply(providers map[string]provider.Provider, desired []diff.DesiredResource) *multiProviderApply {
+	localToProvider := make(map[string]string, len(desired))
+	for _, r := range desired {
+		localToProvider[r.ID.Local] = r.ID.Provider
+	}
+	// Pick an arbitrary fallback (the first one in iteration order).
+	var fallback provider.Provider
+	for _, p := range providers {
+		fallback = p
+		break
+	}
+	return &multiProviderApply{
+		providers:       providers,
+		localToProvider: localToProvider,
+		fallback:        fallback,
+	}
+}
+
+// Schema returns the schema of the fallback provider.
+//
+// Note: in a multi-provider scenario each provider has its own schema.  The
+// Schema method here is required by the provider.Provider interface but is not
+// used by ApplyWaves (which routes Apply, not Schema/Diff).  The per-provider
+// diff engines are built separately in runReconcile.
+func (m *multiProviderApply) Schema() provider.Schema {
+	if m.fallback != nil {
+		return m.fallback.Schema()
+	}
+	return provider.Schema{}
+}
+
+// Capabilities returns the capabilities of the fallback provider.
+// See Schema() for the same caveat about per-provider capabilities.
+func (m *multiProviderApply) Capabilities() provider.Capabilities {
+	if m.fallback != nil {
+		return m.fallback.Capabilities()
+	}
+	return provider.Capabilities{}
+}
+
+// Read routes to the provider responsible for the given local ID.
+func (m *multiProviderApply) Read(ctx context.Context, id string) (core.Observation, error) {
+	p := m.providerFor(id)
+	return p.Read(ctx, id)
+}
+
+// Apply routes each op in the plan to the provider responsible for its target.
+//
+// All ops in a plan MUST belong to the same provider (ApplyWaves sends one
+// plan per resource, and each resource has a single provider).  If ops in a
+// plan span providers, they are dispatched to their respective providers in
+// separate Apply calls.
+func (m *multiProviderApply) Apply(ctx context.Context, plan core.Plan) error {
+	// Group ops by provider.
+	byProvider := make(map[string][]core.Op)
+	var providerOrder []string
+	for _, op := range plan.Ops {
+		name := m.localToProvider[op.Target.Local]
+		if name == "" {
+			// Unknown local ID — fall back to the default provider.
+			name = ""
+		}
+		if _, seen := byProvider[name]; !seen {
+			providerOrder = append(providerOrder, name)
+		}
+		byProvider[name] = append(byProvider[name], op)
+	}
+
+	for _, name := range providerOrder {
+		ops := byProvider[name]
+		var p provider.Provider
+		if name == "" {
+			p = m.fallback
+		} else {
+			var ok bool
+			p, ok = m.providers[name]
+			if !ok {
+				p = m.fallback
+			}
+		}
+		if err := p.Apply(ctx, core.Plan{Ops: ops}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// List implements provider.Lister by routing to the fallback provider's List.
+//
+// For multi-provider prune, the per-provider prune logic (computePruneForProvider)
+// calls each provider's Lister directly.  This method exists so that the
+// multiProviderApply can also satisfy provider.Lister when needed by ApplyWaves.
+func (m *multiProviderApply) List(ctx context.Context, scope core.Scope) (core.ListResult, error) {
+	lister, ok := m.fallback.(provider.Lister)
+	if !ok {
+		return core.ListResult{}, nil
+	}
+	return lister.List(ctx, scope)
+}
+
+// providerFor returns the provider responsible for the given local ID.
+func (m *multiProviderApply) providerFor(localID string) provider.Provider {
+	name, ok := m.localToProvider[localID]
+	if !ok || name == "" {
+		return m.fallback
+	}
+	p, ok := m.providers[name]
+	if !ok {
+		return m.fallback
+	}
+	return p
 }
