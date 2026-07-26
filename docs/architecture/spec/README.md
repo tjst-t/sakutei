@@ -1,11 +1,11 @@
-# Sakutei（作庭）設計書 v3.1
+# Sakutei（作庭）設計書 v3.3
 
-**改訂日: 2026-07-22**（8 部 29 節・分冊構成）
+**改訂日: 2026-07-24**（8 部 29 節・分冊構成）
 
 ## 本書の位置づけ
 
 - 本書（この `spec/` ディレクトリ一式）は Sakutei の**設計の正（source of truth）**である。設計に関する記述は本書を正とし、旧版・サンプルとの矛盾は本書に寄せる。
-- 本書の骨格は **v2.6 と内容（設計判断）が等価**の全面再構成（v3.0）である。v3.1 では §29.4（位置づけを OSS 個人プロジェクト・Apache-2.0 に確定）のみを更新した。v2.2〜v2.6 の改訂履歴は [`../old/`](../old/) の各 `CHANGELOG-v2.x.md` と旧版ファイルを、v2.6 → v3.0 の再構成は [`../CHANGELOG-v3.0.md`](../CHANGELOG-v3.0.md)、v3.0 → v3.1 は [`../CHANGELOG-v3.1.md`](../CHANGELOG-v3.1.md) を参照。
+- 本書の骨格は **v2.6 と内容（設計判断）が等価**の全面再構成（v3.0）である。v3.1 では §29.4（位置づけを OSS 個人プロジェクト・Apache-2.0 に確定）のみを更新した。v3.2 では障害駆動の人手対処（human-in-the-loop remediation）を §14.7 として新設し、§6.2（1-outstanding 制約）・§6.4（ゲート timeout 宣言）を補強した（ADR-0023）。v3.3 では段0-zero（非常駐・クライアント PC からの一回性収束）を §23.7 として新設し、§14.5（cooling-off のゲート化）・§26.6（非常駐運用の正当性）を補強した（ADR-0024。旧 §23.7 dogfooding は §23.8 へ）。v2.2〜v2.6 の改訂履歴は [`../old/`](../old/) の各 `CHANGELOG-v2.x.md` と旧版ファイルを、v2.6 → v3.0 の再構成は [`../CHANGELOG-v3.0.md`](../CHANGELOG-v3.0.md)、v3.0 → v3.1 は [`../CHANGELOG-v3.1.md`](../CHANGELOG-v3.1.md)、v3.1 → v3.2 は [`../CHANGELOG-v3.2.md`](../CHANGELOG-v3.2.md)、v3.2 → v3.3 は [`../CHANGELOG-v3.3.md`](../CHANGELOG-v3.3.md) を参照。
 - §番号（§1〜§29）は全 8 ファイルを通して一意。ファイルをまたぐ参照も §番号のままで成立する。
 
 ## 改訂の規約
@@ -35,7 +35,7 @@
 ### [第IV部 安全機構](part4-safety.md)
 - **§12 削除の規律** — 集合演算と境界宣言 / DeletionPolicy / pruneable / List 完全性 / Release 非対称 / final_backup
 - **§13 変更予算** — rate limit / 累積時間窓予算 / planned_change / capacity gate
-- **§14 修復の統制** — remediation mode / schedule / 優先規則と freeze / 承認ゲート / 運用プロファイル / alert-only 常用
+- **§14 修復の統制** — remediation mode / schedule / 優先規則と freeze / 承認ゲート / 運用プロファイル / alert-only 常用 / 人手対処（human-in-the-loop）
 - **§15 隔離と防御** — blast radius 3軸 / fencing token / oscillation 隔離 / シャード=爆発半径 / デフォルト halt
 
 ### [第V部 スケールと分散](part5-scale.md)
@@ -50,7 +50,7 @@
 - **§22 委譲と停止影響** — 委譲一覧 / observability-as-Resource / Event と sink / 衛星停止影響表
 
 ### [第VII部 運用ライフサイクル](part7-operations.md)
-- **§23 ブートストラップ** — 段0 / 設計判断 / 管理 NW 要件 / コールドスタートと SPOF / 段0-minimal / devenv dogfooding
+- **§23 ブートストラップ** — 段0 / 設計判断 / 管理 NW 要件 / コールドスタートと SPOF / 段0-minimal / 段0-zero / devenv dogfooding
 - **§24 ブラウンフィールド** — 不完全な理想×prune / 信頼獲得の順序 / import / Sync Mode / 観測不能資産 / escape hatch
 - **§25 災害と復旧** — DR モード / git 外部化 / S2 喪失 / 分断時挙動と DR 判定
 - **§26 検証と監査** — 検証4段 / devenv（坪庭）・twin（縮景） / 監査 S4 / 適合レポート / canary / CLI 全 verb

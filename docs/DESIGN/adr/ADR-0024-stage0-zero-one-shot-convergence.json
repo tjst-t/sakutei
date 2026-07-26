@@ -1,0 +1,36 @@
+{
+  "id": "ADR-0024",
+  "title": "段0-zero —— クライアント PC からの一回性収束（非常駐）を第一級の運用形態とする",
+  "status": "accepted",
+  "date": "2026-07-24",
+  "context": "段0-minimal（1ノード常駐・§23.6）でもなお、ホームラボには『常時稼働する制御面ノードを 1 台確保する』こと自体が重い。ノート PC は常時稼働できず、常駐デーモン前提が物理的に成立しない。一方で CLI には `sakutei reconcile`（1回収束・手動キック）が既に第一級 verb としてあり、観測 state レスは実行間の状態保持をそもそも要求しない。scenario 01/02 レビューの最大ギャップ（段0 の重さ）と、OSS 初期利用者の入口を軽くする方針（ADR-0020 / v3.1『入口の軽さが採用を決める』）の両方が、制御面専用ノードゼロの運用形態を求めている。",
+  "alternatives": [
+    {
+      "name": "常駐を必須とし、ホームラボには Raspberry Pi 等の常時稼働ノードを要求する",
+      "tradeoff": "入口の重さが残り、『clone してクライアント PC から試す』という OSS 初期体験（Terraform ユーザーの筋肉記憶）を閉ざす。常時稼働ノードを確保できるならそれは段0-minimal である"
+    },
+    {
+      "name": "cron 等の定時起動で疑似常駐にする",
+      "tradeoff": "クライアント PC は起動時間が不定で定時起動が成立しない。成立する機械があるならやはり段0-minimal でよい"
+    },
+    {
+      "name": "一回性運用は state ファイル持ちの Terraform 型別モードとして作る",
+      "tradeoff": "観測 state レスを捨てると three-way-diff / state ドリフト問題を自ら持ち込む。一回性でも毎回リアルを再観測することこそが本設計の価値であり、別モード化は不要かつ有害"
+    }
+  ],
+  "decision": "段0-minimal の下に『段0-zero』（制御面専用ノードなし・クライアント PC から `sakutei reconcile` による任意タイミングの一回性収束）を第一級の運用形態として定義する（§23.7）。常駐は『本来の姿』のまま、起床トリガが人間になっただけと位置づける（人間 triggered な起床、level-triggered な真実）。成立条件として (1) solo cooling-off を『次回 reconcile 時に N 時間経過していれば通す』ゲート条件に再解釈（§14.5）、(2) S2 は PC ローカル file、(3) 複数 PC の二重 writer は fencing 世代（§15.2 流用）で拒否、(4) S3 喪失は既定の保守側（prune 保留）で安全、を仕様化する。",
+  "consequences": [
+    "+ scenario 01/02 の最大ギャップ（段0 の重さ）への最終回答。採用ファネル 段0-zero → 段0-minimal → 段0 が成立し、OSS の最初の体験が『clone して plan → reconcile』になる",
+    "+ 観測 state レスゆえ実行間の状態を一切持たず、Terraform 的な『開いて叩く』UX でも state 鮮度問題を持ち込まない（§23.6『制御面停止はデータ面を止めない』の極限形。新たな理論を要しない）",
+    "+ cooling-off のタイマー→ゲート再解釈は level-triggered 思想にむしろ整合する",
+    "- ドリフトは検知すらされない（alert-only の『検知は続け』も止まる）。『開いたらまず status / plan』が運用作法になる",
+    "- 多相 Task / Workflow の実行中はプロセスを終了できない（中断は S2 file 永続 + べき等再開で耐えるが、長時間手続きは段0-minimal 以上を推奨）",
+    "- 早期収束パス・remediation schedule・cooling-off の自動実行は非常駐では無効",
+    "- クライアント PC がホームラボ全機器の write 資格を持つ（爆発半径 = PC の盗難。ディスク暗号化 + file SecretBackend で緩和・§20 資格局所性の家庭版）"
+  ],
+  "reversibility_cost": "low",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "v3.3 で §23.7 として spec 反映（CHANGELOG-v3.3）。§14.5（cooling-off ゲート化）・§26.6（CLI 注記）も更新し、旧 §23.7（devenv dogfooding）は §23.8 へ繰り下げ。ADR-0017（段0 / 段0-minimal）・ADR-0020（OSS 第一歩）に接続。"
+}

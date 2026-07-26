@@ -381,6 +381,8 @@ update_policy:
   rollback_on_fail: true
 ```
 
+- **1-outstanding 制約**:`strategy: task` の起動は、同一リソースにつき未完了の Task/Workflow インスタンスを高々 1 つに制限する。level-triggered な収束は同じ差分を毎周期検知し続けるため、抑止がないと手続きが周期ごとに乱造される（人手対処 Workflow ならチケット乱造・§14.7）。未完了（承認待ち・halt を含む）の間は再起動せず、完了または cancel 後の周期に差分がなお残っていれば改めて起動する。
+
 ### §6.3 Workflow —— 順序 + 不変条件 + 承認ゲート
 
 ローリングアップグレードは Task では足りない。集合をまたぎ、**動的な状態依存**（隣が今 healthy か）・**全体不変条件**（常に N 台 active / quorum 維持）・**部分失敗からの回復方針**を持つ。DAG は静的順序しか表せない。
@@ -433,7 +435,7 @@ rollout:
   on_stage_fail: halt
 ```
 
-**承認ゲートのフロー**:ステージ完了 → `StageAwaitingApproval` Event 発火 → sink 経由で人へ通知 → Workflow は「待ち」フェーズで停止（S2 の永続化により留まる）→ 承認 API → 次ステージ。タイムアウト（例 24h）で halt する。
+**承認ゲートのフロー**:ステージ完了 → `StageAwaitingApproval` Event 発火 → sink 経由で人へ通知 → Workflow は「待ち」フェーズで停止（S2 の永続化により留まる）→ 承認 API → 次ステージ。タイムアウトで halt する（`timeout` はゲート単位で宣言可・既定 24h。部品調達を伴う物理作業の観測ゲートでは週単位が正当・§14.7）。
 
 - **API 形**:`POST /workflows/{id}/gates/{gate}/approve`（却下 = halt）。ボディに承認者 ID + 署名を載せる。ゲートは requirements を満たす承認が揃うまで「待ち」に留まり、揃った瞬間に次ステージへ進む。
 - **承認 API 自体は認可を持たない**（誰が叩けるか・役割 X の判定は上位 IdP）。ゲートは「役割 X の署名が N 個必要」を requirements として保持するだけである（コアは認可を持たない・§7）。

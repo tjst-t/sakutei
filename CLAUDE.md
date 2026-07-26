@@ -50,7 +50,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 | IV 安全機構 | §12-15 | part4-safety.md | 削除の規律 / 変更予算+planned_change / 修復の統制+プロファイル / 隔離と防御（fencing）|
 | V スケールと分散 | §16-18 | part5-scale.md | 天井算術（BulkObserve）/ claim シャーディング+S2-free / 分散の原則 |
 | VI 衛星と外部世界 | §19-22 | part6-satellites.md | allocator / secret と資格 / DesiredSource と catalog / 委譲と停止影響表 |
-| VII 運用ライフサイクル | §23-26 | part7-operations.md | 段0・段0-minimal / ブラウンフィールド / 災害と復旧（DRモード）/ 検証と監査 |
+| VII 運用ライフサイクル | §23-26 | part7-operations.md | 段0・段0-minimal・段0-zero / ブラウンフィールド / 災害と復旧（DRモード）/ 検証と監査 |
 | VIII 実装 | §27-29 | part8-implementation.md | スライス v1a/v1b/v1.5/v2 / Provider SDK / 残る課題と既知の限界 |
 
 ## 設計を貫く八つの原則（§3）

@@ -235,7 +235,7 @@ remediation:
 
 段階適用における承認ゲートは、既存 Workflow（wave + invariant + Event/sink + フェーズ永続化）の組み合わせで表現でき、新プリミティブは不要。ゲート型そのものは §6 の Workflow を参照する。
 
-**承認ゲートのフロー**:ステージ完了 → `StageAwaitingApproval` Event 発火 → sink 経由で人へ通知 → Workflow は「待ち」フェーズで停止（S2 の永続化により留まる）→ 承認 API `POST /workflows/{id}/gates/{gate}/approve`（却下 = halt）→ 次ステージ。タイムアウト（例 24h）で halt。承認 API 自体は認可を持たない（誰が叩けるかは上位 IdP）が、承認された事実は監査（S4・§26）に記録する。
+**承認ゲートのフロー**:ステージ完了 → `StageAwaitingApproval` Event 発火 → sink 経由で人へ通知 → Workflow は「待ち」フェーズで停止（S2 の永続化により留まる）→ 承認 API `POST /workflows/{id}/gates/{gate}/approve`（却下 = halt）→ 次ステージ。タイムアウト（ゲート単位で宣言可・既定 24h・§6.4）で halt。承認 API 自体は認可を持たない（誰が叩けるかは上位 IdP）が、承認された事実は監査（S4・§26）に記録する。
 
 規制環境（金融）が要求する 4-eyes（申請者≠承認者・複数承認）は、**ゲート定義への `requirements` 追加**と**承認 API の拡張のみ**で実装する（新プリミティブ不要）。
 
@@ -264,7 +264,7 @@ platform 破壊的変更に PR 承認必須という既定は、チーム運用�
 | **team**（既定） | 単一承認必須 | PR 必須（他者承認） | 単一承認 | 少人数チーム |
 | **enterprise** | N-of-M + 役割制約を既定化 | PR 必須 | N-of-M + separation | 規制・大規模 |
 
-- **solo:cooling-off（遅延実行）による承認代替**。platform の破壊的大量変更の事前承認を、cooling-off = 遅延実行で代替できる。**`planned_change`（§13.3）の宣言から N 時間後に自動実行**され、**その間いつでも halt 可能**である。「他者のレビュー」を「時間差 + 自己による中断機会」で置き換える——1名運用では後者の方が実効的な安全になる。監査記録は team と同等（誰が・いつ宣言し・いつ実行されたかを S4 に残す）。PR は自己マージ可。
+- **solo:cooling-off（遅延実行）による承認代替**。platform の破壊的大量変更の事前承認を、cooling-off = 遅延実行で代替できる。**`planned_change`（§13.3）の宣言から N 時間後に自動実行**され、**その間いつでも halt 可能**である。「他者のレビュー」を「時間差 + 自己による中断機会」で置き換える——1名運用では後者の方が実効的な安全になる。監査記録は team と同等（誰が・いつ宣言し・いつ実行されたかを S4 に残す）。PR は自己マージ可。非常駐運用（段0-zero・§23.7）では「N 時間後に自動実行」が成立しないため、cooling-off は「**次回 reconcile 時に N 時間経過していれば通す**」ゲート条件として評価する（タイマーからゲートへの level-triggered な再解釈）。
 
 ```yaml
 profile: solo
@@ -280,6 +280,35 @@ solo:
 ### §14.6 ブラウンフィールドの alert-only 常用
 
 ブラウンフィールド導入では、人の変更を早々に自動で巻き戻さないため、read-only / alert-only から始めて信頼を得る。import → alert-only → scope ごとに auto へ昇格、という順序を採る。詳細は §24 に定める。
+
+### §14.7 障害駆動の人手対処（human-in-the-loop remediation）
+
+障害検知後の修復には、物理作業（ディスク / ノード / SFP 交換）や、人間にしか実行できない操作（Vault の unseal・§23）が必須の場合がある。これを Sakutei の外（監視 + チケット運用）に置くと、通知・待ち・作業前後の自動段・事実確認・監査が分断される。**新プリミティブは足さない**。既存部品の合成——`strategy: task`（§6.2）による起動、Event/sink（§4.7, §22）による通知、S2 永続の「待ち」フェーズ、承認ゲート（§14.4）、ready_condition（§11）——で、人手対処を Workflow として第一級に載せる。
+
+**人手には2種類あり、待ち方の型が違う。** 「進んでよいか」という**判断**は承認ゲートで待つ（自己申告 + 署名・4-eyes・S4 記録）。「部品を挿す」という**物理作業**は**観測ゲート**で待つ——人間を external_owner（§7）と同型に扱い、Sakutei から作業指示は出さず、人が変えた現実を次の Observe が確認して先へ進む。原則7「シャード間協調は現実を介して行う」の人間への適用であり、完了の自己申告でなく観測された事実で進むため、報告忘れ・誤報告に頑健である。うまい Workflow は「判断は承認で、作業は観測で」を使い分ける。観測できない対象（`observability: none`・§5）では観測ゲートは成立せず、承認ゲートへ縮退する。
+
+推奨形（ディスク交換。起動は Resource 側の `strategy: task` 宣言・§6.2 が担う）:
+
+```yaml
+workflow: replace-failed-osd    # cause B 検知 → 起動(1-outstanding 制約下・§6.2)
+steps:
+  - freeze_scope: "host-N"      # 人が触る間、当該 scope の自動修復を止める(§14.3)
+  - osd-out: {...}              # 自動段:safe-to-remove を invariant で確認
+  - gate:
+      notify: "host-N slot3 のディスクを交換"  # sink 経由。ITSM チケット起票も sink の一実装(§22)
+      ready_condition: new_disk_observed       # ← 物理作業を観測で待つ
+      timeout: 168h                            # 部品調達を見込む(ゲート単位宣言・§6.4)
+  - osd-recreate: {...}         # 自動段
+  - unfreeze_scope: "host-N"
+```
+
+これを成立させる規律は3つで、いずれも既存機構の延長である。
+
+- **1-outstanding 制約**（§6.2）:level-triggered な再検知は同じ差分を毎周期検知し続けるため、抑止がないと Workflow / チケットが周期ごとに乱造される。同一リソース高々1未完了インスタンスで構造的に塞ぐ。逆に、halt したまま放置された未完了インスタンスは新たな修復を塞ぐため、ゲート timeout と手動 cancel が排水弁になる。
+- **timeout のゲート単位宣言**（§6.4）:承認向けの既定（24h）に対し、部品調達を伴う物理作業では週単位が正当である。
+- **作業中 scope の freeze**:Workflow の最初の段で freeze を張り、最後の段で外す。mode 解決は most-restrictive-wins（§14.3）なのでこの freeze はどの決定源よりも優先し、保守員の手元で自動修復が動く事故を型で塞ぐ。
+
+§13.4 の容量超過是正（是正は Workflow として明示的にトリガし、自動連鎖させない）はこの型の既出例であり、Vault の sealed-on-restart（§23）も「sealed を観測 → 通知 → unsealed を観測して依存作業再開」として同型に載る。
 
 ---
 

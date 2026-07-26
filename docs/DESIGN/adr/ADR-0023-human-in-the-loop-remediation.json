@@ -1,0 +1,35 @@
+{
+  "id": "ADR-0023",
+  "title": "障害駆動の人手対処（human-in-the-loop remediation）は既存プリミティブの合成で仕組み化する",
+  "status": "accepted",
+  "date": "2026-07-24",
+  "context": "障害を検知しても、修復にディスク / ノード / SFP 交換のような物理作業や、Vault unseal（§23）のように人間にしか実行できない操作が必須の場合がある。現行 spec は remediation の統制（§14）と Workflow の承認ゲート（§14.4）を持つが、『人手作業を含む修復』を仕組みに載せる型は未規定で、Sakutei の外（監視 + ITSM 運用）に置くと通知・待ち・作業前後の自動段（drain / freeze / 復帰）・事実確認・S4 監査が分断される。新プリミティブを追加するか、既存プリミティブの合成で表現するかの判断が要る。",
+  "alternatives": [
+    {
+      "name": "新プリミティブ「human task」を追加する",
+      "tradeoff": "人手は『判断』と『物理作業』に分解でき、前者は承認ゲート・後者は観測ゲート（ready_condition）という既存2型で表現できる。専用プリミティブはコア肥大であり、seam を増やさず合成で表す原則（§3 原則5）に反する"
+    },
+    {
+      "name": "Sakutei は alert-only 通知までとし、修復は監視 + ITSM の外部運用に任せる",
+      "tradeoff": "通知と実作業と前後の自動段が分断され、freeze の張り忘れ等のヒューマンエラー面が残り、作業の事実が S4 監査に残らない"
+    },
+    {
+      "name": "人間を Provider として実装する（Apply = チケット起票 / Read = 作業結果確認）",
+      "tradeoff": "非冪等・経路依存の人手作業を毎周期の収束ループに載せることになり、RequiresTaskEvent の原則（§6.5）に真っ向から反する。チケット起票は sink の一実装として扱えば足りる"
+    }
+  ],
+  "decision": "人手対処は Workflow として表現し、『判断は承認ゲート（§14.4）、物理作業は観測ゲート（ready_condition）』で待つ。人間は external_owner（§7）と同型に扱い、Sakutei は作業指示を出さず、人が変えた現実を Observe して次段へ進む。成立条件として (1) strategy: task の 1-outstanding 制約、(2) ゲート timeout のゲート単位宣言、(3) 作業中 scope の freeze 段、の3点を仕様化する（v3.2 §14.7）。",
+  "consequences": [
+    "+ 通知（sink）・待ち（S2）・事実確認（Observe）・前後の自動段・監査（S4）が単一 Workflow に載り、人間の役割は『現実を変える』ことだけになる",
+    "+ 物理作業の完了を自己申告でなく観測で判定するため、報告忘れ・誤報告に頑健（原則7『シャード間協調は現実を介して行う』の人間への適用）",
+    "+ level-triggered の再検知による Workflow / チケットの乱造を 1-outstanding 制約が構造的に塞ぐ",
+    "- observability: none の対象では観測ゲートが成立せず、承認ゲート（自己申告）へ縮退する",
+    "- halt したまま放置された未完了インスタンスが新たな修復を塞ぐため、ゲート timeout と手動 cancel の運用が排水弁として必須になる",
+    "- Workflow は v1.5 スコープであり、v1a 時点ではこの型は使えない（alert-only + 手動運用で代替）"
+  ],
+  "reversibility_cost": "low",
+  "affects": ["reconciler"],
+  "supersedes": null,
+  "superseded_by": null,
+  "notes": "§6.2（strategy: task）・§6.4（承認ゲート）・§7（external_owner）・§11（ready_condition）・§13.4（是正 Workflow）・§23（Vault unseal）に接続。v3.2 で §14.7 として spec 反映（CHANGELOG-v3.2 CHG-H1〜H3）。人手ゲートを含む Workflow への freeze 暗黙強制は見送り（暗黙の mode 変更は追跡性を損なう。lint 警告の検討余地を実装中に決める事項として残す）。"
+}
