@@ -9,3 +9,6 @@ docs/sprint-logs/
 *.test
 *.out
 coverage.*
+
+# make demo scratch dir
+.demo/

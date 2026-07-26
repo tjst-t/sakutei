@@ -1,10 +1,76 @@
-.PHONY: build test vet
+.PHONY: build test vet check demo clean
+
+BIN     := sakutei
+DEMODIR := .demo
 
 build:
-	go build -o sakutei ./cmd/sakutei
+	go build -o $(BIN) ./cmd/sakutei
 
 test:
 	go test ./...
 
 vet:
 	go vet ./...
+
+check: build vet test
+
+clean:
+	rm -rf $(BIN) $(DEMODIR)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# make demo — GUI を持たない収束エンジンの「レビュー面」を実演する。
+# dnszone（実 provider）を一時ディレクトリ .demo/ で動かし、次の物語を再生する:
+#   1) plan       宣言した2レコードが「これから作られる」ことを dry-run で見る
+#   2) reconcile  実体ファイル zone.db に収束させる
+#   3) status     適合レポート（drifted=0）
+#   4) ドリフト注入  誰かが zone.db を手で改ざん＋宣言外レコードを追加 → status が検知
+#   5) reconcile  触っていないのに元へ戻る（自己修復）
+#   6) status     再び適合（改ざんは戻り、宣言外は prune されず残る）
+# 見どころ: 改ざんは cause B（ドリフト）で plan/status が一致、宣言外は unmanaged で可視化。
+# すべて読み取り面（plan/status）に出るのがこのソフトのレビュー体験そのもの。
+# ─────────────────────────────────────────────────────────────────────────────
+demo: build
+	@rm -rf $(DEMODIR) && mkdir -p $(DEMODIR)/intent
+	@printf '%s\n' \
+	  '{' \
+	  '  "resources": [' \
+	  '    {"provider": "dnszone", "id": "www.example.com./A", "fields": {"name": "www.example.com.", "type": "A", "value": "192.0.2.10", "ttl": "300"}},' \
+	  '    {"provider": "dnszone", "id": "api.example.com./A", "fields": {"name": "api.example.com.", "type": "A", "value": "192.0.2.20", "ttl": "300"}}' \
+	  '  ]' \
+	  '}' > $(DEMODIR)/intent/zone.json
+	@echo ''
+	@echo '▶ intent（人が書く「あるべき姿」）: www=192.0.2.10, api=192.0.2.20'
+	@echo ''
+	@echo '════════ 1) sakutei plan — 何が変わるか（dry-run、まだ触らない）════════'
+	@./$(BIN) plan --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
+	@echo ''
+	@echo '════════ 2) sakutei reconcile — 1回収束（zone.db を実際に書く）════════'
+	@./$(BIN) reconcile --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
+	@echo ''
+	@echo '── 実体 zone.db ──'
+	@cat $(DEMODIR)/zone.db
+	@echo ''
+	@echo '════════ 3) sakutei status — 適合レポート（今そろっている？）════════'
+	@./$(BIN) status --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
+	@echo ''
+	@echo '▶ 誰かが zone.db を手で改ざん（www を 10.6.6.6 に + 宣言外 rogue を追加）'
+	@printf '%s\n' \
+	  'www.example.com. 300 IN A 10.6.6.6' \
+	  'api.example.com. 300 IN A 192.0.2.20' \
+	  'rogue.example.com. 300 IN A 192.0.2.99' > $(DEMODIR)/zone.db
+	@echo ''
+	@echo '════════ 4) sakutei status — ドリフト検知（触っていないのに気づく）════════'
+	@./$(BIN) status --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
+	@echo ''
+	@echo '════════ 5) sakutei reconcile — 自己修復（触っていないのに戻る）════════'
+	@./$(BIN) reconcile --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
+	@echo ''
+	@echo '── 実体 zone.db（www が戻り、rogue は prune されず残る＝確信なき減算はしない）──'
+	@cat $(DEMODIR)/zone.db
+	@echo ''
+	@echo '════════ 6) sakutei status — 再確認 ════════'
+	@./$(BIN) status --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
+	@echo ''
+	@echo '▶ 見どころ: 4)の www は cause B（ドリフト）で plan/status 一致。'
+	@echo '            rogue は unmanaged（宣言外・実在・prune 対象外）として可視化。'
+	@echo '            6)で www は自己修復済み、rogue は減算されず残る。'
