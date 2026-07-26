@@ -317,6 +317,11 @@ func runPlan(args []string) {
 		if childrenWithUpstreamChange[res.ID.Local] {
 			resCauseCtx.UpstreamChanged = true
 		}
+		// Fix Sc7a647 cause-consistency: tell Classify whether this op will be a
+		// Create (resource absent in reality) so a cold-start (empty prev
+		// revision) Create is A but a cold-start drift-repair UPDATE is B — the
+		// same test the diff engine uses (obs.State == nil → OpKindCreate).
+		resCauseCtx.ResourceObservedAbsent = obs.State == nil
 
 		// S33266e-1 (§20): a bare plaintext in a secret-flagged field is a fatal
 		// intent error (plaintext secret + perpetual non-converging diff).  Fail

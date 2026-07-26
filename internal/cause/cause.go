@@ -30,8 +30,25 @@
 //     rather than "intent changed at scope level"; the child's own desired
 //     fields did not change directly.  In v1a this flag is always false.
 //
-//  3. A (intentional) — intent_revision changed since the last cycle.  The
-//     operator committed a new desired state.
+//  3. A (intentional) — a genuine intent change, in one of two forms:
+//     (a) a KNOWN prior intent_revision that DIFFERS from the current one
+//         (IntentPrevRevision != "" && != IntentCurRevision): the operator
+//         committed a new desired state; or
+//     (b) cold start (IntentPrevRevision == "" / no history) where reality
+//         was observed ABSENT — i.e. the op is a Create.  A first declaration
+//         of a resource that does not yet exist is intentional, not drift.
+//
+//     COLD-START vs DRIFT (fix Sc7a647 cause-consistency): an EMPTY
+//     IntentPrevRevision means "no history / cold start", NOT "intent changed".
+//     Previously the A branch fired whenever IntentCurRevision !=
+//     IntentPrevRevision, so a one-shot plan/reconcile with no --cause-state
+//     ("" != cur) tagged EVERYTHING A — including an UPDATE that merely repairs
+//     a field that drifted under the operator.  That read as A ("operator
+//     changed intent") under plan/reconcile but B ("drift") under status, for
+//     the very same drifted resource.  The unified rule is: with no history,
+//     the OPERATION KIND decides (Create → A, Update → B via ResourceObservedAbsent);
+//     with a known prior revision that differs, it is a genuine intent change (A);
+//     with a known prior revision equal to cur (stable), it is never A.
 //
 //  4. E (external-input change) — rendered_revision changed but
 //     intent_revision is stable.  In v1a (no external inputs) rendered ==
@@ -117,6 +134,18 @@ type CauseContext struct {
 	// SEAM (v1a): always false because rendered == intent.
 	// Will be set when S072a14 brings real external inputs into rendered_revision.
 	RenderedRevisionChanged bool
+
+	// ResourceObservedAbsent is true when THIS cycle's Observe found the resource
+	// absent in reality — i.e. the op the diff engine will emit is a Create (§4,
+	// obs.State == nil).  The CALLER sets it per-resource from the observation.
+	//
+	// It only matters on cold start (IntentPrevRevision == "" / no history), where
+	// it disambiguates the A-vs-B decision (fix Sc7a647 cause-consistency):
+	//   - absent  → Create → A (intentional first declaration).
+	//   - present → Update → NOT A (a field drifted under the operator → falls to B).
+	// When a KNOWN prior revision exists, the revision comparison decides and this
+	// flag is not consulted for the A branch.
+	ResourceObservedAbsent bool
 }
 
 // Classify returns the cause tag for a single resource Op, given:
@@ -168,15 +197,34 @@ func Classify(diffExists bool, ctx CauseContext) core.CauseTag {
 		return core.CauseTagD
 	}
 
-	// Priority 3: A — intent_revision changed.
-	// The operator committed a new desired state for this resource.
-	// On first run IntentPrevRevision is empty; intent always differs from
-	// empty, so the first cycle is tagged A (intentional: the operator
-	// declared this desired state for the first time).  This is correct:
-	// first-run creates are intentional, not drift.
-	if ctx.IntentCurRevision != ctx.IntentPrevRevision {
-		return core.CauseTagA
+	// Priority 3: A — a genuine intent change (fix Sc7a647 cause-consistency).
+	//
+	// Two disjoint cases produce A; a third (cold-start UPDATE) deliberately does
+	// NOT and falls through to E/B.  The pivot is whether IntentPrevRevision is
+	// KNOWN (a real prior cycle wrote it) or EMPTY (no history / cold start):
+	//
+	//   1. Known prior differs (Prev != "" && Cur != Prev): the operator committed
+	//      a new desired state → A.
+	//   2. Cold start (Prev == "") AND the resource was observed ABSENT
+	//      (ResourceObservedAbsent → op is a Create): an intentional first
+	//      declaration of a not-yet-existing resource → A.
+	//   3. Cold start (Prev == "") AND the resource is PRESENT (an UPDATE that
+	//      repairs a drifted field): there is NO evidence intent changed — an
+	//      empty prev means "no history", not "intent changed".  Do NOT return A;
+	//      fall through so this drift-repair lands on B (matching status, which
+	//      uses the same cold-start convention).
+	//
+	// A KNOWN prior equal to cur (Prev != "" && Cur == Prev, stable intent) also
+	// falls through here (never A) → E/B, unchanged from before.
+	if ctx.IntentPrevRevision != "" {
+		if ctx.IntentCurRevision != ctx.IntentPrevRevision {
+			return core.CauseTagA // case 1: known prior differs = genuine change
+		}
+		// known prior == cur: stable intent → fall through to E/B.
+	} else if ctx.ResourceObservedAbsent {
+		return core.CauseTagA // case 2: cold-start Create
 	}
+	// else: cold-start UPDATE (case 3) → fall through (do NOT return A).
 
 	// Priority 4: E — rendered_revision changed but intent_revision is stable.
 	// SEAM (v1a): RenderedRevisionChanged is always false because

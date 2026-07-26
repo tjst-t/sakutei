@@ -108,6 +108,15 @@ type Report struct {
 	// UnobservableCount は観測不能（Availability != Ok）だったリソース数。
 	// unknown ≠ absent（§3）: これらは drifted にも converged にも数えない。
 	UnobservableCount int
+	// Unmanaged は「宣言外・実在」リソース一覧（現実に在るが intent に無い）。
+	// FIX #2 (Sc7a647-3): provider の List でリアルを列挙し、宣言集合との差分から
+	// 求める。既定の DeletionPolicy（ExplicitAbsentOnly）では prune 対象外＝削除され
+	// ない（「確信なき減算はしない」）。ID 文字列昇順で整列済み。
+	Unmanaged []core.ID
+	// UnmanagedNotes は unmanaged 検出が「できなかった」provider の注記
+	// （List 非対応 / List エラー）。検出不能を「宣言外ゼロ」と混同しないための
+	// graceful degradation の可視化。
+	UnmanagedNotes []string
 }
 
 // DriftSummaryProvider は last-seen リングの「前周は X だった」注記を提供する
@@ -129,6 +138,8 @@ type Builder struct {
 	drifted          []DriftedItem
 	converged        int
 	unobservable     int
+	unmanaged        []core.ID
+	unmanagedNotes   []string
 }
 
 // NewBuilder は指定した版情報と last-seen リングでビルダを作る。
@@ -164,6 +175,19 @@ func (b *Builder) AddConverged() { b.converged++ }
 // AddUnobservable は観測不能だったリソースを 1 つ数える（unknown ≠ absent）。
 func (b *Builder) AddUnobservable() { b.unobservable++ }
 
+// AddUnmanaged は「宣言外・実在」リソース（現実に在るが intent に無い）を 1 つ
+// 記録する（FIX #2, Sc7a647-3）。既定 DeletionPolicy では prune 対象外＝削除されない。
+func (b *Builder) AddUnmanaged(id core.ID) {
+	b.unmanaged = append(b.unmanaged, id)
+}
+
+// NoteUnmanagedUndetectable は unmanaged 検出が「できなかった」provider の注記を
+// 追加する（List 非対応、または List エラー）。graceful degradation：検出不能を
+// 「宣言外ゼロ」と混同させず、現実を過少報告しないための可視化。
+func (b *Builder) NoteUnmanagedUndetectable(note string) {
+	b.unmanagedNotes = append(b.unmanagedNotes, note)
+}
+
 // Build は蓄積した項目からレポートを組み立てる。drifted 一覧は Local ID 昇順に
 // 整列される（map 由来の非決定順を排除）。
 func (b *Builder) Build() Report {
@@ -172,12 +196,22 @@ func (b *Builder) Build() Report {
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i].ID.Local < sorted[j].ID.Local
 	})
+	unmanaged := make([]core.ID, len(b.unmanaged))
+	copy(unmanaged, b.unmanaged)
+	sort.Slice(unmanaged, func(i, j int) bool {
+		return unmanaged[i].String() < unmanaged[j].String()
+	})
+	notes := make([]string, len(b.unmanagedNotes))
+	copy(notes, b.unmanagedNotes)
+	sort.Strings(notes)
 	return Report{
 		IntentRevision:    b.intentRevision,
 		RenderedRevision:  b.renderedRevision,
 		Drifted:           sorted,
 		ConvergedCount:    b.converged,
 		UnobservableCount: b.unobservable,
+		Unmanaged:         unmanaged,
+		UnmanagedNotes:    notes,
 	}
 }
 
@@ -224,8 +258,29 @@ func (r Report) String() string {
 		}
 	}
 
-	fmt.Fprintf(&sb, "要約: drifted=%d converged=%d unobservable=%d\n",
-		len(r.Drifted), r.ConvergedCount, r.UnobservableCount)
+	// FIX #2 (Sc7a647-3): unmanaged（宣言外・実在）セクション。現実に在るが intent に
+	// 無いリソースを列挙する。既定 DeletionPolicy（ExplicitAbsentOnly）では prune 対象外
+	// ＝ status では削除しない（read-only；「確信なき減算はしない」§12.2, ADR-0005）。
+	if len(r.Unmanaged) > 0 {
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "unmanaged（宣言外・実在・prune 対象外）: %d リソース\n", len(r.Unmanaged))
+		sb.WriteString("  注記: これらは現実に在るが intent に宣言が無い。既定（ExplicitAbsentOnly）では\n")
+		sb.WriteString("  自動削除されない（prune 対象外・read-only）。削除するなら intent 側で明示する。\n")
+		for _, id := range r.Unmanaged {
+			fmt.Fprintf(&sb, "  UNMANAGED %s\n", id)
+		}
+	}
+	// graceful degradation: 検出不能 provider の注記（List 非対応 / List エラー）。
+	// 検出不能を「宣言外ゼロ」と混同させないため、常に可視化する。
+	if len(r.UnmanagedNotes) > 0 {
+		sb.WriteString("\n")
+		for _, note := range r.UnmanagedNotes {
+			fmt.Fprintf(&sb, "  %s\n", note)
+		}
+	}
+
+	fmt.Fprintf(&sb, "\n要約: drifted=%d converged=%d unobservable=%d unmanaged=%d\n",
+		len(r.Drifted), r.ConvergedCount, r.UnobservableCount, len(r.Unmanaged))
 	return sb.String()
 }
 

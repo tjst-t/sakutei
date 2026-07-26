@@ -116,10 +116,15 @@ func (e *Engine) ValidateDesired(desired DesiredResource) error {
 // obs is the output of Provider.Read for this resource.
 // desired is the intent declaration for this resource.
 // ctx is the per-cycle cause context used to classify the root cause of any
-// diff (§10.2, ADR-0008, Scb0ecd-2).  Pass a zero-value CauseContext to get
-// the original A-placeholder behaviour (first-run: IntentPrevRevision is empty
-// so intent always "changed", yielding tag A — which is correct for first-run
-// creates and updates that have no prior state to compare).
+// diff (§10.2, ADR-0008, Scb0ecd-2).  The caller SHOULD set
+// ctx.ResourceObservedAbsent = (obs.State == nil) so Classify can distinguish a
+// cold-start Create (tag A) from a cold-start drift-repair Update (tag B) when
+// there is no prior revision history (fix Sc7a647 cause-consistency).  A
+// zero-value CauseContext (empty prev revision, ResourceObservedAbsent=false)
+// now classifies a first-run UPDATE as B, not A — an empty prev revision means
+// "no history / cold start", not "intent changed".  A first-run CREATE is A only
+// when the caller sets ResourceObservedAbsent (which Diff's own obs.State == nil
+// branch already implies for the op it emits).
 //
 // Diff returns a Plan containing zero or one Op:
 //   - If obs.Availability != Ok: no Op (unknown ≠ absent; do not create/delete).

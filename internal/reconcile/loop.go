@@ -703,6 +703,10 @@ func runCycleAsync(
 		if childrenWithUpstreamChange[res.ID.Local] {
 			resCauseCtx.UpstreamChanged = true
 		}
+		// Fix Sc7a647 cause-consistency: a cold-start (empty prev revision)
+		// Create is A, but a cold-start drift-repair UPDATE is B.  Mark whether
+		// the resource is absent in reality (obs.State == nil → OpKindCreate).
+		resCauseCtx.ResourceObservedAbsent = obs.State == nil
 
 		// S33266e-1 (§20): reject a bare plaintext in a secret-flagged field
 		// BEFORE diffing.  Such a value is a plaintext secret in the intent AND

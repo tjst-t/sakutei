@@ -170,3 +170,58 @@ func TestReport_CauseDPropagation(t *testing.T) {
 		t.Errorf("[AC-Sc7a647-3-3] downstream cause D should appear; got:\n%s", report.String())
 	}
 }
+
+// TestReport_UnmanagedSection verifies the unmanaged（宣言外・実在）section
+// renders each undeclared reality ID, the "not deleted" note, and unmanaged=N in
+// the summary (FIX #2, Sc7a647-3).
+//
+// [AC-Sc7a647-3-unmanaged]
+func TestReport_UnmanagedSection(t *testing.T) {
+	// [AC-Sc7a647-3-unmanaged]
+	b := NewBuilder("rev-int", "rev-rendered", nil)
+	b.AddConverged()
+	b.AddUnmanaged(core.ID{Provider: "fake", Local: "rogue-1"})
+	b.AddUnmanaged(core.ID{Provider: "fake", Local: "rogue-2"})
+	out := b.Build().String()
+
+	if !strings.Contains(out, "unmanaged（宣言外・実在・prune 対象外）: 2 リソース") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] expected unmanaged heading with count 2; got:\n%s", out)
+	}
+	if !strings.Contains(out, "rogue-1") || !strings.Contains(out, "rogue-2") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] both undeclared IDs must be listed; got:\n%s", out)
+	}
+	if !strings.Contains(out, "自動削除されない") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] must carry the not-auto-deleted note; got:\n%s", out)
+	}
+	if !strings.Contains(out, "unmanaged=2") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] summary must show unmanaged=2; got:\n%s", out)
+	}
+}
+
+// TestReport_UnmanagedUndetectableNote verifies the graceful-degradation note
+// path (a provider that cannot enumerate reality — e.g. a non-Lister provider or
+// a failed/incomplete List) is surfaced as a note and does NOT inflate the
+// unmanaged count (unmanaged stays 0: honest, not fabricated).
+//
+// This is the report-builder proof for the non-Lister degradation branch, which
+// is not reachable via the CLI (every CLI-registered provider implements Lister).
+//
+// [AC-Sc7a647-3-unmanaged]
+func TestReport_UnmanagedUndetectableNote(t *testing.T) {
+	// [AC-Sc7a647-3-unmanaged]
+	b := NewBuilder("rev-int", "rev-rendered", nil)
+	b.AddConverged()
+	b.NoteUnmanagedUndetectable("unmanaged 検出不可（List 非対応 provider: noimpl）")
+	out := b.Build().String()
+
+	if !strings.Contains(out, "unmanaged 検出不可（List 非対応 provider: noimpl）") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] expected the non-Lister degradation note; got:\n%s", out)
+	}
+	// Degradation must not fabricate unmanaged entries.
+	if !strings.Contains(out, "unmanaged=0") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] undetectable must keep unmanaged=0 (not fabricated); got:\n%s", out)
+	}
+	if strings.Contains(out, "UNMANAGED ") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] no UNMANAGED entries should be listed; got:\n%s", out)
+	}
+}

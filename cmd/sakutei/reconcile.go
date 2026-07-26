@@ -422,6 +422,11 @@ func runReconcile(args []string) {
 		if childrenWithUpstreamChangeRec[res.ID.Local] {
 			resCauseCtxRec.UpstreamChanged = true
 		}
+		// Fix Sc7a647 cause-consistency: mark whether this op is a Create
+		// (resource absent in reality) so a cold-start (empty prev revision)
+		// Create is A but a cold-start drift-repair UPDATE is B — mirroring the
+		// diff engine's obs.State == nil → OpKindCreate test.
+		resCauseCtxRec.ResourceObservedAbsent = obs.State == nil
 
 		// S33266e-1 (§20): reject a bare plaintext in a secret-flagged field
 		// before diffing (plaintext secret + perpetual non-converging diff).

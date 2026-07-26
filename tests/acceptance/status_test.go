@@ -271,6 +271,156 @@ func dirExists(path string) bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// [AC-Sc7a647-3-unmanaged] status surfaces "unmanaged" reality — present in
+// reality, absent from intent (FIX #2).  It must NOT imply deletion (default
+// ExplicitAbsentOnly = not pruned; "確信なき減算はしない").  Graceful degradation:
+// a List that cannot enumerate reality is NOTED, never crashed, never treated
+// as "no unmanaged".
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestStatus_UnmanagedRecordSurfaced verifies that a record present in reality
+// but NOT declared in intent appears under `unmanaged`, is counted in the
+// summary (unmanaged=1), and carries the "not deleted by default" note.
+//
+// [AC-Sc7a647-3-unmanaged]
+func TestStatus_UnmanagedRecordSurfaced(t *testing.T) {
+	// [AC-Sc7a647-3-unmanaged]
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	// Intent declares only "managed-vm".
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{"provider": "fake", "id": "managed-vm", "fields": map[string]string{"name": "managed-vm", "size": "20"}},
+		},
+	})
+	// Reality has managed-vm (converged) PLUS an out-of-band "rogue-vm" that is
+	// present in reality but NOT declared in intent (the demo's rogue record).
+	seedState(t, statePath, map[string]map[string]any{
+		"managed-vm": {"name": "managed-vm", "size": "20"},
+		"rogue-vm":   {"name": "rogue-vm", "size": "1"},
+	})
+
+	stdout, stderr, code := runStatusCmd(t, intentDir, statePath)
+	if code != 0 {
+		t.Fatalf("[AC-Sc7a647-3-unmanaged] status exited %d; stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "unmanaged（宣言外・実在・prune 対象外）") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] expected an unmanaged section heading; got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "rogue-vm") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] the undeclared rogue-vm must be listed as unmanaged; got:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "UNMANAGED") && !strings.Contains(stdout, "UNMANAGED fake/") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] unmanaged entry should show the full composite ID; got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "unmanaged=1") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] summary should report unmanaged=1; got:\n%s", stdout)
+	}
+	// "not deleted by default" note present.
+	if !strings.Contains(stdout, "自動削除されない") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] must state unmanaged is NOT auto-deleted (ExplicitAbsentOnly); got:\n%s", stdout)
+	}
+	// A managed, converged resource must NOT be listed as unmanaged.
+	if strings.Contains(stdout, "UNMANAGED fake//managed-vm") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] a declared resource must never be unmanaged; got:\n%s", stdout)
+	}
+	// Read-only: status must not print Apply verbs even with an unmanaged record.
+	assertNoApplyVerbs(t, "[AC-Sc7a647-3-unmanaged]", stdout)
+	t.Logf("[AC-Sc7a647-3-unmanaged] status output:\n%s", stdout)
+}
+
+// TestStatus_UnmanagedZeroWhenNoExtras verifies that a reality with no
+// undeclared resources reports unmanaged=0.
+//
+// [AC-Sc7a647-3-unmanaged]
+func TestStatus_UnmanagedZeroWhenNoExtras(t *testing.T) {
+	// [AC-Sc7a647-3-unmanaged]
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{"provider": "fake", "id": "only-vm", "fields": map[string]string{"name": "only-vm", "size": "7"}},
+		},
+	})
+	// Reality has exactly the declared resource — nothing undeclared.
+	seedState(t, statePath, map[string]map[string]any{
+		"only-vm": {"name": "only-vm", "size": "7"},
+	})
+
+	stdout, stderr, code := runStatusCmd(t, intentDir, statePath)
+	if code != 0 {
+		t.Fatalf("[AC-Sc7a647-3-unmanaged] status exited %d; stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "unmanaged=0") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] no undeclared reality should report unmanaged=0; got:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "UNMANAGED") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] no unmanaged entries expected; got:\n%s", stdout)
+	}
+	t.Logf("[AC-Sc7a647-3-unmanaged] status output:\n%s", stdout)
+}
+
+// TestStatus_UnmanagedGracefulDegradation_ListIncomplete verifies that when a
+// provider's List cannot guarantee completeness (ListPartial), status does NOT
+// crash and does NOT under-report: it emits an "検出不可" note rather than
+// silently claiming unmanaged=0 while still counting 0 (the honest degradation).
+//
+// This exercises the same graceful-degradation branch a non-Lister provider
+// would hit (both add an "unmanaged 検出不可" note); the non-Lister branch itself
+// is unit-tested at the report-builder layer (statusreport_test.go), since every
+// CLI-registered provider implements Lister.
+//
+// [AC-Sc7a647-3-unmanaged]
+func TestStatus_UnmanagedGracefulDegradation_ListIncomplete(t *testing.T) {
+	// [AC-Sc7a647-3-unmanaged]
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{"provider": "fake", "id": "deg-vm", "fields": map[string]string{"name": "deg-vm", "size": "3"}},
+		},
+	})
+	seedState(t, statePath, map[string]map[string]any{
+		"deg-vm":  {"name": "deg-vm", "size": "3"},
+		"extra-x": {"name": "extra-x", "size": "1"}, // would be unmanaged if List were complete
+	})
+	// Force List to report ListPartial → completeness not guaranteed.
+	seedStateListPartial(t, statePath)
+
+	stdout, stderr, code := runStatusCmd(t, intentDir, statePath)
+	if code != 0 {
+		t.Fatalf("[AC-Sc7a647-3-unmanaged] status exited %d (must not crash); stderr: %s", code, stderr)
+	}
+	// Honest degradation: a note, not a fabricated unmanaged list.
+	if !strings.Contains(stdout, "unmanaged 検出不可") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] incomplete List should emit a 検出不可 note; got:\n%s", stdout)
+	}
+	// It must NOT surface extra-x as unmanaged from an incomplete enumeration.
+	if strings.Contains(stdout, "extra-x") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] must not derive unmanaged from an incomplete List; got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "unmanaged=0") {
+		t.Errorf("[AC-Sc7a647-3-unmanaged] incomplete List: unmanaged count stays 0 (noted, not fabricated); got:\n%s", stdout)
+	}
+	t.Logf("[AC-Sc7a647-3-unmanaged] graceful degradation output:\n%s", stdout)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AC-Sc7a647-3-3: provider tier + last-seen note + downstream D.
 // ─────────────────────────────────────────────────────────────────────────────
 

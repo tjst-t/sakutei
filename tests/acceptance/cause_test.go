@@ -468,6 +468,137 @@ func TestCauseTag_B_ReconcileDrift(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// [AC-cause-consistency] cold-start semantics unified across plan/reconcile/status
+// (fix Sc7a647): an EMPTY prev intent_revision means "no history / cold start",
+// NOT "intent changed".  On cold start the OP KIND decides — a Create is A
+// (intentional first declaration) but a drift-repair Update is B (no evidence
+// intent changed).  Before this fix a one-shot plan/reconcile with no
+// --cause-state tagged EVERY op A ("" != cur), so a drifted field read as A under
+// plan/reconcile but B under status.  These tests lock in that plan and status now
+// AGREE on the same drifted resource (both B), and that a genuine cold-start
+// CREATE is still A.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestCauseConsistency_ColdStart_CreateA_DriftB verifies, WITHOUT any
+// --cause-state file (cold start), that:
+//   - a resource absent in reality (a Create) is tagged A, and
+//   - a resource present-but-drifted in reality (an Update) is tagged B.
+//
+// [AC-cause-consistency]
+func TestCauseConsistency_ColdStart_CreateA_DriftB(t *testing.T) {
+	// [AC-cause-consistency]
+	// --- cold-start CREATE → A -------------------------------------------------
+	tmpC := t.TempDir()
+	intentC := filepath.Join(tmpC, "intent")
+	if err := os.MkdirAll(intentC, 0755); err != nil {
+		t.Fatal(err)
+	}
+	stateC := filepath.Join(tmpC, "state.json")
+	writeIntentFile(t, intentC, map[string]any{
+		"resources": []map[string]any{
+			{"provider": "fake", "id": "cs-create", "fields": map[string]string{"name": "cs-create", "size": "10"}},
+		},
+	})
+	initStateFile(t, stateC) // reality empty → the op is a Create
+	// NOTE: no --cause-state → cold start (empty prev revision).
+	stdoutC, stderrC, codeC := runPlan(t, intentC, stateC)
+	if codeC != 0 {
+		t.Fatalf("[AC-cause-consistency] cold-start create plan exited %d; stderr: %s", codeC, stderrC)
+	}
+	if !strings.Contains(stdoutC, "CREATE") {
+		t.Fatalf("[AC-cause-consistency] expected a CREATE op (absent reality); got:\n%s", stdoutC)
+	}
+	tagsC := extractCauseTags(stdoutC)
+	if !allTagsEqual(tagsC, "A") {
+		t.Errorf("[AC-cause-consistency] cold-start CREATE must be A (intentional first declaration); got %v\nstdout:\n%s",
+			tagsC, stdoutC)
+	}
+
+	// --- cold-start UPDATE (drift) → B ----------------------------------------
+	tmpU := t.TempDir()
+	intentU := filepath.Join(tmpU, "intent")
+	if err := os.MkdirAll(intentU, 0755); err != nil {
+		t.Fatal(err)
+	}
+	stateU := filepath.Join(tmpU, "state.json")
+	writeIntentFile(t, intentU, map[string]any{
+		"resources": []map[string]any{
+			{"provider": "fake", "id": "cs-drift", "fields": map[string]string{"name": "cs-drift", "size": "20"}},
+		},
+	})
+	// Reality PRESENT but drifted (size 10 vs desired 20) → the op is an Update.
+	seedState(t, stateU, map[string]map[string]any{
+		"cs-drift": {"name": "cs-drift", "size": "10"},
+	})
+	// NOTE: no --cause-state → cold start.  Before the fix this UPDATE was A; the
+	// unified semantics make it B (a field drifted under the operator; no history
+	// = no evidence intent changed).
+	stdoutU, stderrU, codeU := runPlan(t, intentU, stateU)
+	if codeU != 0 {
+		t.Fatalf("[AC-cause-consistency] cold-start drift plan exited %d; stderr: %s", codeU, stderrU)
+	}
+	if !strings.Contains(stdoutU, "UPDATE") {
+		t.Fatalf("[AC-cause-consistency] expected an UPDATE op (present, drifted); got:\n%s", stdoutU)
+	}
+	tagsU := extractCauseTags(stdoutU)
+	if !allTagsEqual(tagsU, "B") {
+		t.Errorf("[AC-cause-consistency] cold-start drift-repair UPDATE must be B (not A); got %v\nstdout:\n%s",
+			tagsU, stdoutU)
+	}
+	t.Logf("[AC-cause-consistency] PASS: cold-start create=%v (A), drift-update=%v (B)", tagsC, tagsU)
+}
+
+// TestCauseConsistency_PlanAndStatusAgree verifies the exact demo bug: the SAME
+// drifted resource, observed one-shot (cold start, no --cause-state), must show
+// the SAME cause tag under `plan` and `status` — B under both — not A under plan
+// and B under status.
+//
+// [AC-cause-consistency]
+func TestCauseConsistency_PlanAndStatusAgree(t *testing.T) {
+	// [AC-cause-consistency]
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{"provider": "fake", "id": "agree-vm", "fields": map[string]string{"name": "agree-vm", "size": "20"}},
+		},
+	})
+	// Reality present but drifted (size 10 vs desired 20).
+	seedState(t, statePath, map[string]map[string]any{
+		"agree-vm": {"name": "agree-vm", "size": "10"},
+	})
+
+	// plan (cold start: no --cause-state) — the drift-repair UPDATE must be B.
+	planOut, planErr, planCode := runPlan(t, intentDir, statePath)
+	if planCode != 0 {
+		t.Fatalf("[AC-cause-consistency] plan exited %d; stderr: %s", planCode, planErr)
+	}
+	planTags := extractCauseTags(planOut)
+	if !allTagsEqual(planTags, "B") {
+		t.Errorf("[AC-cause-consistency] plan on drifted resource must be B; got %v\nstdout:\n%s", planTags, planOut)
+	}
+
+	// status (cold start: no --cause-state) — same resource, must ALSO be B.
+	statusOut, statusErr, statusCode := runStatusCmd(t, intentDir, statePath)
+	if statusCode != 0 {
+		t.Fatalf("[AC-cause-consistency] status exited %d; stderr: %s", statusCode, statusErr)
+	}
+	if !strings.Contains(statusOut, "B（ドリフト）") {
+		t.Errorf("[AC-cause-consistency] status on the SAME drifted resource must be B (agree with plan); got:\n%s",
+			statusOut)
+	}
+	if strings.Contains(statusOut, "A（意図") {
+		t.Errorf("[AC-cause-consistency] status must NOT tag a cold-start drift as A; got:\n%s", statusOut)
+	}
+	t.Logf("[AC-cause-consistency] PASS: plan tags=%v and status both report B for the same drift", planTags)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AC-Scb0ecd-2-3: cause: C when provider_version changes (ghost diff)
 // ─────────────────────────────────────────────────────────────────────────────
 

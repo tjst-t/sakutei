@@ -305,7 +305,13 @@ func ScopedReconcile(
 			continue
 		}
 
-		plan := engine.Diff(obs, r, baseCauseCtx)
+		// Fix Sc7a647 cause-consistency: pass Create-vs-Update to Classify.
+		// The scoped (early-convergence) path is entered on a revision change
+		// (cause A/E) so IntentPrevRevision is normally known; this flag only
+		// changes the cold-start decision, kept here for uniformity.
+		resCauseCtx := baseCauseCtx
+		resCauseCtx.ResourceObservedAbsent = obs.State == nil
+		plan := engine.Diff(obs, r, resCauseCtx)
 		if len(plan.Ops) == 0 {
 			continue // 既に収束。
 		}

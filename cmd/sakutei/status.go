@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
@@ -27,6 +28,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/internal/statusreport"
 	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/pkg/provider"
 	"github.com/tjst-t/sakutei/pkg/registry"
 )
 
@@ -85,6 +87,13 @@ func runStatus(args []string) {
 	// 層で単体テストする。--cause-state と同様、リングの永続化は行わない。
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
+	// Fix Sc7a647 cause-consistency: status may READ an optional cause-state file
+	// to learn the previous cycle's revisions, so its cause tags AGREE with
+	// plan/reconcile (which read the same file).  status MUST stay READ-ONLY: it
+	// reads this file but NEVER writes it (no saveCauseState call).  Absent =
+	// cold start (no history), the same convention plan/reconcile use.
+	causeStatePath := fs.String("cause-state", "",
+		"OPTIONAL path to a cause-state JSON file to READ previous-cycle revisions for consistent cause tags (Sc7a647); status never writes it (read-only)")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
@@ -142,19 +151,34 @@ func runStatus(args []string) {
 		engines[name] = diff.New(p.Schema())
 	}
 
-	// cause 分類のための版・バージョン信号を組み立てる。status は cause-state を
-	// 読み書きしない（read-only）ため、前周版は「今周と同一」として扱う。
+	// cause 分類のための版・バージョン信号を組み立てる。
 	//
-	// これは意味的に正しい: status は「今コミットされている（安定した）intent に対し、
-	// 現実が宣言どおり在るか」を報告する適合レポートである。intent は安定
-	// （prev==cur）とみなすので、diff がある = 現実がドリフトした ＝ 原因 B が既定になる
-	// （§10.2 の消去法: intent/rendered/provider_version がすべて安定なのに diff が
-	// あれば B）。合成親由来の子は下流波及 D（UpstreamChanged）が B より優先される。
-	// これにより「新規 apply（A）」ではなく「宣言どおり在るか（B/D）」という
-	// conformance の問いに沿ったタグ付けになる。原因タグは diff エンジン
+	// Fix Sc7a647 cause-consistency: 以前は「前周版 = 今周版（prev==cur）」を
+	// ハードコードしていた。これだと cold-start CREATE（宣言されているのに実在
+	// しない = drift/deletion）が prev==cur の安定扱いで B になる一方、plan/reconcile
+	// は同じ状況で（--cause-state 無しの空 prev で）A を出し、両者が食い違っていた。
+	//
+	// 統一規約: status も plan/reconcile と同じ cold-start 規約を使う。
+	//   - --cause-state ファイルが与えられ読めれば、その prev 版で比較する
+	//     （plan/reconcile と同一の loadCauseState を READ するだけ・書き戻さない）。
+	//   - 与えられなければ prev 版は空（"" = 履歴なし / cold start）。
+	// これに ResourceObservedAbsent（リソースごとに obs.State==nil で設定）を
+	// 組み合わせることで、cold-start CREATE=A・drift UPDATE=B が plan/reconcile と
+	// 一致する（§10.2）。intent が安定（既知 prev == cur）なら消去法で B、合成親由来の
+	// 子は下流波及 D（UpstreamChanged）が B より優先。原因タグは diff エンジン
 	// （cause パッケージ）が付す core.CauseTag をそのまま採録する（分類ロジックを fork
 	// しない）。
 	curProviderVersion := joinedProviderVersions(providers)
+
+	// Fix Sc7a647: READ (never write) the optional cause-state file so status's
+	// prev revisions match plan/reconcile.  A load error is non-fatal: treat as
+	// cold start (empty prev), the same as an absent file.
+	prevState, csErr := loadCauseState(*causeStatePath)
+	if csErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei status: warn: load cause-state %q: %v (treating as cold start)\n",
+			*causeStatePath, csErr)
+		prevState = causeStateFile{}
+	}
 
 	// 下流波及 D: 合成親 → 子の対応から、親 desired が変わった子を特定する。
 	// status は cause-state を持たないため親の「前周」は不明だが、合成展開が
@@ -168,14 +192,14 @@ func runStatus(args []string) {
 		}
 	}
 
+	// Fix Sc7a647: derive prev signals from the cause-state file (READ-only).
+	// Absent/unreadable → empty prev (cold start), matching plan/reconcile.
 	baseCauseCtx := cause.CauseContext{
-		// prev == cur: intent は安定とみなす（上記コメント参照）。diff があれば
-		// 消去法で B（ドリフト）。合成親由来の子は UpstreamChanged=true で D が優先。
-		IntentPrevRevision:   rev.IntentRevision,
+		IntentPrevRevision:   prevState.PrevIntentRevision,
 		IntentCurRevision:    rev.IntentRevision,
-		RenderedPrevRevision: rev.RenderedRevision,
+		RenderedPrevRevision: prevState.PrevRenderedRevision,
 		RenderedCurRevision:  rev.RenderedRevision,
-		ProviderPrevVersion:  curProviderVersion,
+		ProviderPrevVersion:  prevState.PrevProviderVersion,
 		ProviderCurVersion:   curProviderVersion,
 	}
 
@@ -215,6 +239,10 @@ func runStatus(args []string) {
 		if childrenWithUpstreamChange[res.ID.Local] {
 			resCauseCtx.UpstreamChanged = true
 		}
+		// Fix Sc7a647 cause-consistency: mark whether the resource is absent in
+		// reality (obs.State == nil → OpKindCreate) so a cold-start CREATE is A
+		// but a cold-start drift-repair UPDATE is B — identical to plan/reconcile.
+		resCauseCtx.ResourceObservedAbsent = obs.State == nil
 
 		plan := engine.Diff(obs, res, resCauseCtx)
 
@@ -241,11 +269,91 @@ func runStatus(args []string) {
 		})
 	}
 
+	// FIX #2 (Sc7a647-3, §12.2): unmanaged（宣言外・実在）検出。
+	//
+	// provider.Lister を実装する provider ごとに List でリアルを列挙し、宣言集合との
+	// 差分（reality − declared）を取る。差分に残る ID＝「宣言していないのに現実に在る」
+	// リソース。既定 DeletionPolicy（ExplicitAbsentOnly）では prune 対象外なので status は
+	// これを削除せず、単に「在る」ことを可視化する（「確信なき減算はしない」）。List は
+	// READ なので status の read-only 契約は保たれる（prune も apply もしない）。
+	//
+	// graceful degradation:
+	//   - Lister 非対応 provider はリアルを列挙できない → 「検出不可（List 非対応）」注記。
+	//   - List がエラー（complete-or-error）→ 「検出不可（List エラー）」注記。失敗を
+	//     「宣言外ゼロ」と混同しない（現実の過少報告を避ける）。status は crash しない。
+	//   - List が ListComplete でない（Partial/Unknown）→ 完全列挙を保証できないので
+	//     unmanaged 判定を控え、注記に留める（安全側）。
+	//
+	// v1a single-claim: status に --claim は無いので managed scope 全体を列挙する。
+	detectUnmanaged(ctx, providers, desired, builder)
+
 	// 適合レポートを整形して出力。Apply（CREATE/UPDATE/DELETE/applied）系の行は
 	// 一切含まれない —— drift を「一覧」するだけで実行はしない（read-only 契約）。
 	report := builder.Build()
 	fmt.Print(report.String())
 	os.Exit(0)
+}
+
+// detectUnmanaged enumerates reality via each Lister-capable provider and adds
+// any resource present in reality but absent from the declared intent set to the
+// report as UNMANAGED (FIX #2, Sc7a647-3, §12.2).  It is READ-ONLY: it calls
+// List (a read) only — never prune, apply, or write.
+//
+// Matching uses core.ID.Key() (collision-free) so a reality ID counts as
+// declared only when Provider+Scope+Local all match a declared resource.
+//
+// Graceful degradation (never crash, never under-report):
+//   - provider without Lister → "検出不可（List 非対応 provider）" note, skipped.
+//   - List returns error       → "検出不可（List エラー）" note (a failed List is
+//     NOT treated as "no unmanaged" — that would hide reality).
+//   - List not ListComplete    → "検出不可（List 未完全: partial/unknown）" note; do
+//     not derive unmanaged from an incomplete enumeration (safe side).
+func detectUnmanaged(
+	ctx context.Context,
+	providers map[string]provider.Provider,
+	desired []diff.DesiredResource,
+	builder *statusreport.Builder,
+) {
+	// Declared set, keyed by collision-free ID key.
+	declared := make(map[core.IDKey]bool, len(desired))
+	for _, r := range desired {
+		declared[r.ID.Key()] = true
+	}
+
+	// Deterministic provider iteration order for stable notes/output.
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		fp := providers[name]
+		lister, ok := fp.(provider.Lister)
+		if !ok {
+			builder.NoteUnmanagedUndetectable(
+				fmt.Sprintf("unmanaged 検出不可（List 非対応 provider: %s）", name))
+			continue
+		}
+		// v1a: whole managed scope (no --claim on status); empty scope = root.
+		result, err := lister.List(ctx, core.NewScope(nil))
+		if err != nil {
+			// complete-or-error: a failed List must NOT read as "no unmanaged".
+			builder.NoteUnmanagedUndetectable(
+				fmt.Sprintf("unmanaged 検出不可（List エラー: %s: %v）", name, err))
+			continue
+		}
+		if result.Status != core.ListComplete {
+			builder.NoteUnmanagedUndetectable(
+				fmt.Sprintf("unmanaged 検出不可（List 未完全: %s: status=%v）", name, result.Status))
+			continue
+		}
+		for _, realID := range result.IDs {
+			if !declared[realID.Key()] {
+				builder.AddUnmanaged(realID)
+			}
+		}
+	}
 }
 
 // stateToStringMap は観測 State を last-seen リング用の文字列マップに変換する。
