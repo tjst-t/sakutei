@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sakutei(作庭)— 段0から、動くクラスタまで</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Old+Mincho:wght@400;600;900&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --sand:#DEDFD8; --sand-lt:#EBECE6; --sand-dk:#C7C9C0;
+  --sumi:#161A18; --sumi-2:#232927; --sumi-3:#333A37;
+  --moss:#4B6E55; --moss-lt:#7FA187; --moss-dk:#2E4737;
+  --water:#35596B; --water-lt:#6E93A3;
+  --shu:#B93E2C; --shu-lt:#D9705E;
+  --stone:#8C9089;
+  --f-display:'Zen Old Mincho', serif;
+  --f-body:'Zen Kaku Gothic New', system-ui, sans-serif;
+  --f-mono:'IBM Plex Mono', ui-monospace, monospace;
+  --mx:min(1180px, 92vw);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--sand);color:var(--sumi);font-family:var(--f-body);font-size:16px;line-height:1.85;-webkit-font-smoothing:antialiased}
+::selection{background:var(--moss);color:var(--sand-lt)}
+
+/* ---------- nav ---------- */
+.nav{position:sticky;top:0;z-index:50;background:rgba(222,223,216,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--sand-dk)}
+.nav-in{width:var(--mx);margin:0 auto;display:flex;align-items:center;gap:1.3rem;height:52px;overflow-x:auto;scrollbar-width:none}
+.nav-in::-webkit-scrollbar{display:none}
+.nav-mark{font-family:var(--f-display);font-weight:900;font-size:1.02rem;letter-spacing:.06em;white-space:nowrap;flex-shrink:0}
+.nav-mark span{color:var(--moss)}
+.nav-mark a{color:inherit;text-decoration:none}
+.nav a.tab{font-family:var(--f-mono);font-size:.72rem;color:var(--sumi-3);text-decoration:none;white-space:nowrap;letter-spacing:.03em;padding:.2rem 0;border-bottom:1px solid transparent;transition:color .18s,border-color .18s}
+.nav a.tab:hover,.nav a.tab:focus-visible{color:var(--moss-dk);border-color:var(--moss)}
+.nav .back{margin-left:auto;font-family:var(--f-mono);font-size:.68rem;color:var(--stone);white-space:nowrap;text-decoration:none;border:1px solid var(--sand-dk);padding:.3rem .6rem;border-radius:2px}
+.nav .back:hover{color:var(--moss-dk);border-color:var(--moss)}
+
+/* ---------- hero ---------- */
+.hero{position:relative;background:var(--sumi);color:var(--sand-lt);padding:clamp(3.4rem,9vh,6rem) 0 clamp(2.6rem,6vh,4rem);border-bottom:1px solid var(--sumi)}
+.hero .wrap{width:var(--mx);margin:0 auto}
+.eyebrow{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.22em;text-transform:uppercase;color:var(--moss-lt);margin-bottom:1.1rem}
+.hero h1{font-family:var(--f-display);font-weight:900;font-size:clamp(2rem,5.2vw,3.4rem);line-height:1.28;letter-spacing:.01em;margin-bottom:.9rem;max-width:20ch}
+.hero h1 .accent{color:var(--moss-lt)}
+.thesis{max-width:64ch;font-size:clamp(.95rem,1.3vw,1.06rem);line-height:1.95;color:#C3C8C2}
+.thesis b{color:var(--sand-lt);font-weight:500}
+.hero-note{margin-top:1.6rem;font-family:var(--f-mono);font-size:.72rem;color:var(--stone);letter-spacing:.03em}
+.hero-note a{color:var(--water-lt)}
+
+/* ---------- shell ---------- */
+section{padding:clamp(3.2rem,7vh,5rem) 0}
+.wrap{width:var(--mx);margin:0 auto}
+.sec-head{margin-bottom:2.4rem;max-width:72ch}
+.kicker{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;color:var(--moss);margin-bottom:.8rem;display:flex;align-items:center;gap:.7rem}
+.kicker::after{content:'';flex:1;height:1px;background:var(--sand-dk);max-width:120px}
+h2{font-family:var(--f-display);font-weight:600;font-size:clamp(1.4rem,2.8vw,2.1rem);line-height:1.35;letter-spacing:.01em;margin-bottom:.6rem}
+h3{font-family:var(--f-display);font-weight:600;font-size:1.05rem;margin-bottom:.4rem;letter-spacing:.01em}
+.lede{color:#454C48;font-size:.96rem;line-height:1.95}
+p+p{margin-top:.7rem}
+code{font-family:var(--f-mono);font-size:.85em;background:var(--sand-dk);padding:.08em .38em;border-radius:2px}
+.dark code{background:var(--sumi-3);color:var(--sand-lt)}
+.dark{background:var(--sumi);color:var(--sand-lt)}
+.dark .lede{color:#A9B0AB}
+.dark h2,.dark h3{color:var(--sand-lt)}
+.dark .kicker{color:var(--moss-lt)}
+.dark .kicker::after{background:var(--sumi-3)}
+
+/* ---------- premise strip ---------- */
+.premise{display:grid;grid-template-columns:1fr 1fr;gap:1.6rem}
+.pre-box{border:1px solid var(--sand-dk);border-radius:3px;padding:1.1rem 1.2rem;background:var(--sand-lt)}
+.pre-box.done{border-color:var(--stone)}
+.pre-box.todo{border-color:var(--moss);background:rgba(75,110,85,.06)}
+.pre-tag{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--stone);margin-bottom:.5rem}
+.pre-box.todo .pre-tag{color:var(--moss-dk)}
+.pre-box ul{list-style:none;font-size:.82rem;line-height:1.85;color:#454C48}
+.pre-box li::before{content:'· ';color:var(--stone)}
+
+/* ---------- pod topology ---------- */
+.pod{border:1px solid var(--sand-dk);background:var(--sand-lt);padding:1.2rem;border-radius:3px}
+.dark .pod{background:var(--sumi-2);border-color:var(--sumi-3)}
+.leafpair{display:flex;gap:.8rem;margin-bottom:1rem}
+.leafbox{flex:1;border:1.5px solid var(--water-lt);border-radius:3px;padding:.6rem .8rem;font-family:var(--f-mono);font-size:.72rem;color:var(--water);display:flex;justify-content:space-between;align-items:center}
+.dark .leafbox{color:var(--water-lt)}
+.leafbox .cc{font-size:.6rem;border:1px dashed var(--water-lt);padding:.12rem .4rem;border-radius:10px}
+.hostgrid{display:grid;grid-template-columns:repeat(10,1fr);gap:.4rem}
+.hchip{aspect-ratio:1/.62;border:1px solid var(--stone);border-radius:2px;display:flex;align-items:center;justify-content:center;font-family:var(--f-mono);font-size:.6rem;color:var(--stone);background:var(--sand);transition:all .3s}
+.dark .hchip{background:var(--sumi)}
+.hchip.pending{opacity:.55}
+.hchip.active{border-color:var(--water);color:var(--water);background:rgba(53,89,107,.1)}
+.dark .hchip.active{color:var(--water-lt)}
+.hchip.done{border-color:var(--moss);color:var(--moss-dk);background:rgba(75,110,85,.12)}
+.dark .hchip.done{color:var(--moss-lt)}
+.hchip.seed{border-color:var(--moss);border-width:2px;color:var(--moss-dk);background:rgba(75,110,85,.18)}
+.dark .hchip.seed{color:var(--moss-lt)}
+.hchip.retry{border-color:var(--shu-lt);border-style:dashed;color:var(--shu)}
+.grid-legend{display:flex;flex-wrap:wrap;gap:1rem;margin-top:.8rem;font-family:var(--f-mono);font-size:.66rem;color:var(--stone)}
+.grid-legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:.3rem;vertical-align:middle}
+.li-pending{background:var(--stone);opacity:.5} .li-active{background:var(--water)} .li-done{background:var(--moss)} .li-seed{border:2px solid var(--moss);background:transparent} .li-retry{border:1px dashed var(--shu-lt);background:transparent}
+
+/* ---------- layer flow ---------- */
+.layer-flow{position:relative;padding-left:2.6rem}
+.layer-flow::before{content:'';position:absolute;left:1.05rem;top:.6rem;bottom:.6rem;width:1px;background:var(--sand-dk)}
+.dark .layer-flow::before{background:var(--sumi-3)}
+.layer{position:relative;margin-bottom:3.2rem}
+.layer:last-child{margin-bottom:0}
+.layer-num{position:absolute;left:-2.6rem;top:0;width:2.1rem;height:2.1rem;border-radius:50%;background:var(--moss-dk);color:var(--sand-lt);font-family:var(--f-mono);font-size:.8rem;display:flex;align-items:center;justify-content:center;font-weight:500}
+.layer-title{font-family:var(--f-display);font-weight:600;font-size:1.3rem;margin-bottom:.3rem}
+.layer-sub{font-family:var(--f-mono);font-size:.7rem;color:var(--stone);margin-bottom:1.1rem;letter-spacing:.02em}
+.layer-dep{display:inline-block;margin-bottom:1rem;font-family:var(--f-mono);font-size:.7rem;color:var(--water);border:1px dashed var(--water-lt);padding:.28rem .6rem;border-radius:2px}
+.dark .layer-dep{color:var(--water-lt)}
+.layer-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:2.2rem;align-items:start}
+
+.meta-row{display:flex;flex-wrap:wrap;gap:.5rem;margin:0 0 1.1rem}
+.badge{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.03em;padding:.3rem .62rem;border-radius:2px;border:1px solid transparent}
+.badge-prim{background:var(--moss-dk);color:var(--sand-lt)}
+.badge-prim.task{background:var(--water)}
+.badge-safe{border:1px dashed var(--water-lt);color:var(--water);background:transparent}
+.dark .badge-safe{color:var(--water-lt)}
+.badge-warn{border:1px solid var(--shu-lt);color:var(--shu)}
+
+.steps2{list-style:none;counter-reset:sc}
+.steps2>li{counter-increment:sc;position:relative;padding:.62rem 0 .62rem 2.2rem;border-bottom:1px solid var(--sand-dk);font-size:.85rem;line-height:1.72;color:#454C48}
+.dark .steps2>li{border-color:var(--sumi-3);color:#C3C8C2}
+.steps2>li:last-child{border:0}
+.steps2>li::before{content:counter(sc);position:absolute;left:0;top:.55rem;width:1.4rem;height:1.4rem;border-radius:50%;border:1px solid var(--moss);color:var(--moss-dk);font-family:var(--f-mono);font-size:.64rem;display:flex;align-items:center;justify-content:center}
+.dark .steps2>li::before{color:var(--moss-lt)}
+.steps2>li b{color:var(--sumi);font-weight:700}
+.dark .steps2>li b{color:var(--sand-lt)}
+
+pre.code{font-family:var(--f-mono);font-size:.72rem;line-height:1.7;background:var(--sumi);color:#C3C8C2;padding:.9rem 1rem;border-radius:3px;overflow-x:auto;white-space:pre}
+.dark pre.code{background:var(--sumi-2);border:1px solid var(--sumi-3)}
+pre.code .k{color:var(--moss-lt)} pre.code .s{color:var(--water-lt)} pre.code .c{color:var(--stone)}
+
+.callout{margin-top:1.2rem;padding:1rem 1.15rem;background:var(--sand-lt);border-left:3px solid var(--water);font-size:.83rem;line-height:1.8;color:#4B524D}
+.dark .callout{background:var(--sumi-2);border-color:var(--water-lt);color:#A9B0AB}
+.callout b{color:var(--sumi)}
+.dark .callout b{color:var(--sand-lt)}
+.callout.mine{border-color:var(--shu-lt)}
+.callout .spec{display:block;margin-top:.5rem;font-family:var(--f-mono);font-size:.66rem;color:var(--stone)}
+
+/* ---------- task state track (reused for HV deploy) ---------- */
+.track{display:flex;flex-wrap:wrap;align-items:center;gap:0;margin:1rem 0 .5rem}
+.tk{font-family:var(--f-mono);font-size:.68rem;padding:.42rem .7rem;border:1px solid var(--stone);border-radius:2px;color:#454C48;background:var(--sand-lt);white-space:nowrap}
+.dark .tk{color:#C3C8C2;background:var(--sumi-2);border-color:var(--sumi-3)}
+.tk.done{border-color:var(--moss);color:var(--moss-dk);background:rgba(75,110,85,.1)}
+.dark .tk.done{color:var(--moss-lt)}
+.tk-arrow{font-family:var(--f-mono);color:var(--stone);padding:0 .35rem;font-size:.76rem}
+.branch{margin-top:.6rem;display:flex;align-items:center;gap:.5rem;font-family:var(--f-mono);font-size:.68rem;color:var(--shu)}
+.branch .tk{border-color:var(--shu);color:var(--shu);background:rgba(185,62,44,.06)}
+
+/* ---------- before/after transition ---------- */
+.transition{display:grid;grid-template-columns:1fr auto 1fr;gap:.8rem;align-items:center;margin-top:1rem}
+.transition .t-lbl{font-family:var(--f-mono);font-size:.64rem;letter-spacing:.08em;text-transform:uppercase;color:var(--stone);margin-bottom:.4rem}
+.transition .t-arrow{font-family:var(--f-mono);font-size:1.2rem;color:var(--moss);text-align:center}
+.transition .pod{padding:.7rem}
+.transition .hostgrid{grid-template-columns:repeat(5,1fr)}
+
+/* ---------- cycle timeline ---------- */
+.cyc-track{display:flex;gap:.5rem;overflow-x:auto;padding-bottom:.6rem}
+.cyc{flex:0 0 auto;min-width:120px;border:1px solid var(--sand-dk);border-radius:3px;padding:.6rem .7rem;background:var(--sand-lt)}
+.dark .cyc{background:var(--sumi-2);border-color:var(--sumi-3)}
+.cyc .c-n{font-family:var(--f-mono);font-size:.6rem;color:var(--stone);letter-spacing:.08em;text-transform:uppercase;margin-bottom:.3rem}
+.cyc .c-b{font-family:var(--f-mono);font-size:.68rem;color:#454C48;line-height:1.5}
+.dark .cyc .c-b{color:#C3C8C2}
+.cyc.mark{border-color:var(--moss)}
+
+/* ---------- comparison ---------- */
+.tbl{width:100%;border-collapse:collapse;font-size:.84rem}
+.tbl th,.tbl td{text-align:left;padding:.75rem .8rem;border-bottom:1px solid var(--sand-dk);vertical-align:top}
+.tbl th{font-family:var(--f-mono);font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--stone);font-weight:500;border-bottom:1px solid var(--sumi)}
+
+/* ---------- footer ---------- */
+footer{background:var(--sumi);color:var(--stone);padding:3.2rem 0 2.4rem;font-size:.82rem}
+footer .wrap{display:grid;grid-template-columns:1.4fr 1fr;gap:3rem;align-items:end}
+footer .f-mark{font-family:var(--f-display);font-weight:900;font-size:2rem;color:var(--sand-lt);line-height:1;margin-bottom:.7rem}
+footer .f-mark span{color:var(--moss-lt)}
+footer p{line-height:1.9;max-width:52ch}
+footer a{color:var(--water-lt)}
+footer .f-meta{font-family:var(--f-mono);font-size:.7rem;line-height:2.1;text-align:right;letter-spacing:.04em}
+footer .f-meta i{font-style:normal;color:var(--sand-lt)}
+
+@media(max-width:900px){
+  .premise{grid-template-columns:1fr}
+  .layer-grid{grid-template-columns:1fr;gap:1.2rem}
+  .layer-flow{padding-left:2.2rem}
+  .hostgrid{grid-template-columns:repeat(5,1fr)}
+  .transition{grid-template-columns:1fr}
+  .transition .t-arrow{transform:rotate(90deg);padding:.3rem 0}
+  footer .wrap{grid-template-columns:1fr}
+  footer .f-meta{text-align:left}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-in">
+    <div class="nav-mark"><a href="sakutei.html">作庭 <span>Sakutei</span></a></div>
+    <a class="tab" href="#premise">前提</a>
+    <a class="tab" href="#l1">①ネットワーク</a>
+    <a class="tab" href="#l2">②BMC</a>
+    <a class="tab" href="#l3">③ハイパーバイザー</a>
+    <a class="tab" href="#l4">④クラスタ</a>
+    <a class="tab" href="#dag">全体像</a>
+    <a class="back" href="scenarios.html">運用シナリオへ →</a>
+  </div>
+</nav>
+
+<!-- ══════════ HERO ══════════ -->
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">From Stage 0 to a Running Cluster</div>
+    <h1>段0だけがある状態から、<br><span class="accent">動くクラスタ</span>まで積む</h1>
+    <p class="thesis">
+      Ansible が作った段0(不変の最小核)しか存在しない。そこへ、リーフスイッチ2台・サーバ20台規模の
+      新しいポッドを丸ごと迎え入れる——<b>ネットワーク到達性 → BMC → ハイパーバイザー導入 → クラスタ構築</b>
+      という4層を、<b>一つの intent PR</b> から、複数 Cycle にまたがって段階的に積み上げる様子を追う。
+      層が変わるたびにプリミティブも安全機構も変わる——それがなぜかを、各層で立ち止まって見る。
+    </p>
+    <div class="hero-note">登場人物:leaf-01 / leaf-02(ToR スイッチ)· host-01〜host-20(物理サーバ)· 既存の段0(3ノード・Ansible 構築済み)</div>
+  </div>
+</header>
+
+<!-- ══════════ 前提 ══════════ -->
+<section id="premise">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Premise</div>
+      <h2>すでにあるもの、まだ無いもの</h2>
+      <p class="lede">境界線は §23.4 が定める一つの問いに要約される——<b>「それを壊したとき、Sakutei が自分でそれを直せなくなるか」</b>。直せなくなるものだけが段0、それ以外はすべて段1(=これから歩く4層)。</p>
+    </div>
+    <div class="premise">
+      <div class="pre-box done">
+        <div class="pre-tag">すでにある(段0 · Ansible 構築済み)</div>
+        <ul>
+          <li>reconciler / Vault / broker 候補(3ノード・VM-HA)の管理NW接続</li>
+          <li>管理NWコアの<b>到達性の最小核</b>(段0収容ポート + 最小 L2/L3)</li>
+          <li>Vault unseal 済み・reconciler は起動シーケンス通り稼働中(§23.5)</li>
+          <li>OOB / コンソールサーバ(Break Glass 経路)</li>
+        </ul>
+      </div>
+      <div class="pre-box todo">
+        <div class="pre-tag">これから積む(段1 · この 4 層)</div>
+        <ul>
+          <li>leaf-01 / leaf-02:ラック済み・工場出荷設定のまま</li>
+          <li>host-01〜host-20:電源投入済み・BMC はデフォルト IP で応答するのみ</li>
+          <li>ハイパーバイザーは未導入、クラスタも未形成</li>
+          <li>= 「◎ネットワーク → ②BMC → ③ハイパーバイザー → ④クラスタ」がここから始まる</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 全体トポロジ ══════════ -->
+<section class="dark">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">The Pod</div>
+      <h2>新設ポッドの姿(20台規模)</h2>
+      <p class="lede">これは単一デーモンの天井(§16)に楽々収まる規模である——NETCONF/gNMI 経由の泥臭い機器でも 30s 間隔で ~107 台まで届く。<b>claim シャーディング(§17)は不要</b>、段1a のコアループだけで足りる。</p>
+    </div>
+    <div class="pod">
+      <div class="leafpair">
+        <div class="leafbox">leaf-01 <span class="cc">CommitConfirm 必須</span></div>
+        <div class="leafbox">leaf-02 <span class="cc">CommitConfirm 必須</span></div>
+      </div>
+      <div class="hostgrid" id="topo-grid"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 4層フロー ══════════ -->
+<section id="l1">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">One Composite Intent, Four Layers</div>
+      <h2>4層は、1つの PR から段階展開される</h2>
+      <p class="lede">運用者が書くのは<code>pod_buildout</code>という<b>一つの合成リソース</b>の PR だけである。以下の4層は「4回の作業」ではなく、render フェーズ2 による実子リソース展開 + <code>depends_on</code>/<code>ready_condition</code> による自然な段階解放(§9.5・§8.3)である。</p>
+    </div>
+
+    <div class="layer-flow">
+
+      <!-- Layer 1: network -->
+      <div class="layer">
+        <div class="layer-num">01</div>
+        <div class="layer-title">リーフスイッチ構築 —— 到達性の土台</div>
+        <div class="layer-sub">対象:leaf-01 / leaf-02(管理NW の「末端」= 段1所属。段0の到達性最小核はここに含まない)</div>
+        <div class="layer-grid">
+          <div>
+            <div class="meta-row">
+              <span class="badge badge-prim">Resource</span>
+              <span class="badge badge-safe">CommitConfirm 必須</span>
+              <span class="badge badge-safe">tier: foundation</span>
+              <span class="badge badge-warn">v1 では未 Apply(観測のみ)</span>
+            </div>
+            <ol class="steps2">
+              <li><b>intent で宣言。</b>leaf-01/02 の VLAN(mgmt/data)・ポート割当・uplink 構成を書く。管理NWコア変更にあたるため <b>platform ownership + PR 必須</b>。</li>
+              <li><b>render → observe → diff。</b>現時点で VLAN/ポートが未設定 → create/update 判定、原因タグ A。</li>
+              <li><b>apply は commit-confirm 付きでのみ許可。</b>NW機器 provider は <code>Capabilities.CommitConfirm</code> を持たない限り「Apply 不可・観測のみ」に型で強制される——config push 一つで BMC への到達経路を自分で切る(self-lockout)のを防ぐ安全装置。</li>
+              <li><b>到達性を再確認できなければ自動ロールバック。</b>これが通って初めて「network_ready」の ready_condition が立つ。</li>
+            </ol>
+          </div>
+          <div>
+            <h3>地雷はここにある</h3>
+            <p class="lede" style="font-size:.85rem">レイヤ別適合表(§3.9)で NW 機器は「○(収束できるが地雷あり)」——主な地雷は<b>管理断ロックアウト</b>と<b>順序付きリスト(FW ルール等)</b>。CommitConfirm はまさにこの地雷への型レベルの応答である。</p>
+            <div class="callout mine">
+              <b>正直な但し書き。</b>CommitConfirm capability は v2 の NW 機器 provider で入る(v1a/v1b には無い)。したがって「leaf スイッチの自動 Apply」は<b>設計上は表現できるが、安全に実行できるようになるのは v2</b>——これは妥協ではなく、ロックアウト経路を型で塞ぐための意図的な順序である。
+              <span class="spec">spec: §23.4 / §5.6</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Layer 2: BMC -->
+      <div class="layer" id="l2">
+        <div class="layer-num">02</div>
+        <div class="layer-title">サーバの BMC 設定</div>
+        <div class="layer-sub">対象:host-01〜host-20 の BMC(Redfish)</div>
+        <div class="layer-dep">depends_on: leaf-switch  ready_condition: network_ready</div>
+        <div class="layer-grid">
+          <div>
+            <div class="meta-row">
+              <span class="badge badge-prim">Resource</span>
+              <span class="badge badge-safe">SecretRef(Vault)</span>
+              <span class="badge badge-safe">標準階級(List 無しで可)</span>
+            </div>
+            <ol class="steps2">
+              <li><b>intent で宣言。</b>BMC 管理 IP・NTP・SNMP/Syslog 通知・ローカル管理ユーザを 20 台分書く。管理ユーザの値は <code>SecretRef</code> で自動マスクされ、Vault から Apply 直前に JIT 解決される。</li>
+              <li><b>observe → diff。</b>20 台とも工場出荷値のまま → 全 update 判定、原因タグ A。</li>
+              <li><b>1台の失敗は他台に波及しない。</b>「各サーバの BMC 設定は1台死んでも他は生きる」(§23.4 の表)——leaf のような CommitConfirm 必須化は要らない。transient エラー(一時応答無し)は指数 backoff で個別に再試行される。</li>
+              <li><b>20台全部が Ready で「bmc_ready」。</b>次層はこの ready_condition を待つ。</li>
+            </ol>
+          </div>
+          <div>
+            <h3>進行スナップショット</h3>
+            <div class="hostgrid" id="bmc-grid"></div>
+            <div class="grid-legend">
+              <span><i class="li-done"></i>設定完了</span>
+              <span><i class="li-retry"></i>一時エラー・backoff 再試行中</span>
+            </div>
+            <div class="callout">
+              <b>「1台死んでも他は生きる」がこの層の安全設計そのもの。</b>host-14 が一時応答不能でも、他19台の収束を止める理由がない——これが「管理NWコア(全体を全盲にしうる)」と「末端機器(部分故障で閉じる)」を分けて扱う理由である。
+              <span class="spec">spec: §23.4 / §5.5 transient/permanent</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Layer 3: hypervisor deploy -->
+      <div class="layer" id="l3">
+        <div class="layer-num">03</div>
+        <div class="layer-title">ハイパーバイザーのデプロイ</div>
+        <div class="layer-sub">対象:host-01〜host-20 へのベアメタル OS インストール</div>
+        <div class="layer-dep">depends_on: bmc  ready_condition: bmc_ready</div>
+        <div class="layer-grid">
+          <div>
+            <div class="meta-row">
+              <span class="badge badge-prim task">Task(多相型)</span>
+              <span class="badge badge-safe">1-outstanding</span>
+              <span class="badge badge-safe">rate limit(バッチ分割)</span>
+              <span class="badge badge-safe">unknown ≠ absent(リブート中)</span>
+            </div>
+            <p class="lede" style="font-size:.85rem;margin-bottom:.9rem">imaging は中断不可・非冪等・リブート跨ぎ——収束ループに直接載せられない。差分検知は「Task 起動イベント」を発火するだけに留める(§6.5)。</p>
+            <div class="track">
+              <span class="tk done">Idle</span><span class="tk-arrow">→</span>
+              <span class="tk done">NetBoot</span><span class="tk-arrow">→</span>
+              <span class="tk done">Imaging</span><span class="tk-arrow">→</span>
+              <span class="tk">Rebooting</span><span class="tk-arrow">→</span>
+              <span class="tk">Configuring</span><span class="tk-arrow">→</span>
+              <span class="tk">Verifying</span><span class="tk-arrow">→</span>
+              <span class="tk">Done</span>
+            </div>
+            <div class="branch">↳ 失敗 → <span class="tk">Failed</span><span class="tk-arrow">→</span><span class="tk">Rollback(再 Imaging)</span></div>
+            <ol class="steps2" style="margin-top:1.2rem">
+              <li><b>NetBoot。</b>Task が BMC の virtual media / boot device を一時的に変更し、installer を起動する(BMC への書込みは Task 自身が担う手続き)。</li>
+              <li><b>Imaging → Rebooting。</b>Rebooting 中は host が一時的に消える → <code>unknown ≠ absent</code> で「今はリブート中」と解釈し、タイムアウト付きで再出現を待つ。</li>
+              <li><b>Configuring → Verifying。</b>hostname・管理NW設定・join 用鍵配布のあと、ハイパーバイザー API が健全応答するかを確認して初めて Done。</li>
+              <li><b>20台を一気にやらない。</b>BMC の同時 virtual media 接続数のような現実制約を模して、rate limit で 5台ずつ4波に分割する。1-outstanding 制約が同一ホストの二重デプロイを防ぐ。</li>
+            </ol>
+          </div>
+          <div>
+            <h3>進行スナップショット(バッチ2/4が進行中)</h3>
+            <div class="hostgrid" id="hv-grid"></div>
+            <div class="grid-legend">
+              <span><i class="li-done"></i>Done(バッチ1)</span>
+              <span><i class="li-active"></i>進行中(バッチ2)</span>
+              <span><i class="li-pending"></i>未着手(バッチ3-4待ち)</span>
+            </div>
+            <div class="callout">
+              <b>「いつ = 収束 / どう = 手続き」がここでも一貫している。</b>収束が担うのは「差分を検知して Task を起動する」ことと「メンテ窓・バッチ枠を守る」ことだけ。NetBoot〜Verifying という危険な手順そのものは Task の中に閉じている。
+              <span class="spec">spec: §3.2 / §6.2 / §6.5</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Layer 4: cluster -->
+      <div class="layer" id="l4">
+        <div class="layer-num">04</div>
+        <div class="layer-title">クラスタ構築</div>
+        <div class="layer-sub">対象:host-01〜host-20 を1つのハイパーバイザークラスタへ</div>
+        <div class="layer-dep">depends_on: hypervisor-deploy  ready_condition: hv_ready</div>
+        <div class="layer-grid">
+          <div>
+            <div class="meta-row">
+              <span class="badge badge-prim">Resource(Workflow 不要)</span>
+              <span class="badge badge-safe">depends_on chain</span>
+              <span class="badge badge-safe">ready_condition: quorum_formed</span>
+            </div>
+            <ol class="steps2">
+              <li><b>3台をシードにする。</b>host-01 が初期化(cluster init)、host-02 は <code>depends_on: host-01 ready:quorum_seed</code>、host-03 は両方に依存——この3台だけは順序を持つ。</li>
+              <li><b>quorum 形成。</b>3/3 が揃うと <code>ready_condition: quorum_formed</code> が立つ。</li>
+              <li><b>残り17台は条件が1つだけ。</b><code>depends_on: quorum_formed</code> のみを満たせばよく、互いへの依存が無いため <b>wave で一括並列 apply</b> できる——quorum を脅かすリスクがもう無いから。</li>
+              <li><b>Ceph OSD 追加・プール拡張も合わせて収束。</b>合成リソースの子として、各ホストの join と同じ wave でストレージプールも拡張される。</li>
+              <li><b>20台 healthy で「pod_ready」。</b>これで4層すべてが converged。</li>
+            </ol>
+          </div>
+          <div>
+            <h3>quorum 形成の前後</h3>
+            <div class="transition">
+              <div><div class="t-lbl">quorum 形成前</div>
+                <div class="pod"><div class="hostgrid" id="cl-before"></div></div>
+              </div>
+              <div class="t-arrow">→</div>
+              <div><div class="t-lbl">quorum 形成後(残り一括 join)</div>
+                <div class="pod"><div class="hostgrid" id="cl-after"></div></div>
+              </div>
+            </div>
+            <div class="grid-legend">
+              <span><i class="li-seed"></i>シード(順序あり)</span>
+              <span><i class="li-pending"></i>quorum 待ち</span>
+              <span><i class="li-done"></i>join 完了</span>
+            </div>
+            <div class="callout mine">
+              <b>なぜここに Workflow が要らないのか。</b>Workflow が要るのは「今動いている何かを、止めずに守りながら変える」場面(不変条件・承認ゲートが要る)。この新規クラスタにはまだ<b>守るべき稼働中の invariant が無い</b>——だから <code>depends_on</code> + <code>ready_condition</code> という Resource の標準機構だけで、安全に、しかも一括で足りる。同じ20台クラスタでも、稼働開始後のローリング更新は話が別で、そこでは min_active のような invariant を守る Workflow が必要になる。
+              <span class="spec">spec: §6(3プリミティブ)/ §8.3 ready_condition</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 全体像:複数 Cycle にまたがる展開 ══════════ -->
+<section id="dag" class="dark">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">The Whole Picture</div>
+      <h2>1つの PR が、複数 Cycle にまたがって展開する</h2>
+      <p class="lede">wave は「1 Cycle 内の並列単位」であって「依存解決の最終形」ではない——物理サーバの起動や imaging のような長時間操作をまたぐ依存解放は、複数 Cycle にわたって段階的に進むのが正式なモデルである。</p>
+    </div>
+    <div class="cyc-track">
+      <div class="cyc mark"><div class="c-n">Cycle 1</div><div class="c-b">leaf apply<br>(commit-confirm 検証中)</div></div>
+      <div class="cyc"><div class="c-n">Cycle 2</div><div class="c-b">network_ready 確定<br>→ BMC 開始</div></div>
+      <div class="cyc"><div class="c-n">Cycle 3-5</div><div class="c-b">BMC 20台 設定完了<br>→ bmc_ready</div></div>
+      <div class="cyc mark"><div class="c-n">Cycle 6-9</div><div class="c-b">HV Task<br>バッチ1・2 進行</div></div>
+      <div class="cyc"><div class="c-n">Cycle 10-13</div><div class="c-b">HV Task<br>バッチ3・4 進行</div></div>
+      <div class="cyc"><div class="c-n">Cycle 14</div><div class="c-b">20台 Done<br>→ hv_ready</div></div>
+      <div class="cyc mark"><div class="c-n">Cycle 15-16</div><div class="c-b">3台シード join<br>→ quorum_formed</div></div>
+      <div class="cyc"><div class="c-n">Cycle 17</div><div class="c-b">残り17台 一括 join</div></div>
+      <div class="cyc mark"><div class="c-n">Cycle 18</div><div class="c-b">全20台 healthy<br>= <b>pod_ready</b></div></div>
+    </div>
+    <div class="callout" style="margin-top:1.6rem;background:var(--sumi-2);border-color:var(--moss-lt);color:#A9B0AB">
+      <b>毎 Cycle、全 DAG を見ている。</b>特定 Cycle が失敗・遅延しても、次の定期周期が自然に回収する——level-triggered の本体はこの「毎周・全部・間引きなし」であり、依存が複数 Cycle にまたがることは設計の欠陥ではなく正式なモデルである。
+      <span class="spec">spec: §8.2 モデルA / §8.3 wave</span>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ footer ══════════ -->
+<footer>
+  <div class="wrap">
+    <div>
+      <div class="f-mark">作庭 <span>Sakutei</span></div>
+      <p>
+        ここで歩いた4層は、1つの合成リソース PR ・ render の実子展開・<code>depends_on</code>/<code>ready_condition</code>・
+        wave・非冪等操作の Task 排除という、既存の機構の組み合わせにすぎない。
+        クラスタが動き出したあとの保守作業(増設・物理交換・FW更新・ローリング更新)は
+        <a href="scenarios.html">運用シナリオ集</a>で、設計全体は<a href="sakutei.html">ランディングページ</a>で。
+      </p>
+    </div>
+    <div class="f-meta">
+      <div>POD &nbsp;<i>2 leaf + 20 hosts</i></div>
+      <div>LAYERS &nbsp;<i>network → BMC → hypervisor → cluster</i></div>
+      <div>DESIGN &nbsp;<i>spec v3.3(8部29節)</i></div>
+      <div style="margin-top:1rem;color:var(--stone)">土台から積む——飛ばせる段は、一つも無い。</div>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  'use strict';
+  function grid(id, states){
+    var el = document.getElementById(id);
+    if(!el) return;
+    var html = '';
+    for(var i=0;i<states.length;i++){
+      var n = String(i+1).padStart(2,'0');
+      html += '<div class="hchip '+states[i]+'">h'+n+'</div>';
+    }
+    el.innerHTML = html;
+  }
+  function rep(state, n){ var a=[]; for(var i=0;i<n;i++) a.push(state); return a; }
+
+  grid('topo-grid', rep('pending', 20));
+  grid('bmc-grid', ['done','done','done','done','done','done','done','done','done','done',
+                     'done','done','done','retry','done','done','done','done','done','done']);
+  grid('hv-grid', rep('done',5).concat(rep('active',5)).concat(rep('pending',10)));
+  grid('cl-before', rep('seed',3).concat(rep('pending',17)));
+  grid('cl-after', rep('seed',3).concat(rep('done',17)));
+
+  if('IntersectionObserver' in window && !window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if(e.isIntersecting){ e.target.style.opacity=1; e.target.style.transform='none'; io.unobserve(e.target); }
+      });
+    }, {threshold:.08, rootMargin:'0px 0px -40px 0px'});
+    document.querySelectorAll('.sec-head, .layer, .pre-box, .cyc').forEach(function(el){
+      el.style.opacity=0; el.style.transform='translateY(10px)';
+      el.style.transition='opacity .55s ease, transform .55s ease';
+      io.observe(el);
+    });
+  }
+})();
+</script>
+</body>
+</html>
