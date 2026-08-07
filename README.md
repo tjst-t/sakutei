@@ -123,6 +123,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 - **[docs/README.md](docs/README.md)** — ドキュメント索引（まずここ）
 - **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.1（8 部 29 節・分冊）。§番号は全体で一意
 - **[docs/web/sakutei.html](docs/web/sakutei.html)** — 設計思想を庭園メタファで表したランディングページ
+- **[docs/web/scenarios.html](docs/web/scenarios.html)** — 仮想基盤を題材に、構築/増設/物理交換/FW更新/HVローリング更新が実際どう実行されるかを追う運用シナリオ集
 
 ### 設計を貫く八つの原則（§3）
 

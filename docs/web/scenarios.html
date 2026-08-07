@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sakutei(作庭)— 運用シナリオ:仮想基盤の一生</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Old+Mincho:wght@400;600;900&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --sand:#DEDFD8; --sand-lt:#EBECE6; --sand-dk:#C7C9C0;
+  --sumi:#161A18; --sumi-2:#232927; --sumi-3:#333A37;
+  --moss:#4B6E55; --moss-lt:#7FA187; --moss-dk:#2E4737;
+  --water:#35596B; --water-lt:#6E93A3;
+  --shu:#B93E2C; --shu-lt:#D9705E;
+  --stone:#8C9089;
+  --f-display:'Zen Old Mincho', serif;
+  --f-body:'Zen Kaku Gothic New', system-ui, sans-serif;
+  --f-mono:'IBM Plex Mono', ui-monospace, monospace;
+  --mx:min(1180px, 92vw);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--sand);color:var(--sumi);font-family:var(--f-body);font-size:16px;line-height:1.85;-webkit-font-smoothing:antialiased}
+::selection{background:var(--moss);color:var(--sand-lt)}
+
+/* ---------- nav ---------- */
+.nav{position:sticky;top:0;z-index:50;background:rgba(222,223,216,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--sand-dk)}
+.nav-in{width:var(--mx);margin:0 auto;display:flex;align-items:center;gap:1.3rem;height:52px;overflow-x:auto;scrollbar-width:none}
+.nav-in::-webkit-scrollbar{display:none}
+.nav-mark{font-family:var(--f-display);font-weight:900;font-size:1.02rem;letter-spacing:.06em;white-space:nowrap;flex-shrink:0}
+.nav-mark span{color:var(--moss)}
+.nav-mark a{color:inherit;text-decoration:none}
+.nav a.tab{font-family:var(--f-mono);font-size:.72rem;color:var(--sumi-3);text-decoration:none;white-space:nowrap;letter-spacing:.03em;padding:.2rem 0;border-bottom:1px solid transparent;transition:color .18s,border-color .18s}
+.nav a.tab:hover,.nav a.tab:focus-visible{color:var(--moss-dk);border-color:var(--moss)}
+.nav .back{margin-left:auto;font-family:var(--f-mono);font-size:.68rem;color:var(--stone);white-space:nowrap;text-decoration:none;border:1px solid var(--sand-dk);padding:.3rem .6rem;border-radius:2px}
+.nav .back:hover{color:var(--moss-dk);border-color:var(--moss)}
+
+/* ---------- hero ---------- */
+.hero{position:relative;background:var(--sumi);color:var(--sand-lt);padding:clamp(3.4rem,9vh,6rem) 0 clamp(2.6rem,6vh,4rem);border-bottom:1px solid var(--sumi)}
+.hero .wrap{width:var(--mx);margin:0 auto}
+.eyebrow{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.22em;text-transform:uppercase;color:var(--moss-lt);margin-bottom:1.1rem}
+.hero h1{font-family:var(--f-display);font-weight:900;font-size:clamp(2.1rem,5.4vw,3.6rem);line-height:1.22;letter-spacing:.01em;margin-bottom:.9rem;max-width:18ch}
+.hero h1 .accent{color:var(--moss-lt)}
+.thesis{max-width:62ch;font-size:clamp(.95rem,1.3vw,1.06rem);line-height:1.95;color:#C3C8C2}
+.thesis b{color:var(--sand-lt);font-weight:500}
+.hero-note{margin-top:1.6rem;font-family:var(--f-mono);font-size:.72rem;color:var(--stone);letter-spacing:.03em}
+.hero-note a{color:var(--water-lt)}
+
+/* ---------- shell ---------- */
+section{padding:clamp(3.6rem,8vh,5.6rem) 0}
+.wrap{width:var(--mx);margin:0 auto}
+.sec-head{margin-bottom:2.6rem;max-width:70ch}
+.kicker{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;color:var(--moss);margin-bottom:.8rem;display:flex;align-items:center;gap:.7rem}
+.kicker::after{content:'';flex:1;height:1px;background:var(--sand-dk);max-width:120px}
+h2{font-family:var(--f-display);font-weight:600;font-size:clamp(1.5rem,3vw,2.2rem);line-height:1.35;letter-spacing:.01em;margin-bottom:.7rem}
+h3{font-family:var(--f-display);font-weight:600;font-size:1.05rem;margin-bottom:.4rem;letter-spacing:.01em}
+.lede{color:#454C48;font-size:.98rem;line-height:1.95}
+p+p{margin-top:.8rem}
+code{font-family:var(--f-mono);font-size:.85em;background:var(--sand-dk);padding:.08em .38em;border-radius:2px}
+.dark code{background:var(--sumi-3);color:var(--sand-lt)}
+.dark{background:var(--sumi);color:var(--sand-lt)}
+.dark .lede{color:#A9B0AB}
+.dark h2,.dark h3{color:var(--sand-lt)}
+.dark .kicker{color:var(--moss-lt)}
+.dark .kicker::after{background:var(--sumi-3)}
+
+/* ---------- topology ---------- */
+.cluster{border:1px solid var(--sand-dk);background:var(--sand-lt);padding:1.2rem;border-radius:3px}
+.dark .cluster{background:var(--sumi-2);border-color:var(--sumi-3)}
+.hosts{display:grid;grid-template-columns:repeat(3,1fr);gap:.9rem;margin-bottom:.9rem}
+.host{border:1.5px solid var(--stone);border-radius:3px;padding:.7rem .8rem;background:var(--sand);transition:border-color .3s,background .3s,opacity .3s}
+.dark .host{background:var(--sumi)}
+.host-hd{display:flex;justify-content:space-between;align-items:baseline;font-family:var(--f-mono);font-size:.72rem;margin-bottom:.55rem}
+.host-name{font-weight:500;letter-spacing:.03em}
+.host-fw{color:var(--stone);font-size:.66rem}
+.vms{display:flex;flex-wrap:wrap;gap:.35rem;min-height:1.6rem}
+.vm{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.02em;padding:.18rem .45rem;border:1px solid var(--sand-dk);border-radius:2px;background:var(--sand-lt);color:#4B524D}
+.dark .vm{background:var(--sumi-2);border-color:var(--sumi-3);color:#A9B0AB}
+.vm.new{border-color:var(--moss);color:var(--moss-dk);background:rgba(75,110,85,.14)}
+.dark .vm.new{color:var(--moss-lt);background:rgba(127,161,135,.14)}
+.vm.ghost{border-style:dashed;opacity:.55}
+.vm.moved{border-color:var(--water);color:var(--water)}
+.host[data-state="active"]{border-color:var(--moss-lt)}
+.host[data-state="draining"]{border-color:var(--water);background:rgba(53,89,107,.08)}
+.dark .host[data-state="draining"]{background:rgba(110,147,163,.1)}
+.host[data-state="down"]{border-color:var(--shu);border-style:dashed;opacity:.55}
+.host[data-state="rebuilding"]{border-color:var(--stone);border-style:dashed}
+.host[data-state="new"]{border-color:var(--moss);box-shadow:0 0 0 2px rgba(75,110,85,.15) inset}
+.fabric{display:flex;flex-wrap:wrap;gap:.5rem;padding-top:.85rem;border-top:1px dashed var(--sand-dk)}
+.dark .fabric{border-color:var(--sumi-3)}
+.net-chip,.store-chip{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.02em;padding:.22rem .55rem;border-radius:12px;border:1px solid var(--water-lt);color:var(--water)}
+.store-chip{border-color:var(--stone);color:var(--stone)}
+.dark .net-chip{color:var(--water-lt)}
+.dark .store-chip{color:var(--stone)}
+.topo-legend{display:flex;flex-wrap:wrap;gap:1.1rem;margin-top:1rem;font-family:var(--f-mono);font-size:.68rem;color:var(--stone)}
+.topo-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.35rem;vertical-align:middle}
+.li-active{background:var(--moss-lt)} .li-draining{background:var(--water)} .li-down{background:var(--shu)} .li-new{background:var(--moss)}
+
+/* ---------- transition (before/after) ---------- */
+.transition{display:grid;grid-template-columns:1fr auto 1fr;gap:1rem;align-items:center;margin-top:1.6rem}
+.transition .t-lbl{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--stone);margin-bottom:.5rem}
+.transition .t-arrow{font-family:var(--f-mono);font-size:1.3rem;color:var(--moss);text-align:center}
+.transition .cluster{padding:.9rem}
+.transition .hosts{grid-template-columns:repeat(3,1fr);gap:.55rem}
+.transition .host{padding:.5rem .55rem}
+.transition .host-hd{font-size:.64rem;margin-bottom:.4rem}
+.transition .vm{font-size:.6rem;padding:.14rem .38rem}
+
+/* ---------- scenario meta row ---------- */
+.meta-row{display:flex;flex-wrap:wrap;gap:.5rem;margin:1.2rem 0 1.6rem}
+.badge{font-family:var(--f-mono);font-size:.68rem;letter-spacing:.04em;padding:.32rem .68rem;border-radius:2px;border:1px solid transparent}
+.badge-prim{background:var(--moss-dk);color:var(--sand-lt)}
+.badge-prim.task{background:var(--water)}
+.badge-prim.workflow{background:var(--sumi-3);color:var(--sand-lt)}
+.badge-cause{border:1px solid var(--stone);color:var(--sumi-3);background:transparent}
+.dark .badge-cause{color:var(--sand-lt);border-color:var(--stone)}
+.badge-cause.danger{border-color:var(--shu);color:var(--shu)}
+.badge-safe{border:1px dashed var(--water-lt);color:var(--water);background:transparent}
+.dark .badge-safe{color:var(--water-lt)}
+
+/* ---------- scenario body layout ---------- */
+.scen{display:grid;grid-template-columns:1.05fr .95fr;gap:2.6rem;align-items:start}
+.steps2{list-style:none;counter-reset:sc}
+.steps2>li{counter-increment:sc;position:relative;padding:.75rem 0 .75rem 2.3rem;border-bottom:1px solid var(--sand-dk);font-size:.88rem;line-height:1.75;color:#454C48}
+.dark .steps2>li{border-color:var(--sumi-3);color:#C3C8C2}
+.steps2>li:last-child{border:0}
+.steps2>li::before{counter(sc)"";content:counter(sc);position:absolute;left:0;top:.72rem;width:1.5rem;height:1.5rem;border-radius:50%;border:1px solid var(--moss);color:var(--moss-dk);font-family:var(--f-mono);font-size:.68rem;display:flex;align-items:center;justify-content:center}
+.dark .steps2>li::before{color:var(--moss-lt)}
+.steps2>li b{color:var(--sumi);font-weight:700}
+.dark .steps2>li b{color:var(--sand-lt)}
+.steps2>li .sub{display:block;margin-top:.25rem;font-size:.8rem;color:var(--stone)}
+
+.side-panel{position:sticky;top:76px}
+pre.code{font-family:var(--f-mono);font-size:.74rem;line-height:1.7;background:var(--sumi);color:#C3C8C2;padding:1rem 1.1rem;border-radius:3px;overflow-x:auto;white-space:pre}
+.dark pre.code{background:var(--sumi-2);border:1px solid var(--sumi-3)}
+pre.code .k{color:var(--moss-lt)} pre.code .s{color:var(--water-lt)} pre.code .c{color:var(--stone)}
+
+.callout{margin-top:1.4rem;padding:1.05rem 1.2rem;background:var(--sand-lt);border-left:3px solid var(--water);font-size:.85rem;line-height:1.8;color:#4B524D}
+.dark .callout{background:var(--sumi-2);border-color:var(--water-lt);color:#A9B0AB}
+.callout b{color:var(--sumi)}
+.dark .callout b{color:var(--sand-lt)}
+.callout .spec{display:block;margin-top:.5rem;font-family:var(--f-mono);font-size:.68rem;color:var(--stone)}
+
+/* ---------- task state machine ---------- */
+.track{display:flex;flex-wrap:wrap;align-items:center;gap:0;margin:1.4rem 0 .6rem}
+.tk{font-family:var(--f-mono);font-size:.72rem;padding:.5rem .8rem;border:1px solid var(--stone);border-radius:2px;color:#454C48;background:var(--sand-lt);white-space:nowrap}
+.dark .tk{color:#C3C8C2;background:var(--sumi-2);border-color:var(--sumi-3)}
+.tk.done{border-color:var(--moss);color:var(--moss-dk);background:rgba(75,110,85,.1)}
+.dark .tk.done{color:var(--moss-lt)}
+.tk-arrow{font-family:var(--f-mono);color:var(--stone);padding:0 .4rem;font-size:.8rem}
+.branch{margin-top:.7rem;display:flex;align-items:center;gap:.5rem;font-family:var(--f-mono);font-size:.7rem;color:var(--shu)}
+.branch .tk{border-color:var(--shu);color:var(--shu);background:rgba(185,62,44,.06)}
+
+/* ---------- rolling table ---------- */
+.roll{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:1.2rem}
+.roll th,.roll td{border:1px solid var(--sand-dk);padding:.5rem .6rem;text-align:center;font-family:var(--f-mono);font-size:.68rem}
+.dark .roll th,.dark .roll td{border-color:var(--sumi-3)}
+.roll th{background:var(--sand-dk);color:var(--sumi-3);font-weight:500}
+.dark .roll th{background:var(--sumi-3);color:var(--sand-lt)}
+.roll td.hostcol{text-align:left;font-family:var(--f-mono);color:var(--stone)}
+.roll td.st-active{color:var(--moss-dk)} .dark .roll td.st-active{color:var(--moss-lt)}
+.roll td.st-drain{background:rgba(53,89,107,.14);color:var(--water)}
+.roll td.st-wait{background:rgba(140,144,137,.14);color:var(--stone)}
+.roll td.st-done{background:rgba(75,110,85,.14);color:var(--moss-dk)}
+.dark .roll td.st-done{color:var(--moss-lt)}
+
+/* ---------- summary table ---------- */
+.tbl{width:100%;border-collapse:collapse;font-size:.86rem}
+.tbl th,.tbl td{text-align:left;padding:.8rem .85rem;border-bottom:1px solid var(--sand-dk);vertical-align:top}
+.tbl th{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--stone);font-weight:500;border-bottom:1px solid var(--sumi)}
+.tbl td .tag-mini{font-family:var(--f-mono);font-size:.72rem}
+
+/* ---------- footer ---------- */
+footer{background:var(--sumi);color:var(--stone);padding:3.4rem 0 2.6rem;font-size:.82rem}
+footer .wrap{display:grid;grid-template-columns:1.4fr 1fr;gap:3rem;align-items:end}
+footer .f-mark{font-family:var(--f-display);font-weight:900;font-size:2rem;color:var(--sand-lt);line-height:1;margin-bottom:.7rem}
+footer .f-mark span{color:var(--moss-lt)}
+footer p{line-height:1.9;max-width:52ch}
+footer a{color:var(--water-lt)}
+footer .f-meta{font-family:var(--f-mono);font-size:.7rem;line-height:2.1;text-align:right;letter-spacing:.04em}
+footer .f-meta i{font-style:normal;color:var(--sand-lt)}
+
+@media(max-width:900px){
+  .scen{grid-template-columns:1fr;gap:1.6rem}
+  .side-panel{position:static}
+  .hosts,.transition .hosts{grid-template-columns:1fr}
+  .transition{grid-template-columns:1fr}
+  .transition .t-arrow{transform:rotate(90deg);padding:.4rem 0}
+  footer .wrap{grid-template-columns:1fr}
+  footer .f-meta{text-align:left}
+  .roll{font-size:.66rem}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-in">
+    <div class="nav-mark"><a href="sakutei.html">作庭 <span>Sakutei</span></a></div>
+    <a class="tab" href="#build">構築</a>
+    <a class="tab" href="#expand">増設</a>
+    <a class="tab" href="#swap">物理交換</a>
+    <a class="tab" href="#fw">FW更新</a>
+    <a class="tab" href="#hv">HV更新</a>
+    <a class="tab" href="#summary">まとめ</a>
+    <a class="back" href="sakutei.html">← 設計思想へ戻る</a>
+  </div>
+</nav>
+
+<!-- ══════════ HERO ══════════ -->
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Operations Walkthrough</div>
+    <h1>一つの仮想基盤で、<br><span class="accent">五つの現場</span>を歩く</h1>
+    <p class="thesis">
+      3ノードのハイパーバイザークラスタを一つの題材に固定し、<b>構築・増設・物理ホスト交換・
+      ファームウェア更新・ハイパーバイザーのローリング更新</b>という5つの作業が、Sakutei の中で
+      実際にどのプリミティブ・原因タグ・安全機構を通って実行されるかを追う。
+      すべて <a href="sakutei.html" style="color:var(--water-lt)">設計の正</a> に定義された機構の適用であり、
+      新しい概念は一つも足していない。
+    </p>
+    <div class="hero-note">同じ登場人物が5回出てくる:host-a / host-b / host-c(3ノード)· 統合 Ceph · VLAN(mgmt/app)· その上の VM 群</div>
+  </div>
+</header>
+
+<!-- ══════════ 題材 ══════════ -->
+<section id="topology">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">The Example</div>
+      <h2>題材:3ノードの仮想化基盤</h2>
+      <p class="lede">
+        物理ホストの電源投入・ラッキング・OS ベースの敷設(段0)はすでに Ansible で終わっている前提とする——
+        <b>ゼロタッチ物理は Sakutei の責務外</b>であり、これは設計の穴ではなく正直な境界宣言である。
+        Sakutei が担うのはここから先、<b>段1以降</b>:ストレージプール・仮想ネットワーク・VM フリートの収束である。
+      </p>
+    </div>
+    <div class="cluster">
+      <div class="hosts">
+        <div class="host" data-state="active">
+          <div class="host-hd"><span class="host-name">host-a</span><span class="host-fw">bmc-fw 3.4.0</span></div>
+          <div class="vms"><span class="vm">vm-web-1</span><span class="vm">vm-web-2</span></div>
+        </div>
+        <div class="host" data-state="active">
+          <div class="host-hd"><span class="host-name">host-b</span><span class="host-fw">bmc-fw 3.4.0</span></div>
+          <div class="vms"><span class="vm">vm-web-3</span><span class="vm">vm-db-1</span></div>
+        </div>
+        <div class="host" data-state="active">
+          <div class="host-hd"><span class="host-name">host-c</span><span class="host-fw">bmc-fw 3.4.0</span></div>
+          <div class="vms"><span class="vm">vm-db-2</span></div>
+        </div>
+      </div>
+      <div class="fabric">
+        <span class="net-chip">virtual_network:vlan-mgmt(10)</span>
+        <span class="net-chip">virtual_network:vlan-app(20)</span>
+        <span class="net-chip">fw_rule:app→db 3306/tcp</span>
+        <span class="store-chip">ceph_pool:3-way replica</span>
+      </div>
+    </div>
+    <div class="topo-legend">
+      <span><i class="li-active"></i>active(定常収束中)</span>
+      <span><i class="li-draining"></i>draining(退避中)</span>
+      <span><i class="li-down"></i>down / unknown</span>
+      <span><i class="li-new"></i>新規(create 判定)</span>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ シナリオ 1:構築 ══════════ -->
+<section id="build" class="dark">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Scenario 1 · Build</div>
+      <h2>構築 —— 何もない状態から一括で立ち上げる</h2>
+      <p class="lede">段0(3ホスト分の Proxmox 相当基盤)は Ansible で作られている。その上に、ストレージ・ネットワーク・初期 VM フリートを<b>一つの合成リソース</b>として宣言し、初めて Sakutei に収束させる。</p>
+    </div>
+
+    <div class="meta-row">
+      <span class="badge badge-prim">Resource(合成)</span>
+      <span class="badge badge-cause">原因タグ A · 意図</span>
+      <span class="badge badge-safe">capacity gate</span>
+      <span class="badge badge-safe">render 二フェーズ</span>
+      <span class="badge badge-safe">wave 分解</span>
+    </div>
+
+    <div class="scen">
+      <ol class="steps2">
+        <li><b>intent を書き PR。</b>合成リソース <code>hv_cluster</code>(ceph_pool + virtual_network×2 + fw_rule + vm×5)を YAML で宣言する。platform ownership のため書込みは PR 必須。
+          <span class="sub">§7.1 platform=PR必須 / §9.5 合成リソースの展開</span></li>
+        <li><b>承認・マージ。</b>intent_revision が進む。差分は PR 上で dry-run(<code>plan</code>)としてそのまま見えている。</li>
+        <li><b>render。</b>フェーズ1で外部入力(ここでは無し)を解決、フェーズ2で合成リソースを実子リソース(ceph_pool・virtual_network・vm 各実体)に決定的に展開する。
+          <span class="sub">§9.1 二フェーズ / §9.5</span></li>
+        <li><b>observe → diff。</b>3ホストは既に実在するが、ceph_pool・virtual_network・vm は List 上に存在しない → 全て create 判定、原因タグ <b>A</b>。</li>
+        <li><b>apply。</b>依存 DAG を wave に分解し並列適用する:vlan/fw → ceph_pool → vm の順。Apply は非同期なので、VM 作成が数分かかってもループ全体は止まらない。
+          <span class="sub">§8.2 モデルA / §8.3 wave / §8.4 非同期 Apply</span></li>
+        <li><b>capacity gate。</b>一括 create が下位基盤(Ceph 等)の受容量を超えないよう、進行中件数を capacity gate で絞る。加算方向なので既定は「通す」が、暴走はここで抑える。
+          <span class="sub">§11.4 / §13.4 capacity gate</span></li>
+        <li><b>record → status。</b>diff が縮小し converged。<code>sakutei status</code> で drifted=0 を確認すれば、PR の diff どおりに世界が出来上がったことが監査として残る。</li>
+      </ol>
+
+      <div class="side-panel">
+        <h3>desired(抜粋)</h3>
+        <pre class="code"><span class="c"># intent/hv-cluster.yaml</span>
+<span class="k">resource</span>: hv_cluster       <span class="c"># 合成リソース</span>
+<span class="k">id</span>: dc1-cluster-01
+<span class="k">storage</span>:
+  <span class="k">pool</span>: ceph-main
+  <span class="k">replicas</span>: 3
+<span class="k">network</span>:
+  - { <span class="k">name</span>: vlan-mgmt, <span class="k">vlan</span>: 10 }
+  - { <span class="k">name</span>: vlan-app,  <span class="k">vlan</span>: 20 }
+<span class="k">vm_fleet</span>:
+  - { <span class="k">id</span>: vm-web-1, <span class="k">node</span>: host-a }
+  - { <span class="k">id</span>: vm-web-2, <span class="k">node</span>: host-a }
+  - { <span class="k">id</span>: vm-web-3, <span class="k">node</span>: host-b }
+  - { <span class="k">id</span>: vm-db-1,  <span class="k">node</span>: host-b }
+  - { <span class="k">id</span>: vm-db-2,  <span class="k">node</span>: host-c }</pre>
+        <div class="callout">
+          <b>「作る」は本質的に安全側の操作である。</b>非対称原則(確信が持てないとき、加算はしても減算はしない)が効くのは主に減算側だが、その裏返しとして create は既定で積極的に進めてよい——だからこそ大量 create の唯一の歯止めは capacity gate と wave の依存順序だけでよい。
+          <span class="spec">spec: §3.9(適用境界:ゼロタッチ物理は責務外)/ §8 / §9.5</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ シナリオ 2:増設 ══════════ -->
+<section id="expand">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Scenario 2 · Expand</div>
+      <h2>増設 —— 需要増でフリートを 5 → 8 台に広げる</h2>
+      <p class="lede">アプリ層の負荷が増え、host-c の空き容量に VM を 3 台追加する。ここで初めて<b>採番(台帳)</b>——具体 IP の払い出し——が登場する。</p>
+    </div>
+
+    <div class="meta-row">
+      <span class="badge badge-prim">Resource</span>
+      <span class="badge badge-cause">原因タグ A · 意図</span>
+      <span class="badge badge-safe">Reserve → Confirm</span>
+      <span class="badge badge-safe">rate limit</span>
+      <span class="badge badge-safe">planned_change(任意)</span>
+    </div>
+
+    <div class="scen">
+      <ol class="steps2">
+        <li><b>intent に 3 台追加して PR。</b><code>vm_fleet</code> に <code>vm-app-4/5/6</code>(すべて host-c)を書き足す。</li>
+        <li><b>PR 生成時に IP を仮予約。</b>render フェーズ1が allocator に <code>Reserve</code>(TTL 付き)を発行し、PR の diff に具体 IP が表示される——却下されれば TTL 切れで自動的にリークなく解放される。
+          <span class="sub">§19.4 仮予約(Reserve → Confirm)</span></li>
+        <li><b>承認・マージ。</b>マージ直後に走る render フェーズ1が仮予約を <code>Confirm</code> し、本payoutに昇格する。</li>
+        <li><b>observe → diff。</b>List 結果に 3 台の ID が存在しない → create 判定、原因タグ <b>A</b>。既存 5 台には触れない(加算のみ = 無停止)。</li>
+        <li><b>rate limit の確認。</b>3 台の create は非破壊的なので緩やかに通る。だがこれが「一晩で 300 台」のような急拡大なら、変更予算(cycle 単位 rate limit / 累積時間窓予算)に引っかかり halt する——そのときは <code>planned_change</code>(専用予算レーン + 承認)で正当な大量作業として宣言する。
+          <span class="sub">§13.1 rate limit / §13.3 planned_change</span></li>
+        <li><b>apply → record → status。</b>host-c に 3 台出現、converged。以降の定常収束では allocator の <code>Lookup</code> はシャードローカルにキャッシュされ、衛星呼び出しはゼロになる。
+          <span class="sub">§19.6 QPS はフリート規模でなく churn に比例</span></li>
+      </ol>
+
+      <div class="side-panel">
+        <h3>PR diff(具体 IP が見える)</h3>
+        <pre class="code"><span class="c">+ vm_fleet:</span>
+<span class="k">+ </span>{ <span class="k">id</span>: vm-app-4, <span class="k">node</span>: host-c, <span class="k">ip</span>: <span class="s">10.20.3.41</span> }  <span class="c"># reserved</span>
+<span class="k">+ </span>{ <span class="k">id</span>: vm-app-5, <span class="k">node</span>: host-c, <span class="k">ip</span>: <span class="s">10.20.3.42</span> }  <span class="c"># reserved</span>
+<span class="k">+ </span>{ <span class="k">id</span>: vm-app-6, <span class="k">node</span>: host-c, <span class="k">ip</span>: <span class="s">10.20.3.43</span> }  <span class="c"># reserved</span></pre>
+        <div class="transition">
+          <div><div class="t-lbl">適用前</div>
+            <div class="cluster"><div class="hosts">
+              <div class="host" data-state="active"><div class="host-hd"><span class="host-name">host-c</span></div><div class="vms"><span class="vm">vm-db-2</span></div></div>
+            </div></div>
+          </div>
+          <div class="t-arrow">→</div>
+          <div><div class="t-lbl">適用後</div>
+            <div class="cluster"><div class="hosts">
+              <div class="host" data-state="new"><div class="host-hd"><span class="host-name">host-c</span></div><div class="vms"><span class="vm">vm-db-2</span><span class="vm new">vm-app-4</span><span class="vm new">vm-app-5</span><span class="vm new">vm-app-6</span></div></div>
+            </div></div>
+          </div>
+        </div>
+        <div class="callout">
+          <b>PR フローの仮予約は「却下してもリークしない」の型実装。</b>本払い出しを PR 生成時にやると却下時にプールを食い潰す。Reserve/Confirm の分離が、レビューで見える化と安全なロールバックを両立させる。
+          <span class="spec">spec: §19.3-19.4</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ シナリオ 3:物理交換 ══════════ -->
+<section id="swap" class="dark">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Scenario 3 · Physical Swap</div>
+      <h2>物理ホスト交換 —— host-b の老朽ハードを入れ替える</h2>
+      <p class="lede">計画的なハードウェア交換。VM の退避は<b>収束(Resource)</b>だけで表現でき、実機の抜き差しだけが Sakutei の責務外(段0/人手)に残る——境界がどこにあるかが最もよく見える例。</p>
+    </div>
+
+    <div class="meta-row">
+      <span class="badge badge-prim workflow">Workflow(骨格)+ Resource</span>
+      <span class="badge badge-cause">原因タグ A · 計画</span>
+      <span class="badge badge-cause danger">unknown ≠ absent(不意故障時)</span>
+      <span class="badge badge-safe">planned_change</span>
+      <span class="badge badge-safe">fencing token</span>
+      <span class="badge badge-safe">S2-free 復旧</span>
+    </div>
+
+    <div class="scen">
+      <ol class="steps2">
+        <li><b>交換を計画し宣言。</b>運用者が <code>planned_change</code>(種別:replace, scope:host-b, window:メンテ窓)を intent に宣言する——専用予算レーンで「これは正当な大量作業だ」と明示する。
+          <span class="sub">§13.3 planned_change</span></li>
+        <li><b>VM を退避(= 収束だけで表現できる)。</b>host-b 上の VM の <code>node</code> desired 値を host-a/host-c に書き換える PR。Task ではなく<b>ただの Resource 収束</b>——加算(host-a/c への作成)+ 減算(host-b からの削除)の組で表現される。
+          <span class="sub">§6.1 Resource / 非対称原則は減算側にのみ厳格に効く</span></li>
+        <li><b>host-b が空になったことを List で確認。</b>「退避完了」は Observe 単発ではなく <b>List(集合演算)</b> を根拠にする——Release の非対称原則と同型。</li>
+        <li><b>物理作業(責務外)。</b>人が電源を落とし、実機を交換する。新ハードの最小核構築は<b>段0 = Ansible</b>の領域であり、Sakutei はここに関与しない。
+          <span class="sub">§3.9 適用境界:ゼロタッチ物理は責務外</span></li>
+        <li><b>新ハードが名乗り出る。</b>段0 が新 host-b の最小核(NW到達性・OS)を再構築し終えると、Sakutei の scope に「host-b」として再登場する。ローカル state(S2)を何も持たないハードなら、<b>再イメージ → pull → 収束で完全復旧</b>——失うものはゼロ。
+          <span class="sub">§17.5 S2-free シャード</span></li>
+        <li><b>fencing 世代を確認。</b>旧 host-b の資格や書込み経路が万一残っていても、新しい fencing 世代が古い writer を拒否する——二重 writer による事故(FW/ルーティングの発振)を防ぐ。
+          <span class="sub">§15.2 fencing token</span></li>
+        <li><b>基盤リソースを再収束。</b>ceph_pool への再参加・virtual_network の再適用を、intent が元々持っていた desired との diff(cause A、中身は変わっていない)として通常収束する。</li>
+        <li><b>(任意)VM を戻す。</b>負荷分散のため一部 VM の <code>node</code> を host-b に戻す PR。ここも通常の Resource 収束。</li>
+      </ol>
+
+      <div class="side-panel">
+        <div class="transition">
+          <div><div class="t-lbl">交換前</div>
+            <div class="cluster"><div class="hosts">
+              <div class="host" data-state="active"><div class="host-hd"><span class="host-name">host-b</span></div><div class="vms"><span class="vm">vm-web-3</span><span class="vm">vm-db-1</span></div></div>
+            </div></div>
+          </div>
+          <div class="t-arrow">→</div>
+          <div><div class="t-lbl">退避 + 物理交換中</div>
+            <div class="cluster"><div class="hosts">
+              <div class="host" data-state="down"><div class="host-hd"><span class="host-name">host-b</span></div><div class="vms"></div></div>
+            </div></div>
+          </div>
+        </div>
+        <div class="transition" style="margin-top:.9rem">
+          <div><div class="t-lbl">host-a(退避先)</div>
+            <div class="cluster"><div class="hosts">
+              <div class="host" data-state="active"><div class="host-hd"><span class="host-name">host-a</span></div><div class="vms"><span class="vm">vm-web-1</span><span class="vm">vm-web-2</span><span class="vm moved">vm-web-3</span></div></div>
+            </div></div>
+          </div>
+          <div class="t-arrow">→</div>
+          <div><div class="t-lbl">復旧後の host-b</div>
+            <div class="cluster"><div class="hosts">
+              <div class="host" data-state="rebuilding"><div class="host-hd"><span class="host-name">host-b</span><span class="host-fw">reimaged</span></div><div class="vms"></div></div>
+            </div></div>
+          </div>
+        </div>
+        <div class="callout">
+          <b>不意の故障ならどう変わるか。</b>host-b が突然応答不能になると Observe は <code>unknown</code> を返す——<code>unknown ≠ absent</code> の原則により「VM が消えた」とは断じず、閾値時間を超えてもなお不明なら remediation mode に従ってアラート(alert-only)に倒す。自動フェイルオーバーは軽々には起動しない。
+          <span class="spec">spec: §3.3 非対称原則 / §4.5 Observation の三値 / §14 remediation mode</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ シナリオ 4:FW更新 ══════════ -->
+<section id="fw">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Scenario 4 · Firmware</div>
+      <h2>ファームウェア更新 —— host-a の BMC を 3.4.0 → 3.4.1 へ</h2>
+      <p class="lede">中断不可・リブート跨ぎ・非冪等。収束ループには絶対に直接載せられない、<b>多相 Task</b> の典型例。</p>
+    </div>
+
+    <div class="meta-row">
+      <span class="badge badge-prim task">Task(多相型)</span>
+      <span class="badge badge-safe">strategy: task</span>
+      <span class="badge badge-safe">1-outstanding 制約</span>
+      <span class="badge badge-safe">メンテ窓ゲート</span>
+      <span class="badge badge-safe">unknown ≠ absent(リブート中)</span>
+    </div>
+
+    <div class="scen">
+      <ol class="steps2">
+        <li><b>収束は差分を検知するだけ。</b><code>target_version: "3.4.1"</code> と現在値の不一致を diff が検出しても、直接 Apply せず Task 起動イベントだけを発火する——非冪等操作を収束ループから排除する型。
+          <span class="sub">§6.5 RequiresTaskEvent</span></li>
+        <li><b>1-outstanding 制約。</b>同一リソースへの Task 起動は未完了インスタンス高々 1 つに制限される。level-triggered な収束は同じ差分を毎周検知し続けるため、抑止がないと Task が周期ごとに乱造される。
+          <span class="sub">§6.2</span></li>
+        <li><b>メンテ窓ゲート。</b><code>window: "Sat 02:00-04:00"</code> の外では起動しない。</li>
+        <li><b>状態機械を進行。</b>各相の入口で「もう済んでいるか」を現実 Observe で確認してから進む(べき等な再開)。</li>
+        <li><b>Rebooting 中は host-a が一時的に消える。</b><code>unknown ≠ absent</code> で「リブート中」と解釈し、タイムアウト付きで再出現を待つ——シナリオ3の物理故障と紛れないのは、Task 自身が「今どの相にいるか」を知っているから。</li>
+        <li><b>Confirming で完了確認。</b>進行フェーズだけを外部永続化(S2)し、Done 判定は稼働バージョンを現実 Observe で問うだけ——完了印は現実側にある。</li>
+      </ol>
+
+      <div class="side-panel">
+        <h3>収束への接続</h3>
+        <pre class="code"><span class="k">resource</span>: host_bmc_fw
+<span class="k">id</span>: host-a
+<span class="k">target_version</span>: <span class="s">"3.4.1"</span>
+<span class="k">update_policy</span>:
+  <span class="k">strategy</span>: task        <span class="c"># 直接 Apply せず Task を起動</span>
+  <span class="k">window</span>: <span class="s">"Sat 02:00-04:00"</span>
+  <span class="k">rollback_on_fail</span>: <span class="k">true</span></pre>
+        <div class="track">
+          <span class="tk done">Idle</span><span class="tk-arrow">→</span>
+          <span class="tk done">Staging</span><span class="tk-arrow">→</span>
+          <span class="tk done">Verifying</span><span class="tk-arrow">→</span>
+          <span class="tk done">Applying</span><span class="tk-arrow">→</span>
+          <span class="tk">Rebooting</span><span class="tk-arrow">→</span>
+          <span class="tk">Confirming</span><span class="tk-arrow">→</span>
+          <span class="tk">Done</span>
+        </div>
+        <div class="branch">↳ いずれかの相で失敗 → <span class="tk">Failed</span><span class="tk-arrow">→</span><span class="tk">Rollback</span></div>
+        <div class="callout">
+          <b>「いつ = 収束 / どう = 手続き」の型レベルの実装がこれ。</b>収束はトリガとメンテ窓ゲートだけを担い、書込み・検証・リブート待ちという危険な手順そのものは Task に閉じ込める。実行中は <code>converging</code> 扱いになり、収束の介入は止まる。
+          <span class="spec">spec: §3.2 / §6.2 / §6.5</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ シナリオ 5:ハイパーバイザー更新 ══════════ -->
+<section id="hv" class="dark">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Scenario 5 · Rolling Upgrade</div>
+      <h2>ハイパーバイザーのローリング更新 —— 3台を1台ずつ、止めずに</h2>
+      <p class="lede">単一リソースの手続きでは足りない。<b>動的な状態依存</b>(隣が今 healthy か)と<b>全体不変条件</b>(常に2台以上 active)を持つ、Workflow の実例。内部では毎ステップでシナリオ4の多相 Task を呼ぶ——3プリミティブの階層構造がそのまま現れる。</p>
+    </div>
+
+    <div class="meta-row">
+      <span class="badge badge-prim workflow">Workflow</span>
+      <span class="badge badge-safe">invariant: min_active</span>
+      <span class="badge badge-safe">承認ゲート N-of-M</span>
+      <span class="badge badge-safe">canary → broad</span>
+      <span class="badge badge-safe">on_failure: halt</span>
+    </div>
+
+    <div class="scen">
+      <ol class="steps2">
+        <li><b>Workflow 起動。</b><code>invariant: min_active=2</code>(3台中常に2台以上 active)を各ステップ前後で検証しながら進む。</li>
+        <li><b>canary ステージ。</b>影響度最小の1台(least-loaded-first)から。<code>health_check</code>(自動ゲート)と <code>manual_approval</code>(N-of-M=2/3、申請者≠承認者)を通過して初めて次へ。</li>
+        <li><b>1台ずつ:drain → failover → wait → firmware-update(Task 呼び出し)→ health-check → undrain → verify。</b>drain/undrain は VM の <code>node</code> 書き換え(シナリオ3と同型の Resource 収束)、firmware-update はシナリオ4の多相 Task そのもの。</li>
+        <li><b>ゲートで停止 → 承認 API → 次ステージ。</b>ステージ完了で <code>StageAwaitingApproval</code> Event が発火し sink 経由で人へ通知、Workflow は S2 に永続化された「待ち」フェーズで停止する。<code>POST /workflows/{id}/gates/{gate}/approve</code> で次へ進む。</li>
+        <li><b>broad ステージ。</b>残り2台を同じ手順で(canary で検証済みの手順を横展開)。</li>
+        <li><b>失敗時は halt。</b>ローリングは全ロールバックが困難なため、既定は「その場で止めて人を呼ぶ」(<code>keep_drained: true</code>)——無理に自動で戻そうとしない。</li>
+      </ol>
+
+      <div class="side-panel">
+        <h3>invariant を保ったまま進む(1台ずつ)</h3>
+        <table class="roll">
+          <thead><tr><th>host</th><th>drain</th><th>firmware(Task)</th><th>health</th><th>undrain</th><th>verify</th></tr></thead>
+          <tbody>
+            <tr><td class="hostcol">host-a(canary)</td><td class="st-done">済</td><td class="st-done">済</td><td class="st-done">済</td><td class="st-done">済</td><td class="st-done">済</td></tr>
+            <tr><td class="hostcol">host-b</td><td class="st-drain">進行中</td><td class="st-wait">待ち</td><td class="st-wait">—</td><td class="st-wait">—</td><td class="st-wait">—</td></tr>
+            <tr><td class="hostcol">host-c</td><td class="st-wait">未着手</td><td class="st-wait">—</td><td class="st-wait">—</td><td class="st-wait">—</td><td class="st-wait">—</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:.76rem;color:var(--stone);margin-top:.5rem;font-family:var(--f-mono)">host-a・host-c が active な間だけ host-b を drain してよい(min_active=2 を常に満たす)</p>
+        <pre class="code" style="margin-top:1rem"><span class="k">on_failure</span>:
+  <span class="k">policy</span>: halt          <span class="c"># 既定。全ロールバックは困難</span>
+  <span class="k">keep_drained</span>: <span class="k">true</span></pre>
+        <div class="callout">
+          <b>これは過剰な抽象化ではない。</b>「順序・不変条件・失敗回復」を持つ手続きは、どのツールで組んでも本質的に必要になる複雑さである。Workflow はそれを第一級プリミティブとして構造化しているだけで、Task を隠さずそのまま子として呼ぶ——収束(shape)・Task(手続き)・Workflow(段取り)は積み木のように組み合わさる。
+          <span class="spec">spec: §6.3 / §6.4 承認ゲート</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ まとめ ══════════ -->
+<section id="summary">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">At a Glance</div>
+      <h2>5つの現場、一つの型</h2>
+      <p class="lede">どの作業も、3プリミティブと横断的な安全機構の組み合わせに落ちる。新しい機構を都度発明していない。</p>
+    </div>
+    <table class="tbl">
+      <thead>
+        <tr><th>作業</th><th>主プリミティブ</th><th>原因タグ</th><th>主な安全機構</th><th>破壊性</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>構築</td><td>Resource(合成)</td><td class="tag-mini">A</td>
+          <td>capacity gate / wave 依存順</td><td>低 — 加算のみ</td>
+        </tr>
+        <tr>
+          <td>増設</td><td>Resource</td><td class="tag-mini">A</td>
+          <td>Reserve→Confirm / rate limit</td><td>低 — 加算のみ</td>
+        </tr>
+        <tr>
+          <td>物理ホスト交換</td><td>Workflow(骨格)+ Resource</td><td class="tag-mini">A(不意なら B)</td>
+          <td>planned_change / fencing / S2-free</td><td>中 — 一時的に容量低下</td>
+        </tr>
+        <tr>
+          <td>ファームウェア更新</td><td>Task(多相型)</td><td class="tag-mini">— (Task 起動のみ)</td>
+          <td>メンテ窓 / 1-outstanding / rollback</td><td>中 — 対象1台が一時停止</td>
+        </tr>
+        <tr>
+          <td>ハイパーバイザー更新</td><td>Workflow(→ 内部で Task)</td><td class="tag-mini">— (Task 起動のみ)</td>
+          <td>invariant / N-of-M ゲート / halt</td><td>低 — min_active を常時維持</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="tbl-note" style="margin-top:1.1rem;font-size:.86rem;color:#5A615C">
+      「いつ・どの順で変えるか」は常に収束が判定し、「どう変えるか」だけが Task/Workflow に委ねられる——
+      この一線が、5つの現場すべてで揺らいでいない。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════ footer ══════════ -->
+<footer>
+  <div class="wrap">
+    <div>
+      <div class="f-mark">作庭 <span>Sakutei</span></div>
+      <p>
+        ここで歩いた5つの現場は、いずれも新しいプリミティブを要らなかった。
+        <a href="sakutei.html">設計思想のランディングページ</a>で全体像を、
+        <a href="../architecture/spec/README.md">docs/architecture/spec/</a> で§番号つきの正文を確認できる。
+      </p>
+    </div>
+    <div class="f-meta">
+      <div>EXAMPLE &nbsp;<i>3-node hypervisor cluster</i></div>
+      <div>SCENARIOS &nbsp;<i>build · expand · swap · fw · rolling</i></div>
+      <div>DESIGN &nbsp;<i>spec v3.3(8部29節)</i></div>
+      <div style="margin-top:1rem;color:var(--stone)">庭は、一日にして成らず。だが型は、最初から一つである。</div>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  'use strict';
+  if('IntersectionObserver' in window && !window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if(e.isIntersecting){ e.target.style.opacity=1; e.target.style.transform='none'; io.unobserve(e.target); }
+      });
+    }, {threshold:.1, rootMargin:'0px 0px -40px 0px'});
+    document.querySelectorAll('.sec-head, .cluster, .side-panel, .steps2 > li').forEach(function(el){
+      el.style.opacity=0; el.style.transform='translateY(12px)';
+      el.style.transition='opacity .6s ease, transform .6s ease';
+      io.observe(el);
+    });
+  }
+})();
+</script>
+</body>
+</html>

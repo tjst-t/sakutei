@@ -455,6 +455,7 @@ footer .f-meta i{font-style:normal;color:var(--sand-lt)}
     <a href="#sat">衛星群</a>
     <a href="#test">検証</a>
     <a href="#scope">スコープ</a>
+    <a href="scenarios.html" style="color:var(--moss-dk);border-bottom:1px dashed var(--moss)">運用シナリオ →</a>
   </div>
 </nav>
 
@@ -532,9 +533,9 @@ footer .f-meta i{font-style:normal;color:var(--sand-lt)}
 <section id="principles" style="padding-top:0">
   <div class="wrap">
     <div class="sec-head">
-      <div class="kicker">6 Principles</div>
+      <div class="kicker">8 Principles</div>
       <h2>設計を貫く原則</h2>
-      <p class="lede">個々の判断は、この6原則の適用として導かれる。逆に言えば、原則から導けない機能は入れない。</p>
+      <p class="lede">個々の判断は、この8原則の適用として導かれる。逆に言えば、原則から導けない機能は入れない。前半6つは core を貫く基本原則、後半2つはスケール・分散・衛星の設計で結晶した原則である。</p>
     </div>
 
     <div class="pr-grid">
@@ -567,6 +568,16 @@ footer .f-meta i{font-style:normal;color:var(--sand-lt)}
         <div class="n">06</div>
         <h3>ownership がすべてを貫く</h3>
         <p>ただ一つの区別(platform / tenant)が、書き込みポリシー・修復モード・rate limit・爆発半径・供給源・シャード境界を決める。</p>
+      </div>
+      <div class="pr">
+        <div class="n">07</div>
+        <h3>シャード間協調は現実を介して行う</h3>
+        <p>シャード同士は互いに問い合わせない。相手が作った現実を Observe して gate する。シャード間 RPC / 状態交換は正しさに一切関与しない——観測 state レス思想(原則01)のスケール版。</p>
+      </div>
+      <div class="pr">
+        <div class="n">08</div>
+        <h3>衛星の停止は、変化を止めるが、維持を止めない</h3>
+        <p>定常収束は衛星コールゼロで回る。割当事実は Release まで不変なのでキャッシュしてよい。衛星が止まっても、止まるのは<b>変化</b>だけで<b>維持</b>は止まらない。QPS はフリート規模でなく churn に比例する。</p>
       </div>
     </div>
   </div>
@@ -1077,7 +1088,7 @@ footer .f-meta i{font-style:normal;color:var(--sand-lt)}
 
     <div class="scope">
       <div class="sc" style="background:var(--sumi-2);border-color:var(--moss)">
-        <div class="tagline">v1 — 最初に建てる</div>
+        <div class="tagline">v1a — 完成 · コア実証</div>
         <h3 style="color:var(--sand-lt)">収束コアと、型</h3>
         <ul style="color:#A9B0AB">
           <li>Provider / Lister の二層分離</li>
@@ -1091,20 +1102,20 @@ footer .f-meta i{font-style:normal;color:var(--sand-lt)}
         </ul>
         <p style="font-size:.78rem;color:var(--stone);margin-top:1rem;line-height:1.7">
           <b style="color:var(--moss-lt)">後付けできない型は、最初に。</b>
-          あとは DNS provider から始める——最もクリーンで、検証も軽い。
+          Go(標準ライブラリのみ)で実装済み。<code>dnszone</code> / <code>nftables</code> provider と <code>make demo</code> で動く。
         </p>
       </div>
       <div class="sc" style="background:var(--sumi-2);border-color:var(--water)">
-        <div class="tagline">v2 — 育ててから</div>
+        <div class="tagline">v1b · v1.5 · v2+ — これから育てる</div>
         <h3 style="color:var(--sand-lt)">手続きと、衛星</h3>
         <ul style="color:#A9B0AB">
+          <li>import / Sync Mode · 静的シャーディング</li>
           <li>Task / Workflow / 承認ゲート</li>
           <li>段階適用 · canary</li>
           <li>Sekimori(認証)</li>
           <li>Daicho(採番)</li>
           <li>Zumen(UI)</li>
           <li>DBSource / 分散 Executor</li>
-          <li>シャーディング</li>
         </ul>
         <p style="font-size:.78rem;color:var(--stone);margin-top:1rem;line-height:1.7">
           <b style="color:var(--water-lt)">seam は今切る、split は後。</b>
@@ -1149,6 +1160,8 @@ footer .f-meta i{font-style:normal;color:var(--sand-lt)}
       <div>CORE &nbsp;<i>Niwashi(庭師)</i></div>
       <div>SATELLITES &nbsp;<i>Sekimori · Daicho · Zumen</i></div>
       <div>VERIFICATION &nbsp;<i>Tsuboniwa · Shukkei</i></div>
+      <div>DESIGN &nbsp;<i>spec v3.3(8部29節)</i></div>
+      <div>IMPLEMENTATION &nbsp;<i>v1a 完成(Go)</i></div>
       <div style="margin-top:1rem;color:var(--stone)">『作庭記』——世界最古の、庭の宣言的仕様書</div>
     </div>
   </div>
