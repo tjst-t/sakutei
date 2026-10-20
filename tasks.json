@@ -404,6 +404,29 @@
       "updatedAt": "2026-10-20T08:43:33.533Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "v1b",
+      "number": 18,
+      "kind": "story",
+      "title": "v1b: ブラウンフィールド導入と採番・静的シャーディング",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1b"
+      ],
+      "body": "設計 §27.3。v1b が実証するのは、**既存の大規模基盤に安全に入れる**ことと、**採番の権威と連携して合成リソースを実体化する**こと。v1a と合わせて「使い始められる」水準にする。ADR-0010/0012/0021。\n\nv1a で seam だけ切ったもの（BulkObserve・--claim・Vault SecretBackend）の実装もここに入る。\n\n子タスクは §27.3 の箇条を単位に分けた。依存はタスクの dependsOn を参照。各タスクは大きいので、着手時にさらに細かく割ってよい。",
+      "doneWhen": "子タスクがすべて done で、make check と -race テストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:47.028Z",
+      "updatedAt": "2026-10-20T08:43:47.028Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
