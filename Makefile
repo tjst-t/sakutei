@@ -1,4 +1,4 @@
-.PHONY: build test vet check demo clean
+.PHONY: build test test-race vet check demo clean
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -8,6 +8,11 @@ build:
 
 test:
 	go test ./...
+
+# race detector 付きのテスト。cgo が要るので gcc（C コンパイラ）が必要。
+# -count=1 で結果のキャッシュを使わず、毎回実際に回す。
+test-race:
+	CGO_ENABLED=1 go test -race -count=1 ./...
 
 vet:
 	go vet ./...

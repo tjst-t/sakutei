@@ -24,10 +24,10 @@ $ make test       # 全テスト（tests/acceptance の受け入れ・chaos を�
 $ make vet        # go vet
 $ make check      # build + vet + test
 $ make demo       # plan → converge → drift → self-heal のウォークスルー
-$ CGO_ENABLED=1 go test -race ./...   # race 検出（gcc が要る）
+$ make test-race  # race 検出付きのテスト（cgo のため gcc が要る）
 ```
 
-Go 1.22 以上。外部依存なし（stdlib のみ）。
+Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflows/ci.yml`（GitHub Actions）。push（main）と PR のたびに、Go 1.22 と最新の安定版で `make check` を、最新の安定版で `make test-race` を回す。
 
 ## リポジトリ構成
 
