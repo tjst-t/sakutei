@@ -32,6 +32,8 @@
 //	      "scope": {"site": "tokyo"},   // optional; omit or {} for root scope
 //	      "id": "my-resource",
 //	      "depends_on": ["other-resource"],  // optional; S94f1f9-2 provisional
+//	      // an entry may also be {"id": "vm-1", "ready_condition": "cloud_init_done"}
+//	      // to wait for a named observable condition of the upstream (§8.3)
 //	      "fields": {
 //	        "name": "my-resource",
 //	        "size": "10"
@@ -96,8 +98,20 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		r.Fields, r.Allocations = fields, allocs
 		if depRaw, ok := m["depends_on"].([]any); ok {
 			for _, d := range depRaw {
-				if s, ok := d.(string); ok {
-					r.DependsOn = append(r.DependsOn, s)
+				switch dep := d.(type) {
+				case string:
+					r.DependsOn = append(r.DependsOn, dep)
+				case map[string]any:
+					// { id, ready_condition }: wait for a named, observable
+					// condition of the upstream, not just its processing (§8.3).
+					id, _ := dep["id"].(string)
+					r.DependsOn = append(r.DependsOn, id)
+					if cond, _ := dep["ready_condition"].(string); cond != "" {
+						if r.ReadyConditions == nil {
+							r.ReadyConditions = make(map[string]string)
+						}
+						r.ReadyConditions[id] = cond
+					}
 				}
 			}
 		}
@@ -203,6 +217,9 @@ type intentResource struct {
 	// DependsOn is the list of provider-local IDs (same intent file scope)
 	// that this resource depends on.  Provisional format; S33266e formalises.
 	DependsOn []string `json:"depends_on"`
+	// ReadyConditions maps a DependsOn entry to the ready condition declared
+	// with it (`depends_on: [{id, ready_condition}]`, §8.3).
+	ReadyConditions map[string]string `json:"-"`
 	// Fields is the map of field name → desired value (string).
 	Fields map[string]string `json:"fields"`
 	// DeletionPolicy controls how the engine handles resources absent from
@@ -472,12 +489,13 @@ func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 		}
 
 		resources = append(resources, diff.DesiredResource{
-			ID:             id,
-			Fields:         fields,
-			DependsOn:      dependsOn,
-			DeletionPolicy: parseDeletionPolicy(r.DeletionPolicy),
-			Allocations:    r.Allocations,
-			ObserveTier:    strings.TrimSpace(r.ObserveTier),
+			ID:              id,
+			Fields:          fields,
+			DependsOn:       dependsOn,
+			ReadyConditions: r.ReadyConditions,
+			DeletionPolicy:  parseDeletionPolicy(r.DeletionPolicy),
+			Allocations:     r.Allocations,
+			ObserveTier:     strings.TrimSpace(r.ObserveTier),
 		})
 	}
 	return resources, intent, nil

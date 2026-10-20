@@ -56,6 +56,10 @@ import (
 // so their transitive downstream is skipped: "unknown ≠ absent; do not proceed
 // downstream on uncertainty" (ADR-0002, §3 asymmetry principle).
 //
+// ready is this cycle's observed ready conditions (§8.3, §11.2).  A resource
+// whose depends_on names a ready_condition that is not satisfied in ready is
+// skipped like an upstream failure, together with its transitive downstream.
+//
 // Returns:
 //   - applied: total number of Ops applied.
 //   - appliedIDs: set of resource Local IDs whose Apply succeeded (for reporting).
@@ -70,9 +74,10 @@ func ApplyWaves(
 	desired []diff.DesiredResource,
 	plans map[string]core.Plan,
 	unobservable map[string]bool,
+	ready Readiness,
 	errOut io.Writer,
 ) (applied int, appliedIDs map[string]bool, skipped []string, err error) {
-	return applyWaves(ctx, fp, exec, desired, plans, unobservable, errOut)
+	return applyWaves(ctx, fp, exec, desired, plans, unobservable, ready, errOut)
 }
 
 // applyWaves runs the DAG/Kahn-wave apply phase for a single convergence cycle.
@@ -104,6 +109,7 @@ func applyWaves(
 	desired []diff.DesiredResource,
 	plans map[string]core.Plan,
 	unobservable map[string]bool,
+	ready Readiness,
 	errOut io.Writer,
 ) (applied int, appliedIDs map[string]bool, skipped []string, err error) {
 	n := len(desired)
@@ -169,6 +175,21 @@ func applyWaves(
 				fmt.Fprintf(errOut, "sakutei: skip %s: %s\n", r.ID, reason)
 				failed[local] = true // propagate skip to *this* node's deps
 				// Advance downstream: decrement their in-degree.
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
+			// §8.3: hold this node until every ready_condition upstream is
+			// observed ready this cycle (released in a later cycle).
+			if dep, cond := unreadyUpstream(r, ready); dep != "" {
+				skipped = append(skipped, local)
+				fmt.Fprintf(errOut, "sakutei: skip %s: waiting for upstream %q ready_condition %q (not satisfied this cycle)\n", r.ID, dep, cond)
+				failed[local] = true
 				for _, m := range adj[idx] {
 					inDeg[m]--
 					if inDeg[m] == 0 {

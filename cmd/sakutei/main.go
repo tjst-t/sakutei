@@ -136,6 +136,10 @@ func runDaemon() {
 	approveLargeChange := fs.Int("approve-large-change", 0,
 		"explicitly approve up to N destructive changes this invocation")
 
+	// §13.4: capacity gate.
+	var capacityGates capacityGateFlag
+	fs.Var(&capacityGates, "capacity-gate", capacityGateUsage)
+
 	// Scf7762-3: remediation mode flags (§14.1).
 	modeStr := fs.String("mode", "auto",
 		"remediation mode: auto | alert-only (§14.1); alert-only detects drift but does not Apply")
@@ -259,6 +263,7 @@ func runDaemon() {
 		Provider:              fp,
 		Interval:              interval,
 		BudgetConfig:          budgetCfg,
+		CapacityGates:         capacityGates,
 		Remediation:           remCfg,
 		GeneratedDir:          genDir,
 		ExternalInputResolver: resolverCache,

@@ -87,6 +87,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/budget"
+	"github.com/tjst-t/sakutei/internal/capacity"
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
@@ -126,6 +127,11 @@ type Config struct {
 	// BudgetConfig holds the change-budget configuration (§13, Scf7762-2).
 	// Zero value means no budget limits are enforced (unlimited).
 	BudgetConfig budget.Config
+	// CapacityGates are the capacity gates (§11.4, §13.4).  Each cycle the pool
+	// resource of every gate is observed fresh through Provider; utilization
+	// above the threshold (or unknown) halts new changes per the gate's
+	// on_exceed.  Empty means no capacity gate.
+	CapacityGates []capacity.Gate
 	// Remediation holds the remediation mode configuration (§14.1, Scf7762-3).
 	// Zero value (ModeAuto, Freeze=false) means Apply and prune execute normally.
 	Remediation remediation.Config
@@ -310,6 +316,11 @@ func Run(ctx context.Context, cfg Config) error {
 			// Scf7762-2: change budget gate blocked ops this cycle.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: BUDGET HALTED: %s\n",
 				cycleNum, res.BudgetReason)
+		}
+		if res.CapacityHalted {
+			// §13.4: capacity gate halted changes this cycle.
+			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: CAPACITY HALTED: %s\n",
+				cycleNum, res.CapacityReason)
 		}
 		if res.GhostDiffs > 0 {
 			// F-5 (Scb0ecd-2 daemon wiring): one or more resources produced a
@@ -544,6 +555,14 @@ type CycleResult struct {
 	// schedule this cycle (tier thinning, §16.5).  They were neither Observed
 	// nor Diffed, and are not treated as unobservable.
 	NotDue []string
+
+	// Capacity gate fields (§13.4):
+
+	// CapacityHalted is true when a capacity gate halted changes this cycle
+	// (utilization above the threshold, or unknown).
+	CapacityHalted bool
+	// CapacityReason is the human-readable explanation of the capacity halt.
+	CapacityReason string
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -805,6 +824,8 @@ func runCycleAsync(
 	plans := make(map[string]core.Plan, len(desired))
 	// unobservable = truly unobservable (D-1) + in-flight (treated as converging)
 	unobservable := make(map[string]bool)
+	// ready = this cycle's observed ready conditions (§8.3); never carried over.
+	ready := make(Readiness)
 	var inFlightThisCycle []string
 	var backedOff []string
 	// F-5: count resources whose diff was a cause-C ghost diff (held, not applied).
@@ -855,6 +876,7 @@ func runCycleAsync(
 			sched.Observed(res, false)
 			continue
 		}
+		ready.Record(local, obs)
 
 		// Scb0ecd-3: convert observed State to string map for last-seen ring.
 		curFields := make(map[string]string, len(obs.State))
@@ -940,6 +962,11 @@ func runCycleAsync(
 		// it every cycle until the operator resolves it.
 		sched.Observed(res, len(plan.Ops) == 0)
 	}
+
+	// §8.3: ready_condition upstreams outside the desired set (external owner,
+	// §7) are observed here so they can still gate their dependents.
+	ObserveExternalUpstreams(ctx, func(diff.DesiredResource) provider.Provider { return fp },
+		desired, ready, cfg.ErrOut)
 
 	// F-5 ghost-diff gate — sticky provider_version baseline.
 	//
@@ -1071,6 +1098,19 @@ func runCycleAsync(
 	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, inFlightDestructive, len(desired))
 	budgetHalted := budgetDecision.HaltAll || budgetDecision.HaltDestructive
 	budgetReason := budgetDecision.Reason
+
+	// Phase 2e': Capacity gate (§11.4, §13.4).  The pool's CURRENT utilization
+	// is observed fresh; above the threshold (or unknown) new changes halt.
+	// Remediation is outside the reconciler: only the Event is emitted here.
+	// The decision is merged into the budget decision so both gates filter
+	// Apply plans and prune ops through the same path below.
+	capacityDecision := capacity.CheckAll(ctx, cfg.CapacityGates,
+		func(capacity.Gate) provider.Provider { return fp })
+	capacityHalted := capacityDecision.HaltAll || capacityDecision.HaltDestructive
+	if capacityHalted {
+		fmt.Fprintf(cfg.ErrOut, "sakutei: %s: %s\n", capacity.EventName, capacityDecision.Reason)
+	}
+	budgetDecision = budget.Merge(budgetDecision, capacityDecision)
 	// E (Scf7762-2): do NOT log BUDGET HALTED here.  This helper has no cycle
 	// number; the single, cycle-numbered "cycle N: BUDGET HALTED" line is emitted
 	// by Run() from the returned CycleResult (BudgetHalted / BudgetReason).  A
@@ -1095,7 +1135,7 @@ func runCycleAsync(
 	filteredPlans := filterPlansByBudget(plans, budgetDecision)
 
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
-		ctx, fp, exec, ifl, desired, filteredPlans, unobservable, cfg.ErrOut,
+		ctx, fp, exec, ifl, desired, filteredPlans, unobservable, ready, cfg.ErrOut,
 		budgetEngine.CommitOps)
 	backedOff = backedOffList
 	if waveErr != nil {
@@ -1125,6 +1165,9 @@ func runCycleAsync(
 		BudgetReason: budgetReason,
 		GhostDiffs:   ghostDiffs,
 		NotDue:       notDue,
+
+		CapacityHalted: capacityHalted,
+		CapacityReason: capacityDecision.Reason,
 	}, nil
 }
 
@@ -1291,6 +1334,7 @@ func applyWavesAsync(
 	desired []diff.DesiredResource,
 	plans map[string]core.Plan,
 	unobservable map[string]bool,
+	ready Readiness,
 	errOut io.Writer,
 	commitFn func([]core.Op),
 ) (applied, launched int, backedOff, skipped []string, err error) {
@@ -1339,6 +1383,22 @@ func applyWavesAsync(
 			if up := upstreamFailed(r.DependsOn, failed); up != "" {
 				skipped = append(skipped, local)
 				fmt.Fprintf(errOut, "sakutei: skip %s: upstream %q failed/in-flight\n", r.ID, up)
+				failed[local] = true
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
+			// §8.3 / §11.2: a ready_condition upstream that is not observed
+			// ready this cycle holds this node (and its downstream) exactly
+			// like an upstream failure; a later cycle releases it.
+			if dep, cond := unreadyUpstream(r, ready); dep != "" {
+				skipped = append(skipped, local)
+				fmt.Fprintf(errOut, "sakutei: skip %s: waiting for upstream %q ready_condition %q (not satisfied this cycle)\n", r.ID, dep, cond)
 				failed[local] = true
 				for _, m := range adj[idx] {
 					inDeg[m]--

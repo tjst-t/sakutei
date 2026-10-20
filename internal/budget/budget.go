@@ -357,3 +357,22 @@ func (d CycleDecision) FilterOps(ops []core.Op) (allowed, blocked []core.Op) {
 	}
 	return
 }
+
+// Merge combines two gate decisions into the most restrictive one (a halt in
+// either halts).  Used to fold the capacity gate (§13.4) into the change
+// budget decision so ops are filtered in one place.
+func Merge(a, b CycleDecision) CycleDecision {
+	out := CycleDecision{
+		HaltAll:         a.HaltAll || b.HaltAll,
+		HaltDestructive: a.HaltDestructive || b.HaltDestructive,
+	}
+	switch {
+	case a.Reason != "" && b.Reason != "":
+		out.Reason = a.Reason + "; " + b.Reason
+	case a.Reason != "":
+		out.Reason = a.Reason
+	default:
+		out.Reason = b.Reason
+	}
+	return out
+}

@@ -32,7 +32,7 @@ import (
 //   - observe_tiers は Observe 頻度の tier（name / observe_every、§16.5）。resource は observe_tier で
 //     所属を書く（tier: は §8 の DAG 優先度帯 `tier: foundation` の予約名なので使わない）。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
-//     depends_on（文字列配列）、fields（文字列→スカラーのマップ）、
+//     depends_on（文字列、または { id, ready_condition } の配列）、fields（文字列→スカラーのマップ）、
 //     deletion_policy（enum）を持つ。
 //   - version は「文字列必須」の代表例として scope の外側に置ける任意フィールドとして
 //     許容し、型を string に固定する（Norway 問題: 1.10 を float 化させない）。
@@ -107,10 +107,20 @@ func intentSchema() schemaNode {
 					"additionalProperties": false,
 					"required":             []any{"provider", "id"},
 					"properties": map[string]any{
-						"provider":     schemaNode{"type": "string"},
-						"id":           schemaNode{"type": "string"},
-						"scope":        stringMap,
-						"depends_on":   schemaNode{"type": "array", "items": schemaNode{"type": "string"}},
+						"provider": schemaNode{"type": "string"},
+						"id":       schemaNode{"type": "string"},
+						"scope":    stringMap,
+						// depends_on の要素は Local ID の文字列か、ready_condition 付きの
+						// オブジェクト { id, ready_condition }（§8.3, §11.2）。
+						"depends_on": schemaNode{"type": "array", "items": schemaNode{
+							"type":                 []any{"string", "object"},
+							"additionalProperties": false,
+							"required":             []any{"id"},
+							"properties": map[string]any{
+								"id":              schemaNode{"type": "string"},
+								"ready_condition": schemaNode{"type": "string"},
+							},
+						}},
 						"fields":       stringMap,
 						"observe_tier": schemaNode{"type": "string"},
 						"deletion_policy": schemaNode{

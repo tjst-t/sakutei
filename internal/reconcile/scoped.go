@@ -270,6 +270,8 @@ func ScopedReconcile(
 	// は観測を一切していないので、観測 state を reconcile に持ち越さない。
 	plans := make(map[string]core.Plan, len(desired))
 	unobservable := make(map[string]bool)
+	// ready は今回の観測で得た ready condition（§8.3）。前回値は持ち越さない。
+	ready := make(Readiness)
 	observed := 0
 	var deferredCauseB []string
 
@@ -296,6 +298,7 @@ func ScopedReconcile(
 			unobservable[local] = true
 			continue
 		}
+		ready.Record(local, obs)
 
 		// S33266e-1 (§20): reject a bare plaintext in a secret-flagged field
 		// before diffing (names the field only, never the value).
@@ -349,6 +352,11 @@ func ScopedReconcile(
 		}
 		plans[local] = core.Plan{Ops: acceptedOps}
 	}
+
+	// 影響サブ DAG の外にある ready_condition 上流も観測して gate に使う（§8.3）。
+	// 観測できなければ下流は保留のまま（次の定期周期が拾う）。
+	ObserveExternalUpstreams(ctx, func(diff.DesiredResource) provider.Provider { return fp },
+		desired, ready, errOut)
 
 	res.Observed = observed
 	res.DeferredCauseB = deferredCauseB
@@ -415,7 +423,7 @@ func ScopedReconcile(
 	// 影響サブ DAG のみに対して通常の wave/skip セマンティクス（ApplyWaves）を再利用。
 	// A/E の plans だけが渡るので B/C/D は適用されない（安全柵 1）。
 	applied, appliedIDs, skipped, applyErr := applyWaves(
-		ctx, fp, exec, desired, plans, unobservable, errOut)
+		ctx, fp, exec, desired, plans, unobservable, ready, errOut)
 	if applyErr != nil {
 		fmt.Fprintf(errOut, "sakutei: scoped: wave error: %v\n", applyErr)
 	}
@@ -545,7 +553,7 @@ func scopeTouched(sc core.Scope, touched []core.Scope) bool {
 }
 
 // desiredEqual は 2 つの DesiredResource が desired として同値かを決定的に判定する。
-// ID・Fields・DependsOn・DeletionPolicy を比較する（観測には触れない）。
+// ID・Fields・DependsOn・ReadyConditions・DeletionPolicy を比較する（観測には触れない）。
 func desiredEqual(a, b diff.DesiredResource) bool {
 	if !a.ID.Equal(b.ID) {
 		return false
@@ -563,6 +571,15 @@ func desiredEqual(a, b diff.DesiredResource) bool {
 	}
 	if len(a.DependsOn) != len(b.DependsOn) {
 		return false
+	}
+	// ready_condition の付け外し・変更も desired 変化とみなす。
+	if len(a.ReadyConditions) != len(b.ReadyConditions) {
+		return false
+	}
+	for k, v := range a.ReadyConditions {
+		if bv, ok := b.ReadyConditions[k]; !ok || bv != v {
+			return false
+		}
 	}
 	// depends_on は順序も含めて比較（順序変化も desired 変化とみなす保守側）。
 	for i := range a.DependsOn {

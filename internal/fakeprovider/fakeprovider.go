@@ -109,6 +109,12 @@ type storedResource struct {
 // match against.  Absent (nil) → every listed ID carries the empty root scope,
 // preserving the historical behaviour of every existing test.
 // This is a test-only mechanism; production providers do not use this field.
+//
+// Ready is a test-only map from Local ID to its named ready conditions
+// (§8.3, §11.2).  Read returns it as Observation.Ready for a resource that
+// exists, so tests can flip a condition (e.g. cloud_init_done) between cycles
+// to simulate a long-running bring-up that finishes several cycles later.
+// This is a test-only mechanism; production providers do not use this field.
 type stateFile struct {
 	Resources           map[string]storedResource    `json:"resources"`
 	FailInject          map[string]string            `json:"fail_inject,omitempty"`
@@ -119,6 +125,7 @@ type stateFile struct {
 	ListPartial         bool                         `json:"list_partial,omitempty"`
 	PruneableCapability bool                         `json:"pruneable_capability,omitempty"`
 	ProviderVersion     string                       `json:"provider_version,omitempty"`
+	Ready               map[string]map[string]bool   `json:"ready,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
@@ -275,9 +282,18 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 		st[field] = anyToTypedValue(val)
 	}
 
+	var ready map[string]bool
+	if conds, ok := sf.Ready[key]; ok {
+		ready = make(map[string]bool, len(conds))
+		for name, v := range conds {
+			ready[name] = v
+		}
+	}
+
 	return core.Observation{
 		Availability: core.AvailabilityOk,
 		State:        st,
+		Ready:        ready,
 		ObservedAt:   time.Now(),
 	}, nil
 }

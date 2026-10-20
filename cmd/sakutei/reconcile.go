@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/budget"
+	"github.com/tjst-t/sakutei/internal/capacity"
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
@@ -118,6 +119,10 @@ func runReconcile(args []string) {
 		"action when budget is exceeded: halt-all | halt-destructive-only (§13.1)")
 	approveLargeChange := fs.Int("approve-large-change", 0,
 		"explicitly approve up to N destructive changes this cycle (overrides per-cycle rate limit)")
+
+	// §13.4: capacity gate.
+	var capacityGates capacityGateFlag
+	fs.Var(&capacityGates, "capacity-gate", capacityGateUsage)
 
 	// Scf7762-3: remediation mode flags (§14.1).
 	modeStr := fs.String("mode", "auto",
@@ -395,6 +400,9 @@ func runReconcile(args []string) {
 	// != Ok (D-1).  They are NOT treated as converged: ApplyWaves marks them
 	// failed and skips their transitive downstream this cycle.
 	unobservable := make(map[string]bool)
+	// ready holds the ready conditions observed this invocation (§8.3); a
+	// downstream whose ready_condition upstream is not ready is skipped.
+	ready := make(reconcile.Readiness)
 	// obsFields records the observed field values per resource (as strings) so
 	// we can populate the last-seen ring and report drift B diagnostics.
 	obsFields := make(map[string]map[string]string, len(desired))
@@ -432,6 +440,7 @@ func runReconcile(args []string) {
 			unobservable[res.ID.Local] = true
 			continue
 		}
+		ready.Record(res.ID.Local, obs)
 
 		// Convert observed State to string map for last-seen ring storage.
 		curFields := make(map[string]string, len(obs.State))
@@ -496,6 +505,12 @@ func runReconcile(args []string) {
 			// scheduler (do not attempt Apply, do not skip downstream).
 		}
 	}
+
+	// §8.3: observe ready_condition upstreams that are outside the desired set
+	// through the dependent's provider, so they can still gate it.
+	reconcile.ObserveExternalUpstreams(ctx, func(r diff.DesiredResource) provider.Provider {
+		return providers[r.ID.Provider]
+	}, desired, ready, os.Stderr)
 
 	// Scb0ecd-3: populate the last-seen ring AFTER Diff so the ring records
 	// the current cycle's observations.  The ring is read on the NEXT cycle
@@ -621,6 +636,30 @@ func runReconcile(args []string) {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: BUDGET HALTED: %s\n", budgetDecision.Reason)
 	}
 
+	// Phase 2d': Capacity gate (§11.4, §13.4).  Observe each pool's current
+	// utilization; above the threshold (or unknown) halts new changes.  The
+	// pool is read through the gate's provider, or the fake provider (the
+	// --state default) when the gate names none.
+	capacityDecision := capacity.CheckAll(ctx, capacityGates, func(g capacity.Gate) provider.Provider {
+		name := g.Provider
+		if name == "" {
+			name = "fake"
+		}
+		if p, ok := providers[name]; ok {
+			return p
+		}
+		p, err := reg.Get(name, providerConfig)
+		if err != nil {
+			return nil
+		}
+		return p
+	})
+	capacityHalted := capacityDecision.HaltAll || capacityDecision.HaltDestructive
+	if capacityHalted {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: %s: CAPACITY HALTED: %s\n", capacity.EventName, capacityDecision.Reason)
+	}
+	budgetDecision = budget.Merge(budgetDecision, capacityDecision)
+
 	// Filter per-resource plans through the budget decision.
 	filteredPlans := make(map[string]core.Plan, len(plans))
 	for local, plan := range plans {
@@ -650,7 +689,7 @@ func runReconcile(args []string) {
 	// internal/reconcile.  The adapter routes each Apply call to the correct
 	// per-resource provider based on the Op's target provider.
 	applyProvider := newMultiProviderApply(providers, desired)
-	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, os.Stderr)
+	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, ready, os.Stderr)
 	if waveErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: wave apply: %v\n", waveErr)
 		os.Exit(1)
@@ -658,7 +697,7 @@ func runReconcile(args []string) {
 
 	// Report skipped resources (upstream failure or unobservable) to stderr.
 	for _, sk := range skipped {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: skip %s (unobservable or upstream failure; not converged this cycle)\n", sk)
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: skip %s (unobservable, upstream failure, or upstream not ready; not converged this cycle)\n", sk)
 	}
 
 	// Advance the cumulative window counter for applied ops.
@@ -713,6 +752,9 @@ func runReconcile(args []string) {
 	}
 
 	switch {
+	case capacityHalted && appliedOps == 0:
+		fmt.Printf("Reconcile: CAPACITY HALTED (no changes applied): %s\n", capacityDecision.Reason)
+		os.Exit(1)
 	case budgetHalted && appliedOps == 0:
 		// A (Scf7762-2): the BUDGET HALTED stderr line is already emitted once,
 		// above, right after CheckCycle (the single stderr source of truth).  Do
@@ -745,7 +787,7 @@ func runReconcile(args []string) {
 			len(unobservable))
 		os.Exit(1)
 	}
-	if budgetHalted {
+	if budgetHalted || capacityHalted {
 		os.Exit(1)
 	}
 	os.Exit(0)

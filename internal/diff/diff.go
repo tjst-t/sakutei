@@ -52,6 +52,14 @@ type DesiredResource struct {
 	// this resource depends on.  Populated from the "depends_on" field in
 	// the intent file (Story S94f1f9-2, provisional; formal Loader is S33266e).
 	DependsOn []string
+	// ReadyConditions maps a dependency's Local ID (an entry of DependsOn) to
+	// the named ready condition it must satisfy before this resource may be
+	// applied (§8.3, §11.2).  The upstream's Observation.Ready[condition] must
+	// be true in the CURRENT cycle's observation; until then this resource is
+	// skipped every cycle (multi-cycle dependency release).  A dependency with
+	// no entry here only needs to be processed (the plain depends_on order).
+	// Nil when no dependency declares a ready_condition.
+	ReadyConditions map[string]string
 	// DeletionPolicy controls how the engine handles resources in reality that
 	// are absent from the intent (§12.2, ADR-0005).  Defaults to
 	// ExplicitAbsentOnly (open-world) when not declared.

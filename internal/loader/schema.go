@@ -23,6 +23,7 @@
 // # サポートするキーワード（明示的境界）
 //
 //   - type: "object" / "array" / "string" / "integer" / "boolean" / "null"
+//     （配列で複数の型を並べると、いずれかに一致すればよい）
 //   - required: 必須プロパティ名の配列
 //   - properties: プロパティ名 → サブスキーマ
 //   - additionalProperties: false のとき未知キーを拒否（未定義または true なら許可）
@@ -78,6 +79,19 @@ func (v *schemaValidator) validate(path string, value any, schema schemaNode) {
 		if !typeMatches(t, value) {
 			v.fail(path, "型が %q でなければなりません（実際: %s）", t, typeName(value))
 			return // 型が違えば以降の制約検査は無意味
+		}
+	}
+	if ts, ok := schema["type"].([]any); ok {
+		matched := false
+		for _, t := range ts {
+			if s, isStr := t.(string); isStr && typeMatches(s, value) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			v.fail(path, "型が %v のいずれかでなければなりません（実際: %s）", ts, typeName(value))
+			return
 		}
 	}
 
