@@ -911,7 +911,7 @@
       "number": 44,
       "kind": "task",
       "title": "v1.5: planned_change の承認情報連携と運用プロファイル（solo / team / enterprise）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-5-task-workflow-planned-change-remedi",
       "dependsOn": [
         "v1-5-planned-change-list-halt-kind-reima",
@@ -926,7 +926,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T13:38:03.379Z",
+      "updatedAt": "2026-10-20T15:23:25.719Z",
       "closedAt": null,
       "extra": {}
     },
