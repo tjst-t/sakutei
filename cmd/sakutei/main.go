@@ -68,6 +68,8 @@ func main() {
 		runStatus(os.Args[2:])
 	case "import":
 		runImport(os.Args[2:])
+	case "sync":
+		runSync(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Fprintf(os.Stdout, "sakutei %s\n", version)
 	case "help", "--help", "-h":
@@ -261,6 +263,7 @@ Usage:
   sakutei reconcile    run one convergence cycle manually
   sakutei status       report drifted resources
   sakutei import       export existing reality as intent YAML
+  sakutei sync         record the reality of mode: sync scopes into generated/
   sakutei version      print version information
   sakutei help         show this help message
 `)

@@ -383,7 +383,7 @@ func runPlan(args []string) {
 	// plan does NOT call Apply; it only computes and displays the Delete ops.
 	// S62dbba-2: prune is computed per provider so each provider's Lister is
 	// used for the resources it manages.
-	allOps = append(allOps, planPruneOpsMulti(ctx, providers, desired, unobservable)...)
+	allOps = append(allOps, planPruneOpsMulti(ctx, providers, desired, unobservable, syncScopeList(in))...)
 
 	// S072a14-3: compute composite status aggregation (§9.7) for reporting.
 	// Build per-resource ConvergenceStatus from diff results and unobservable set.
@@ -470,6 +470,7 @@ func planPruneOpsMulti(
 	providers map[string]provider.Provider,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
+	syncScopes []core.Scope,
 ) []core.Op {
 	var allDeleteOps []core.Op
 
@@ -486,6 +487,7 @@ func planPruneOpsMulti(
 		}
 		scope := core.NewScope(nil)
 		engine := prune.New()
+		engine.SetExcludedScopes(syncScopes) // #23: sync scopes are never pruned (§24.5)
 		provDesired := byProvider[name]
 		// FIX #6: plan does not (yet) accept --claim, so the claim selector is
 		// empty here — an empty selector matches every scope, keeping plan's

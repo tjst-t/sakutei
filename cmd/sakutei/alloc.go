@@ -30,7 +30,9 @@ package main
 
 import (
 	"github.com/tjst-t/sakutei/internal/allocator"
+	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/pkg/allocation"
+	"github.com/tjst-t/sakutei/pkg/core"
 )
 
 // openAllocStore returns the file allocation authority at path, or a nil
@@ -41,4 +43,14 @@ func openAllocStore(path string) allocation.AllocationAuthority {
 		return nil
 	}
 	return allocator.New(path)
+}
+
+// syncScopeList returns the intent's mode: sync scopes, which the prune
+// set-difference must exclude (#23, §24.5).
+func syncScopeList(in loader.Intent) []core.Scope {
+	var out []core.Scope
+	for _, sp := range in.SyncScopes() {
+		out = append(out, sp.Scope)
+	}
+	return out
 }

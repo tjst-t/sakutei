@@ -107,6 +107,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.Pools = pools
+	scopes, err := parseScopes(tree["scopes"])
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.Scopes = scopes
 	return out, nil
 }
 
@@ -177,6 +182,7 @@ func scalarToString(v any) string {
 type intentFile struct {
 	Resources []intentResource `json:"resources"`
 	Pools     []Pool           `json:"pools"`
+	Scopes    []ScopePolicy    `json:"scopes"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -240,6 +246,7 @@ func LoadDir(dir string) ([]diff.DesiredResource, core.RevisionInfo, error) {
 type Intent struct {
 	Resources []diff.DesiredResource
 	Pools     []Pool
+	Scopes    []ScopePolicy
 	Revision  core.RevisionInfo
 }
 
@@ -254,6 +261,7 @@ func LoadIntent(dir string) (Intent, error) {
 
 	var resources []diff.DesiredResource
 	var pools []Pool
+	var scopes []ScopePolicy
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -264,12 +272,13 @@ func LoadIntent(dir string) (Intent, error) {
 		}
 
 		path := filepath.Join(dir, name)
-		loaded, filePools, err := loadFile(path)
+		loaded, file, err := loadFile(path)
 		if err != nil {
 			return Intent{}, fmt.Errorf("loader: %w", err)
 		}
 		resources = append(resources, loaded...)
-		pools = append(pools, filePools...)
+		pools = append(pools, file.Pools...)
+		scopes = append(scopes, file.Scopes...)
 	}
 
 	// D-2: reject duplicate Local IDs.  Two resources sharing a Local ID would
@@ -288,6 +297,9 @@ func LoadIntent(dir string) (Intent, error) {
 	if err := validatePools(pools, resources); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
+	if err := validateScopes(scopes, resources); err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
 
 	// Scb0ecd-1: compute revision info after all validation passes so that only
 	// valid intent contributes to the hash.  Use the root scope (empty labels)
@@ -298,7 +310,7 @@ func LoadIntent(dir string) (Intent, error) {
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Revision: rev}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, Revision: rev}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the
@@ -396,36 +408,36 @@ func fileFormat(name string) string {
 // loadFile parses a single intent file (JSON or YAML subset) and returns its
 // resources.  The pipeline is: バイト列 → decodeIntentTree（フォーマット非依存の木）
 // → JSON Schema 検証 → intentFile へデコード → DesiredResource。
-func loadFile(path string) ([]diff.DesiredResource, []Pool, error) {
+func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read intent file %s: %w", path, err)
+		return nil, intentFile{}, fmt.Errorf("read intent file %s: %w", path, err)
 	}
 
 	format := fileFormat(filepath.Base(path))
 	tree, err := decodeIntentTree(data, format)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse intent file %s: %w", path, err)
+		return nil, intentFile{}, fmt.Errorf("parse intent file %s: %w", path, err)
 	}
 
 	// S33266e-2: ロード時に JSON Schema で検証する（未知キー・型曖昧性・enum を強制）。
 	// 不正 intent はここで明確なエラーで拒否し、収束を開始させない。
 	if err := validateAgainstSchema(tree, intentSchema()); err != nil {
-		return nil, nil, fmt.Errorf("intent file %s: %w", path, err)
+		return nil, intentFile{}, fmt.Errorf("intent file %s: %w", path, err)
 	}
 
 	intent, err := treeToIntentFile(tree)
 	if err != nil {
-		return nil, nil, fmt.Errorf("intent file %s: %w", path, err)
+		return nil, intentFile{}, fmt.Errorf("intent file %s: %w", path, err)
 	}
 
 	resources := make([]diff.DesiredResource, 0, len(intent.Resources))
 	for i, r := range intent.Resources {
 		if r.Provider == "" {
-			return nil, nil, fmt.Errorf("intent file %s: resource[%d]: missing provider", path, i)
+			return nil, intentFile{}, fmt.Errorf("intent file %s: resource[%d]: missing provider", path, i)
 		}
 		if r.ID == "" {
-			return nil, nil, fmt.Errorf("intent file %s: resource[%d]: missing id", path, i)
+			return nil, intentFile{}, fmt.Errorf("intent file %s: resource[%d]: missing id", path, i)
 		}
 
 		scope := core.NewScope(r.Scope) // handles nil → empty scope
@@ -449,5 +461,5 @@ func loadFile(path string) ([]diff.DesiredResource, []Pool, error) {
 			Allocations:    r.Allocations,
 		})
 	}
-	return resources, intent.Pools, nil
+	return resources, intent, nil
 }

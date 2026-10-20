@@ -543,6 +543,17 @@ func runCycleAsync(
 	}
 	rev := in.Revision
 
+	// #23: mode: sync scopes (§24.5) are never converged; their reality must
+	// never be an orphan candidate for prune.  Refreshed every cycle with the
+	// intent.
+	if pruneEngine != nil {
+		var syncScopes []core.Scope
+		for _, sp := range in.SyncScopes() {
+			syncScopes = append(syncScopes, sp.Scope)
+		}
+		pruneEngine.SetExcludedScopes(syncScopes)
+	}
+
 	// #24 render phase 1: allocation (§9.1, §19).  Allocate is idempotent, so
 	// in the steady state every request resolves to the value it already
 	// holds.  An authority error skips this cycle: never converge on a

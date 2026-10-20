@@ -92,6 +92,27 @@ type Engine struct {
 	// lastListCount is the List count observed in the previous cycle
 	// (S3 state; memory-only; 0 when no prior observation exists).
 	lastListCount int
+
+	// excluded are scopes that are never prune candidates — the mode: sync
+	// scopes of §24.5 (recorded from reality, never converged).  Set per
+	// cycle by SetExcludedScopes.
+	excluded []core.Scope
+}
+
+// SetExcludedScopes sets the scopes whose reality is dropped before the
+// set-difference, exactly like out-of-claim reality: a resource in a sync
+// scope (§24.5) is never desired, and must never look like an orphan.
+func (e *Engine) SetExcludedScopes(scopes []core.Scope) {
+	e.excluded = scopes
+}
+
+func (e *Engine) isExcluded(s core.Scope) bool {
+	for _, x := range e.excluded {
+		if s.Matches(x) {
+			return true
+		}
+	}
+	return false
 }
 
 // New creates a prune Engine with the default drop threshold.
@@ -191,7 +212,9 @@ func (e *Engine) ComputePrune(
 	// provider's own full List) but BEFORE the set-difference and any Read.
 	filteredIDs := listResult.IDs[:0:0]
 	for _, id := range listResult.IDs {
-		if id.Scope.Matches(claim) {
+		// #23: a sync scope (§24.5) is dropped the same way — it is never
+		// converged, so its reality must never be an orphan candidate.
+		if id.Scope.Matches(claim) && !e.isExcluded(id.Scope) {
 			filteredIDs = append(filteredIDs, id)
 		}
 	}

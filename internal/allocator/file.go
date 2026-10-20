@@ -304,7 +304,8 @@ func (a *FileAuthority) save(s *store) error {
 		return fmt.Errorf("allocator: write store: %w", err)
 	}
 	name := tmp.Name()
-	if _, err := tmp.Write(data); err == nil {
+	_, err = tmp.Write(data)
+	if err == nil {
 		err = tmp.Sync()
 	}
 	if cerr := tmp.Close(); err == nil {

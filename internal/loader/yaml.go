@@ -313,13 +313,23 @@ func (p *yamlParser) parseList(blockIndent int) (any, error) {
 			// ダッシュ + 空白ぶんずれるが、本サブセットでは "- key: value" の
 			// 1 行 or 単純スカラーのみを許可する（複数キーの inline は次行継続で表現）。
 			sub := map[string]any{}
-			v, err := parseScalar(rest, line.num)
-			if err != nil {
-				return nil, err
-			}
-			sub[k] = v
-			// 続く行が blockIndent より深ければ、同じマップの続きとして取り込む。
 			contIndent := blockIndent + 2 // "- " のぶん
+			if rest == "" && p.pos < len(p.lines) && p.lines[p.pos].indent > contIndent {
+				// "- key:" の値が次行以降のネストブロック（例: "- scope:" の下に
+				// ラベルのマップ）。キーの桁より深い行をその値として読む。
+				child, err := p.parseBlock(contIndent+1, 0)
+				if err != nil {
+					return nil, err
+				}
+				sub[k] = child
+			} else {
+				v, err := parseScalar(rest, line.num)
+				if err != nil {
+					return nil, err
+				}
+				sub[k] = v
+			}
+			// 続く行が blockIndent より深ければ、同じマップの続きとして取り込む。
 			for p.pos < len(p.lines) && p.lines[p.pos].indent >= contIndent {
 				cont := p.lines[p.pos]
 				if strings.HasPrefix(cont.body, "- ") || cont.body == "-" {
@@ -474,6 +484,9 @@ func parseScalar(tok string, num int) (any, error) {
 
 // rejectScalarUnsupported は bare スカラー位置のサブセット外構文を拒否する。
 func rejectScalarUnsupported(tok string, num int) error {
+	if tok == "" {
+		return nil // 空（null）。先頭文字を読む前に弾く（以前は panic していた）。
+	}
 	switch tok[0] {
 	case '&':
 		return fmt.Errorf("yaml: %d 行目: アンカー（&）は非対応です", num)

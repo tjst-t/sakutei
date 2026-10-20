@@ -28,6 +28,7 @@ import (
 //
 //   - resources は配列（pools / scopes だけのファイルも書けるよう任意）。
 //   - pools は採番プールの宣言（name / range / claim、§19.8）。
+//   - scopes は scope ごとの mode（converge / sync）と sync.target_path（§24.5）。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
 //     depends_on（文字列配列）、fields（文字列→スカラーのマップ）、
 //     deletion_policy（enum）を持つ。
@@ -47,6 +48,29 @@ func intentSchema() schemaNode {
 		"properties": map[string]any{
 			// version は文字列必須（Norway 問題の代表例）。任意。
 			"version": schemaNode{"type": "string"},
+			// scopes は scope ごとのポリシー（ScopeMode、§24.5）。
+			"scopes": schemaNode{
+				"type": "array",
+				"items": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"scope"},
+					"properties": map[string]any{
+						"scope": stringMap,
+						"mode": schemaNode{
+							"type": "string",
+							"enum": []any{"converge", "sync"},
+						},
+						"sync": schemaNode{
+							"type":                 "object",
+							"additionalProperties": false,
+							"properties": map[string]any{
+								"target_path": schemaNode{"type": "string"},
+							},
+						},
+					},
+				},
+			},
 			// pools は採番プールの宣言（§19.8）。range は "下限-上限"（整数）。
 			"pools": schemaNode{
 				"type": "array",

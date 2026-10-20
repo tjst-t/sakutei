@@ -79,9 +79,12 @@ sakutei plan         # dry-run: 何が変わるか（Diff で止まる）
 sakutei reconcile    # 1 回収束（手動キック）              --expect-revision <rev>
 sakutei status       # 適合レポート（drifted / unmanaged 一覧、read-only）
 sakutei import       # 既存リアルを intent（YAML）として書き出す   --provider <名前> --out <dir> [--scope k=v]
+sakutei sync         # mode: sync の scope の現実を generated/ に記録する（Apply しない）  --provider <名前> [--interval 30s]
 ```
 
 `import` は現実を List と Read で観測し、`<dir>/imported-<provider>.yaml` に書き出します。直後の `plan` は差分ゼロになります。何度か観測して（`--samples`、既定 3 回）値が変わったフィールドには **managed 候補** の印を付けます。書き出すのは「現状のスナップショット」なので、人が読んで整理してから intent にしてください。全リソースは `deletion_policy: ExplicitAbsentOnly`（prune しない）で書き出され、secret の平文は書き出しません。
+
+**Sync Mode（v1b）**：Sakutei の管理に切り替えるまでの間、人手運用を続ける scope は、intent のトップレベルの `scopes:` で `mode: sync` と宣言します（`scope`・`mode`・`sync.target_path`）。`sakutei sync` がその scope の現実を `target_path`（`generated/` の下）に自動生成ヘッダ付きで書き出し、変化があったときだけ書き換えます。sync の scope は収束しません。intent にリソースを書けず、prune の対象にもなりません。手で編集されたスナップショットは上書きしません。git へのコミットはまだです（Backlog #35）。
 
 **採番（v1b）**：VLAN などの番号はプールから払い出せます。intent のトップレベルの `pools:` にプール（`name`・`range: "100-199"`）を宣言し、フィールドに `from_pool: <プール名>` と書きます。`reconcile` と常駐ループは `--alloc-store <ファイル>` の採番記録から払い出し（同じリソースには常に同じ値）、`plan` と `status` は既存の割当を引くだけです（未割当は「割り当て待ち」と表示）。
 

@@ -539,7 +539,7 @@ func runReconcile(args []string) {
 	}
 	for name, fp := range providers {
 		if _, isLister := fp.(provider.Lister); isLister {
-			ops, halted := computePruneForProvider(ctx, fp, claimSelector, byProvider[name], unobservable)
+			ops, halted := computePruneForProvider(ctx, fp, claimSelector, byProvider[name], unobservable, syncScopeList(in))
 			precomputedPruneOps = append(precomputedPruneOps, ops...)
 			if halted {
 				pruneWasHaltedBySafetyGuard = true
@@ -798,6 +798,7 @@ func computePruneForProvider(
 	claim core.Scope,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
+	syncScopes []core.Scope,
 ) (approvedOps []core.Op, halted bool) {
 	lister, ok := fp.(provider.Lister)
 	if !ok {
@@ -818,6 +819,7 @@ func computePruneForProvider(
 	// so an out-of-claim resource is never treated as an orphan (§17.1, 原則3).
 	// An empty selector matches everything → unchanged single-shard behaviour.
 	engine := prune.New()
+	engine.SetExcludedScopes(syncScopes) // #23: sync scopes are never pruned (§24.5)
 	result, err := engine.ComputePrune(ctx, lister, fp, scope, claim, desired, unobservable, os.Stderr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune compute error: %v\n", err)

@@ -48,6 +48,19 @@ func EmitYAML(resources []Resource, samples int) []byte {
 	} else {
 		b.WriteString("# 観測が 1 回だけなので、managed 候補（観測のたびに値が変わるフィールド）は調べていません。\n")
 	}
+	b.WriteString(EmitResourcesYAML(resources))
+	return []byte(b.String())
+}
+
+// EmitResourcesYAML renders just the `resources:` section (no header) — the
+// body shared by import and Sync Mode.  With no resources it returns a
+// comment instead of an empty `resources:` key.
+func EmitResourcesYAML(resources []Resource) string {
+	var b strings.Builder
+	if len(resources) == 0 {
+		b.WriteString("# (no resources in scope)\n")
+		return b.String()
+	}
 	b.WriteString("resources:\n")
 
 	for _, r := range resources {
@@ -77,7 +90,7 @@ func EmitYAML(resources []Resource, samples int) []byte {
 			fmt.Fprintf(&b, "    # 書き出していないフィールド %s: %s\n", f, oneLine(r.Omitted[f]))
 		}
 	}
-	return []byte(b.String())
+	return b.String()
 }
 
 // quote renders s as a double-quoted scalar using only the escapes the
