@@ -24,7 +24,7 @@
 //	[AC-37-1]  読めない行を含むゾーンで Read が Unknown（error）を返し、List がエラーを返す
 //	[AC-37-2]  reconcile で prune が halt し、Create も Delete も出ず、ゾーンは書き換わらない
 //	[AC-37-3]  コメント・空行・$ORIGIN / $TTL は従来どおり読める
-//	[AC-37-4]  自分で読み戻せない行（未知の型・単位付き TTL・括弧を含む value）は
+//	[AC-37-4]  自分で読み戻せない行（未知の型・単位付き TTL・括弧や改行を含む value）は
 //	           Apply が書かずに Permanent で失敗し、ゾーンのほかのレコードは止まらない
 package acceptance
 
@@ -189,6 +189,9 @@ func TestDNSZone_ApplyRefusesUnreadableLine(t *testing.T) {
 		{"type FOO", core.OpKindCreate, "FOO", []core.FieldDiff{{Field: "value", To: "x"}, {Field: "ttl", To: "300"}}},
 		{"ttl 1h", core.OpKindCreate, "A", []core.FieldDiff{{Field: "value", To: "10.0.0.2"}, {Field: "ttl", To: "1h"}}},
 		{"value with paren", core.OpKindCreate, "TXT", []core.FieldDiff{{Field: "value", To: "( oops"}, {Field: "ttl", To: "300"}}},
+		{"value with LF", core.OpKindCreate, "TXT", []core.FieldDiff{{Field: "value", To: "\"a\"\noops"}, {Field: "ttl", To: "300"}}},
+		{"value with CR", core.OpKindCreate, "TXT", []core.FieldDiff{{Field: "value", To: "\"a\"\roops"}, {Field: "ttl", To: "300"}}},
+		{"update value with LF", core.OpKindUpdate, "A", []core.FieldDiff{{Field: "value", From: "10.0.0.1", To: "10.0.0.1\noops"}}},
 		{"update ttl 1h", core.OpKindUpdate, "A", []core.FieldDiff{{Field: "ttl", From: "300", To: "1h"}}},
 		{"update value with paren", core.OpKindUpdate, "A", []core.FieldDiff{{Field: "value", From: "10.0.0.1", To: "10.0.0.1 )"}}},
 	}

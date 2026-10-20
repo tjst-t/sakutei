@@ -482,6 +482,11 @@ func (p *Provider) writeRecord(rec record) error {
 	// parse error on the next cycle and stop every record in it; refusing
 	// here confines the failure to this one resource.
 	newLine := formatRecord(rec)
+	if strings.ContainsAny(newLine, "\r\n") {
+		// parseLine splits on any whitespace, so a line break would read back
+		// as one line here yet become two lines in the file.
+		return provider.NewPermanentError(fmt.Errorf("dnszone: writeRecord: refusing to write a record containing a line break: %q", newLine))
+	}
 	back, ok, perr := parseLine(newLine)
 	if perr == nil && !ok {
 		perr = fmt.Errorf("not a resource record: %q", newLine)
