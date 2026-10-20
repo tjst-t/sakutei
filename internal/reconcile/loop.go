@@ -1045,8 +1045,8 @@ func computeDaemonPrune(
 		return prune.PruneResult{}
 	}
 
-	// Empty scope for the fake provider (Sprint 1 simplification, mirrors the
-	// one-shot path).  Multi-scope prune is a later Story.
+	// List the whole provider (mirrors the one-shot path); the engine narrows
+	// the set-difference to the scopes that declare PruneWithinScope (#38).
 	scope := core.NewScope(nil)
 
 	result, err := pruneEngine.ComputePrune(ctx, lister, fp, scope, claim, desired, unobservable, errOut)

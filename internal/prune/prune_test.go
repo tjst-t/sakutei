@@ -393,3 +393,28 @@ func TestPruneEngine_MixedType_NonPruneableTypeNotDeleted(t *testing.T) {
 			len(resultB.DeleteOps), resultB.DeleteOps)
 	}
 }
+
+// TestPruneEngine_OnlyWithinDeclaredScope: reality in a scope where nothing
+// declares PruneWithinScope is open-world and never a candidate (#38, §12.2).
+func TestPruneEngine_OnlyWithinDeclaredScope(t *testing.T) {
+	tokyo := core.NewScope(map[string]string{"site": "tokyo"})
+	legacy := core.NewScope(map[string]string{"site": "legacy"})
+	lister := &fakeCompleteList{ids: []core.ID{
+		core.NewID("fake", tokyo, "web-1"),
+		core.NewID("fake", tokyo, "orphan-t"),
+		core.NewID("fake", legacy, "old-1"),
+	}}
+	desired := []diff.DesiredResource{{
+		ID:             core.NewID("fake", tokyo, "web-1"),
+		DeletionPolicy: core.PruneWithinScope,
+	}}
+
+	result, err := prune.New().ComputePrune(context.Background(), lister, pruneableObserver(),
+		core.NewScope(nil), core.NewScope(nil), desired, nil, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.DeleteOps) != 1 || result.DeleteOps[0].Target.Local != "orphan-t" {
+		t.Fatalf("want only orphan-t deleted, got %v", result.DeleteOps)
+	}
+}

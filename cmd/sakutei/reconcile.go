@@ -811,7 +811,8 @@ func computePruneForProvider(
 		return nil, false
 	}
 
-	// Use empty scope for the fake provider (Sprint 1 simplification).
+	// List the whole provider; the engine narrows the set-difference to the
+	// scopes that declare PruneWithinScope (#38).
 	scope := core.NewScope(nil)
 
 	// FIX #6: pass the --claim selector so the prune set-difference is scoped to

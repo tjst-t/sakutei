@@ -21,7 +21,9 @@
 // guards before emitting a Delete Op:
 //
 //  1. DeletionPolicy gate: PruneWithinScope required (open-world resources are
-//     never pruned by the engine).
+//     never pruned by the engine).  Only reality inside the scope of some
+//     PruneWithinScope declaration is a candidate; other scopes stay
+//     open-world (#38).
 //  2. Pruneable gate (TYPE-level): the provider's Capabilities().Pruneable must
 //     be true.  This is a property of the resource TYPE, not of an individual
 //     intent declaration: ADR-0005 says "destructive TYPES default to
@@ -261,10 +263,17 @@ func (e *Engine) ComputePrune(
 	// Only PruneWithinScope declarations mark a Local as "desired for prune
 	// purposes": under ExplicitAbsentOnly (open-world) the intent does not claim
 	// to enumerate the scope, so absence from it is not evidence for deletion.
+	//
+	// #38 (§12.2): the closed world is the SCOPE of each PruneWithinScope
+	// declaration, not the whole provider.  pruneScopes collects those scopes;
+	// reality outside all of them is open-world (e.g. a brownfield scope not yet
+	// promoted, §24.2) and is never a deletion candidate.
 	desiredSet := make(map[string]bool, len(desired))
+	var pruneScopes []core.Scope
 	for _, res := range desired {
 		if res.DeletionPolicy == core.PruneWithinScope {
 			desiredSet[res.ID.Local] = true
+			pruneScopes = append(pruneScopes, res.ID.Scope)
 		}
 	}
 
@@ -281,6 +290,12 @@ func (e *Engine) ComputePrune(
 
 		// Resources in the desired set are not deletion candidates.
 		if desiredSet[local] {
+			continue
+		}
+
+		// #38: reality outside every PruneWithinScope scope is open-world —
+		// absence from intent is not evidence for deletion there.
+		if !inAnyScope(realID.Scope, pruneScopes) {
 			continue
 		}
 
@@ -342,4 +357,16 @@ func (e *Engine) ComputePrune(
 	}
 
 	return result, nil
+}
+
+// inAnyScope reports whether s lies inside at least one of scopes.  A scope
+// covers its finer sub-scopes (Scope.Matches), so a PruneWithinScope declared
+// at the root scope still closes the whole world as before.
+func inAnyScope(s core.Scope, scopes []core.Scope) bool {
+	for _, x := range scopes {
+		if s.Matches(x) {
+			return true
+		}
+	}
+	return false
 }
