@@ -96,6 +96,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/internal/revision"
+	"github.com/tjst-t/sakutei/pkg/allocation"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -165,6 +166,12 @@ type Config struct {
 	// choice (both construct a *render.ResolverCache and pass it), so all three
 	// execution paths are consistent.
 	ExternalInputResolver *render.ResolverCache
+
+	// Allocation is the allocation authority for `from_pool` requests
+	// (#24, §19).  The daemon ALLOCATES (idempotently) each cycle; an
+	// authority error skips the cycle (logged, halt-safe).  Nil when the
+	// intent uses no allocations.
+	Allocation allocation.AllocationAuthority
 
 	// ExpanderRegistry is the render phase 2 expander registry (§9.5).
 	// If nil, render.DefaultRegistry() is used (includes the FakeCompositeExpander).
@@ -530,10 +537,22 @@ func runCycleAsync(
 	// Load desired state fresh each cycle.
 	// Scb0ecd-1: LoadDir now returns (resources, RevisionInfo, error).  The
 	// RevisionInfo is S3 state (memory-only, computed fresh each cycle).
-	intentResources, rev, loadErr := loader.LoadDir(cfg.IntentDir)
+	in, loadErr := loader.LoadIntent(cfg.IntentDir)
 	if loadErr != nil {
 		return CycleResult{}, fmt.Errorf("load intent: %w", loadErr)
 	}
+	rev := in.Revision
+
+	// #24 render phase 1: allocation (§9.1, §19).  Allocate is idempotent, so
+	// in the steady state every request resolves to the value it already
+	// holds.  An authority error skips this cycle: never converge on a
+	// partially allocated desired.
+	allocRes, allocErr := render.RenderAllocations(ctx, cfg.Allocation, render.AllocAllocate, in)
+	if allocErr != nil {
+		return CycleResult{}, fmt.Errorf("render phase 1 (allocation): %w", allocErr)
+	}
+	intentResources := allocRes.Resources
+	phase1ExternalInputHashes = append(phase1ExternalInputHashes, allocRes.Inputs...)
 
 	// S072a14-3 render phase 1 (continued): recompute rendered_revision with the
 	// external inputs so that a change in external inputs causes rendered_revision

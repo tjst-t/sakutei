@@ -88,7 +88,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		r.ID, _ = m["id"].(string)
 		r.DeletionPolicy, _ = m["deletion_policy"].(string)
 		r.Scope = stringifyStringMap(m["scope"])
-		r.Fields = stringifyStringMap(m["fields"])
+		fields, allocs, err := splitFields(m["fields"])
+		if err != nil {
+			return intentFile{}, fmt.Errorf("resource[%d] (%v): %w", i, m["id"], err)
+		}
+		r.Fields, r.Allocations = fields, allocs
 		if depRaw, ok := m["depends_on"].([]any); ok {
 			for _, d := range depRaw {
 				if s, ok := d.(string); ok {
@@ -98,7 +102,42 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		}
 		out.Resources = append(out.Resources, r)
 	}
+	pools, err := parsePools(tree["pools"])
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.Pools = pools
 	return out, nil
+}
+
+// splitFields separates plain field values from allocation requests.  A field
+// whose value is the map { from_pool: <pool> } is an allocation request
+// (§19.1: "VLAN が1つ必要" without naming the ID); any other map value is
+// rejected rather than silently stringified.
+func splitFields(v any) (fields, allocs map[string]string, err error) {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return nil, nil, nil
+	}
+	for k, val := range m {
+		sub, isMap := val.(map[string]any)
+		if !isMap {
+			if fields == nil {
+				fields = map[string]string{}
+			}
+			fields[k] = scalarToString(val)
+			continue
+		}
+		pool, _ := sub["from_pool"].(string)
+		if len(sub) != 1 || strings.TrimSpace(pool) == "" {
+			return nil, nil, fmt.Errorf("field %q: a map value must be exactly { from_pool: <pool> } (allocation request, §19.1)", k)
+		}
+		if allocs == nil {
+			allocs = map[string]string{}
+		}
+		allocs[k] = strings.TrimSpace(pool)
+	}
+	return fields, allocs, nil
 }
 
 // stringifyStringMap は map[string]any の各スカラー値を文字列へ寄せる。
@@ -137,6 +176,7 @@ func scalarToString(v any) string {
 // intentFile is the on-disk representation of a single intent file.
 type intentFile struct {
 	Resources []intentResource `json:"resources"`
+	Pools     []Pool           `json:"pools"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -162,6 +202,10 @@ type intentResource struct {
 	// legacy "pruneable" key in an intent file is silently ignored (provisional
 	// format; S33266e will formalise the schema and reject unknown keys).
 	DeletionPolicy string `json:"deletion_policy"`
+
+	// Allocations maps a field to the pool it is allocated from — the
+	// `field: { from_pool: <pool> }` request form (§19.1).
+	Allocations map[string]string `json:"-"`
 }
 
 // LoadDir reads all JSON files in dir and returns the desired resources and
@@ -184,12 +228,32 @@ type intentResource struct {
 // provisional loader does not yet support multi-scope intent directories.
 // Multi-scope revision computation is deferred to S33266e.
 func LoadDir(dir string) ([]diff.DesiredResource, core.RevisionInfo, error) {
+	in, err := LoadIntent(dir)
+	if err != nil {
+		return nil, core.RevisionInfo{}, err
+	}
+	return in.Resources, in.Revision, nil
+}
+
+// Intent is everything an intent directory declares: resources plus the
+// top-level declarations (pools for allocation, §19.8).
+type Intent struct {
+	Resources []diff.DesiredResource
+	Pools     []Pool
+	Revision  core.RevisionInfo
+}
+
+// LoadIntent reads every intent file in dir (same rules as LoadDir) and also
+// returns the top-level declarations.  It validates that pool names are unique
+// and that every allocation request names a declared pool.
+func LoadIntent(dir string) (Intent, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, core.RevisionInfo{}, fmt.Errorf("loader: read intent dir %s: %w", dir, err)
+		return Intent{}, fmt.Errorf("loader: read intent dir %s: %w", dir, err)
 	}
 
 	var resources []diff.DesiredResource
+	var pools []Pool
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -200,28 +264,29 @@ func LoadDir(dir string) ([]diff.DesiredResource, core.RevisionInfo, error) {
 		}
 
 		path := filepath.Join(dir, name)
-		loaded, err := loadFile(path)
+		loaded, filePools, err := loadFile(path)
 		if err != nil {
-			return nil, core.RevisionInfo{}, fmt.Errorf("loader: %w", err)
+			return Intent{}, fmt.Errorf("loader: %w", err)
 		}
 		resources = append(resources, loaded...)
+		pools = append(pools, filePools...)
 	}
 
 	// D-2: reject duplicate Local IDs.  Two resources sharing a Local ID would
 	// otherwise be indistinguishable to Observe/Diff/Apply (which key on the
 	// Local ID) and to depends_on resolution, causing one to silently shadow the
 	// other.  Fail loudly instead of picking a winner.
-	//
-	// NOTE: Sprint 1 keys purely on Local ID (Scope is empty for the fake).
-	// When multi-Scope support lands (S33266e), extend this check to the full
-	// composite ID so that the same Local ID under different Scopes is allowed.
 	if err := detectDuplicateLocalIDs(resources); err != nil {
-		return nil, core.RevisionInfo{}, fmt.Errorf("loader: %w", err)
+		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
 
 	// S94f1f9-2: reject cyclic depends_on graphs at load time.
 	if err := detectCycles(resources); err != nil {
-		return nil, core.RevisionInfo{}, fmt.Errorf("loader: %w", err)
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
+
+	if err := validatePools(pools, resources); err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
 
 	// Scb0ecd-1: compute revision info after all validation passes so that only
@@ -230,10 +295,10 @@ func LoadDir(dir string) ([]diff.DesiredResource, core.RevisionInfo, error) {
 	rootScope := core.NewScope(nil)
 	rev, err := revision.Compute(dir, rootScope)
 	if err != nil {
-		return nil, core.RevisionInfo{}, fmt.Errorf("loader: revision: %w", err)
+		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return resources, rev, nil
+	return Intent{Resources: resources, Pools: pools, Revision: rev}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the
@@ -331,36 +396,36 @@ func fileFormat(name string) string {
 // loadFile parses a single intent file (JSON or YAML subset) and returns its
 // resources.  The pipeline is: バイト列 → decodeIntentTree（フォーマット非依存の木）
 // → JSON Schema 検証 → intentFile へデコード → DesiredResource。
-func loadFile(path string) ([]diff.DesiredResource, error) {
+func loadFile(path string) ([]diff.DesiredResource, []Pool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read intent file %s: %w", path, err)
+		return nil, nil, fmt.Errorf("read intent file %s: %w", path, err)
 	}
 
 	format := fileFormat(filepath.Base(path))
 	tree, err := decodeIntentTree(data, format)
 	if err != nil {
-		return nil, fmt.Errorf("parse intent file %s: %w", path, err)
+		return nil, nil, fmt.Errorf("parse intent file %s: %w", path, err)
 	}
 
 	// S33266e-2: ロード時に JSON Schema で検証する（未知キー・型曖昧性・enum を強制）。
 	// 不正 intent はここで明確なエラーで拒否し、収束を開始させない。
 	if err := validateAgainstSchema(tree, intentSchema()); err != nil {
-		return nil, fmt.Errorf("intent file %s: %w", path, err)
+		return nil, nil, fmt.Errorf("intent file %s: %w", path, err)
 	}
 
 	intent, err := treeToIntentFile(tree)
 	if err != nil {
-		return nil, fmt.Errorf("intent file %s: %w", path, err)
+		return nil, nil, fmt.Errorf("intent file %s: %w", path, err)
 	}
 
 	resources := make([]diff.DesiredResource, 0, len(intent.Resources))
 	for i, r := range intent.Resources {
 		if r.Provider == "" {
-			return nil, fmt.Errorf("intent file %s: resource[%d]: missing provider", path, i)
+			return nil, nil, fmt.Errorf("intent file %s: resource[%d]: missing provider", path, i)
 		}
 		if r.ID == "" {
-			return nil, fmt.Errorf("intent file %s: resource[%d]: missing id", path, i)
+			return nil, nil, fmt.Errorf("intent file %s: resource[%d]: missing id", path, i)
 		}
 
 		scope := core.NewScope(r.Scope) // handles nil → empty scope
@@ -381,7 +446,8 @@ func loadFile(path string) ([]diff.DesiredResource, error) {
 			Fields:         fields,
 			DependsOn:      dependsOn,
 			DeletionPolicy: parseDeletionPolicy(r.DeletionPolicy),
+			Allocations:    r.Allocations,
 		})
 	}
-	return resources, nil
+	return resources, intent.Pools, nil
 }

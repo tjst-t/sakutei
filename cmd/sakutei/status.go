@@ -26,6 +26,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/lastseen"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/internal/statusreport"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
@@ -92,6 +93,8 @@ func runStatus(args []string) {
 	// plan/reconcile (which read the same file).  status MUST stay READ-ONLY: it
 	// reads this file but NEVER writes it (no saveCauseState call).  Absent =
 	// cold start (no history), the same convention plan/reconcile use.
+	allocStore := fs.String("alloc-store", "",
+		"#24: path to the allocation store file; status only looks allocations up, never allocates")
 	causeStatePath := fs.String("cause-state", "",
 		"OPTIONAL path to a cause-state JSON file to READ previous-cycle revisions for consistent cause tags (Sc7a647); status never writes it (read-only)")
 
@@ -106,10 +109,26 @@ func runStatus(args []string) {
 	}
 
 	// desired をロード（plan と同一の loader）。
-	intentResources, rev, err := loader.LoadDir(*intentDir)
+	in, err := loader.LoadIntent(*intentDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei status: load intent: %v\n", err)
 		os.Exit(1)
+	}
+	intentResources, rev := in.Resources, in.Revision
+
+	// #24: render phase 1 — allocation.  status is read-only: it only looks
+	// up existing allocations (a request without one shows as pending).
+	allocRes, allocErr := render.RenderAllocations(context.Background(), openAllocStore(*allocStore), render.AllocLookupOnly, in)
+	if allocErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei status: %v\n", allocErr)
+		os.Exit(1)
+	}
+	intentResources = allocRes.Resources
+	if len(allocRes.Inputs) > 0 {
+		rev.RenderedRevision = revision.ComputeRenderedRevision(core.NewScope(nil), rev.IntentRevision, allocRes.Inputs)
+	}
+	for _, pa := range allocRes.Pending {
+		fmt.Fprintf(os.Stderr, "sakutei status: pending allocation: %s field %q from pool %q (allocated by reconcile)\n", pa.ID, pa.Field, pa.Pool)
 	}
 
 	// render フェーズ2（合成リソースの展開）を in-memory で実施。

@@ -83,6 +83,8 @@ sakutei import       # 既存リアルを intent（YAML）として書き出す 
 
 `import` は現実を List と Read で観測し、`<dir>/imported-<provider>.yaml` に書き出します。直後の `plan` は差分ゼロになります。何度か観測して（`--samples`、既定 3 回）値が変わったフィールドには **managed 候補** の印を付けます。書き出すのは「現状のスナップショット」なので、人が読んで整理してから intent にしてください。全リソースは `deletion_policy: ExplicitAbsentOnly`（prune しない）で書き出され、secret の平文は書き出しません。
 
+**採番（v1b）**：VLAN などの番号はプールから払い出せます。intent のトップレベルの `pools:` にプール（`name`・`range: "100-199"`）を宣言し、フィールドに `from_pool: <プール名>` と書きます。`reconcile` と常駐ループは `--alloc-store <ファイル>` の採番記録から払い出し（同じリソースには常に同じ値）、`plan` と `status` は既存の割当を引くだけです（未割当は「割り当て待ち」と表示）。
+
 `apply` は意図的に主 verb にしていません（「いつ変えるか」は収束が決める）。`plan` と `status` を前面に置くこと自体が、このソフトのレビュー体験です。
 
 ---

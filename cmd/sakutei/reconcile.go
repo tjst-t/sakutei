@@ -95,6 +95,8 @@ func runReconcile(args []string) {
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
 	// S072a14-1: generated/ output directory for render phase 2 (§9.6).
+	allocStore := fs.String("alloc-store", "",
+		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	generatedDir := fs.String("generated", "",
 		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
 	// S072a14-2: render phase 1 — external input resolver flags.
@@ -190,11 +192,14 @@ func runReconcile(args []string) {
 	// loader.LoadDir also performs cycle detection (S94f1f9-2): cyclic
 	// depends_on is rejected here with a non-zero exit before any Apply.
 	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
-	intentResources, rev, err := loader.LoadDir(*intentDir)
+	in, err := loader.LoadIntent(*intentDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: load intent: %v\n", err)
 		os.Exit(1)
 	}
+	intentResources, rev := in.Resources, in.Revision
+	var externalInputs []string
+	recomputeRendered := false
 
 	// S072a14-2: render phase 1 — external input resolution (§9.1 フェーズ1).
 	if *inventoryHash != "" || *inventoryUnreachable {
@@ -215,9 +220,28 @@ func runReconcile(args []string) {
 				phase1Result.Err)
 			os.Exit(1)
 		}
+		externalInputs = append(externalInputs, phase1Result.ExternalInputHashes...)
+		recomputeRendered = true
+	}
+
+	// #24: render phase 1 — allocation (§9.1, §19).  reconcile ALLOCATES
+	// (idempotently: the same owner always gets the same value).  Any
+	// authority error stops the run before Apply (halt-safe): never converge
+	// on a partially allocated desired.
+	allocRes, allocErr := render.RenderAllocations(context.Background(), openAllocStore(*allocStore), render.AllocAllocate, in)
+	if allocErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: %v\n  convergence not advanced (halt-safe, §9.2)\n", allocErr)
+		os.Exit(1)
+	}
+	intentResources = allocRes.Resources
+	if len(allocRes.Inputs) > 0 {
+		externalInputs = append(externalInputs, allocRes.Inputs...)
+		recomputeRendered = true
+	}
+	if recomputeRendered {
 		rootScope := core.NewScope(nil)
 		rev.RenderedRevision = revision.ComputeRenderedRevision(
-			rootScope, rev.IntentRevision, phase1Result.ExternalInputHashes)
+			rootScope, rev.IntentRevision, externalInputs)
 	}
 
 	// S072a14-1: render phase 2 — expand composite resources (§9.5).

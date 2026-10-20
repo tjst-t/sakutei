@@ -61,6 +61,11 @@ type DesiredResource struct {
 	// Capabilities().Pruneable (ADR-0005: "破壊的型は pruneable:false 既定"), not
 	// a per-instance intent flag.  See internal/prune.
 	DeletionPolicy core.DeletionPolicy
+	// Allocations maps a field name to the pool it must be allocated from
+	// (intent: `field: { from_pool: <pool> }`, §19.1).  Render phase 1 asks the
+	// AllocationAuthority for the value and writes it into Fields; until then
+	// the field is absent from Fields.  Nil when the resource requests nothing.
+	Allocations map[string]string
 }
 
 // Engine holds the provider schema used to drive the diff.

@@ -181,7 +181,7 @@ func ExpandAll(registry *ExpanderRegistry, intent []diff.DesiredResource) ([]Exp
 //
 // The children inherit the parent's Scope and use provider "fake".  Each child
 // gets a "name" field equal to its own ID and a "managed_by" field set to the
-// parent's Local ID (§7.5).
+// parent's Local ID (§7.5).  A parent "vlan" field is copied to each child.
 //
 // FakeCompositeExpander is deterministic by construction (no time/random calls).
 type FakeCompositeExpander struct{}
@@ -197,6 +197,13 @@ func (FakeCompositeExpander) Expand(parent diff.DesiredResource) ([]ExpandedReso
 		childFields := map[string]string{
 			"name":        childLocal,
 			ManagedByField: parent.ID.Local,
+		}
+		// #24: a parent "vlan" (typically allocated from a pool in render
+		// phase 1) reaches every child, the way a virtual_network's VLAN
+		// reaches its vds_portgroup (§9.5).  Only when present, so existing
+		// composites expand exactly as before.
+		if v, ok := parent.Fields["vlan"]; ok {
+			childFields["vlan"] = v
 		}
 		child := ExpandedResource{
 			DesiredResource: diff.DesiredResource{

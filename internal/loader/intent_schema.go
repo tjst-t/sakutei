@@ -26,7 +26,8 @@ import (
 
 // intentSchema は理想状態木のルートスキーマ。
 //
-//   - resources は必須の配列。
+//   - resources は配列（pools / scopes だけのファイルも書けるよう任意）。
+//   - pools は採番プールの宣言（name / range / claim、§19.8）。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
 //     depends_on（文字列配列）、fields（文字列→スカラーのマップ）、
 //     deletion_policy（enum）を持つ。
@@ -43,10 +44,23 @@ func intentSchema() schemaNode {
 	return schemaNode{
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []any{"resources"},
 		"properties": map[string]any{
 			// version は文字列必須（Norway 問題の代表例）。任意。
 			"version": schemaNode{"type": "string"},
+			// pools は採番プールの宣言（§19.8）。range は "下限-上限"（整数）。
+			"pools": schemaNode{
+				"type": "array",
+				"items": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"name", "range"},
+					"properties": map[string]any{
+						"name":  schemaNode{"type": "string"},
+						"range": schemaNode{"type": "string"},
+						"claim": stringMap,
+					},
+				},
+			},
 			"resources": schemaNode{
 				"type": "array",
 				"items": schemaNode{

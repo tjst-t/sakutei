@@ -87,6 +87,8 @@ func runPlan(args []string) {
 	// (inventory/allocation/secret) with fakes so no production pool/secret is
 	// contacted (§26.2).  When set, phase 1 resolves through the DevenvProfile's
 	// substituted inventory cache instead of the plain --inventory-hash resolver.
+	allocStore := fs.String("alloc-store", "",
+		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	devenv := fs.Bool("devenv", false,
 		"S33266e-3: devenv（坪庭）mode — render external inputs (inventory/allocation/secret) are substituted with fakes; no production pool/secret is touched (§26.2)")
 
@@ -109,11 +111,14 @@ func runPlan(args []string) {
 
 	// Load desired resources from intent directory.
 	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
-	intentResources, rev, err := loader.LoadDir(*intentDir)
+	in, err := loader.LoadIntent(*intentDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei plan: load intent: %v\n", err)
 		os.Exit(1)
 	}
+	intentResources, rev := in.Resources, in.Revision
+	var externalInputs []string
+	recomputeRendered := false
 
 	// S072a14-2: render phase 1 — external input resolution (§9.1 フェーズ1).
 	// Build a FakeInventoryResolver from the --inventory-hash and
@@ -166,9 +171,30 @@ func runPlan(args []string) {
 		// IMPORTANT — rendered_revision 算出定義は §26 カテゴリ A.
 		// The v1a canonical definition is provisional: only inventory_hash is
 		// included.  Vault secret generations and allocator epochs are v1b/S8.
+		externalInputs = append(externalInputs, phase1Result.ExternalInputHashes...)
+		recomputeRendered = true
+	}
+
+	// #24: render phase 1 — allocation (§9.1, §19).  plan is read-only, so it
+	// only LOOKS UP existing allocations; a request with none yet is shown as
+	// pending and is allocated by reconcile.
+	allocRes, allocErr := render.RenderAllocations(context.Background(), openAllocStore(*allocStore), render.AllocLookupOnly, in)
+	if allocErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei plan: %v\n", allocErr)
+		os.Exit(1)
+	}
+	intentResources = allocRes.Resources
+	if len(allocRes.Inputs) > 0 {
+		externalInputs = append(externalInputs, allocRes.Inputs...)
+		recomputeRendered = true
+	}
+	for _, pa := range allocRes.Pending {
+		fmt.Fprintf(os.Stderr, "sakutei plan: pending allocation: %s field %q from pool %q (allocated by reconcile)\n", pa.ID, pa.Field, pa.Pool)
+	}
+	if recomputeRendered {
 		rootScope := core.NewScope(nil)
 		rev.RenderedRevision = revision.ComputeRenderedRevision(
-			rootScope, rev.IntentRevision, phase1Result.ExternalInputHashes)
+			rootScope, rev.IntentRevision, externalInputs)
 	}
 
 	// S072a14-1: render phase 2 — expand composite resources into concrete

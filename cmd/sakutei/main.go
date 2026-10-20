@@ -109,6 +109,8 @@ func runDaemon() {
 		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
 	inventoryHash := fs.String("inventory-hash", "",
 		"S072a14-3: inject deterministic inventory hash into rendered_revision (fake phase 1; empty=no external input)")
+	allocStore := fs.String("alloc-store", "",
+		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
 		"S072a14-3: simulate an unreachable ExternalInputResolver (triggers last-value-on-unreachable path §9.2)")
 
@@ -240,6 +242,7 @@ func runDaemon() {
 		Remediation:           remCfg,
 		GeneratedDir:          genDir,
 		ExternalInputResolver: resolverCache,
+		Allocation:            openAllocStore(*allocStore),
 	}
 
 	if err := reconcile.Run(context.Background(), cfg); err != nil {
