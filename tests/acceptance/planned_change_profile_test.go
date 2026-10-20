@@ -242,8 +242,51 @@ func TestPlannedChangeProfile_SoloCoolingOff_Reconcile(t *testing.T) {
 	h.reconcile()
 	h.write(solo, nil) // the declaration is reverted
 	time.Sleep(coolingOff + 200*time.Millisecond)
-	if out := h.reconcile(); h.remaining() != 6 {
-		t.Fatalf("[AC-44-3] a removed declaration must not open its lane; out:\n%s", out)
+	if out := h.reconcile(); h.remaining() != 6 || !strings.Contains(out, "PlannedChangeWithdrawn") {
+		t.Fatalf("[AC-44-3] a removed declaration must not open its lane and is withdrawn; out:\n%s", out)
+	}
+	// Writing the same declaration back (revert of the revert) starts the
+	// cooling-off over: the old declaration time no longer counts.
+	h.write(solo, map[string]any{})
+	if out := h.reconcile(); h.remaining() != 6 || !strings.Contains(out, "PlannedChangeCoolingOff") {
+		t.Fatalf("[AC-44-3] a declaration written back must cool off again: %d remain; out:\n%s", h.remaining(), out)
+	}
+	time.Sleep(coolingOff + 200*time.Millisecond)
+	if out := h.reconcile(); h.remaining() != 1 {
+		t.Fatalf("[AC-44-3] after the new cooling-off the written-back declaration proceeds: %d remain; out:\n%s", h.remaining(), out)
+	}
+	if k := h.auditKinds(); k[audit.KindPlannedChangeDeclared] != 2 || k[audit.KindPlannedChangeWithdrawn] != 1 {
+		t.Errorf("[AC-44-3] S4 (declared, withdrawn, declared again): %v", k)
+	}
+}
+
+// [AC-44-3] 常駐でも、cooling-off 中に消した宣言を書き戻すと cooling-off はやり直しになる。
+func TestPlannedChangeProfile_SoloCoolingOff_RedeclareRestarts_Resident(t *testing.T) {
+	r := newPCRig(t)
+	const coolingOff = 2 * time.Second
+	solo := map[string]any{"profile": "solo", "solo": map[string]any{"cooling_off": coolingOff.String()}}
+	r.write(solo, map[string]any{})
+	stop := startPlannedChangeDaemon(t, r.intentDir, r.statePath, r.logPath,
+		"--max-destructive-per-cycle=1", "--audit-log", r.auditPath)
+	waitForMoreCycles(t, r.logPath, 2)
+	r.write(solo, nil) // halted during the cooling-off
+	waitForMoreCycles(t, r.logPath, 2)
+	time.Sleep(coolingOff + 200*time.Millisecond) // the first declaration's cooling-off would be over
+	r.write(solo, map[string]any{})
+	rewritten := time.Now()
+	waitForMoreCycles(t, r.logPath, 3)
+	if time.Since(rewritten) < coolingOff && r.remaining() != 6 {
+		t.Fatalf("[AC-44-3] the written-back declaration opened without a new cooling-off; log:\n%s", readFileString(r.logPath))
+	}
+	if !strings.Contains(readFileString(r.logPath), "PlannedChangeWithdrawn") {
+		t.Fatalf("[AC-44-3] want PlannedChangeWithdrawn in the log:\n%s", readFileString(r.logPath))
+	}
+	if !waitForResourceCount(t, r.statePath, 1, 15*time.Second) {
+		t.Fatalf("[AC-44-3] after the new cooling-off the deletes must land: %d remain", r.remaining())
+	}
+	stop()
+	if time.Since(rewritten) < coolingOff {
+		t.Fatalf("[AC-44-3] deletes landed before the new cooling-off elapsed")
 	}
 }
 

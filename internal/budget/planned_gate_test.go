@@ -158,3 +158,56 @@ func TestPlannedGate_WideningRestartsCoolingOff(t *testing.T) {
 		t.Fatalf("a widened declaration must cool off again")
 	}
 }
+
+// cooling-off 中に消した宣言を書き戻すと cooling-off はやり直し（常駐でも、S4 から読み直す次の実行でも）。
+func TestPlannedGate_WithdrawnRedeclareRestartsCoolingOff(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	p := decl(PlannedDelete, decomScope, 10)
+	p.Gate = PlannedGate{Profile: "solo", CoolingOff: time.Hour}
+	clk := &fakeClock{t: t0.Add(time.Minute)}
+	newEngine := func() *Engine {
+		e := newEngineWithClock(Config{}, clk)
+		if err := e.AttachAudit(audit.NewLog(logPath)); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+
+	e := newEngine()
+	e.SetPlannedChanges([]PlannedChange{p})
+	e.CheckCycle(nil, 0, 0)  // declared at t0+1m
+	e.SetPlannedChanges(nil) // removed during the cooling-off
+	if d := e.CheckCycle(nil, 0, 0); !hasEvent(d, "PlannedChangeWithdrawn") {
+		t.Fatalf("want PlannedChangeWithdrawn, got %v", d.Events)
+	}
+	clk.advance(2 * time.Hour)
+	e.SetPlannedChanges([]PlannedChange{p}) // written back
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0); d.LaneAdmitted() != 0 {
+		t.Fatalf("resident: a written-back declaration must cool off again")
+	}
+
+	// The next run (reconcile) restores the new clock, not the first one.
+	if d := func() CycleDecision {
+		e := newEngine()
+		e.SetPlannedChanges([]PlannedChange{p})
+		return e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0)
+	}(); d.LaneAdmitted() != 0 {
+		t.Fatalf("next run: the withdrawn declaration time must not count")
+	}
+
+	// A run that loads intent without the declaration withdraws a clock
+	// restored from S4, so writing it back later cools off again too.
+	clk.advance(30 * time.Minute)
+	e = newEngine()
+	e.SetPlannedChanges(nil)
+	clk.advance(2 * time.Hour)
+	e = newEngine()
+	e.SetPlannedChanges([]PlannedChange{p})
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0); d.LaneAdmitted() != 0 {
+		t.Fatalf("reconcile: a declaration removed between runs must cool off again when written back")
+	}
+	clk.advance(time.Hour)
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0); d.LaneAdmitted() != 2 {
+		t.Fatalf("after the new cooling-off the lane opens: %v", d.Events)
+	}
+}

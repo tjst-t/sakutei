@@ -25,7 +25,8 @@
 //     「評価した時点で N 時間経っていれば通すゲート」であり、常駐でも reconcile でも同じ式で
 //     判定する。その間に宣言を消せば（PR の revert）レーンは開かずに止まる。
 //
-// 宣言・レーンが開いたこと・レーンで発射した件数を S4 に残す（declared / opened / executed）。
+// 宣言・開く前の取り下げ・レーンが開いたこと・レーンで発射した件数を S4 に残す（declared /
+// withdrawn / opened / executed）。取り下げた宣言の時計は捨てるので、書き戻すと cooling-off はやり直し。
 // executed の合計は reconcile が実行をまたいで max_count を守るのに使う。S4 に書けない記録に
 // 基づく判断は効かせない（宣言が書けなければ cooling-off の時計は動かさず、opened が書け
 // なければレーンを開かない）。
@@ -75,10 +76,18 @@ func (e *Engine) AttachAudit(log *audit.Log) error {
 	for _, rec := range recs {
 		switch rec.Kind {
 		case audit.KindPlannedChangeDeclared:
+			// The latest declared since the last withdrawn wins: a re-declaration
+			// recorded after a withdrawal that could not be recorded still restarts
+			// the cooling-off (later is the conservative side).
 			fp := fmt.Sprintf("%s|%d", rec.PlannedChange, rec.Count)
-			if at, ok := e.declaredAt[fp]; !ok || rec.Time.Before(at) {
+			if at, ok := e.declaredAt[fp]; !ok || rec.Time.After(at) {
 				e.declaredAt[fp] = rec.Time
+				e.declaredMax[fp] = rec.Count
 			}
+		case audit.KindPlannedChangeWithdrawn:
+			fp := fmt.Sprintf("%s|%d", rec.PlannedChange, rec.Count)
+			delete(e.declaredAt, fp)
+			delete(e.declaredMax, fp)
 		case audit.KindPlannedChangeOpened:
 			e.opened[fmt.Sprintf("%s|%d", rec.PlannedChange, rec.Count)] = true
 		case audit.KindPlannedChangeExecuted:
@@ -159,6 +168,49 @@ func (e *Engine) ensureGateMaps() {
 	if e.laneFlushed == nil {
 		e.laneFlushed = map[string]int{}
 	}
+	if e.declaredMax == nil {
+		e.declaredMax = map[string]int{}
+	}
+}
+
+// withdrawMissing forgets the cooling-off clock of every declaration that was
+// seen (or restored from S4) but is no longer in intent and never opened its
+// lane: removing a declaration during its cooling-off halts it, and writing
+// the same declaration back starts the cooling-off over (§14.5).  The
+// withdrawal is recorded in S4 so the next run (reconcile, restart) does not
+// restore the old clock.  The resident loop sees the removal when it reloads
+// intent; the one-shot reconcile compares the loaded declarations with the
+// clocks restored from S4.  Must be called with e.mu held.
+func (e *Engine) withdrawMissing(now time.Time) {
+	e.ensureGateMaps()
+	present := map[string]bool{}
+	for _, p := range e.planned {
+		present[p.Fingerprint()] = true
+	}
+	fps := make([]string, 0, len(e.declaredAt))
+	for fp := range e.declaredAt {
+		if !present[fp] && !e.opened[fp] {
+			fps = append(fps, fp)
+		}
+	}
+	sort.Strings(fps)
+	for _, fp := range fps {
+		key, max := strings.TrimSuffix(fp, fmt.Sprintf("|%d", e.declaredMax[fp])), e.declaredMax[fp]
+		msg := fmt.Sprintf("PlannedChangeWithdrawn: %s (max_count %d) was removed from intent before its lane opened; writing it back starts its cooling-off over (§14.5)", key, max)
+		if e.audit != nil {
+			if err := e.audit.Append(audit.Record{
+				Time: now, Kind: audit.KindPlannedChangeWithdrawn, PlannedChange: key, Count: max, Detail: msg,
+			}); err != nil {
+				// Forget the clock anyway: a re-declaration writes a later declared
+				// record, which AttachAudit prefers (conservative).
+				msg += fmt.Sprintf(" [the withdrawal could not be recorded in S4: %v]", err)
+			}
+		}
+		delete(e.declaredAt, fp)
+		delete(e.declaredMax, fp)
+		delete(e.gateNoted, fp)
+		e.pendingEvents = append(e.pendingEvents, msg)
+	}
 }
 
 // noteDeclared starts the declaration's cooling-off clock the first time it is
@@ -182,6 +234,7 @@ func (e *Engine) noteDeclared(p PlannedChange, now time.Time, events *[]string) 
 		}
 	}
 	e.declaredAt[fp] = now
+	e.declaredMax[fp] = p.MaxCount
 }
 
 // gateOpen reports whether the declaration's gate lets its lane open now.

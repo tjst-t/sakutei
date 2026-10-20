@@ -143,6 +143,11 @@ type Engine struct {
 	opened      map[string]bool
 	gateNoted   map[string]string
 	laneFlushed map[string]int
+	// declaredMax holds the max_count of each declaredAt entry (for the
+	// withdrawn record); pendingEvents are notices raised outside CheckCycle
+	// (SetPlannedChanges), emitted with the next cycle's events.
+	declaredMax   map[string]int
+	pendingEvents []string
 }
 
 // New creates an Engine with the given configuration.

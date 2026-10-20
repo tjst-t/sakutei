@@ -61,6 +61,10 @@ const (
 	// solo の cooling-off はこの時刻から数える（非常駐の reconcile は実行をまたいで
 	// この記録を読み直す）。PlannedChange は宣言の Key、Count は max_count。
 	KindPlannedChangeDeclared Kind = "planned_change.declared"
+	// KindPlannedChangeWithdrawn はレーンが開く前の宣言が intent から消えたこと（cooling-off
+	// 中の halt、§14.5）。これより前の declared は無効になり、同じ宣言を書き戻すと cooling-off は
+	// やり直しになる。PlannedChange は宣言の Key、Count は max_count。
+	KindPlannedChangeWithdrawn Kind = "planned_change.withdrawn"
 	// KindPlannedChangeOpened は planned_change のレーンが開いたこと（承認が要件を
 	// 満たした、または cooling-off が明けた）。Detail にその根拠を書く。
 	KindPlannedChangeOpened Kind = "planned_change.opened"

@@ -206,6 +206,7 @@ func (e *Engine) SetPlannedChanges(pcs []PlannedChange) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.planned = append([]PlannedChange(nil), pcs...)
+	e.withdrawMissing(e.cfg.now())
 }
 
 // ReserveLanes consumes lane capacity for the ops about to be dispatched.  Call
@@ -247,6 +248,7 @@ type laneAdmission struct {
 func (e *Engine) admitLanes(ops []core.Op) laneAdmission {
 	now := e.cfg.now()
 	var out laneAdmission
+	out.events, e.pendingEvents = e.pendingEvents, nil
 	var active []PlannedChange
 	for _, p := range e.planned {
 		if now.Before(p.End) {
