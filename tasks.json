@@ -378,6 +378,32 @@
       "updatedAt": "2026-10-20T08:43:32.850Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "ci-race-detector",
+      "number": 17,
+      "kind": "task",
+      "title": "CI を用意し、race detector 付きのテストを回す",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [
+        "bytes-buffer-data-race"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "ci",
+        "race"
+      ],
+      "body": "旧 ROADMAP.json の backlog（S94f1f9-1 review D-1）。当時は gcc がなく -race を回せなかった。\n\nいまのリポジトリには CI がない（.github/ がない）。GitHub Actions のワークフローを足して、push と PR のたびに `make check` と `CGO_ENABLED=1 go test -race ./...` を回す。Makefile にも `test-race` ターゲットを足す。\n\ndata race のバグ（bytes-buffer-data-race）を先に直さないと、race のジョブは落ちる。",
+      "doneWhen": ".github/workflows に make check と -race テストを回すワークフローがあり、make test-race がローカルで合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:33.533Z",
+      "updatedAt": "2026-10-20T08:43:33.533Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
