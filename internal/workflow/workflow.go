@@ -19,6 +19,7 @@
 //
 //	workflows:
 //	  - workflow: rolling-upgrade
+//	    applicant: alice                        # 申請者 ID（separation 用、PR の作者など）
 //	    target: { provider: fake }              # 対象の provider（と scope）
 //	    invariant: { min_active: 2, active_when: { active: "true" } }
 //	    strategy: { order: one-at-a-time }
@@ -26,6 +27,14 @@
 //	      - name: n1
 //	        targets: [n1]                        # ステージ内の対象も 1 つずつ
 //	        gate: { manual_approval: required, timeout: 24h }
+//	      - name: n2
+//	        targets: [n2]
+//	        gate:
+//	          manual_approval:
+//	            requirements:                    # §14.4（無ければ単一承認）
+//	              quorum: { n: 2, of: 3 }
+//	              roles: [platform-admin]
+//	              separation: applicant_ne_approver
 //	      - ...
 //	    steps:                                   # 対象ごとに実行する手順
 //	      - apply: { active: "false" }           # drain（冪等な Apply）
@@ -44,7 +53,12 @@
 //     フェーズで止まる。進行位置は S2（Store）にあるので再起動しても待ちに留まる。
 //     承認で次のステージへ、却下と timeout（既定 24h）で halt。
 //   - 承認の事実は S4 監査（audit.Log）に append-only で記録する。承認 API 自体は
-//     認可を持たない（§7）。requirements（N-of-M・separation）は別タスク。
+//     認可を持たない（§7）。
+//   - ゲートは requirements（§14.4）を持てる。quorum: { n, of } は異なる承認者 n 人で
+//     通過（同じ承認者の二重承認は 1 と数える）、roles はそのいずれかを名乗る承認
+//     だけを数え、separation: applicant_ne_approver は申請者（workflow の applicant）
+//     本人の承認を拒否する。役割の真偽は上位 IdP が判定する（承認ボディの roles を
+//     数えるだけ、§7）。requirements の無いゲートは単一承認。
 //   - 実行中・待ち・halt の Workflow の対象は収束ループが Apply しない（converging
 //     扱い、§6）。完了（done）すると収束に戻る。
 package workflow
@@ -92,10 +106,83 @@ type Step struct {
 	Timeout time.Duration `json:"timeout,omitempty"`
 }
 
-// Gate はステージ末尾の手動承認ゲート（§6.4）。requirements を宣言しない単一承認。
+// Gate はステージ末尾の手動承認ゲート（§6.4）。
 type Gate struct {
 	// Timeout を過ぎても承認されなければ halt する。既定 24h。
 	Timeout time.Duration `json:"timeout"`
+	// Requirements は承認者要件（§14.4）。nil なら単一承認。
+	Requirements *Requirements `json:"requirements,omitempty"`
+}
+
+// SeparationApplicantNeApprover は申請者≠承認者（4-eyes の中核、§14.4）。
+const SeparationApplicantNeApprover = "applicant_ne_approver"
+
+// Quorum は N-of-M（承認者候補 Of 人のうち N 人の承認で通過）。
+type Quorum struct {
+	N  int `json:"n"`
+	Of int `json:"of"`
+}
+
+// Requirements はゲートの承認者要件（§14.4）。コアは認可を持たない（§7）: 役割は
+// 承認ボディに名乗られたものを数えるだけで、真偽は上位 IdP が判定する。
+type Requirements struct {
+	// Quorum が nil なら 1 人。
+	Quorum *Quorum `json:"quorum,omitempty"`
+	// Roles を宣言すると、そのいずれかの役割を名乗る承認だけを数える。
+	Roles []string `json:"roles,omitempty"`
+	// Separation が applicant_ne_approver なら申請者本人の承認を拒否する。
+	Separation string `json:"separation,omitempty"`
+}
+
+// Needed は通過に要る異なる承認者の数。
+func (r *Requirements) Needed() int {
+	if r == nil || r.Quorum == nil {
+		return 1
+	}
+	return r.Quorum.N
+}
+
+// qualify は承認 a が要件を満たさない理由を返す（満たすなら空）。
+func (r *Requirements) qualify(a Approval, applicant string) string {
+	if r == nil {
+		return ""
+	}
+	if r.Separation == SeparationApplicantNeApprover && a.Approver == applicant {
+		return fmt.Sprintf("separation %s: %s is the applicant and cannot approve", r.Separation, a.Approver)
+	}
+	if len(r.Roles) > 0 && !hasAny(a.Roles, r.Roles) {
+		return fmt.Sprintf("approver %s holds none of the required roles %v (asserted roles %v)", a.Approver, r.Roles, a.Roles)
+	}
+	return ""
+}
+
+func hasAny(have, want []string) bool {
+	for _, h := range have {
+		for _, w := range want {
+			if h == w {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (r *Requirements) validate() error {
+	if r == nil {
+		return nil
+	}
+	if q := r.Quorum; q != nil && (q.N < 1 || q.Of < q.N) {
+		return fmt.Errorf("requirements.quorum must satisfy 1 <= n <= of (n=%d, of=%d)", q.N, q.Of)
+	}
+	if r.Separation != "" && r.Separation != SeparationApplicantNeApprover {
+		return fmt.Errorf("requirements.separation %q is not supported (%s)", r.Separation, SeparationApplicantNeApprover)
+	}
+	for _, role := range r.Roles {
+		if role == "" {
+			return fmt.Errorf("requirements.roles: empty role")
+		}
+	}
+	return nil
 }
 
 // Stage は 1 つのステージ。Targets を宣言順に 1 つずつ処理する。
@@ -116,7 +203,10 @@ type Invariant struct {
 
 // Definition は intent の workflows: の 1 件。
 type Definition struct {
-	Name      string    `json:"workflow"`
+	Name string `json:"workflow"`
+	// Applicant は申請者 ID（PR の作者など）。separation: applicant_ne_approver の
+	// ゲートはこの ID の承認を拒否する。
+	Applicant string    `json:"applicant,omitempty"`
 	Invariant Invariant `json:"invariant"`
 	Stages    []Stage   `json:"stages"`
 	Steps     []Step    `json:"steps"`
@@ -145,10 +235,11 @@ func (d Definition) Hash() string {
 	}
 	v := struct {
 		Name      string    `json:"name"`
+		Applicant string    `json:"applicant,omitempty"`
 		Invariant Invariant `json:"invariant"`
 		Stages    []stage   `json:"stages"`
 		Steps     []Step    `json:"steps"`
-	}{Name: d.Name, Invariant: d.Invariant, Steps: d.Steps}
+	}{Name: d.Name, Applicant: d.Applicant, Invariant: d.Invariant, Steps: d.Steps}
 	for _, st := range d.Stages {
 		s := stage{Name: st.Name, Gate: st.Gate}
 		for _, id := range st.Targets {
@@ -207,6 +298,14 @@ func (d Definition) Validate() error {
 		}
 		if st.Gate != nil && st.Gate.Timeout <= 0 {
 			return fmt.Errorf("workflow %s: stage %s: gate timeout must be positive", d.Name, st.Name)
+		}
+		if st.Gate != nil {
+			if err := st.Gate.Requirements.validate(); err != nil {
+				return fmt.Errorf("workflow %s: stage %s: gate %w", d.Name, st.Name, err)
+			}
+			if st.Gate.Requirements != nil && st.Gate.Requirements.Separation != "" && d.Applicant == "" {
+				return fmt.Errorf("workflow %s: stage %s: separation %s needs the workflow's applicant", d.Name, st.Name, st.Gate.Requirements.Separation)
+			}
 		}
 	}
 	if d.Invariant.MinActive > len(targets) {

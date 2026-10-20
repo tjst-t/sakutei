@@ -30,8 +30,11 @@ import (
 // Decide はゲートへの判断（承認 / 却下）を受け付ける。承認 API と CLI の共通の入口。
 //
 // 判断は S4 監査に append してから S2 に書く（同じロックの中）。S4 に残せない判断は
-// 効かせない。コアは認可を持たない（§7）: approver と signature は記録するだけで、
-// 誰が叩けるか・署名が正しいかは上位（IdP / プロキシ）が判定する。
+// 効かせない。コアは認可を持たない（§7）: approver・roles・signature は記録するだけで、
+// 誰が叩けるか・役割と署名が正しいかは上位（IdP / プロキシ）が判定する。ゲートの
+// requirements（§14.4）を満たさない承認（申請者本人・役割違い）は ErrNotQualified で
+// 拒否し、数えない。要件を満たす承認は 1 件ごとに S4 に残り、揃った時点で次の周に
+// 次のステージへ進む。
 func Decide(ctx context.Context, store Store, log *audit.Log, workflow, gate string, a Approval, now time.Time) (Run, error) {
 	if log == nil {
 		return Run{}, fmt.Errorf("an S4 audit log is required to record approvals (--audit-log)")
@@ -39,26 +42,33 @@ func Decide(ctx context.Context, store Store, log *audit.Log, workflow, gate str
 	a.Gate = gate
 	return store.Decide(ctx, workflow, a, now, func(run Run) error {
 		kind := audit.KindGateApproved
-		detail := fmt.Sprintf("stage %s approved; proceeding to the next stage", gate)
+		approvers, need := run.Tally()
+		detail := fmt.Sprintf("stage %s approved (%d of %d required: %s); proceeding to the next stage",
+			gate, len(approvers), need, strings.Join(approvers, ", "))
+		if len(approvers) < need {
+			detail = fmt.Sprintf("stage %s approved (%d of %d required: %s); still awaiting approval",
+				gate, len(approvers), need, strings.Join(approvers, ", "))
+		}
 		if a.Decision == DecisionReject {
 			kind = audit.KindGateRejected
 			detail = fmt.Sprintf("stage %s rejected; workflow halted", gate)
 		}
 		return log.Append(audit.Record{
 			Time: now, Kind: kind, Workflow: workflow, RunID: run.RunID, Gate: gate,
-			Actor: a.Approver, Signature: a.Signature, Detail: detail,
+			Actor: a.Approver, Roles: a.Roles, Signature: a.Signature, Detail: detail,
 		})
 	})
 }
 
 // API は承認ゲートの HTTP API（§6.4）。
 //
-//	POST /workflows/{id}/gates/{gate}/approve   {"approver": "...", "signature": "...", "decision": "approve"|"reject"}
+//	POST /workflows/{id}/gates/{gate}/approve   {"approver": "...", "roles": ["..."], "signature": "...", "decision": "approve"|"reject"}
 //	POST /workflows/{id}/gates/{gate}/reject    {"approver": "...", "signature": "..."}
 //	GET  /workflows                              全 Workflow の進行位置
 //	GET  /workflows/{id}
 //
 // approve の decision を省くと承認、"reject" なら却下（= halt）。認可は持たない。
+// ゲートの requirements を満たさない承認は 403（数えない）。
 type API struct {
 	Store Store
 	Audit *audit.Log
@@ -68,6 +78,7 @@ type API struct {
 
 type decisionBody struct {
 	Approver  string   `json:"approver"`
+	Roles     []string `json:"roles,omitempty"`
 	Signature string   `json:"signature"`
 	Decision  Decision `json:"decision,omitempty"`
 }
@@ -127,12 +138,14 @@ func (a *API) decide(def Decision) http.HandlerFunc {
 			now = a.Now()
 		}
 		run, err := Decide(r.Context(), a.Store, a.Audit, r.PathValue("id"), r.PathValue("gate"),
-			Approval{Approver: body.Approver, Signature: body.Signature, Decision: decision}, now)
+			Approval{Approver: body.Approver, Roles: body.Roles, Signature: body.Signature, Decision: decision}, now)
 		switch {
 		case err == nil:
 			writeJSON(w, http.StatusOK, run)
 		case errors.Is(err, ErrNotAwaiting):
 			writeError(w, http.StatusConflict, err)
+		case errors.Is(err, ErrNotQualified):
+			writeError(w, http.StatusForbidden, err)
 		case errors.Is(err, ErrInvalidDecision):
 			writeError(w, http.StatusBadRequest, err)
 		default:

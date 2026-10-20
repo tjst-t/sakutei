@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/audit"
@@ -177,6 +178,7 @@ func (e *Engine) tick(ctx context.Context, def Definition) []Event {
 			Workflow:      def.Name,
 			RunID:         fmt.Sprintf("%s-%d", def.Name, s.now.UnixNano()),
 			DefHash:       hash,
+			Applicant:     def.Applicant,
 			Phase:         PhaseRunning,
 			StepStartedAt: s.now.UTC(),
 			Holder:        e.Holder,
@@ -214,15 +216,16 @@ func (e *Engine) tick(ctx context.Context, def Definition) []Event {
 // gate は承認待ちのゲートを評価する。次のステージへ進めるなら true。
 func (s *stepper) gate(ctx context.Context) bool {
 	run := s.run
-	if d, ok := run.decisionFor(run.Gate); ok {
-		if d.Decision == DecisionReject {
-			// Decide がその場で halt にしているはず。念のため。
-			s.halt("gate %s rejected by %s", run.Gate, d.Approver)
-			return false
-		}
-		s.emit(EventApproved, "gate %s approved by %s", run.Gate, d.Approver)
+	if d, ok := run.rejection(run.Gate); ok {
+		// Decide がその場で halt にしているはず。念のため。
+		s.halt("gate %s rejected by %s", run.Gate, d.Approver)
+		return false
+	}
+	approvers, need := run.Tally()
+	if len(approvers) >= need {
+		s.emit(EventApproved, "gate %s approved by %s (%d of %d required)", run.Gate, strings.Join(approvers, ", "), len(approvers), need)
 		s.run.Phase = PhaseRunning
-		s.run.Gate, s.run.GateOpenedAt, s.run.GateDeadline = "", time.Time{}, time.Time{}
+		s.run.Gate, s.run.GateOpenedAt, s.run.GateDeadline, s.run.GateRequirements = "", time.Time{}, time.Time{}, nil
 		return s.nextStage()
 	}
 	if !s.now.Before(run.GateDeadline) {
@@ -237,8 +240,8 @@ func (s *stepper) gate(ctx context.Context) bool {
 		s.halt("%s", reason)
 		return false
 	}
-	s.emit(EventWaiting, "awaiting approval at gate %s until %s (POST /workflows/%s/gates/%s/approve)",
-		run.Gate, run.GateDeadline.Format(time.RFC3339), run.Workflow, run.Gate)
+	s.emit(EventWaiting, "awaiting approval at gate %s until %s (%d of %d approval(s)%s; POST /workflows/%s/gates/%s/approve)",
+		run.Gate, run.GateDeadline.Format(time.RFC3339), len(approvers), need, describe(run.GateRequirements), run.Workflow, run.Gate)
 	return false
 }
 
@@ -331,9 +334,11 @@ func (s *stepper) advance(ctx context.Context) {
 			s.run.Gate = stage.Name
 			s.run.GateOpenedAt = s.now.UTC()
 			s.run.GateDeadline = s.now.Add(stage.Gate.Timeout).UTC()
+			s.run.GateRequirements = stage.Gate.Requirements
 			if s.save() {
-				s.emit(EventAwaiting, "stage %s completed; awaiting approval at gate %s (timeout %s, deadline %s): POST /workflows/%s/gates/%s/approve",
-					stage.Name, stage.Name, stage.Gate.Timeout, s.run.GateDeadline.Format(time.RFC3339), s.def.Name, stage.Name)
+				s.emit(EventAwaiting, "stage %s completed; awaiting approval at gate %s (%d approval(s)%s, timeout %s, deadline %s): POST /workflows/%s/gates/%s/approve",
+					stage.Name, stage.Name, stage.Gate.Requirements.Needed(), describe(stage.Gate.Requirements),
+					stage.Gate.Timeout, s.run.GateDeadline.Format(time.RFC3339), s.def.Name, stage.Name)
 			}
 			return
 		}
@@ -484,4 +489,22 @@ func (s *stepper) countActive(obs map[string]core.Observation, target core.ID, o
 		}
 	}
 	return n
+}
+
+// describe は承認者要件の役割・separation を Event の文面にする。
+func describe(r *Requirements) string {
+	if r == nil {
+		return ""
+	}
+	var parts []string
+	if len(r.Roles) > 0 {
+		parts = append(parts, "roles "+strings.Join(r.Roles, "|"))
+	}
+	if r.Separation != "" {
+		parts = append(parts, "separation "+r.Separation)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, ", ")
 }

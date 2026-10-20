@@ -25,7 +25,7 @@
 //	AC-v1.5-workflow-4 — 却下で halt する（以後進まない・対象は収束ループに返らない）
 //	AC-v1.5-workflow-5 — ゲートの timeout で halt する
 //	AC-v1.5-workflow-6 — 承認・却下・timeout が S4 監査に append-only で残る
-//	AC-v1.5-workflow-7 — v1.5 で未対応の宣言（select・requirements・halt 以外の on_failure）はロード時に拒否される
+//	AC-v1.5-workflow-7 — v1.5 で未対応の宣言（select・halt 以外の on_failure）と誤った requirements はロード時に拒否される
 //	AC-v1.5-workflow-8 — workflow store が無ければ Workflow は進まず、対象は Apply されない
 package acceptance
 

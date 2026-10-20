@@ -37,7 +37,7 @@ import (
 //     所属を書く（tier: は §8 の DAG 優先度帯 `tier: foundation` の予約名なので使わない）。
 //   - planned_change は大量正当作業の宣言（scope / kind / max_count / window / approval、§13.3）。
 //     1 件ならオブジェクト、複数なら配列で書く。
-//   - workflows は最小 Workflow の宣言（workflow / target / invariant / strategy / stages /
+//   - workflows は最小 Workflow の宣言（workflow / applicant / target / invariant / strategy / stages /
 //     steps / on_failure、§6.3 / §6.4）。書式の詳細と v1.5 で拒否するものは workflow.go。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
 //     depends_on（文字列、または { id, ready_condition } の配列）、fields（文字列→スカラーのマップ）、
@@ -198,7 +198,8 @@ func workflowsSchema() schemaNode {
 			"additionalProperties": false,
 			"required":             []any{"workflow", "target", "stages", "steps"},
 			"properties": map[string]any{
-				"workflow": schemaNode{"type": "string"},
+				"workflow":  schemaNode{"type": "string"},
+				"applicant": schemaNode{"type": "string"},
 				"target": schemaNode{
 					"type":                 "object",
 					"additionalProperties": false,

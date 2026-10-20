@@ -48,13 +48,15 @@ const (
 	DecisionReject  Decision = "reject"
 )
 
-// Approval はゲートへの 1 件の判断（承認者 ID + 署名）。
+// Approval はゲートへの 1 件の判断（承認者 ID + 役割 + 署名）。
 type Approval struct {
-	Gate      string    `json:"gate"`
-	Approver  string    `json:"approver"`
-	Signature string    `json:"signature"`
-	Decision  Decision  `json:"decision"`
-	At        time.Time `json:"at"`
+	Gate      string `json:"gate"`
+	Approver  string `json:"approver"`
+	Signature string `json:"signature"`
+	// Roles は承認者が名乗る役割（真偽は上位 IdP が判定する、§7）。
+	Roles    []string  `json:"roles,omitempty"`
+	Decision Decision  `json:"decision"`
+	At       time.Time `json:"at"`
 }
 
 // Run は 1 つの Workflow の進行位置（S2、§6 表「進行位置 + invariant（S2）」）。
@@ -76,6 +78,11 @@ type Run struct {
 	Gate         string    `json:"gate,omitempty"`
 	GateOpenedAt time.Time `json:"gate_opened_at,omitempty"`
 	GateDeadline time.Time `json:"gate_deadline,omitempty"`
+	// GateRequirements は待っているゲートの承認者要件（§14.4、nil なら単一承認）。
+	// ゲートを開いたときに定義から写す。承認 API はこれと Applicant で判定する。
+	GateRequirements *Requirements `json:"gate_requirements,omitempty"`
+	// Applicant は申請者 ID（起動したときの定義から写す）。
+	Applicant string `json:"applicant,omitempty"`
 	// Approvals は全ゲートへの判断の履歴（監査の正本は S4、ここは進行判断用）。
 	Approvals []Approval `json:"approvals,omitempty"`
 	// Reason は halt の理由、または今進めない理由。
@@ -87,14 +94,38 @@ type Run struct {
 	Version int `json:"version"`
 }
 
-// decisionFor は gate への最新の判断を返す。
-func (r Run) decisionFor(gate string) (Approval, bool) {
-	for i := len(r.Approvals) - 1; i >= 0; i-- {
-		if r.Approvals[i].Gate == gate {
-			return r.Approvals[i], true
+// rejection は gate への却下を返す。
+func (r Run) rejection(gate string) (Approval, bool) {
+	for _, a := range r.Approvals {
+		if a.Gate == gate && a.Decision == DecisionReject {
+			return a, true
 		}
 	}
 	return Approval{}, false
+}
+
+// Tally は待っているゲートの承認を数える: 要件（GateRequirements）を満たす承認の
+// 異なる承認者を承認順に返す（同じ承認者の二重承認は 1 と数える）。need は通過に
+// 要る人数。
+func (r Run) Tally() (approvers []string, need int) {
+	seen := map[string]bool{}
+	for _, a := range r.Approvals {
+		if a.Gate != r.Gate || a.Decision != DecisionApprove || seen[a.Approver] {
+			continue
+		}
+		if r.GateRequirements.qualify(a, r.Applicant) != "" {
+			continue
+		}
+		seen[a.Approver] = true
+		approvers = append(approvers, a.Approver)
+	}
+	return approvers, r.GateRequirements.Needed()
+}
+
+// gatePassed は待っているゲートの要件が揃ったか。
+func (r Run) gatePassed() bool {
+	approvers, need := r.Tally()
+	return len(approvers) >= need
 }
 
 // ErrConflict は Save の楽観ロックが外れた（その間に別の書込があった）。
@@ -309,6 +340,10 @@ var ErrNotAwaiting = errors.New("gate is not awaiting approval")
 // ErrInvalidDecision は判断の中身の誤り（承認者 ID・署名の欠落など）。
 var ErrInvalidDecision = errors.New("invalid decision")
 
+// ErrNotQualified は承認がゲートの要件（§14.4: 役割・申請者≠承認者）を満たさない。
+// 数えずに拒否する（S2 にも S4 にも残さない）。
+var ErrNotQualified = errors.New("approval does not satisfy the gate requirements")
+
 // checkDecidable は run が gate への判断 a を受け付けられるかを返す。
 func checkDecidable(run Run, a Approval, now time.Time) error {
 	if a.Approver == "" {
@@ -327,12 +362,19 @@ func checkDecidable(run Run, a Approval, now time.Time) error {
 		}
 		return fmt.Errorf("%w: workflow %s gate %s (workflow is %s)", ErrNotAwaiting, run.Workflow, a.Gate, where)
 	}
-	// ゲートは 1 回の実行の中で 1 度だけ開く（ゲート名 = ステージ名）。
-	if _, decided := run.decisionFor(a.Gate); decided {
+	// ゲートは 1 回の実行の中で 1 度だけ開く（ゲート名 = ステージ名）。却下されたか
+	// 要件が揃ったゲートは決着済み。
+	if _, rejected := run.rejection(a.Gate); rejected || run.gatePassed() {
 		return fmt.Errorf("%w: gate %s of workflow %s is already decided", ErrNotAwaiting, a.Gate, run.Workflow)
 	}
 	if !run.GateDeadline.IsZero() && !now.Before(run.GateDeadline) {
 		return fmt.Errorf("%w: gate %s of workflow %s timed out at %s", ErrNotAwaiting, a.Gate, run.Workflow, run.GateDeadline.Format(time.RFC3339))
+	}
+	// 要件は承認にだけ課す（却下 = halt は安全側なので誰のものでも効かせる）。
+	if a.Decision == DecisionApprove {
+		if why := run.GateRequirements.qualify(a, run.Applicant); why != "" {
+			return fmt.Errorf("%w: gate %s of workflow %s: %s", ErrNotQualified, a.Gate, run.Workflow, why)
+		}
 	}
 	return nil
 }

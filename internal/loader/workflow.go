@@ -25,9 +25,8 @@ import (
 
 // parseWorkflows reads the intent's top-level `workflows:` (§6.3, §6.4).  See
 // package workflow for the format.  What v1.5 does not implement is rejected
-// rather than ignored: strategy.select (dynamic selection is v2), on_failure
-// other than halt, and gate requirements (N-of-M / roles / separation are a
-// separate task).
+// rather than ignored: strategy.select (dynamic selection is v2) and on_failure
+// other than halt.
 func parseWorkflows(v any) ([]workflow.Definition, error) {
 	raw, _ := v.([]any)
 	out := make([]workflow.Definition, 0, len(raw))
@@ -50,6 +49,8 @@ func parseWorkflow(m map[string]any) (workflow.Definition, error) {
 	var def workflow.Definition
 	def.Name, _ = m["workflow"].(string)
 	def.Name = strings.TrimSpace(def.Name)
+	def.Applicant, _ = m["applicant"].(string)
+	def.Applicant = strings.TrimSpace(def.Applicant)
 
 	providerName, scope := "", core.NewScope(nil)
 	if t, ok := m["target"].(map[string]any); ok {
@@ -122,8 +123,9 @@ func parseWorkflow(m map[string]any) (workflow.Definition, error) {
 	return def, def.Validate()
 }
 
-// parseGate reads a stage gate.  manual_approval: required is the single
-// approval of v1.5; a gate with requirements is rejected.
+// parseGate reads a stage gate.  manual_approval: required is a single
+// approval; manual_approval: { requirements: {...} } adds the approver
+// requirements of §14.4 (quorum / roles / separation).
 func parseGate(g map[string]any) (*workflow.Gate, error) {
 	gate := &workflow.Gate{Timeout: workflow.DefaultGateTimeout}
 	switch ma := g["manual_approval"].(type) {
@@ -132,8 +134,17 @@ func parseGate(g map[string]any) (*workflow.Gate, error) {
 			return nil, fmt.Errorf("gate.manual_approval must be \"required\"")
 		}
 	case map[string]any:
-		if _, ok := ma["requirements"]; ok {
-			return nil, fmt.Errorf("gate.manual_approval.requirements (N-of-M / roles / separation) is not implemented yet; a gate without requirements is a single approval")
+		for k := range ma {
+			if k != "requirements" {
+				return nil, fmt.Errorf("gate.manual_approval.%s is not supported (requirements only)", k)
+			}
+		}
+		if raw, ok := ma["requirements"]; ok {
+			req, err := parseRequirements(raw)
+			if err != nil {
+				return nil, fmt.Errorf("gate.manual_approval.requirements: %w", err)
+			}
+			gate.Requirements = req
 		}
 	case nil:
 		return nil, fmt.Errorf("gate.manual_approval is required (health_check gates are v2)")
@@ -149,6 +160,50 @@ func parseGate(g map[string]any) (*workflow.Gate, error) {
 		gate.Timeout = d
 	}
 	return gate, nil
+}
+
+// parseRequirements reads { quorum: { n, of }, roles: [...], separation:
+// applicant_ne_approver } (§14.4).  Unknown keys are rejected: a misspelled
+// requirement would silently weaken the gate.
+func parseRequirements(v any) (*workflow.Requirements, error) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("must be an object { quorum, roles, separation }")
+	}
+	req := &workflow.Requirements{}
+	for k, val := range m {
+		switch k {
+		case "quorum":
+			q, ok := val.(map[string]any)
+			if !ok || len(q) != 2 {
+				return nil, fmt.Errorf("quorum must be { n: <int>, of: <int> }")
+			}
+			n, nok := toInt(q["n"])
+			of, ofok := toInt(q["of"])
+			if !nok || !ofok {
+				return nil, fmt.Errorf("quorum must be { n: <int>, of: <int> }")
+			}
+			req.Quorum = &workflow.Quorum{N: n, Of: of}
+		case "roles":
+			list, ok := val.([]any)
+			if !ok || len(list) == 0 {
+				return nil, fmt.Errorf("roles must be a non-empty list of role names")
+			}
+			for _, r := range list {
+				role, _ := r.(string)
+				req.Roles = append(req.Roles, strings.TrimSpace(role))
+			}
+		case "separation":
+			req.Separation, _ = val.(string)
+			req.Separation = strings.TrimSpace(req.Separation)
+			if req.Separation == "" {
+				return nil, fmt.Errorf("separation must be %q", workflow.SeparationApplicantNeApprover)
+			}
+		default:
+			return nil, fmt.Errorf("unknown requirement %q (quorum | roles | separation)", k)
+		}
+	}
+	return req, nil
 }
 
 // parseStep reads one step: an object with exactly one of apply / task /

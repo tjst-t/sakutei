@@ -36,6 +36,7 @@ type Kind string
 
 const (
 	// KindGateApproved は承認ゲートの承認（§6.4「全承認者を S4 監査に記録」）。
+	// N-of-M のゲートでは承認者 1 人ごとに 1 件。
 	KindGateApproved Kind = "workflow.gate.approved"
 	// KindGateRejected は承認ゲートの却下（= halt）。
 	KindGateRejected Kind = "workflow.gate.rejected"
@@ -54,9 +55,11 @@ type Record struct {
 	Gate     string    `json:"gate,omitempty"`
 	// Actor は承認者 ID。コアは認可を持たないので、記録するのは名乗られた ID と
 	// その署名である（誰が叩けるかの判定は上位 IdP、§7）。
-	Actor     string `json:"actor,omitempty"`
-	Signature string `json:"signature,omitempty"`
-	Detail    string `json:"detail,omitempty"`
+	Actor string `json:"actor,omitempty"`
+	// Roles は承認者が名乗った役割（真偽は上位 IdP、§7）。
+	Roles     []string `json:"roles,omitempty"`
+	Signature string   `json:"signature,omitempty"`
+	Detail    string   `json:"detail,omitempty"`
 }
 
 // Log は1つのファイルへの append-only ログ。複数プロセスから追記してよい

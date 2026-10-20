@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/audit"
@@ -30,12 +31,13 @@ import (
 
 // runApprove implements "sakutei approve" and "sakutei reject" (#42, §6.4):
 //
-//	sakutei approve --store <file> --audit-log <file> --approver <id> --signature <sig> <workflow> <gate>
+//	sakutei approve --store <file> --audit-log <file> --approver <id> [--role <role>]... --signature <sig> <workflow> <gate>
 //	sakutei reject  --store <file> --audit-log <file> --approver <id> --signature <sig> <workflow> <gate>
 //
 // The same decision as POST /workflows/{id}/gates/{gate}/approve: recorded in
 // the S4 audit log first, then in the S2 workflow store.  Like the API it has
-// no authorization of its own (§7).
+// no authorization of its own (§7): --role is the role the approver asserts
+// (verified by the upstream IdP), counted against the gate's requirements.
 func runApprove(decision workflow.Decision, args []string) {
 	verb := string(decision)
 	fs := flag.NewFlagSet("sakutei "+verb, flag.ExitOnError)
@@ -43,13 +45,15 @@ func runApprove(decision workflow.Decision, args []string) {
 	auditLog := fs.String("audit-log", "", "S4 audit log file (required; same as the daemon's --audit-log)")
 	approver := fs.String("approver", "", "approver ID (required)")
 	signature := fs.String("signature", "", "signature of the approver (required)")
+	var roles stringList
+	fs.Var(&roles, "role", "role the approver holds (repeatable or comma-separated; checked against the gate's requirements.roles)")
 	_ = fs.Parse(args)
 	if *store == "" || *auditLog == "" || fs.NArg() != 2 {
-		fmt.Fprintf(os.Stderr, "usage: sakutei %s --store <file> --audit-log <file> --approver <id> --signature <sig> <workflow> <gate>\n", verb)
+		fmt.Fprintf(os.Stderr, "usage: sakutei %s --store <file> --audit-log <file> --approver <id> [--role <role>]... --signature <sig> <workflow> <gate>\n", verb)
 		os.Exit(1)
 	}
 	run, err := workflow.Decide(context.Background(), workflow.NewFileStore(*store), audit.NewLog(*auditLog),
-		fs.Arg(0), fs.Arg(1), workflow.Approval{Approver: *approver, Signature: *signature, Decision: decision}, time.Now())
+		fs.Arg(0), fs.Arg(1), workflow.Approval{Approver: *approver, Roles: roles, Signature: *signature, Decision: decision}, time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei %s: %v\n", verb, err)
 		os.Exit(1)
@@ -58,7 +62,27 @@ func runApprove(decision workflow.Decision, args []string) {
 		fmt.Fprintf(os.Stdout, "rejected gate %s of workflow %s (run %s); the workflow is halted\n", fs.Arg(1), fs.Arg(0), run.RunID)
 		return
 	}
+	approvers, need := run.Tally()
+	if len(approvers) < need {
+		fmt.Fprintf(os.Stdout, "approved gate %s of workflow %s (run %s); %d of %d approval(s), still awaiting more\n",
+			fs.Arg(1), fs.Arg(0), run.RunID, len(approvers), need)
+		return
+	}
 	fmt.Fprintf(os.Stdout, "approved gate %s of workflow %s (run %s); the daemon proceeds on its next cycle\n", fs.Arg(1), fs.Arg(0), run.RunID)
+}
+
+// stringList is a repeatable, comma-separated string flag.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(v string) error {
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			*l = append(*l, s)
+		}
+	}
+	return nil
 }
 
 // runWorkflow implements "sakutei workflow" (#42, §6.3):
