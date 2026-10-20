@@ -413,7 +413,7 @@
       "number": 25,
       "kind": "task",
       "title": "v1b: allocator の HA 最小形・Lookup キャッシュ・waiting-allocation 縮退・プール分割 by claim",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [
         "v1b-allocationauthority-interface-sqlite"
@@ -427,7 +427,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T08:44:17.592Z",
+      "updatedAt": "2026-10-20T12:35:35.928Z",
       "closedAt": null,
       "extra": {}
     },
