@@ -610,7 +610,7 @@
       "number": 35,
       "kind": "task",
       "title": "v1b: Sync Mode の git コミット（コミッター・間引き・直接コミットの拒否）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v1b",
       "dependsOn": [
         "v1b-scopemode-converge-sync-sync-mode"
@@ -620,12 +620,12 @@
       "labels": [],
       "body": "設計 §24.5 / §26.3 / §29.1。#23 では generated/ への書き出しまでを作った。2026-10-20 人が決定：\n\n- **既定**：コミッターは `sakutei-sync <sakutei-sync@localhost>`、署名なし。設定（フラグか intent の sync 設定）で、名前・メールを変えられるようにする。署名は既定でオフにし、後で足せる形にしておく。\n- **意味のある差分があるときだけコミット**：スナップショットの内容が変わったとき（#23 の本文ハッシュの変化）だけ。managed 候補の仕組み（§24.4）と共通化して、揺れるだけのフィールドの差分ではコミットしないようにする。\n- **人の直接コミットの拒否（generated/ の規律、§9.6・§21）**：sync の出力を人が手で変えてコミットしたら検知し、上書きせずに止める（#23 の手編集検知を git の側にも広げる）。\n- コミットの attribution はシステム（§26.3）。人の intent のコミットと混ざらないこと。",
       "doneWhen": "sync の scope で現実を変えると、既定では sakutei-sync を名乗るコミットが 1 つでき、設定で名乗りを変えられること、揺れるだけのフィールドや変化なしではコミットされないこと、人が手で変えてコミットした sync の出力は上書きされないことをテストで示す。make check と make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/v1b-sync-mode-git）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T11:11:06.738Z",
-      "updatedAt": "2026-10-20T20:07:59.699Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T20:21:12.889Z",
+      "closedAt": "2026-10-20T20:21:12.889Z",
       "extra": {}
     },
     {
