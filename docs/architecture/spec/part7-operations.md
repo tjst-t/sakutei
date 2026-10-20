@@ -472,7 +472,7 @@ sakutei secrets extract --from <file> --claim <selector> --out <file>  # 1 拠�
 |---|---|---|
 | 常駐（`sakutei`） | `--alloc-store <file>` / `--alloc-url <url,url>`（排他）・`--claim <selector>`・`--fencing-store <file>`・`--shard-id <名前>`（既定 `<hostname>-<pid>`）・`--capacity-gate <宣言>`（繰り返し可）・`--inventory-file <file>`・`--inventory-min-ratio`（既定 0.5）・`--inventory-expected-min`（既定 0 = 無効）・`--intent-repo <url>`・`--workdir <dir>`・`--shard <名前>`・`--git-branch`（既定 `main`）・`--git-poll`（既定 60s + 最大 50% の jitter）・`--s2-free`・`--secret-store <file>` | 採番は Allocate（Lookup キャッシュ付き・§19.6）。`--claim` 外の scope は Observe しない（§17.1）。`--intent-repo` は `--intent` と排他で、`--workdir` と、`--shard` か `--claim` のどちらか一方を要する（§17.4）。`--s2-free` は `--intent-repo` を必須にし `--alloc-store` を拒否する（§17.5） |
 | `plan` | `--alloc-store` / `--alloc-url` | 採番は Lookup のみ（払い出さない）。未割当は「割り当て待ち」と表示 |
-| `reconcile` | `--alloc-store` / `--alloc-url`・`--capacity-gate`・`--audit-log <file>`（v1.5） | 採番は Allocate。`--claim` は v1a から持つ。`--audit-log` を付けると planned_change のレーンを開く（S4 が実行をまたいで `max_count` と cooling-off を持つ・§13.3） |
+| `reconcile` | `--alloc-store` / `--alloc-url`・`--capacity-gate`・`--audit-log <file>`（v1.5）・`--expect-revision <rev>`（#46） | 採番は Allocate。`--claim` は v1a から持つ。`--audit-log` を付けると planned_change のレーンを開く（S4 が実行をまたいで `max_count` と cooling-off を持つ・§13.3）。`--expect-revision` は rendered_revision がずれていれば何も Apply せず 0 以外で終わる |
 | `status` | `--alloc-store` / `--alloc-url` | 採番は Lookup のみ。read-only |
 | `import` | `--provider <名前,...>`（必須）・`--out <dir>`（必須）・`--scope k=v,...`・`--samples N`（既定 3）・`--sample-interval`（既定 2s）・`--force` | §24.4 |
 | `sync` | `--intent <dir>`（必須）・`--provider <名前,...>`（必須）・`--interval <d>`（既定は 1 回で終了） | §24.5 |
@@ -482,7 +482,7 @@ sakutei secrets extract --from <file> --claim <selector> --out <file>  # 1 拠�
 | `secrets extract` | `--from <file>`・`--claim <selector>`・`--out <file>`（すべて必須） | 出力はモード 0600（§20.5） |
 
 - `plan` / `status` は**採番を払い出さない**（Lookup のみ）。dry-run と適合レポートが副作用を持たないという §26.4 の規律を採番にも適用したものである。
-- **`--expect-revision` は v1b 時点で未実装**である（`reconcile` にフラグが無い）。設計上の位置づけ（上記）は変えない。
+- **`--expect-revision` の実装**（#46）：`reconcile` は render フェーズ1（外部入力・採番）を終えて rendered_revision を算出した直後、generated/ の書き出しと Observe・Apply より前に、渡された値と照合する。ずれていれば `RevisionMismatch` を出し、何も Apply せずに 0 以外で終わる（plan からやり直す）。plan は採番を Lookup のみで行うため、plan 時点で割り当て待ちだった採番を reconcile が払い出すと rendered_revision がずれて中断する（払い出しは冪等なので、plan をやり直せば同じ値が見え、その rendered_revision で収束する）。
 
 **承認ゲート API**。段階適用（rolling）の手動承認ゲートは HTTP API で通過させる。
 

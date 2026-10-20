@@ -81,6 +81,7 @@ import (
 //	0 — reconcile completed, nothing skipped (with or without changes applied)
 //	1 — error (flag parse, intent load, apply error) OR one or more resources
 //	    were skipped this cycle (unobservable upstream / upstream Apply failure)
+//	    OR --expect-revision did not match rendered_revision (nothing applied)
 func runReconcile(args []string) {
 	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -143,6 +144,13 @@ func runReconcile(args []string) {
 	// Real sparse checkout / git distribution is v1b (§17.4); this is the seam.
 	claim := fs.String("claim", "",
 		"scope-selector restricting convergence to a claim, e.g. site=tokyo,cluster=prod (§17.1); empty=whole world")
+
+	// #46 (§26.6): --expect-revision pins the rendered_revision confirmed by
+	// plan.  If intent, allocations or inventory moved in between, this run's
+	// rendered_revision differs and nothing is Applied (the approval gate's
+	// "approve the intent, check identity by rendered_revision at run time", §14).
+	expectRevision := fs.String("expect-revision", "",
+		"rendered_revision confirmed by plan; if this run's rendered_revision differs, abort before any Apply (§26.6); empty=no check")
 
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
@@ -297,6 +305,15 @@ func runReconcile(args []string) {
 		rootScope := core.NewScope(nil)
 		rev.RenderedRevision = revision.ComputeRenderedRevision(
 			rootScope, rev.IntentRevision, externalInputs)
+	}
+	// #46 (§26.6): checked before render phase 2 writes generated/ and before
+	// any Observe/Apply, so a mismatch leaves reality untouched.
+	if *expectRevision != "" && *expectRevision != rev.RenderedRevision {
+		fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
+		fmt.Fprintf(os.Stderr,
+			"sakutei reconcile: RevisionMismatch: --expect-revision %s but rendered_revision is %s (intent, allocations or inventory changed since plan); nothing applied — re-run plan (§26.6)\n",
+			*expectRevision, rev.RenderedRevision)
+		os.Exit(1)
 	}
 
 	// S072a14-1: render phase 2 — expand composite resources (§9.5).
