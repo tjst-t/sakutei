@@ -863,7 +863,7 @@
       "number": 42,
       "kind": "task",
       "title": "v1.5: 最小 Workflow（直列・不変条件・手動承認ゲート・S4 監査）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-5-task-workflow-planned-change-remedi",
       "dependsOn": [
         "v1-5-task-strategy-task-1-outstanding-re"
@@ -877,7 +877,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T13:38:03.379Z",
+      "updatedAt": "2026-10-20T14:18:06.268Z",
       "closedAt": null,
       "extra": {}
     },
