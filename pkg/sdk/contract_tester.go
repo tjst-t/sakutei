@@ -17,6 +17,8 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
@@ -92,6 +94,105 @@ type ContractTester struct {
 	// Cleanup is called after all contract tests complete to remove the
 	// test resource from the provider.  If nil, no cleanup is performed.
 	Cleanup func() error
+
+	// ── Generation from Schema (§28.3 / §28.6, Backlog #32) ──────────────────
+	//
+	// When SampleDesired is nil, RunAll generates it from Provider.Schema():
+	// every field that is neither Computed nor Managed gets a value — the one
+	// in Examples if given, otherwise a default derived from the field's Kind
+	// (see DefaultValueForKind).  Provider authors only supply Examples for
+	// fields whose values the target validates (an IP address, a rule syntax).
+
+	// Examples maps a field name to the example value to use for it when
+	// SampleDesired is generated.  Ignored when SampleDesired is set.
+	Examples map[string]string
+
+	// MakeID derives the provider-local ID from the generated desired fields
+	// when SampleID is empty.  When nil, the default is the values of the
+	// Identity fields sorted by field name and joined with "/" (a single
+	// identity field gives its value as-is).
+	MakeID func(fields map[string]string) string
+
+	// MakeUnreachable, if set, makes the provider's target unreachable and
+	// returns a function that restores it.  RunAll then checks three-valued
+	// correctness (§4.5): with the target unreachable, Read of the sample must
+	// return an error or Availability Unknown — never Ok with a nil State,
+	// which would claim the resource is absent (unknown ≠ absent).
+	MakeUnreachable func() (restore func(), err error)
+}
+
+// DefaultValueForKind is the value used for a field without an Example when
+// SampleDesired is generated from the Schema.  The values are deliberately
+// plain so that any provider that does not validate a field accepts them.
+func DefaultValueForKind(field string, kind core.FieldKind) string {
+	switch kind {
+	case core.FieldKindInt:
+		return "1"
+	case core.FieldKindBool:
+		return "true"
+	case core.FieldKindFloat:
+		return "1.5"
+	case core.FieldKindSecretRef:
+		return "secretref:file/sdk-contract/" + field + "#gen1"
+	default: // String, StringList, Map and unknown kinds
+		return "sdk-contract-" + field
+	}
+}
+
+// GenerateSample builds the sample local ID and desired fields from the
+// provider's Schema, Examples and MakeID (see the field docs).  It is what
+// RunAll uses when SampleDesired / SampleID are not given, exported so a
+// provider author can print or inspect the generated sample.
+func (ct *ContractTester) GenerateSample() (id string, desired map[string]string, err error) {
+	if ct.Provider == nil {
+		return "", nil, fmt.Errorf("ContractTester: Provider is nil")
+	}
+	schema := ct.Provider.Schema()
+	desired = ct.SampleDesired
+	if desired == nil {
+		desired = make(map[string]string)
+		for name, spec := range schema.Fields {
+			if spec.Computed || spec.Managed {
+				continue
+			}
+			if v, ok := ct.Examples[name]; ok {
+				desired[name] = v
+				continue
+			}
+			kind := spec.Kind
+			if spec.Secret {
+				kind = core.FieldKindSecretRef
+			}
+			desired[name] = DefaultValueForKind(name, kind)
+		}
+		if len(desired) == 0 {
+			return "", nil, fmt.Errorf("ContractTester: the Schema has no writable field; pass SampleDesired")
+		}
+	}
+
+	id = ct.SampleID
+	if id == "" {
+		if ct.MakeID != nil {
+			id = ct.MakeID(desired)
+		} else {
+			var idFields []string
+			for name, spec := range schema.Fields {
+				if spec.Identity {
+					idFields = append(idFields, name)
+				}
+			}
+			sort.Strings(idFields)
+			parts := make([]string, 0, len(idFields))
+			for _, f := range idFields {
+				parts = append(parts, desired[f])
+			}
+			id = strings.Join(parts, "/")
+		}
+		if id == "" {
+			return "", nil, fmt.Errorf("ContractTester: cannot derive the sample ID (no Identity field and no MakeID); pass SampleID or MakeID")
+		}
+	}
+	return id, desired, nil
 }
 
 // RunAll runs all contract tests against the provider using t for reporting.
@@ -99,6 +200,24 @@ type ContractTester struct {
 //
 // Tests run sequentially because they share provider state.
 func (ct *ContractTester) RunAll(t TB) {
+	t.Helper()
+
+	// Work on a copy so the caller's ContractTester is not modified when the
+	// sample is generated from the Schema.
+	c := *ct
+	id, desired, err := c.GenerateSample()
+	if err != nil {
+		t.Fatalf("%v", err)
+		return
+	}
+	c.SampleID, c.SampleDesired = id, desired
+	if ct.SampleDesired == nil {
+		t.Logf("ContractTester: sample generated from Schema: id=%q fields=%v", id, desired)
+	}
+	c.runAll(t)
+}
+
+func (ct *ContractTester) runAll(t TB) {
 	t.Helper()
 
 	// AF-3 (S62dbba verify): runAbsentCreateRead MUST run first, while the
@@ -111,6 +230,10 @@ func (ct *ContractTester) RunAll(t TB) {
 
 	if ct.Lister != nil {
 		ct.runListCompleteness(t)
+	}
+
+	if ct.MakeUnreachable != nil {
+		ct.runThreeValued(t)
 	}
 
 	if ct.Cleanup != nil {
@@ -270,6 +393,34 @@ func (ct *ContractTester) runListCompleteness(t TB) {
 	}
 	if pass {
 		t.Logf("ContractTester/ListCompleteness: PASS (%d IDs verified)", len(result.IDs))
+	}
+}
+
+// runThreeValued verifies unknown ≠ absent (§4.5): with the target made
+// unreachable, Read of the (existing) sample must not report it as absent.
+//
+// Contract: unreachable → Read returns an error or Availability Unknown; it
+// never returns Availability Ok with a nil State.
+func (ct *ContractTester) runThreeValued(t TB) {
+	t.Helper()
+	restore, err := ct.MakeUnreachable()
+	if err != nil {
+		t.Fatalf("ContractTester/ThreeValued: MakeUnreachable failed: %v", err)
+		return
+	}
+	obs, readErr := ct.Provider.Read(context.Background(), ct.SampleID)
+	if restore != nil {
+		restore()
+	}
+	switch {
+	case readErr != nil:
+		t.Logf("ContractTester/ThreeValued: PASS (Read returned an error while unreachable)")
+	case obs.Availability == core.AvailabilityUnknown:
+		t.Logf("ContractTester/ThreeValued: PASS (Read returned Unknown while unreachable)")
+	case obs.Availability == core.AvailabilityOk && obs.State == nil:
+		t.Errorf("ContractTester/ThreeValued: unreachable target reported as absent (Availability Ok, nil State); unknown must not be conflated with absent (§4.5)")
+	default:
+		t.Errorf("ContractTester/ThreeValued: unreachable target reported Availability %v with State %v; want an error or Unknown", obs.Availability, obs.State)
 	}
 }
 
