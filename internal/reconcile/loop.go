@@ -205,6 +205,40 @@ type Config struct {
 	// (§16.5).  Nil means a TierScheduler fed by the intent's `observe_tiers:` —
 	// with no tiers declared, every resource is Observed every cycle.
 	ObserveScheduler ObserveScheduler
+
+	// IntentTree loads IntentDir recursively (loader.LoadIntentTree): the git
+	// layout intent/<scope>/... (§17.4).  False keeps the flat directory.
+	IntentTree bool
+
+	// Source brings the intent up to date before every cycle and names the
+	// claim to converge (§17.4 claim の git 配布).  When the claim it returns
+	// changes (claim 変更 PR のハンドオフ, §17.7), Run drains the in-flight
+	// Applies and starts over with the new claim as if restarted: the cross-cycle
+	// S3 state and the fencing generations held are dropped.  Claim is then
+	// ignored.  Nil means IntentDir and Claim stay fixed for the daemon's life.
+	Source Source
+}
+
+// Source refreshes the desired source of the daemon (§17.4).
+type Source interface {
+	// Refresh updates the local intent and returns the claim to converge.  An
+	// error means there is no usable intent at all (e.g. the first pull failed):
+	// Run skips the cycle — no Observe, no Apply, no prune.
+	Refresh(ctx context.Context) (SourceState, error)
+}
+
+// SourceState is the result of Source.Refresh.
+type SourceState struct {
+	// Claim is the scope-selector to converge this cycle.
+	Claim core.Scope
+	// Idle means the shard claims nothing right now (e.g. a store daemon before
+	// the opening handoff, §17.7).  It converges nothing — never the whole world.
+	Idle bool
+	// Revision is the source revision the intent was taken from (git commit).
+	Revision string
+	// Stale is set when the refresh failed but the last pulled intent is kept
+	// (WAN 断・ミラー断).  Convergence continues on it (§17.4, §20.5).
+	Stale error
 }
 
 // DefaultInterval is the default convergence cycle period.
@@ -254,35 +288,116 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.Interval, cfg.IntentDir, cfg.StatePath, effectiveMode)
 	}
 
-	if len(cfg.Claim.Labels) > 0 || cfg.Fencing != nil {
-		claim := cfg.Claim.String()
+	printClaim := func(c Config) {
+		claim := c.Claim.String()
 		if claim == "" {
 			claim = "(whole world)"
 		}
 		shard := "(no fencing)"
-		if cfg.Fencing != nil {
-			shard = cfg.Fencing.Holder()
+		if c.Fencing != nil {
+			shard = c.Fencing.Holder()
 		}
-		fmt.Fprintf(cfg.Out, "sakutei: claim=%s shard=%s\n", claim, shard)
+		fmt.Fprintf(c.Out, "sakutei: claim=%s shard=%s\n", claim, shard)
+	}
+	if cfg.Source == nil && (len(cfg.Claim.Labels) > 0 || cfg.Fencing != nil) {
+		printClaim(cfg)
 	}
 
-	d := NewDaemon(cfg)
-	ifl := d.ifl
-
+	// d is nil while a Source-driven shard has no claim yet (or is idle).
+	var d *Daemon
+	if cfg.Source == nil {
+		d = NewDaemon(cfg)
+	}
+	// cycleBase keeps cycle numbers increasing across daemon rebuilds.
+	cycleBase := 0
 	cycleNum := 0
+	idle := false
+	drain := func() {
+		if d != nil {
+			d.Wait(gracefulShutdownWait)
+		}
+	}
+	sleep := func() bool {
+		// Jitter sleep: base interval + up to 10%.
+		// Guard rand.Int63n against a zero/negative argument, which panics.
+		// This happens when Interval is smaller than 10ns (10% rounds to 0).
+		n := int64(cfg.Interval) / 10
+		if n <= 0 {
+			n = 1
+		}
+		jitter := time.Duration(rand.Int63n(n))
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(cfg.Out, "sakutei: shutdown signal received; stopping after cycle %d\n", cycleNum)
+			drain()
+			return false
+		case <-time.After(cfg.Interval + jitter):
+			return true
+		}
+	}
+
 	for {
 		// Check for shutdown before each cycle.
 		select {
 		case <-ctx.Done():
 			fmt.Fprintf(cfg.Out, "sakutei: shutdown signal received; stopping after cycle %d\n", cycleNum)
 			// Graceful shutdown: wait for in-flight Applies to complete.
-			ifl.Wait(gracefulShutdownWait)
+			drain()
 			return nil
 		default:
 		}
 
+		if cfg.Source != nil {
+			st, srcErr := cfg.Source.Refresh(ctx)
+			switch {
+			case srcErr != nil:
+				// No usable intent at all: never converge an empty desired.
+				fmt.Fprintf(cfg.ErrOut, "sakutei: intent source unavailable; cycle skipped (no Observe/Apply/prune): %v\n", srcErr)
+				if !sleep() {
+					return nil
+				}
+				continue
+			case st.Stale != nil:
+				fmt.Fprintf(cfg.ErrOut, "sakutei: intent source refresh failed; converging on the last pulled revision %s: %v\n",
+					shortRev(st.Revision), st.Stale)
+			}
+			if st.Idle {
+				if d != nil {
+					fmt.Fprintf(cfg.Out, "sakutei: claim released at revision %s; draining in-flight Applies, shard is idle\n", shortRev(st.Revision))
+					drain()
+					cycleBase += d.cycle
+					d = nil
+				} else if !idle {
+					fmt.Fprintf(cfg.Out, "sakutei: shard claims nothing at revision %s; idle\n", shortRev(st.Revision))
+				}
+				idle = true
+				if !sleep() {
+					return nil
+				}
+				continue
+			}
+			idle = false
+			if d == nil || !st.Claim.Equal(d.cfg.Claim) {
+				if d != nil {
+					// Handoff (§17.6/§17.7): finish what the old claim started,
+					// then start over as a fresh daemon with the new claim.
+					fmt.Fprintf(cfg.Out, "sakutei: claim changed %s -> %s at revision %s; draining in-flight Applies\n",
+						d.cfg.Claim, st.Claim, shortRev(st.Revision))
+					drain()
+					cycleBase += d.cycle
+				}
+				next := cfg
+				next.Claim = st.Claim
+				if next.Fencing != nil {
+					next.Fencing.Reset()
+				}
+				printClaim(next)
+				d = NewDaemon(next)
+			}
+		}
+
 		res, cycleErr := d.RunCycle(ctx)
-		cycleNum = d.cycle
+		cycleNum = cycleBase + d.cycle
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
@@ -378,25 +493,21 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 		}
 
-		// Jitter sleep: base interval + up to 10%.
-		// Guard rand.Int63n against a zero/negative argument, which panics.
-		// This happens when Interval is smaller than 10ns (10% rounds to 0).
-		n := int64(cfg.Interval) / 10
-		if n <= 0 {
-			n = 1
-		}
-		jitter := time.Duration(rand.Int63n(n))
-		sleep := cfg.Interval + jitter
-
-		select {
-		case <-ctx.Done():
-			fmt.Fprintf(cfg.Out, "sakutei: shutdown signal received; stopping after cycle %d\n", cycleNum)
-			ifl.Wait(gracefulShutdownWait)
+		if !sleep() {
 			return nil
-		case <-time.After(sleep):
-			// Next cycle.
 		}
 	}
+}
+
+// shortRev abbreviates a source revision (git commit) for log lines.
+func shortRev(rev string) string {
+	if rev == "" {
+		return "(unknown)"
+	}
+	if len(rev) > 12 {
+		return rev[:12]
+	}
+	return rev
 }
 
 // Daemon is the convergence loop's state across cycles: the in-flight set,
@@ -704,7 +815,11 @@ func runCycleAsync(
 	// Load desired state fresh each cycle.
 	// Scb0ecd-1: LoadDir now returns (resources, RevisionInfo, error).  The
 	// RevisionInfo is S3 state (memory-only, computed fresh each cycle).
-	in, loadErr := loader.LoadIntent(cfg.IntentDir)
+	loadIntent := loader.LoadIntent
+	if cfg.IntentTree {
+		loadIntent = loader.LoadIntentTree
+	}
+	in, loadErr := loadIntent(cfg.IntentDir)
 	if loadErr != nil {
 		return CycleResult{}, fmt.Errorf("load intent: %w", loadErr)
 	}

@@ -48,6 +48,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -96,13 +97,65 @@ func ComputeIntentRevision(dir string) (string, error) {
 		}
 		names = append(names, e.Name())
 	}
+	return hashIntentFiles(dir, names)
+}
 
+// IntentTreeFiles returns the intent files under dir and all its
+// subdirectories, as slash-separated paths relative to dir in sorted order.
+// This is the git layout intent/<scope>/... (§17.4), where a sparse checkout
+// leaves only the shard's own scope directories on disk.  A missing dir is an
+// error, never an empty intent (an absent tree must not render as "desire
+// nothing", §9.2).
+func IntentTreeFiles(dir string) ([]string, error) {
+	var rels []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// Hidden directories (.git and the like) are never intent.
+			if path != dir && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !isIntentFile(d.Name()) {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		rels = append(rels, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("revision: walk intent tree %s: %w", dir, err)
+	}
+	sort.Strings(rels)
+	return rels, nil
+}
+
+// ComputeIntentTreeRevision is ComputeIntentRevision over the whole tree
+// under dir (IntentTreeFiles).  For a tree with no subdirectories it equals
+// ComputeIntentRevision(dir).
+func ComputeIntentTreeRevision(dir string) (string, error) {
+	rels, err := IntentTreeFiles(dir)
+	if err != nil {
+		return "", err
+	}
+	return hashIntentFiles(dir, rels)
+}
+
+// hashIntentFiles hashes the given files (slash-separated, relative to dir).
+func hashIntentFiles(dir string, names []string) (string, error) {
 	// Ensure deterministic order regardless of ReadDir implementation.
+	names = append([]string(nil), names...)
 	sort.Strings(names)
 
 	h := sha256.New()
 	for _, name := range names {
-		path := filepath.Join(dir, name)
+		path := filepath.Join(dir, filepath.FromSlash(name))
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("revision: read intent file %s: %w", path, err)
@@ -124,11 +177,11 @@ func ComputeIntentRevision(dir string) (string, error) {
 //
 // Parameters:
 //   - scope:          the Scope unit for which rendered_revision is computed
-//                     (§9.4: rendered_revision is scope-unit).
+//     (§9.4: rendered_revision is scope-unit).
 //   - intentHash:     the intent_revision for this scope (from ComputeIntentRevision).
 //   - externalInputs: additional deterministic hashes from external inputs
-//                     (Vault secret generation digests, inventory hash,
-//                     allocator epoch, etc.).  In v1a this is nil or empty.
+//     (Vault secret generation digests, inventory hash,
+//     allocator epoch, etc.).  In v1a this is nil or empty.
 //
 // v1a behaviour: externalInputs is empty, so rendered_revision = intentHash.
 //
@@ -174,11 +227,25 @@ func Compute(dir string, scope core.Scope) (core.RevisionInfo, error) {
 	if err != nil {
 		return core.RevisionInfo{}, err
 	}
+	return revisionInfo(scope, intentHash), nil
+}
+
+// ComputeTree is Compute over the whole intent tree under dir
+// (ComputeIntentTreeRevision, §17.4 git layout).
+func ComputeTree(dir string, scope core.Scope) (core.RevisionInfo, error) {
+	intentHash, err := ComputeIntentTreeRevision(dir)
+	if err != nil {
+		return core.RevisionInfo{}, err
+	}
+	return revisionInfo(scope, intentHash), nil
+}
+
+func revisionInfo(scope core.Scope, intentHash string) core.RevisionInfo {
 	rendered := ComputeRenderedRevision(scope, intentHash, nil)
 	return core.RevisionInfo{
 		IntentRevision:   intentHash,
 		RenderedRevision: rendered,
-	}, nil
+	}
 }
 
 // isIntentFile reports whether name is an intent file the loader reads.  Keep

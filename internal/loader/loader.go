@@ -288,21 +288,40 @@ func LoadIntent(dir string) (Intent, error) {
 	if err != nil {
 		return Intent{}, fmt.Errorf("loader: read intent dir %s: %w", dir, err)
 	}
-
-	var resources []diff.DesiredResource
-	var pools []Pool
-	var scopes []ScopePolicy
-	var tiers []ObserveTier
+	var names []string
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		name := entry.Name()
-		if fileFormat(name) == "" {
+		if fileFormat(entry.Name()) == "" {
 			continue // .json/.yaml/.yml 以外は黙ってスキップ
 		}
+		names = append(names, entry.Name())
+	}
+	return loadIntentFiles(dir, names, revision.Compute)
+}
 
-		path := filepath.Join(dir, name)
+// LoadIntentTree は LoadIntent と同じ規則で、dir 配下のサブディレクトリも含めて
+// 全 intent ファイルを読む。git 配布のレイアウト intent/<scope>/...（§17.4）用で、
+// sparse checkout で手元に残るのは自 claim 分と共有 platform 分だけになる。
+// dir が無いときはエラーにする（無い木を「何も望まない」として描かない、§9.2）。
+func LoadIntentTree(dir string) (Intent, error) {
+	rels, err := revision.IntentTreeFiles(dir)
+	if err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
+	return loadIntentFiles(dir, rels, revision.ComputeTree)
+}
+
+// loadIntentFiles reads the given intent files (slash-separated, relative to
+// dir), validates the whole, and computes the revision with rev.
+func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (core.RevisionInfo, error)) (Intent, error) {
+	var resources []diff.DesiredResource
+	var pools []Pool
+	var scopes []ScopePolicy
+	var tiers []ObserveTier
+	for _, name := range names {
+		path := filepath.Join(dir, filepath.FromSlash(name))
 		loaded, file, err := loadFile(path)
 		if err != nil {
 			return Intent{}, fmt.Errorf("loader: %w", err)
@@ -340,12 +359,12 @@ func LoadIntent(dir string) (Intent, error) {
 	// valid intent contributes to the hash.  Use the root scope (empty labels)
 	// for the provisional single-scope loader.
 	rootScope := core.NewScope(nil)
-	rev, err := revision.Compute(dir, rootScope)
+	ri, err := rev(dir, rootScope)
 	if err != nil {
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Revision: rev}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Revision: ri}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the
@@ -425,6 +444,25 @@ func detectCycles(resources []diff.DesiredResource) error {
 		return fmt.Errorf("cyclic dependency detected among resources: %s", strings.Join(cyclic, ", "))
 	}
 	return nil
+}
+
+// ReadTree は JSON / YAML（intent と同じサブセット）のファイルを、フォーマット
+// 非依存の木として読む。intent 以外の宣言ファイル（例: シャード割当 shards/<名前>.yaml、
+// §17.1）を同じ書式で読むために使う。
+func ReadTree(path string) (map[string]any, error) {
+	format := fileFormat(path)
+	if format == "" {
+		return nil, fmt.Errorf("loader: %s: 拡張子が .json / .yaml / .yml でない", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("loader: %w", err)
+	}
+	tree, err := decodeIntentTree(data, format)
+	if err != nil {
+		return nil, fmt.Errorf("loader: %s: %w", path, err)
+	}
+	return tree, nil
 }
 
 // fileFormat は拡張子から intent フォーマット（"json"/"yaml"）を判定する。

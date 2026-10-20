@@ -44,6 +44,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/pkg/allocation"
+	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
 )
@@ -77,6 +78,10 @@ func main() {
 		runFence(os.Args[2:])
 	case "allocator":
 		runAllocator(os.Args[2:])
+	case "mirror":
+		runMirror(os.Args[2:])
+	case "secrets":
+		runSecrets(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Fprintf(os.Stdout, "sakutei %s\n", version)
 	case "help", "--help", "-h":
@@ -165,6 +170,8 @@ func runDaemon() {
 		"fencing generation store file shared by all shards (§15.2, §17.1); empty=no double-claim detection")
 	shardID := fs.String("shard-id", "",
 		"this shard's ID recorded as the fencing holder (default: <hostname>-<pid>)")
+	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。
+	gd := addGitDistFlags(fs)
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// "-h"/"--help" makes flag.Parse return flag.ErrHelp after printing
@@ -176,8 +183,9 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
-	if *intentDir == "" {
-		fmt.Fprintln(os.Stderr, "sakutei: --intent <dir> is required")
+	src := setupGitDist(gd, *intentDir, *claim, *allocStore)
+	if src == nil && *intentDir == "" {
+		fmt.Fprintln(os.Stderr, "sakutei: --intent <dir> or --intent-repo <url> is required")
 		fs.Usage()
 		os.Exit(1)
 	}
@@ -229,6 +237,10 @@ func runDaemon() {
 	}
 
 	claimSelector, claimErr := parseClaimSelector(*claim)
+	if src != nil {
+		// The claim comes from the Source each cycle (git or --claim).
+		claimSelector, claimErr = core.Scope{}, nil
+	}
 	if claimErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei: invalid --claim %q: %v\n", *claim, claimErr)
 		os.Exit(1)
@@ -269,6 +281,10 @@ func runDaemon() {
 	genDir := *generatedDir
 	if genDir == "" {
 		genDir = filepath.Join(filepath.Dir(*intentDir), "generated")
+		if src != nil {
+			// Keep render output out of the checkout: it is rebuilt every cycle.
+			genDir = filepath.Join(*gd.workdir, "generated")
+		}
 	}
 
 	// S072a14-3: build render phase 1 resolver if inventory hash is configured.
@@ -321,6 +337,11 @@ func runDaemon() {
 		Claim:                 claimSelector,
 		Fencing:               guard,
 	}
+	if src != nil {
+		cfg.Source = src
+		cfg.IntentDir = src.IntentDir()
+		cfg.IntentTree = true
+	}
 
 	if err := reconcile.Run(context.Background(), cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
@@ -341,6 +362,8 @@ Usage:
   sakutei sync         record the reality of mode: sync scopes into generated/
   sakutei fence        show the fencing generations of claimed scopes (§17.6)
   sakutei allocator    serve the allocation authority (active/standby, §19.8)
+  sakutei mirror       keep a read-only git mirror of the intent repository (§17.4)
+  sakutei secrets      build a site-local secret store: secrets extract (§20.5)
   sakutei version      print version information
   sakutei help         show this help message
 `)

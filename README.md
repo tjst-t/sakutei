@@ -81,6 +81,8 @@ sakutei status       # 適合レポート（drifted / unmanaged 一覧、read-on
 sakutei import       # 既存リアルを intent（YAML）として書き出す   --provider <名前> --out <dir> [--scope k=v]
 sakutei sync         # mode: sync の scope の現実を generated/ に記録する（Apply しない）  --provider <名前> [--interval 30s]
 sakutei fence        # 各 scope の fencing 世代と holder を表示する（read-only）  --store <ファイル>
+sakutei mirror       # 拠点が pull する読み取り専用の git ミラーを中央に追従させる  --upstream <url> --dir <dir> [--once]
+sakutei secrets extract  # 中央の資格ファイルから 1 拠点分だけを抜き出す  --from <ファイル> --claim <selector> --out <ファイル>
 ```
 
 `import` は現実を List と Read で観測し、`<dir>/imported-<provider>.yaml` に書き出します。直後の `plan` は差分ゼロになります。何度か観測して（`--samples`、既定 3 回）値が変わったフィールドには **managed 候補** の印を付けます。書き出すのは「現状のスナップショット」なので、人が読んで整理してから intent にしてください。全リソースは `deletion_policy: ExplicitAbsentOnly`（prune しない）で書き出され、secret の平文は書き出しません。
@@ -99,6 +101,20 @@ sakutei fence        # 各 scope の fencing 世代と holder を表示する（
 2. **claim 変更 PR**：シャード割当（各シャードの `--claim`）の変更をレビューしてマージする。
 3. **fencing 世代の更新**：新シャードを新しい claim で起動する。新シャードが対象 scope の世代を上げ、旧シャードはその scope だけ fence される（ほかの scope の収束は続く）。`sakutei fence --store <ファイル>` で holder が新シャードに替わったことを確かめる。
 4. **旧シャードの再起動**：旧シャードを新しい claim で再起動する。再起動しないと、旧シャードは対象 scope について `FENCED` を出し続ける。
+
+**claim の git 配布と S2-free シャード（v1b）**：拠点のデーモンは `--intent` の代わりに `--intent-repo <url> --workdir <dir>` で起動すると、intent を git から取ります。リポジトリは次のレイアウト規約に従います（`<scope>` は `site=tokyo` のように `ラベル=値` を `,` で並べたもの）。
+
+```
+intent/platform/…        # 全シャードが read-only で参照する共有 platform
+intent/site=tokyo/…      # claim {site: tokyo} のシャードが所有
+shards/<シャード名>.yaml  # シャード割当（claim: の下に scope ラベル。空なら idle）
+```
+
+デーモンは partial clone（`--filter=blob:none`）と cone モードの sparse checkout で、`shards/`・`intent/platform/`・自 claim の `intent/<scope>/` だけを取得します（他拠点の intent は blob も手元に来ません）。中央 git は直接叩かず、`sakutei mirror` で作った読み取り専用ミラーを指し、`--git-poll`（既定 60s、最大 50% の jitter）ごとに pull します。ミラーに届かない間は前回 pull した intent で収束を続け、一度も pull できていない・自 claim の `intent/<scope>/` がコミットに無いときは周を飛ばします（空の desired で収束しない）。claim は `--claim` で固定するか、`--shard <名前>` で `shards/<名前>.yaml` から読みます。後者では **claim 変更 PR がそのまま開店/閉店のハンドオフ**です。中央の `shards/central.yaml` から scope を外して店舗の `shards/store-x.yaml` に足す PR をマージすると、旧担当は in-flight の Apply を待って手を引き（`claim released`）、新担当がその scope の fencing 世代を上げて収束を始めます。claim が変わったシャードは再起動と同じように収束し直すので、上の手順 4 の再起動は要りません。
+
+`--s2-free` は S2-free シャード（Resource 収束のみ）の宣言です。拠点のディスクに置くのは `--workdir`（手元写しと render 出力）だけで、どちらも pull と収束で作り直せます。ホストが全損しても、再イメージ → 資格の再配布 → 同じフラグで起動、で元に戻ります。拠点ローカルの採番ストア（`--alloc-store`）は失うと困る状態なので、`--s2-free` では拒否します（中央の `--alloc-url` を使います）。
+
+拠点の write 資格は `--secret-store <ファイル>`（file SecretBackend）に置き、そこには**その拠点の機器の資格だけ**を入れます（パスは `<scope>/…`、例 `site=tokyo/router/admin`）。他拠点の資格が 1 つでも入っていると、デーモンは収束しません。拠点用のファイルは `sakutei secrets extract --from <中央のファイル> --claim site=tokyo --out <拠点のファイル>` で作ります（モード 0600）。資格のローテーション（中央から拠点の資格を収束させる Workflow）は v1.5 です。
 
 `apply` は意図的に主 verb にしていません（「いつ変えるか」は収束が決める）。`plan` と `status` を前面に置くこと自体が、このソフトのレビュー体験です。
 
@@ -163,7 +179,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 | スライス | 内容 | 状態 |
 | --- | --- | --- |
 | **v1a** | コア型・収束ループ・安全機構（累積予算・List 完全性）・早期収束/BulkObserve/--claim の型切り・最小 SDK・実 provider 2 個・devenv・secret（file backend）・loader・status・chaos | ✅ 完成 |
-| **v1b** | import / Sync Mode、tier 別 Observe 頻度、採番連携、静的シャーディング実装、inventory 検証 | 予定 |
+| **v1b** | import / Sync Mode、tier 別 Observe 頻度、採番連携、静的シャーディング実装（claim の git 配布・S2-free シャードを含む）、inventory 検証 | 予定 |
 | **v1.5** | 単純 Task ＋ 最小 Workflow（直列＋不変条件＋N-of-M 手動承認）＋ remediation schedule ＋ planned_change | 予定 |
 | **v2+** | 多相 Task、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、intent UI | 予定 |
 

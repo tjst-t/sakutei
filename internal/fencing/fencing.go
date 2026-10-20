@@ -401,6 +401,17 @@ func (g *Guard) Check(ctx context.Context, scope core.Scope) error {
 	return nil
 }
 
+// Reset は手元控え（持っている世代と fence された scope）を捨て、再起動直後と同じ
+// 状態に戻す。claim が変わったデーモンが新しい claim で収束し直すときに使う
+// （§17.6/§17.7 のハンドオフ）。fence された scope も、新しい claim に入っていれば
+// 次の Sync で取り直す——claim 変更 PR が割当を改めた以上、取り直しは発振ではない。
+func (g *Guard) Reset() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.held = map[string]Token{}
+	g.lost = map[string]*FencedError{}
+}
+
 // Fenced は fence された scope のキーを返す（キー順）。
 func (g *Guard) Fenced() []string {
 	g.mu.Lock()

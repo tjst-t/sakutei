@@ -42,6 +42,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 )
 
@@ -128,6 +130,64 @@ func (b *FileSecretBackend) ResolveValue(_ context.Context, _ string, path strin
 		return "", &SecretNotFoundError{Path: path, Backend: "file"}
 	}
 	return entry.Value, nil
+}
+
+// Paths returns the secret paths held by the store, sorted.  Paths are not
+// secret (§20: the ref is not secret; only the value is) — this is what the
+// credential-locality check (§20.5) inspects.
+func (b *FileSecretBackend) Paths() ([]string, error) {
+	store, err := b.load()
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(store.Secrets))
+	for p := range store.Secrets {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// ExtractFileSecretStore writes to dst a file store holding only the secrets of
+// src whose path satisfies keep, and returns how many it kept.  This is how the
+// central side builds a site-local store (§20.5): one site's devices only, never
+// every site's credentials.  dst is written atomically with mode 0600.  The
+// values are copied store-to-store and never printed.
+func ExtractFileSecretStore(src, dst string, keep func(path string) bool) (int, error) {
+	store, err := NewFileSecretBackend(src).load()
+	if err != nil {
+		return 0, err
+	}
+	out := fileSecretStore{Secrets: map[string]fileSecretEntry{}}
+	for p, e := range store.Secrets {
+		if keep(p) {
+			out.Secrets[p] = e
+		}
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return 0, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".secrets-*")
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return 0, err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return 0, err
+	}
+	if err := tmp.Close(); err != nil {
+		return 0, err
+	}
+	if err := os.Rename(tmp.Name(), dst); err != nil {
+		return 0, err
+	}
+	return len(out.Secrets), nil
 }
 
 // load reads and parses the site-local store file.
