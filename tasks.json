@@ -71,6 +71,29 @@
       "updatedAt": "2026-10-20T08:42:47.985Z",
       "closedAt": "2026-10-20T08:42:47.985Z",
       "extra": {}
+    },
+    {
+      "id": "v1a-4-cause-tag-a-e-revision",
+      "number": 4,
+      "kind": "story",
+      "title": "v1a-4 差分の原因区別 — cause tag A〜E と revision 分離",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1a"
+      ],
+      "body": "旧 ROADMAP.json の Sprint 4（`Scb0ecd`）。\n\ncause tag A〜E、intent_revision と rendered_revision（scope 単位）の分離、provider_version の diff 埋め込みと fail-closed、last-seen リング。ADR-0008。\n\n- Scb0ecd-1 intent_revision / rendered_revision の算出と保持（3 件・revision_test.go）\n- Scb0ecd-2 cause tag 分類（A/B/C 実動作、D/E seam）（4 件・cause_test.go, cause_daemon_test.go）\n- Scb0ecd-3 provider_version fail-closed と last-seen リング（3 件・provider_version_test.go, last_seen_test.go）\n\n受け入れ条件の全文は git 履歴の `docs/ROADMAP.json`（コミット 9d7cf32）。テスト内タグ `[AC-Scb0ecd-x-y]`。\n\n**確認（2026-10-20）**：`make check` が通り、10 件すべて合格。",
+      "doneWhen": "受け入れ条件 AC-Scb0ecd-* 10 件のテストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:42:48.723Z",
+      "updatedAt": "2026-10-20T08:42:48.723Z",
+      "closedAt": "2026-10-20T08:42:48.723Z",
+      "extra": {}
     }
   ]
 }
