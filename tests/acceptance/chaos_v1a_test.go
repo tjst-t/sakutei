@@ -450,7 +450,7 @@ func TestChaosV1a_SecretBackendDown_DegradesNoLeak(t *testing.T) {
 	//     引用しうる — degrade error は canary を絶対に晒してはならない。
 	corruptPath := filepath.Join(tmp, "store.json")
 	corrupt := `{"secrets": {"db/root": {"gen": 1, "value": "` + canary + `" MISSING_COMMA }}}`
-	if err := os.WriteFile(corruptPath, []byte(corrupt), 0600); err != nil {
+	if err := writeFileAtomic(corruptPath, []byte(corrupt), 0600); err != nil {
 		t.Fatal(err)
 	}
 	be2 := render.NewFileSecretBackend(corruptPath)
@@ -705,7 +705,7 @@ func writeJSONState(t *testing.T, statePath string, sf map[string]any) {
 	if err != nil {
 		t.Fatalf("writeJSONState: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("writeJSONState: write: %v", err)
 	}
 }
@@ -727,7 +727,7 @@ func clearFakeFailInject(t *testing.T, statePath string) {
 	if err != nil {
 		t.Fatalf("clearFakeFailInject: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("clearFakeFailInject: write: %v", err)
 	}
 }

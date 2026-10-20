@@ -264,7 +264,7 @@ func TestRenderExpand_DirectEditWarning(t *testing.T) {
 
 	// Simulate a direct human edit: remove the _generated flag.
 	tamperedContent := `{"_generated":false,"_generated_by":"human","_do_not_edit":false,"resources":[]}`
-	if err := os.WriteFile(genPath, []byte(tamperedContent), 0644); err != nil {
+	if err := writeFileAtomic(genPath, []byte(tamperedContent), 0644); err != nil {
 		t.Fatalf("[AC-S072a14-1-3] write tampered content: %v", err)
 	}
 

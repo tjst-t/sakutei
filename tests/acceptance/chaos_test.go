@@ -83,7 +83,7 @@ func seedChaosResources(t *testing.T, statePath string, n int) {
 	if err != nil {
 		t.Fatalf("seedChaosResources: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedChaosResources: write: %v", err)
 	}
 }
@@ -112,7 +112,7 @@ func seedChaosResourcesNonPruneable(t *testing.T, statePath string, n int) {
 	if err != nil {
 		t.Fatalf("seedChaosResourcesNonPruneable: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedChaosResourcesNonPruneable: write: %v", err)
 	}
 }

@@ -49,7 +49,7 @@ import (
 // writeZoneFile writes a zone file with the given content to path.
 func writeZoneFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := writeFileAtomic(path, []byte(content), 0644); err != nil {
 		t.Fatalf("writeZoneFile: %v", err)
 	}
 }

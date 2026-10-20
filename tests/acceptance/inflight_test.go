@@ -93,7 +93,7 @@ func TestInflight_CyclesDoNotAccumulate(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
-	if err := os.WriteFile(statePath, initData, 0600); err != nil {
+	if err := writeFileAtomic(statePath, initData, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -195,7 +195,7 @@ func TestInflight_NoConcurrentApplyForSameResource(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
-	if err := os.WriteFile(statePath, initData, 0600); err != nil {
+	if err := writeFileAtomic(statePath, initData, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -331,7 +331,7 @@ func TestInflight_BackoffAfterApplyFailure(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
-	if err := os.WriteFile(statePath, initData, 0600); err != nil {
+	if err := writeFileAtomic(statePath, initData, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -452,7 +452,7 @@ func TestInflight_BackoffDoesNotBlockUnrelatedResources(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
-	if err := os.WriteFile(statePath, initData, 0600); err != nil {
+	if err := writeFileAtomic(statePath, initData, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -557,7 +557,7 @@ func TestInflight_BackedOffUpstreamSkipsDownstream(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	initData, _ := json.MarshalIndent(initState, "", "  ")
-	if err := os.WriteFile(statePath, initData, 0600); err != nil {
+	if err := writeFileAtomic(statePath, initData, 0600); err != nil {
 		t.Fatal(err)
 	}
 

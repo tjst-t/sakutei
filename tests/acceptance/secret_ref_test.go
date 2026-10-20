@@ -384,7 +384,7 @@ func writeFileSecretStore(t *testing.T, secrets map[string]fileStoreEntry) strin
 		t.Fatalf("marshal store: %v", err)
 	}
 	p := filepath.Join(t.TempDir(), "secrets.json")
-	if err := os.WriteFile(p, b, 0600); err != nil {
+	if err := writeFileAtomic(p, b, 0600); err != nil {
 		t.Fatalf("write store: %v", err)
 	}
 	return p
@@ -553,7 +553,7 @@ func TestFileSecretBackend_MalformedStoreDoesNotLeak(t *testing.T) {
 	// syntax error — the wrapper must NOT surface that.
 	storePath := filepath.Join(t.TempDir(), "store.json")
 	malformed := `{"secrets": {"db/root": {"gen": 1, "value": "` + theSecret + `" MISSING_COMMA_HERE }}}`
-	if err := os.WriteFile(storePath, []byte(malformed), 0o600); err != nil {
+	if err := writeFileAtomic(storePath, []byte(malformed), 0o600); err != nil {
 		t.Fatalf("write malformed store: %v", err)
 	}
 

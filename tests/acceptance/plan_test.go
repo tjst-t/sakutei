@@ -106,7 +106,7 @@ func writeIntentFile(t *testing.T, dir string, content any) {
 	if err != nil {
 		t.Fatalf("writeIntentFile: marshal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "resources.json"), data, 0644); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, "resources.json"), data, 0644); err != nil {
 		t.Fatalf("writeIntentFile: write: %v", err)
 	}
 }
@@ -242,7 +242,7 @@ func TestPlan_DoesNotModifyState(t *testing.T) {
 
 			// Seed the state file (or leave it absent for the "absent" case).
 			if tc.seed != nil {
-				if err := os.WriteFile(statePath, tc.seed, 0644); err != nil {
+				if err := writeFileAtomic(statePath, tc.seed, 0644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -311,7 +311,7 @@ func TestPlan_ConvergedWhenRealityMatchesDesired(t *testing.T) {
 		},
 	}
 	seedData, _ := json.MarshalIndent(seedStateData, "", "  ")
-	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+	if err := writeFileAtomic(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -369,7 +369,7 @@ func TestPlan_UpdateDiff(t *testing.T) {
 		},
 	}
 	seedData, _ := json.MarshalIndent(seedStateData, "", "  ")
-	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+	if err := writeFileAtomic(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
 

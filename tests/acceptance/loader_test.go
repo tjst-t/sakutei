@@ -23,7 +23,6 @@
 package acceptance
 
 import (
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -37,7 +36,7 @@ import (
 func writeIntentDir(t *testing.T, filename, content string) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, filename), []byte(content), 0o600); err != nil {
 		t.Fatalf("write intent file: %v", err)
 	}
 	return dir
@@ -124,7 +123,7 @@ func TestLoader_MixedFormatsInSameDir(t *testing.T) {
 		"c.yml":  "resources:\n  - provider: fake\n    id: c\n    fields:\n      name: c\n",
 	}
 	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		if err := writeFileAtomic(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}

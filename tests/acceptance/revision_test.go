@@ -73,7 +73,7 @@ func writeIntentJSON(t *testing.T, intentDir string, content any) {
 	if err != nil {
 		t.Fatalf("writeIntentJSON: marshal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(intentDir, "resources.json"), data, 0644); err != nil {
+	if err := writeFileAtomic(filepath.Join(intentDir, "resources.json"), data, 0644); err != nil {
 		t.Fatalf("writeIntentJSON: write: %v", err)
 	}
 }

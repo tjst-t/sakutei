@@ -252,7 +252,7 @@ func TestLoop_DriftCorrection(t *testing.T) {
 	fields, _ := res["fields"].(map[string]any)
 	fields["size"] = "999" // inject drift
 	drifted, _ := json.MarshalIndent(sf, "", "  ")
-	if err := os.WriteFile(statePath, drifted, 0600); err != nil {
+	if err := writeFileAtomic(statePath, drifted, 0600); err != nil {
 		t.Fatalf("[AC-S94f1f9-1-2] write drifted state: %v", err)
 	}
 
@@ -514,7 +514,7 @@ func TestFieldMerge_UpdatePreservesUnchangedFields(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	seedData, _ := json.MarshalIndent(seedStateData, "", "  ")
-	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+	if err := writeFileAtomic(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
 

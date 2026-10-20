@@ -310,7 +310,7 @@ func TestReconcile_UpdatesDriftedResource(t *testing.T) {
 		},
 	}
 	seedData, _ := json.MarshalIndent(seedStateData, "", "  ")
-	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+	if err := writeFileAtomic(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
 

@@ -52,7 +52,7 @@ import (
 )
 
 // seedStateAtomic writes the fake-provider state file (resources + a specific
-// provider_version) in a SINGLE os.WriteFile call.
+// provider_version) in a SINGLE writeFileAtomic call.
 //
 // This matters for the daemon tests: injecting a drift and a provider_version
 // bump must appear to the running daemon as one atomic change.  If the size and
@@ -74,7 +74,7 @@ func seedStateAtomic(t *testing.T, statePath string, resources map[string]map[st
 	if err != nil {
 		t.Fatalf("seedStateAtomic: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedStateAtomic: write: %v", err)
 	}
 }

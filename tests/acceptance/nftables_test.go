@@ -52,7 +52,7 @@ import (
 // writeRulesetFile writes a ruleset file with the given content to path.
 func writeRulesetFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := writeFileAtomic(path, []byte(content), 0644); err != nil {
 		t.Fatalf("writeRulesetFile: %v", err)
 	}
 }

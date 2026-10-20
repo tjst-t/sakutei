@@ -65,7 +65,7 @@ func seedDriftedState(t *testing.T, statePath string) {
 	if err != nil {
 		t.Fatalf("seedDriftedState: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedDriftedState: write: %v", err)
 	}
 }

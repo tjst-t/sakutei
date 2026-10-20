@@ -67,7 +67,7 @@ func seedStateWithResources(t *testing.T, statePath string, resources map[string
 	if err != nil {
 		t.Fatalf("seedStateWithResources: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedStateWithResources: write: %v", err)
 	}
 }
@@ -89,7 +89,7 @@ func seedStateListPartial(t *testing.T, statePath string) {
 	if err != nil {
 		t.Fatalf("seedStateListPartial: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedStateListPartial: write: %v", err)
 	}
 }
@@ -116,7 +116,7 @@ func seedStatePruneableCapability(t *testing.T, statePath string) {
 	if err != nil {
 		t.Fatalf("seedStatePruneableCapability: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedStatePruneableCapability: write: %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func seedStateObserveUnknown(t *testing.T, statePath, localID string) {
 	if err != nil {
 		t.Fatalf("seedStateObserveUnknown: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedStateObserveUnknown: write: %v", err)
 	}
 }

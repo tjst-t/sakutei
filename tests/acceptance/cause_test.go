@@ -160,7 +160,7 @@ func seedState(t *testing.T, statePath string, resources map[string]map[string]a
 	if err != nil {
 		t.Fatalf("seedState: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedState: write: %v", err)
 	}
 }
@@ -192,7 +192,7 @@ func seedStateNoVersion(t *testing.T, statePath string, resources map[string]map
 	if err != nil {
 		t.Fatalf("seedStateNoVersion: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedStateNoVersion: write: %v", err)
 	}
 }
@@ -216,7 +216,7 @@ func setProviderVersion(t *testing.T, statePath, version string) {
 	if err != nil {
 		t.Fatalf("setProviderVersion: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, out, 0600); err != nil {
+	if err := writeFileAtomic(statePath, out, 0600); err != nil {
 		t.Fatalf("setProviderVersion: write: %v", err)
 	}
 }
@@ -689,7 +689,7 @@ func TestCauseTag_C_ProviderVersionChange(t *testing.T) {
 	// (Re-establish prev_provider_version = v1.0.0 so cycle compares v1→v2.)
 	// We do this by writing to cause-state directly.
 	prevCauseState := `{"prev_intent_revision":"","prev_rendered_revision":"","prev_provider_version":"v1.0.0"}`
-	if err := os.WriteFile(causeStatePath, []byte(prevCauseState), 0600); err != nil {
+	if err := writeFileAtomic(causeStatePath, []byte(prevCauseState), 0600); err != nil {
 		t.Fatal(err)
 	}
 

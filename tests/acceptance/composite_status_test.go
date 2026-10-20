@@ -62,7 +62,7 @@ func seedStateWithObserveUnknown(t *testing.T, statePath string,
 	if err != nil {
 		t.Fatalf("seedStateWithObserveUnknown: marshal: %v", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	if err := writeFileAtomic(statePath, data, 0600); err != nil {
 		t.Fatalf("seedStateWithObserveUnknown: write: %v", err)
 	}
 }

@@ -260,7 +260,7 @@ func TestDAG_UpstreamFailureSkipsDownstream(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	seedData, _ := json.MarshalIndent(seedState, "", "  ")
-	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+	if err := writeFileAtomic(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -348,7 +348,7 @@ func TestDAG_UpstreamFailureNextCycleRetries(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	seedData, _ := json.MarshalIndent(seedState, "", "  ")
-	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+	if err := writeFileAtomic(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -370,7 +370,7 @@ func TestDAG_UpstreamFailureNextCycleRetries(t *testing.T) {
 		// fail_inject omitted → no injected failures
 	}
 	clearData, _ := json.MarshalIndent(clearState, "", "  ")
-	if err := os.WriteFile(statePath, clearData, 0644); err != nil {
+	if err := writeFileAtomic(statePath, clearData, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -456,7 +456,7 @@ func TestDAG_UnobservableUpstreamSkipsDownstream(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	seedData, _ := json.MarshalIndent(seedState, "", "  ")
-	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+	if err := writeFileAtomic(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -534,7 +534,7 @@ func TestDAG_ObserveErrorUpstreamSkipsDownstream(t *testing.T) {
 		"provider_version": testProviderVersion,
 	}
 	seedData, _ := json.MarshalIndent(seedState, "", "  ")
-	if err := os.WriteFile(statePath, seedData, 0644); err != nil {
+	if err := writeFileAtomic(statePath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
 
