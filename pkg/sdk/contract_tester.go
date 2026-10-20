@@ -45,7 +45,9 @@ type TB interface {
 //
 //  1. Idempotency: Apply twice → Read result is identical both times.
 //  2. Absent→Create→Read: After a Create Apply, Read returns Availability=Ok
-//     and a State that matches the desired fields.
+//     and a State that matches the desired fields.  For a minimal-tier
+//     provider (Capabilities.TrueObserve == false) only the Identity fields
+//     must be present; other fields are compared only when returned.
 //  3. List completeness: Every ID returned by List can be Read successfully
 //     with Availability=Ok.
 //
@@ -341,9 +343,19 @@ func (ct *ContractTester) runAbsentCreateRead(t TB) {
 	}
 
 	// Verify that all desired fields are present in the observed State.
+	//
+	// A minimal-tier provider (TrueObserve:false, §5.3) cannot return every
+	// field — it may report little more than existence.  For it only the
+	// Identity fields must be present; every other field is checked only when
+	// the provider chose to return it.
+	trueObserve := ct.Provider.Capabilities().TrueObserve
+	schema := ct.Provider.Schema()
 	pass := true
 	for field, desiredVal := range ct.SampleDesired {
 		tv, ok := obs.State[field]
+		if !ok && !trueObserve && !schema.Fields[field].Identity {
+			continue
+		}
 		if !ok {
 			t.Errorf("ContractTester/AbsentCreateRead: field %q absent from observed State after Create", field)
 			pass = false

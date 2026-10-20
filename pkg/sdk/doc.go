@@ -20,6 +20,10 @@
 //
 // # Golden path for provider authors
 //
+// Start from a template in templates/provider/ (full: complete tier + bulk;
+// minimal: minimal tier).  Copy it, replace one word, and its bundled
+// contract tests pass as-is (§28.6, see templates/provider/README.md).
+//
 // Step 1 — Write Schema (hardest: §28.4):
 //
 //	schema := provider.Schema{Fields: map[string]provider.FieldSpec{
