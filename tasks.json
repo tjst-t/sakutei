@@ -356,6 +356,30 @@
       "extra": {}
     },
     {
+      "id": "bytes-buffer-data-race",
+      "number": 10,
+      "kind": "bug",
+      "title": "受入テストの補助関数でデーモン出力の bytes.Buffer に data race",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "test",
+        "race"
+      ],
+      "body": "2026-10-20 に `CGO_ENABLED=1 go test -race ./...` を初めて回したところ、tests/acceptance で 12 テストが `race detected` で落ちた（通常の `go test` では全部合格）。\n\n**原因**：`startDaemonCombined` / `startDaemon` / `startDaemonWithArgs`（tests/acceptance/last_seen_test.go ほか）が、`exec.Cmd` の Stdout/Stderr に `bytes.Buffer` をそのまま渡している。exec のコピー用ゴルーチンが書き込んでいる最中に、テスト側の `waitForStringInBuf` が `buf.String()` で読むため、data race になる。製品コード（internal/・pkg/）のフレームは race レポートに出ていない。\n\n**落ちたテスト**：TestLoop_CreatesResource / DriftCorrection / StatelessObservation、TestLastSeenRing_*（3）、TestDaemonCause_A/B/C*（4）、TestCauseTag_D_DaemonCompositeCycle、TestCauseTag_E_DaemonWithInventoryHash。\n\n**直し方の案**：mutex で守った書き込み口（`syncBuffer`：Write と String をロックする）を補助関数に用意し、全部の起動ヘルパーで使う。\n\n**確かめ方**：`CGO_ENABLED=1 go test -race -count=1 ./...` を3回回し、すべて合格すること。",
+      "doneWhen": "CGO_ENABLED=1 go test -race -count=1 ./... が3回連続で全部合格し、make check も合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:20.864Z",
+      "updatedAt": "2026-10-20T08:43:20.864Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "ci-race-detector",
       "number": 17,
       "kind": "task",
@@ -378,30 +402,6 @@
       "threads": [],
       "createdAt": "2026-10-20T08:43:33.533Z",
       "updatedAt": "2026-10-20T08:43:33.533Z",
-      "closedAt": null,
-      "extra": {}
-    },
-    {
-      "id": "bytes-buffer-data-race",
-      "number": 10,
-      "kind": "bug",
-      "title": "受入テストの補助関数でデーモン出力の bytes.Buffer に data race",
-      "status": "ready",
-      "parent": null,
-      "dependsOn": [],
-      "milestone": null,
-      "priority": "high",
-      "labels": [
-        "test",
-        "race"
-      ],
-      "body": "2026-10-20 に `CGO_ENABLED=1 go test -race ./...` を初めて回したところ、tests/acceptance で 12 テストが `race detected` で落ちた（通常の `go test` では全部合格）。\n\n**原因**：`startDaemonCombined` / `startDaemon` / `startDaemonWithArgs`（tests/acceptance/last_seen_test.go ほか）が、`exec.Cmd` の Stdout/Stderr に `bytes.Buffer` をそのまま渡している。exec のコピー用ゴルーチンが書き込んでいる最中に、テスト側の `waitForStringInBuf` が `buf.String()` で読むため、data race になる。製品コード（internal/・pkg/）のフレームは race レポートに出ていない。\n\n**落ちたテスト**：TestLoop_CreatesResource / DriftCorrection / StatelessObservation、TestLastSeenRing_*（3）、TestDaemonCause_A/B/C*（4）、TestCauseTag_D_DaemonCompositeCycle、TestCauseTag_E_DaemonWithInventoryHash。\n\n**直し方の案**：mutex で守った書き込み口（`syncBuffer`：Write と String をロックする）を補助関数に用意し、全部の起動ヘルパーで使う。\n\n**確かめ方**：`CGO_ENABLED=1 go test -race -count=1 ./...` を3回回し、すべて合格すること。",
-      "doneWhen": "CGO_ENABLED=1 go test -race -count=1 ./... が3回連続で全部合格し、make check も合格",
-      "resolution": null,
-      "refs": [],
-      "threads": [],
-      "createdAt": "2026-10-20T08:43:20.864Z",
-      "updatedAt": "2026-10-20T08:43:20.864Z",
       "closedAt": null,
       "extra": {}
     },
