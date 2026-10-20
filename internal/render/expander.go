@@ -173,6 +173,11 @@ func ExpandAll(registry *ExpanderRegistry, intent []diff.DesiredResource) ([]Exp
 			if child.ObserveTier == "" {
 				child.ObserveTier = res.ObserveTier
 			}
+			// §6.5: a non-idempotent parent stays non-idempotent in its children —
+			// strategy: task must not be lost by expansion.
+			if !child.UpdatePolicy.IsTask() && res.UpdatePolicy.IsTask() {
+				child.UpdatePolicy = res.UpdatePolicy
+			}
 			out = append(out, child)
 		}
 	}

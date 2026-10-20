@@ -319,6 +319,14 @@ func ScopedReconcile(
 			continue // 既に収束。
 		}
 
+		// #41 (§6.5): strategy: task のリソースは早期収束パスで Apply しない。Task の
+		// 起動（1-outstanding・窓）は定期周期だけが行う。下流は収束中扱いで待たせる。
+		if r.UpdatePolicy.IsTask() {
+			unobservable[local] = true
+			fmt.Fprintf(errOut, "sakutei: scoped: skip %s: strategy: task は定期周期が Task を起動する（直接 Apply しない）\n", r.ID)
+			continue
+		}
+
 		// ---- 安全柵 1: cause A/E 限定 --------------------------------------
 		//
 		// scoped 経路は「新旧 desired diff から入った」cause A/E のみを扱う。道中で

@@ -58,6 +58,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/revision"
+	"github.com/tjst-t/sakutei/internal/task"
 	"github.com/tjst-t/sakutei/pkg/core"
 )
 
@@ -92,6 +93,13 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		r.DeletionPolicy, _ = m["deletion_policy"].(string)
 		r.ObserveTier, _ = m["observe_tier"].(string)
 		r.Scope = stringifyStringMap(m["scope"])
+		if up, ok := m["update_policy"].(map[string]any); ok {
+			pol, err := parseUpdatePolicy(up)
+			if err != nil {
+				return intentFile{}, fmt.Errorf("resource[%d] (%v): %w", i, m["id"], err)
+			}
+			r.UpdatePolicy = pol
+		}
 		fields, allocs, err := splitFields(m["fields"])
 		if err != nil {
 			return intentFile{}, fmt.Errorf("resource[%d] (%v): %w", i, m["id"], err)
@@ -249,6 +257,32 @@ type intentResource struct {
 	// Allocations maps a field to the pool it is allocated from — the
 	// `field: { from_pool: <pool> }` request form (§19.1).
 	Allocations map[string]string `json:"-"`
+
+	// UpdatePolicy is the update_policy (§6.2): strategy / window /
+	// rollback_on_fail.
+	UpdatePolicy core.UpdatePolicy `json:"-"`
+}
+
+// parseUpdatePolicy reads update_policy (§6.2).  window and rollback_on_fail
+// only mean something for strategy: task; declaring them on the Apply strategy
+// is rejected rather than silently ignored (a window that does not gate
+// anything would read as a safety that is not there).
+func parseUpdatePolicy(m map[string]any) (core.UpdatePolicy, error) {
+	var pol core.UpdatePolicy
+	strategy, _ := m["strategy"].(string)
+	if strategy == "task" {
+		pol.Strategy = core.UpdateStrategyTask
+	}
+	pol.Window, _ = m["window"].(string)
+	pol.Window = strings.TrimSpace(pol.Window)
+	pol.RollbackOnFail, _ = m["rollback_on_fail"].(bool)
+	if !pol.IsTask() && (pol.Window != "" || pol.RollbackOnFail) {
+		return core.UpdatePolicy{}, fmt.Errorf("update_policy: window / rollback_on_fail require strategy: task")
+	}
+	if _, err := task.ParseWindow(pol.Window); err != nil {
+		return core.UpdatePolicy{}, fmt.Errorf("update_policy: %w", err)
+	}
+	return pol, nil
 }
 
 // LoadDir reads all JSON files in dir and returns the desired resources and
@@ -553,6 +587,7 @@ func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 			DeletionPolicy:  parseDeletionPolicy(r.DeletionPolicy),
 			Allocations:     r.Allocations,
 			ObserveTier:     strings.TrimSpace(r.ObserveTier),
+			UpdatePolicy:    r.UpdatePolicy,
 		})
 	}
 	return resources, intent, nil

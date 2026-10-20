@@ -35,7 +35,7 @@ import (
 //     所属を書く（tier: は §8 の DAG 優先度帯 `tier: foundation` の予約名なので使わない）。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
 //     depends_on（文字列、または { id, ready_condition } の配列）、fields（文字列→スカラーのマップ）、
-//     deletion_policy（enum）を持つ。
+//     deletion_policy（enum）、update_policy（strategy / window / rollback_on_fail、§6.2）を持つ。
 //   - version は「文字列必須」の代表例として scope の外側に置ける任意フィールドとして
 //     許容し、型を string に固定する（Norway 問題: 1.10 を float 化させない）。
 //
@@ -152,6 +152,20 @@ func intentSchema() schemaNode {
 						}},
 						"fields":       stringMap,
 						"observe_tier": schemaNode{"type": "string"},
+						// update_policy は差分の直し方（§6.2, §6.5）。strategy: task なら
+						// 直接 Apply せず Task を起動する。window はメンテ窓。
+						"update_policy": schemaNode{
+							"type":                 "object",
+							"additionalProperties": false,
+							"properties": map[string]any{
+								"strategy": schemaNode{
+									"type": "string",
+									"enum": []any{"apply", "task"},
+								},
+								"window":           schemaNode{"type": "string"},
+								"rollback_on_fail": schemaNode{"type": "boolean"},
+							},
+						},
 						"deletion_policy": schemaNode{
 							"type": "string",
 							"enum": []any{"ExplicitAbsentOnly", "PruneWithinScope"},

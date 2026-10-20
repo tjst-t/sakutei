@@ -418,6 +418,8 @@ func runReconcile(args []string) {
 	// skipped like an unobservable one — not Observed, downstream skipped,
 	// never pruned — but they are not a safety failure (§19.9).
 	waitingAlloc := allocRes.WaitingLocals(parentToChildrenRec)
+	// #41: strategy: task resources with a diff (held for the daemon's Task).
+	taskHeld := map[string]bool{}
 	// ready holds the ready conditions observed this invocation (§8.3); a
 	// downstream whose ready_condition upstream is not ready is skipped.
 	ready := make(reconcile.Readiness)
@@ -514,7 +516,16 @@ func runReconcile(args []string) {
 				nonCOps = append(nonCOps, op)
 			}
 		}
-		if len(nonCOps) > 0 {
+		if len(nonCOps) > 0 && res.UpdatePolicy.IsTask() {
+			// #41 (§6.5 RequiresTaskEvent): a non-idempotent resource is never
+			// Applied.  Only the daemon launches its Task (1-outstanding, S2);
+			// here it is not converged, so its downstream waits.
+			fmt.Fprintf(os.Stderr,
+				"sakutei reconcile: RequiresTaskEvent: %s: strategy: task — not applying; the daemon launches its Task (§6.5)\n",
+				res.ID)
+			unobservable[res.ID.Local] = true
+			taskHeld[res.ID.Local] = true
+		} else if len(nonCOps) > 0 {
 			plans[res.ID.Local] = core.Plan{Ops: nonCOps}
 		} else if len(resourcePlan.Ops) > 0 && len(nonCOps) == 0 {
 			// All ops were C (ghost diff); store an empty plan so that the
@@ -799,21 +810,28 @@ func runReconcile(args []string) {
 	// skip it resolves itself on a later reconcile, once the allocation exists.
 	// #40: a resource held by an alert-only scope (§14.3) was observed fine;
 	// holding it is the declared policy, not a safety failure.
-	waitingCount, heldCount := 0, 0
+	// #41: a strategy: task resource held for its Task is not a safety failure
+	// either — it was observed; only the daemon may launch the Task.
+	waitingCount, heldCount, taskCount := 0, 0, 0
 	for local := range unobservable {
 		if waitingAlloc[local] {
 			waitingCount++
 		} else if scopeHeld.Locals[local] {
 			heldCount++
+		} else if taskHeld[local] {
+			taskCount++
 		}
 	}
 	if waitingCount > 0 {
 		fmt.Printf("Reconcile: %d resource(s) waiting-allocation (retry once the allocator can allocate)\n", waitingCount)
 	}
-	if len(unobservable) > waitingCount+heldCount {
+	if taskCount > 0 {
+		fmt.Printf("Reconcile: %d strategy: task resource(s) await their Task (launched by the daemon, §6.5)\n", taskCount)
+	}
+	if len(unobservable) > waitingCount+heldCount+taskCount {
 		fmt.Fprintf(os.Stderr,
 			"sakutei reconcile: %d resource(s) were unobservable this cycle; convergence incomplete\n",
-			len(unobservable)-waitingCount-heldCount)
+			len(unobservable)-waitingCount-heldCount-taskCount)
 		os.Exit(1)
 	}
 	if budgetHalted || capacityHalted {

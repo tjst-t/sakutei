@@ -41,6 +41,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/fencing"
 	"github.com/tjst-t/sakutei/internal/reconcile"
+	"github.com/tjst-t/sakutei/internal/task"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/pkg/allocation"
@@ -76,6 +77,8 @@ func main() {
 		runSync(os.Args[2:])
 	case "fence":
 		runFence(os.Args[2:])
+	case "task":
+		runTask(os.Args[2:])
 	case "allocator":
 		runAllocator(os.Args[2:])
 	case "mirror":
@@ -104,6 +107,7 @@ func main() {
 //	--claim <selector>   converge only the matching scopes (§17.1)
 //	--fencing-store <f>  fencing generation store shared by all shards (§15.2)
 //	--shard-id <id>      fencing holder ID of this shard
+//	--task-store <f>     S2 store of strategy: task progress phases (§6.2)
 //
 // The loop runs until SIGTERM or SIGINT is received, at which point it stops
 // at the next cycle boundary and exits 0.
@@ -170,6 +174,9 @@ func runDaemon() {
 		"fencing generation store file shared by all shards (§15.2, §17.1); empty=no double-claim detection")
 	shardID := fs.String("shard-id", "",
 		"this shard's ID recorded as the fencing holder (default: <hostname>-<pid>)")
+	// #41: strategy: task の進行フェーズの S2（§6.2）。
+	taskStore := fs.String("task-store", "",
+		"S2 store file of strategy: task progress phases (§6.2); empty=no Task is launched (strategy: task resources are held)")
 	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。
 	gd := addGitDistFlags(fs)
 
@@ -337,6 +344,9 @@ func runDaemon() {
 		Claim:                 claimSelector,
 		Fencing:               guard,
 	}
+	if *taskStore != "" {
+		cfg.TaskStore = task.NewFileStore(*taskStore)
+	}
 	if src != nil {
 		cfg.Source = src
 		cfg.IntentDir = src.IntentDir()
@@ -361,6 +371,7 @@ Usage:
   sakutei import       export existing reality as intent YAML
   sakutei sync         record the reality of mode: sync scopes into generated/
   sakutei fence        show the fencing generations of claimed scopes (§17.6)
+  sakutei task         list / cancel outstanding strategy: task Tasks (§6.2)
   sakutei allocator    serve the allocation authority (active/standby, §19.8)
   sakutei mirror       keep a read-only git mirror of the intent repository (§17.4)
   sakutei secrets      build a site-local secret store: secrets extract (§20.5)

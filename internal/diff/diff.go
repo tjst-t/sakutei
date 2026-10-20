@@ -79,6 +79,10 @@ type DesiredResource struct {
 	// `observe_tiers:`, §16.5).  Not the §8 DAG priority band (`tier:`).  Empty means
 	// the default: Observed every cycle (§8).
 	ObserveTier string
+	// UpdatePolicy is the resource's update_policy (§6.2).  With strategy: task
+	// a diff never reaches Apply: the daemon launches a Task instead (§6.5).
+	// The zero value is the default Apply strategy.
+	UpdatePolicy core.UpdatePolicy
 }
 
 // Engine holds the provider schema used to drive the diff.

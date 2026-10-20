@@ -73,6 +73,14 @@
 //     state changes (intent or rendered revision changed for the parent), the
 //     daemon sets UpstreamChanged=true for each of the parent's children.
 //     cause.Classify returns CauseTagD for those children.
+//
+// #41 additions (§6.2, §6.5):
+//   - RequiresTaskEvent: a resource with update_policy.strategy: task is never
+//     Applied.  A diff on it launches a Task through task.Manager instead —
+//     at most one outstanding Task per resource (1-outstanding, S2 in
+//     Config.TaskStore), never outside update_policy.window.  The resource is
+//     not converged (its downstream waits) until a later Observe shows no diff
+//     (the completion mark in reality); that Observe also clears the record.
 package reconcile
 
 import (
@@ -98,6 +106,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/internal/revision"
+	"github.com/tjst-t/sakutei/internal/task"
 	"github.com/tjst-t/sakutei/pkg/allocation"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
@@ -217,6 +226,19 @@ type Config struct {
 	// S3 state and the fencing generations held are dropped.  Claim is then
 	// ignored.  Nil means IntentDir and Claim stay fixed for the daemon's life.
 	Source Source
+
+	// TaskStore is the S2 store of the progress phases of strategy: task
+	// resources (§6.2): the 1-outstanding record that survives a daemon
+	// restart.  Nil means no store: a strategy: task resource with a diff is
+	// held — neither Applied nor handed a Task — since a Task without S2 could
+	// run twice across a restart.
+	TaskStore task.Store
+	// TaskRunner runs the Tasks.  Nil means the Provider, if it implements
+	// task.Runner.
+	TaskRunner task.Runner
+	// Now is the clock the maintenance window (update_policy.window) is
+	// checked against.  Nil means time.Now.
+	Now func() time.Time
 }
 
 // Source refreshes the desired source of the daemon (§17.4).
@@ -413,7 +435,8 @@ func Run(ctx context.Context, cfg Config) error {
 			// further down carries the detailed drift report.
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d drifted (alert-only, no changes)\n",
 				cycleNum, res.Observed)
-		} else if res.Applied == 0 && res.Launched == 0 && len(res.Waiting) == 0 && res.DriftCount == 0 {
+		} else if res.Applied == 0 && res.Launched == 0 && len(res.Waiting) == 0 && res.DriftCount == 0 &&
+			len(res.TasksLaunched) == 0 && len(res.TasksHeld) == 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d converged (no changes)\n",
 				cycleNum, res.Observed)
 		} else {
@@ -423,6 +446,15 @@ func Run(ctx context.Context, cfg Config) error {
 		if len(res.Fenced) > 0 {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: FENCED scope(s) %v: another shard holds a newer fencing generation; not converging them\n",
 				cycleNum, res.Fenced)
+		}
+		if len(res.TasksLaunched) > 0 {
+			// #41 (§6.5): RequiresTaskEvent — Tasks launched instead of Apply.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d task(s) launched (strategy: task): %v\n",
+				cycleNum, len(res.TasksLaunched), res.TasksLaunched)
+		}
+		if len(res.TasksHeld) > 0 {
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d strategy: task resource(s) awaiting their Task (not applied): %v\n",
+				cycleNum, len(res.TasksHeld), res.TasksHeld)
 		}
 		if len(res.NotDue) > 0 {
 			// #30 (§16.5): resources thinned by their tier this cycle.
@@ -543,6 +575,10 @@ type Daemon struct {
 	prevRev             core.RevisionInfo
 	prevProviderVersion string
 	cycle               int
+	// tasks launches strategy: task Tasks (§6.5).  Nil when no TaskStore or
+	// no runner is configured; tasksOff then says why.
+	tasks    *task.Manager
+	tasksOff string
 }
 
 // NewDaemon prepares the cross-cycle state for cfg.  cfg.Out / cfg.ErrOut
@@ -624,7 +660,28 @@ func NewDaemon(cfg Config) *Daemon {
 	if sched == nil {
 		sched = NewTierScheduler()
 	}
+
+	// #41 (§6.2): the Task manager.  Its in-process running set is S3; the
+	// 1-outstanding record lives in the S2 TaskStore so a restart cannot run a
+	// Task twice.
+	var tasks *task.Manager
+	tasksOff := ""
+	runner := cfg.TaskRunner
+	if runner == nil {
+		runner, _ = fp.(task.Runner)
+	}
+	switch {
+	case cfg.TaskStore == nil:
+		tasksOff = "no task store configured (--task-store); a Task needs S2 to never run twice (§6.2)"
+	case runner == nil:
+		tasksOff = "the provider has no task runner"
+	default:
+		tasks = task.NewManager(cfg.TaskStore, runner, taskHolder(cfg), cfg.Now)
+	}
+
 	return &Daemon{
+		tasks:        tasks,
+		tasksOff:     tasksOff,
 		cfg:          cfg,
 		engine:       engine,
 		pruneEngine:  pruneEngine,
@@ -642,12 +699,27 @@ func NewDaemon(cfg Config) *Daemon {
 func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 	d.cycle++
 	return runCycleAsync(ctx, d.engine, d.pruneEngine, d.budgetEngine, d.fp, d.exec, d.ifl, d.lsRing,
-		&d.prevRev, &d.prevProviderVersion, d.sched, d.cycle, d.cfg)
+		&d.prevRev, &d.prevProviderVersion, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff)
 }
 
-// Wait blocks until in-flight Applies finish or timeout elapses.
+// Wait blocks until in-flight Applies and running Tasks finish or timeout
+// elapses.
 func (d *Daemon) Wait(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
 	d.ifl.Wait(timeout)
+	if d.tasks != nil {
+		d.tasks.Wait(time.Until(deadline))
+	}
+}
+
+// taskHolder names this daemon in the Task records: the fencing shard ID when
+// there is one, otherwise host-pid.
+func taskHolder(cfg Config) string {
+	if cfg.Fencing != nil {
+		return cfg.Fencing.Holder()
+	}
+	host, _ := os.Hostname()
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }
 
 // CycleResult holds the summary of one convergence cycle.
@@ -745,6 +817,18 @@ type CycleResult struct {
 	// Fenced lists the scope keys fenced this cycle (another shard holds a
 	// newer generation).  Their resources were not Observed, Applied or pruned.
 	Fenced []string
+
+	// strategy: task fields (§6.2, §6.5):
+
+	// TasksLaunched lists the resources a Task was launched for this cycle.
+	TasksLaunched []string
+	// TasksHeld lists the strategy: task resources with a diff for which no
+	// Task was launched: one is outstanding, the window is closed, or Tasks
+	// are not configured.  None of them was Applied.
+	TasksHeld []string
+	// TasksCompleted lists the resources whose outstanding Task record was
+	// cleared because this cycle's Observe showed no diff (completion mark).
+	TasksCompleted []string
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -798,6 +882,8 @@ func runCycleAsync(
 	sched ObserveScheduler,
 	cycle int,
 	cfg Config,
+	tasks *task.Manager,
+	tasksOff string,
 ) (CycleResult, error) {
 	// S072a14-3: resolve generated/ directory.
 	genDir := cfg.GeneratedDir
@@ -1082,6 +1168,8 @@ func runCycleAsync(
 	var backedOff []string
 	// F-5: count resources whose diff was a cause-C ghost diff (held, not applied).
 	ghostDiffs := 0
+	// #41: strategy: task resources whose completion mark was observed.
+	var tasksCompleted []string
 
 	// S072a14-3: build a set of child Local IDs whose parent changed, for D tag.
 	// Children in this set get UpstreamChanged=true in their CauseContext.
@@ -1218,6 +1306,17 @@ func runCycleAsync(
 		// unconverged upstream).
 		if len(nonCOps) > 0 {
 			plans[local] = core.Plan{Ops: nonCOps}
+		}
+		// #41 (§6.2): completion of a Task is asked of reality.  No diff means
+		// the completion mark is observed: the outstanding record is done.
+		if res.UpdatePolicy.IsTask() && len(plan.Ops) == 0 && tasks != nil {
+			if rec, cleared, err := tasks.Settle(ctx, res.ID); err != nil {
+				fmt.Fprintf(cfg.ErrOut, "sakutei: task store: %s: %v\n", res.ID, err)
+			} else if cleared {
+				tasksCompleted = append(tasksCompleted, local)
+				fmt.Fprintf(cfg.Out, "sakutei: task %s for %s completed (completion mark observed; was %s)\n",
+					rec.TaskID, res.ID, rec.Phase)
+			}
 		}
 		// A held ghost diff (all C) is not converged either: keep Observing
 		// it every cycle until the operator resolves it.
@@ -1381,9 +1480,46 @@ func runCycleAsync(
 	// When budget fires with halt-all, we pass an empty plans map.
 	filteredPlans := filterPlansByBudget(plans, budgetDecision)
 
+	// #41 (§6.5 RequiresTaskEvent): a strategy: task resource reached by the
+	// wave scheduler with a diff gets a Task, never an Apply.
+	var tasksLaunched, tasksHeld []string
+	launchTask := func(r diff.DesiredResource, plan core.Plan) {
+		local := r.ID.Local
+		if tasks == nil {
+			tasksHeld = append(tasksHeld, local)
+			fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: strategy: task, not applying; no Task launched: %s\n", r.ID, tasksOff)
+			return
+		}
+		if cfg.Fencing != nil {
+			// §15.2: a fenced writer launches nothing either.
+			if err := cfg.Fencing.Check(ctx, r.ID.Scope); err != nil {
+				tasksHeld = append(tasksHeld, local)
+				fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: no Task launched: %v\n", r.ID, err)
+				return
+			}
+		}
+		dec, err := tasks.Trigger(ctx, r.ID, r.Fields, plan, r.UpdatePolicy)
+		if err != nil {
+			tasksHeld = append(tasksHeld, local)
+			fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: no Task launched: %v\n", r.ID, err)
+			return
+		}
+		switch dec.Outcome {
+		case task.Launched:
+			tasksLaunched = append(tasksLaunched, local)
+			budgetEngine.CommitOps(plan.Ops)
+			fmt.Fprintf(cfg.Out, "sakutei: RequiresTaskEvent: %s: task %s launched (strategy: task; not applying)\n", r.ID, dec.Record.TaskID)
+		case task.Running:
+			tasksHeld = append(tasksHeld, local)
+		default:
+			tasksHeld = append(tasksHeld, local)
+			fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: no Task launched (%s): %s\n", r.ID, dec.Outcome, dec.Reason)
+		}
+	}
+
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
 		ctx, fp, exec, ifl, desired, filteredPlans, unobservable, ready, cfg.ErrOut,
-		budgetEngine.CommitOps)
+		budgetEngine.CommitOps, launchTask)
 	backedOff = backedOffList
 	if waveErr != nil {
 		return CycleResult{Observed: observed}, waveErr
@@ -1423,6 +1559,10 @@ func runCycleAsync(
 
 		ExcludedByClaim: excludedByClaim,
 		Fenced:          fencedScopes,
+
+		TasksLaunched:  tasksLaunched,
+		TasksHeld:      tasksHeld,
+		TasksCompleted: tasksCompleted,
 	}, nil
 }
 
@@ -1573,6 +1713,11 @@ func executePruneOps(
 // commitFn is called (in the goroutine) for each successfully applied plan so
 // the budget engine can count committed ops (Scf7762-2).  May be nil (no-op).
 //
+// #41: a resource with update_policy.strategy: task is never Applied: taskFn
+// is called with its plan instead (§6.5 RequiresTaskEvent), and it counts as
+// an unconverged upstream — its downstream is skipped until a later cycle
+// observes it converged.
+//
 // Returns:
 //   - applied:    number of Ops reported by synchronous (immediate) Applies.
 //     For async Applies this is 0 — the goroutine reports completion outside the
@@ -1592,6 +1737,7 @@ func applyWavesAsync(
 	ready Readiness,
 	errOut io.Writer,
 	commitFn func([]core.Op),
+	taskFn func(diff.DesiredResource, core.Plan),
 ) (applied, launched int, backedOff, skipped []string, err error) {
 	n := len(desired)
 	if n == 0 {
@@ -1668,6 +1814,21 @@ func applyWavesAsync(
 			plan, hasPlan := plans[local]
 			if !hasPlan || len(plan.Ops) == 0 {
 				// Already converged; advance downstream.
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
+			// #41 (§6.5): strategy: task — hand the diff to a Task, never Apply.
+			if r.UpdatePolicy.IsTask() {
+				if taskFn != nil {
+					taskFn(r, plan)
+				}
+				failed[local] = true // not converged until the completion mark is observed
 				for _, m := range adj[idx] {
 					inDeg[m]--
 					if inDeg[m] == 0 {

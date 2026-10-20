@@ -126,6 +126,11 @@ type stateFile struct {
 	PruneableCapability bool                         `json:"pruneable_capability,omitempty"`
 	ProviderVersion     string                       `json:"provider_version,omitempty"`
 	Ready               map[string]map[string]bool   `json:"ready,omitempty"`
+	// Task runner fields (test-only, #41, §6.2): see task.go.
+	TaskRunCount      map[string]int    `json:"task_run_count,omitempty"`
+	TaskRollbackCount map[string]int    `json:"task_rollback_count,omitempty"`
+	TaskFailInject    map[string]string `json:"task_fail_inject,omitempty"`
+	TaskSkipMark      map[string]bool   `json:"task_skip_mark,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
@@ -153,6 +158,11 @@ type Provider struct {
 	// in-process test that holds this Provider value.
 	readMu    sync.Mutex
 	readCount map[string]int
+
+	// holdMu guards taskHolds, the in-memory gates that keep RunTask blocked
+	// until a test releases them (test-only, #41; see HoldTask).
+	holdMu    sync.Mutex
+	taskHolds map[string]chan struct{}
 }
 
 // New creates a new fake Provider backed by the JSON file at statePath.
