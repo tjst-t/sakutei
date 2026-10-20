@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/tjst-t/sakutei/internal/budget"
 )
 
 // intentSchema は理想状態木のルートスキーマ。
@@ -33,6 +35,8 @@ import (
 //   - remediation は時間帯連動の修復 mode（default / schedule[{window, mode}] / tz、§14.2）。
 //   - observe_tiers は Observe 頻度の tier（name / observe_every、§16.5）。resource は observe_tier で
 //     所属を書く（tier: は §8 の DAG 優先度帯 `tier: foundation` の予約名なので使わない）。
+//   - planned_change は大量正当作業の宣言（scope / kind / max_count / window / approval、§13.3）。
+//     1 件ならオブジェクト、複数なら配列で書く。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
 //     depends_on（文字列、または { id, ready_condition } の配列）、fields（文字列→スカラーのマップ）、
 //     deletion_policy（enum）、update_policy（strategy / window / rollback_on_fail、§6.2）を持つ。
@@ -114,6 +118,8 @@ func intentSchema() schemaNode {
 					},
 				},
 			},
+			// planned_change は専用予算レーンの宣言（§13.3）。1 件はオブジェクト、複数は配列。
+			"planned_change": plannedChangeSchema(),
 			// pools は採番プールの宣言（§19.8）。range は "下限-上限"（整数）。
 			"pools": schemaNode{
 				"type": "array",
@@ -175,6 +181,40 @@ func intentSchema() schemaNode {
 			},
 		},
 	}
+}
+
+// plannedChangeSchema は planned_change（§13.3）のスキーマ。オブジェクト 1 件か、その配列。
+func plannedChangeSchema() schemaNode {
+	kinds := make([]any, 0, len(budget.PlannedKinds))
+	for _, k := range budget.PlannedKinds {
+		kinds = append(kinds, string(k))
+	}
+	decl := schemaNode{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"scope", "kind", "max_count", "window"},
+		"properties": map[string]any{
+			"scope":     schemaNode{"type": "object", "additionalProperties": true},
+			"kind":      schemaNode{"type": "string", "enum": kinds},
+			"max_count": schemaNode{"type": "integer"},
+			"window":    schemaNode{"type": "string"},
+			"approval": schemaNode{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"pr":        schemaNode{"type": "integer"},
+					"approvers": schemaNode{"type": "array", "items": schemaNode{"type": "string"}},
+				},
+			},
+		},
+	}
+	out := schemaNode{"type": []any{"object", "array"}, "items": decl}
+	for k, v := range decl {
+		if k != "type" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // decodeIntentTree は生バイト列を（拡張子に応じて）JSON または YAML としてパースし、

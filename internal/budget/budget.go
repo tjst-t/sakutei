@@ -32,11 +32,14 @@
 //
 //   - approve-large-change flag: an explicit per-invocation flag that raises the
 //     cycle limit for destructive changes, expressing "I know this will delete N
-//     things and I approve".  This is NOT planned_change (v1.5); it is a simple
+//     things and I approve".  This is NOT planned_change; it is a simple
 //     approval flag, not a scope/kind/window declaration.
 //
+//   - planned_change lanes (§13.3, Backlog #39, planned.go): ops admitted to a
+//     declaration's lane are taken out of the normal budget before it is
+//     evaluated, and the normal budget's halt does not stop them.
+//
 // Out of scope for this Story:
-//   - planned_change declaration (v1.5, §13.3)
 //   - N-of-M approval gates (v1.5, §14.4)
 //   - remediation schedule / time-zone auto-switch (v1.5, §14.2)
 //   - remediation mode (auto / alert-only) — separate Story Scf7762-3
@@ -123,6 +126,12 @@ type Engine struct {
 	cfg     Config
 	mu      sync.Mutex
 	history []windowEntry // time-ordered destructive events (S3 memory)
+
+	// planned_change lanes (§13.3).  laneUsed is keyed by PlannedChange.Key;
+	// like history it is S3 memory and resets on restart.
+	planned      []PlannedChange
+	laneUsed     map[string]int
+	expiredNoted map[string]bool
 }
 
 // New creates an Engine with the given configuration.
@@ -146,6 +155,16 @@ type CycleDecision struct {
 	// Reason is a human-readable explanation of why the budget fired (non-empty
 	// when either halt flag is true).
 	Reason string
+	// Events are the planned_change notices of this cycle (PlannedChange,
+	// PlannedChangeExhausted, PlannedChangeKindMismatch, PlannedChangeExpired).
+	Events []string
+
+	// lane holds the ops admitted to planned_change lanes (§13.3).  HaltAll and
+	// HaltDestructive are the normal budget's verdict and do not apply to them;
+	// laneHaltAll / laneHaltDestructive (set by Merge from the other gates, such
+	// as capacity) do.
+	lane                             map[string]laneSlot
+	laneHaltAll, laneHaltDestructive bool
 }
 
 // CheckCycle evaluates whether the planned ops in this cycle breach any budget
@@ -165,10 +184,24 @@ type CycleDecision struct {
 // after the ops are actually applied to advance the cumulative counter.
 // This separation lets the caller suppress the actual Apply when halted and
 // avoids counting aborted operations.
+//
+// Ops admitted to a planned_change lane (§13.3) are taken out first: the limits
+// below see only the remaining ops, and the returned halt does not block the
+// lane ops (IsHalted).
 func (e *Engine) CheckCycle(ops []core.Op, inFlightCount int, totalDesired int) CycleDecision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	adm := e.admitLanes(ops)
+	d := e.checkNormal(adm.normal, inFlightCount, totalDesired)
+	d.lane = adm.lane
+	d.Events = adm.events
+	return d
+}
+
+// checkNormal evaluates the normal budget over ops.  Must be called with e.mu
+// held.
+func (e *Engine) checkNormal(ops []core.Op, inFlightCount int, totalDesired int) CycleDecision {
 	destructive, _ := countOps(ops)
 	// in-flight counts toward the cycle budget (§13.1): Add in-flight to the
 	// destructive count for the rate-limit check (not the window budget).
@@ -334,7 +367,13 @@ func countOps(ops []core.Op) (destructive, additive int) {
 
 // IsHalted returns true if the decision blocks the given op.
 // Additive (non-destructive) ops are only blocked when HaltAll is true.
+//
+// A planned_change lane op is blocked only by the gates merged in from outside
+// the change budget (capacity), never by the normal budget's halt.
 func (d CycleDecision) IsHalted(op core.Op) bool {
+	if d.InLane(op) {
+		return d.laneHaltAll || (d.laneHaltDestructive && op.Destructive)
+	}
 	if d.HaltAll {
 		return true
 	}
@@ -361,10 +400,25 @@ func (d CycleDecision) FilterOps(ops []core.Op) (allowed, blocked []core.Op) {
 // Merge combines two gate decisions into the most restrictive one (a halt in
 // either halts).  Used to fold the capacity gate (§13.4) into the change
 // budget decision so ops are filtered in one place.
+//
+// planned_change lane ops stay exempt from a decision that carries lanes (the
+// change budget) but are halted by a decision without lanes (capacity).
 func Merge(a, b CycleDecision) CycleDecision {
 	out := CycleDecision{
 		HaltAll:         a.HaltAll || b.HaltAll,
 		HaltDestructive: a.HaltDestructive || b.HaltDestructive,
+		Events:          append(append([]string(nil), a.Events...), b.Events...),
+	}
+	aAll, aDes := a.laneHalts()
+	bAll, bDes := b.laneHalts()
+	out.laneHaltAll, out.laneHaltDestructive = aAll || bAll, aDes || bDes
+	for _, d := range []CycleDecision{a, b} {
+		for k, s := range d.lane {
+			if out.lane == nil {
+				out.lane = map[string]laneSlot{}
+			}
+			out.lane[k] = s
+		}
 	}
 	switch {
 	case a.Reason != "" && b.Reason != "":
@@ -375,4 +429,14 @@ func Merge(a, b CycleDecision) CycleDecision {
 		out.Reason = b.Reason
 	}
 	return out
+}
+
+// laneHalts is how d halts planned_change lane ops: a decision with lanes keeps
+// them exempt from its own halt; a decision without lanes (another gate) halts
+// them like any other op.
+func (d CycleDecision) laneHalts() (all, destructive bool) {
+	if d.lane != nil {
+		return d.laneHaltAll, d.laneHaltDestructive
+	}
+	return d.HaltAll, d.HaltDestructive
 }

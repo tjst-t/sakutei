@@ -102,6 +102,10 @@ type InFlightSet struct {
 
 	// backoff maps (local, errKind) → backoffEntry for resources in cooldown.
 	backoff map[backoffKey]backoffEntry
+
+	// lane marks in-flight resources whose Apply was dispatched in a
+	// planned_change lane (§13.3); they are not counted in the normal budget.
+	lane map[string]bool
 }
 
 // NewInFlightSet creates an empty InFlightSet.
@@ -109,6 +113,7 @@ func NewInFlightSet() *InFlightSet {
 	return &InFlightSet{
 		inflight: make(map[string]bool),
 		backoff:  make(map[backoffKey]backoffEntry),
+		lane:     make(map[string]bool),
 	}
 }
 
@@ -133,6 +138,24 @@ func (s *InFlightSet) Remove(local string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.inflight, local)
+	delete(s.lane, local)
+}
+
+// MarkLane records that the in-flight Apply of local was dispatched in a
+// planned_change lane (§13.3).  Cleared by Remove.
+func (s *InFlightSet) MarkLane(local string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inflight[local] {
+		s.lane[local] = true
+	}
+}
+
+// IsLane reports whether local is in flight in a planned_change lane.
+func (s *InFlightSet) IsLane(local string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lane[local]
 }
 
 // InFlightLocals returns a snapshot of all Local IDs currently in-flight.

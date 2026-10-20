@@ -408,7 +408,7 @@ func ScopedReconcile(
 	// 保守的カウント）。ここでは影響サブ DAG 内の in-flight を数える。
 	inFlightDestructive := 0
 	for _, r := range desired {
-		if ifl.IsInFlight(r.ID.Local) {
+		if ifl.IsInFlight(r.ID.Local) && !ifl.IsLane(r.ID.Local) {
 			inFlightDestructive++
 		}
 	}
@@ -425,6 +425,14 @@ func ScopedReconcile(
 			decision.Reason)
 		return res
 	}
+
+	for _, ev := range decision.Events {
+		fmt.Fprintf(errOut, "sakutei: scoped: %s\n", ev)
+	}
+
+	// planned_change のレーン（§13.3）に入った op は、発射前にレーンの枠を消費する
+	// （同期 wave なので、ここで全 op 分を先に取る。skip された op の枠は戻さない＝保守側）。
+	budgetEngine.ReserveLanes(decision, allPlannedOps)
 
 	// ---- Apply（同期 wave） -------------------------------------------------
 	//
@@ -462,7 +470,8 @@ func ScopedReconcile(
 		res.Applied += len(plan.Ops)
 	}
 
-	if len(committed) > 0 {
+	// レーンの op は通常予算の window に記録しない（§13.3: 別枠）。
+	if committed = decision.OutsideLanes(committed); len(committed) > 0 {
 		budgetEngine.CommitOps(committed)
 	}
 

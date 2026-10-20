@@ -10,7 +10,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 
 - **ライセンス:** Apache-2.0
 - **言語:** Go（1.22・標準ライブラリのみ、外部依存なし）
-- **状態:** 設計 v3.4／ 実装 **v1a 完成・v1b ほぼ完成**（残りは BulkObserve の実バルク実装・Sync Mode の git コミット・採番の SQLite 版）
+- **状態:** 設計 v3.5／ 実装 **v1a 完成・v1b ほぼ完成**（残りは BulkObserve の実バルク実装・Sync Mode の git コミット・採番の SQLite 版）
 
 ---
 

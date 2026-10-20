@@ -492,6 +492,10 @@ func Run(ctx context.Context, cfg Config) error {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: prune HALTED (safety guard); no orphan deleted this cycle\n",
 				cycleNum)
 		}
+		for _, ev := range res.PlannedChangeEvents {
+			// §13.3: planned_change lane notices.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %s\n", cycleNum, ev)
+		}
 		if res.BudgetHalted {
 			// Scf7762-2: change budget gate blocked ops this cycle.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: BUDGET HALTED: %s\n",
@@ -755,6 +759,9 @@ type CycleResult struct {
 	BudgetHalted bool
 	// BudgetReason is the human-readable explanation of the budget halt.
 	BudgetReason string
+	// PlannedChangeEvents are the planned_change lane notices of the cycle
+	// (§13.3): admissions, exhaustion, kind mismatches, expiry.
+	PlannedChangeEvents []string
 
 	// Scf7762-3 remediation mode fields:
 
@@ -966,6 +973,11 @@ func runCycleAsync(
 	if pruneEngine != nil {
 		pruneEngine.SetExcludedScopes(syncScopes)
 	}
+
+	// §13.3: the planned_change declarations open their lanes in the budget
+	// engine.  Refreshed every cycle with the intent; a declaration removed from
+	// intent (or past its window) no longer admits anything.
+	budgetEngine.SetPlannedChanges(in.PlannedChanges)
 
 	// #24 render phase 1: allocation (§9.1, §19).  Allocate is idempotent, so
 	// in the steady state every request resolves to the value it already
@@ -1434,7 +1446,11 @@ func runCycleAsync(
 	// time-window budget before issuing ANY Apply or prune Delete.
 	inFlightDestructive := 0
 	for _, local := range inFlightThisCycle {
-		_ = local // in-flight items are already unobservable; count them as 1
+		// §13.3: an Apply dispatched in a planned_change lane is not counted in
+		// the normal budget, in flight or not.
+		if ifl.IsLane(local) {
+			continue
+		}
 		inFlightDestructive++ // conservative: count each in-flight as destructive
 		// B (backlog): counting every in-flight op as destructive is safe (biases
 		// toward halt) but can false-positive halt a Create-heavy cycle.  Future
@@ -1480,6 +1496,22 @@ func runCycleAsync(
 	// When budget fires with halt-all, we pass an empty plans map.
 	filteredPlans := filterPlansByBudget(plans, budgetDecision)
 
+	// §13.3: a planned_change lane op consumes its lane when dispatched and is
+	// never recorded in the normal window budget.
+	laneDecision := budgetDecision
+	dispatch := func(local string, ops []core.Op) {
+		budgetEngine.ReserveLanes(laneDecision, ops)
+		for _, op := range ops {
+			if laneDecision.InLane(op) {
+				ifl.MarkLane(local)
+				break
+			}
+		}
+	}
+	commit := func(ops []core.Op) {
+		budgetEngine.CommitOps(laneDecision.OutsideLanes(ops))
+	}
+
 	// #41 (§6.5 RequiresTaskEvent): a strategy: task resource reached by the
 	// wave scheduler with a diff gets a Task, never an Apply.
 	var tasksLaunched, tasksHeld []string
@@ -1507,7 +1539,9 @@ func runCycleAsync(
 		switch dec.Outcome {
 		case task.Launched:
 			tasksLaunched = append(tasksLaunched, local)
-			budgetEngine.CommitOps(plan.Ops)
+			// §13.3: a Task launched for a lane op consumes the lane instead.
+			budgetEngine.ReserveLanes(laneDecision, plan.Ops)
+			budgetEngine.CommitOps(laneDecision.OutsideLanes(plan.Ops))
 			fmt.Fprintf(cfg.Out, "sakutei: RequiresTaskEvent: %s: task %s launched (strategy: task; not applying)\n", r.ID, dec.Record.TaskID)
 		case task.Running:
 			tasksHeld = append(tasksHeld, local)
@@ -1519,7 +1553,7 @@ func runCycleAsync(
 
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
 		ctx, fp, exec, ifl, desired, filteredPlans, unobservable, ready, cfg.ErrOut,
-		budgetEngine.CommitOps, launchTask)
+		dispatch, commit, launchTask)
 	backedOff = backedOffList
 	if waveErr != nil {
 		return CycleResult{Observed: observed}, waveErr
@@ -1533,7 +1567,7 @@ func runCycleAsync(
 	//
 	// CommitOps is called for each successfully applied Delete to advance the
 	// cumulative window counter (S3, §13.2).
-	pruned, pruneHalted := executePruneOps(ctx, pruneResult, allowedPruneOps, fp, exec, budgetEngine, cfg.ErrOut)
+	pruned, pruneHalted := executePruneOps(ctx, pruneResult, allowedPruneOps, fp, exec, budgetEngine, pruneEngine, budgetDecision, cfg.ErrOut)
 
 	return CycleResult{
 		Observed:     observed,
@@ -1553,6 +1587,8 @@ func runCycleAsync(
 		Mode:        decision,
 		DriftCount:  scopeHeld.DriftCount,
 		DriftEvents: scopeHeld.Events,
+
+		PlannedChangeEvents: budgetDecision.Events,
 
 		CapacityHalted: capacityHalted,
 		CapacityReason: capacityDecision.Reason,
@@ -1663,7 +1699,9 @@ func computeDaemonPrune(
 // prune-engine guards and the budget gate.
 //
 // allowedOps is the budget-filtered subset of pruneResult.DeleteOps.
-// budgetEngine is called with CommitOps for each successfully applied Delete.
+// budgetEngine is called with CommitOps for each successfully applied Delete
+// outside the planned_change lanes; a lane Delete consumes its lane instead and
+// is noted to pruneEngine so the next List drop does not count it (§13.3).
 func executePruneOps(
 	ctx context.Context,
 	pruneResult prune.PruneResult,
@@ -1671,6 +1709,8 @@ func executePruneOps(
 	fp provider.Provider,
 	exec executor.Executor,
 	budgetEngine *budget.Engine,
+	pruneEngine *prune.Engine,
+	decision budget.CycleDecision,
 	errOut io.Writer,
 ) (pruned int, halted bool) {
 	if pruneResult.Halted {
@@ -1678,13 +1718,24 @@ func executePruneOps(
 	}
 	for _, op := range allowedOps {
 		plan := core.Plan{Ops: []core.Op{op}}
+		inLane := decision.InLane(op)
+		if inLane {
+			budgetEngine.ReserveLanes(decision, plan.Ops)
+		}
 		if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
 			fmt.Fprintf(errOut, "sakutei: prune apply %s: %v\n", op.Target, applyErr)
 			continue
 		}
-		fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; PruneWithinScope)\n", op.Target)
-		// Scf7762-2: advance the cumulative window counter for applied destructive ops.
-		budgetEngine.CommitOps([]core.Op{op})
+		if inLane {
+			fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; planned_change lane)\n", op.Target)
+			if pruneEngine != nil {
+				pruneEngine.NotePlannedRemoval(op.Target)
+			}
+		} else {
+			fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; PruneWithinScope)\n", op.Target)
+			// Scf7762-2: advance the cumulative window counter for applied destructive ops.
+			budgetEngine.CommitOps([]core.Op{op})
+		}
 		pruned++
 	}
 	return pruned, false
@@ -1709,6 +1760,10 @@ func executePruneOps(
 //
 // The function returns immediately after launching all goroutines; it does NOT
 // wait for them.  The in-flight set tracks their completion.
+//
+// dispatchFn is called (synchronously, before the goroutine starts) with each
+// plan about to be applied, so planned_change lanes are consumed at dispatch
+// (§13.3).  May be nil (no-op).
 //
 // commitFn is called (in the goroutine) for each successfully applied plan so
 // the budget engine can count committed ops (Scf7762-2).  May be nil (no-op).
@@ -1736,6 +1791,7 @@ func applyWavesAsync(
 	unobservable map[string]bool,
 	ready Readiness,
 	errOut io.Writer,
+	dispatchFn func(local string, ops []core.Op),
 	commitFn func([]core.Op),
 	taskFn func(diff.DesiredResource, core.Plan),
 ) (applied, launched int, backedOff, skipped []string, err error) {
@@ -1871,6 +1927,9 @@ func applyWavesAsync(
 			// Add to in-flight BEFORE launching the goroutine to ensure that a
 			// concurrent Cycle cannot launch a second goroutine for the same resource.
 			ifl.Add(local)
+			if dispatchFn != nil {
+				dispatchFn(local, plan.Ops)
+			}
 
 			// Launch async Apply.
 			launched++

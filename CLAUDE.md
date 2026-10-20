@@ -8,7 +8,7 @@
 
 Kubernetes からは *収束原理*（level-triggered な収束ループ）だけを借り、実装機構（apiserver・etcd・scheduler・admission・CRD）は意図的に捨てている。位置づけは「**Ansible の冪等性 + k8s のループ**」。最大の特徴は **観測 state レス**（キャッシュした「現在状態」を持たず毎周期リアルを再観測する）で、これにより Terraform の three-way-diff / state ドリフト問題を構造的に排除する。名称は平安期の作庭書『作庭記』に由来する。
 
-> **現状:** 設計は v3.4（v1b の実装に追いつかせた改訂）。実装は **v1a が完成、v1b がほぼ完成**（残りは Backlog の #27・#35・#36）。次は v1.5（Backlog #19、タスク #39〜#45）。
+> **現状:** 設計は v3.5（v3.4 = v1b の実装に追いつかせた改訂、v3.5 = planned_change の実装上の決定）。実装は **v1a が完成、v1b がほぼ完成**（残りは Backlog の #27・#35・#36）。次は v1.5（Backlog #19、タスク #39〜#45）。
 
 ## 仕事の管理（Backlog）
 
@@ -44,7 +44,7 @@ Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflo
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── architecture/
-    │   ├── spec/                              # ★設計の正（source of truth）v3.4 分冊
+    │   ├── spec/                              # ★設計の正（source of truth）v3.5 分冊
     │   │   ├── README.md                      #   索引（版・改訂規約・目次・§→ファイル対応）
     │   │   └── part1〜part8-*.md              #   8部29節の本文（§番号は全部で一意）
     │   ├── CHANGELOG-v3.0.md                  # v2.6→v3.0 構成対応マップ+分冊化の記録
@@ -63,7 +63,7 @@ Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflo
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」（現行 v3.4。骨格は v2.6 と内容等価の全面再構成 v3.0 で、v3.1〜v3.4 は分冊を直接改訂）。`old/` は旧版（編集しない）、矛盾時は **spec/ が優先**。すべて日本語で書かれている。
+**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」（現行 v3.5。骨格は v2.6 と内容等価の全面再構成 v3.0 で、v3.1〜v3.5 は分冊を直接改訂）。`old/` は旧版（編集しない）、矛盾時は **spec/ が優先**。すべて日本語で書かれている。
 
 ## v3.0 の構成（8部29節・分冊）
 

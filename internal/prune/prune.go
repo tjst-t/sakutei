@@ -34,6 +34,8 @@
 //  4. List drop-rate gate (§12.4b): if the current List count has dropped more
 //     than the configured threshold relative to the previous cycle's count, the
 //     engine halts prune for this cycle and emits a PruneHalted event.
+//     Removals the daemon made in a planned_change lane (§13.3) are noted with
+//     NotePlannedRemoval and are not counted as a drop.
 //  5. unknown ≠ absent (ADR-0002): resources whose Observe returned
 //     AvailabilityUnknown or AvailabilityConverging are excluded from the
 //     deletion candidate set even if they are absent from the intent.
@@ -41,7 +43,6 @@
 // Out of scope for this Story (deferred to Scf7762-2/3/4):
 //   - rate-limit / cumulative budget (§13)
 //   - remediation mode (§14.1) / freeze
-//   - planned_change (§13.3)
 package prune
 
 import (
@@ -99,6 +100,22 @@ type Engine struct {
 	// scopes of §24.5 (recorded from reality, never converged).  Set per
 	// cycle by SetExcludedScopes.
 	excluded []core.Scope
+
+	// plannedGone are the IDs removed in a planned_change lane since the
+	// baseline was last recorded (§13.3): their absence from the next List is
+	// declared, not a sudden drop.  Cleared when the baseline is updated.
+	plannedGone map[core.IDKey]bool
+}
+
+// NotePlannedRemoval records that id was deleted in a planned_change lane
+// (§13.3), so its disappearance from the next List is not counted by the
+// drop-rate gate (§12.4b).  Only removals the daemon itself made under a
+// declaration are discounted; any other shrink still halts.
+func (e *Engine) NotePlannedRemoval(id core.ID) {
+	if e.plannedGone == nil {
+		e.plannedGone = map[core.IDKey]bool{}
+	}
+	e.plannedGone[id.Key()] = true
 }
 
 // SetExcludedScopes sets the scopes whose reality is dropped before the
@@ -223,9 +240,28 @@ func (e *Engine) ComputePrune(
 	listResult.IDs = filteredIDs
 
 	// (b) Drop-rate gate (§12.4b): compare with last observed count.
+	//
+	// §13.3: the declared removals (planned_change lane deletes since the
+	// baseline) that are indeed gone from this List are taken off the baseline
+	// before the drop is measured.
 	currentCount := len(listResult.IDs)
-	if e.lastListCount > 0 {
-		drop := float64(e.lastListCount-currentCount) / float64(e.lastListCount)
+	baseline := e.lastListCount
+	if len(e.plannedGone) > 0 {
+		present := make(map[core.IDKey]bool, len(listResult.IDs))
+		for _, id := range listResult.IDs {
+			present[id.Key()] = true
+		}
+		for k := range e.plannedGone {
+			if !present[k] {
+				baseline--
+			}
+		}
+		if baseline < 0 {
+			baseline = 0
+		}
+	}
+	if baseline > 0 {
+		drop := float64(baseline-currentCount) / float64(baseline)
 		if drop > e.dropThreshold {
 			// Do NOT update lastListCount when halted: preserve the prior
 			// baseline so subsequent cycles with the same list see the same
@@ -233,7 +269,7 @@ func (e *Engine) ComputePrune(
 			// cycle.
 			reason := fmt.Sprintf(
 				"List count dropped from %d to %d (%.0f%% > threshold %.0f%%); halting prune to prevent accidental bulk delete",
-				e.lastListCount, currentCount,
+				baseline, currentCount,
 				drop*100, e.dropThreshold*100,
 			)
 			fmt.Fprintf(errOut, "sakutei: prune HALT: %s\n", reason)
@@ -246,6 +282,7 @@ func (e *Engine) ComputePrune(
 
 	// Update last count for the next cycle.
 	e.lastListCount = currentCount
+	e.plannedGone = nil
 
 	// (2) Pruneable gate — TYPE level (§12.3, ADR-0005).
 	//

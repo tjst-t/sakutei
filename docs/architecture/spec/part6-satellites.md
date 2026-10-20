@@ -398,6 +398,7 @@ JSON Schema の `additionalProperties: false` で閉じており、未知のキ�
 | `pools` | 採番プール（`name` / `range` / `claim` / `space`） | §19.8 |
 | `scopes` | scope ごとの mode（`scope` / `mode: converge \| sync` / `sync.target_path`） | §24.5 |
 | `observe_tiers` | Observe 頻度の tier（`name` / `observe_every`） | §16.5 |
+| `planned_change` | 大量正当作業の宣言（`scope` / `kind` / `max_count` / `window` / `approval`）。1 件はオブジェクト、複数は配列（v1.5） | §13.3 |
 | `version` | 文字列（Norway 問題の代表例として型を string に固定） | 本節 |
 
 | resource のキー | 内容 | 正 |

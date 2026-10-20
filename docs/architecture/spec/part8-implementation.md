@@ -43,7 +43,7 @@ v1a が実証するのは二つの体験である——**「触っていない�
 - **`tier: foundation`**（基盤サービスを依存の根として DAG 順序に反映・§8）。
 - render パイプライン（2フェーズ / TTL キャッシュ / 障害時は前回値保持 + **incomplete≠empty 急減検知**・§9）。ただし **v1a のフェーズ2 展開は非採番の固定値展開のみ**（採番連携は v1b）。
 - **rate limit + halt**（in-flight を含めて評価）+ **破壊的変更の累積時間窓予算**（§13）+ **List 完全性検証**（件数急減 halt・scope 単位閾値宣言・§12）+ **異常検知の "halt-all で凍結" セマンティクス**（§13）。
-- **`planned_change` 宣言 + 専用予算レーン**（§13）——大量正当作業の解除弁。型と予算レーン評価は v1a（承認情報 requirements 連携は v1.5）。
+- **`planned_change` 宣言 + 専用予算レーン**（§13）——大量正当作業の解除弁。型と予算レーン評価は v1a（承認情報 requirements 連携は v1.5）。**実装は v1.5 にずれ込んだ**（Backlog #39・§13.3「v1.5 の実装」）。
 - **運用プロファイル（solo / team / enterprise）**（§14）——規模別の安全既定値セット。既定は team。
 - `ownership: platform` の破壊的大量変更は **A タグでも承認必須**（悪意・誤操作の両方を止める・§13。solo は cooling-off で代替可・§14）。
 - Event 型 + 構造化ログ（JSON）出力。
@@ -100,7 +100,8 @@ intent_revision が YAML の intent を数えていなかった（§9.4）。
 - **最小 Workflow**：**直列（one-at-a-time）+ 不変条件（invariant）+ 手動承認ゲート**のみ（§6/§14）。ローリング / DR の骨格をこの3要素で表現する。**動的 select・自動 canary 判定・自動段階ロールアウトは v2**。
 - **承認ゲートの N-of-M 拡張**（§14）——承認者要件（N-of-M・役割制約・separation〈申請者≠承認者〉・全承認者の S4 記録）。ゲート定義の `requirements` と承認 API の署名対応のみで実装。
 - **災害時運用経路（DR モード）**（§25）——DR intent のプリステージ（claim ハンドオフ + DR Workflow の組み合わせ）+ 緊急ローカル書込経路（書込 break-glass の型 + Event/S4 検出 + 事後合流 PR 起票）。
-- **`planned_change` の承認情報連携**（§13）——v1a で入れた予算レーンに、承認 requirements を接続する。
+- **`planned_change` 宣言 + 専用予算レーン**（§13）——v1a から持ち越し（Backlog #39 で実装）。
+- **`planned_change` の承認情報連携**（§13）——予算レーンに、承認 requirements を接続する。
 - **`remediation schedule`**（§14）——保守窓文化の構成で必須なので v1.5 で入れる。
 
 ### §27.5 v2 以降
@@ -254,9 +255,9 @@ Ansible provider では横断保証の多くが落ちる。**check mode は「�
 | 項目 | 決める内容 | 関連 |
 |---|---|---|
 | **多相 Task の「相の途中 death」の人手ゲート** | 各相の入口 Observe（§6）は相境界の death は守るが、Applying 途中（書き込み中）の death を「リブート中」と bricked で区別できない。Applying を「危険区間」としてマークし、区間内 death は Observe で Done 確認できない限り **auto 再開を禁止し人手ゲート**にする、その具体判定 | §6 |
-| **reimage の delete/create ペアリング判定** | `planned_change` の `kind: reimage` 宣言下で、再イメージが「delete 誤計上」でなく正当な delete→create の対であることを機械的に確認する判定基準 | §13 |
+| **reimage の delete/create ペアリング判定** | `planned_change` の `kind: reimage` 宣言下で、再イメージが「delete 誤計上」でなく正当な delete→create の対であることを機械的に確認する判定基準。**v1.5 で決定**：同じ周期の Plan で、同じ provider・scope のラベル集合が完全一致・1 対 1（§13.3「v1.5 の実装」） | §13 |
 | **break-glass の到達不能判定基準・合流競合手順** | 緊急ローカル書込経路（§25）を発動してよい「git 到達不能」の判定基準と、復旧後に本流と事後合流するときの競合解消手順 | §25 |
-| **`planned_change` の kind 整合検証** | 宣言 kind（reimage / decommission 等）と実際に生じた Plan の操作種別が一致することの検証ルール | §13 |
+| **`planned_change` の kind 整合検証** | 宣言 kind（reimage / decommission 等）と実際に生じた Plan の操作種別が一致することの検証ルール。**v1.5 で決定**：kind ごとに通す操作種別を固定し（delete→Delete、update→Update、reimage / recreate→対の Delete+Create）、scope 内で kind の合わない破壊的 op はレーンに入れず通常予算で評価して `PlannedChangeKindMismatch` を出す（§13.3） | §13 |
 | **List 急減閾値のチューニング** | scope 単位で宣言する件数急減 halt の閾値の実運用値（誤発火と見逃しの均衡） | §12 |
 | **Ansible executor の Observe 頻度** | fork + SSH の高レイテンシ層で tier 別間引き（§16。`observe_tier`）をどう既定するか。executor を実装するまでの既定は「毎周」 | §16 |
 | **運用パラメータ** | Sync Mode の commit 主体（bot / 署名有無）、scope 昇格の「N 日間 diff ゼロ」の N、reconcile 間隔既定値、freeze の粒度 | §14/§24 |
@@ -302,3 +303,4 @@ v1b の実装中に見つけ、Backlog に積んだ（または未登録の）�
 |---|---|---|
 | dnszone が読めない行を黙って読み飛ばす（Backlog #37） | ゾーンファイルの解釈できない行を捨てるため、打ち間違えたレコードが `Read` で「無い」（`ok` + 空の State）と見なされ、Create されて重複しうる。unknown ≠ absent（§4.5）に照らせば読めない行は `unknown` / error にするのが安全側だが、未対応の RFC1035 構文を含む既存のゾーンファイルがすべて `unknown` になるため、どこまで厳しく読むかは未決 | §4.5・§12.4 |
 | `reconcile --expect-revision` が未実装 | §26.6 の verb の一つだが、v1b 時点の `reconcile` にこのフラグは無い | §26.6 |
+| 予算カウンタが S3（メモリ）のまま（v1.5 で確認・未登録） | §13.2 は累積時間窓予算のカウンタを S2 相当として永続化すると定めるが、実装はメモリに持ち、再起動で窓がリセットされる。planned_change のレーン使用量（§13.3）も同じで、再起動をまたぐと `max_count` を超えうる。one-shot `reconcile` がレーンを開かないのはこのため | §13.2・§13.3 |

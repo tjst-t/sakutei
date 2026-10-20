@@ -176,7 +176,17 @@ planned_change:
 - **reimage の delete 誤計上を解消**:再イメージは内部的に delete+create に見えて破壊予算を食い潰すが、**変更種別 `kind: reimage` を宣言**すれば「これは再イメージであって純粋な削除ではない」と分類され、一斉再イメージが破壊予算に delete としてカウントされない。
 - **窓を過ぎたら自動失効**し、通常予算に戻る（宣言の効力は window に閉じる。恒久緩和にならない）。
 
-**宣言外の変更は引き続き通常予算で評価される**。`planned_change` が site-a の reimage を許可していても、同じ周期で起きた宣言外の delete（別 scope・別種別・上限超過分）は通常の rate limit / 破壊予算 / halt が効く。すなわち **「宣言中でも、宣言外の暴発は止まる」**——これが「バイパスではなく専用レーン」の意味である。`planned_change` の型と専用予算レーンの評価は v1a、承認情報の requirements 連携（§14.4）は v1.5 に属する。
+**宣言外の変更は引き続き通常予算で評価される**。`planned_change` が site-a の reimage を許可していても、同じ周期で起きた宣言外の delete（別 scope・別種別・上限超過分）は通常の rate limit / 破壊予算 / halt が効く。すなわち **「宣言中でも、宣言外の暴発は止まる」**——これが「バイパスではなく専用レーン」の意味である。`planned_change` の型と専用予算レーンの評価は v1a に置く設計だったが、実装は v1.5 で入った（Backlog #39）。承認情報の requirements 連携（§14.4）は v1.5 の別タスクに属する。
+
+**v1.5 の実装**（Backlog #39）：
+
+- **書式**：intent のトップレベルの `planned_change:`。1 件はオブジェクト、複数は配列で書く（v1b の YAML サブセットではブロックで書く・§21.3）。`scope`（空は拒否）・`kind`（`delete` / `update` / `reimage` / `recreate`）・`max_count`（1 以上）・`window` は必須、`approval`（`pr` / `approvers`）は任意で、記録するだけである。`window` は `"<開始> .. <終了>"` で、各端は RFC 3339 か `YYYY-MM-DD HH:MM`（ゾーン無しは UTC）。窓は `[開始, 終了)`。同じ scope・kind・窓の宣言を二度書くとロード時に拒否する。
+- **kind と Plan の操作種別（§29.1 kind 整合検証の決定）**：`delete` は Delete op、`update` は Update op、`reimage` / `recreate` は下記の対になった Delete+Create を通す（対 1 組で枠を 1 消費する。予算上 `reimage` と `recreate` は同じで、違いは監査上の名前だけ）。有効な宣言の scope 内にあるのに kind が合わずレーンに入らない破壊的 op は、通常予算で評価し、`PlannedChangeKindMismatch` Event を出す。
+- **reimage / recreate の対（§29.1 ペアリング判定の決定）**：同じ周期の Plan の Delete X と Create Y は、(1) 同じ provider、(2) scope のラベル集合が完全に一致（宣言 scope の内側、だけでは足りない。同じ置き場所の入れ替えであること）、(3) 1 対 1（同じ scope の中で Local ID 昇順に組む）のとき対になる。余った Delete は純粋な削除（kind 不一致）、余った Create はただの追加として通常予算で評価する。scope に機体を表すラベル（`slot` など）を持たせれば、1 台ずつの入れ替えとして判定される。
+- **レーンの計上**：レーンに入った op は通常の rate limit・累積時間窓予算の計算から外し、通常予算の halt でも止めない（capacity gate など予算以外のゲートは止める）。枠は op を provider へ発射する直前に消費する（halt や skip で発射しなかった op は枠を減らさない。発射して失敗した op の枠は戻さない＝保守側）。枠を超えた分は `PlannedChangeExhausted` を出して通常予算で評価する。窓を過ぎた宣言は `PlannedChangeExpired` を一度出して失効する。レーンで in-flight の Apply は通常予算の in-flight 計上に入れない。
+- **List 急減 halt との連動**：常駐ループがレーンで削除した ID は prune engine に記録し、次の List でそれが消えていれば、その件数を前周の基準件数から引いてから急減を測る。数えないのは**自分が宣言の下で消したもの**だけで、それ以外の減少は従来どおり halt する。
+- **経路**：レーンを開くのは常駐ループ（と同じ予算を共有する早期収束の scoped run）だけである。one-shot の `sakutei reconcile` は呼び出しごとに予算エンジンを作り直し、`max_count` を呼び出しをまたいで守れないため、宣言があっても全変更を通常予算で評価する（その旨を表示する）。
+- **既知の限界**：レーンの使用量は通常予算の累積カウンタと同じく S3（メモリ）で、再起動で戻る（§13.2 の S2 永続化は未実装・§29.6）。
 
 ### §13.4 capacity gate
 

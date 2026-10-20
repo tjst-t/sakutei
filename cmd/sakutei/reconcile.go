@@ -203,6 +203,13 @@ func runReconcile(args []string) {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: load intent: %v\n", err)
 		os.Exit(1)
 	}
+	// §13.3: the planned_change lanes are opened only by the resident loop.
+	// One-shot reconcile builds a fresh budget engine every invocation, so it
+	// could not hold a declaration to its max_count across runs; it evaluates
+	// every change by the normal budget instead (conservative).
+	if len(in.PlannedChanges) > 0 {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: note: %d planned_change declaration(s) are honoured only by the resident loop (sakutei); this one-shot run evaluates every change by the normal budget\n", len(in.PlannedChanges))
+	}
 	intentResources, rev := in.Resources, in.Revision
 	var externalInputs []string
 	recomputeRendered := false

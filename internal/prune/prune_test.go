@@ -418,3 +418,42 @@ func TestPruneEngine_OnlyWithinDeclaredScope(t *testing.T) {
 		t.Fatalf("want only orphan-t deleted, got %v", result.DeleteOps)
 	}
 }
+
+// TestPruneEngine_CountDrop_PlannedRemovalNotCounted verifies §13.3: removals
+// noted as planned_change lane deletes are not a sudden drop, while an extra,
+// undeclared shrink on top of them still halts.
+func TestPruneEngine_CountDrop_PlannedRemovalNotCounted(t *testing.T) {
+	ids := make([]core.ID, 10)
+	for i := range ids {
+		ids[i] = makeID("vm-" + string(rune('a'+i)))
+	}
+	run := func(engine *prune.Engine, list []core.ID) prune.PruneResult {
+		t.Helper()
+		res, err := engine.ComputePrune(context.Background(), &fakeCompleteList{ids: list}, &fakeObserver{},
+			core.NewScope(nil), core.NewScope(nil), pruneDesired("vm-a"), nil, &bytes.Buffer{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	// 10 → 3 with the 7 vanished IDs declared: not halted.
+	engine := prune.New()
+	run(engine, ids)
+	for _, id := range ids[3:] {
+		engine.NotePlannedRemoval(id)
+	}
+	if res := run(engine, ids[:3]); res.Halted {
+		t.Fatalf("declared removals must not trip the drop gate: %s", res.HaltReason)
+	}
+
+	// 10 → 2 with only 4 declared: 6 → 2 is still a 67% drop → halt.
+	engine = prune.New()
+	run(engine, ids)
+	for _, id := range ids[6:] {
+		engine.NotePlannedRemoval(id)
+	}
+	if res := run(engine, ids[:2]); !res.Halted {
+		t.Fatalf("an undeclared shrink on top of the declared one must still halt")
+	}
+}
