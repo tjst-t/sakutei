@@ -457,7 +457,7 @@
       "number": 27,
       "kind": "task",
       "title": "v1b: BulkObserve の実装（dnszone・nftables で実証）と一貫性契約の SDK 強制",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [
         "v1b-golden-path-bulkobserve"
@@ -471,7 +471,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T20:06:57.764Z",
+      "updatedAt": "2026-10-20T20:07:58.253Z",
       "closedAt": null,
       "extra": {}
     },
