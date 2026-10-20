@@ -91,6 +91,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/executor"
+	"github.com/tjst-t/sakutei/internal/fencing"
 	"github.com/tjst-t/sakutei/internal/lastseen"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
@@ -136,14 +137,22 @@ type Config struct {
 	// Zero value (ModeAuto, Freeze=false) means Apply and prune execute normally.
 	Remediation remediation.Config
 
-	// Claim is the --claim scope-selector (§17.1, FIX #6).  It scopes the prune
-	// boundary: reality IDs whose scope does not match the claim are dropped
-	// before the set-difference, so an out-of-claim resource is never treated as
-	// an orphan.  The zero value (empty Scope, no labels) matches every scope —
-	// the daemon's default single-shard behaviour — so leaving it unset preserves
-	// whole-world prune.  (The daemon does not yet narrow `desired` by claim; this
-	// field keeps the prune boundary symmetric for when it does.)
+	// Claim is the --claim scope-selector (§17.1).  A desired resource whose
+	// scope does not match the claim is dropped before Observe — an out-of-claim
+	// scope is never Observed, Diffed or Applied — and the prune boundary is
+	// narrowed the same way (reality outside the claim is never an orphan).  The
+	// zero value (empty Scope, no labels) matches every scope — the daemon's
+	// default single-shard behaviour.
 	Claim core.Scope
+
+	// Fencing detects a double claim (§15.2, §17.1).  Each cycle the scopes in
+	// the claim are synced against the fencing store: a scope not yet held is
+	// acquired (generation bump); a scope whose generation was bumped by another
+	// shard is fenced — dropped from Observe/Apply and excluded from prune for
+	// the rest of this daemon's life.  Every Apply/Delete re-checks the token
+	// right before calling the provider.  A store error skips the cycle.  Nil
+	// means no fencing (single shard).
+	Fencing *fencing.Guard
 
 	// S072a14-3: render pipeline configuration.
 
@@ -243,6 +252,18 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.Interval, cfg.IntentDir, cfg.StatePath, effectiveMode)
 	}
 
+	if len(cfg.Claim.Labels) > 0 || cfg.Fencing != nil {
+		claim := cfg.Claim.String()
+		if claim == "" {
+			claim = "(whole world)"
+		}
+		shard := "(no fencing)"
+		if cfg.Fencing != nil {
+			shard = cfg.Fencing.Holder()
+		}
+		fmt.Fprintf(cfg.Out, "sakutei: claim=%s shard=%s\n", claim, shard)
+	}
+
 	d := NewDaemon(cfg)
 	ifl := d.ifl
 
@@ -280,6 +301,10 @@ func Run(ctx context.Context, cfg Config) error {
 		} else {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d applied=%d launched=%d\n",
 				cycleNum, res.Observed, res.Applied, res.Launched)
+		}
+		if len(res.Fenced) > 0 {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: FENCED scope(s) %v: another shard holds a newer fencing generation; not converging them\n",
+				cycleNum, res.Fenced)
 		}
 		if len(res.NotDue) > 0 {
 			// #30 (§16.5): resources thinned by their tier this cycle.
@@ -408,6 +433,10 @@ func NewDaemon(cfg Config) *Daemon {
 	fp := cfg.Provider
 	engine := diff.New(fp.Schema())
 	var exec executor.Executor = executor.New()
+	if cfg.Fencing != nil {
+		// §15.2: every Apply/Delete passes the token check first.
+		exec = &fencing.Executor{Inner: exec, Guard: cfg.Fencing}
+	}
 
 	// Scf7762-1: create the prune Engine ONCE, here, outside the cycle loop, so
 	// its S3 baseline (lastListCount) survives across cycles for the whole daemon
@@ -563,6 +592,15 @@ type CycleResult struct {
 	CapacityHalted bool
 	// CapacityReason is the human-readable explanation of the capacity halt.
 	CapacityReason string
+
+	// Claim / fencing fields (§17.1, §15.2):
+
+	// ExcludedByClaim is the number of desired resources outside --claim.
+	// They were not Observed.
+	ExcludedByClaim int
+	// Fenced lists the scope keys fenced this cycle (another shard holds a
+	// newer generation).  Their resources were not Observed, Applied or pruned.
+	Fenced []string
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -687,11 +725,11 @@ func runCycleAsync(
 	// #23: mode: sync scopes (§24.5) are never converged; their reality must
 	// never be an orphan candidate for prune.  Refreshed every cycle with the
 	// intent.
+	var syncScopes []core.Scope
+	for _, sp := range in.SyncScopes() {
+		syncScopes = append(syncScopes, sp.Scope)
+	}
 	if pruneEngine != nil {
-		var syncScopes []core.Scope
-		for _, sp := range in.SyncScopes() {
-			syncScopes = append(syncScopes, sp.Scope)
-		}
 		pruneEngine.SetExcludedScopes(syncScopes)
 	}
 
@@ -741,9 +779,62 @@ func runCycleAsync(
 	// Build the desired slice: only non-composite resources enter Diff/Apply.
 	// Composite parents are excluded; their children represent them in the DAG.
 	desired := make([]diff.DesiredResource, 0, len(expanded))
+	excludedByClaim := 0
 	for _, r := range expanded {
-		if !r.IsComposite {
-			desired = append(desired, r.DesiredResource)
+		if r.IsComposite {
+			continue
+		}
+		// §17.1: a scope outside the claim is not Observed at all.
+		if !r.DesiredResource.ID.Scope.Matches(cfg.Claim) {
+			excludedByClaim++
+			continue
+		}
+		desired = append(desired, r.DesiredResource)
+	}
+
+	// §15.2 / §17.1: double-claim detection.  Fenced scopes leave the cycle
+	// entirely: not Observed, not Applied, and their reality is excluded from
+	// prune (dropping them from desired must not turn them into orphans).
+	var fencedScopes []string
+	if cfg.Fencing != nil {
+		scopes := make([]core.Scope, 0, len(desired))
+		for _, r := range desired {
+			scopes = append(scopes, r.ID.Scope)
+		}
+		sr, fenceErr := cfg.Fencing.Sync(ctx, scopes)
+		if fenceErr != nil {
+			return CycleResult{ExcludedByClaim: excludedByClaim},
+				fmt.Errorf("fencing store unreachable; cycle skipped (no Observe/Apply/prune): %w", fenceErr)
+		}
+		for _, a := range sr.Acquired {
+			if a.Previous.Generation > 0 && a.Previous.Holder != a.Token.Holder {
+				fmt.Fprintf(cfg.ErrOut, "sakutei: fencing: scope %s taken over from %q (generation %d -> %d); the previous holder is fenced from now on\n",
+					a.Token.Scope, a.Previous.Holder, a.Previous.Generation, a.Token.Generation)
+			} else {
+				fmt.Fprintf(cfg.Out, "sakutei: fencing: scope %s acquired by %q at generation %d\n",
+					a.Token.Scope, a.Token.Holder, a.Token.Generation)
+			}
+		}
+		if len(sr.Fenced) > 0 {
+			fenced := map[string]bool{}
+			excluded := append([]core.Scope(nil), syncScopes...)
+			for _, fe := range sr.Fenced {
+				fenced[fe.Scope] = true
+				fencedScopes = append(fencedScopes, fe.Scope)
+				fmt.Fprintf(cfg.ErrOut, "sakutei: FENCED: %v\n", fe)
+			}
+			kept := desired[:0]
+			for _, r := range desired {
+				if fenced[fencing.ScopeKey(r.ID.Scope)] {
+					excluded = append(excluded, r.ID.Scope)
+					continue
+				}
+				kept = append(kept, r)
+			}
+			desired = kept
+			if pruneEngine != nil {
+				pruneEngine.SetExcludedScopes(excluded)
+			}
 		}
 	}
 
@@ -1168,6 +1259,9 @@ func runCycleAsync(
 
 		CapacityHalted: capacityHalted,
 		CapacityReason: capacityDecision.Reason,
+
+		ExcludedByClaim: excludedByClaim,
+		Fenced:          fencedScopes,
 	}, nil
 }
 

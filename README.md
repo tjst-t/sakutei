@@ -74,12 +74,13 @@ unmanaged（宣言外・実在・prune 対象外）: 1 リソース
 ## CLI
 
 ```
-sakutei              # 常駐して回り続ける（本来の姿）      --claim <scope-selector>
+sakutei              # 常駐して回り続ける（本来の姿）      --claim <scope-selector> [--fencing-store <ファイル> --shard-id <名前>]
 sakutei plan         # dry-run: 何が変わるか（Diff で止まる）
 sakutei reconcile    # 1 回収束（手動キック）              --expect-revision <rev>
 sakutei status       # 適合レポート（drifted / unmanaged 一覧、read-only）
 sakutei import       # 既存リアルを intent（YAML）として書き出す   --provider <名前> --out <dir> [--scope k=v]
 sakutei sync         # mode: sync の scope の現実を generated/ に記録する（Apply しない）  --provider <名前> [--interval 30s]
+sakutei fence        # 各 scope の fencing 世代と holder を表示する（read-only）  --store <ファイル>
 ```
 
 `import` は現実を List と Read で観測し、`<dir>/imported-<provider>.yaml` に書き出します。直後の `plan` は差分ゼロになります。何度か観測して（`--samples`、既定 3 回）値が変わったフィールドには **managed 候補** の印を付けます。書き出すのは「現状のスナップショット」なので、人が読んで整理してから intent にしてください。全リソースは `deletion_policy: ExplicitAbsentOnly`（prune しない）で書き出され、secret の平文は書き出しません。
@@ -89,6 +90,15 @@ sakutei sync         # mode: sync の scope の現実を generated/ に記録す
 **採番（v1b）**：VLAN などの番号はプールから払い出せます。intent のトップレベルの `pools:` にプール（`name`・`range: "100-199"`）を宣言し、フィールドに `from_pool: <プール名>` と書きます。`reconcile` と常駐ループは `--alloc-store <ファイル>` の採番記録から払い出し（同じリソースには常に同じ値）、`plan` と `status` は既存の割当を引くだけです（未割当は「割り当て待ち」と表示）。
 
 **tier 別の Observe 頻度（v1b）**：常駐ループは既定で毎周すべてのリソースを Observe します。Observe が重い層（NETCONF・CLI・Ansible など）は、intent のトップレベルの `observe_tiers:` に tier（`name`・`observe_every: N`）を宣言し、リソースに `observe_tier: <名前>` と書くと、収束しているあいだは N 周に1回だけ Observe されます。初回・未収束（差分・エラー）・desired が変わった周は間引かずに Observe するので、遅れるのは安定したリソースの drift 検知だけです（最大 N−1 周）。`observe_tier` を書かないリソースは毎周のままです（Ansible executor の既定値も、executor を実装するまで「毎周」です）。キーを `tier:` にしていないのは、設計（§8）が `tier: foundation`（DAG 順序の優先度帯）にその名前を使っているためで、二つは別の設定です。
+
+**静的シャーディング（v1b）**：常駐ループを `--claim site=tokyo` で起動すると、claim にマッチする scope のリソースだけを収束します。マッチしない scope は Observe もしません（prune の対象からも外れます）。シャードを複数動かすときは、全シャードで同じ `--fencing-store <ファイル>` を指定し、`--shard-id` でシャードごとに名前を付けます。シャードは claim 内の scope を初めて収束するとき、その scope の fencing 世代を1つ上げて自分を holder にします。Apply と Delete の直前には毎回、手元の世代がストアの現在世代と一致するかを確かめます。2つのデーモンが同じ scope を claim すると、後から世代を上げた方が勝ち、古い世代の方はその scope への書き込みを拒否されて `FENCED` を出します（その scope は Observe・Apply・prune のどれもしません）。fence されたシャードは、再起動するまでその scope を取り返しません。fencing ストアに届かない周は、何もせずに飛ばします。
+
+再シャード（scope を別のシャードへ移す、§17.6）は、v1b では次の手動手順です（Workflow による自動化は v1.5）。
+
+1. **drain**：旧シャードで対象 scope への新規 Apply を止め、in-flight の Apply が終わるのを待つ（`--mode alert-only` で再起動するなど）。
+2. **claim 変更 PR**：シャード割当（各シャードの `--claim`）の変更をレビューしてマージする。
+3. **fencing 世代の更新**：新シャードを新しい claim で起動する。新シャードが対象 scope の世代を上げ、旧シャードはその scope だけ fence される（ほかの scope の収束は続く）。`sakutei fence --store <ファイル>` で holder が新シャードに替わったことを確かめる。
+4. **旧シャードの再起動**：旧シャードを新しい claim で再起動する。再起動しないと、旧シャードは対象 scope について `FENCED` を出し続ける。
 
 `apply` は意図的に主 verb にしていません（「いつ変えるか」は収束が決める）。`plan` と `status` を前面に置くこと自体が、このソフトのレビュー体験です。
 

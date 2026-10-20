@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/budget"
+	"github.com/tjst-t/sakutei/internal/fencing"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
@@ -70,6 +71,8 @@ func main() {
 		runImport(os.Args[2:])
 	case "sync":
 		runSync(os.Args[2:])
+	case "fence":
+		runFence(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Fprintf(os.Stdout, "sakutei %s\n", version)
 	case "help", "--help", "-h":
@@ -89,6 +92,9 @@ func main() {
 //	--intent <dir>       directory containing intent JSON files (required)
 //	--state  <file>      path to the fake provider state file (default: sakutei-fake-state.json)
 //	--interval <dur>     convergence cycle period (default: 10s; use short values in tests)
+//	--claim <selector>   converge only the matching scopes (§17.1)
+//	--fencing-store <f>  fencing generation store shared by all shards (§15.2)
+//	--shard-id <id>      fencing holder ID of this shard
 //
 // The loop runs until SIGTERM or SIGINT is received, at which point it stops
 // at the next cycle boundary and exits 0.
@@ -145,6 +151,15 @@ func runDaemon() {
 		"remediation mode: auto | alert-only (§14.1); alert-only detects drift but does not Apply")
 	freeze := fs.Bool("freeze", false,
 		"global freeze: override to alert-only regardless of --mode (§14.3 escape hatch)")
+
+	// #28: static sharding (§17).  --claim narrows convergence to the matching
+	// scopes; --fencing-store turns on double-claim detection (§15.2).
+	claim := fs.String("claim", "",
+		"scope-selector restricting convergence to a claim, e.g. site=tokyo,cluster=prod (§17.1); empty=whole world")
+	fencingStore := fs.String("fencing-store", "",
+		"fencing generation store file shared by all shards (§15.2, §17.1); empty=no double-claim detection")
+	shardID := fs.String("shard-id", "",
+		"this shard's ID recorded as the fencing holder (default: <hostname>-<pid>)")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// "-h"/"--help" makes flag.Parse return flag.ErrHelp after printing
@@ -208,6 +223,24 @@ func runDaemon() {
 		Freeze: *freeze,
 	}
 
+	claimSelector, claimErr := parseClaimSelector(*claim)
+	if claimErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: invalid --claim %q: %v\n", *claim, claimErr)
+		os.Exit(1)
+	}
+	var guard *fencing.Guard
+	if *fencingStore != "" {
+		id := *shardID
+		if id == "" {
+			host, _ := os.Hostname()
+			id = fmt.Sprintf("%s-%d", host, os.Getpid())
+		}
+		guard = fencing.NewGuard(fencing.NewFileStore(*fencingStore), id)
+	} else if *shardID != "" {
+		fmt.Fprintln(os.Stderr, "sakutei: --shard-id requires --fencing-store")
+		os.Exit(1)
+	}
+
 	// S62dbba-2: resolve the "fake" provider via the ProviderRegistry.
 	// The daemon currently supports a single provider (the state file path is
 	// provided via --state).  Multi-provider daemon support is a future Story.
@@ -269,6 +302,8 @@ func runDaemon() {
 		ExternalInputResolver: resolverCache,
 		Allocation:            openAllocStore(*allocStore),
 		Inventory:             inventory,
+		Claim:                 claimSelector,
+		Fencing:               guard,
 	}
 
 	if err := reconcile.Run(context.Background(), cfg); err != nil {
@@ -288,6 +323,7 @@ Usage:
   sakutei status       report drifted resources
   sakutei import       export existing reality as intent YAML
   sakutei sync         record the reality of mode: sync scopes into generated/
+  sakutei fence        show the fencing generations of claimed scopes (§17.6)
   sakutei version      print version information
   sakutei help         show this help message
 `)
