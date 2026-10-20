@@ -427,6 +427,29 @@
       "updatedAt": "2026-10-20T08:43:47.028Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "v1-5-task-workflow-planned-change-remedi",
+      "number": 19,
+      "kind": "story",
+      "title": "v1.5: 単純 Task・最小 Workflow・planned_change・remediation schedule",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1.5"
+      ],
+      "body": "設計 §27.4。20 構成の適用検討のうち 12 構成が「事業の核」を Task/Workflow に依存させていたため、最小形を v2 から前倒しする。ADR-0006/0014。\n\n- 単純 Task（一度実行して現実側に完了印。S2 は進行フェーズのみ）\n- 最小 Workflow：直列 + 不変条件 + 手動承認ゲート（動的 select・自動 canary は v2）\n- 承認ゲートの N-of-M 拡張（役割制約・申請者≠承認者・全承認者を S4 に記録）\n- DR モード（DR intent のプリステージ + 書込 break-glass + 事後合流 PR）\n- planned_change の承認情報連携\n- remediation schedule（時間帯連動）・運用プロファイル（solo/team/enterprise）\n\nv1b のあとに分割する。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:47.700Z",
+      "updatedAt": "2026-10-20T08:43:47.700Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
