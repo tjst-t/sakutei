@@ -559,13 +559,13 @@
       "labels": [
         "test"
       ],
-      "body": "旧 ROADMAP.json の backlog（S94f1f9 で追加）。並行・周期のテスト（Inflight/Loop/DAG）で、時間に左右される失敗がまれに見られた（18 回以上回して再現せず）。interval/deadline の余白を広げるか、決定的な同期点を入れて、さらに起きにくくする。",
+      "body": "旧 ROADMAP.json の backlog（S94f1f9 で追加）。並行・周期のテスト（Inflight/Loop/DAG）で、時間に左右される失敗がまれに見られた（18 回以上回して再現せず）。interval/deadline の余白を広げるか、決定的な同期点を入れて、さらに起きにくくする。\n\n**2026-10-20 追記**：原因の 1 つが分かり、#10 のコミット ae2a771 で直した。fake provider が state ファイルを直接上書きしていたため、テストが書き込みの途中を読んで `unexpected end of JSON input` で落ちることがあった（TestBudget_ProgressiveDestruction_Daemon で観測）。これは一時ファイル + rename の書き込みにして解消した。逆向きの競合は残っている。テストがデーモンの動いている最中に state ファイルを直接書き換える（ドリフトの注入）と、デーモンが書き込みの途中を読みうる。完了条件の 20 回はまだ回していない。",
       "doneWhen": "go test -count=20 ./tests/acceptance/ が全部合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:43:21.590Z",
-      "updatedAt": "2026-10-20T08:43:21.590Z",
+      "updatedAt": "2026-10-20T10:00:25.144Z",
       "closedAt": null,
       "extra": {}
     },
