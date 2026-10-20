@@ -501,7 +501,7 @@
       "number": 29,
       "kind": "task",
       "title": "v1b: claim の git 配布・S2-free シャード階級・エッジの資格局所性",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [
         "v1b-claim-fencing-claim"
@@ -515,7 +515,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T08:44:17.592Z",
+      "updatedAt": "2026-10-20T12:50:59.372Z",
       "closedAt": null,
       "extra": {}
     },
