@@ -330,6 +330,31 @@
       "updatedAt": "2026-10-20T08:43:23.910Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "item-2",
+      "number": 15,
+      "kind": "task",
+      "title": "外部入力不達でサイクルをスキップし続けるときの上限と通知",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "enhancement",
+        "render",
+        "status"
+      ],
+      "body": "旧 ROADMAP.json の backlog（S072a14 review D-3）。\n\nデーモン（internal/reconcile の Run / runCycleAsync）は、外部入力が初回から届かず前回値のキャッシュもないとき、そのサイクルを halt-safe にスキップする。しかし連続スキップに上限も通知もないので、外部の権威が長く届かないと収束が静かに止まり続ける。CycleResult に SkippedDueToUnreachable を足し、Run で連続スキップ回数を数えてログに出し、`sakutei status` の適合レポートにも出す。",
+      "doneWhen": "外部入力を不達にしたまま N 周期回すと、連続スキップ回数がログと sakutei status に出ることをテストで示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:24.592Z",
+      "updatedAt": "2026-10-20T08:43:24.592Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
