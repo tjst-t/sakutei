@@ -24,6 +24,29 @@
       "updatedAt": "2026-10-20T08:42:11.521Z",
       "closedAt": "2026-10-20T08:42:11.521Z",
       "extra": {}
+    },
+    {
+      "id": "v1a-2-dag-wave-apply",
+      "number": 2,
+      "kind": "story",
+      "title": "v1a-2 収束ループと依存解決 — 周期・DAG/wave・非同期 Apply",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1a"
+      ],
+      "body": "旧 ROADMAP.json の Sprint 2（`S94f1f9`）。\n\nlevel-triggered な常駐ループ（Observe 全並列→Diff→サブ DAG→Kahn wave 並列 Apply→jitter sleep）、依存解決、非同期 Apply と in-flight 集合、per-resource backoff。ADR-0002 の本体。\n\n- S94f1f9-1 常駐収束ループ（観測 state レス）（3 件・loop_test.go）\n- S94f1f9-2 依存解決（DAG / Kahn wave、循環はロード時に拒否）（3 件・dag_test.go）\n- S94f1f9-3 非同期 Apply と in-flight・backoff（3 件・inflight_test.go）\n\n受け入れ条件の全文は git 履歴の `docs/ROADMAP.json`（コミット 9d7cf32）。テスト内タグ `[AC-S94f1f9-x-y]`。\n\n**確認（2026-10-20）**：`make check` が通り、9 件すべて合格。",
+      "doneWhen": "受け入れ条件 AC-S94f1f9-* 9 件のテストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:42:47.276Z",
+      "updatedAt": "2026-10-20T08:42:47.276Z",
+      "closedAt": "2026-10-20T08:42:47.276Z",
+      "extra": {}
     }
   ]
 }
