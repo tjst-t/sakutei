@@ -842,7 +842,7 @@
       "number": 41,
       "kind": "task",
       "title": "v1.5: 単純 Task と strategy: task（1-outstanding・RequiresTaskEvent）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-5-task-workflow-planned-change-remedi",
       "dependsOn": [],
       "milestone": null,
@@ -854,7 +854,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T13:38:03.379Z",
+      "updatedAt": "2026-10-20T13:49:11.342Z",
       "closedAt": null,
       "extra": {}
     },
