@@ -767,7 +767,7 @@
       "number": 34,
       "kind": "bug",
       "title": "intent_revision が YAML の intent を数えていない（YAML の編集が cause B に誤分類される）",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -779,7 +779,7 @@
       ],
       "body": "2026-10-20、#22（sakutei import）の作業中に見つけた。\n\nloader（LoadDir）は .json・.yaml・.yml を読むのに、intent_revision の計算（internal/revision の ComputeIntentRevision）は .json しかハッシュしていなかった。そのため YAML の intent を書き換えても intent_revision が変わらず、その変更が「意図の変更（cause A）」ではなく「現実のずれ（cause B）」と分類されていた。YAML だけのディレクトリでは、revision は常に空のデータのハッシュ（e3b0c4…）になる。--expect-revision による同一性の確認も、YAML の変更を見逃す。\n\n直し方：revision の計算でも loader と同じ拡張子を対象にする。JSON だけのディレクトリではハッシュは変わらない。",
       "doneWhen": "YAML の intent を書き換えると intent_revision が変わることを受け入れテストで示す（修正前は落ちることも確認）。make check と make test-race が合格",
-      "resolution": null,
+      "resolution": "コミット 51c2e5c。revision の対象を loader と同じ拡張子（.json/.yaml/.yml）にした。受け入れテスト revision_yaml_test.go を追加し、修正前は失敗・修正後は合格することを確認。make check と make test-race が合格。",
       "refs": [],
       "threads": [
         {
@@ -788,8 +788,8 @@
         }
       ],
       "createdAt": "2026-10-20T11:03:35.237Z",
-      "updatedAt": "2026-10-20T11:03:35.237Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T11:04:28.662Z",
+      "closedAt": "2026-10-20T11:04:28.662Z",
       "extra": {}
     }
   ]
