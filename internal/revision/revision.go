@@ -57,7 +57,7 @@ import (
 )
 
 // ComputeIntentRevision computes a deterministic SHA-256 hex digest of all
-// JSON intent files in dir, sorted by filename.
+// intent files (.json / .yaml / .yml) in dir, sorted by filename.
 //
 // The digest is computed over:
 //
@@ -71,8 +71,10 @@ import (
 //   - Adding, removing, or changing any byte in any file changes the digest.
 //   - Files whose names differ but whose contents are identical do NOT alias.
 //
-// Non-JSON files and subdirectories are silently skipped (matching
-// loader.LoadDir's behaviour).
+// Files with other extensions and subdirectories are silently skipped — the
+// same set of files loader.LoadDir reads.  (Until 2026-10 only .json was
+// hashed, so editing a YAML intent left intent_revision unchanged and the
+// change was misclassified as drift, cause B, instead of intent, cause A.)
 //
 // Returns an error if the directory cannot be read or any listed file cannot
 // be opened.  Returns an all-zero hash if the directory contains no JSON
@@ -83,13 +85,13 @@ func ComputeIntentRevision(dir string) (string, error) {
 		return "", fmt.Errorf("revision: read intent dir %s: %w", dir, err)
 	}
 
-	// Collect JSON file names, already in lexicographic order from ReadDir.
+	// Collect intent file names, already in lexicographic order from ReadDir.
 	var names []string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		if !strings.HasSuffix(e.Name(), ".json") {
+		if !isIntentFile(e.Name()) {
 			continue
 		}
 		names = append(names, e.Name())
@@ -177,4 +179,10 @@ func Compute(dir string, scope core.Scope) (core.RevisionInfo, error) {
 		IntentRevision:   intentHash,
 		RenderedRevision: rendered,
 	}, nil
+}
+
+// isIntentFile reports whether name is an intent file the loader reads.  Keep
+// in sync with loader.fileFormat.
+func isIntentFile(name string) bool {
+	return strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")
 }
