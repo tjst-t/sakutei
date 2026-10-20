@@ -312,7 +312,7 @@
       "number": 21,
       "kind": "task",
       "title": "v1b: SDK の BulkObserve 等価性テスト（BulkObserve(scope) ≡ {Read(id)}）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v1b",
       "dependsOn": [],
       "milestone": null,
@@ -320,7 +320,7 @@
       "labels": [],
       "body": "設計 §5.7 / §28.3。もとの #21（テストハーネス）を 3 つに分けたうちの 1 つ目（2026-10-20）。残りは「契約テストの Schema からの自動生成」と「golden path テンプレート」の別タスク。\n\nSDK に BulkEquivalenceTester を入れる。fake provider 上で `BulkObserve(scope) ≡ {Read(id) ∀ id ∈ scope}` を検証する。これを通ることが「完全階級 + bulk」を名乗る条件で、#27（実バルク実装）の土台になる。\n\n検査すること：\n- Capabilities.BulkObserve の宣言と、BulkObserver の実装の有無が一致する（どちら向きのずれも違反）\n- 対象の ID（明示するか、Lister があれば List(scope) が ListComplete で返したもの）すべてについて、bulk の結果に入っている（欠けていれば違反）\n- Availability が Read と同じで、Ok のときは State も同じ\n- bulk の各 Observation に ObservedAt が入っている\n- List から対象を取ったときは、bulk が scope の外の余計な ID を返していない\n\nfake provider には、BulkObserve を持つ版（既存の挙動は変えない別の型）を足す。",
       "doneWhen": "fake provider の bulk 版で BulkEquivalenceTester が合格し、わざと壊した provider（欠け・State 違い・Availability 違い・ObservedAt なし・宣言と実装のずれ）でそれぞれ失敗することをテストで示す。make check と make test-race が合格",
-      "resolution": null,
+      "resolution": "コミット 4e7288c。pkg/sdk の BulkEquivalenceTester と、fake provider の bulk 版（fakeprovider.NewBulk）を追加した。fake の bulk 版で合格し、壊した provider（欠け・State 違い・Availability 違い・ObservedAt なし・余計な ID・宣言と実装のずれの両方向）をそれぞれ報告することをテストで確認した。make check と make test-race が合格。",
       "refs": [],
       "threads": [
         {
@@ -329,8 +329,8 @@
         }
       ],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T10:50:15.364Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T10:52:45.090Z",
+      "closedAt": "2026-10-20T10:52:45.090Z",
       "extra": {}
     },
     {
