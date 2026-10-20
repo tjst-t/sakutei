@@ -359,7 +359,7 @@
       "number": 23,
       "kind": "task",
       "title": "v1b: ScopeMode（converge / sync）と Sync Mode の反映ループ",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [
         "v1b-sakutei-import-reverse-render-manage"
@@ -371,9 +371,14 @@
       "doneWhen": "sync の scope で現実を変えると intent 側に反映され、converge の scope では従来どおり現実が戻されることをテストで示す",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "842b31fe-c4b4-4859-a4f2-ebe5f6966616",
+          "threadId": "76c48956-1ba3-4dbd-be03-1414830fe679"
+        }
+      ],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T08:44:17.592Z",
+      "updatedAt": "2026-10-20T11:22:19.124Z",
       "closedAt": null,
       "extra": {}
     },
