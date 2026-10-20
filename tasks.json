@@ -235,30 +235,6 @@
       "extra": {}
     },
     {
-      "id": "wave-launch",
-      "number": 12,
-      "kind": "task",
-      "title": "非同期 wave の同一サイクル内バリア（楽観的な下流 launch の窓を消す）",
-      "status": "backlog",
-      "parent": null,
-      "dependsOn": [],
-      "milestone": null,
-      "priority": "low",
-      "labels": [
-        "enhancement",
-        "reconcile"
-      ],
-      "body": "旧 ROADMAP.json の backlog（S94f1f9-3 review DD-1 の残差）。\n\n非同期 Apply では、上流 A を launch した同じサイクルで、A の失敗が記録される前に下流 B が 1 回だけ楽観的に launch されうる（apply_count<=1）。level-triggered なので次の周期に自己修復し、定常状態では skip されるが、上流 wave の in-flight 完了まで下流 wave を起動しない厳密なバリアにすれば、1 サイクルの窓も消せる。安全機構や段階ロールアウトと合わせて検討。上限があり自己修復するので、急ぎではない。",
-      "doneWhen": "",
-      "resolution": null,
-      "refs": [],
-      "threads": [],
-      "createdAt": "2026-10-20T08:43:22.279Z",
-      "updatedAt": "2026-10-20T08:43:22.279Z",
-      "closedAt": null,
-      "extra": {}
-    },
-    {
       "id": "fake-provider-apply-update",
       "number": 16,
       "kind": "bug",
@@ -590,6 +566,30 @@
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
       "updatedAt": "2026-10-20T08:44:17.592Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "wave-launch",
+      "number": 12,
+      "kind": "task",
+      "title": "非同期 wave の同一サイクル内バリア（楽観的な下流 launch の窓を消す）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "enhancement",
+        "reconcile"
+      ],
+      "body": "旧 ROADMAP.json の backlog（S94f1f9-3 review DD-1 の残差）。\n\n非同期 Apply では、上流 A を launch した同じサイクルで、A の失敗が記録される前に下流 B が 1 回だけ楽観的に launch されうる（apply_count<=1）。level-triggered なので次の周期に自己修復し、定常状態では skip されるが、上流 wave の in-flight 完了まで下流 wave を起動しない厳密なバリアにすれば、1 サイクルの窓も消せる。安全機構や段階ロールアウトと合わせて検討。上限があり自己修復するので、急ぎではない。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:22.279Z",
+      "updatedAt": "2026-10-20T08:43:22.279Z",
       "closedAt": null,
       "extra": {}
     },
