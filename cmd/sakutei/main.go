@@ -93,6 +93,8 @@ func main() {
 		runMirror(os.Args[2:])
 	case "secrets":
 		runSecrets(os.Args[2:])
+	case "breakglass":
+		runBreakGlass(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Fprintf(os.Stdout, "sakutei %s\n", version)
 	case "help", "--help", "-h":
@@ -412,6 +414,7 @@ Usage:
   sakutei allocator    serve the allocation authority (active/standby, §19.8)
   sakutei mirror       keep a read-only git mirror of the intent repository (§17.4)
   sakutei secrets      build a site-local secret store: secrets extract (§20.5)
+  sakutei breakglass   DR write break-glass: keygen / commit / verify / status (§25.1)
   sakutei version      print version information
   sakutei help         show this help message
 `)

@@ -256,7 +256,7 @@ Ansible provider では横断保証の多くが落ちる。**check mode は「�
 |---|---|---|
 | **多相 Task の「相の途中 death」の人手ゲート** | 各相の入口 Observe（§6）は相境界の death は守るが、Applying 途中（書き込み中）の death を「リブート中」と bricked で区別できない。Applying を「危険区間」としてマークし、区間内 death は Observe で Done 確認できない限り **auto 再開を禁止し人手ゲート**にする、その具体判定 | §6 |
 | **reimage の delete/create ペアリング判定** | `planned_change` の `kind: reimage` 宣言下で、再イメージが「delete 誤計上」でなく正当な delete→create の対であることを機械的に確認する判定基準。**v1.5 で決定**：同じ周期の Plan で、同じ provider・scope のラベル集合が完全一致・1 対 1（§13.3「v1.5 の実装」） | §13 |
-| **break-glass の到達不能判定基準・合流競合手順** | 緊急ローカル書込経路（§25）を発動してよい「git 到達不能」の判定基準と、復旧後に本流と事後合流するときの競合解消手順 | §25 |
+| **break-glass の到達不能判定基準・合流競合手順** | 緊急ローカル書込経路（§25）を発動してよい「git 到達不能」の判定基準と、復旧後に本流と事後合流するときの競合解消手順。**v1.5 で決定**：到達不能 = 中央 git（ミラーではなくその upstream）への `git ls-remote` が 1 回 10s の timeout 付きで、10s 間隔に **3 回続けて**すべて失敗したとき（回数の下限 3。1 回でも届けば書けない。認証の失敗も不達に数える）。合流 = break-glass コミットを rebase・squash せず `breakglass/<session>` として中央へ push し PR の下書きを作る。中央が base から進んでいれば両側で変わったパスを下書きに並べ、**自動解消はせず人が解く**（中央を正とし、合流ブランチに中央を merge して載せ直す）。取り込みは merge commit / fast-forward に限り、中央が break-glass の先端を含むまでミラーは中央を追わない（§25.1「v1.5 の実装」） | §25 |
 | **`planned_change` の kind 整合検証** | 宣言 kind（reimage / decommission 等）と実際に生じた Plan の操作種別が一致することの検証ルール。**v1.5 で決定**：kind ごとに通す操作種別を固定し（delete→Delete、update→Update、reimage / recreate→対の Delete+Create）、scope 内で kind の合わない破壊的 op はレーンに入れず通常予算で評価して `PlannedChangeKindMismatch` を出す（§13.3） | §13 |
 | **List 急減閾値のチューニング** | scope 単位で宣言する件数急減 halt の閾値の実運用値（誤発火と見逃しの均衡） | §12 |
 | **Ansible executor の Observe 頻度** | fork + SSH の高レイテンシ層で tier 別間引き（§16。`observe_tier`）をどう既定するか。executor を実装するまでの既定は「毎周」 | §16 |

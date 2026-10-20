@@ -31,9 +31,24 @@ const DefaultBranch = "main"
 // runGit は git を実行し、標準出力を返す。失敗時は標準エラーの末尾を添える。
 // 認証のプロンプトで止まらないよう GIT_TERMINAL_PROMPT=0 で走らせる。
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	return runGitEnv(ctx, dir, nil, args...)
+}
+
+// runGitRaw は runGit と同じだが、標準出力を切り詰めずに返す。
+func runGitRaw(ctx context.Context, dir string, args ...string) (string, error) {
+	return gitCommand(ctx, dir, nil, args...)
+}
+
+// runGitEnv は env を足して git を実行し、前後の空白を除いた標準出力を返す。
+func runGitEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	out, err := gitCommand(ctx, dir, env, args...)
+	return strings.TrimSpace(out), err
+}
+
+func gitCommand(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -44,7 +59,7 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 		}
 		return "", fmt.Errorf("git %s: %w: %s", args[0], err, msg)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }
 
 // Checkout は 1 シャードの intent の手元写し。partial clone（blob は必要な分だけ）と

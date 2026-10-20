@@ -17,6 +17,7 @@ package gitdist
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -26,18 +27,39 @@ import (
 // 状態を持たない中継である: ミラーは上流（中央 git）の写しにすぎず、消えても
 // 次の Sync で上流から作り直せる。拠点は中央を直接叩かないので、中央の負荷は
 // ミラーの数に固定される。ミラーは partial clone の取得（blob の後取り）に応じる。
+//
+// 例外は書込 break-glass の session（§25.1 (b)）を開いている間: ミラーは中央を追わず
+// break-glass の先端を配り続け、中央が戻れば事後合流を起票し、取り込まれたら追従に戻る。
 type Mirror struct {
 	// Upstream は中央 git。
 	Upstream string
 	// Dir は bare のミラーリポジトリ。
 	Dir string
+	// Log は break-glass session の進み具合の出力先（nil なら捨てる）。
+	Log io.Writer
+}
+
+func (m *Mirror) logf(format string, a ...any) {
+	if m.Log != nil {
+		fmt.Fprintf(m.Log, "sakutei mirror: "+format+"\n", a...)
+	}
 }
 
 // Sync はミラーを上流に追従させる。ミラーが無ければ作る（一時ディレクトリに
 // 作ってから rename するので、拠点が作りかけのミラーを見ることはない）。
 func (m *Mirror) Sync(ctx context.Context) error {
 	if _, err := os.Stat(filepath.Join(m.Dir, "HEAD")); err == nil {
-		_, err := runGit(ctx, m.Dir, "remote", "update", "--prune")
+		sess, err := ReadSession(m.Dir)
+		if err != nil {
+			return err
+		}
+		if sess != nil {
+			closed, err := m.holdBreakGlass(ctx, sess)
+			if err != nil || !closed {
+				return err
+			}
+		}
+		_, err = runGit(ctx, m.Dir, "remote", "update", "--prune")
 		return err
 	}
 	parent := filepath.Dir(m.Dir)

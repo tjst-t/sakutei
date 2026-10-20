@@ -146,7 +146,7 @@ func runMirror(args []string) {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	m := &gitdist.Mirror{Upstream: *upstream, Dir: *dir}
+	m := &gitdist.Mirror{Upstream: *upstream, Dir: *dir, Log: os.Stdout}
 	for {
 		if err := m.Sync(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "sakutei mirror: %v\n", err)

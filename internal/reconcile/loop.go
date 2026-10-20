@@ -281,6 +281,12 @@ type SourceState struct {
 	// Stale is set when the refresh failed but the last pulled intent is kept
 	// (WAN 断・ミラー断).  Convergence continues on it (§17.4, §20.5).
 	Stale error
+	// DRPlan names the active DR plan that moved this shard's claim (§25.1 (a));
+	// "" when the claim is the shard's peacetime claim.
+	DRPlan string
+	// BreakGlass lists the break-glass commits (§25.1 (b)) that arrived with
+	// this refresh.  Each one raises a BreakGlassWriteUsed Event.
+	BreakGlass []string
 }
 
 // DefaultInterval is the default convergence cycle period.
@@ -354,6 +360,7 @@ func Run(ctx context.Context, cfg Config) error {
 	cycleBase := 0
 	cycleNum := 0
 	idle := false
+	drPlan := ""
 	var lastMode remediation.Decision
 	drain := func() {
 		if d != nil {
@@ -403,6 +410,19 @@ func Run(ctx context.Context, cfg Config) error {
 			case st.Stale != nil:
 				fmt.Fprintf(cfg.ErrOut, "sakutei: intent source refresh failed; converging on the last pulled revision %s: %v\n",
 					shortRev(st.Revision), st.Stale)
+			}
+			for _, c := range st.BreakGlass {
+				fmt.Fprintf(cfg.ErrOut, "sakutei: EVENT BreakGlassWriteUsed severity=critical: break-glass commit %s arrived at revision %s (signed emergency write to the local mirror, §25.1)\n",
+					shortRev(c), shortRev(st.Revision))
+			}
+			if st.DRPlan != drPlan {
+				if st.DRPlan != "" {
+					fmt.Fprintf(cfg.Out, "sakutei: EVENT DRPlanActive: DR plan %s is enabled at revision %s; this shard's claim follows it\n",
+						st.DRPlan, shortRev(st.Revision))
+				} else {
+					fmt.Fprintf(cfg.Out, "sakutei: DR plan %s no longer moves this shard at revision %s\n", drPlan, shortRev(st.Revision))
+				}
+				drPlan = st.DRPlan
 			}
 			if st.Idle {
 				if d != nil {

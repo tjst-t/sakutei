@@ -44,6 +44,18 @@ const (
 	KindGateTimedOut Kind = "workflow.gate.timed_out"
 	// KindWorkflowCancelled は人による Workflow の実行の取り消し（sakutei workflow cancel）。
 	KindWorkflowCancelled Kind = "workflow.cancelled"
+
+	// KindBreakGlassWrite は書込 break-glass の使用（§25.1 (b)）: git の正に届かない間に
+	// ローカルミラーへ書いた署名付きコミット。コミットより先に記録する。
+	KindBreakGlassWrite Kind = "breakglass.write"
+	// KindBreakGlassMergeBack は事後合流のブランチを中央へ push し PR の下書きを作ったこと。
+	KindBreakGlassMergeBack Kind = "breakglass.merge_back.opened"
+	// KindBreakGlassMerged は中央の正が break-glass コミットを取り込み、ミラーが中央の
+	// 追従に戻ったこと（session の終わり）。
+	KindBreakGlassMerged Kind = "breakglass.merged"
+	// KindBreakGlassKeyRetired は session で使った break-glass 鍵の失効（使い捨て原則）。
+	// 失効した鍵での break-glass 書込は拒否される。
+	KindBreakGlassKeyRetired Kind = "breakglass.key.retired"
 )
 
 // Record は監査の 1 件。
@@ -59,7 +71,11 @@ type Record struct {
 	// Roles は承認者が名乗った役割（真偽は上位 IdP、§7）。
 	Roles     []string `json:"roles,omitempty"`
 	Signature string   `json:"signature,omitempty"`
-	Detail    string   `json:"detail,omitempty"`
+	// Session・Commit・Key は書込 break-glass の記録（session ID・コミット・鍵の指紋）。
+	Session string `json:"session,omitempty"`
+	Commit  string `json:"commit,omitempty"`
+	Key     string `json:"key,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 }
 
 // Log は1つのファイルへの append-only ログ。複数プロセスから追記してよい

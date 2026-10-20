@@ -310,13 +310,20 @@ Sync Mode は `import` / `prune` / `closed-world` と同じく `Capabilities.Lis
 **（a）DR intent のプリステージ**（平時にレビュー済みの構成を保持）。大阪が東京 scope を引き継ぐための構成（claim 変更を含む）を、**平時にレビュー・承認済みの状態でリポジトリに保持**する。発動時は新規レビューを要さず、**パラメータ / claim の切替のみ**で有効化する。
 
 ```yaml
+# shards/dr/tokyo-to-osaka.yaml
 # 平時に PR 承認済みで保持。発動は enabled: true への切替（または claim 切替）のみ
 dr_plan:
   name: tokyo-to-osaka
-  primary: { site: tokyo }
-  standby: { site: osaka }
+  primary:                # 引き継がれる scope（平時の東京の claim）
+    site: tokyo
+  standby:
+    site: osaka
   on_activation:
-    claim_change: { from: {site: tokyo}, to: {site: osaka} }  # 大阪が東京 scope を claim（§17）
+    claim_change:         # 大阪の DR シャードが東京 scope を claim（§17）
+      from:
+        shard: tokyo
+      to:
+        shard: osaka-dr
     enabled: false        # ★平時は false。発動 = true（この1点の切替が DR 発動）
 ```
 
@@ -332,6 +339,15 @@ DR 発動時に新規レビューが不要なのが要点である。承認は�
 **貫く原則**：DR 経路も「事前チェック最小・事後監査最大」——被災時は速度を優先して生存サイトが書けるようにし、抑止は確実な発覚（Event + S4）+ 事後合流の強制で担保する。平時のガバナンス（PR 承認・署名）を DR で捨てるのではなく、**（a）で平時に前倒し、（b）で緊急書込を検出可能な break-glass に閉じ込める**の二段構えで、「被災サイトへの承認・署名依存」を構造的に断つ。
 
 DR intent のプリステージ（a）は claim ハンドオフ（§17・v1b）と DR Workflow（§6・v1.5）の組み合わせで表現でき、新プリミティブ不要である。書込 break-glass（b）は Break Glass（§20）と Event/S4（§26）の再利用であり、書込 break-glass の型と事後合流 PR 起票は v1.5（最小 Workflow と同じ段）とする。
+
+**v1.5 の実装**（Backlog #45）：
+
+- **DR intent の置き場所と効き方**：DR plan は `shards/dr/<name>.yaml`（`name` はファイル名と一致）に置く。`shards/` の下なので全シャードの sparse checkout（§17.4）に必ず入る。claim は 1 シャード 1 scope なので、引き継ぐ側は standby 拠点で**平時 idle の DR シャード**（`shards/osaka-dr.yaml` が `claim:` 空）として待機させ、`claim_change` はシャード名（`{shard: <name>}`）で書く。`enabled: true` の間、`from` のシャードは idle になり（平時の claim が `primary` と一致していることを要する）、`to` のシャードが `primary` を claim する。以後は claim 変更 PR のハンドオフ（§17.7）と同じ経路で、`to` が fencing の世代を上げて引き継ぎ、旧プライマリが戻ってきても plan が有効な間は idle に留まる（split-brain にならない）。発動中の plan があるシャードは `DRPlanActive` Event を出す。
+- **宣言の矛盾は収束させない**：`to` が平時に idle でない、`from` が `primary` を claim していない、1 つのシャードを 2 つ以上の発動中 plan が動かす、`enabled` が明記されていない、未知のキー——のいずれかがあれば、その周を飛ばす（曖昧な claim で収束しない。空の desired で収束しないのと同じ扱い・§17.4）。`enabled` をシステムが書き換えることはない（§25.4 人間トリガ）。
+- **DR Workflow との組み合わせ**：引き継いだ scope の intent（`intent/site=tokyo/`）に置いた Workflow は、claim が移った DR シャードが S2（§25.3）とともに進める。DR plan 自体は新プリミティブを持たない。
+- **書込 break-glass**（`sakutei breakglass commit`）：運用者はローカルミラーの clone に緊急の変更を書き、break-glass 鍵（ed25519。`sakutei breakglass keygen` で平時に作りオフライン保管）で署名して 1 コミットにする。署名はコミットの tree・parent・メッセージ（署名行を除く）を覆い、trailer（`Sakutei-Break-Glass` = session・`-Actor`・`-Key` = 鍵の指紋・`-Signature`）に置く（git の gpg/ssh 署名に依存しない。確認は `sakutei breakglass verify`）。手順は **到達不能の判定（§29.1）→ 失効鍵の拒否 → 署名 → S4 に `breakglass.write` を append（書けなければ書かない）→ ミラーに session の印 → ミラーへ push** の順で、使用は `BreakGlassWriteUsed`（severity=critical）Event になる。actor・理由・S4 の指定が無ければ書けない。拠点の常駐ループも、新しく届いた break-glass コミットごとに `BreakGlassWriteUsed` を出す。
+- **ミラーの保持と事後合流**：session を開いたミラー（`sakutei mirror`）は中央を追わず、break-glass の先端を配り続ける（中央の古い先端で緊急書込を巻き戻さない）。中央に届くようになると、break-glass コミットをそのまま（rebase・squash せず署名を保ったまま）合流用ブランチ `breakglass/<session>` として中央へ push し、PR の下書き（Markdown。コミット・実行者・鍵・両側で変わったパス・取り込み方）をミラーの横に書き、S4 に `breakglass.merge_back.opened` を残す。中央の先端が break-glass の先端を祖先に含んだら（merge commit / fast-forward で取り込まれたら）session を閉じて中央の追従に戻り、S4 に `breakglass.merged` と、使った鍵ごとの `breakglass.key.retired` を残す。失効した鍵での break-glass 書込は拒否される（使い捨て原則：鍵は rotate する）。
+- **既知の限界**：PR の起票はブランチの push と下書きの生成までで、GitHub/GitLab の API で PR を開くのは運用者（またはその上の自動化）が行う。session の間は中央で進んだ変更もそのミラーの拠点には届かない（合流で取り込まれてから届く）。squash merge は祖先関係が残らないので session が閉じない（squash しない規約で担保する）。
 
 ### §25.2 git 外部化とローカルミラー（読み取り全断耐性）
 

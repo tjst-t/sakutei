@@ -37,6 +37,8 @@ const DefaultPoll = 60 * time.Second
 //
 //   - Shard を指定すると claim は git 上の shards/<Shard>.yaml から読む（§17.1）。
 //     claim 変更 PR がマージされると、次の取得で claim が変わる（§17.7 ハンドオフ）。
+//     shards/dr/ の DR plan が enabled: true になると、claim はその plan に従って
+//     移る（§25.1 (a) DR intent のプリステージ。ResolveClaim）。
 //   - Shard が空なら Claim（--claim）を固定で使う。
 //
 // 取得に失敗しても、手元写しがあればそれで収束を続ける（Stale）。手元写しが一度も
@@ -70,7 +72,7 @@ func (s *Source) Refresh(ctx context.Context) (reconcile.SourceState, error) {
 	now := time.Now()
 	if s.ready && now.Before(s.nextFetch) {
 		st := s.state
-		st.Stale = nil
+		st.Stale, st.BreakGlass = nil, nil
 		return st, nil
 	}
 	s.nextFetch = now.Add(s.jitteredPoll())
@@ -90,6 +92,10 @@ func (s *Source) Refresh(ctx context.Context) (reconcile.SourceState, error) {
 	st, err := s.resolve(ctx)
 	if err != nil {
 		return s.fail(err)
+	}
+	// 前回の取得から新しく来た break-glass コミットを拾う（§25.1 (b) 必ず検出される）。
+	if s.state.Revision != "" && st.Revision != s.state.Revision {
+		st.BreakGlass = BreakGlassCommits(ctx, s.Checkout.Dir, s.state.Revision, st.Revision)
 	}
 	s.state, s.ready = st, true
 	st.Stale = stale
@@ -121,10 +127,11 @@ func (s *Source) wantSparse(ctx context.Context) ([]string, error) {
 func (s *Source) resolve(ctx context.Context) (reconcile.SourceState, error) {
 	st := reconcile.SourceState{Claim: s.Claim, Revision: s.Checkout.Head(ctx)}
 	if s.Shard != "" {
-		sc, err := ReadShardClaim(s.Checkout.Dir, s.Shard)
+		sc, plan, err := ResolveClaim(s.Checkout.Dir, s.Shard)
 		if err != nil {
 			return st, err
 		}
+		st.DRPlan = plan
 		if sc.Idle {
 			st.Claim, st.Idle = core.Scope{}, true
 			// claim を持たないシャードは shards/ 以外を手元に置かない。
