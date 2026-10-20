@@ -163,6 +163,29 @@
       "updatedAt": "2026-10-20T08:42:50.793Z",
       "closedAt": "2026-10-20T08:42:50.793Z",
       "extra": {}
+    },
+    {
+      "id": "v1a-8-devenv-secret",
+      "number": 8,
+      "kind": "story",
+      "title": "v1a-8 devenv・secret・設定ローダ",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1a"
+      ],
+      "body": "旧 ROADMAP.json の Sprint 8（`S33266e`）。\n\ndevenv（坪庭）の最小形、SecretRef（自動マスク・JIT 解決・値は収束しない）と Vault SecretBackend の seam、Loader（YAML/JSON round-trip + JSON Schema 検証）。ADR-0016/0019。\n\n- S33266e-1 SecretRef の自動マスク・JIT 解決・値非収束 + file SecretBackend（4 件・secret_ref_test.go）\n- S33266e-2 Loader — YAML/JSON round-trip + JSON Schema 検証（4 件・loader_test.go）\n- S33266e-3 devenv 最小形 — render 外部入力の差し替え（3 件・devenv_test.go）\n\nVault backend は interface とスタブのまま（v1b 以降）。\n\n受け入れ条件の全文は git 履歴の `docs/ROADMAP.json`（コミット 9d7cf32）。テスト内タグ `[AC-S33266e-x-y]`。\n\n**確認（2026-10-20）**：`make check` が通り、11 件すべて合格。旧 ROADMAP では受け入れ条件が pending のままだったが、記録の付け忘れだった。",
+      "doneWhen": "受け入れ条件 AC-S33266e-* 11 件のテストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:42:51.493Z",
+      "updatedAt": "2026-10-20T08:42:51.493Z",
+      "closedAt": "2026-10-20T08:42:51.493Z",
+      "extra": {}
     }
   ]
 }
