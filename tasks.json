@@ -450,6 +450,29 @@
       "updatedAt": "2026-10-20T08:43:47.700Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "v2-task-ui",
+      "number": 20,
+      "kind": "story",
+      "title": "v2: 多相 Task・自動段階ロールアウト・分散・衛星本体・UI",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "v2"
+      ],
+      "body": "設計 §27.5。スケールの上位と高度な自律運用。v1 系の実地検証を経てから着手する。\n\n- 多相 Task 状態機械\n- 自動段階ロールアウト + 自動 canary ゲート、health、常設 canary、Prometheus exporter\n- DBSource（と連動する Watch）\n- credential-broker（JIT 短命発行・bastion）\n- 分散 Executor + lease 縮退、動的ルーター / 自動リバランス\n- Observe 間引き・tier 別頻度・watch 併用の本格化\n- intent UI（catalog）、twin のフル機能、抽象リソース（§28.8）",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:48.404Z",
+      "updatedAt": "2026-10-20T08:43:48.404Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
