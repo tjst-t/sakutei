@@ -596,6 +596,29 @@
       "extra": {}
     },
     {
+      "id": "v1b-sync-mode-git",
+      "number": 35,
+      "kind": "task",
+      "title": "v1b: Sync Mode の git コミット（コミッター・間引き・直接コミットの拒否）",
+      "status": "backlog",
+      "parent": "v1b",
+      "dependsOn": [
+        "v1b-scopemode-converge-sync-sync-mode"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "設計 §24.5 / §26.3 / §29.1。#23 では generated/ への書き出しまでを作り、git へのコミットは後回しにした（2026-10-20 人が決定）。\n\n残っていること：\n- 差分があるとき、システムをコミッターとしてコミットする（人の intent のコミットと区別できる attribution、§26.3）\n- コミットの間引き（意味のあるフィールドだけ比べる。managed 候補の仕組みと共通化、§24.4）\n- 人が sync の出力を直接コミットするのを拒否する（generated/ の規律、§21）\n- コミッター名・署名の有無は §29.1 の運用パラメータとして、着手時に人と決める",
+      "doneWhen": "sync の scope で現実を変えると、システムをコミッターとするコミットが 1 つでき、意味のない揺れではコミットされないことをテストで示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T11:11:06.738Z",
+      "updatedAt": "2026-10-20T11:11:06.738Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "item-1",
       "number": 11,
       "kind": "task",
