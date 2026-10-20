@@ -886,7 +886,7 @@
       "number": 43,
       "kind": "task",
       "title": "v1.5: 承認ゲートの N-of-M・役割制約・申請者≠承認者",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v1-5-task-workflow-planned-change-remedi",
       "dependsOn": [
         "v1-5-workflow-s4"
@@ -898,12 +898,12 @@
       ],
       "body": "設計 §14.4 / §6.4。ゲート定義に requirements（quorum: {n, of}・roles・separation: applicant_ne_approver）を足し、approve のボディ（承認者 ID・役割・署名）で判定する。役割の真偽は上位 IdP に委ね、コアは「役割 X の署名が N 個必要」を保持するだけ（§7、認可を持たない）。同じ承認者の二重承認は 1 と数える。全承認者を S4 に記録する。",
       "doneWhen": "2-of-3 のゲートが 1 人の承認では待ちに留まり 2 人目で通ること、同じ人の 2 回の承認では通らないこと、申請者本人の承認が拒否されること、役割の合わない承認が数えられないこと、全承認者が S4 に残ることをテストで示す",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/v1-5-n-of-m）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T15:04:51.925Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T15:11:49.602Z",
+      "closedAt": "2026-10-20T15:11:49.602Z",
       "extra": {}
     },
     {
