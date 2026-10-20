@@ -413,7 +413,7 @@
       "number": 25,
       "kind": "task",
       "title": "v1b: allocator の HA 最小形・Lookup キャッシュ・waiting-allocation 縮退・プール分割 by claim",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v1b",
       "dependsOn": [
         "v1b-allocationauthority-interface-sqlite"
@@ -423,12 +423,12 @@
       "labels": [],
       "body": "設計 §19。段0 VM-HA 上の active/standby + fencing、割当事実のシャードローカル無期限キャッシュ（S3）、allocator 停止時の waiting-allocation 縮退（原則8：衛星が止まっても維持は止めない）。intent で disjoint なレンジを宣言してプールを claim ごとに分ける。",
       "doneWhen": "allocator を止めても既存リソースの定常収束が続き、新規割当だけが waiting-allocation になることを chaos テストで示す",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/v1b-allocator-ha-lookup-waiting-allocati）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T12:35:35.928Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T12:50:52.909Z",
+      "closedAt": "2026-10-20T12:50:52.909Z",
       "extra": {}
     },
     {
