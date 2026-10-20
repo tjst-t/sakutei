@@ -51,8 +51,8 @@
 // Story Scf7762-3 additions:
 //   - Remediation mode gate (§14.1, ADR-0014 v1a subset): Config.Remediation
 //     controls whether Apply and prune Delete are executed.
-//     - alert-only: no Apply, no prune Delete; drift is reported via log Events.
-//     - global freeze: overrides mode to alert-only (most-restrictive-wins, §14.3).
+//   - alert-only: no Apply, no prune Delete; drift is reported via log Events.
+//   - global freeze: overrides mode to alert-only (most-restrictive-wins, §14.3).
 //   - Mode gate is evaluated BEFORE the budget gate — if we are in alert-only
 //     there is no need to evaluate the budget at all (nothing is applied).
 //   - Both the daemon path (Run/runCycleAsync) and the one-shot path
@@ -81,6 +81,15 @@
 //     Config.TaskStore), never outside update_policy.window.  The resource is
 //     not converged (its downstream waits) until a later Observe shows no diff
 //     (the completion mark in reality); that Observe also clears the record.
+//
+// #42 additions (§6.3, §6.4):
+//   - The minimal Workflow (intent `workflows:`) is advanced by workflow.Engine
+//     once per cycle, before Observe: serial, invariant-gated, with manual
+//     approval gates.  Its progress lives in Config.WorkflowStore (S2), so a
+//     restart stays where it was (e.g. awaiting approval).  The targets of a
+//     Workflow that is not done are converging for the loop: not Observed, not
+//     Applied, their downstream waits.  In alert-only / freeze no Workflow
+//     advances (the mode gate holds every change).
 package reconcile
 
 import (
@@ -94,6 +103,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/audit"
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/capacity"
 	"github.com/tjst-t/sakutei/internal/cause"
@@ -107,6 +117,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/internal/task"
+	"github.com/tjst-t/sakutei/internal/workflow"
 	"github.com/tjst-t/sakutei/pkg/allocation"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
@@ -239,6 +250,15 @@ type Config struct {
 	// Now is the clock the maintenance window (update_policy.window) is
 	// checked against.  Nil means time.Now.
 	Now func() time.Time
+
+	// WorkflowStore is the S2 store of the Workflows' progress (§6.3): the
+	// position, the open gate and its decisions.  Nil means no Workflow
+	// advances and every Workflow target is held (a gate without S2 would
+	// forget it was waiting across a restart).
+	WorkflowStore workflow.Store
+	// Audit is the S4 audit log (append-only).  The daemon records gate
+	// timeouts there; approvals are recorded by the approval API.
+	Audit *audit.Log
 }
 
 // Source refreshes the desired source of the daemon (§17.4).
@@ -436,7 +456,7 @@ func Run(ctx context.Context, cfg Config) error {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d drifted (alert-only, no changes)\n",
 				cycleNum, res.Observed)
 		} else if res.Applied == 0 && res.Launched == 0 && len(res.Waiting) == 0 && res.DriftCount == 0 &&
-			len(res.TasksLaunched) == 0 && len(res.TasksHeld) == 0 {
+			len(res.TasksLaunched) == 0 && len(res.TasksHeld) == 0 && len(res.WorkflowHeld) == 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d converged (no changes)\n",
 				cycleNum, res.Observed)
 		} else {
@@ -455,6 +475,14 @@ func Run(ctx context.Context, cfg Config) error {
 		if len(res.TasksHeld) > 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d strategy: task resource(s) awaiting their Task (not applied): %v\n",
 				cycleNum, len(res.TasksHeld), res.TasksHeld)
+		}
+		for _, ev := range res.WorkflowEvents {
+			// #42 (§6.3, §6.4): Workflow progress, gates and halts.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %s\n", cycleNum, ev)
+		}
+		if len(res.WorkflowHeld) > 0 {
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d Workflow target(s) driven by their Workflow (not converged by the loop): %v\n",
+				cycleNum, len(res.WorkflowHeld), res.WorkflowHeld)
 		}
 		if len(res.NotDue) > 0 {
 			// #30 (§16.5): resources thinned by their tier this cycle.
@@ -583,6 +611,9 @@ type Daemon struct {
 	// no runner is configured; tasksOff then says why.
 	tasks    *task.Manager
 	tasksOff string
+	// workflows advances the intent's Workflows (§6.3).  Nil when no
+	// WorkflowStore is configured.
+	workflows *workflow.Engine
 }
 
 // NewDaemon prepares the cross-cycle state for cfg.  cfg.Out / cfg.ErrOut
@@ -683,7 +714,25 @@ func NewDaemon(cfg Config) *Daemon {
 		tasks = task.NewManager(cfg.TaskStore, runner, taskHolder(cfg), cfg.Now)
 	}
 
+	// #42 (§6.3): the Workflow engine.  Its apply steps go through the same
+	// executor as the loop (fencing included); its task steps through the same
+	// Task manager (1-outstanding).
+	var workflows *workflow.Engine
+	if cfg.WorkflowStore != nil {
+		workflows = &workflow.Engine{
+			Store:    cfg.WorkflowStore,
+			Audit:    cfg.Audit,
+			Provider: fp,
+			Exec:     func(ctx context.Context, plan core.Plan) error { return exec.Execute(ctx, fp, plan) },
+			Tasks:    tasks,
+			TasksOff: tasksOff,
+			Holder:   taskHolder(cfg),
+			Now:      cfg.Now,
+		}
+	}
+
 	return &Daemon{
+		workflows:    workflows,
 		tasks:        tasks,
 		tasksOff:     tasksOff,
 		cfg:          cfg,
@@ -703,7 +752,7 @@ func NewDaemon(cfg Config) *Daemon {
 func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 	d.cycle++
 	return runCycleAsync(ctx, d.engine, d.pruneEngine, d.budgetEngine, d.fp, d.exec, d.ifl, d.lsRing,
-		&d.prevRev, &d.prevProviderVersion, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff)
+		&d.prevRev, &d.prevProviderVersion, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows)
 }
 
 // Wait blocks until in-flight Applies and running Tasks finish or timeout
@@ -836,6 +885,15 @@ type CycleResult struct {
 	// TasksCompleted lists the resources whose outstanding Task record was
 	// cleared because this cycle's Observe showed no diff (completion mark).
 	TasksCompleted []string
+
+	// Workflow fields (§6.3, §6.4):
+
+	// WorkflowEvents are the Workflow events of the cycle (StageAwaitingApproval,
+	// InvariantBlocked, WorkflowHalted, ...).
+	WorkflowEvents []workflow.Event
+	// WorkflowHeld lists the Workflow targets the loop did not converge this
+	// cycle (their Workflow is not done).
+	WorkflowHeld []string
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -891,6 +949,7 @@ func runCycleAsync(
 	cfg Config,
 	tasks *task.Manager,
 	tasksOff string,
+	workflows *workflow.Engine,
 ) (CycleResult, error) {
 	// S072a14-3: resolve generated/ directory.
 	genDir := cfg.GeneratedDir
@@ -1093,6 +1152,60 @@ func runCycleAsync(
 		}
 	}
 
+	// Phase 2b's run-wide remediation mode, resolved once per cycle; the
+	// Workflows below also obey it.
+	decision := cfg.Remediation.Decide(in.Remediation)
+
+	// #42 (§6.3, §6.4): advance the Workflows, then hold the targets of every
+	// Workflow that is not done.  A Workflow with a target outside the claim
+	// (or fenced) is not advanced by this shard; its targets in the claim are
+	// still held.
+	fencedKey := make(map[string]bool, len(fencedScopes))
+	for _, k := range fencedScopes {
+		fencedKey[k] = true
+	}
+	var wfEvents []workflow.Event
+	wfHeld := map[string]string{}
+	if len(in.Workflows) > 0 {
+		if workflows == nil {
+			for _, def := range in.Workflows {
+				for _, id := range def.Targets() {
+					wfHeld[id.Local] = def.Name
+				}
+				wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventError, Workflow: def.Name,
+					Message: "no workflow store configured (--workflow-store); the Workflow does not advance and its targets are held (a gate needs S2, §6.4)"})
+			}
+		} else {
+			var runnable []workflow.Definition
+			for _, def := range in.Workflows {
+				ok := true
+				for _, id := range def.Targets() {
+					if !id.Scope.Matches(cfg.Claim) || fencedKey[fencing.ScopeKey(id.Scope)] {
+						ok = false
+						break
+					}
+				}
+				if ok {
+					runnable = append(runnable, def)
+				}
+			}
+			if decision.IsAlertOnly() {
+				for _, def := range runnable {
+					wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventWaiting, Workflow: def.Name,
+						Message: fmt.Sprintf("remediation mode is alert-only (%s); not advancing", decision.Reason)})
+				}
+			} else {
+				wfEvents = workflows.Tick(ctx, runnable)
+			}
+			held, err := workflows.Held(ctx, in.Workflows)
+			if err != nil {
+				fmt.Fprintf(cfg.ErrOut, "sakutei: workflow store: %v; holding every Workflow target\n", err)
+			}
+			wfHeld = held
+		}
+	}
+	var wfHeldThisCycle []string
+
 	// S072a14-3: build the parent→children map for cause D propagation.
 	// This maps composite parent Local IDs to their expanded child Local IDs.
 	parentToChildren := render.BuildParentChildMap(expanded)
@@ -1202,6 +1315,14 @@ func runCycleAsync(
 		// never a prune candidate (it stays in desired).
 		if waitingAlloc[local] {
 			waitingThisCycle = append(waitingThisCycle, local)
+			unobservable[local] = true
+			continue
+		}
+
+		// #42 (§6.3): a Workflow target is driven by its Workflow until the
+		// Workflow is done — converging for the loop, downstream waits.
+		if _, ok := wfHeld[local]; ok {
+			wfHeldThisCycle = append(wfHeldThisCycle, local)
 			unobservable[local] = true
 			continue
 		}
@@ -1398,7 +1519,6 @@ func runCycleAsync(
 	// alert-only / freeze: do NOT Apply or prune.  Report drift Events and
 	// return immediately.  The budget gate (Phase 2c) is skipped entirely —
 	// there is nothing to count because no op will execute.
-	decision := cfg.Remediation.Decide(in.Remediation)
 	if decision.IsAlertOnly() {
 		held := HoldAll(desired, plans, unobservable, pruneResult.DeleteOps)
 		return CycleResult{
@@ -1412,6 +1532,9 @@ func runCycleAsync(
 			GhostDiffs:  ghostDiffs,
 			NotDue:      notDue,
 			Waiting:     waitingThisCycle,
+
+			WorkflowEvents: wfEvents,
+			WorkflowHeld:   wfHeldThisCycle,
 		}, nil
 	}
 
@@ -1599,6 +1722,9 @@ func runCycleAsync(
 		TasksLaunched:  tasksLaunched,
 		TasksHeld:      tasksHeld,
 		TasksCompleted: tasksCompleted,
+
+		WorkflowEvents: wfEvents,
+		WorkflowHeld:   wfHeldThisCycle,
 	}, nil
 }
 
@@ -1971,4 +2097,3 @@ func applyWavesAsync(
 	_ = applied // keep return signature consistent with sync path
 	return 0, launched, backedOff, skipped, nil
 }
-

@@ -38,12 +38,14 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/allocator"
+	"github.com/tjst-t/sakutei/internal/audit"
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/fencing"
 	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/internal/task"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/internal/task"
+	"github.com/tjst-t/sakutei/internal/workflow"
 	"github.com/tjst-t/sakutei/pkg/allocation"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/registry"
@@ -79,6 +81,12 @@ func main() {
 		runFence(os.Args[2:])
 	case "task":
 		runTask(os.Args[2:])
+	case "workflow":
+		runWorkflow(os.Args[2:])
+	case "approve":
+		runApprove(workflow.DecisionApprove, os.Args[2:])
+	case "reject":
+		runApprove(workflow.DecisionReject, os.Args[2:])
 	case "allocator":
 		runAllocator(os.Args[2:])
 	case "mirror":
@@ -108,6 +116,9 @@ func main() {
 //	--fencing-store <f>  fencing generation store shared by all shards (§15.2)
 //	--shard-id <id>      fencing holder ID of this shard
 //	--task-store <f>     S2 store of strategy: task progress phases (§6.2)
+//	--workflow-store <f> S2 store of the Workflows' progress (§6.3)
+//	--audit-log <f>      S4 audit log (append-only) of approvals and gate timeouts (§6.4)
+//	--approval-listen <addr>  serve the approval gate API (§6.4)
 //
 // The loop runs until SIGTERM or SIGINT is received, at which point it stops
 // at the next cycle boundary and exits 0.
@@ -177,6 +188,13 @@ func runDaemon() {
 	// #41: strategy: task の進行フェーズの S2（§6.2）。
 	taskStore := fs.String("task-store", "",
 		"S2 store file of strategy: task progress phases (§6.2); empty=no Task is launched (strategy: task resources are held)")
+	// #42: 最小 Workflow の進行位置（S2）・S4 監査・承認 API（§6.3 / §6.4）。
+	workflowStore := fs.String("workflow-store", "",
+		"S2 store file of the Workflows' progress (§6.3); empty=no Workflow advances (their targets are held)")
+	auditLog := fs.String("audit-log", "",
+		"S4 audit log file (append-only JSON lines) of gate approvals, rejections and timeouts (§6.4)")
+	approvalListen := fs.String("approval-listen", "",
+		"address to serve the approval gate API on, e.g. 127.0.0.1:8470 (§6.4; no authorization, §7); requires --workflow-store and --audit-log")
 	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。
 	gd := addGitDistFlags(fs)
 
@@ -347,6 +365,22 @@ func runDaemon() {
 	if *taskStore != "" {
 		cfg.TaskStore = task.NewFileStore(*taskStore)
 	}
+	if *workflowStore != "" {
+		cfg.WorkflowStore = workflow.NewFileStore(*workflowStore)
+	}
+	if *auditLog != "" {
+		cfg.Audit = audit.NewLog(*auditLog)
+	}
+	if *approvalListen != "" {
+		if cfg.WorkflowStore == nil || cfg.Audit == nil {
+			fmt.Fprintln(os.Stderr, "sakutei: --approval-listen requires --workflow-store and --audit-log")
+			os.Exit(1)
+		}
+		if err := serveApprovalAPI(*approvalListen, cfg.WorkflowStore, cfg.Audit); err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
+			os.Exit(1)
+		}
+	}
 	if src != nil {
 		cfg.Source = src
 		cfg.IntentDir = src.IntentDir()
@@ -372,6 +406,9 @@ Usage:
   sakutei sync         record the reality of mode: sync scopes into generated/
   sakutei fence        show the fencing generations of claimed scopes (§17.6)
   sakutei task         list / cancel outstanding strategy: task Tasks (§6.2)
+  sakutei workflow     list / cancel Workflow runs (§6.3)
+  sakutei approve      approve a Workflow gate (§6.4)
+  sakutei reject       reject a Workflow gate: the Workflow halts (§6.4)
   sakutei allocator    serve the allocation authority (active/standby, §19.8)
   sakutei mirror       keep a read-only git mirror of the intent repository (§17.4)
   sakutei secrets      build a site-local secret store: secrets extract (§20.5)

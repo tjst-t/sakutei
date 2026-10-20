@@ -60,6 +60,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/internal/task"
+	"github.com/tjst-t/sakutei/internal/workflow"
 	"github.com/tjst-t/sakutei/pkg/core"
 )
 
@@ -152,6 +153,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.PlannedChanges = planned
+	wfs, err := parseWorkflows(tree["workflows"])
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.Workflows = wfs
 	return out, nil
 }
 
@@ -228,6 +234,8 @@ type intentFile struct {
 	Remediation *remediation.Schedule `json:"-"`
 	// PlannedChanges is the top-level planned_change (§13.3).
 	PlannedChanges []budget.PlannedChange `json:"-"`
+	// Workflows is the top-level workflows (§6.3).
+	Workflows []workflow.Definition `json:"-"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -332,7 +340,9 @@ type Intent struct {
 	Remediation *remediation.Schedule
 	// PlannedChanges are the planned_change declarations (§13.3).
 	PlannedChanges []budget.PlannedChange
-	Revision       core.RevisionInfo
+	// Workflows are the minimal Workflow declarations (§6.3).
+	Workflows []workflow.Definition
+	Revision  core.RevisionInfo
 }
 
 // LoadIntent reads every intent file in dir (same rules as LoadDir) and also
@@ -378,6 +388,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	var rem *remediation.Schedule
 	remFrom := ""
 	var planned []budget.PlannedChange
+	var workflows []workflow.Definition
 	for _, name := range names {
 		path := filepath.Join(dir, filepath.FromSlash(name))
 		loaded, file, err := loadFile(path)
@@ -395,6 +406,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 			rem, remFrom = file.Remediation, name
 		}
 		planned = append(planned, file.PlannedChanges...)
+		workflows = append(workflows, file.Workflows...)
 	}
 
 	// D-2: reject duplicate Local IDs.  Two resources sharing a Local ID would
@@ -422,6 +434,9 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	if err := validatePlannedChanges(planned); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
+	if err := validateWorkflows(workflows, resources); err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
 
 	// Scb0ecd-1: compute revision info after all validation passes so that only
 	// valid intent contributes to the hash.  Use the root scope (empty labels)
@@ -432,7 +447,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Remediation: rem, PlannedChanges: planned, Revision: ri}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Remediation: rem, PlannedChanges: planned, Workflows: workflows, Revision: ri}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the

@@ -37,6 +37,8 @@ import (
 //     所属を書く（tier: は §8 の DAG 優先度帯 `tier: foundation` の予約名なので使わない）。
 //   - planned_change は大量正当作業の宣言（scope / kind / max_count / window / approval、§13.3）。
 //     1 件ならオブジェクト、複数なら配列で書く。
+//   - workflows は最小 Workflow の宣言（workflow / target / invariant / strategy / stages /
+//     steps / on_failure、§6.3 / §6.4）。書式の詳細と v1.5 で拒否するものは workflow.go。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
 //     depends_on（文字列、または { id, ready_condition } の配列）、fields（文字列→スカラーのマップ）、
 //     deletion_policy（enum）、update_policy（strategy / window / rollback_on_fail、§6.2）を持つ。
@@ -120,6 +122,8 @@ func intentSchema() schemaNode {
 			},
 			// planned_change は専用予算レーンの宣言（§13.3）。1 件はオブジェクト、複数は配列。
 			"planned_change": plannedChangeSchema(),
+			// workflows は最小 Workflow（§6.3）。直列 + invariant + 手動承認ゲート。
+			"workflows": workflowsSchema(),
 			// pools は採番プールの宣言（§19.8）。range は "下限-上限"（整数）。
 			"pools": schemaNode{
 				"type": "array",
@@ -176,6 +180,64 @@ func intentSchema() schemaNode {
 							"type": "string",
 							"enum": []any{"ExplicitAbsentOnly", "PruneWithinScope"},
 						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// workflowsSchema は workflows（§6.3 / §6.4）のスキーマ。step の中身・v1.5 で
+// 未対応のキーの拒否は parseWorkflow が行う。
+func workflowsSchema() schemaNode {
+	stringMap := schemaNode{"type": "object", "additionalProperties": true}
+	return schemaNode{
+		"type": "array",
+		"items": schemaNode{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{"workflow", "target", "stages", "steps"},
+			"properties": map[string]any{
+				"workflow": schemaNode{"type": "string"},
+				"target": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"provider"},
+					"properties": map[string]any{
+						"provider": schemaNode{"type": "string"},
+						"scope":    stringMap,
+					},
+				},
+				"invariant": schemaNode{"type": "object", "additionalProperties": true},
+				"strategy":  schemaNode{"type": "object", "additionalProperties": true},
+				"stages": schemaNode{
+					"type": "array",
+					"items": schemaNode{
+						"type":                 "object",
+						"additionalProperties": false,
+						"required":             []any{"name", "targets"},
+						"properties": map[string]any{
+							"name":    schemaNode{"type": "string"},
+							"targets": schemaNode{"type": "array", "items": schemaNode{"type": "string"}},
+							"gate": schemaNode{
+								"type":                 "object",
+								"additionalProperties": false,
+								"properties": map[string]any{
+									"manual_approval": schemaNode{"type": []any{"string", "object"}},
+									"health_check":    schemaNode{"type": []any{"string", "object"}},
+									"timeout":         schemaNode{"type": "string"},
+								},
+							},
+						},
+					},
+				},
+				"steps": schemaNode{"type": "array", "items": schemaNode{"type": "object"}},
+				"on_failure": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"policy":       schemaNode{"type": "string"},
+						"keep_drained": schemaNode{"type": "boolean"},
 					},
 				},
 			},

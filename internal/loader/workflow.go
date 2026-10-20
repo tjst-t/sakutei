@@ -1,0 +1,221 @@
+// Copyright 2026 tjst-t
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+package loader
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/pkg/core"
+)
+
+// parseWorkflows reads the intent's top-level `workflows:` (§6.3, §6.4).  See
+// package workflow for the format.  What v1.5 does not implement is rejected
+// rather than ignored: strategy.select (dynamic selection is v2), on_failure
+// other than halt, and gate requirements (N-of-M / roles / separation are a
+// separate task).
+func parseWorkflows(v any) ([]workflow.Definition, error) {
+	raw, _ := v.([]any)
+	out := make([]workflow.Definition, 0, len(raw))
+	for i, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("workflows[%d]: オブジェクトでなければなりません", i)
+		}
+		def, err := parseWorkflow(m)
+		if err != nil {
+			name, _ := m["workflow"].(string)
+			return nil, fmt.Errorf("workflows[%d] (%s): %w", i, name, err)
+		}
+		out = append(out, def)
+	}
+	return out, nil
+}
+
+func parseWorkflow(m map[string]any) (workflow.Definition, error) {
+	var def workflow.Definition
+	def.Name, _ = m["workflow"].(string)
+	def.Name = strings.TrimSpace(def.Name)
+
+	providerName, scope := "", core.NewScope(nil)
+	if t, ok := m["target"].(map[string]any); ok {
+		providerName, _ = t["provider"].(string)
+		scope = core.NewScope(stringifyStringMap(t["scope"]))
+	}
+	if strings.TrimSpace(providerName) == "" {
+		return def, fmt.Errorf("target.provider is required")
+	}
+
+	if inv, ok := m["invariant"].(map[string]any); ok {
+		for k := range inv {
+			if k != "min_active" && k != "active_when" {
+				return def, fmt.Errorf("invariant.%s is not supported in v1.5 (min_active only)", k)
+			}
+		}
+		if v, ok := inv["min_active"]; ok {
+			n, isInt := toInt(v)
+			if !isInt {
+				return def, fmt.Errorf("invariant.min_active must be an integer")
+			}
+			def.Invariant.MinActive = n
+		}
+		def.Invariant.ActiveWhen = stringifyStringMap(inv["active_when"])
+	}
+
+	if st, ok := m["strategy"].(map[string]any); ok {
+		if order, _ := st["order"].(string); order != "" && order != "one-at-a-time" {
+			return def, fmt.Errorf("strategy.order %q is not supported (one-at-a-time only)", order)
+		}
+		if _, ok := st["select"]; ok {
+			return def, fmt.Errorf("strategy.select is v2 (dynamic selection); v1.5 processes targets in the declared order")
+		}
+	}
+
+	if of, ok := m["on_failure"].(map[string]any); ok {
+		if policy, _ := of["policy"].(string); policy != "" && policy != "halt" {
+			return def, fmt.Errorf("on_failure.policy %q is not supported (halt only)", policy)
+		}
+	}
+
+	stages, _ := m["stages"].([]any)
+	for i, s := range stages {
+		sm, _ := s.(map[string]any)
+		var st workflow.Stage
+		st.Name, _ = sm["name"].(string)
+		st.Name = strings.TrimSpace(st.Name)
+		targets, _ := sm["targets"].([]any)
+		for _, t := range targets {
+			st.Targets = append(st.Targets, core.NewID(providerName, scope, strings.TrimSpace(scalarToString(t))))
+		}
+		if g, ok := sm["gate"].(map[string]any); ok {
+			gate, err := parseGate(g)
+			if err != nil {
+				return def, fmt.Errorf("stages[%d] (%s): %w", i, st.Name, err)
+			}
+			st.Gate = gate
+		}
+		def.Stages = append(def.Stages, st)
+	}
+
+	steps, _ := m["steps"].([]any)
+	for i, s := range steps {
+		step, err := parseStep(s)
+		if err != nil {
+			return def, fmt.Errorf("steps[%d]: %w", i, err)
+		}
+		def.Steps = append(def.Steps, step)
+	}
+	return def, def.Validate()
+}
+
+// parseGate reads a stage gate.  manual_approval: required is the single
+// approval of v1.5; a gate with requirements is rejected.
+func parseGate(g map[string]any) (*workflow.Gate, error) {
+	gate := &workflow.Gate{Timeout: workflow.DefaultGateTimeout}
+	switch ma := g["manual_approval"].(type) {
+	case string:
+		if ma != "required" {
+			return nil, fmt.Errorf("gate.manual_approval must be \"required\"")
+		}
+	case map[string]any:
+		if _, ok := ma["requirements"]; ok {
+			return nil, fmt.Errorf("gate.manual_approval.requirements (N-of-M / roles / separation) is not implemented yet; a gate without requirements is a single approval")
+		}
+	case nil:
+		return nil, fmt.Errorf("gate.manual_approval is required (health_check gates are v2)")
+	}
+	if _, ok := g["health_check"]; ok {
+		return nil, fmt.Errorf("gate.health_check is v2")
+	}
+	if ts, ok := g["timeout"].(string); ok {
+		d, err := time.ParseDuration(strings.TrimSpace(ts))
+		if err != nil {
+			return nil, fmt.Errorf("gate.timeout: %w", err)
+		}
+		gate.Timeout = d
+	}
+	return gate, nil
+}
+
+// parseStep reads one step: an object with exactly one of apply / task /
+// wait / verify.
+func parseStep(v any) (workflow.Step, error) {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != 1 {
+		return workflow.Step{}, fmt.Errorf("a step is an object with exactly one of apply / task / wait / verify")
+	}
+	for k, val := range m {
+		step := workflow.Step{Kind: workflow.StepKind(k)}
+		switch step.Kind {
+		case workflow.StepApply, workflow.StepTask:
+			step.Fields = stringifyStringMap(val)
+		case workflow.StepWait:
+			wm, _ := val.(map[string]any)
+			step.Fields = stringifyStringMap(wm["fields"])
+			if ts, ok := wm["timeout"].(string); ok {
+				d, err := time.ParseDuration(strings.TrimSpace(ts))
+				if err != nil {
+					return workflow.Step{}, fmt.Errorf("wait.timeout: %w", err)
+				}
+				step.Timeout = d
+			}
+		case workflow.StepVerify:
+			// verify: invariant  /  verify: { invariant: min_active }
+			ok := false
+			switch t := val.(type) {
+			case string:
+				ok = t == "invariant"
+			case map[string]any:
+				inv, _ := t["invariant"].(string)
+				ok = len(t) == 1 && inv == "min_active"
+			}
+			if !ok {
+				return workflow.Step{}, fmt.Errorf("verify must be \"invariant\" or { invariant: min_active }")
+			}
+		default:
+			return workflow.Step{}, fmt.Errorf("unknown step %q (apply | task | wait | verify)", k)
+		}
+		return step, nil
+	}
+	return workflow.Step{}, nil
+}
+
+// validateWorkflows rejects two workflows with the same name (the name is the
+// API's {id}) and a target claimed by two workflows or also declared as a
+// strategy: task resource (two procedures would drive the same resource).
+func validateWorkflows(defs []workflow.Definition, resources []diff.DesiredResource) error {
+	names := map[string]bool{}
+	owner := map[string]string{}
+	for _, def := range defs {
+		if names[def.Name] {
+			return fmt.Errorf("workflow %s is declared twice", def.Name)
+		}
+		names[def.Name] = true
+		for _, id := range def.Targets() {
+			if other, ok := owner[id.Local]; ok {
+				return fmt.Errorf("target %s is in both workflow %s and %s", id.Local, other, def.Name)
+			}
+			owner[id.Local] = def.Name
+		}
+	}
+	for _, r := range resources {
+		if name, ok := owner[r.ID.Local]; ok && r.UpdatePolicy.IsTask() {
+			return fmt.Errorf("resource %s is a target of workflow %s and also declares strategy: task; drive it with one of them", r.ID.Local, name)
+		}
+	}
+	return nil
+}

@@ -210,6 +210,16 @@ func runReconcile(args []string) {
 	if len(in.PlannedChanges) > 0 {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: note: %d planned_change declaration(s) are honoured only by the resident loop (sakutei); this one-shot run evaluates every change by the normal budget\n", len(in.PlannedChanges))
 	}
+	// #42 (§6.3): a Workflow target is driven only by its Workflow in the
+	// resident loop, where its progress (S2) is known.  The one-shot run cannot
+	// tell whether the Workflow is done, so it never Applies a target with a
+	// diff (conservative).
+	workflowOf := map[string]string{}
+	for _, def := range in.Workflows {
+		for _, id := range def.Targets() {
+			workflowOf[id.Local] = def.Name
+		}
+	}
 	intentResources, rev := in.Resources, in.Revision
 	var externalInputs []string
 	recomputeRendered := false
@@ -427,6 +437,8 @@ func runReconcile(args []string) {
 	waitingAlloc := allocRes.WaitingLocals(parentToChildrenRec)
 	// #41: strategy: task resources with a diff (held for the daemon's Task).
 	taskHeld := map[string]bool{}
+	// #42: Workflow targets with a diff (driven by the daemon's Workflow).
+	workflowHeld := map[string]bool{}
 	// ready holds the ready conditions observed this invocation (§8.3); a
 	// downstream whose ready_condition upstream is not ready is skipped.
 	ready := make(reconcile.Readiness)
@@ -523,7 +535,13 @@ func runReconcile(args []string) {
 				nonCOps = append(nonCOps, op)
 			}
 		}
-		if len(nonCOps) > 0 && res.UpdatePolicy.IsTask() {
+		if wf, ok := workflowOf[res.ID.Local]; ok && len(nonCOps) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"sakutei reconcile: %s: target of workflow %s — not applying; the daemon drives it through the Workflow (§6.3)\n",
+				res.ID, wf)
+			unobservable[res.ID.Local] = true
+			workflowHeld[res.ID.Local] = true
+		} else if len(nonCOps) > 0 && res.UpdatePolicy.IsTask() {
 			// #41 (§6.5 RequiresTaskEvent): a non-idempotent resource is never
 			// Applied.  Only the daemon launches its Task (1-outstanding, S2);
 			// here it is not converged, so its downstream waits.
@@ -818,8 +836,9 @@ func runReconcile(args []string) {
 	// #40: a resource held by an alert-only scope (§14.3) was observed fine;
 	// holding it is the declared policy, not a safety failure.
 	// #41: a strategy: task resource held for its Task is not a safety failure
-	// either — it was observed; only the daemon may launch the Task.
-	waitingCount, heldCount, taskCount := 0, 0, 0
+	// either — it was observed; only the daemon may launch the Task.  #42: the
+	// same for a Workflow target.
+	waitingCount, heldCount, taskCount, workflowCount := 0, 0, 0, 0
 	for local := range unobservable {
 		if waitingAlloc[local] {
 			waitingCount++
@@ -827,6 +846,8 @@ func runReconcile(args []string) {
 			heldCount++
 		} else if taskHeld[local] {
 			taskCount++
+		} else if workflowHeld[local] {
+			workflowCount++
 		}
 	}
 	if waitingCount > 0 {
@@ -835,10 +856,13 @@ func runReconcile(args []string) {
 	if taskCount > 0 {
 		fmt.Printf("Reconcile: %d strategy: task resource(s) await their Task (launched by the daemon, §6.5)\n", taskCount)
 	}
-	if len(unobservable) > waitingCount+heldCount+taskCount {
+	if workflowCount > 0 {
+		fmt.Printf("Reconcile: %d Workflow target(s) held for the daemon's Workflow (§6.3)\n", workflowCount)
+	}
+	if n := waitingCount + heldCount + taskCount + workflowCount; len(unobservable) > n {
 		fmt.Fprintf(os.Stderr,
 			"sakutei reconcile: %d resource(s) were unobservable this cycle; convergence incomplete\n",
-			len(unobservable)-waitingCount-heldCount-taskCount)
+			len(unobservable)-n)
 		os.Exit(1)
 	}
 	if budgetHalted || capacityHalted {
