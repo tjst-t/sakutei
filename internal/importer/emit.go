@@ -76,12 +76,15 @@ func EmitResourcesYAML(resources []Resource) string {
 		if len(r.Fields) > 0 {
 			b.WriteString("    fields:\n")
 			for _, f := range sortedKeys(r.Fields) {
-				if vals, ok := r.ManagedCandidates[f]; ok {
+				if vals, ok := r.ManagedCandidates[f]; ok && len(vals) > 1 {
 					q := make([]string, len(vals))
 					for i, v := range vals {
 						q[i] = quote(v)
 					}
 					fmt.Fprintf(&b, "      # managed 候補: 観測のたびに値が変化（%s）\n", strings.Join(q, " → "))
+				} else if ok {
+					// Sync Mode carries a candidate over from an earlier pass (§24.5).
+					b.WriteString("      # managed 候補: 以前の観測で値が変化\n")
 				}
 				fmt.Fprintf(&b, "      %s: %s\n", key(f), quote(r.Fields[f]))
 			}

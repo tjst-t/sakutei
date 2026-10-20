@@ -58,6 +58,10 @@ func runSync(args []string) {
 	zonePath := fs.String("zone", "", "path to the dnszone provider zone file (default: falls back to --state)")
 	rulesetPath := fs.String("ruleset", "", "path to the nftables provider ruleset file (default: falls back to --state)")
 	intervalStr := fs.String("interval", "", "repeat every interval, e.g. 30s (default: one pass)")
+	samples := fs.Int("samples", 3, "how many times to observe reality per pass; a field that changes between observations is a managed candidate and its changes alone are not committed")
+	sampleInterval := fs.Duration("sample-interval", 2*time.Second, "wait between observations (with --samples > 1)")
+	committerName := fs.String("committer-name", syncmode.DefaultCommitter.Name, "name on Sync's git commits (the system, §26.3)")
+	committerEmail := fs.String("committer-email", syncmode.DefaultCommitter.Email, "email on Sync's git commits")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
@@ -75,6 +79,14 @@ func runSync(args []string) {
 			os.Exit(1)
 		}
 		interval = d
+	}
+	if *samples < 1 {
+		fmt.Fprintln(os.Stderr, "sakutei sync: --samples must be >= 1")
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*committerName) == "" || strings.TrimSpace(*committerEmail) == "" {
+		fmt.Fprintln(os.Stderr, "sakutei sync: --committer-name and --committer-email must not be empty")
+		os.Exit(1)
 	}
 
 	reg := registry.DefaultRegistry()
@@ -104,8 +116,12 @@ func runSync(args []string) {
 	}
 
 	root := filepath.Dir(filepath.Clean(*intentDir))
+	base := syncmode.Options{
+		Root: root, Providers: providers, Samples: *samples, Interval: *sampleInterval,
+		Committer: syncmode.Committer{Name: *committerName, Email: *committerEmail},
+	}
 	for {
-		failed := syncPass(*intentDir, root, providers)
+		failed := syncPass(*intentDir, base)
 		if interval == 0 {
 			if failed {
 				os.Exit(1)
@@ -116,9 +132,10 @@ func runSync(args []string) {
 	}
 }
 
-// syncPass loads the intent fresh (scopes may change between passes) and
-// records every sync scope.  It returns true if anything failed.
-func syncPass(intentDir, root string, providers map[string]provider.Provider) bool {
+// syncPass loads the intent fresh (scopes may change between passes), records
+// every sync scope and commits what changed.  It returns true if anything
+// failed.
+func syncPass(intentDir string, opts syncmode.Options) bool {
 	in, err := loader.LoadIntent(intentDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei sync: load intent: %v\n", err)
@@ -128,8 +145,10 @@ func syncPass(intentDir, root string, providers map[string]provider.Provider) bo
 		fmt.Fprintln(os.Stdout, "sync: no scope is declared mode: sync; nothing to record")
 		return false
 	}
+	opts.Intent = in
+	rep := syncmode.RunOnce(context.Background(), opts)
 	failed := false
-	for _, o := range syncmode.RunOnce(context.Background(), syncmode.Options{Intent: in, Root: root, Providers: providers}) {
+	for _, o := range rep.Outcomes {
 		switch {
 		case o.Err != nil:
 			failed = true
@@ -139,6 +158,17 @@ func syncPass(intentDir, root string, providers map[string]provider.Provider) bo
 		default:
 			fmt.Fprintf(os.Stdout, "sync: scope %s provider %s: %d resource(s), unchanged\n", o.Scope, o.Provider, o.Resources)
 		}
+	}
+	switch {
+	case rep.Repo == "":
+		fmt.Fprintln(os.Stdout, "sync: not in a git work tree; snapshots written, not committed")
+	case rep.CommitErr != nil:
+		failed = true
+		fmt.Fprintf(os.Stderr, "sync: commit failed (snapshots stay in the work tree; the next pass commits them): %v\n", rep.CommitErr)
+	case rep.Commit != "":
+		fmt.Fprintf(os.Stdout, "sync: committed %s as %s <%s>\n", rep.Commit, opts.Committer.Name, opts.Committer.Email)
+	default:
+		fmt.Fprintln(os.Stdout, "sync: nothing to commit")
 	}
 	return failed
 }

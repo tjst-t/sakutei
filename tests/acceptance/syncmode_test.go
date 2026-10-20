@@ -130,7 +130,7 @@ func TestSyncMode_WritesSnapshot(t *testing.T) {
 	root, intent, state := setupSync(t, syncScopesYAML)
 	before := readFile(t, state)
 
-	out := mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state)
+	out := mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state, "--samples", "1")
 	snap := filepath.Join(root, "generated", "legacy", "sync-fake.yaml")
 	body := readFile(t, snap)
 	if !strings.HasPrefix(body, "# sakutei:generated sync\n") || !strings.Contains(body, "# body-sha256: ") {
@@ -148,7 +148,7 @@ func TestSyncMode_WritesSnapshot(t *testing.T) {
 
 	info1, _ := os.Stat(snap)
 	time.Sleep(20 * time.Millisecond)
-	out = mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state)
+	out = mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state, "--samples", "1")
 	info2, _ := os.Stat(snap)
 	if !strings.Contains(out, "unchanged") || !info1.ModTime().Equal(info2.ModTime()) {
 		t.Fatalf("[#23-2] unchanged reality must leave the snapshot untouched:\n%s", out)
@@ -156,7 +156,7 @@ func TestSyncMode_WritesSnapshot(t *testing.T) {
 
 	// Reality changes in the sync scope → recorded.
 	writeStateJSON(t, state, strings.Replace(syncState, `"old-1": {"fields": {"name": "old-1", "size": 1}}`, `"old-1": {"fields": {"name": "old-1", "size": 9}}`, 1))
-	mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state)
+	mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state, "--samples", "1")
 	if !strings.Contains(readFile(t, snap), `size: "9"`) {
 		t.Fatalf("[#23-2] a reality change in the sync scope must be recorded:\n%s", readFile(t, snap))
 	}
@@ -165,13 +165,13 @@ func TestSyncMode_WritesSnapshot(t *testing.T) {
 func TestSyncMode_RefusesHandEdit(t *testing.T) {
 	// [#23-3]
 	root, intent, state := setupSync(t, syncScopesYAML)
-	mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state)
+	mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state, "--samples", "1")
 	snap := filepath.Join(root, "generated", "legacy", "sync-fake.yaml")
 	edited := strings.Replace(readFile(t, snap), `size: "1"`, `size: "100"`, 1)
 	writeStateJSON(t, snap, edited)
 
 	writeStateJSON(t, state, strings.Replace(syncState, `"size": 1}}, "orphan-t"`, `"size": 2}}, "orphan-t"`, 1))
-	out, code := runSakutei(t, "sync", "--intent", intent, "--provider", "fake", "--state", state)
+	out, code := runSakutei(t, "sync", "--intent", intent, "--provider", "fake", "--state", state, "--samples", "1")
 	if code == 0 || !strings.Contains(out, "edited by hand") {
 		t.Fatalf("[#23-3] a hand-edited snapshot must stop the overwrite (exit %d):\n%s", code, out)
 	}
@@ -223,12 +223,12 @@ func TestSyncMode_DaemonNeverPrunesSyncScope(t *testing.T) {
 func TestSyncMode_IncompleteListKeepsSnapshot(t *testing.T) {
 	// [#23-6]
 	root, intent, state := setupSync(t, syncScopesYAML)
-	mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state)
+	mustRun(t, "sync", "--intent", intent, "--provider", "fake", "--state", state, "--samples", "1")
 	snap := filepath.Join(root, "generated", "legacy", "sync-fake.yaml")
 	good := readFile(t, snap)
 
 	writeStateJSON(t, state, strings.Replace(syncState, `"pruneable_capability": true`, `"pruneable_capability": true, "list_partial": true`, 1))
-	out, code := runSakutei(t, "sync", "--intent", intent, "--provider", "fake", "--state", state)
+	out, code := runSakutei(t, "sync", "--intent", intent, "--provider", "fake", "--state", state, "--samples", "1")
 	if code == 0 || !strings.Contains(out, "previous snapshot kept") {
 		t.Fatalf("[#23-6] an incomplete List must skip the scope (exit %d):\n%s", code, out)
 	}

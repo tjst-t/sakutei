@@ -78,7 +78,7 @@ v1b が実証するのは、**既存の大規模基盤に安全に入れる**こ
 | 項目 | 状況 | 正 |
 |---|---|---|
 | `sakutei import` + managed 候補 | 実装済み | §24.4 |
-| `ScopeMode` + Sync Mode | `generated/` への書き出しまで実装済み。**git コミットは未実装**（Backlog #35） | §24.5 |
+| `ScopeMode` + Sync Mode | 実装済み（`generated/` への書き出し + git コミット。コミッターは既定 `sakutei-sync`・署名なし、v3.9） | §24.5 |
 | `AllocationAuthority` + 採番連携 | ファイル版（JSON + flock）で実装済み。**v1 の採番はこれで確定**。SQLite 版は v1 の範囲外（v2 以降、Backlog #36） | §19.3・§19.9 |
 | allocator HA 最小形・Lookup キャッシュ・waiting-allocation・プール分割 by claim | 実装済み（`sakutei allocator`） | §19.6・§19.8・§19.9 |
 | 契約テストの Schema からの生成・golden path テンプレート・BulkObserve 等価性テスト | 実装済み | §28.3・§28.6 |
@@ -261,7 +261,7 @@ Ansible provider では横断保証の多くが落ちる。**check mode は「�
 | **`planned_change` の kind 整合検証** | 宣言 kind（reimage / decommission 等）と実際に生じた Plan の操作種別が一致することの検証ルール。**v1.5 で決定**：kind ごとに通す操作種別を固定し（delete→Delete、update→Update、reimage / recreate→対の Delete+Create）、scope 内で kind の合わない破壊的 op はレーンに入れず通常予算で評価して `PlannedChangeKindMismatch` を出す（§13.3） | §13 |
 | **List 急減閾値のチューニング** | scope 単位で宣言する件数急減 halt の閾値の実運用値（誤発火と見逃しの均衡） | §12 |
 | **Ansible executor の Observe 頻度** | fork + SSH の高レイテンシ層で tier 別間引き（§16。`observe_tier`）をどう既定するか。executor を実装するまでの既定は「毎周」 | §16 |
-| **運用パラメータ** | Sync Mode の commit 主体（bot / 署名有無）、scope 昇格の「N 日間 diff ゼロ」の N、reconcile 間隔既定値、freeze の粒度 | §14/§24 |
+| **運用パラメータ** | Sync Mode の commit 主体（bot / 署名有無）、scope 昇格の「N 日間 diff ゼロ」の N、reconcile 間隔既定値、freeze の粒度。**Sync Mode の commit 主体は v1b で決定**：既定のコミッター（author も同じ）は `sakutei-sync <sakutei-sync@localhost>`、署名なし。名前・メールは `--committer-name` / `--committer-email` で変えられる。署名は既定でオフとし、足すときはコミットを作る 1 か所に鍵を渡す形にする（§24.5「v1b の実装」） | §14/§24 |
 
 ### §29.2 意図的な先送りと再検討トリガ
 
