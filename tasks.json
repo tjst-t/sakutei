@@ -358,8 +358,8 @@
       "id": "v1b-scopemode-converge-sync-sync-mode",
       "number": 23,
       "kind": "task",
-      "title": "v1b: ScopeMode（converge / sync）と Sync Mode の反映ループ",
-      "status": "in-progress",
+      "title": "v1b: ScopeMode（converge / sync）と Sync Mode の generated/ への書き出し",
+      "status": "done",
       "parent": "v1b",
       "dependsOn": [
         "v1b-sakutei-import-reverse-render-manage"
@@ -369,7 +369,7 @@
       "labels": [],
       "body": "設計 §24。scope ごとに converge（現実を intent に寄せる）か sync（現実を intent 側に反映する）かを宣言できるようにし、Sync Mode では現実の変化を intent の更新として書き戻すループを回す。commit 主体（bot・署名の有無）は §29.1 の運用パラメータとして実装中に決める。",
       "doneWhen": "sync の scope で現実を変えると intent 側に反映され、converge の scope では従来どおり現実が戻されることをテストで示す",
-      "resolution": null,
+      "resolution": "コミット d8788a9。intent の scopes:（scope・mode・sync.target_path）、sync の scope を prune の集合差から除外、sakutei sync（自動生成ヘッダ付きで generated/ に書き出し、変化時だけ書く、手編集は上書きしない）を追加。sync の scope の現実を変えるとスナップショットに反映され、converge の scope では従来どおり収束・prune することを、plan・reconcile・常駐ループでテストした。git コミットは #35。make check と make test-race が合格。",
       "refs": [],
       "threads": [
         {
@@ -378,8 +378,8 @@
         }
       ],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T11:22:19.124Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T11:28:31.872Z",
+      "closedAt": "2026-10-20T11:28:31.872Z",
       "extra": {}
     },
     {
