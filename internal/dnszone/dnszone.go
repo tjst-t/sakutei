@@ -41,6 +41,14 @@
 // Comment lines (;) and blank lines are preserved verbatim on write.
 // $ORIGIN and $TTL directives are preserved verbatim (not interpreted).
 //
+// Any other line that cannot be read as a record (a typo, an unknown record
+// type, an unsupported directive such as $INCLUDE, a multi-line "( … )" record,
+// an indented line that omits the owner name) makes the whole zone a parse
+// error: Read returns Unknown and List returns an error so prune halts.  A
+// record we cannot read is not proof that it is absent (§3 principle 3,
+// unknown ≠ absent); silently skipping it would make the core Create a
+// duplicate.  The error names the offending line number.
+//
 // Local ID convention: "<name>/<type>" (e.g. "www.example.com./A").
 // This encodes the composite {name, type} identity into a single opaque string
 // that the convergence core passes to Read/Apply.
@@ -77,6 +85,29 @@ const providerVersion = "dnszone-v1.0.0"
 var managedSkipTypes = map[string]bool{
 	"SOA": true,
 	"NS":  true,
+}
+
+// knownTypes lists the record types parseLine accepts as the TYPE token.
+// Generic "TYPE<n>" (RFC 3597) is accepted separately.  A token outside this
+// list means the line is not a record we understand (e.g. a typo), and the
+// zone becomes a parse error rather than silently losing the record.
+var knownTypes = map[string]bool{
+	"A": true, "AAAA": true, "AFSDB": true, "APL": true, "CAA": true,
+	"CDNSKEY": true, "CDS": true, "CERT": true, "CNAME": true, "CSYNC": true,
+	"DHCID": true, "DNAME": true, "DNSKEY": true, "DS": true, "EUI48": true,
+	"EUI64": true, "HINFO": true, "HTTPS": true, "IPSECKEY": true, "KX": true,
+	"LOC": true, "MX": true, "NAPTR": true, "NS": true, "NSEC": true,
+	"NSEC3": true, "NSEC3PARAM": true, "OPENPGPKEY": true, "PTR": true,
+	"RP": true, "RRSIG": true, "SMIMEA": true, "SOA": true, "SPF": true,
+	"SRV": true, "SSHFP": true, "SVCB": true, "TLSA": true, "TXT": true,
+	"URI": true, "ZONEMD": true,
+}
+
+// supportedDirectives lists the $-directives that are read (and preserved
+// verbatim).  Others ($INCLUDE, $GENERATE, …) would hide records from us.
+var supportedDirectives = map[string]bool{
+	"$ORIGIN": true,
+	"$TTL":    true,
 }
 
 // record is a parsed DNS resource record from the zone file.
@@ -456,8 +487,12 @@ func (p *Provider) writeRecord(rec record) error {
 
 	// Remove existing lines for this {name, type}.
 	filtered := make([]string, 0, len(lines)+1)
-	for _, line := range lines {
-		r, ok := parseLine(line)
+	for i, line := range lines {
+		r, ok, perr := parseLine(line)
+		if perr != nil {
+			// Refuse to rewrite a zone we cannot fully read (unknown ≠ absent).
+			return provider.NewTransientError(fmt.Errorf("dnszone: writeRecord: %s: line %d: %w", p.zonePath, i+1, perr))
+		}
 		if !ok {
 			// Not a resource record (comment, directive, blank) — preserve.
 			filtered = append(filtered, line)
@@ -493,8 +528,11 @@ func (p *Provider) deleteRecord(name, rrtype string) error {
 	normType := strings.ToUpper(rrtype)
 
 	filtered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		r, ok := parseLine(line)
+	for i, line := range lines {
+		r, ok, perr := parseLine(line)
+		if perr != nil {
+			return provider.NewTransientError(fmt.Errorf("dnszone: deleteRecord: %s: line %d: %w", p.zonePath, i+1, perr))
+		}
 		if ok && normaliseName(r.name) == normName && strings.ToUpper(r.rrtype) == normType {
 			// Drop this line.
 			continue
@@ -508,6 +546,8 @@ func (p *Provider) deleteRecord(name, rrtype string) error {
 // parseZone reads the zone file and returns all managed records.
 // SOA and NS records are excluded (management boundary).
 // Returns os.ErrNotExist if the zone file does not exist.
+// Returns an error naming the line number if any line cannot be read
+// (never a partial record set — unknown ≠ absent).
 func (p *Provider) parseZone() ([]record, error) {
 	lines, err := p.readLines()
 	if err != nil {
@@ -515,8 +555,11 @@ func (p *Provider) parseZone() ([]record, error) {
 	}
 
 	var records []record
-	for _, line := range lines {
-		r, ok := parseLine(line)
+	for i, line := range lines {
+		r, ok, perr := parseLine(line)
+		if perr != nil {
+			return nil, fmt.Errorf("line %d: %w", i+1, perr)
+		}
 		if !ok {
 			continue
 		}
@@ -585,7 +628,9 @@ func (p *Provider) writeLines(lines []string) error {
 }
 
 // parseLine parses a single zone-file line into a record.
-// Returns (zero, false) if the line is a comment, blank, or directive.
+// Returns (zero, false, nil) if the line is a comment, blank, or a supported
+// directive ($ORIGIN / $TTL).  Returns a non-nil error if the line is neither
+// that nor a record we can read (see the package doc).
 //
 // Supported formats (RFC1035 subset):
 //
@@ -596,15 +641,31 @@ func (p *Provider) writeLines(lines []string) error {
 //
 // Fields after TYPE are joined as the record value (handles multi-word rdata
 // like MX priority + exchange, or quoted TXT strings).
-func parseLine(line string) (record, bool) {
+func parseLine(line string) (record, bool, error) {
 	trimmed := strings.TrimSpace(line)
-	if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "$") {
-		return record{}, false
+	if trimmed == "" || strings.HasPrefix(trimmed, ";") {
+		return record{}, false, nil
+	}
+	if strings.HasPrefix(trimmed, "$") {
+		directive := strings.ToUpper(strings.Fields(trimmed)[0])
+		if !supportedDirectives[directive] {
+			return record{}, false, fmt.Errorf("unsupported directive %s: %q", directive, line)
+		}
+		return record{}, false, nil
+	}
+	if trimmed != line && (line[0] == ' ' || line[0] == '\t') {
+		// RFC1035 lets an indented line inherit the previous owner name; we
+		// do not track that, so reading it would attach the record to a
+		// wrong owner.
+		return record{}, false, fmt.Errorf("owner name omitted (indented line) is not supported: %q", line)
+	}
+	if hasUnquotedParen(trimmed) {
+		return record{}, false, fmt.Errorf("multi-line record \"( … )\" is not supported: %q", line)
 	}
 
 	fields := strings.Fields(trimmed)
 	if len(fields) < 3 {
-		return record{}, false
+		return record{}, false, fmt.Errorf("not a resource record: %q", line)
 	}
 
 	// fields[0] is always the owner name.
@@ -638,15 +699,18 @@ func parseLine(line string) (record, bool) {
 	}
 
 	if idx >= len(fields) {
-		return record{}, false
+		return record{}, false, fmt.Errorf("no record type: %q", line)
 	}
 
 	rrtype := strings.ToUpper(fields[idx])
+	if !isKnownType(rrtype) {
+		return record{}, false, fmt.Errorf("unknown record type %q: %q", fields[idx], line)
+	}
 	idx++
 
 	if idx >= len(fields) {
 		// No rdata — malformed.
-		return record{}, false
+		return record{}, false, fmt.Errorf("no record data: %q", line)
 	}
 
 	// Everything after TYPE is the rdata value.
@@ -657,7 +721,35 @@ func parseLine(line string) (record, bool) {
 		ttl:    ttl,
 		rrtype: rrtype,
 		value:  value,
-	}, true
+	}, true, nil
+}
+
+// isKnownType reports whether t (uppercased) is a record type parseLine
+// accepts: one of knownTypes or the RFC 3597 generic form "TYPE<n>".
+func isKnownType(t string) bool {
+	if knownTypes[t] {
+		return true
+	}
+	return strings.HasPrefix(t, "TYPE") && isNumeric(t[len("TYPE"):])
+}
+
+// hasUnquotedParen reports whether s contains "(" or ")" outside a quoted
+// string and before a ";" comment.
+func hasUnquotedParen(s string) bool {
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\\' && inQuote:
+			i++ // skip the escaped character
+		case c == '"':
+			inQuote = !inQuote
+		case c == ';' && !inQuote:
+			return false
+		case (c == '(' || c == ')') && !inQuote:
+			return true
+		}
+	}
+	return false
 }
 
 // formatRecord converts a record to a canonical zone-file line.
