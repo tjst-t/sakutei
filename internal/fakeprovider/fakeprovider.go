@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -601,18 +602,41 @@ func (p *Provider) load() (*stateFile, error) {
 	return &sf, nil
 }
 
-// save serialises the stateFile and writes it atomically-ish (write + rename
-// would be ideal but for test simplicity we write directly).
+// save serialises the stateFile and writes it atomically: the JSON is written
+// to a temp file in the same directory and then os.Rename'd onto statePath.
 //
-// NOTE: a production Provider MUST persist state via an atomic write to a temp
-// file followed by os.Rename onto the target path, so a crash mid-write can
-// never leave a truncated/corrupt state file (S2 progress; loss = incident).
+// Readers (the acceptance tests poll the state file while the daemon runs)
+// therefore always see either the previous or the new complete file, never a
+// truncated one. A direct os.WriteFile truncates first and made concurrent
+// readers intermittently fail with "unexpected end of JSON input".
 func (p *Provider) save(sf *stateFile) error {
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		return fmt.Errorf("fakeprovider: marshal state: %w", err)
 	}
-	return os.WriteFile(p.statePath, data, 0600)
+	tmp, err := os.CreateTemp(filepath.Dir(p.statePath), "."+filepath.Base(p.statePath)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("fakeprovider: create temp state: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("fakeprovider: write temp state: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("fakeprovider: close temp state: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0600); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("fakeprovider: chmod temp state: %w", err)
+	}
+	if err := os.Rename(tmpName, p.statePath); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("fakeprovider: rename state: %w", err)
+	}
+	return nil
 }
 
 // anyToTypedValue converts a JSON-decoded any value to a core.TypedValue.

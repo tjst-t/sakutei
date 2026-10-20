@@ -28,7 +28,6 @@
 package acceptance
 
 import (
-	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,11 +44,11 @@ import (
 // --interval <interval>" and captures both stdout and stderr into separate
 // buffers.  The daemon does NOT merge stderr into stdout (unlike startDaemon)
 // so we can inspect stderr independently for DriftEvent messages.
-func startDaemonCombined(t *testing.T, intentDir, statePath, interval string) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer) {
+func startDaemonCombined(t *testing.T, intentDir, statePath, interval string) (*exec.Cmd, *syncBuffer, *syncBuffer) {
 	t.Helper()
 	bin := buildBinary(t)
 
-	var stdoutBuf, stderrBuf bytes.Buffer
+	var stdoutBuf, stderrBuf syncBuffer
 	cmd := exec.Command(bin,
 		"--intent", intentDir,
 		"--state", statePath,
@@ -66,7 +65,7 @@ func startDaemonCombined(t *testing.T, intentDir, statePath, interval string) (*
 
 // waitForStringInBuf polls buf until the given substring appears or the
 // deadline is exceeded.  Returns true if found.
-func waitForStringInBuf(buf *bytes.Buffer, substr string, deadline time.Duration) bool {
+func waitForStringInBuf(buf *syncBuffer, substr string, deadline time.Duration) bool {
 	end := time.Now().Add(deadline)
 	for time.Now().Before(end) {
 		if strings.Contains(buf.String(), substr) {

@@ -27,7 +27,6 @@
 package acceptance
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -45,11 +44,11 @@ import (
 //
 //	cmd, stdout := startDaemon(t, ...)
 //	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-func startDaemon(t *testing.T, intentDir, statePath, interval string) (*exec.Cmd, *bytes.Buffer) {
+func startDaemon(t *testing.T, intentDir, statePath, interval string) (*exec.Cmd, *syncBuffer) {
 	t.Helper()
 	bin := buildBinary(t)
 
-	var stdout bytes.Buffer
+	var stdout syncBuffer
 	cmd := exec.Command(bin,
 		"--intent", intentDir,
 		"--state", statePath,

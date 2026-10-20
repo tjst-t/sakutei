@@ -29,7 +29,6 @@
 package acceptance
 
 import (
-	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,11 +44,11 @@ import (
 // startDaemonWithArgs launches the sakutei daemon with explicit extra flags
 // (e.g. --generated, --inventory-hash).  Unlike startDaemonCombined, the
 // caller passes all extra flags as extraArgs.
-func startDaemonWithArgs(t *testing.T, intentDir, statePath, interval string, extraArgs ...string) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer) {
+func startDaemonWithArgs(t *testing.T, intentDir, statePath, interval string, extraArgs ...string) (*exec.Cmd, *syncBuffer, *syncBuffer) {
 	t.Helper()
 	bin := buildBinary(t)
 
-	var stdoutBuf, stderrBuf bytes.Buffer
+	var stdoutBuf, stderrBuf syncBuffer
 	args := []string{
 		"--intent", intentDir,
 		"--state", statePath,
