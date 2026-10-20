@@ -933,7 +933,7 @@
       "number": 45,
       "kind": "task",
       "title": "v1.5: DR モード（DR intent のプリステージ・書込 break-glass・事後合流）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-5-task-workflow-planned-change-remedi",
       "dependsOn": [
         "v1-5-workflow-s4"
@@ -947,7 +947,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T13:38:03.379Z",
+      "updatedAt": "2026-10-20T15:03:32.928Z",
       "closedAt": null,
       "extra": {}
     },
