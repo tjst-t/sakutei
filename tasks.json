@@ -877,7 +877,7 @@
       "number": 38,
       "kind": "bug",
       "title": "PruneWithinScope の prune が、リソースの scope を越えて別の scope の現実まで消す",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -889,12 +889,12 @@
       ],
       "body": "2026-10-20、#23（Sync Mode）の作業中に確認した。\n\nintent に `scope: {site: tokyo}`・`deletion_policy: PruneWithinScope` のリソースだけを書くと、prune は site=legacy にある現実のリソースまで「理想に無い余分なもの」として DELETE する（`sakutei plan` で `- DELETE fake/site=legacy/old-1` が出る）。prune エンジンは `List(core.NewScope(nil))`（全世界）を集合差の対象にしていて、コードには「Sprint 1 の簡略化」とある（cmd/sakutei/reconcile.go の computePruneForProvider、plan.go、internal/reconcile/loop.go）。\n\n設計 §12 の「scope 内で消す（PruneWithinScope）」は、宣言した scope の境界の中だけを閉世界にする意味のはず。scope を複数持つ現実（ブラウンフィールドの段階的昇格 §24.2 で、1 scope ずつ prune を有効にする運用）では、昇格させていない scope まで消える。\n\nいまは --claim（§17.1）と mode: sync の scope（#23）だけが集合差の前に除外される。\n\n直し方の案：集合差の対象を、PruneWithinScope を宣言したリソースの scope に合う現実だけに絞る。",
       "doneWhen": "scope A のリソースだけが PruneWithinScope のとき、scope B にある現実が plan・reconcile・常駐ループのどれでも DELETE されないことを受け入れテストで示す",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/prunewithinscope-prune-scope-scope）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T11:26:05.119Z",
-      "updatedAt": "2026-10-20T12:10:50.681Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T12:15:29.961Z",
+      "closedAt": "2026-10-20T12:15:29.961Z",
       "extra": {}
     }
   ]
