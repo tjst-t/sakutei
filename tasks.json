@@ -837,6 +837,30 @@
       "updatedAt": "2026-10-20T11:04:28.662Z",
       "closedAt": "2026-10-20T11:04:28.662Z",
       "extra": {}
+    },
+    {
+      "id": "dnszone",
+      "number": 37,
+      "kind": "bug",
+      "title": "dnszone が読めない行を黙って読み飛ばす（打ち間違いのレコードが「無い」扱いになる）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "dnszone",
+        "safety"
+      ],
+      "body": "2026-10-20、#32（契約テストの自動生成）の作業中に見つけた。\n\ninternal/dnszone の parseZone は、parseLine が解釈できない行（`this is { not a zone file` など）を `continue` で黙って捨てる。そのため、ゾーンファイルに打ち間違いのあるレコード行があると、そのレコードは Read で「無い」（Availability Ok・State nil）と見なされ、Create されて重複しうる。原則 3（確信が持てないときは減算しない／unknown ≠ absent）に照らすと、解釈できない行が 1 行でもあれば、ファイル全体を parse error にして Unknown を返すほうが安全側。\n\nただし、RFC1035 のうち未対応の構文（$ORIGIN 以外のディレクティブ、複数行の括弧など）を書いている既存のゾーンファイルが、すべて Unknown になってしまう。どこまで厳しく読むかの判断が要る。いまファイル全体が Unknown になるのは、64KiB を超える 1 行など、読み込みそのものが失敗するときだけ。",
+      "doneWhen": "解釈できない行を含むゾーンファイルで Read が Unknown（または error）を返し、prune が halt することをテストで示す。または、読み飛ばしを意図した仕様として設計書に書く",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T11:12:52.590Z",
+      "updatedAt": "2026-10-20T11:12:52.590Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
