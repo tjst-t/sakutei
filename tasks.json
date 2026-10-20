@@ -94,6 +94,29 @@
       "updatedAt": "2026-10-20T08:42:48.723Z",
       "closedAt": "2026-10-20T08:42:48.723Z",
       "extra": {}
+    },
+    {
+      "id": "v1a-5-render-2",
+      "number": 5,
+      "kind": "story",
+      "title": "v1a-5 render パイプライン — 2 フェーズと合成リソース",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1a"
+      ],
+      "body": "旧 ROADMAP.json の Sprint 5（`S072a14`）。\n\nrender フェーズ1（外部入力解決・副作用あり）＋フェーズ2（合成リソースの決定的展開）、外部権威到達不能時の前回解決値保持、generated/ 規約、ステータス集約。§9。\n\n- S072a14-1 フェーズ2 — 合成リソースの決定的展開と generated/ 規約（4 件・render_expand_test.go）\n- S072a14-2 フェーズ1 seam — ExternalInputResolver + TTL キャッシュ + 不達時前回保持（3 件・render_phase1_test.go）\n- S072a14-3 cause tag E/D の活動化 + 合成ステータス集約（最悪優先）（3 件・cause_tag_ede_test.go, composite_status_test.go）\n\n受け入れ条件の全文は git 履歴の `docs/ROADMAP.json`（コミット 9d7cf32）。テスト内タグ `[AC-S072a14-x-y]`。\n\n**確認（2026-10-20）**：`make check` が通り、10 件すべて合格。",
+      "doneWhen": "受け入れ条件 AC-S072a14-* 10 件のテストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:42:49.388Z",
+      "updatedAt": "2026-10-20T08:42:49.388Z",
+      "closedAt": "2026-10-20T08:42:49.388Z",
+      "extra": {}
     }
   ]
 }
