@@ -87,7 +87,7 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		r.Provider, _ = m["provider"].(string)
 		r.ID, _ = m["id"].(string)
 		r.DeletionPolicy, _ = m["deletion_policy"].(string)
-		r.Tier, _ = m["tier"].(string)
+		r.ObserveTier, _ = m["observe_tier"].(string)
 		r.Scope = stringifyStringMap(m["scope"])
 		fields, allocs, err := splitFields(m["fields"])
 		if err != nil {
@@ -113,11 +113,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.Scopes = scopes
-	tiers, err := parseTiers(tree["tiers"])
+	tiers, err := parseObserveTiers(tree["observe_tiers"])
 	if err != nil {
 		return intentFile{}, err
 	}
-	out.Tiers = tiers
+	out.ObserveTiers = tiers
 	return out, nil
 }
 
@@ -186,10 +186,10 @@ func scalarToString(v any) string {
 
 // intentFile is the on-disk representation of a single intent file.
 type intentFile struct {
-	Resources []intentResource `json:"resources"`
-	Pools     []Pool           `json:"pools"`
-	Scopes    []ScopePolicy    `json:"scopes"`
-	Tiers     []Tier           `json:"tiers"`
+	Resources    []intentResource `json:"resources"`
+	Pools        []Pool           `json:"pools"`
+	Scopes       []ScopePolicy    `json:"scopes"`
+	ObserveTiers []ObserveTier    `json:"observe_tiers"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -216,8 +216,10 @@ type intentResource struct {
 	// format; S33266e will formalise the schema and reject unknown keys).
 	DeletionPolicy string `json:"deletion_policy"`
 
-	// Tier is the Observe-frequency tier (§16.5).  Empty means every cycle.
-	Tier string `json:"tier"`
+	// ObserveTier is the Observe-frequency tier (§16.5).  Empty means every
+	// cycle.  Deliberately not `tier:`, which §8 reserves for the DAG priority
+	// band (`tier: foundation`).
+	ObserveTier string `json:"observe_tier"`
 
 	// Allocations maps a field to the pool it is allocated from — the
 	// `field: { from_pool: <pool> }` request form (§19.1).
@@ -254,11 +256,11 @@ func LoadDir(dir string) ([]diff.DesiredResource, core.RevisionInfo, error) {
 // Intent is everything an intent directory declares: resources plus the
 // top-level declarations (pools for allocation, §19.8).
 type Intent struct {
-	Resources []diff.DesiredResource
-	Pools     []Pool
-	Scopes    []ScopePolicy
-	Tiers     []Tier
-	Revision  core.RevisionInfo
+	Resources    []diff.DesiredResource
+	Pools        []Pool
+	Scopes       []ScopePolicy
+	ObserveTiers []ObserveTier
+	Revision     core.RevisionInfo
 }
 
 // LoadIntent reads every intent file in dir (same rules as LoadDir) and also
@@ -273,7 +275,7 @@ func LoadIntent(dir string) (Intent, error) {
 	var resources []diff.DesiredResource
 	var pools []Pool
 	var scopes []ScopePolicy
-	var tiers []Tier
+	var tiers []ObserveTier
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -291,7 +293,7 @@ func LoadIntent(dir string) (Intent, error) {
 		resources = append(resources, loaded...)
 		pools = append(pools, file.Pools...)
 		scopes = append(scopes, file.Scopes...)
-		tiers = append(tiers, file.Tiers...)
+		tiers = append(tiers, file.ObserveTiers...)
 	}
 
 	// D-2: reject duplicate Local IDs.  Two resources sharing a Local ID would
@@ -313,7 +315,7 @@ func LoadIntent(dir string) (Intent, error) {
 	if err := validateScopes(scopes, resources); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
-	if err := validateTiers(tiers, resources); err != nil {
+	if err := validateObserveTiers(tiers, resources); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
 
@@ -326,7 +328,7 @@ func LoadIntent(dir string) (Intent, error) {
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, Tiers: tiers, Revision: rev}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Revision: rev}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the
@@ -475,7 +477,7 @@ func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 			DependsOn:      dependsOn,
 			DeletionPolicy: parseDeletionPolicy(r.DeletionPolicy),
 			Allocations:    r.Allocations,
-			Tier:           strings.TrimSpace(r.Tier),
+			ObserveTier:    strings.TrimSpace(r.ObserveTier),
 		})
 	}
 	return resources, intent, nil

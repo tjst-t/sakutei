@@ -21,7 +21,9 @@
 //	AC-v1b-tier-observe-2 — 間引かれた周の drift は次に予定された周で検知・修復される
 //	AC-v1b-tier-observe-3 — 未収束のリソースは収束するまで毎周 Observe される
 //	AC-v1b-tier-observe-4 — intent の変更は間引かれず、次の周で Observe・Apply される
-//	AC-v1b-tier-observe-5 — tiers: の宣言の誤りはロード時に拒否される
+//	AC-v1b-tier-observe-5 — observe_tiers: の宣言の誤りはロード時に拒否される
+//	AC-v1b-tier-observe-6 — tier:（§8 の DAG 優先度帯）は Observe 頻度として読まれない
+//	AC-v1b-tier-observe-7 — 合成リソースの子は親の observe_tier を継ぐ
 package acceptance
 
 import (
@@ -34,18 +36,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/reconcile"
+	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/pkg/core"
 )
 
 // tierIntent は fast（tier なし）と slow（observe_every: every の tier）の2リソースの intent。
 func tierIntent(every, slowSize string) string {
 	return `{
-  "tiers": [ { "name": "slow", "observe_every": ` + every + ` } ],
+  "observe_tiers": [ { "name": "slow", "observe_every": ` + every + ` } ],
   "resources": [
     { "provider": "fake", "id": "fast", "fields": { "name": "fast", "size": "1" } },
-    { "provider": "fake", "id": "slow", "tier": "slow", "fields": { "name": "slow", "size": "` + slowSize + `" } }
+    { "provider": "fake", "id": "slow", "observe_tier": "slow", "fields": { "name": "slow", "size": "` + slowSize + `" } }
   ]
 }`
 }
@@ -218,12 +223,12 @@ func TestTierObserve_IntentChangeIsNotThinned(t *testing.T) {
 // [AC-v1b-tier-observe-5]
 func TestTierObserve_InvalidTierDeclarationsRejected(t *testing.T) {
 	cases := map[string]struct{ intent, want string }{
-		"undeclared tier": {`{"resources":[{"provider":"fake","id":"a","tier":"nope","fields":{"name":"a"}}]}`, `tier "nope" is not declared`},
-		"observe_every 0": {`{"tiers":[{"name":"s","observe_every":0}]}`, "observe_every must be >= 1"},
-		"duplicate":       {`{"tiers":[{"name":"s","observe_every":2},{"name":"s","observe_every":3}]}`, "declared twice"},
-		"empty name":      {`{"tiers":[{"name":"","observe_every":2}]}`, "empty name"},
-		"not integer":     {`{"tiers":[{"name":"s","observe_every":"2"}]}`, "observe_every"},
-		"unknown key":     {`{"tiers":[{"name":"s","observe_every":2,"every":2}]}`, "every"},
+		"undeclared tier": {`{"resources":[{"provider":"fake","id":"a","observe_tier":"nope","fields":{"name":"a"}}]}`, `observe_tier "nope" is not declared`},
+		"observe_every 0": {`{"observe_tiers":[{"name":"s","observe_every":0}]}`, "observe_every must be >= 1"},
+		"duplicate":       {`{"observe_tiers":[{"name":"s","observe_every":2},{"name":"s","observe_every":3}]}`, "declared twice"},
+		"empty name":      {`{"observe_tiers":[{"name":"","observe_every":2}]}`, "empty name"},
+		"not integer":     {`{"observe_tiers":[{"name":"s","observe_every":"2"}]}`, "observe_every"},
+		"unknown key":     {`{"observe_tiers":[{"name":"s","observe_every":2,"every":2}]}`, "every"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -240,7 +245,7 @@ func TestTierObserve_InvalidTierDeclarationsRejected(t *testing.T) {
 
 	// YAML でも同じく宣言でき、リソースの tier が読める。
 	dir := t.TempDir()
-	yaml := "tiers:\n  - name: ansible\n    observe_every: 5\nresources:\n  - provider: fake\n    id: a\n    tier: ansible\n    fields:\n      name: a\n"
+	yaml := "observe_tiers:\n  - name: ansible\n    observe_every: 5\nresources:\n  - provider: fake\n    id: a\n    observe_tier: ansible\n    fields:\n      name: a\n"
 	if err := os.WriteFile(filepath.Join(dir, "i.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +253,53 @@ func TestTierObserve_InvalidTierDeclarationsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("[AC-v1b-tier-observe-5] YAML: %v", err)
 	}
-	if in.TierIntervals()["ansible"] != 5 || in.Resources[0].Tier != "ansible" {
-		t.Errorf("[AC-v1b-tier-observe-5] YAML: tiers=%v resource tier=%q", in.Tiers, in.Resources[0].Tier)
+	if in.ObserveTierIntervals()["ansible"] != 5 || in.Resources[0].ObserveTier != "ansible" {
+		t.Errorf("[AC-v1b-tier-observe-5] YAML: tiers=%v resource tier=%q", in.ObserveTiers, in.Resources[0].ObserveTier)
+	}
+}
+
+// [AC-v1b-tier-observe-6]
+// tier: は §8 の DAG 優先度帯（tier: foundation）の名前なので、Observe 頻度には
+// 使わない。observe_tier と別のキーで、Observe 頻度として読まれることはない。
+func TestTierObserve_TierKeyIsNotObserveFrequency(t *testing.T) {
+	dir := t.TempDir()
+	intent := `{"observe_tiers":[{"name":"foundation","observe_every":3}],` +
+		`"resources":[{"provider":"fake","id":"a","tier":"foundation","fields":{"name":"a"}}]}`
+	if err := os.WriteFile(filepath.Join(dir, "i.json"), []byte(intent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in, err := loader.LoadIntent(dir)
+	if err == nil {
+		t.Fatalf("[AC-v1b-tier-observe-6] tier: が observe_tier として読まれた: %+v", in.Resources)
+	}
+	if strings.Contains(err.Error(), "observe_tier") {
+		t.Errorf("[AC-v1b-tier-observe-6] tier: を observe_tier と混同したエラー: %v", err)
+	}
+}
+
+// [AC-v1b-tier-observe-7]
+// 合成リソースの子は親の observe_tier を継ぐ。
+func TestTierObserve_CompositeChildrenInheritObserveTier(t *testing.T) {
+	parent := diff.DesiredResource{
+		ID:          core.NewID("fake", core.NewScope(nil), "net"),
+		Fields:      map[string]string{"name": "net", "kind": render.CompositeKind},
+		ObserveTier: "slow",
+	}
+	out, err := render.ExpandAll(render.DefaultRegistry(), []diff.DesiredResource{parent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := 0
+	for _, r := range out {
+		if r.IsComposite {
+			continue
+		}
+		children++
+		if r.ObserveTier != "slow" {
+			t.Errorf("[AC-v1b-tier-observe-7] child %s: observe_tier=%q want slow", r.ID.Local, r.ObserveTier)
+		}
+	}
+	if children == 0 {
+		t.Fatalf("[AC-v1b-tier-observe-7] no children expanded")
 	}
 }

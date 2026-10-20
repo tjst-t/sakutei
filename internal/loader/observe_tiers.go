@@ -21,63 +21,67 @@ import (
 	"github.com/tjst-t/sakutei/internal/diff"
 )
 
-// Tier is an Observe-frequency tier declared in intent (§16.5):
+// ObserveTier is an Observe-frequency tier declared in intent (§16.5):
 //
-//	tiers:
+//	observe_tiers:
 //	  - { name: ansible, observe_every: 5 }   # 5 周に1回
 //
-// A resource joins a tier with `tier: <name>`.  A resource with no tier is
+// A resource joins a tier with `observe_tier: <name>`.  A resource with none is
 // Observed every cycle (the §8 default).  ObserveEvery is the number of
 // cycles between two Observes of a converged resource; 1 means every cycle.
-type Tier struct {
+//
+// The keys are observe_tier / observe_tiers, not tier / tiers: §8 reserves
+// `tier:` for the coarse DAG priority band (`tier: foundation`).  The two are
+// independent — a foundation resource can also be Observed rarely.
+type ObserveTier struct {
 	Name         string
 	ObserveEvery int
 }
 
-func parseTiers(v any) ([]Tier, error) {
+func parseObserveTiers(v any) ([]ObserveTier, error) {
 	raw, _ := v.([]any)
-	out := make([]Tier, 0, len(raw))
+	out := make([]ObserveTier, 0, len(raw))
 	for i, item := range raw {
 		m, ok := item.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("tiers[%d]: オブジェクトでなければなりません", i)
+			return nil, fmt.Errorf("observe_tiers[%d]: オブジェクトでなければなりません", i)
 		}
 		name, _ := m["name"].(string)
 		every, _ := m["observe_every"].(int)
-		out = append(out, Tier{Name: strings.TrimSpace(name), ObserveEvery: every})
+		out = append(out, ObserveTier{Name: strings.TrimSpace(name), ObserveEvery: every})
 	}
 	return out, nil
 }
 
-// validateTiers rejects empty or duplicate tier names, observe_every < 1, and
+// validateObserveTiers rejects empty or duplicate tier names, observe_every < 1, and
 // resources that name an undeclared tier.  An undeclared tier is an error, not
 // a silent "every cycle": a typo would otherwise hide the declaration.
-func validateTiers(tiers []Tier, resources []diff.DesiredResource) error {
+func validateObserveTiers(tiers []ObserveTier, resources []diff.DesiredResource) error {
 	byName := map[string]bool{}
 	for _, t := range tiers {
 		if t.Name == "" {
-			return fmt.Errorf("tiers: a tier has an empty name")
+			return fmt.Errorf("observe_tiers: a tier has an empty name")
 		}
 		if byName[t.Name] {
-			return fmt.Errorf("tiers: tier %q declared twice", t.Name)
+			return fmt.Errorf("observe_tiers: tier %q declared twice", t.Name)
 		}
 		if t.ObserveEvery < 1 {
-			return fmt.Errorf("tiers: tier %q: observe_every must be >= 1 (got %d)", t.Name, t.ObserveEvery)
+			return fmt.Errorf("observe_tiers: tier %q: observe_every must be >= 1 (got %d)", t.Name, t.ObserveEvery)
 		}
 		byName[t.Name] = true
 	}
 	for _, r := range resources {
-		if r.Tier != "" && !byName[r.Tier] {
-			return fmt.Errorf("resource %s: tier %q is not declared under tiers:", r.ID, r.Tier)
+		if r.ObserveTier != "" && !byName[r.ObserveTier] {
+			return fmt.Errorf("resource %s: observe_tier %q is not declared under observe_tiers:", r.ID, r.ObserveTier)
 		}
 	}
 	return nil
 }
 
-// TierIntervals returns tier name → observe_every for the declared tiers.
-func (in Intent) TierIntervals() map[string]int {
-	out := make(map[string]int, len(in.Tiers))
-	for _, t := range in.Tiers {
+// ObserveTierIntervals returns tier name → observe_every for the declared tiers.
+func (in Intent) ObserveTierIntervals() map[string]int {
+	out := make(map[string]int, len(in.ObserveTiers))
+	for _, t := range in.ObserveTiers {
 		out[t.Name] = t.ObserveEvery
 	}
 	return out

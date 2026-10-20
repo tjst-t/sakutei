@@ -44,7 +44,7 @@ type ObserveScheduler interface {
 	Observed(res diff.DesiredResource, converged bool)
 }
 
-// TierScheduler thins Observes by tier (§16.5).  The default stays "every
+// TierScheduler thins Observes by observe_tier (§16.5).  The default stays "every
 // resource, every cycle" (§8); a resource in a tier with observe_every N > 1
 // is Observed once every N cycles — but only while it is stable.  It is due
 // in any cycle where:
@@ -96,7 +96,7 @@ func (s *TierScheduler) BeginCycle(cycle int, desired []diff.DesiredResource, ti
 
 // Due implements ObserveScheduler.
 func (s *TierScheduler) Due(res diff.DesiredResource) bool {
-	every := s.tiers[res.Tier]
+	every := s.tiers[res.ObserveTier]
 	if every <= 1 {
 		return true
 	}
@@ -121,7 +121,7 @@ func desiredHash(res diff.DesiredResource) string {
 			h.Write([]byte{0})
 		}
 	}
-	write(res.ID.String(), res.Tier, fmt.Sprint(res.DeletionPolicy), strings.Join(res.DependsOn, ","))
+	write(res.ID.String(), res.ObserveTier, fmt.Sprint(res.DeletionPolicy), strings.Join(res.DependsOn, ","))
 	keys := make([]string, 0, len(res.Fields))
 	for k := range res.Fields {
 		keys = append(keys, k)

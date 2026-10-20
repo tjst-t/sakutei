@@ -185,7 +185,7 @@ type Config struct {
 	ExpanderRegistry *render.ExpanderRegistry
 
 	// ObserveScheduler decides which resources are Observed each cycle
-	// (§16.5).  Nil means a TierScheduler fed by the intent's `tiers:` —
+	// (§16.5).  Nil means a TierScheduler fed by the intent's `observe_tiers:` —
 	// with no tiers declared, every resource is Observed every cycle.
 	ObserveScheduler ObserveScheduler
 }
@@ -795,7 +795,7 @@ func runCycleAsync(
 	*prevRev = rev
 
 	// #30 (§16.5): the Observe scheduler sees this cycle's desired and tiers.
-	sched.BeginCycle(cycle, desired, in.TierIntervals())
+	sched.BeginCycle(cycle, desired, in.ObserveTierIntervals())
 	var notDue []string
 
 	// Phase 1: Observe all resources fresh (ADR-0002).
