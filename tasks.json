@@ -436,7 +436,7 @@
       "number": 26,
       "kind": "task",
       "title": "v1b: ready_condition と複数 Cycle に跨る依存解決、capacity gate",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [],
       "milestone": null,
@@ -448,7 +448,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T08:44:17.592Z",
+      "updatedAt": "2026-10-20T12:14:52.774Z",
       "closedAt": null,
       "extra": {}
     },
