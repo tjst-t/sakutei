@@ -1,0 +1,29 @@
+{
+  "format": "banto-backlog/1",
+  "milestones": [],
+  "items": [
+    {
+      "id": "v1a-1-fake-provider",
+      "number": 1,
+      "kind": "story",
+      "title": "v1a-1 収束コアの骨格 — 正準型・単発収束・fake Provider",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1a"
+      ],
+      "body": "旧 ROADMAP.json の Sprint 1（`Sead944`）。\n\nコア型（ID/Scope/State/Plan/Observation）と Provider/Lister インターフェースを定義し、fake in-memory Provider に対して `sakutei plan`（Diff で停止）と `sakutei reconcile`（Observe→Diff→Apply を1巡）が CLI から動く最小の実行可能増分。ADR-0002/0003/0004。\n\n- Sead944-1 コア型と Provider/Lister インターフェース（受け入れ条件 3 件・core_types_test.go）\n- Sead944-2 sakutei plan（3 件・plan_test.go）\n- Sead944-3 sakutei reconcile（冪等・観測 state レス、3 件・reconcile_test.go）\n\n受け入れ条件の全文は git 履歴の `docs/ROADMAP.json`（コミット 9d7cf32）にある。テストの中では `[AC-Sead944-x-y]` のタグで引ける。\n\n**確認（2026-10-20）**：Go 1.27.3 で `make check` が通り、9 件すべての受け入れ条件のテストが合格。",
+      "doneWhen": "受け入れ条件 AC-Sead944-* 9 件のテストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:42:11.521Z",
+      "updatedAt": "2026-10-20T08:42:11.521Z",
+      "closedAt": "2026-10-20T08:42:11.521Z",
+      "extra": {}
+    }
+  ]
+}
