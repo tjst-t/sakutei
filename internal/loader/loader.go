@@ -463,3 +463,25 @@ func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 	}
 	return resources, intent, nil
 }
+
+// LoadResourcesFile reads one intent-format file (.json/.yaml/.yml) and returns
+// its resources.  Render phase 1 uses it to read the resources an external
+// inventory (CMDB) composes (§9.1 inventory 合成).  An inventory carries
+// resources only: a file that also declares pools or scopes is rejected
+// rather than having those declarations silently ignored.
+func LoadResourcesFile(path string) ([]diff.DesiredResource, error) {
+	if fileFormat(filepath.Base(path)) == "" {
+		return nil, fmt.Errorf("loader: %s: extension must be .json, .yaml or .yml", path)
+	}
+	resources, file, err := loadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("loader: %w", err)
+	}
+	if len(file.Pools) > 0 || len(file.Scopes) > 0 {
+		return nil, fmt.Errorf("loader: %s: an inventory file declares resources only (pools/scopes belong in intent)", path)
+	}
+	if err := detectDuplicateLocalIDs(resources); err != nil {
+		return nil, fmt.Errorf("loader: %s: %w", path, err)
+	}
+	return resources, nil
+}

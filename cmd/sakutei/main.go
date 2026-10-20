@@ -115,6 +115,12 @@ func runDaemon() {
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
 		"S072a14-3: simulate an unreachable ExternalInputResolver (triggers last-value-on-unreachable path §9.2)")
+	inventoryFile := fs.String("inventory-file", "",
+		"#31: inventory file (intent-format resources composed by render phase 1, §9.1); a sudden drop halts the cycle (incomplete≠empty, §9.2)")
+	inventoryMinRatio := fs.Float64("inventory-min-ratio", render.DefaultInventoryMinRatio,
+		"#31: an inventory at or below this fraction of the previous item count is incomplete (§9.2)")
+	inventoryExpectedMin := fs.Int("inventory-expected-min", 0,
+		"#31: expected inventory cardinality; fewer items is incomplete even on the first cycle (§9.2); 0=off")
 
 	// Scf7762-2: change-budget flags (§13).
 	maxDestructivePerCycle := fs.Int("max-destructive-per-cycle", 0,
@@ -235,6 +241,18 @@ func runDaemon() {
 		resolverCache = render.NewResolverCache(fakeResolver, render.DefaultTTL)
 	}
 
+	// #31: render phase 1 inventory composition with the incomplete≠empty guard.
+	var inventory *render.InventoryGuard
+	if *inventoryFile != "" {
+		if *inventoryMinRatio <= 0 || *inventoryMinRatio >= 1 {
+			fmt.Fprintf(os.Stderr, "sakutei: invalid --inventory-min-ratio %v: must be in (0, 1)\n", *inventoryMinRatio)
+			os.Exit(1)
+		}
+		inventory = render.NewInventoryGuard(&render.FileInventorySource{Path: *inventoryFile},
+			render.WithInventoryMinRatio(*inventoryMinRatio),
+			render.WithInventoryExpectedMin(*inventoryExpectedMin))
+	}
+
 	cfg := reconcile.Config{
 		IntentDir:             *intentDir,
 		StatePath:             *statePath,
@@ -245,6 +263,7 @@ func runDaemon() {
 		GeneratedDir:          genDir,
 		ExternalInputResolver: resolverCache,
 		Allocation:            openAllocStore(*allocStore),
+		Inventory:             inventory,
 	}
 
 	if err := reconcile.Run(context.Background(), cfg); err != nil {

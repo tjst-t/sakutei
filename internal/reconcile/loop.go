@@ -173,6 +173,13 @@ type Config struct {
 	// intent uses no allocations.
 	Allocation allocation.AllocationAuthority
 
+	// Inventory composes the desired resources an external inventory (CMDB)
+	// provides (#31, §9.1 inventory 合成) and guards incomplete≠empty (§9.2):
+	// a sudden drop halts the cycle — no Apply, no prune — with an
+	// InventoryIncomplete Event.  Created once per daemon run so its baseline
+	// (S3, memory-only) survives across cycles.  Nil when there is no inventory.
+	Inventory *render.InventoryGuard
+
 	// ExpanderRegistry is the render phase 2 expander registry (§9.5).
 	// If nil, render.DefaultRegistry() is used (includes the FakeCompositeExpander).
 	ExpanderRegistry *render.ExpanderRegistry
@@ -305,6 +312,10 @@ func Run(ctx context.Context, cfg Config) error {
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
+		} else if res.InventoryHalted {
+			// #31: render phase 1 halted the cycle; do NOT print "converged".
+			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: INVENTORY HALTED: %s; no Apply, no prune\n",
+				cycleNum, res.InventoryReason)
 		} else if res.AlertOnly && res.DriftCount > 0 {
 			// Scf7762-3: in alert-only mode drift was detected but nothing was
 			// applied — do NOT print "converged (no changes)" (it contradicts the
@@ -441,6 +452,15 @@ type CycleResult struct {
 	// (only populated when AlertOnly is true).
 	DriftEvents []string
 
+	// #31 render phase 1 inventory field:
+
+	// InventoryHalted is true when render phase 1 halted the cycle because the
+	// inventory was incomplete or unreachable with no previous value (#31,
+	// §9.2).  Nothing was observed, applied or pruned.
+	InventoryHalted bool
+	// InventoryReason explains InventoryHalted.
+	InventoryReason string
+
 	// F-5 (Scb0ecd-2 daemon wiring) cause-classification field:
 
 	// GhostDiffs is the number of resources whose diff this cycle was classified
@@ -542,6 +562,31 @@ func runCycleAsync(
 		return CycleResult{}, fmt.Errorf("load intent: %w", loadErr)
 	}
 	rev := in.Revision
+
+	// #31 render phase 1: inventory composition (§9.1) with the
+	// incomplete≠empty guard (§9.2).  An inventory that suddenly shrank is
+	// incomplete, not empty: halt the whole cycle (no Observe/Apply/prune) and
+	// emit an InventoryIncomplete Event, instead of rendering the missing half
+	// as "absent from desired" and letting closed-world prune delete it.
+	if cfg.Inventory != nil {
+		inv := cfg.Inventory.Compose(ctx)
+		if inv.UnreachableFallback {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: ExternalInputUnreachable: %s; using the previous inventory (§9.2 last-value-on-unreachable)\n", inv.Reason)
+		}
+		if inv.Halt {
+			if inv.Incomplete {
+				fmt.Fprintf(cfg.ErrOut, "sakutei: InventoryIncomplete: %s; treating as incomplete, not empty — cycle halted, no Apply and no prune (§9.2 incomplete≠empty)\n", inv.Reason)
+			} else {
+				fmt.Fprintf(cfg.ErrOut, "sakutei: ExternalInputUnreachable (first call): %s; skipping cycle (halt-safe, §9.2)\n", inv.Reason)
+			}
+			return CycleResult{InventoryHalted: true, InventoryReason: inv.Reason}, nil
+		}
+		if err := checkInventoryIDs(in.Resources, inv.Resources); err != nil {
+			return CycleResult{}, err
+		}
+		in.Resources = append(append([]diff.DesiredResource(nil), in.Resources...), inv.Resources...)
+		phase1ExternalInputHashes = append(phase1ExternalInputHashes, inv.Input)
+	}
 
 	// #23: mode: sync scopes (§24.5) are never converged; their reality must
 	// never be an orphan candidate for prune.  Refreshed every cycle with the
@@ -984,6 +1029,22 @@ func runCycleAsync(
 		BudgetReason: budgetReason,
 		GhostDiffs:   ghostDiffs,
 	}, nil
+}
+
+// checkInventoryIDs rejects an inventory resource whose Local ID is also
+// declared in intent: which one wins would otherwise be silent (same rule as
+// the loader's duplicate-ID check, D-2).
+func checkInventoryIDs(intent, inventory []diff.DesiredResource) error {
+	seen := make(map[string]struct{}, len(intent))
+	for _, r := range intent {
+		seen[r.ID.Local] = struct{}{}
+	}
+	for _, r := range inventory {
+		if _, dup := seen[r.ID.Local]; dup {
+			return fmt.Errorf("render phase 1 (inventory): resource id %q is declared in both intent and inventory", r.ID.Local)
+		}
+	}
+	return nil
 }
 
 // filterPlansByBudget filters the plans map according to the budget decision.
