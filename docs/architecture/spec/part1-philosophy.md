@@ -63,11 +63,14 @@ sakutei reconcile                  # 一回だけ収束させる（手動キッ�
                                    #   --expect-revision <rev> で理想側の版のみ照合
 sakutei status                     # drifted 一覧（適合レポート）
 sakutei import                     # 既存の現実を intent として書き出す（brownfield 導入）
-                                   #   --scope <範囲> --out intent/
+                                   #   --provider <名前> --out intent/ [--scope <範囲>]
 sakutei --claim <scope-selector>   # 自分が収束を担当する scope を宣言して常駐（静的シャーディング）
+sakutei sync                       # mode: sync の scope の現実を generated/ に記録する（Apply しない・§24.5）
+sakutei allocator / fence / mirror / secrets extract
+                                   # 衛星と運用の補助 verb（採番権威・fencing 世代表示・git ミラー・拠点資格の抜き出し）
 ```
 
-`apply` を主動詞に置かないのは、**Sakutei が「一回叩くツール」ではなく「回り続けるもの」**であることを名前で表明するためである（level-triggered の思想を CLI が体現する）。承認ゲートは API（`POST /workflows/{id}/gates/{gate}/approve`）で扱う。
+全 verb とフラグの正は §26.6 である。`apply` を主動詞に置かないのは、**Sakutei が「一回叩くツール」ではなく「回り続けるもの」**であることを名前で表明するためである（level-triggered の思想を CLI が体現する）。承認ゲートは API（`POST /workflows/{id}/gates/{gate}/approve`）で扱う。
 
 ### §1.6 対象領域
 

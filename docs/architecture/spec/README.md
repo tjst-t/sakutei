@@ -1,11 +1,11 @@
-# Sakutei（作庭）設計書 v3.3
+# Sakutei（作庭）設計書 v3.4
 
-**改訂日: 2026-07-24**（8 部 29 節・分冊構成）
+**改訂日: 2026-10-20**（8 部 29 節・分冊構成）
 
 ## 本書の位置づけ
 
 - 本書（この `spec/` ディレクトリ一式）は Sakutei の**設計の正（source of truth）**である。設計に関する記述は本書を正とし、旧版・サンプルとの矛盾は本書に寄せる。
-- 本書の骨格は **v2.6 と内容（設計判断）が等価**の全面再構成（v3.0）である。v3.1 では §29.4（位置づけを OSS 個人プロジェクト・Apache-2.0 に確定）のみを更新した。v3.2 では障害駆動の人手対処（human-in-the-loop remediation）を §14.7 として新設し、§6.2（1-outstanding 制約）・§6.4（ゲート timeout 宣言）を補強した（ADR-0023）。v3.3 では段0-zero（非常駐・クライアント PC からの一回性収束）を §23.7 として新設し、§14.5（cooling-off のゲート化）・§26.6（非常駐運用の正当性）を補強した（ADR-0024。旧 §23.7 dogfooding は §23.8 へ）。v2.2〜v2.6 の改訂履歴は [`../old/`](../old/) の各 `CHANGELOG-v2.x.md` と旧版ファイルを、v2.6 → v3.0 の再構成は [`../CHANGELOG-v3.0.md`](../CHANGELOG-v3.0.md)、v3.0 → v3.1 は [`../CHANGELOG-v3.1.md`](../CHANGELOG-v3.1.md)、v3.1 → v3.2 は [`../CHANGELOG-v3.2.md`](../CHANGELOG-v3.2.md)、v3.2 → v3.3 は [`../CHANGELOG-v3.3.md`](../CHANGELOG-v3.3.md) を参照。
+- 本書の骨格は **v2.6 と内容（設計判断）が等価**の全面再構成（v3.0）である。v3.1 では §29.4（位置づけを OSS 個人プロジェクト・Apache-2.0 に確定）のみを更新した。v3.2 では障害駆動の人手対処（human-in-the-loop remediation）を §14.7 として新設し、§6.2（1-outstanding 制約）・§6.4（ゲート timeout 宣言）を補強した（ADR-0023）。v3.3 では段0-zero（非常駐・クライアント PC からの一回性収束）を §23.7 として新設し、§14.5（cooling-off のゲート化）・§26.6（非常駐運用の正当性）を補強した（ADR-0024。旧 §23.7 dogfooding は §23.8 へ）。v3.4 では v1b の実装に合わせ、設計判断を変えずに CLI の verb・フラグ、intent の書式（`pools:` / `scopes:` / `observe_tiers:` / `depends_on` の `ready_condition`）、採番・Sync Mode・import・prune・シャーディングの実装上の決定と既定値を書き足し、設計とずれた名前（`observe_tier`・`intent/<scope>/` のディレクトリ名）を直した。v2.2〜v2.6 の改訂履歴は [`../old/`](../old/) の各 `CHANGELOG-v2.x.md` と旧版ファイルを、v2.6 → v3.0 の再構成は [`../CHANGELOG-v3.0.md`](../CHANGELOG-v3.0.md)、v3.0 → v3.1 は [`../CHANGELOG-v3.1.md`](../CHANGELOG-v3.1.md)、v3.1 → v3.2 は [`../CHANGELOG-v3.2.md`](../CHANGELOG-v3.2.md)、v3.2 → v3.3 は [`../CHANGELOG-v3.3.md`](../CHANGELOG-v3.3.md)、v3.3 → v3.4 は [`../CHANGELOG-v3.4.md`](../CHANGELOG-v3.4.md) を参照。
 - §番号（§1〜§29）は全 8 ファイルを通して一意。ファイルをまたぐ参照も §番号のままで成立する。
 
 ## 改訂の規約
@@ -46,7 +46,7 @@
 ### [第VI部 衛星と外部世界](part6-satellites.md)
 - **§19 allocator（台帳）** — 払い出し / authority 3役 / 仮予約 / Release 非対称 / QPS 算術 / HA・プール分割 / waiting-allocation
 - **§20 secret と資格** — 値は収束しない / SecretRef / Vault 断縮退 / credential-broker / 資格局所性 / Break Glass
-- **§21 DesiredSource と catalog（図面）** — seam / Watch / Loader / catalog
+- **§21 DesiredSource と catalog（図面）** — seam / Watch / Loader（intent の書式・YAML サブセット） / catalog
 - **§22 委譲と停止影響** — 委譲一覧 / observability-as-Resource / Event と sink / 衛星停止影響表
 
 ### [第VII部 運用ライフサイクル](part7-operations.md)
@@ -58,7 +58,7 @@
 ### [第VIII部 実装](part8-implementation.md)
 - **§27 実装スライス** — 基準 / v1a / v1b / v1.5 / v2 以降 / 作らないもの / 相対規模
 - **§28 Provider SDK** — SDK が採用を決める / 作者が書くもの / SDK が担うもの / Schema 設計 / golden path / 2層戦略 / 【将来】抽象リソース
-- **§29 残る課題と既知の限界** — 実装中に決める事項 / 先送りと再検討トリガ / 既知の限界 / 非技術の着手条件
+- **§29 残る課題と既知の限界** — 実装中に決める事項 / 先送りと再検討トリガ / 既知の限界 / 非技術の着手条件 / 着手前決定を再オープンさせない運用 / v1b で見つけた実装上の問題
 
 ## §番号 → ファイル対応（早見）
 

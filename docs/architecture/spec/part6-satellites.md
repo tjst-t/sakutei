@@ -24,6 +24,19 @@ VLAN ID / IP / ASN の**プールからの払い出し**は、inventory（事実
 
 - **割り当ての事実**（state）：`app-net → VLAN 573` を**外部 authority が永続化**する。次サイクルで「app-net は既に 573」と分かり、**二重払い出しを防ぐ = 冪等性が回復する**。
 
+**intent の書式（v1b で実装済み）**：要求は resource の `fields` の値に `{ from_pool: <プール名> }` と書く（この形以外の
+マップ値はロード時に拒否する）。プールはトップレベルの `pools:` で宣言し（§19.8）、宣言されていないプールへの要求は
+ロード時に拒否する。YAML サブセットではフロースタイル（`{ }`）を書けないので（§21.3）、ブロックで書く。
+
+```yaml
+resources:
+  - provider: fake
+    id: app-net
+    fields:
+      vlan:
+        from_pool: tenant-acme-vlans   # プールから1つ要求（ID 指定なし）
+```
+
 → authority が「前回何を払い出したか」の記憶装置になり、収束エンジン自身は state を持たずに済む。値・配置と同じく、state（冪等性の記憶）も自前で持たず外に委ねる（§3 第4原則）。
 
 ### §19.2 authority の3役
@@ -51,6 +64,24 @@ type AllocationAuthority interface {
 ```
 
 `Allocate` は冪等である——同じ `owner` には常に同じ `value` を返す。これが §19.1 の「二重払い出しを防ぐ」を型として担保する。
+
+**v1b の実装上の決定**：
+
+- **owner** は `"<provider>/<local id>#<field>"` とし、**scope を含めない**。scope は再シャードで動くが Local ID は動かない
+  （§4.2）ので、scope が変わっても割当の値は変わらない。
+- **どの verb が払い出すか**：`reconcile` と常駐ループは `Allocate`、`plan` と `status` は `Lookup` だけを呼ぶ
+  （未割当は「割り当て待ち」と表示し、採番記録に書かない）。dry-run と適合レポートは副作用を持たない（§26.6）。
+- **render との接続**：割当の解決は render フェーズ1（§9.1）で行い、要求のフィールドを具体値に置き換えてから
+  フェーズ2（Expand）と Diff に渡す。合成リソースの子への伝播は Expand の仕事で、fake provider の合成リソースは親の `vlan` を子に引き継ぐ（§9.5 の例と同じ形）。割当は rendered_revision の
+  外部入力に入る（変われば cause E・§9.4）。
+- **プールの宣言**：払い出す側（`reconcile`・常駐ループ）は、intent の `pools:` を authority に宣言してから解決する。
+  使用中の値を範囲外に出す範囲変更は拒否する。NetBox 等の外部権威はプール定義を自分で持つので、この宣言を受けなくて
+  よい。
+- **ファイル版 authority の振る舞い**：`Allocate` は owner ごとに冪等で、空いている値を小さい順に払い出す。枯渇は
+  エラー。`Reserve` は TTL 付きで、期限切れの仮予約は解放される。`Release` 後の値は **cooldown（既定 24h）** の
+  あいだ再払い出ししない（§19.5（b））。
+- **Release を呼ぶ経路はまだ作っていない**。§19.5 の「下流の削除を List で確かめてから」を満たす経路が要るためで、
+  v1b では割当は解放されない（保守側）。
 
 ### §19.4 仮予約（Reserve → Confirm）
 
@@ -84,6 +115,10 @@ PR 生成時   ： TTL 付き Reserve（仮予約）→ PR diff に具体 ID が
 - **割当事実は Release まで不変**：allocator が `app-net → VLAN 573` を確定させたら、その事実は Release（§19.5）まで変わらない。したがって **`Lookup`（§19.3）の結果はシャードローカルに無期限キャッシュしてよい**——無効化は**自分の Release のときだけ**（他者が自分の割当を変えることはない・§19.7 の 1 プール 1 権威）。
 - **観測 state レス原則との整合**：これは観測 state レス（§3）に反しない。割当事実は「**観測**」ではなく「**自分が確定させた事実**」だからである。現実を再観測して得る値（毎周見に行くべき S1・§4）ではなく、自分が払い出しを依頼して得た確定値である。喪失しても allocator に `Lookup` し直すだけで再取得できるので、これは **S2（喪失＝事故）ではなく再取得可能なキャッシュ = S3 扱い**である（§4）。喪失時の縮退は「一度 allocator に問い直す」だけで、事故にならない。
 
+**v1b の実装**：常駐ループは authority の前にシャードローカルの Lookup キャッシュ（メモリのみ・S3）を挟む。一度
+払い出した値は期限なしでキャッシュし、無効化は自分の `Release` のときだけである。仮予約（`Reserve`）はキャッシュしない
+（Confirm されなければ消えるため）。再起動でキャッシュを失っても、要求ごとに 1 回 `Allocate` し直すだけで済む。
+
 この帰結として、**定常状態の収束ループは衛星コールゼロで回る**。QPS 算術を第一級の設計事実として置く。
 
 - 例：**10,000 リソース・日次 churn 1% = 新規採番 ~100 件/日 ≒ 無負荷**（定常の 9,900 リソースは Lookup キャッシュヒットで allocator に触れない）。フリートが 10 万に増えても、churn が同じなら QPS は 10 倍で済み、「リソース数に比例して allocator が詰まる」は起きない。
@@ -96,7 +131,7 @@ secret も同型である（§20）：割当事実に対する Lookup キャッ�
 
 authority は state を持つ（§19.1）ゆえに **喪失と分断の設計が要る**。
 
-- **state 喪失時の再構築（逆引き）**：割当記録（§19.9 の SQLite）が失われたとき、**現実から逆引きして再構築する手順**を持つ。`owner → value` は現実側（機器に設定された VLAN/IP）を Observe / List すれば多くが復元でき、復元できない分は cooldown 中の未使用として保守側に倒す。喪失＝即再払い出し衝突を防ぐ。
+- **state 喪失時の再構築（逆引き）**：割当記録（§19.9。v1b はファイル版）が失われたとき、**現実から逆引きして再構築する手順**を持つ。`owner → value` は現実側（機器に設定された VLAN/IP）を Observe / List すれば多くが復元でき、復元できない分は cooldown 中の未使用として保守側に倒す。喪失＝即再払い出し衝突を防ぐ。
 - **1 プールにつき 1 権威**：地理分散で 2 権威が同一プールから独立払い出しすると復帰時に採番衝突（§19.5 が最悪級と呼ぶ事故）になる。→ **プールをサイトごとに静的分割**（サイト A = VLAN 1–500、B = 501–1000）し、**そもそも 2 権威が同一プールに触れない**ようにする（shared-nothing を採番プールにも適用）。分断中も各サイトは自分のプール範囲内で独立に払い出せる。
 
 ### §19.8 HA 最小形とプール分割 by claim
@@ -105,6 +140,15 @@ authority は state を持つ（§19.1）ゆえに **喪失と分断の設計が
 
 - **fencing の再利用**：active/standby フェイルオーバーで旧 active が生きていると 2 権威が同一プールから独立払い出しし、復帰時に採番衝突（§19.5 が最悪級と呼ぶ事故）になる。→ 割当記録に **fencing token / 世代番号**を持たせ、standby 昇格時に世代を上げ、古い active の Confirm/Release を fence する（§17 の単一 writer fencing と同型）。
 - **quorum ストアへの相乗り可**：割当記録（最も喪失が痛い S2・§4）は、**S2 の永続化先（quorum ストア or 同期レプリカ + fencing・§4）と同じ置き場に相乗りしてよい**。allocator 専用の別ストアを立てる必要はなく、S2 の置き場が決まればそこに載る。
+- **v1b の実装（`sakutei allocator`）**：採番権威を HTTP サービスとして提供する。段0 の VM-HA の各ノードで 1 つずつ、
+  同じストア（S2 の置き場）を指して起動する。`--standby` なしで起動したインスタンスは起動時に昇格し（ストアの
+  fencing 世代を 1 つ上げて取る）、`--standby` のインスタンスは `POST /v1/promote` まで 503 を返す。active は各要求の
+  前にストアの世代を確かめ、自分より新しい世代が昇格していたら fence されたとして standby に降りる（読み取りも
+  答えない）。API は `POST /v1/{allocate,reserve,confirm,release,lookup,ensure-pool,promote}` と
+  `GET /v1/health`（role と世代）。クライアントは `--alloc-url a,b` に全エンドポイントを並べ、落ちている・standby・
+  fence されたエンドポイントから次へフェイルオーバーする（全操作が冪等なので再送してよい）。どこも active として
+  答えなければ、その要求は waiting-allocation になる（§19.9）。`--alloc-store`（ファイルを直接開く）と `--alloc-url` は
+  排他である（1 プール 1 権威）。
 - ただし **§19.6 / §22 の原則により、allocator HA は「変化（新規採番）の可用性」のためであって「維持（定常収束）の可用性」のためではない**——定常収束は allocator が落ちていても Lookup キャッシュで回る。HA は新規払い出しの UX（§8 の早期収束）を守るための投資であり、システム全体の生存条件ではない。
 
 **プール分割 by claim**：サイト / シャード固有のプールは、**intent でレンジを disjoint に分割宣言する**（§19.7 の「1 プール 1 権威」をシャード軸に一般化）。
@@ -112,9 +156,26 @@ authority は state を持つ（§19.1）ゆえに **喪失と分断の設計が
 ```yaml
 # 各サイトのプールレンジを intent で disjoint に宣言（claim と対応）
 pools:
-  - { name: site-a-vlans, range: "100-199", claim: {site: site-a} }
-  - { name: site-b-vlans, range: "200-299", claim: {site: site-b} }
+  - name: site-a-vlans
+    range: "100-199"
+    claim:
+      site: site-a
+  - name: site-b-vlans
+    range: "200-299"
+    claim:
+      site: site-b
 ```
+
+- **`pools:` の書式（v1b）**：各要素は `name`（必須）・`range`（必須。`"下限-上限"` の整数・両端を含む）・`claim`
+  （任意。プールが属する scope-selector）・`space`（任意。番号空間の名前。既定は共通の 1 空間）を持つ。v1b のプールは
+  整数（VLAN ID 等）のみ。YAML サブセットはフロースタイルを受け付けないので、上のようにブロックで書く（JSON なら
+  `{"name": ..., "claim": {...}}` と書ける）。`pools:` だけのファイルも書ける。
+- **ロード時の検証**：プール名の空・重複を拒否する。同じ `space` で claim が異なり（少なくとも一方に claim がある）、
+  範囲が重なるプールは拒否する（1 値 1 権威・§19.7）。claim を持たないプール同士は重なってよい（VLAN と ASN のように
+  別のものを数えるプールは同じ番号を持ちうる）。claim 付きのプールへの要求は、その claim の中のリソースからしか
+  許さない。
+- **シャードの振る舞い**：シャードは claim を持たないプールと自分の claim に合うプールだけを宣言・払い出し、自分の
+  claim の中のリソースの要求だけを解決する。
 
 - サイト固有プールを disjoint に切ると、**シャードは自分のレンジだけを自 allocator（またはローカルインスタンス）で管理でき**、中央 allocator への依存は「**全シャード共有プール**」（サイトをまたぐ ASN 等）だけに縮む。
 - **実行時のレンジ委譲プロトコルは作らない**——分割は **intent の宣言で足りる**（claim-as-intent・§17 と同じ思想：動的な調停機構でなく、静的な宣言で分割境界を固定する）。分断中も各シャードは自分のレンジ内で独立に払い出せる。
@@ -125,11 +186,23 @@ pools:
 
 - **allocator 停止 → 新規採番が必要なリソースだけが `waiting-allocation` 状態**になる。これは `converging`（§11.1）に類似した「一時的に進めない」状態であり、**エラーでも halt でもなく、下流 skip のみ**（§8 の失敗伝播と同じ機構）。既存リソースの収束は Lookup キャッシュ（§19.6）で**継続**する。
 - **Release は元々非対称・遅延可**（§19.5）：allocator 停止中に Release を発火できなくても、Release は「下流削除を List 確認してから・cooldown 付き」で元々遅延前提なので、停止中は単に保留され安全側に倒れる（加算はしても減算はしない・§3）。
+- **v1b の実装**：authority が答えられない要求（allocator 不達・プール枯渇）は、そのリソースだけを waiting-allocation に
+  する。そのリソースと下流（合成リソースなら展開した子も）は skip し、prune の候補にもしない。ほかのリソースは通常
+  どおり収束する。常駐ループ・`reconcile`・`plan` / `status` のすべてで同じく縮退する（`plan` / `status` は「割り当て待ち」
+  と表示する）。chaos テストで、稼働中のデーモンの下で allocator を SIGKILL しても既存リソースのドリフト修復は続き、
+  新規要求だけが waiting-allocation になり、standby の昇格で自然に解けることを確かめている。
 - **早期収束パスの縮退**：allocator 停止中、新規払い出しが要る早期収束ヒント（§8）は**キューに保持し、定期周期へ縮退**する（§8 の「溢れたヒントは次の定期周期へ」と同じ規律）。allocator 復帰後の周期で自然に払い出され、`waiting-allocation` が解ける。UX としては「申請が即時反映されず、allocator 復帰まで遅延する」として現れる——正しさは損なわれない。
 
 **自作最小実装と外部権威の切替**：NetBox / Infoblox / phpIPAM / 自作を実装として差し替え可能（`AllocationAuthority` seam）。**独立 CMDB 全体は不要**——inventory は当面ファイル、reality 逆流は将来、残るのは**採番だけ**である。**採番は state を持つので自作の価値があり**（intent は git が正だから UI も供給源も薄くてよい＝ state を持つ部分と持たない部分で自作の意味が違う）、最小実装で足りる：
 
 - **SQLite + `BEGIN IMMEDIATE`（アトミック払い出し）＋ フラットプール**。`BEGIN IMMEDIATE` で書込ロックを即時取得し、同一プールへの並行 `Allocate` を直列化して二重払い出しを防ぐ。
+
+**v1b の決定：ファイル版で最小実装し、SQLite 版は後で差し替える**。v1b の自作実装（`FileAuthority`）は、割当記録を
+1 つの JSON ファイルに置き、全操作を排他ロック（プロセス内の mutex + `<store>.lock` の flock）の下で「読み → 変更 →
+書き戻し（一時ファイル + fsync + rename）」する。`BEGIN IMMEDIATE` と同じく同一プールへの並行 `Allocate` を直列化する
+ので、二重払い出しは起きない（同時払い出しの受け入れテストで、ロックを外すと失敗することも確かめた）。割当記録には
+fencing 世代（§19.8）も持たせる。SQLite を採らなかった理由は、**リポジトリを stdlib のみ（外部依存なし）に保つ**ため
+である。SQLite 版は `AllocationAuthority` seam の裏で後から差し替える（Backlog #36。初めての外部依存を入れてよいかは着手時に決める）。
 
 **守る2規律**：（1） `AllocationAuthority` interface の裏に隠して差し替え可能に保つ。（2） スコープを**採番に限定**し、CMDB 全体に育てない。
 
@@ -217,6 +290,11 @@ type CredentialProvider interface {
 
 エッジ / 店舗の claim（§17）が **WAN 断中も自律収束を回す**には、その店舗の機器へ到達する **write 資格が店舗ローカルに常駐**する必要がある。だが資格を常駐させると漏洩時の破壊力が問題になる——このトレードオフを**局所化で決着させる**。
 
+- **v1b の実装**：拠点の資格は常駐ループの `--secret-store <file>`（file `SecretBackend`）に置き、パスは intent と同じ
+  規約で `<scope>/…`（例 `site=tokyo/router/admin`）とする。`--secret-store` は claim（`--claim` か `--shard`）を要し、
+  ストアに claim の接頭辞の外の資格が 1 つでもあれば**デーモンは収束しない**（エラーにはパスだけを書き、値は読まない）。
+  拠点用のファイルは `sakutei secrets extract --from <中央のファイル> --claim site=tokyo --out <拠点のファイル>` で
+  1 拠点分だけを抜き出して作る（モード 0600）。中央からのローテーション収束（Workflow）は v1.5。
 - **店舗ローカル file `SecretBackend` に、その店舗の機器分の資格だけを常駐させる**（§2 seam 一覧の `file` 実装・§23 段0-minimal と同じ `SecretBackend` seam）。**中央の全店舗資格を配らない**——ある店舗のデーモンが持つのは当該店舗の機器資格のみで、**爆発半径は当該店舗に閉じる**（1 店舗の資格漏洩は 1 店舗にしか及ばない）。
 - **WAN 断中も自律収束が回る**：店舗デーモンは局所資格で自店舗の機器へ Apply/Observe でき、中央 Vault・中央 broker への到達を要しない（§17 の S2-free シャードと組み合わせ、店舗は「pull した intent + 局所資格」だけで完結する）。
 - **再接続時に中央からローテーション収束**：WAN 復帰時、中央が rotation Workflow（§20.1）で店舗ローカル資格を収束（rotate）する。常駐資格の鮮度は「常駐しているから古いまま」ではなく、**中央からの定期 rotate 収束で維持**される。
@@ -310,6 +388,33 @@ type ChangeHint struct {
 - **スキーマ検証は JSON Schema を外付け**し、ロード時に検証（`pruneable` / `scope` / enum の必須化、循環検出）。YAML の型曖昧性（Norway 問題等）はスキーマで封じる（「version は文字列必須」等）。
 - 参照（暗黙依存）が主役になったら **CUE** へ Loader を差し替える余地を残す（CUE は検証＋参照＋導出を言語内に持つ）。**Starlark は round-trip 不可**で API write と衝突するため採らない。
 - **キー命名規約**：設定ファイル上のキーは **snake_case** を正とし、Loader が Go フィールド名（`DependsOn` 等）へ変換する。`depends_on` / `dependsOn` の混在は Loader が吸収する。
+
+**intent の書式（v1b 時点）**：intent ディレクトリの `.json` / `.yaml` / `.yml` を読み、同じ木として扱う。キーは
+JSON Schema の `additionalProperties: false` で閉じており、未知のキーはロード時に拒否する。
+
+| トップレベルのキー | 内容 | 正 |
+|---|---|---|
+| `resources` | resource の配列（任意。`pools:` などだけのファイルも書ける） | 下表 |
+| `pools` | 採番プール（`name` / `range` / `claim` / `space`） | §19.8 |
+| `scopes` | scope ごとの mode（`scope` / `mode: converge \| sync` / `sync.target_path`） | §24.5 |
+| `observe_tiers` | Observe 頻度の tier（`name` / `observe_every`） | §16.5 |
+| `version` | 文字列（Norway 問題の代表例として型を string に固定） | 本節 |
+
+| resource のキー | 内容 | 正 |
+|---|---|---|
+| `provider` / `id` | 必須。`id` は Local ID で、intent 全体で一意（重複はロード時に拒否） | §4.1 |
+| `scope` | ラベルのマップ | §4.2 |
+| `fields` | フィールド値。値に `{ from_pool: <プール> }` と書くと採番の要求 | §19.1 |
+| `depends_on` | Local ID の文字列、または `{ id, ready_condition }` の配列（循環はロード時に拒否） | §8.3・§11.2 |
+| `deletion_policy` | `ExplicitAbsentOnly` / `PruneWithinScope` | §12.2 |
+| `observe_tier` | 所属する Observe 頻度の tier（`tier:` ではない） | §16.5 |
+
+**YAML サブセット**：外部依存を持たないため、YAML は自前の最小サブセットだけを受け付ける。ブロックスタイルのマップ・
+リスト（`- key:` の下に入れ子のブロックを書いてよい）・スカラー・`#` コメントは受け付け、**フロースタイル（`{ }` /
+`[ ]`）・アンカー / エイリアス・タグ・複数ドキュメント・マージキー・ブロックスカラー・タブのインデントは、黙って
+誤解釈せず明確なエラーで拒否する**。bool は `true` / `false` だけ、数値は整数だけを数値にする（`1.10` は文字列のまま）。
+本書の YAML 例のうちフロースタイルで書いたもの（`{ name: ..., range: ... }` 等）は説明のための略記であり、v1b の
+intent ではブロックで書く（JSON なら `{ }` をそのまま書ける）。
 
 **理想状態の保持（platform 層 / ファイル正）**：正はファイル。起動時に読んでインメモリ保持し、通常運転は全部メモリ上で回す。API が書く場合はインメモリ更新＋ファイルへ write-through。**DB プロセスゼロ、単一バイナリを維持**でき、`git diff` で理想状態の変遷が読める。並行書き込みやクエリ性が実問題になった時点で embedded KV（bbolt / SQLite）へ `DesiredStore` interface 経由で移行する。**etcd（分散合意）は要らない**——etcd は「多書き手の合意」のためであって「永続化」のためではない。
 

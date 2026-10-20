@@ -79,7 +79,32 @@ Proxmox `/cluster/resources` / AWS Describe* / NetBox の一覧 API 等）。こ
 
 - **既定は「毎周全部」を維持し（§8）、頻度は tier で上書き可能にする**。安定リソースの間引きは drift 検知が数周
   遅れるが許容する。
-- 完全な間引き最適化と watch 併用は v2 のまま（§16.6）。v1b では seam（スケジューラの型）を切るところまでを行う。
+- 完全な間引き最適化と watch 併用は v2 のまま（§16.6）。v1b では seam（スケジューラの型）と、その上の tier 別の間引き（下記）までを行う。
+
+**v1b の実装（intent の書式と間引きの規則）**：
+
+```yaml
+observe_tiers:            # トップレベル。Observe 頻度の tier の宣言
+  - name: ansible
+    observe_every: 5      # 収束しているあいだ 5 周に1回だけ Observe する（1 = 毎周）
+resources:
+  - provider: dnszone
+    id: www.example.com./A
+    observe_tier: ansible # 所属。書かないリソースは毎周 Observe（§8 の既定）
+```
+
+- **命名の決定**：キーは `observe_tier` / `observe_tiers` とし、`tier` / `tiers` にしない。`tier:` は §8 の DAG 順序の
+  粗い優先度帯（`tier: foundation`）の名前であり、Observe 頻度とは独立の設定だからである（基盤層を低頻度で Observe
+  する指定も書ける）。本節の見出しの「tier 別」はこの `observe_tier` を指す。
+- **ロード時の検証**：未宣言の `observe_tier`・`observe_every < 1`・名前の重複・空の名前は拒否する（打ち間違いを
+  黙って「毎周」に倒さない）。合成リソースの子は親の `observe_tier` を継ぐ。
+- **間引かない周**：初回・前回が未収束（差分・エラー・ghost diff）・desired が変わった周は、`observe_every` に関係なく
+  Observe する。したがって遅れるのは安定したリソースの drift 検知だけで、最大 N−1 周である。
+- **間引いた周**：Observe も Diff もせず、unobservable 扱いにもしない（下流を止めない）。desired にあるので prune の
+  候補にもならない。間引きの記録は S3（周番号と desired のハッシュだけで、現実の観測値は持たない）であり、観測
+  state レス（§3）に触れない。
+- 間引きは常駐ループの Observe スケジューラ（`ObserveScheduler` seam。v1b の実装は tier 別の間引き）で行う。
+  Ansible executor の既定は、executor を実装するまで「毎周」とする（§29.1）。
 
 破綻したときの延命の入口が、§8 の早期警戒線（間隔 30s に対し Observe 10s 超・API 課金/rate limit が頻度で効く・
 リソース数が桁で増えた）である。
@@ -124,6 +149,9 @@ render → Observe → Diff → Apply する（§8/§21）。ヒントを取り�
   隠れた設定」ではなく「収束すべき第一級の intent」になる。
 - **二重 claim（2 デーモンが同一 scope を掴む）の検知は既存の fencing token（§15）**で行う。分断や設定ミスで
   割当が重なっても、共有基盤 provider の Apply が古い世代の writer を fence する。
+- **v1b の実装（claim フィルタ）**：常駐ループを `--claim site=tokyo` で起動すると、claim にマッチする scope の
+  リソースだけを desired に残して収束し、マッチしない scope は Observe しない。prune の集合差の境界も同じ claim で
+  絞る（claim 外の現実は削除候補にならない）。claim を git の `shards/<名前>.yaml` から読む形は §17.4 を参照。
 - **ルーターという新しい可用性部品を増やさない**:動的ルーター（§18）は割当表（S2）とその可用性が新たな中心
   依存になるが、claim-as-intent は割当を git（既存の intent 経路）に載せるため、**新 S2 は fencing 世代番号のみ**。
   git が落ちてもローカルミラー（§23）で claim は読める。ルーターも新しい S2 も要らない。
@@ -164,10 +192,19 @@ render → Observe → Diff → Apply する（§8/§21）。ヒントを取り�
 ```
 intent/
   platform/…              # 全シャードが read-only 参照する共有 platform(§7)
-  site-a/…                # claim: {site: site-a} のシャードが所有
-  site-b/…
+  site=site-a/…           # claim: {site: site-a} のシャードが所有
+  site=site-b/…
   …
+shards/
+  <シャード名>.yaml        # シャード割当(claim-as-intent・§17.1)
 ```
+
+- **`<scope>` のディレクトリ名は `Scope.Path()`（§4.2）と同じ規約**で、`ラベル=値` をラベル名順に `,` でつないだもの
+  （例 `{site: tokyo, cluster: prod}` → `intent/cluster=prod,site=tokyo/`）。ラベルや値に `/`・`\`・`,`・`=` を含む
+  claim、空の claim（全世界）はディレクトリを作れないので git 配布では拒否する。
+- **シャード割当ファイル** `shards/<シャード名>.yaml` は `claim:` の下に scope のラベルを書く（それ以外のキーは拒否）。
+  `claim` が無い・空のシャードは **idle**（何も収束しない。全世界を掴む意味にはしない）。開店前の店舗デーモンは
+  idle で待ち、claim 変更 PR で scope を受け取る（§17.7）。宣言されていないシャードはエラーにする。
 
 - 各シャードは全 intent を pull しない。**sparse checkout / partial clone** で「**自 claim 分 + 共有 platform
   参照分**」のみを取得する。claim ↔ パスが機械対応するため、`--claim {site: site-a}` から fetch すべきパス
@@ -182,6 +219,16 @@ intent/
 - **webhook（早期収束ヒント・§8/§21）は NAT 越え不可の拠点ではポーリングが代替**する。level ループが正しさを
   保証するため（§8）、ヒント欠落は遅延のみで正しさに影響しない——WAN 断・NAT 環境の拠点でも定期ポーリングで
   収束は回り続ける。
+- **v1b の実装**：拠点のデーモンは `--intent` の代わりに `--intent-repo <ミラーの url> --workdir <dir>` で起動し、
+  claim を `--claim <selector>` で固定するか `--shard <名前>` で `shards/<名前>.yaml` から読む（どちらか一方が必須）。
+  取得は partial clone（`--filter=blob:none`）+ cone モードの sparse checkout で、`shards/`・`intent/platform/`・
+  自 claim の `intent/<scope>/` だけを取る（他拠点の intent は blob も手元に来ない）。`--git-poll`（既定 60s。実際の
+  間隔は 1〜1.5 倍の jitter 付き）ごとに `--git-branch`（既定 `main`）を pull する。
+- **pull できないとき**：ミラーに届かない間は前回 pull した intent で収束を続ける。一度も pull できていない、または
+  自 claim の `intent/<scope>/` がコミットに無いときは、その周を飛ばす（空の desired で収束しない・§9.2）。
+- **ミラー**は `sakutei mirror --upstream <中央> --dir <bare リポジトリ>`（既定 30s ごとに追従、`--once` で 1 回）で
+  作る。一時ディレクトリに作ってから rename するので、拠点が作りかけのミラーを見ることはない。消えても次の追従で
+  作り直せる（状態を持たない中継）。
 - **算術**:300 拠点 × sparse fetch/60s = 5 fetch/s（自 claim 分のみの小さな fetch）。**ミラー 1 対で余裕**で
   捌ける（共有 platform 分はキャッシュヒットが効く）。中央 git 本体には拠点が直接触れないため、中央の負荷は
   ミラー数（2）に固定される。
@@ -197,6 +244,10 @@ intent/
     収束済みの結果を受け取るだけにする。
   - **（b） 完了マーカーを現実側に置く**:一回性の完了印を**現実側**に置き Observe で問う（`schema_migrations` と
     同型・§6 の単純 Task）。進行 state を外部永続化せず、現実が state を持つ。
+- **v1b の実装**：`--s2-free` で宣言する。`--intent-repo` を必須にし、拠点のディスクに置くのは `--workdir`（手元写し
+  `<workdir>/repo` と render 出力 `<workdir>/generated`）だけにする。どちらも pull と収束で作り直せる。拠点ローカルの
+  採番ストア（`--alloc-store`）は失うと困る状態（S2）なので拒否し、中央の allocator（`--alloc-url`・§19.8）を使う。
+  ホスト全損からの復旧は「再イメージ → 資格の再配布（§20.5）→ 同じフラグで起動」である。
 - S2-free シャードは **Resource（宣言的・収束）しか持たない**という制約と引き換えに、**耐久性要件をゼロにする**
   ——「何も覚えないから、何も失わない」。段0-minimal（単一ノード・quorum なし・§23）と最も相性がよい階級である。
 
@@ -211,6 +262,18 @@ intent/
 3. fencing 世代を更新(旧シャードの当該 scope への Apply を以後 fence)
 4. 新シャードが次周(または §8 の Watch)で当該 scope を収束開始
 ```
+
+**v1b の手順（手動）**：Workflow による自動化は v1.5 であり（§27.4）、v1b では次の手動手順で行う。
+
+1. **drain**：旧シャードで対象 scope への新規 Apply を止め、in-flight の Apply が終わるのを待つ（`--mode alert-only`
+   で再起動するなど）。
+2. **claim 変更 PR**：シャード割当（各シャードの `--claim`、または `shards/<名前>.yaml`）の変更をレビューしてマージする。
+3. **fencing 世代の更新**：新シャードを新しい claim で起動する。新シャードが対象 scope の世代を上げ、旧シャードはその
+   scope だけ fence される（ほかの scope の収束は続く・§15.2）。`sakutei fence --store <file>` で holder が替わった
+   ことを確かめる。
+4. **旧シャードの再起動**：旧シャードを新しい claim で再起動する（再起動しないと `FENCED` を出し続ける）。
+   claim を git から読むシャード（`--shard`）は、claim の変化を pull で知って収束し直すので、この再起動は要らない
+   （§17.7）。
 
 **この方式が観測 state レスと整合する理由**:シャードは shared-nothing の独立収束器であり、割当という「どの
 現実を誰が見るか」の情報を **git（intent）に外出し**した。§17.2 の「共有物は衛星へ外出し済み」の一貫適用で
@@ -232,6 +295,11 @@ intent/
 
 - **プロビジョニング（手続き的・S2 が要る）と定常収束（Resource のみ・S2-free）を claim 境界で分ける**のが要点。
   開店直後の重い立ち上げ手続きは中央が担い、安定後の維持だけを店舗が S2-free で担う。
+- **v1b の実装**：`--shard` で claim を git から読むシャードでは、**claim 変更 PR のマージがそのままハンドオフ**になる。
+  中央の `shards/central.yaml` から scope を外して店舗の `shards/store-x.yaml` に足す PR をマージすると、旧担当は
+  pull で claim の変化を知り、in-flight の Apply を待ってから手を引く（`claim released`）。新担当はその scope の
+  fencing 世代を上げて収束を始める。claim が変わったシャードは手元の fencing 世代を捨て、再起動と同じように新しい
+  claim で収束し直す（§15.2）。claim が空になったシャードは idle になる。
 - 所有権ハンドオフが **PR + fencing 世代更新**（§17.6）で表現されるため、開店/閉店が**監査・レビューの対象**に
   なり、二重所有（旧所有者が生きている）は fencing で検知される（§15）。
 
@@ -240,7 +308,8 @@ intent/
 `--claim` の**型は v1a で切る**（起動フラグと scope-selector のパース。実装は必要時）。静的シャーディングの
 **実動作（claim フィルタ + fencing + 再シャード Workflow）は v1b**。リポジトリレイアウト規約・sparse checkout・
 ミラー中継・S2-free シャード階級・claim ハンドオフはすべて v1b（§27）。動的ルーター・自動リバランス・
-`RemoteExecutor`・lease 縮退は v2（§18・§27）。
+`RemoteExecutor`・lease 縮退は v2（§18・§27）。v1b では再シャード Workflow を除いて実装済みで、再シャードは §17.6 の
+手動手順で行う（Workflow 化は v1.5）。
 
 ---
 

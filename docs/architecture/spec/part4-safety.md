@@ -50,6 +50,14 @@ records:
 # → zone 内で上記2つ以外の record は「消すべき」と確信できる(履歴 state 不要)
 ```
 
+**閉世界は宣言した scope の中だけである（v1b で実装を修正）**：集合差の候補は、`PruneWithinScope` を宣言した
+リソースの scope に合う（その scope のラベルをすべて持つ）現実だけに絞る。どの `PruneWithinScope` の scope にも
+入らない現実は open-world のままで、intent に無くても削除候補にならない（例：まだ昇格していないブラウンフィールドの
+scope・§24.2）。v1a の実装は簡略化のため provider 全体の List を集合差の対象にしており、scope A のリソースだけが
+`PruneWithinScope` でも scope B の現実まで消していた。v1b でこれを本節の定義どおりに直した（Engine 内の修正なので
+`plan`・`reconcile`・常駐ループのすべてに効く）。`--claim` の外の scope（§17.1）と `mode: sync` の scope（§24.5）は、
+これとは別に集合差の前に落とす。
+
 **モード2 open-world（explicit absent）** — 網羅 List が非現実的な種別（パッケージ / ファイル / 個別設定エントリ）。個別宣言し、消すには明示 `state: absent` を要求する。この層は Ansible 方式が正しい。
 
 削除判定は共有リソースの種別で3種に分かれる。
@@ -180,6 +188,20 @@ safety:
     max_utilization: 80%
     on_exceed: halt-destructive-only
 ```
+
+**v1b の実装（宣言形）**：v1b では capacity gate を intent ではなく `reconcile` と常駐ループの `--capacity-gate` フラグ
+（繰り返し可）で宣言する。
+
+```
+--capacity-gate resource=<id>,used=<field>,total=<field>,max_utilization=80%[,on_exceed=halt-all|halt-destructive-only][,provider=<name>]
+```
+
+- 毎周、プールのリソース（例：クラスタ）を新鮮に Read し、`used / total × 100` が `max_utilization` を**超えたら**
+  超過とする（ちょうど閾値は超過ではない）。時系列は持たない。
+- **観測できないプールは超過として扱う**（Read のエラー・Availability が `ok` でない・存在しない・フィールドが無いか
+  数値でない）。unknown を「容量内」と断じない（§3 の非対称原則）。
+- `on_exceed` の既定は `halt-all`（満杯のプールに新しい消費者を載せない保守側）。超過時は `CapacityThresholdExceeded`
+  Event を出す。判定は変更予算（§13.1）と同じ形で表し、予算の判定と合成して同じ経路で Apply / prune を絞る。
 
 **是正は reconciler の外**である。reconciler の役割は「危険域に入ったら止める」までで、「ではどうするか（ホスト追加 / migrate / quota 締め）」の判断と実行は含まない。超過時は `CapacityThresholdExceeded` Event（§26）を発火し、是正は Workflow として別途明示的にトリガする（自動連鎖させない）。
 
@@ -335,6 +357,27 @@ shared-nothing で「分散合意を中枢に戻さない」という方針は�
 - **fencing フィールドは型定義時から最初から持たせる**（後付けは危険）。
 
 fencing token / 世代番号は、単一 writer 前提の3経路——platform 共有基盤の書き込み・claim シャーディングの二重検知・allocator の払い出し権威（§19）——を同型の機構で守る。
+
+**v1b の実装（claim シャーディングの二重検知）**：
+
+- **ストア**：scope ごとの世代番号と holder（シャード ID）を 1 つの JSON ファイルに置く（常駐ループの
+  `--fencing-store`。全シャードで同じファイルを指す）。読み書きは隣のロックファイルで直列化し、書き込みは一時
+  ファイル + rename で原子的に行う。これが static シャーディングで新しく増える唯一の S2 である。手元の世代（Guard）は
+  S3（メモリ）。
+- **取得**：シャードは claim 内の scope を初めて収束するとき、その scope の世代を 1 つ上げて自分を holder にする
+  （§17.6 手順 3 の「fencing 世代を更新」）。holder 名は `--shard-id`（既定 `<hostname>-<pid>`）。
+- **検証**：Apply / Delete の直前に毎回、手元の世代とストアの現在世代を比べる（fencing を挟む Executor）。ストアの
+  世代のほうが新しければ、その scope を `FENCED` として以後 Observe・Apply・prune のどれもしない。後から世代を
+  上げたほうが勝つ。
+- **取り返さない**：一度 fence された scope は、そのシャードが再起動するまで取り返さない（取り返すと 2 つのデーモンが
+  互いに fence し合って発振する）。git 配布の claim 変更（§17.7）で claim が変わったときは、再起動と同じく手元の
+  世代を捨てて取り直す。
+- **ストアに届かない周は飛ばす**（世代を確かめられないまま書かない・§15.5）。`--fencing-store` を指定しないシャードは
+  二重 claim を検知しない。
+- `sakutei fence --store <file>` で scope ごとの世代と holder を read-only で表示する（再シャードの確認に使う・§17.6）。
+
+allocator の払い出し権威の fencing（§19.8）も同じ「世代を上げた側が勝ち、古い世代は書かない」規律で、割当記録の
+ストアに世代を持たせて実装している。
 
 ### §15.3 oscillation の自動隔離
 

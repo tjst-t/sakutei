@@ -84,10 +84,13 @@ sem := make(chan struct{}, 16)  // 同時 Observe 上限
 
 ```yaml
 depends_on:
-  - type: proxmox_vm
-    id: http-boot-1
+  - id: http-boot-1
     ready_condition: cloud_init_done    # 単なる存在ではなく、この condition の充足を待つ
 ```
+
+**intent の書式（v1b で実装済み）**：`depends_on` の要素は、上流の Local ID の文字列か、`{ id, ready_condition }`
+のオブジェクトのどちらかである（同じリストに混在してよい）。Local ID は intent 全体で一意であることをロード時に
+検証しているので、上流は `id` だけで特定でき、`type` のキーは持たない（未知のキーはロード時に拒否する）。
 
 provider は `Observation.Ready`（§4）に名前付き condition の充足状況を返す。コントローラの `canApply` 判定は、
 上流の `Ready[condition]` が真になるまで下流を skip し続ける——これは §8.2 の失敗伝播・下流 skip と **同じ機構の
@@ -235,6 +238,22 @@ Vault が sealed-restart 中は世代解決も死ぬため、SecretRef のキャ
   急減したら、それを「不達」と同じく前回保持側へ倒す（または halt + Event）。
 - render 出力に対しても、削除方向 Diff の急増（§13）を専用に監視する。
 
+**v1b の実装（inventory 合成と incomplete≠empty ガード）**：
+
+- inventory はフェーズ1 の `InventorySource` seam から合成する。v1b の実装は intent と同じ形式の resource を書いた
+  1 ファイル（CMDB export の代役）を読む `FileInventorySource` で、常駐ループの `--inventory-file` で指定する。
+  ファイルが無い・読めない（書き込み途中を含む）ときは「空」ではなく「不達」と答える。
+- 判定（毎周、前回受け入れた inventory と比べる）：
+  - 不達で前回がある → 前回の inventory を保持して続ける。不達で前回が無い → その周を halt。
+  - 件数が前回の `--inventory-min-ratio`（既定 0.5。**ちょうど半分も incomplete**）以下、または `--inventory-expected-min`（期待基数。既定 0 = 無効）未満 → **incomplete として周期を halt**し、
+    Apply も prune も走らせず `InventoryIncomplete` Event を出す。非空 → 空もこれに含まれる。
+  - halt 中は基準（前回受け入れた件数）を動かさないので、inventory が戻るまで止まり続ける。それ以外は受け入れて
+    新しい基準にする。漸減（例 10 → 8）は受け入れ、通常どおり prune に進む。
+- 境界の注意：§12.4（b）の List 急減の実装は「50% を**超える**減少」で halt する（ちょうど半分は halt しない）ので、
+  inventory（ちょうど半分で halt）とは境界が 1 点ずれている。どちらも既定値 50% の規律であり、安全側は inventory のほうである。
+- 基準は S3（メモリ）に置く。再起動後の最初の取得はそのまま受け入れる（期待基数を宣言していれば、それで下限を守る）。
+- inventory の内容ハッシュ（並び順に依存しない）を rendered_revision の外部入力に含める（cause E。§9.4）。
+
 ### §9.3 TTL キャッシュと平常時の頻度規律
 
 render が毎周実行になる結果、Vault metadata 読み（シークレット数ぶん）と authority Lookup（割当リソース数ぶん）が
@@ -258,6 +277,14 @@ rendered_revision である。**rendered_revision は scope 単位で算出す�
 列挙順で値が揺れると E と誤判定し、逆に外部入力の変化がハッシュに反映されない実装バグは E を B と誤判定して、
 rotate したシークレットを古い世代へ強制的に戻す。したがって「何を含め何を含めないか」と「TTL ヒット/ミスで
 揺れないこと」を厳密に規定する。
+
+**v1b での具体**：
+
+- FileSource の intent_revision は、intent ディレクトリの `.json` / `.yaml` / `.yml` ファイル（loader が読むのと同じ
+  集合）の内容をファイル名順にハッシュしたものである。v1a では `.json` だけを数えていたため、YAML の intent の
+  編集が cause B に誤分類されていた（v1b で修正）。git 配布（§17.4）では `intent/<scope>/` 以下を再帰的に数える。
+- rendered_revision の外部入力として、v1b では **採番の割当**（§19）と **inventory の内容ハッシュ**（§9.2）が入る。
+  どちらかが変われば cause E になる。
 
 ### §9.5 合成リソースは実子リソースに展開する
 
@@ -434,14 +461,18 @@ converging は「収束器の上の収束器」（SDN / VCF / アレイ / k8s �
 
 ```yaml
 depends_on:
-  - type: bare_server
-    id: leaf03-node1
+  - id: leaf03-node1
     ready_condition: data_network_verified   # 観測可能条件の充足を周期をまたいで待つ
 ```
 
 これは **周期をまたぐ収束**の中核である。物理サーバの立ち上げ（`bare_server` 電源投入 → `installed` →
 `data_network_verified` → `proxmox_node` クラスタ join）のように、1 台の立ち上げが数十 Cycle に跨って進行する。
 各段の間の待ちは、§8.2 の失敗伝播・下流 skip と同じ機構で表現され、新しいプリミティブを要さない。
+
+**v1b の実装の挙動**：上流の今回の観測で `Observation.Ready[condition]` が真でない間、下流は skip する（失敗伝播と
+同じ扱いで、待ちの理由をログに出す）。真になった周期で下流を解放する。この判定は常駐ループ・one-shot の
+`reconcile`・早期収束の scoped 経路のすべてで効く。上流が desired に無い（外部所有の）場合も、上流を観測して
+gate に使う。
 
 **シャード間依存の「観測 ready 待ち」への接続**は §18 を参照。あるシャードのリソースが別シャードのリソースの
 ready を待つ場合も、この ready_condition の意味論をシャード境界越しに適用する。

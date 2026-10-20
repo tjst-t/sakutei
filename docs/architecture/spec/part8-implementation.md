@@ -63,7 +63,7 @@ v1b が実証するのは、**既存の大規模基盤に安全に入れる**こ
 
 - **`sakutei import`（reverse-render）**（§24）+ **managed 候補の自動サジェスト**（§24）。
 - **`ScopeMode`（converge / sync）+ Sync Mode の反映ループ**（§24）。
-- **`AllocationAuthority` interface + 最小実装**（SQLite・§19）と **render フェーズ2 の採番連携展開**（§9）。**採番を使う合成リソースは v1b から**（v1a では非採番の固定値展開のみ）。
+- **`AllocationAuthority` interface + 最小実装**（v1b はファイル版。SQLite 版は後で差し替え・§19.9）と **render の採番連携**（割当の解決はフェーズ1、子への伝播はフェーズ2 の展開・§9）。**採番を使う合成リソースは v1b から**（v1a では非採番の固定値展開のみ）。
 - **allocator HA 最小形 + Lookup キャッシュ + waiting-allocation 縮退**（§19）：段0 VM-HA 上の active/standby + fencing、割当事実のシャードローカル無期限キャッシュ（S3）、allocator 停止時の `waiting-allocation` 縮退。**プール分割 by claim**（intent での disjoint レンジ宣言・§19）。
 - **テストハーネス**（契約テスト自動生成）+ golden path テンプレート（§28）+ **BulkObserve 等価性テスト**（fake provider 上で `BulkObserve(scope) ≡ {Read(id)}` を検証・§5/§28）。
 - **`ready_condition` と複数 Cycle に跨る依存解決**（§8）+ **capacity gate**（§13）——最初の実インフラ provider（VM / 物理）を書く段で必要になる。
@@ -72,6 +72,25 @@ v1b が実証するのは、**既存の大規模基盤に安全に入れる**こ
 - **claim の git 配布 + S2-free シャード階級 + エッジ資格局所性**（§17/§20）：`intent/<scope>/...` レイアウト規約 + sparse checkout / partial clone、ミラー中継層、S2-free シャード（Resource 収束のみ）、店舗ローカル file SecretBackend への資格局所常駐、開店/閉店 = claim 変更 PR ハンドオフ。
 - **tier 別 Observe 頻度（間引き）** の導入余地（§16 の早期警戒線が立った層から）。
 - **inventory 検証**（フェーズ1 の外部入力〈inventory 合成〉が急減・欠損したときの incomplete≠empty 判定・§9）。
+
+**実装状況（2026-10-20 時点）**：
+
+| 項目 | 状況 | 正 |
+|---|---|---|
+| `sakutei import` + managed 候補 | 実装済み | §24.4 |
+| `ScopeMode` + Sync Mode | `generated/` への書き出しまで実装済み。**git コミットは未実装**（Backlog #35） | §24.5 |
+| `AllocationAuthority` + 採番連携 | ファイル版（JSON + flock）で実装済み。**SQLite 版は未実装**（Backlog #36） | §19.3・§19.9 |
+| allocator HA 最小形・Lookup キャッシュ・waiting-allocation・プール分割 by claim | 実装済み（`sakutei allocator`） | §19.6・§19.8・§19.9 |
+| 契約テストの Schema からの生成・golden path テンプレート・BulkObserve 等価性テスト | 実装済み | §28.3・§28.6 |
+| `ready_condition` + capacity gate | 実装済み（capacity gate は CLI フラグで宣言） | §11.2・§13.4 |
+| **BulkObserve の実バルク実装** | **未実装**（Backlog #27）。等価性テストと fake の bulk 版までで、実バルク API を持つ対象（vCenter / Proxmox 等）の provider が要る | §5.7 |
+| 静的シャーディング（claim フィルタ + fencing） | 実装済み。再シャードは手動手順（Workflow 化は v1.5） | §17.1・§17.6・§15.2 |
+| claim の git 配布 + S2-free + 資格局所性 | 実装済み（`sakutei mirror`・`sakutei secrets extract`）。資格の中央からのローテーションは v1.5 | §17.4・§17.5・§20.5 |
+| tier 別 Observe 頻度 | 実装済み（キーは `observe_tier` / `observe_tiers`） | §16.5 |
+| inventory 検証 | 実装済み（ファイルの inventory source） | §9.2 |
+
+v1b の途中で、v1a の実装の簡略化が設計とずれていた 2 点を直した——prune の閉世界が provider 全体だった（§12.2）・
+intent_revision が YAML の intent を数えていなかった（§9.4）。
 
 ### §27.4 v1.5 — 手続きの最小形（v2 から前倒し）
 
@@ -140,8 +159,25 @@ v1b が実証するのは、**既存の大規模基盤に安全に入れる**こ
 | version 埋め込み | provider ビルド version を diff 入力に自動合成（原因タグ C） | §10 |
 | エラー分類ヘルパー | Apply のエラーを transient / permanent に型付け | §5.5 |
 | テストハーネス | フェイクプロバイダ基盤・Read/Apply の契約テスト自動生成 | §26 |
-| **BulkObserve 等価性テスト** | fake provider 上で `BulkObserve(scope) ≡ {Read(id) ∀ id ∈ scope}` を検証。これを通ることが「完全階級 + bulk」を名乗る条件（§5） | §5 |
+| **BulkObserve 等価性テスト** | fake provider 上で `BulkObserve(scope) ≡ {Read(id) ∀ id ∈ scope}` を検証。これを通ることが「完全階級 + bulk」を名乗る条件（§5）。v1b で `BulkEquivalenceTester` として実装済み（下記） | §5 |
 | **Schema lint** | 「secret 宣言し忘れ」「identity 未指定」等を静的検出。**ロード拒否レベルで強制** | §28.4 |
+
+**v1b のテストハーネス（`pkg/sdk`）**：
+
+- **`ContractTester`**（契約テスト）：冪等性・absent → Create → Read・List 完全性・三値を検査する。sample の desired
+  （`SampleDesired`）を渡さなくても、provider の Schema から生成して回せる。生成の規則は、`Examples`（フィールドごとの
+  例の値。対象が値を検証するフィールドだけ渡せばよい）にあればその値、無ければ Kind からの既定値。Computed / Managed は
+  入れず、Secret は `SecretRef` の形にする。sample の ID は `MakeID` で作り、既定は Identity フィールドの値を名前順に
+  `/` でつないだもの。生成結果は `GenerateSample` で作者が確かめられる。`MakeUnreachable`（対象を到達不能にする関数）を
+  渡すと、到達不能のとき `Read` が error か `unknown` を返すこと（`ok` + 空の State で「無い」と答えないこと・§4.5）を
+  検査する。最小階級（`TrueObserve: false`）の provider には、identity 以外のフィールドの欠落を許す。`RunAll` は呼び出し側の
+  `ContractTester` を書き換えない。
+- **Schema（`FieldSpec`）は契約テストのために変えない**と決めた（例の値は Schema に載せず、テスト側の `Examples` に置く）。
+  Schema は provider の公開 API であり、テストの都合で属性を増やすと全 provider に波及するためである（2026-10-20 の決定）。
+- **`BulkEquivalenceTester`**（§5.7 の等価性テスト）：次を検査する。`Capabilities.BulkObserve` の宣言と `BulkObserver` の
+  実装の一致（両方向）・対象 ID（明示、または `List(scope)` が `ListComplete` で返したもの）がすべて bulk の結果にある
+  こと・各 ID の Availability が `Read` と一致し、`ok` なら State も一致すること・bulk の各 Observation に `ObservedAt` が
+  あること・List から対象を取ったとき、bulk が List に無い ID を返さないこと。違反はまとめて報告する。
 
 ### §28.4 最難関は Schema 設計
 
@@ -170,6 +206,11 @@ v1b が実証するのは、**既存の大規模基盤に安全に入れる**こ
 
 - **golden path テンプレート**：Schema → Read → Apply の骨格を持つ雛形。最小階級はさらに短い。
 - **契約テスト自動生成**：Read / Apply の冪等性・三値の正しさ・List 完全性を fake provider 上で自動検証。
+- **v1b の雛形（`templates/provider/`）**：`full/`（完全 + bulk。Schema → Read → Apply → List → BulkObserve の骨格）と
+  `minimal/`（最小階級。Schema → Read〈存在のみ〉→ Apply）の 2 つ。どちらも対象との境界を `Client` seam に切り、
+  インメモリの fake の上で `ValidateProvider`・契約テスト・（full は）BulkObserve 等価性テストが最初から合格する。
+  コピーして名前を 1 語置き換えるだけでビルド・テストが通ることを受け入れテストで毎回確かめている。標準階級は `full/`
+  から `List` と `BulkObserve` を外して作る。
 - **worked example**：Provider と合成リソースの完全な実装例を参照実装として提供する（Proxmox 上の MySQL DBaaS の Provider / Schema を `docs/examples/proxmox-mysql-dbaas-schema.md` に置く）。
 
 ### §28.7 2層プロバイダ戦略
@@ -217,7 +258,7 @@ Ansible provider では横断保証の多くが落ちる。**check mode は「�
 | **break-glass の到達不能判定基準・合流競合手順** | 緊急ローカル書込経路（§25）を発動してよい「git 到達不能」の判定基準と、復旧後に本流と事後合流するときの競合解消手順 | §25 |
 | **`planned_change` の kind 整合検証** | 宣言 kind（reimage / decommission 等）と実際に生じた Plan の操作種別が一致することの検証ルール | §13 |
 | **List 急減閾値のチューニング** | scope 単位で宣言する件数急減 halt の閾値の実運用値（誤発火と見逃しの均衡） | §12 |
-| **Ansible executor の Observe 頻度** | fork + SSH の高レイテンシ層で tier 別間引き（§16）をどう既定するか | §16 |
+| **Ansible executor の Observe 頻度** | fork + SSH の高レイテンシ層で tier 別間引き（§16。`observe_tier`）をどう既定するか。executor を実装するまでの既定は「毎周」 | §16 |
 | **運用パラメータ** | Sync Mode の commit 主体（bot / 署名有無）、scope 昇格の「N 日間 diff ゼロ」の N、reconcile 間隔既定値、freeze の粒度 | §14/§24 |
 
 ### §29.2 意図的な先送りと再検討トリガ
@@ -253,4 +294,11 @@ Ansible provider では横断保証の多くが落ちる。**check mode は「�
 
 コア型・着手前決定の索引（§4 のコア型正準形・§5 の Provider interface 正準形・`rendered_revision` 算出定義・S2/S4 永続化先・`ready_condition` 名前空間）は**すべて確定済み**である。実装の第0スプリントはこの索引を参照して型を書き始めればよく、着手前決定として残る未決は無い。**新たに「後から変えると全プロバイダに波及する」種類の決定が現れたときにのみ、この索引を再オープンする**——それ以外の実装中の判断（§29.1）は索引を再オープンさせない。この規律が、パッチ的改訂で見通しを崩さないための運用境界である。
 
+### §29.6 v1b で見つけた実装上の問題
 
+v1b の実装中に見つけ、Backlog に積んだ（または未登録の）実装上の問題である。いずれも設計（原則・機構）の変更を要しない。
+
+| 問題 | 内容 | 関連 |
+|---|---|---|
+| dnszone が読めない行を黙って読み飛ばす（Backlog #37） | ゾーンファイルの解釈できない行を捨てるため、打ち間違えたレコードが `Read` で「無い」（`ok` + 空の State）と見なされ、Create されて重複しうる。unknown ≠ absent（§4.5）に照らせば読めない行は `unknown` / error にするのが安全側だが、未対応の RFC1035 構文を含む既存のゾーンファイルがすべて `unknown` になるため、どこまで厳しく読むかは未決 | §4.5・§12.4 |
+| `reconcile --expect-revision` が未実装 | §26.6 の verb の一つだが、v1b 時点の `reconcile` にこのフラグは無い | §26.6 |

@@ -183,7 +183,7 @@ diff がゼロにならないなら、それは「理想が不完全」か「誰
 数千リソースの理想を手で書き起こすのは非現実的である。**Observe した現実をそのまま理想状態として書き出す**。
 
 ```
-sakutei import --scope <範囲> --out intent/
+sakutei import --provider <名前> --out intent/ [--scope <範囲>]
   → Observe した現実を intent（YAML）として出力
   → 「今の現実 = 理想」の状態から始める（diff がゼロになる）
 ```
@@ -192,6 +192,21 @@ Sakutei の import は Terraform の import より構造的に楽である。観
 
 - **import した YAML は「理想」ではなく「現状のスナップショット」**である。既存基盤には設定ミス・レガシー・意図しない差異が含まれ、そのまま理想にすると間違った現状を永久に維持することになる。**import 後に人が読み、意図を反映して整理する工程は避けられない**（ここは人力）。
 - **managed fields の切り分けが import 時に必要**（§5）。DRS が動かす配置・動的 IP・runtime な値を理想に取り込むと永久に喧嘩する。→ **managed 候補の自動サジェスト**：import 出力に「N 周観測して毎周値が変わるフィールド」を managed 候補としてマークし、人の切り分けを「ゼロから」から「サジェストの承認/却下」に下げる。これにより §24.2 の昇格基準も「diff ゼロ」でなく「**意味のある diff がゼロ（managed 除外後）**」に緩められ、ノイズと本物の drift を分離できる（アラート疲労の回避）。この機構は Sync Mode の commit 間引き（§24.5）と共通化する。
+
+**v1b の実装（安全側の既定）**：
+
+- **出力**：`<out>/imported-<provider>.yaml` に provider ごとに 1 ファイル書く（`--provider` はカンマ区切りで複数可）。
+  loader の YAML サブセットで書き、値はすべて二重引用符、出力は決定的である。既存の出力は `--force` なしでは上書き
+  しない。`--scope k=v,...` で scope を絞れる。直後の `plan` は差分ゼロになる。
+- **prune させない**：全リソースを `deletion_policy: ExplicitAbsentOnly` で書く（§24.1）。
+- **List が `ListComplete` でなければ中止**し、何も書かずにエラーにする（不完全な列挙を「現状」として書かない）。
+- **観測できないリソースは書かない**（`unknown` を「この値で在る」と書かない。書かなかったものは報告する）。
+- **secret の平文は書かない**。secret フィールドは `SecretRef` の形のときだけ書く。Computed / Managed のフィールドは
+  書かない（観測値を Diff が比べるのと同じ intent の値に直して書く）。
+- **managed 候補**：現実を `--samples` 回（既定 3）、`--sample-interval`（既定 2s）おきに観測し、値が変わったフィールドの
+  **直前にコメント**で候補の印を付ける（`# managed 候補: 観測のたびに値が変化（a → b）`）。人はこれを見て Schema で
+  managed にするか、その行を消す。
+- 現実には書き込まない。
 
 ### §24.5 Sync Mode（reality → intent 一方向反映）
 
@@ -210,11 +225,19 @@ const (
 1つの scope は同時に両方の mode になれない。ロード時に検証し、矛盾する宣言は理想状態ロード時に拒否する（§5 の循環検出・prune 検証と同じ入口・同じ思想）。これは `DeletionPolicy`（§12）と同種の scope に紐づくポリシー enum であり、`Provider` / `Executor` のような実装差し替え可能な interface（seam）とは性質が異なる。
 
 ```yaml
-scope: { site: legacy-dc, cluster: legacy-cluster-a }
-mode: sync
-sync:
-  target_path: generated/legacy-dc/cluster-a/   # ★ generated/ 配下（下記参照）
+scopes:                   # intent のトップレベル（v1b の書式）
+  - scope:
+      site: legacy-dc
+      cluster: legacy-cluster-a
+    mode: sync            # 省略時は converge
+    sync:
+      target_path: generated/legacy-dc/cluster-a/   # ★ generated/ 配下（下記参照）
 ```
+
+**ロード時の検証（v1b）**：（1） 空の scope は拒否する（全世界を一つの mode にする事故で、収束がすべて止まる）。
+（2） 同じ scope の二重宣言は拒否する（1 つの scope は 1 つの mode）。（3） `mode: sync` は `sync.target_path` を必須とし、
+`generated/` の下の相対パスに限る（`converge` に `target_path` は書けない）。（4） **sync の scope に入る intent の
+リソースは拒否する**（sync の scope は収束しないので、そこに置いたリソースは書き戻しループの種になる）。
 
 **動作**（通常の収束サイクルとは別ループ）：
 
@@ -231,6 +254,19 @@ sync:
 **なぜ双方向にしないか**：「intent → 現実への収束」と「現実 → intent への反映」を同一 scope で同時に有効化すると、人が書いた intent が次周の反映で即座に上書きされ、原因タグ A（§10）が現実のわずかな揺れと区別できなくなる。**片方向のみとし Apply 経路には一切接続しない**ことで構造的に回避する。これは「シークレット世代を git に書き戻さない」（§20）と同じ思想——**書き戻しループを作らない**。
 
 **generated/ 規律を適用する**（§21）：片方向にしても、人が sync 対象パスを「普通の intent」だと誤解して直接編集すると次周の反映でサイレントに上書きされる、という穴が残る。RenderedSource の生成物に定めた規律——`generated/` 配下に置き、冒頭に自動生成ヘッダを付し、直接コミットを拒否する——を Sync Mode の出力にも同じく適用する。commit の attribution はシステムとして明確にし（§26.3）、人の intent commit と混同されないようにする。commit 粒度は衛生の問題であり正しさには影響しない——意味のない差分まで毎周 commit すると監査ログの可読性が下がるため、commit は間引くか意味のあるフィールドのみ normalize して比較する。
+
+**v1b の実装（`generated/` への書き出しまで）**：
+
+- `sakutei sync --intent <dir> --provider <名前,...>` が、`scopes:` の sync の scope ごとに現実を List + Read し（観測は
+  `import` と共通）、`<target_path>/sync-<provider>.yaml`（target_path は intent ディレクトリの親＝リポジトリの根から
+  の相対）に書き出す。`--interval` を付けると繰り返し、付けなければ 1 回で終わる。現実には書かない。
+- 出力の先頭に自動生成ヘッダ（`# sakutei:generated sync`）と**本文の sha256** を書く。本文がヘッダのハッシュと
+  合わない（人が編集した）ファイル、ヘッダの無いファイルは**上書きを拒否する**（黙って人の編集を捨てない）。
+- **変化があったときだけ書く**（上の動作の 2〜3）。**List が不完全なら書かずに前のスナップショットを残す**（縮んだ・
+  欠けた現実を記録しない）。ある scope と provider の組の失敗は、ほかの組を止めない。
+- **git へのコミット（上の動作の 3 の commit・コミット者・間引き・直接コミットの拒否）は後回し**とした（Backlog #35）。
+- **prune との関係**：sync の scope の現実は、`--claim` の外と同じく**集合差の前に落とす**（`plan`・`reconcile`・
+  常駐ループ）。`mode: sync` の宣言を外すと、その scope の現実は通常の prune の規律（§12）に戻る。
 
 Sync Mode は `import` / `prune` / `closed-world` と同じく `Capabilities.List` に束ねられる（§5）。List できないプロバイダの scope は Sync Mode の対象にできない。
 
@@ -399,15 +435,38 @@ sakutei plan                     # 何が変わるか（= Diff で止める。dr
 sakutei reconcile                # 一回だけ収束させる（手動キック）
 sakutei reconcile --expect-revision <rev>   # 期待する rendered_revision を指定し、ズレていれば中断
 sakutei status                   # drifted 一覧（適合レポート・§26.4）
-sakutei import --scope <範囲> --out intent/  # 既存の現実を intent として書き出す（§24.4）
+sakutei import --provider <名前> --out intent/  # 既存の現実を intent として書き出す（§24.4）
 sakutei --claim <scope-selector> # 自分が収束を担当する scope を宣言して常駐（静的シャーディング・§17）
+sakutei sync --intent <dir> --provider <名前>   # mode: sync の scope の現実を generated/ に記録（§24.5）
+sakutei allocator --store <file> # 採番権威を HTTP サービスとして提供（active/standby・§19.8）
+sakutei fence --store <file>     # scope ごとの fencing 世代と holder を表示（read-only・§15.2/§17.6）
+sakutei mirror --upstream <url> --dir <dir>     # 拠点が pull する読み取り専用 git ミラー（§17.4）
+sakutei secrets extract --from <file> --claim <selector> --out <file>  # 1 拠点分の資格を抜き出す（§20.5）
 ```
 
 - **`plan` と `reconcile` はそれぞれ独立に Observe する**（§5）。plan の観測を reconcile に持ち越すと観測 state を再導入してしまうため、両者は別々に現実を見る。
 - **`--expect-revision`** は、plan で確認した内容と reconcile が適用する内容の同一性を担保する（間に理想が更新されていれば中断する）。承認ゲートが「plan を1バイト単位で固定する」のではなく「意図を承認し実行時の rendered_revision で同一性を確かめる」思想（§14）と対応する。
-- **`--claim`** は全 intent を pull した上で自分の claim 分だけを収束するための起動フラグ（スケールアウトの段2・§17）。シャード割当そのものを git の intent として宣言し、二重 claim は fencing token（§17）で検知する。型は v1a で切り、実装は必要時。
+- **`--claim`** は全 intent を pull した上で自分の claim 分だけを収束するための起動フラグ（スケールアウトの段2・§17）。シャード割当そのものを git の intent として宣言し、二重 claim は fencing token（§17）で検知する。型は v1a で切り、実動作（claim フィルタ・fencing・git 配布）は v1b で実装した（§17）。
 - **`apply` を主動詞に置かない**のは、このシステムが「一回叩くツール」ではなく「回り続けるもの」であることを名前で表明するためである（§8）。
 - **常駐せず `reconcile` だけで運用する形態も正当**である（段0-zero・§23.7）。「本来の姿」は常駐のまま、起床トリガが人間になるだけで、毎回リアルを再観測する level-triggered な真実は変わらない（`apply` でなく `reconcile` という動詞がこの一回性運用でも意味を保つ）。
+
+**v1b 時点のフラグ（実装に合わせた具体）**。scope-selector は CLI では `site=tokyo,cluster=prod`（`ラベル=値` を `,` で並べる）と書く。`version` / `help` は自明なので省く。
+
+| verb | 主なフラグ（v1b で足したもの） | 挙動の要点 |
+|---|---|---|
+| 常駐（`sakutei`） | `--alloc-store <file>` / `--alloc-url <url,url>`（排他）・`--claim <selector>`・`--fencing-store <file>`・`--shard-id <名前>`（既定 `<hostname>-<pid>`）・`--capacity-gate <宣言>`（繰り返し可）・`--inventory-file <file>`・`--inventory-min-ratio`（既定 0.5）・`--inventory-expected-min`（既定 0 = 無効）・`--intent-repo <url>`・`--workdir <dir>`・`--shard <名前>`・`--git-branch`（既定 `main`）・`--git-poll`（既定 60s + 最大 50% の jitter）・`--s2-free`・`--secret-store <file>` | 採番は Allocate（Lookup キャッシュ付き・§19.6）。`--claim` 外の scope は Observe しない（§17.1）。`--intent-repo` は `--intent` と排他で、`--workdir` と、`--shard` か `--claim` のどちらか一方を要する（§17.4）。`--s2-free` は `--intent-repo` を必須にし `--alloc-store` を拒否する（§17.5） |
+| `plan` | `--alloc-store` / `--alloc-url` | 採番は Lookup のみ（払い出さない）。未割当は「割り当て待ち」と表示 |
+| `reconcile` | `--alloc-store` / `--alloc-url`・`--capacity-gate` | 採番は Allocate。`--claim` は v1a から持つ |
+| `status` | `--alloc-store` / `--alloc-url` | 採番は Lookup のみ。read-only |
+| `import` | `--provider <名前,...>`（必須）・`--out <dir>`（必須）・`--scope k=v,...`・`--samples N`（既定 3）・`--sample-interval`（既定 2s）・`--force` | §24.4 |
+| `sync` | `--intent <dir>`（必須）・`--provider <名前,...>`（必須）・`--interval <d>`（既定は 1 回で終了） | §24.5 |
+| `allocator` | `--store <file>`（必須）・`--listen`（既定 `127.0.0.1:7070`）・`--standby` | `--standby` なしは起動時に昇格（fencing 世代を上げる）。standby は `POST /v1/promote` まで 503（§19.8） |
+| `fence` | `--store <file>`（常駐の `--fencing-store` と同じファイル） | read-only |
+| `mirror` | `--upstream <url>`・`--dir <dir>`（共に必須）・`--interval`（既定 30s）・`--once` | 状態を持たない中継（§17.4） |
+| `secrets extract` | `--from <file>`・`--claim <selector>`・`--out <file>`（すべて必須） | 出力はモード 0600（§20.5） |
+
+- `plan` / `status` は**採番を払い出さない**（Lookup のみ）。dry-run と適合レポートが副作用を持たないという §26.4 の規律を採番にも適用したものである。
+- **`--expect-revision` は v1b 時点で未実装**である（`reconcile` にフラグが無い）。設計上の位置づけ（上記）は変えない。
 
 **承認ゲート API**。段階適用（rolling）の手動承認ゲートは HTTP API で通過させる。
 
