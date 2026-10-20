@@ -877,7 +877,7 @@
       "number": 38,
       "kind": "bug",
       "title": "PruneWithinScope の prune が、リソースの scope を越えて別の scope の現実まで消す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -893,7 +893,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T11:26:05.119Z",
-      "updatedAt": "2026-10-20T12:10:41.670Z",
+      "updatedAt": "2026-10-20T12:10:50.681Z",
       "closedAt": null,
       "extra": {}
     }
