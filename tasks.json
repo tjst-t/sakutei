@@ -355,6 +355,29 @@
       "updatedAt": "2026-10-20T08:43:24.592Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "fake-provider-apply-update",
+      "number": 16,
+      "kind": "bug",
+      "title": "fake provider の Apply(UPDATE) が未変更フィールドを保持しない",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "fakeprovider"
+      ],
+      "body": "旧 ROADMAP.json の backlog（Sead944 で追加）。UPDATE の Apply が変更フィールドだけで resource を作り直し、name などの未変更フィールドを落としていた。\n\nコミット 195ddee（S94f1f9-1）で、既存のフィールドに変更分をマージする実装に直っている（internal/fakeprovider の OpKindUpdate の処理）。ROADMAP 側で閉じ忘れていたので、移行時に done として記録。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:32.850Z",
+      "updatedAt": "2026-10-20T08:43:32.850Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
