@@ -587,7 +587,7 @@
       "number": 33,
       "kind": "task",
       "title": "v1b: provider の golden path テンプレート",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [
         "v1b-sdk-schema-contracttester"
@@ -601,7 +601,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T10:50:16.109Z",
-      "updatedAt": "2026-10-20T10:50:16.109Z",
+      "updatedAt": "2026-10-20T12:35:37.067Z",
       "closedAt": null,
       "extra": {}
     },
