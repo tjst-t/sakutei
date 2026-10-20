@@ -1052,6 +1052,30 @@
       "updatedAt": "2026-10-20T12:15:29.961Z",
       "closedAt": "2026-10-20T12:15:29.961Z",
       "extra": {}
+    },
+    {
+      "id": "reconcile-expect-revision-plan-reconcile",
+      "number": 46,
+      "kind": "task",
+      "title": "reconcile --expect-revision を実装する（plan と reconcile の同一性の担保）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "cli",
+        "v1a-gap"
+      ],
+      "body": "設計 §26.6。`sakutei reconcile --expect-revision <rev>` は v1a の設計にある verb のフラグだが、実装されていない（2026-10-20、設計書 v3.4 の改訂で見つかった。§26.6 と §29.6 に「未実装」と注記済み）。\n\nplan で確認した rendered_revision を渡し、reconcile 時の rendered_revision がずれていれば Apply せずに中断する。承認ゲートの「意図を承認し、実行時の rendered_revision で同一性を確かめる」思想（§14）と対になる。",
+      "doneWhen": "plan の rendered_revision を渡した reconcile は収束し、その間に intent・採番・inventory が変わって rendered_revision がずれたときは何も Apply せずに 0 以外で終わることをテストで示す。設計書の「未実装」の注記を外す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T13:48:41.808Z",
+      "updatedAt": "2026-10-20T13:48:41.808Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
