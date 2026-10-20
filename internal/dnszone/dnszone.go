@@ -477,6 +477,22 @@ func (p *Provider) readRecord(name, rrtype string) (*record, error) {
 // Existing lines for the same {name, type} are removed; the new line is
 // appended.  Atomic write via temp file + rename.
 func (p *Provider) writeRecord(rec record) error {
+	// Refuse to write a line we could not read back (an unknown type, a TTL
+	// like "1h", a value with "(" …).  Writing it would make the whole zone a
+	// parse error on the next cycle and stop every record in it; refusing
+	// here confines the failure to this one resource.
+	newLine := formatRecord(rec)
+	back, ok, perr := parseLine(newLine)
+	if perr == nil && !ok {
+		perr = fmt.Errorf("not a resource record: %q", newLine)
+	}
+	if perr == nil && (normaliseName(back.name) != normaliseName(rec.name) || back.rrtype != strings.ToUpper(rec.rrtype)) {
+		perr = fmt.Errorf("reads back as %s/%s: %q", back.name, back.rrtype, newLine)
+	}
+	if perr != nil {
+		return provider.NewPermanentError(fmt.Errorf("dnszone: writeRecord: refusing to write a line the zone parser cannot read back: %w", perr))
+	}
+
 	lines, err := p.readLines()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return provider.NewTransientError(fmt.Errorf("dnszone: writeRecord: read zone: %w", err))
@@ -506,7 +522,6 @@ func (p *Provider) writeRecord(rec record) error {
 	}
 
 	// Append the new record.
-	newLine := formatRecord(rec)
 	filtered = append(filtered, newLine)
 
 	return p.writeLines(filtered)

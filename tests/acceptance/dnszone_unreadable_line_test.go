@@ -24,11 +24,14 @@
 //	[AC-37-1]  読めない行を含むゾーンで Read が Unknown（error）を返し、List がエラーを返す
 //	[AC-37-2]  reconcile で prune が halt し、Create も Delete も出ず、ゾーンは書き換わらない
 //	[AC-37-3]  コメント・空行・$ORIGIN / $TTL は従来どおり読める
+//	[AC-37-4]  自分で読み戻せない行（未知の型・単位付き TTL・括弧を含む value）は
+//	           Apply が書かずに Permanent で失敗し、ゾーンのほかのレコードは止まらない
 package acceptance
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +39,7 @@ import (
 
 	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
 // typoZone は keep / orphan の正しい行に加えて、打ち間違いの行を 1 行含む。
@@ -159,5 +163,75 @@ func TestDNSZone_SupportedLinesStillRead(t *testing.T) {
 	obs, err := p.Read(context.Background(), "www.example.com./A")
 	if err != nil || obs.Availability != core.AvailabilityOk || obs.State == nil {
 		t.Errorf("[AC-37-3] Read(www) = %+v, %v; want Ok with state", obs, err)
+	}
+}
+
+// TestDNSZone_ApplyRefusesUnreadableLine verifies [AC-37-4].
+//
+// Schema は type・ttl・value の中身を検べないので、悪い宣言 1 件をそのまま
+// 書くと次の周からゾーン全体が Unknown になる。writeRecord は自分が書く行を
+// parseLine で読み戻し、読めなければ書かずに Permanent で失敗する。
+func TestDNSZone_ApplyRefusesUnreadableLine(t *testing.T) {
+	// [AC-37-4]
+	const initial = "; zone\n" +
+		"$ORIGIN example.com.\n" +
+		"@\t300 IN SOA ns1 admin 2024010101 3600 900 604800 300\n" +
+		"keep.example.com. 300 IN A 1.1.1.1\n" +
+		"bad.example.com. 300 IN A 10.0.0.1\n"
+
+	cases := []struct {
+		name   string
+		kind   core.OpKind
+		rrtype string
+		fields []core.FieldDiff
+	}{
+		{"type AAA", core.OpKindCreate, "AAA", []core.FieldDiff{{Field: "value", To: "2001:db8::1"}, {Field: "ttl", To: "300"}}},
+		{"type FOO", core.OpKindCreate, "FOO", []core.FieldDiff{{Field: "value", To: "x"}, {Field: "ttl", To: "300"}}},
+		{"ttl 1h", core.OpKindCreate, "A", []core.FieldDiff{{Field: "value", To: "10.0.0.2"}, {Field: "ttl", To: "1h"}}},
+		{"value with paren", core.OpKindCreate, "TXT", []core.FieldDiff{{Field: "value", To: "( oops"}, {Field: "ttl", To: "300"}}},
+		{"update ttl 1h", core.OpKindUpdate, "A", []core.FieldDiff{{Field: "ttl", From: "300", To: "1h"}}},
+		{"update value with paren", core.OpKindUpdate, "A", []core.FieldDiff{{Field: "value", From: "10.0.0.1", To: "10.0.0.1 )"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			zonePath := filepath.Join(t.TempDir(), "example.com.zone")
+			writeZoneFile(t, zonePath, initial)
+			snapshot := chaosStateBytes(t, zonePath)
+			p := dnszone.New(zonePath)
+			ctx := context.Background()
+
+			localID := "bad.example.com./" + tc.rrtype
+			err := p.Apply(ctx, core.Plan{Ops: []core.Op{{
+				Kind:   tc.kind,
+				Target: core.NewID(dnszone.ProviderName, core.NewScope(nil), localID),
+				Fields: tc.fields,
+			}}})
+			var perm *provider.PermanentError
+			if !errors.As(err, &perm) {
+				t.Fatalf("[AC-37-4] Apply(%s) = %v, want a PermanentError", localID, err)
+			}
+			if after := chaosStateBytes(t, zonePath); !bytes.Equal(snapshot, after) {
+				t.Errorf("[AC-37-4] zone file changed by a refused Apply\nbefore:\n%s\nafter:\n%s", snapshot, after)
+			}
+
+			// ほかのレコードは止まらない。
+			obs, err := p.Read(ctx, "keep.example.com./A")
+			if err != nil || obs.Availability != core.AvailabilityOk || obs.State == nil {
+				t.Errorf("[AC-37-4] Read(keep) = %+v, %v; want Ok with state", obs, err)
+			}
+			res, err := p.List(ctx, core.NewScope(nil))
+			if err != nil || len(res.IDs) != 2 {
+				t.Errorf("[AC-37-4] List = %v, %v; want 2 ids (keep, bad) and no error", res.IDs, err)
+			}
+			// ゾーンへの書き込み自体はまだできる。
+			good := core.Plan{Ops: []core.Op{{
+				Kind:   core.OpKindCreate,
+				Target: core.NewID(dnszone.ProviderName, core.NewScope(nil), "new.example.com./A"),
+				Fields: []core.FieldDiff{{Field: "value", To: "10.0.0.3"}, {Field: "ttl", To: "300"}},
+			}}}
+			if err := p.Apply(ctx, good); err != nil {
+				t.Errorf("[AC-37-4] a valid Apply after the refused one failed: %v", err)
+			}
+		})
 	}
 }
