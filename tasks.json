@@ -480,7 +480,7 @@
       "number": 28,
       "kind": "task",
       "title": "v1b: 静的シャーディングの実動作（--claim フィルタ・fencing による二重 claim 検知・再シャード手順）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [],
       "milestone": null,
@@ -492,7 +492,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T08:44:17.592Z",
+      "updatedAt": "2026-10-20T12:35:36.505Z",
       "closedAt": null,
       "extra": {}
     },
