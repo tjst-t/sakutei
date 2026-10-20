@@ -63,7 +63,7 @@ v1b が実証するのは、**既存の大規模基盤に安全に入れる**こ
 
 - **`sakutei import`（reverse-render）**（§24）+ **managed 候補の自動サジェスト**（§24）。
 - **`ScopeMode`（converge / sync）+ Sync Mode の反映ループ**（§24）。
-- **`AllocationAuthority` interface + 最小実装**（v1b はファイル版。SQLite 版は後で差し替え・§19.9）と **render の採番連携**（割当の解決はフェーズ1、子への伝播はフェーズ2 の展開・§9）。**採番を使う合成リソースは v1b から**（v1a では非採番の固定値展開のみ）。
+- **`AllocationAuthority` interface + 最小実装**（v1 の採番はファイル版で確定。SQLite 版は v2 以降・§19.9）と **render の採番連携**（割当の解決はフェーズ1、子への伝播はフェーズ2 の展開・§9）。**採番を使う合成リソースは v1b から**（v1a では非採番の固定値展開のみ）。
 - **allocator HA 最小形 + Lookup キャッシュ + waiting-allocation 縮退**（§19）：段0 VM-HA 上の active/standby + fencing、割当事実のシャードローカル無期限キャッシュ（S3）、allocator 停止時の `waiting-allocation` 縮退。**プール分割 by claim**（intent での disjoint レンジ宣言・§19）。
 - **テストハーネス**（契約テスト自動生成）+ golden path テンプレート（§28）+ **BulkObserve 等価性テスト**（fake provider 上で `BulkObserve(scope) ≡ {Read(id)}` を検証・§5/§28）。
 - **`ready_condition` と複数 Cycle に跨る依存解決**（§8）+ **capacity gate**（§13）——最初の実インフラ provider（VM / 物理）を書く段で必要になる。
@@ -79,7 +79,7 @@ v1b が実証するのは、**既存の大規模基盤に安全に入れる**こ
 |---|---|---|
 | `sakutei import` + managed 候補 | 実装済み | §24.4 |
 | `ScopeMode` + Sync Mode | `generated/` への書き出しまで実装済み。**git コミットは未実装**（Backlog #35） | §24.5 |
-| `AllocationAuthority` + 採番連携 | ファイル版（JSON + flock）で実装済み。**SQLite 版は未実装**（Backlog #36） | §19.3・§19.9 |
+| `AllocationAuthority` + 採番連携 | ファイル版（JSON + flock）で実装済み。**v1 の採番はこれで確定**。SQLite 版は v1 の範囲外（v2 以降、Backlog #36） | §19.3・§19.9 |
 | allocator HA 最小形・Lookup キャッシュ・waiting-allocation・プール分割 by claim | 実装済み（`sakutei allocator`） | §19.6・§19.8・§19.9 |
 | 契約テストの Schema からの生成・golden path テンプレート・BulkObserve 等価性テスト | 実装済み | §28.3・§28.6 |
 | `ready_condition` + capacity gate | 実装済み（capacity gate は CLI フラグで宣言） | §11.2・§13.4 |
@@ -106,6 +106,7 @@ intent_revision が YAML の intent を数えていなかった（§9.4）。
 
 ### §27.5 v2 以降
 
+- **採番の SQLite 版（または NetBox 等の外部権威）**（§19.9）——v1 の採番はファイル版で確定（v3.8）。
 - **多相 Task 状態機械**（§6 多相型）。
 - **自動段階ロールアウト + 自動 canary ゲート**（§14）/ health（observability as Resource）/ 常設 canary / Prometheus exporter。
 - **`DBSource`**（および `DBSource` 連動の `Watch`・§21）。

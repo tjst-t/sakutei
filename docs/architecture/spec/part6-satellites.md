@@ -197,12 +197,12 @@ pools:
 
 - **SQLite + `BEGIN IMMEDIATE`（アトミック払い出し）＋ フラットプール**。`BEGIN IMMEDIATE` で書込ロックを即時取得し、同一プールへの並行 `Allocate` を直列化して二重払い出しを防ぐ。
 
-**v1b の決定：ファイル版で最小実装し、SQLite 版は後で差し替える**。v1b の自作実装（`FileAuthority`）は、割当記録を
+**v1 の決定：v1 の採番はファイル版で確定し、SQLite 版は v2 以降**（v1b で実装、2026-10-20 に v1 の範囲として確定・v3.8）。v1b の自作実装（`FileAuthority`）は、割当記録を
 1 つの JSON ファイルに置き、全操作を排他ロック（プロセス内の mutex + `<store>.lock` の flock）の下で「読み → 変更 →
 書き戻し（一時ファイル + fsync + rename）」する。`BEGIN IMMEDIATE` と同じく同一プールへの並行 `Allocate` を直列化する
 ので、二重払い出しは起きない（同時払い出しの受け入れテストで、ロックを外すと失敗することも確かめた）。割当記録には
 fencing 世代（§19.8）も持たせる。SQLite を採らなかった理由は、**リポジトリを stdlib のみ（外部依存なし）に保つ**ため
-である。SQLite 版は `AllocationAuthority` seam の裏で後から差し替える（Backlog #36。初めての外部依存を入れてよいかは着手時に決める）。
+である。SQLite 版（または NetBox 等の外部権威）は v1 の範囲に含めず、v2 以降に `AllocationAuthority` seam の裏で別実装として足す（Backlog #36。初めての外部依存を入れてよいかは着手時に決める）。上の SQLite + `BEGIN IMMEDIATE` は、その時点での最小実装の候補として残す。
 
 **守る2規律**：（1） `AllocationAuthority` interface の裏に隠して差し替え可能に保つ。（2） スコープを**採番に限定**し、CMDB 全体に育てない。
 
