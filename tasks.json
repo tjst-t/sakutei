@@ -911,7 +911,7 @@
       "number": 44,
       "kind": "task",
       "title": "v1.5: planned_change の承認情報連携と運用プロファイル（solo / team / enterprise）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v1-5-task-workflow-planned-change-remedi",
       "dependsOn": [
         "v1-5-planned-change-list-halt-kind-reima",
@@ -922,12 +922,12 @@
       "labels": [],
       "body": "設計 §13.3 / §14.4 / §14.5。planned_change の approval を、§14.4 の requirements（N-of-M・separation）で検証する。運用プロファイル profile: solo | team（既定）| enterprise を宣言できるようにし、承認ゲート・planned_change の既定を切り替える（個別の宣言が常に優先）。solo の cooling_off：planned_change の宣言から N 時間後に通す（その間は halt 可能）。非常駐（段0-zero、§23.7）では「次の reconcile で N 時間経っていれば通す」ゲートとして評価する。宣言と実行を S4 に残す。",
       "doneWhen": "enterprise では requirements を書かなくても planned_change に N-of-M + separation が要ること、solo では cooling_off 経過前は進まず経過後に進むこと（常駐と reconcile の両方）、個別の宣言がプロファイルに優先することをテストで示す",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/v1-5-planned-change-solo-team-enterprise）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T15:23:25.719Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T15:53:42.900Z",
+      "closedAt": "2026-10-20T15:53:42.900Z",
       "extra": {}
     },
     {
