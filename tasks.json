@@ -610,7 +610,7 @@
       "number": 35,
       "kind": "task",
       "title": "v1b: Sync Mode の git コミット（コミッター・間引き・直接コミットの拒否）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [
         "v1b-scopemode-converge-sync-sync-mode"
@@ -624,7 +624,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T11:11:06.738Z",
-      "updatedAt": "2026-10-20T20:07:01.424Z",
+      "updatedAt": "2026-10-20T20:07:59.699Z",
       "closedAt": null,
       "extra": {}
     },
