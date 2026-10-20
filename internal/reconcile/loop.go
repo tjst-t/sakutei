@@ -312,6 +312,7 @@ func Run(ctx context.Context, cfg Config) error {
 	cycleBase := 0
 	cycleNum := 0
 	idle := false
+	var lastMode remediation.Decision
 	drain := func() {
 		if d != nil {
 			d.Wait(gracefulShutdownWait)
@@ -412,7 +413,7 @@ func Run(ctx context.Context, cfg Config) error {
 			// further down carries the detailed drift report.
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d drifted (alert-only, no changes)\n",
 				cycleNum, res.Observed)
-		} else if res.Applied == 0 && res.Launched == 0 && len(res.Waiting) == 0 {
+		} else if res.Applied == 0 && res.Launched == 0 && len(res.Waiting) == 0 && res.DriftCount == 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d converged (no changes)\n",
 				cycleNum, res.Observed)
 		} else {
@@ -477,6 +478,21 @@ func Run(ctx context.Context, cfg Config) error {
 			// ghost-diff gate visible.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: %d ghost diff(s) held (cause C, provider upgrade); NOT applied — review provider version\n",
 				cycleNum, res.GhostDiffs)
+		}
+		if res.Mode.Reason != "" && res.Mode != lastMode {
+			// #40 (§14.2): the schedule switches the mode by the clock; log
+			// every switch with the sources that decided it.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: remediation mode=%s (%s)\n",
+				cycleNum, res.Mode.Mode, res.Mode.Reason)
+			lastMode = res.Mode
+		}
+		if !res.AlertOnly && res.DriftCount > 0 {
+			// #40 (§14.3): scope-explicit alert-only held part of the world.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: alert-only scope(s): %d drifted resource(s) held — not remediated\n",
+				cycleNum, res.DriftCount)
+			for _, ev := range res.DriftEvents {
+				fmt.Fprintf(cfg.Out, "sakutei: cycle %d: DRIFT EVENT: %s\n", cycleNum, ev)
+			}
 		}
 		if res.AlertOnly {
 			// Scf7762-3: alert-only mode — no Apply was executed; drifted resources
@@ -673,11 +689,15 @@ type CycleResult struct {
 	// AlertOnly is true when the cycle ran in alert-only or frozen mode.
 	// No Apply or prune Delete was executed.
 	AlertOnly bool
-	// DriftCount is the number of drifted resources detected this cycle
-	// (only meaningful when AlertOnly is true).
+	// Mode is the run-wide remediation decision of this cycle (freeze,
+	// --mode and the schedule at this cycle's time, most-restrictive-wins,
+	// §14.3).  Zero when the cycle ended before the mode gate.
+	Mode remediation.Decision
+	// DriftCount is the number of drifted resources held (not remediated)
+	// this cycle: all of them when AlertOnly, otherwise those in scopes
+	// declared remediation: alert-only (§14.3).
 	DriftCount int
-	// DriftEvents is the list of drift event strings for drifted resources
-	// (only populated when AlertOnly is true).
+	// DriftEvents is the list of drift event strings for the held resources.
 	DriftEvents []string
 
 	// #31 render phase 1 inventory field:
@@ -1256,56 +1276,41 @@ func runCycleAsync(
 		pruneResult = computeDaemonPrune(ctx, pruneEngine, fp, cfg.Claim, desired, unobservable, cfg.ErrOut)
 	}
 
-	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3).
+	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3; #40 §14.2/§14.3).
+	//
+	// The run-wide mode is resolved afresh every cycle from freeze, --mode and
+	// the intent's remediation schedule at the current time, by
+	// most-restrictive-wins.  Nothing about the mode is carried between
+	// cycles: drift seen outside a maintenance window stays in reality and is
+	// simply re-detected — and repaired — by the first cycle inside it.
 	//
 	// alert-only / freeze: do NOT Apply or prune.  Report drift Events and
 	// return immediately.  The budget gate (Phase 2c) is skipped entirely —
 	// there is nothing to count because no op will execute.
-	if cfg.Remediation.IsAlertOnly() {
-		var driftEvents []string
-		driftCount := 0
-		for _, res := range desired {
-			local := res.ID.Local
-			if unobservable[local] {
-				continue
-			}
-			plan, ok := plans[local]
-			if !ok || len(plan.Ops) == 0 {
-				continue
-			}
-			driftCount++
-			for _, op := range plan.Ops {
-				var kindStr string
-				switch op.Kind {
-				case core.OpKindCreate:
-					kindStr = "CREATE"
-				case core.OpKindUpdate:
-					kindStr = "UPDATE"
-				case core.OpKindDelete:
-					kindStr = "DELETE"
-				default:
-					kindStr = "OP"
-				}
-				driftEvents = append(driftEvents, fmt.Sprintf("would be %s %s", kindStr, op.Target))
-			}
-		}
-		// Also report prune candidates as drift.
-		for _, op := range pruneResult.DeleteOps {
-			driftCount++
-			driftEvents = append(driftEvents, fmt.Sprintf("DELETE %s (orphan; would be pruned)", op.Target))
-		}
+	decision := cfg.Remediation.Decide(in.Remediation)
+	if decision.IsAlertOnly() {
+		held := HoldAll(desired, plans, unobservable, pruneResult.DeleteOps)
 		return CycleResult{
 			Observed:    observed,
 			InFlight:    inFlightThisCycle,
 			BackedOff:   backedOff,
 			AlertOnly:   true,
-			DriftCount:  driftCount,
-			DriftEvents: driftEvents,
+			Mode:        decision,
+			DriftCount:  held.DriftCount,
+			DriftEvents: held.Events,
 			GhostDiffs:  ghostDiffs,
 			NotDue:      notDue,
 			Waiting:     waitingThisCycle,
 		}, nil
 	}
+
+	// §14.3: a scope declared `remediation: alert-only` holds its resources
+	// even though every run-wide source allowed auto.  Their ops (and prune
+	// Deletes in those scopes) are reported as drift and dropped from this
+	// cycle; the held resources count as unconverged upstreams, so their
+	// downstream waits.
+	scopeHeld := HoldAlertOnly(desired, plans, unobservable, pruneResult.DeleteOps, in.AlertOnlyScopes())
+	pruneResult.DeleteOps = scopeHeld.PruneOps
 
 	// Phase 2c: Collect all planned Apply ops (from Diff phase).
 	//
@@ -1408,6 +1413,10 @@ func runCycleAsync(
 		GhostDiffs:   ghostDiffs,
 		NotDue:       notDue,
 		Waiting:      waitingThisCycle,
+
+		Mode:        decision,
+		DriftCount:  scopeHeld.DriftCount,
+		DriftEvents: scopeHeld.Events,
 
 		CapacityHalted: capacityHalted,
 		CapacityReason: capacityDecision.Reason,

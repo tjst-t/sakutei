@@ -28,7 +28,9 @@ import (
 //
 //   - resources は配列（pools / scopes だけのファイルも書けるよう任意）。
 //   - pools は採番プールの宣言（name / range / claim / space、§19.8）。
-//   - scopes は scope ごとの mode（converge / sync）と sync.target_path（§24.5）。
+//   - scopes は scope ごとの mode（converge / sync）と sync.target_path（§24.5）、
+//     scope 明示の remediation（auto / alert-only、§14.3）。
+//   - remediation は時間帯連動の修復 mode（default / schedule[{window, mode}] / tz、§14.2）。
 //   - observe_tiers は Observe 頻度の tier（name / observe_every、§16.5）。resource は observe_tier で
 //     所属を書く（tier: は §8 の DAG 優先度帯 `tier: foundation` の予約名なので使わない）。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
@@ -63,11 +65,37 @@ func intentSchema() schemaNode {
 							"type": "string",
 							"enum": []any{"converge", "sync"},
 						},
+						"remediation": schemaNode{
+							"type": "string",
+							"enum": []any{"auto", "alert-only"},
+						},
 						"sync": schemaNode{
 							"type":                 "object",
 							"additionalProperties": false,
 							"properties": map[string]any{
 								"target_path": schemaNode{"type": "string"},
+							},
+						},
+					},
+				},
+			},
+			// remediation は時間帯連動の修復 mode（§14.2）。窓は先に書いたものが勝ち、
+			// どの窓にも入らない時刻は default（省略時 alert-only）。
+			"remediation": schemaNode{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"default": schemaNode{"type": "string", "enum": []any{"auto", "alert-only"}},
+					"tz":      schemaNode{"type": "string"},
+					"schedule": schemaNode{
+						"type": "array",
+						"items": schemaNode{
+							"type":                 "object",
+							"additionalProperties": false,
+							"required":             []any{"window", "mode"},
+							"properties": map[string]any{
+								"window": schemaNode{"type": "string"},
+								"mode":   schemaNode{"type": "string", "enum": []any{"auto", "alert-only"}},
 							},
 						},
 					},

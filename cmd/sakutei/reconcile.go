@@ -586,55 +586,44 @@ func runReconcile(args []string) {
 		_ = name
 	}
 
-	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3).
+	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3; #40 §14.2/§14.3).
 	//
+	// The mode is resolved from freeze, --mode and the intent's remediation
+	// schedule at the current time (most-restrictive-wins).
 	// alert-only / freeze: do NOT Apply or prune.  Report drift and exit 0.
 	// The budget gate (Phase 2c) is skipped — nothing is applied.
-	if remCfg.IsAlertOnly() {
-		driftCount := 0
-		var driftEvents []string
-		for _, res := range desired {
-			if unobservable[res.ID.Local] {
-				continue
-			}
-			plan, ok := plans[res.ID.Local]
-			if !ok || len(plan.Ops) == 0 {
-				continue
-			}
-			driftCount++
-			for _, op := range plan.Ops {
-				var kindStr string
-				switch op.Kind {
-				case core.OpKindCreate:
-					kindStr = "CREATE"
-				case core.OpKindUpdate:
-					kindStr = "UPDATE"
-				case core.OpKindDelete:
-					kindStr = "DELETE"
-				default:
-					kindStr = "OP"
-				}
-				driftEvents = append(driftEvents, fmt.Sprintf("would be %s %s", kindStr, op.Target))
-			}
-		}
-		for _, op := range precomputedPruneOps {
-			driftCount++
-			driftEvents = append(driftEvents, fmt.Sprintf("DELETE %s (orphan; would be pruned)", op.Target))
-		}
+	decision := remCfg.Decide(in.Remediation)
+	if decision.IsAlertOnly() {
+		held := reconcile.HoldAll(desired, plans, unobservable, precomputedPruneOps)
 		modeLabel := "alert-only"
 		if remCfg.Freeze {
 			modeLabel = "alert-only [FROZEN]"
 		}
-		if driftCount == 0 {
+		if in.Remediation != nil {
+			fmt.Printf("Remediation mode: alert-only (%s)\n", decision.Reason)
+		}
+		if held.DriftCount == 0 {
 			fmt.Printf("Reconcile (%s): no drift detected\n", modeLabel)
 		} else {
-			fmt.Printf("Reconcile (%s): %d drifted resource(s) detected — no changes applied\n", modeLabel, driftCount)
-			for _, ev := range driftEvents {
+			fmt.Printf("Reconcile (%s): %d drifted resource(s) detected — no changes applied\n", modeLabel, held.DriftCount)
+			for _, ev := range held.Events {
 				fmt.Printf("  DRIFT EVENT: %s\n", ev)
 			}
 		}
 		// alert-only exits 0: detection without action is not a failure.
 		os.Exit(0)
+	}
+	if in.Remediation != nil {
+		fmt.Printf("Remediation mode: auto (%s)\n", decision.Reason)
+	}
+	// §14.3: scopes declared remediation: alert-only are held even in auto.
+	scopeHeld := reconcile.HoldAlertOnly(desired, plans, unobservable, precomputedPruneOps, in.AlertOnlyScopes())
+	precomputedPruneOps = scopeHeld.PruneOps
+	if scopeHeld.DriftCount > 0 {
+		fmt.Printf("Alert-only scope(s): %d drifted resource(s) held — not remediated\n", scopeHeld.DriftCount)
+		for _, ev := range scopeHeld.Events {
+			fmt.Printf("  DRIFT EVENT: %s\n", ev)
+		}
 	}
 
 	// Phase 2c: Collect all planned Apply ops (from Diff phase).
@@ -794,6 +783,8 @@ func runReconcile(args []string) {
 		// Do not claim convergence: some resources were skipped this cycle
 		// (unobservable upstream or upstream Apply failure).
 		fmt.Printf("Reconcile: no changes applied; %d resource(s) skipped\n", len(skipped))
+	case scopeHeld.DriftCount > 0:
+		fmt.Printf("Reconcile: no changes applied; %d drifted resource(s) held by alert-only scope(s)\n", scopeHeld.DriftCount)
 	default:
 		fmt.Println("Converged (no changes)")
 	}
@@ -806,19 +797,23 @@ func runReconcile(args []string) {
 	// a subsequent reconcile) — this preserves AC-S94f1f9-2-2's exit-0 contract.
 	// #25: waiting-allocation is not a safety failure: like an Apply-failure
 	// skip it resolves itself on a later reconcile, once the allocation exists.
-	waitingCount := 0
+	// #40: a resource held by an alert-only scope (§14.3) was observed fine;
+	// holding it is the declared policy, not a safety failure.
+	waitingCount, heldCount := 0, 0
 	for local := range unobservable {
 		if waitingAlloc[local] {
 			waitingCount++
+		} else if scopeHeld.Locals[local] {
+			heldCount++
 		}
 	}
 	if waitingCount > 0 {
 		fmt.Printf("Reconcile: %d resource(s) waiting-allocation (retry once the allocator can allocate)\n", waitingCount)
 	}
-	if len(unobservable) > waitingCount {
+	if len(unobservable) > waitingCount+heldCount {
 		fmt.Fprintf(os.Stderr,
 			"sakutei reconcile: %d resource(s) were unobservable this cycle; convergence incomplete\n",
-			len(unobservable)-waitingCount)
+			len(unobservable)-waitingCount-heldCount)
 		os.Exit(1)
 	}
 	if budgetHalted || capacityHalted {

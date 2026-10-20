@@ -49,6 +49,11 @@ type ScopePolicy struct {
 	// repository root (the parent of the intent directory).  Always under
 	// generated/ (§24.5, §9.6).
 	TargetPath string
+	// Remediation is the scope-explicit remediation mode (§14.3): "auto",
+	// "alert-only" or "" (not declared).  alert-only holds every resource of
+	// the scope whatever the schedule or --mode say; auto only allows (it
+	// cannot override another source's alert-only).
+	Remediation string
 }
 
 func parseScopes(v any) ([]ScopePolicy, error) {
@@ -63,6 +68,7 @@ func parseScopes(v any) ([]ScopePolicy, error) {
 		if mode, _ := m["mode"].(string); mode != "" {
 			sp.Mode = ScopeMode(mode)
 		}
+		sp.Remediation, _ = m["remediation"].(string)
 		if sync, ok := m["sync"].(map[string]any); ok {
 			sp.TargetPath, _ = sync["target_path"].(string)
 		}
@@ -98,8 +104,16 @@ func validateScopes(scopes []ScopePolicy, resources []diff.DesiredResource) erro
 			if err := checkTargetPath(sp.TargetPath); err != nil {
 				return fmt.Errorf("scopes: scope %s: %w", key, err)
 			}
+			if sp.Remediation != "" {
+				return fmt.Errorf("scopes: scope %s: remediation is only for converge scopes (a sync scope never Applies)", key)
+			}
 		default:
 			return fmt.Errorf("scopes: scope %s: unknown mode %q", key, sp.Mode)
+		}
+		switch sp.Remediation {
+		case "", "auto", "alert-only":
+		default:
+			return fmt.Errorf("scopes: scope %s: unknown remediation %q; use auto or alert-only", key, sp.Remediation)
 		}
 	}
 	for _, r := range resources {

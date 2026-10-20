@@ -56,6 +56,7 @@ import (
 	"strings"
 
 	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
 )
@@ -132,6 +133,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.ObserveTiers = tiers
+	rem, err := parseRemediation(tree["remediation"])
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.Remediation = rem
 	return out, nil
 }
 
@@ -204,6 +210,8 @@ type intentFile struct {
 	Pools        []Pool           `json:"pools"`
 	Scopes       []ScopePolicy    `json:"scopes"`
 	ObserveTiers []ObserveTier    `json:"observe_tiers"`
+	// Remediation is the remediation schedule (§14.2); nil when undeclared.
+	Remediation *remediation.Schedule `json:"-"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -277,7 +285,10 @@ type Intent struct {
 	Pools        []Pool
 	Scopes       []ScopePolicy
 	ObserveTiers []ObserveTier
-	Revision     core.RevisionInfo
+	// Remediation is the remediation schedule (§14.2), declared in at most
+	// one intent file.  Nil when no file declares remediation:.
+	Remediation *remediation.Schedule
+	Revision    core.RevisionInfo
 }
 
 // LoadIntent reads every intent file in dir (same rules as LoadDir) and also
@@ -320,6 +331,8 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	var pools []Pool
 	var scopes []ScopePolicy
 	var tiers []ObserveTier
+	var rem *remediation.Schedule
+	remFrom := ""
 	for _, name := range names {
 		path := filepath.Join(dir, filepath.FromSlash(name))
 		loaded, file, err := loadFile(path)
@@ -330,6 +343,12 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		pools = append(pools, file.Pools...)
 		scopes = append(scopes, file.Scopes...)
 		tiers = append(tiers, file.ObserveTiers...)
+		if file.Remediation != nil {
+			if rem != nil {
+				return Intent{}, fmt.Errorf("loader: remediation: declared in both %s and %s; declare the schedule once (§14.2)", remFrom, name)
+			}
+			rem, remFrom = file.Remediation, name
+		}
 	}
 
 	// D-2: reject duplicate Local IDs.  Two resources sharing a Local ID would
@@ -364,7 +383,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Revision: ri}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Remediation: rem, Revision: ri}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the

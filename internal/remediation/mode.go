@@ -16,11 +16,16 @@
 // convergence loop (§14.1, ADR-0014 v1a subset).
 //
 // v1a scope: remediation mode (auto / alert-only) + global freeze.
-// Out of scope: remediation schedule (time-window auto-switch, v1.5),
-// operational profiles (solo/team/enterprise, v1.5).
+// v1.5 (#40): remediation schedule (time-window auto-switch, §14.2) and the
+// most-restrictive-wins resolution across decision sources (§14.3).
+// Out of scope: operational profiles (solo/team/enterprise, #44).
 package remediation
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Mode controls whether the convergence loop is permitted to make changes
 // to reality (§14.1).
@@ -64,21 +69,70 @@ func ParseMode(s string) (Mode, error) {
 	}
 }
 
-// Config holds the remediation configuration for one daemon/reconcile run.
+// Config holds the remediation configuration for one daemon/reconcile run:
+// the run-wide decision sources given on the command line.
 //
 // The effective mode is determined by most-restrictive-wins (§14.3):
 //   - If Freeze is true → effective mode is always alert-only, regardless of Mode.
 //   - Otherwise → Mode is used directly.
 //
-// This is the v1a subset.  Future sources (remediation.schedule, per-scope
-// overrides, oscillation auto-quarantine) will be additional fields here
-// without changing the interface.
+// Decide adds the intent's remediation schedule (§14.2) as a further source;
+// scope-explicit modes (`scopes: [{scope, remediation}]`) are applied per
+// resource on top of the run-wide decision by the caller.
 type Config struct {
-	// Mode is the base remediation mode for this run.
+	// Mode is the base remediation mode for this run (--mode).
 	Mode Mode
 	// Freeze, when true, overrides Mode to alert-only for the entire run
 	// (global freeze escape hatch, §14.3).
 	Freeze bool
+	// Now is the clock the schedule is evaluated against.  Nil means
+	// time.Now; tests inject a fixed or stepping clock.
+	Now func() time.Time
+}
+
+// Decision is a resolved remediation mode with the reason for it.
+type Decision struct {
+	Mode Mode
+	// Reason names every source that demanded alert-only (joined by ", "),
+	// or, for auto, the sources that all allowed it.
+	Reason string
+}
+
+// IsAlertOnly reports whether the decision is alert-only.
+func (d Decision) IsAlertOnly() bool { return d.Mode == ModeAlertOnly }
+
+// Decide resolves the run-wide mode at the current time from every decision
+// source — freeze, --mode and the intent's schedule (nil when the intent has
+// no remediation: declaration) — by most-restrictive-wins (§14.3): any one
+// source saying alert-only wins, and auto holds only when every source
+// allows it.  Freeze is not "a higher priority"; it is simply a source that
+// always says alert-only, so nothing can outvote it.
+func (c Config) Decide(s *Schedule) Decision {
+	var stop, allow []string
+	if c.Freeze {
+		stop = append(stop, "freeze")
+	}
+	if c.Mode == ModeAlertOnly {
+		stop = append(stop, "--mode alert-only")
+	} else {
+		allow = append(allow, "--mode auto")
+	}
+	if s != nil {
+		now := time.Now
+		if c.Now != nil {
+			now = c.Now
+		}
+		m, why := s.ModeAt(now())
+		if m == ModeAlertOnly {
+			stop = append(stop, why+" (alert-only)")
+		} else {
+			allow = append(allow, why+" (auto)")
+		}
+	}
+	if len(stop) > 0 {
+		return Decision{Mode: ModeAlertOnly, Reason: strings.Join(stop, ", ")}
+	}
+	return Decision{Mode: ModeAuto, Reason: strings.Join(allow, ", ")}
 }
 
 // EffectiveMode returns the mode that should actually be used, applying the
