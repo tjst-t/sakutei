@@ -281,6 +281,30 @@
       "updatedAt": "2026-10-20T08:43:22.279Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "in-flight-op",
+      "number": 13,
+      "kind": "task",
+      "title": "in-flight の op 種別を記録し、破壊的なものだけを予算に計上する",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "enhancement",
+        "budget"
+      ],
+      "body": "旧 ROADMAP.json の backlog（Scf7762-2 review B）。いまは in-flight を一律に destructive として rate-limit に計上している。安全側ではあるが、Create が多いときに誤って halt しうる。InFlightSet に op 種別を記録し、destructive だけを数えるようにする。",
+      "doneWhen": "Create だけが大量に in-flight の状態で rate-limit の halt が起きないこと、Delete の in-flight は従来どおり計上されることをテストで示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:22.949Z",
+      "updatedAt": "2026-10-20T08:43:22.949Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
