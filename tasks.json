@@ -777,7 +777,7 @@
       "number": 19,
       "kind": "story",
       "title": "v1.5: 単純 Task・最小 Workflow・planned_change・remediation schedule",
-      "status": "backlog",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -785,13 +785,13 @@
       "labels": [
         "v1.5"
       ],
-      "body": "設計 §27.4。20 構成の適用検討のうち 12 構成が「事業の核」を Task/Workflow に依存させていたため、最小形を v2 から前倒しする。ADR-0006/0014。\n\n- 単純 Task（一度実行して現実側に完了印。S2 は進行フェーズのみ）\n- 最小 Workflow：直列 + 不変条件 + 手動承認ゲート（動的 select・自動 canary は v2）\n- 承認ゲートの N-of-M 拡張（役割制約・申請者≠承認者・全承認者を S4 に記録）\n- DR モード（DR intent のプリステージ + 書込 break-glass + 事後合流 PR）\n- planned_change の承認情報連携\n- remediation schedule（時間帯連動）・運用プロファイル（solo/team/enterprise）\n\nv1b のあとに分割する。",
+      "body": "設計 §27.4。20 構成の適用検討のうち 12 構成が「事業の核」を Task/Workflow に依存させていたため、最小形を v2 から前倒しする。ADR-0006/0014。\n\n2026-10-20 にタスク #39〜#45 に分割した（依存はタスクの dependsOn）：\n- #39 planned_change と専用予算レーン（設計では v1a だが未実装だった）\n- #40 remediation schedule と most-restrictive-wins\n- #41 単純 Task と strategy: task\n- #42 最小 Workflow（#41 のあと）\n- #43 承認ゲートの N-of-M など（#42 のあと）\n- #44 planned_change の承認連携と運用プロファイル（#39・#43 のあと）\n- #45 DR モード（#42 のあと）",
       "doneWhen": "",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:43:47.700Z",
-      "updatedAt": "2026-10-20T08:43:47.700Z",
+      "updatedAt": "2026-10-20T13:38:13.012Z",
       "closedAt": null,
       "extra": {}
     },
