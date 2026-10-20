@@ -1130,6 +1130,33 @@
       "updatedAt": "2026-10-20T14:47:41.650Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "v2-api-proxmox-bulkobserve",
+      "number": 49,
+      "kind": "task",
+      "title": "v2: 実際の一括 API を持つ対象（Proxmox など）での BulkObserve",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [
+        "v1b-bulkobserve-sdk"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v2",
+        "bulk-observe",
+        "provider"
+      ],
+      "body": "#27 から切り出した（2026-10-20 人が決定）。v1 は dnszone と nftables で BulkObserve を実証する。設計 §5.7 / §16.3 がもともと想定しているのは、一括 API（Proxmox の /cluster/resources、vCenter の PropertyCollector など）を持つ対象で、単一デーモンで 1 万規模の天井に効く経路。\n\nその対象の provider を作るときに、ページングの完走（complete-or-error）を含めた一括の観測を実装し、BulkEquivalenceTester を通す。対象の環境（Proxmox のネストなど）が要る。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T20:07:08.343Z",
+      "updatedAt": "2026-10-20T20:07:08.343Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
