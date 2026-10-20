@@ -545,7 +545,7 @@
       "number": 31,
       "kind": "task",
       "title": "v1b: inventory 検証（外部入力の急減・欠損で incomplete≠empty）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [],
       "milestone": null,
@@ -557,7 +557,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T08:44:17.592Z",
+      "updatedAt": "2026-10-20T12:14:52.119Z",
       "closedAt": null,
       "extra": {}
     },
