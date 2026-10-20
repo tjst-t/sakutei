@@ -78,8 +78,10 @@ sakutei              # 常駐して回り続ける（本来の姿）      --clai
 sakutei plan         # dry-run: 何が変わるか（Diff で止まる）
 sakutei reconcile    # 1 回収束（手動キック）              --expect-revision <rev>
 sakutei status       # 適合レポート（drifted / unmanaged 一覧、read-only）
-sakutei import       # 既存リアルを intent として書き出す（設計 verb・v1b で実装）
+sakutei import       # 既存リアルを intent（YAML）として書き出す   --provider <名前> --out <dir> [--scope k=v]
 ```
+
+`import` は現実を List と Read で観測し、`<dir>/imported-<provider>.yaml` に書き出します。直後の `plan` は差分ゼロになります。何度か観測して（`--samples`、既定 3 回）値が変わったフィールドには **managed 候補** の印を付けます。書き出すのは「現状のスナップショット」なので、人が読んで整理してから intent にしてください。全リソースは `deletion_policy: ExplicitAbsentOnly`（prune しない）で書き出され、secret の平文は書き出しません。
 
 `apply` は意図的に主 verb にしていません（「いつ変えるか」は収束が決める）。`plan` と `status` を前面に置くこと自体が、このソフトのレビュー体験です。
 

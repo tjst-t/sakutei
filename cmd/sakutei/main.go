@@ -67,7 +67,7 @@ func main() {
 	case "status":
 		runStatus(os.Args[2:])
 	case "import":
-		notYetImplemented("import")
+		runImport(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Fprintf(os.Stdout, "sakutei %s\n", version)
 	case "help", "--help", "-h":
@@ -247,13 +247,6 @@ func runDaemon() {
 		os.Exit(1)
 	}
 	os.Exit(0)
-}
-
-// notYetImplemented prints a placeholder message and exits with a non-zero
-// code.  Subcommand stubs use this until their Stories are implemented.
-func notYetImplemented(sub string) {
-	fmt.Fprintf(os.Stderr, "sakutei %s: not yet implemented\n", sub)
-	os.Exit(1)
 }
 
 func printUsage() {

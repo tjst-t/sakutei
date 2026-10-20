@@ -385,3 +385,36 @@ func secretRefForm(v string) (string, bool) {
 	}
 	return "", false
 }
+
+// ObservedIntentValue returns the intent (desired) value that makes an observed
+// field compare equal in Diff — the inverse of the comparison in diffFields.
+// It is what `sakutei import` (reverse-render, §24.4) writes for each field, so
+// that a plan run right after an import reports no changes.
+//
+// include is false when the field must NOT be written into intent:
+//   - Computed or Managed fields: Diff never compares them, and writing an
+//     externally-owned value into intent would invite a tug-of-war (§7.2).
+//   - Secret fields whose observed value is not a recognised SecretRef: the
+//     plaintext is never exported (§20).  A recognised SecretRef is written in
+//     its reference form, which carries no value.
+//
+// reason explains an exclusion in one short phrase (empty when included).
+func ObservedIntentValue(name string, tv core.TypedValue, schema provider.Schema) (value string, include bool, reason string) {
+	spec, declared := schema.Fields[name]
+	if declared {
+		if spec.Computed {
+			return "", false, "computed (observed-only)"
+		}
+		if spec.Managed {
+			return "", false, "managed (owned by an external system)"
+		}
+		if spec.Secret {
+			ref, ok := secretRefForm(typedValueToString(tv))
+			if !ok {
+				return "", false, "secret value is not a SecretRef; plaintext is never exported, write a SecretRef by hand"
+			}
+			return ref, true, ""
+		}
+	}
+	return typedValueToString(tv), true, ""
+}
