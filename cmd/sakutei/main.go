@@ -151,7 +151,7 @@ func runDaemon() {
 	inventoryFile := fs.String("inventory-file", "",
 		"#31: inventory file (intent-format resources composed by render phase 1, §9.1); a sudden drop halts the cycle (incomplete≠empty, §9.2)")
 	inventoryMinRatio := fs.Float64("inventory-min-ratio", render.DefaultInventoryMinRatio,
-		"#31: an inventory at or below this fraction of the previous item count is incomplete (§9.2)")
+		"#31: an inventory below this fraction of the previous item count is incomplete (§9.2)")
 	inventoryExpectedMin := fs.Int("inventory-expected-min", 0,
 		"#31: expected inventory cardinality; fewer items is incomplete even on the first cycle (§9.2); 0=off")
 

@@ -23,7 +23,7 @@
 // empty-desired protection does not catch it either.
 //
 // InventoryGuard therefore compares each fetch with the last accepted one and
-// treats a sudden drop (to DefaultInventoryMinRatio or below) as incomplete,
+// treats a sudden drop (below DefaultInventoryMinRatio) as incomplete,
 // not empty: the caller halts the cycle and emits an InventoryIncomplete Event
 // (原則3: 確信が持てないとき減算しない).
 package render
@@ -68,9 +68,10 @@ func (s *FileInventorySource) Fetch(_ context.Context) ([]diff.DesiredResource, 
 }
 
 // DefaultInventoryMinRatio is the default drop threshold (§9.2 既定 50%): a
-// fetch with at most this fraction of the last accepted item count is
-// incomplete.  The boundary is inclusive — exactly half is incomplete — the
-// same "50%+ drop halts" rule as the prune List count-drop gate (§12.4b).
+// fetch with fewer than this fraction of the last accepted item count is
+// incomplete.  The boundary is exclusive — exactly half is accepted — the
+// same rule as the prune List count-drop gate (§12.4b), which halts only on a
+// drop of more than 50%.
 const DefaultInventoryMinRatio = 0.50
 
 // InventoryGuard composes the inventory each cycle and applies the
@@ -145,8 +146,8 @@ type InventoryResult struct {
 // Compose fetches the inventory and applies the guard:
 //   - unreachable with a previous inventory → that inventory (UnreachableFallback);
 //   - unreachable with none → Halt;
-//   - fewer items than the expected cardinality, or at most minRatio of the
-//     last accepted count → Halt + Incomplete.  The baseline is NOT moved, so
+//   - fewer items than the expected cardinality, or fewer than minRatio of
+//     the last accepted count → Halt + Incomplete.  The baseline is NOT moved, so
 //     the guard keeps halting until the inventory recovers;
 //   - otherwise the fetch is accepted and becomes the new baseline.
 func (g *InventoryGuard) Compose(ctx context.Context) InventoryResult {
@@ -173,9 +174,9 @@ func (g *InventoryGuard) Compose(ctx context.Context) InventoryResult {
 	}
 	if g.hasValue {
 		prev := len(g.last)
-		if prev > 0 && float64(n) <= float64(prev)*g.minRatio {
+		if prev > 0 && float64(n) < float64(prev)*g.minRatio {
 			return InventoryResult{Halt: true, Incomplete: true,
-				Reason: fmt.Sprintf("inventory dropped from %d to %d item(s) (at or below %.0f%% of the previous)",
+				Reason: fmt.Sprintf("inventory dropped from %d to %d item(s) (below %.0f%% of the previous)",
 					prev, n, g.minRatio*100)}
 		}
 	}

@@ -16,19 +16,24 @@
 // drop or loss of render phase 1's inventory is incomplete, not empty (§9.2).
 //
 // Tags:
-//   [#31-1] InventoryGuard: a drop to 50% or below (or below the expected
+//   [#31-1] InventoryGuard: a drop below 50% (or below the expected
 //           cardinality, or to zero) is incomplete; the baseline does not move
 //           while halted; unreachable keeps the previous inventory; the
 //           inventory hash does not depend on item order
-//   [#31-2] chaos: halving the inventory under the daemon runs no prune —
+//   [#31-2] chaos: dropping the inventory below half under the daemon runs
+//           no prune —
 //           the cycle halts with an InventoryIncomplete Event and reality is
 //           intact; restoring the inventory resumes convergence
 //   [#31-3] control: a gradual shrink above the threshold is accepted and
 //           prunes, so [#31-2]'s survival is the guard's doing
+//   [#47-1] boundary: a drop to exactly half is accepted by the inventory
+//           guard and does not halt the prune List count-drop gate — both
+//           follow §9.2's "50% 未満で halt"
 
 package acceptance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,8 +45,10 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
 // stubInventory is an InventorySource whose content the test sets per call.
@@ -77,16 +84,16 @@ func TestInventoryGuard_IncompleteNotEmpty(t *testing.T) {
 		t.Fatalf("[#31-1] first fetch must be accepted: %+v", first)
 	}
 
-	// Exactly half → incomplete.
-	src.items = inventoryItems(5)
-	half := g.Compose(ctx)
-	if !half.Halt || !half.Incomplete || half.Resources != nil {
-		t.Fatalf("[#31-1] a drop to half must halt as incomplete: %+v", half)
+	// Below half → incomplete.
+	src.items = inventoryItems(4)
+	low := g.Compose(ctx)
+	if !low.Halt || !low.Incomplete || low.Resources != nil {
+		t.Fatalf("[#31-1] a drop below half must halt as incomplete: %+v", low)
 	}
-	if !strings.Contains(half.Reason, "from 10 to 5") {
-		t.Errorf("[#31-1] reason should name the drop: %q", half.Reason)
+	if !strings.Contains(low.Reason, "from 10 to 4") {
+		t.Errorf("[#31-1] reason should name the drop: %q", low.Reason)
 	}
-	// The baseline does not move while halted: 5 again still halts.
+	// The baseline does not move while halted: 4 again still halts.
 	if r := g.Compose(ctx); !r.Halt {
 		t.Fatalf("[#31-1] the baseline moved to the incomplete inventory: %+v", r)
 	}
@@ -201,7 +208,7 @@ func setupInventoryChaos(t *testing.T) (intentDir, statePath, invPath, logPath s
 	return intentDir, statePath, invPath, logPath
 }
 
-func TestChaos_InventoryHalved_HaltsWithoutPrune(t *testing.T) {
+func TestChaos_InventoryBelowHalf_HaltsWithoutPrune(t *testing.T) {
 	intentDir, statePath, invPath, logPath := setupInventoryChaos(t)
 
 	cmd, waitCmd := startDaemonWithFlags(t, logPath,
@@ -220,12 +227,12 @@ func TestChaos_InventoryHalved_HaltsWithoutPrune(t *testing.T) {
 		t.Fatalf("[#31-2] cycle 1 did not converge on the inventory of 10; log:\n%s", readFileString(logPath))
 	}
 
-	// Chaos: the CMDB suddenly returns half (200 OK, shrunk content).
-	writeInventoryFile(t, invPath, 5)
-	if !waitForLogFile(logPath, "InventoryIncomplete: inventory dropped from 10 to 5", 5*time.Second) {
-		t.Fatalf("[#31-2] no InventoryIncomplete Event after halving the inventory; log:\n%s", readFileString(logPath))
+	// Chaos: the CMDB suddenly returns less than half (200 OK, shrunk content).
+	writeInventoryFile(t, invPath, 4)
+	if !waitForLogFile(logPath, "InventoryIncomplete: inventory dropped from 10 to 4", 5*time.Second) {
+		t.Fatalf("[#31-2] no InventoryIncomplete Event after the inventory dropped below half; log:\n%s", readFileString(logPath))
 	}
-	// Let several more cycles run on the halved inventory: the halt must hold.
+	// Let several more cycles run on the shrunk inventory: the halt must hold.
 	start := strings.Count(readFileString(logPath), "INVENTORY HALTED")
 	deadline := time.Now().Add(5 * time.Second)
 	for strings.Count(readFileString(logPath), "INVENTORY HALTED") < start+3 && time.Now().Before(deadline) {
@@ -291,5 +298,79 @@ func TestChaos_InventoryGradualShrink_Prunes(t *testing.T) {
 	}
 	if strings.Contains(readFileString(logPath), "InventoryIncomplete") {
 		t.Errorf("[#31-3] a shrink above the threshold must not be reported as incomplete")
+	}
+}
+
+// boundaryLister is a provider.Lister whose complete List the test sets per call.
+type boundaryLister struct{ ids []core.ID }
+
+func (l *boundaryLister) List(context.Context, core.Scope) (core.ListResult, error) {
+	return core.ListResult{IDs: l.ids, Status: core.ListComplete}, nil
+}
+
+// boundaryObserver reports every resource as observable (ok, empty state).
+type boundaryObserver struct{}
+
+func (boundaryObserver) Schema() provider.Schema { return provider.Schema{} }
+func (boundaryObserver) Capabilities() provider.Capabilities {
+	return provider.Capabilities{List: true}
+}
+func (boundaryObserver) Read(context.Context, string) (core.Observation, error) {
+	return core.Observation{Availability: core.AvailabilityOk, State: core.State{}, ObservedAt: time.Now()}, nil
+}
+func (boundaryObserver) Apply(context.Context, core.Plan) error { return nil }
+
+// TestInventoryAndPrune_DropBoundaryAgrees pins the §9.2 boundary: a drop to
+// exactly half is not "50% 未満", so neither the inventory guard nor the prune
+// List count-drop gate (§12.4b) halts on it; one item fewer halts both.
+func TestInventoryAndPrune_DropBoundaryAgrees(t *testing.T) {
+	ctx := context.Background()
+	ids := func(items []diff.DesiredResource) []core.ID {
+		out := make([]core.ID, len(items))
+		for i, r := range items {
+			out[i] = r.ID
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		next     int
+		wantHalt bool
+	}{
+		{next: 5, wantHalt: false}, // exactly half
+		{next: 4, wantHalt: true},  // below half
+	} {
+		src := &stubInventory{items: inventoryItems(10)}
+		g := render.NewInventoryGuard(src)
+		if r := g.Compose(ctx); r.Halt {
+			t.Fatalf("[#47-1] baseline of 10 must be accepted: %+v", r)
+		}
+		src.items = inventoryItems(tc.next)
+		inv := g.Compose(ctx)
+
+		engine := prune.New()
+		lister := &boundaryLister{ids: ids(inventoryItems(10))}
+		desired := inventoryItems(10)
+		if _, err := engine.ComputePrune(ctx, lister, boundaryObserver{}, core.NewScope(nil), core.NewScope(nil), desired, nil, &bytes.Buffer{}); err != nil {
+			t.Fatalf("[#47-1] prune baseline: %v", err)
+		}
+		lister.ids = ids(inventoryItems(tc.next))
+		pr, err := engine.ComputePrune(ctx, lister, boundaryObserver{}, core.NewScope(nil), core.NewScope(nil), inventoryItems(tc.next), nil, &bytes.Buffer{})
+		if err != nil {
+			t.Fatalf("[#47-1] prune: %v", err)
+		}
+
+		if inv.Halt != tc.wantHalt || inv.Incomplete != tc.wantHalt {
+			t.Errorf("[#47-1] inventory 10 → %d: Halt=%v Incomplete=%v, want %v (%s)",
+				tc.next, inv.Halt, inv.Incomplete, tc.wantHalt, inv.Reason)
+		}
+		if pr.Halted != tc.wantHalt {
+			t.Errorf("[#47-1] prune List 10 → %d: Halted=%v, want %v (%s)",
+				tc.next, pr.Halted, tc.wantHalt, pr.HaltReason)
+		}
+		if inv.Halt != pr.Halted {
+			t.Errorf("[#47-1] inventory and prune disagree on 10 → %d: inventory halt=%v, prune halt=%v",
+				tc.next, inv.Halt, pr.Halted)
+		}
 	}
 }

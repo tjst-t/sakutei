@@ -245,12 +245,12 @@ Vault が sealed-restart 中は世代解決も死ぬため、SecretRef のキャ
   ファイルが無い・読めない（書き込み途中を含む）ときは「空」ではなく「不達」と答える。
 - 判定（毎周、前回受け入れた inventory と比べる）：
   - 不達で前回がある → 前回の inventory を保持して続ける。不達で前回が無い → その周を halt。
-  - 件数が前回の `--inventory-min-ratio`（既定 0.5。**ちょうど半分も incomplete**）以下、または `--inventory-expected-min`（期待基数。既定 0 = 無効）未満 → **incomplete として周期を halt**し、
+  - 件数が前回の `--inventory-min-ratio`（既定 0.5。**ちょうど半分は受け入れる**）倍未満、または `--inventory-expected-min`（期待基数。既定 0 = 無効）未満 → **incomplete として周期を halt**し、
     Apply も prune も走らせず `InventoryIncomplete` Event を出す。非空 → 空もこれに含まれる。
   - halt 中は基準（前回受け入れた件数）を動かさないので、inventory が戻るまで止まり続ける。それ以外は受け入れて
     新しい基準にする。漸減（例 10 → 8）は受け入れ、通常どおり prune に進む。
-- 境界の注意：§12.4（b）の List 急減の実装は「50% を**超える**減少」で halt する（ちょうど半分は halt しない）ので、
-  inventory（ちょうど半分で halt）とは境界が 1 点ずれている。どちらも既定値 50% の規律であり、安全側は inventory のほうである。
+- 境界：§12.4（b）の List 急減（「50% を**超える**減少」で halt）と同じく、ちょうど半分は halt せず、半分を下回ったら
+  halt する。どちらも「前回比 50% 未満で halt」という同じ規律である（v3.11 でそろえた）。
 - 基準は S3（メモリ）に置く。再起動後の最初の取得はそのまま受け入れる（期待基数を宣言していれば、それで下限を守る）。
 - inventory の内容ハッシュ（並び順に依存しない）を rendered_revision の外部入力に含める（cause E。§9.4）。
 
