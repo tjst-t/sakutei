@@ -283,31 +283,6 @@
       "extra": {}
     },
     {
-      "id": "cause-d-d",
-      "number": 14,
-      "kind": "task",
-      "title": "cause D を合成親ごとに追跡する（複数の合成親で誤って D が付く）",
-      "status": "backlog",
-      "parent": null,
-      "dependsOn": [],
-      "milestone": null,
-      "priority": "normal",
-      "labels": [
-        "enhancement",
-        "cause",
-        "v1b"
-      ],
-      "body": "旧 ROADMAP.json の backlog（S072a14 review D-1）。\n\ncause D はいま、全体の intent_revision / rendered_revision が変わった周期に、全部の合成親の子へ一律で UpstreamChanged=true を立てる。そのため合成親が複数あると、変えていない親の子にも D が付く。診断の精度だけの問題で、破壊的な挙動（rate-limit・prune・halt）には影響しない。v1b で、親ごとの rendered 寄与ハッシュか、親フィールドの前周期比較に移し、変えた親の子にだけ D を付ける。",
-      "doneWhen": "合成親 2 つのうち片方だけ変えたとき、変えた親の子にだけ cause D が付くことをテストで示す",
-      "resolution": null,
-      "refs": [],
-      "threads": [],
-      "createdAt": "2026-10-20T08:43:23.910Z",
-      "updatedAt": "2026-10-20T08:43:23.910Z",
-      "closedAt": null,
-      "extra": {}
-    },
-    {
       "id": "fake-provider-apply-update",
       "number": 16,
       "kind": "bug",
@@ -639,6 +614,31 @@
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
       "updatedAt": "2026-10-20T08:44:17.592Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "cause-d-d",
+      "number": 14,
+      "kind": "task",
+      "title": "cause D を合成親ごとに追跡する（複数の合成親で誤って D が付く）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "enhancement",
+        "cause",
+        "v1b"
+      ],
+      "body": "旧 ROADMAP.json の backlog（S072a14 review D-1）。\n\ncause D はいま、全体の intent_revision / rendered_revision が変わった周期に、全部の合成親の子へ一律で UpstreamChanged=true を立てる。そのため合成親が複数あると、変えていない親の子にも D が付く。診断の精度だけの問題で、破壊的な挙動（rate-limit・prune・halt）には影響しない。v1b で、親ごとの rendered 寄与ハッシュか、親フィールドの前周期比較に移し、変えた親の子にだけ D を付ける。",
+      "doneWhen": "合成親 2 つのうち片方だけ変えたとき、変えた親の子にだけ cause D が付くことをテストで示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:23.910Z",
+      "updatedAt": "2026-10-20T08:43:23.910Z",
       "closedAt": null,
       "extra": {}
     },
