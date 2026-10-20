@@ -130,7 +130,7 @@ BMC・スイッチ管理ポートへ到達するための**管理NW**は段0 の
 
 - **設計上の位置づけ**:新モードではなく既存要素の組み合わせである。`reconcile` は既存 verb（§26.6）であり、観測 state レスは実行間の状態保持をそもそも要求しない——毎回リアルを再観測するため、Terraform 的な「開いて叩く」UX でも state 鮮度問題を持ち込まない。早期収束パスの標語（§8）を借りれば「**人間 triggered な起床、level-triggered な真実**」であり、§23.6 の「制御面が落ちてもデータ面は動き続け、復帰後に最後の理想へ自然に再収束」の極限形（制御面がほぼ常に停止している）である。
 - **失うもの**:周期ドリフト検知・自動修復・早期収束パス・remediation schedule。とりわけ**ドリフトは検知すらされない**（alert-only の「検知は続け」も止まる）。運用作法は「**開いたらまず `status` / `plan`**」である。久しぶりの実行で巨大 diff が出ても、変更予算・List 急減 halt・削除方向急増の凍結（§13）は周期単位で効くのでそのまま守る。
-- **cooling-off のゲート化**（§14.5）:非常駐では「宣言から N 時間後に自動実行」が成立しない。段0-zero では cooling-off を「**次回 reconcile 時に N 時間経過していれば通す**」ゲート条件として評価する（タイマーからゲートへの level-triggered な再解釈）。
+- **cooling-off のゲート化**（§14.5）:非常駐では「宣言から N 時間後に自動実行」が成立しない。段0-zero では cooling-off を「**次回 reconcile 時に N 時間経過していれば通す**」ゲート条件として評価する（タイマーからゲートへの level-triggered な再解釈）。宣言を初めて見た時刻とレーンの使用量は S4 に残し、次の reconcile が読み直す（`sakutei reconcile --audit-log <file>`。無ければレーンを開かない・§13.3「承認と運用プロファイル」）。
 - **二重 writer**:複数のクライアント PC から叩く事故は、S2 file + fencing 世代（§15.2 の流用）で古い世代の書込を拒否する。
 - **制約**:多相 Task / Workflow（§6.2）の実行中はプロセスを終了できない（フタを閉じない）。中断しても S2 file 永続とべき等再開で耐えるが、長時間手続きは段0-minimal 以上を推奨する。S3（前回 List 基数・last-seen）は実行間で失われるが、S3 喪失は保守側（prune 保留）に倒れる設計なので安全である（cause 帰属・§10 の質は下がる）。
 - **採用ファネル**:段0-zero → 段0-minimal → 段0 の昇格経路が、OSS 初期利用者の入口（§29.4）を最小まで軽くする。clone して PC から plan → reconcile が最初の体験になる。
@@ -472,7 +472,7 @@ sakutei secrets extract --from <file> --claim <selector> --out <file>  # 1 拠�
 |---|---|---|
 | 常駐（`sakutei`） | `--alloc-store <file>` / `--alloc-url <url,url>`（排他）・`--claim <selector>`・`--fencing-store <file>`・`--shard-id <名前>`（既定 `<hostname>-<pid>`）・`--capacity-gate <宣言>`（繰り返し可）・`--inventory-file <file>`・`--inventory-min-ratio`（既定 0.5）・`--inventory-expected-min`（既定 0 = 無効）・`--intent-repo <url>`・`--workdir <dir>`・`--shard <名前>`・`--git-branch`（既定 `main`）・`--git-poll`（既定 60s + 最大 50% の jitter）・`--s2-free`・`--secret-store <file>` | 採番は Allocate（Lookup キャッシュ付き・§19.6）。`--claim` 外の scope は Observe しない（§17.1）。`--intent-repo` は `--intent` と排他で、`--workdir` と、`--shard` か `--claim` のどちらか一方を要する（§17.4）。`--s2-free` は `--intent-repo` を必須にし `--alloc-store` を拒否する（§17.5） |
 | `plan` | `--alloc-store` / `--alloc-url` | 採番は Lookup のみ（払い出さない）。未割当は「割り当て待ち」と表示 |
-| `reconcile` | `--alloc-store` / `--alloc-url`・`--capacity-gate` | 採番は Allocate。`--claim` は v1a から持つ |
+| `reconcile` | `--alloc-store` / `--alloc-url`・`--capacity-gate`・`--audit-log <file>`（v1.5） | 採番は Allocate。`--claim` は v1a から持つ。`--audit-log` を付けると planned_change のレーンを開く（S4 が実行をまたいで `max_count` と cooling-off を持つ・§13.3） |
 | `status` | `--alloc-store` / `--alloc-url` | 採番は Lookup のみ。read-only |
 | `import` | `--provider <名前,...>`（必須）・`--out <dir>`（必須）・`--scope k=v,...`・`--samples N`（既定 3）・`--sample-interval`（既定 2s）・`--force` | §24.4 |
 | `sync` | `--intent <dir>`（必須）・`--provider <名前,...>`（必須）・`--interval <d>`（既定は 1 回で終了） | §24.5 |

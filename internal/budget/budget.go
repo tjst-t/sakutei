@@ -51,6 +51,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/audit"
 	"github.com/tjst-t/sakutei/pkg/core"
 )
 
@@ -128,10 +129,20 @@ type Engine struct {
 	history []windowEntry // time-ordered destructive events (S3 memory)
 
 	// planned_change lanes (§13.3).  laneUsed is keyed by PlannedChange.Key;
-	// like history it is S3 memory and resets on restart.
+	// like history it is S3 memory, restored from S4 when an audit log is
+	// attached (AttachAudit, #44).
 	planned      []PlannedChange
 	laneUsed     map[string]int
 	expiredNoted map[string]bool
+
+	// planned_change gates (§14.4 / §14.5, planned_gate.go).  declaredAt is
+	// keyed by PlannedChange.Fingerprint, opened and gateNoted likewise;
+	// laneFlushed is the part of laneUsed already recorded in S4.
+	audit       *audit.Log
+	declaredAt  map[string]time.Time
+	opened      map[string]bool
+	gateNoted   map[string]string
+	laneFlushed map[string]int
 }
 
 // New creates an Engine with the given configuration.

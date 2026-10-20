@@ -682,6 +682,14 @@ func NewDaemon(cfg Config) *Daemon {
 	// time-window counter (S3, memory-only) accumulates across cycles.  Resetting
 	// on restart is intentional: the first post-restart window starts fresh.
 	budgetEngine := budget.New(cfg.BudgetConfig)
+	// #44 (§14.5): planned_change declarations, openings and lane executions are
+	// recorded in S4; a restart reads back when each was declared (the
+	// cooling-off clock) and how much of each lane was used.
+	if cfg.Audit != nil {
+		if err := budgetEngine.AttachAudit(cfg.Audit); err != nil {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: warn: planned_change: cannot read the S4 audit log: %v; planned_change lanes with a cooling-off stay closed\n", err)
+		}
+	}
 
 	// Scb0ecd-3: last-seen ring (S3, memory-only, non-persistent, §10.5,
 	// ADR-0008).  Created ONCE per daemon run so it survives across cycles.
@@ -1711,6 +1719,11 @@ func runCycleAsync(
 	// CommitOps is called for each successfully applied Delete to advance the
 	// cumulative window counter (S3, §13.2).
 	pruned, pruneHalted := executePruneOps(ctx, pruneResult, allowedPruneOps, fp, exec, budgetEngine, pruneEngine, budgetDecision, cfg.ErrOut)
+
+	// #44 (§14.5): record this cycle's lane executions in S4.
+	if err := budgetEngine.FlushLaneAudit(); err != nil {
+		fmt.Fprintf(cfg.ErrOut, "sakutei: warn: planned_change: cannot record lane executions in S4: %v (retried next cycle)\n", err)
+	}
 
 	return CycleResult{
 		Observed:     observed,

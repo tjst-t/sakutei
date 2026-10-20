@@ -241,7 +241,8 @@ func TestChaosPlannedChange_WindowExpiry_BackToNormalBudget(t *testing.T) {
 		"resources": []map[string]any{pcDesired("keep-decom", pcDecom)},
 		"planned_change": map[string]any{
 			"scope": pcDecom, "kind": "delete", "max_count": 500,
-			"window": pcWindow(now.Add(-time.Hour), end),
+			"window":   pcWindow(now.Add(-time.Hour), end),
+			"approval": map[string]any{"approvers": []string{"alice"}}, // team: one approver (§14.5)
 		},
 	})
 
@@ -306,7 +307,8 @@ func TestChaosPlannedChange_ReimageNotCountedAsDelete(t *testing.T) {
 		"resources": desired,
 		"planned_change": map[string]any{
 			"scope": map[string]string{"pool": "hpc"}, "kind": "reimage", "max_count": 5,
-			"window": pcWindow(now.Add(-time.Hour), now.Add(time.Hour)),
+			"window":   pcWindow(now.Add(-time.Hour), now.Add(time.Hour)),
+			"approval": map[string]any{"approvers": []string{"alice"}}, // team: one approver (§14.5)
 		},
 	})
 

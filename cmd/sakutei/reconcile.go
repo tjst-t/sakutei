@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/audit"
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/capacity"
 	"github.com/tjst-t/sakutei/internal/cause"
@@ -99,6 +100,9 @@ func runReconcile(args []string) {
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	allocURL := fs.String("alloc-url", "", allocURLUsage)
+	// #44 (§14.5, §23.7): S4 audit log; with it the planned_change lanes open.
+	auditLog := fs.String("audit-log", "",
+		"S4 audit log file (append-only JSON lines); with it planned_change lanes open, holding max_count and the cooling-off across runs (§14.5, §23.7)")
 	generatedDir := fs.String("generated", "",
 		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
 	// S072a14-2: render phase 1 — external input resolver flags.
@@ -203,12 +207,20 @@ func runReconcile(args []string) {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: load intent: %v\n", err)
 		os.Exit(1)
 	}
-	// §13.3: the planned_change lanes are opened only by the resident loop.
-	// One-shot reconcile builds a fresh budget engine every invocation, so it
-	// could not hold a declaration to its max_count across runs; it evaluates
-	// every change by the normal budget instead (conservative).
-	if len(in.PlannedChanges) > 0 {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: note: %d planned_change declaration(s) are honoured only by the resident loop (sakutei); this one-shot run evaluates every change by the normal budget\n", len(in.PlannedChanges))
+	// §13.3 / §14.5: one-shot reconcile builds a fresh budget engine every
+	// invocation, so it opens the planned_change lanes only with the S4 audit
+	// log: S4 holds when each declaration was first seen (the cooling-off is a
+	// gate evaluated on this run, §23.7) and how much of each lane earlier runs
+	// used (max_count across runs).  Without it every change is evaluated by the
+	// normal budget (conservative).
+	if *auditLog != "" {
+		if err := budgetEngine.AttachAudit(audit.NewLog(*auditLog)); err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei reconcile: read audit log: %v\n", err)
+			os.Exit(1)
+		}
+		budgetEngine.SetPlannedChanges(in.PlannedChanges)
+	} else if len(in.PlannedChanges) > 0 {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: note: %d planned_change declaration(s) need --audit-log to open their lanes in a one-shot run (max_count and the cooling-off are held in S4 across runs); this run evaluates every change by the normal budget\n", len(in.PlannedChanges))
 	}
 	// #42 (§6.3): a Workflow target is driven only by its Workflow in the
 	// resident loop, where its progress (S2) is known.  The one-shot run cannot
@@ -679,6 +691,9 @@ func runReconcile(args []string) {
 	// Evaluate rate-limit and cumulative time-window budget.  For the one-shot
 	// reconcile, in-flight is always 0 (synchronous Apply, no prior goroutines).
 	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, 0, len(desired))
+	for _, ev := range budgetDecision.Events {
+		fmt.Printf("%s\n", ev)
+	}
 	budgetHalted := budgetDecision.HaltAll || budgetDecision.HaltDestructive
 	if budgetHalted {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: BUDGET HALTED: %s\n", budgetDecision.Reason)
@@ -724,6 +739,24 @@ func runReconcile(args []string) {
 		}
 	}
 
+	// §13.3 / §14.5: the lane ops that passed the gates consume their lanes
+	// up front, and the usage is recorded in S4 before anything is dispatched:
+	// a run that cannot record it executes nothing (a skipped op's slot is not
+	// given back — conservative, as in the scoped path).
+	if budgetDecision.LaneAdmitted() > 0 {
+		var laneOps []core.Op
+		for _, plan := range filteredPlans {
+			laneOps = append(laneOps, plan.Ops...)
+		}
+		allowedPrune, _ := budgetDecision.FilterOps(precomputedPruneOps)
+		laneOps = append(laneOps, allowedPrune...)
+		budgetEngine.ReserveLanes(budgetDecision, laneOps)
+		if err := budgetEngine.FlushLaneAudit(); err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei reconcile: planned_change: cannot record lane executions in S4: %v; nothing applied\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Phase 2: Apply in dependency (wave) order via Kahn decomposition.
 	// reconcile.ApplyWaves ensures that:
 	//   - Resources with depends_on are applied after their dependencies.
@@ -754,7 +787,7 @@ func runReconcile(args []string) {
 			continue
 		}
 		if plan, ok := filteredPlans[res.ID.Local]; ok {
-			budgetEngine.CommitOps(plan.Ops)
+			budgetEngine.CommitOps(budgetDecision.OutsideLanes(plan.Ops))
 		}
 	}
 
@@ -792,7 +825,7 @@ func runReconcile(args []string) {
 	pruneOps, pruneHalted := runPruneWithPrecomputed(ctx, applyProvider, exec, precomputedPruneOps, allowedPruneOps, pruneWasHaltedBySafetyGuard)
 	for _, op := range pruneOps {
 		printOp(op)
-		budgetEngine.CommitOps([]core.Op{op})
+		budgetEngine.CommitOps(budgetDecision.OutsideLanes([]core.Op{op}))
 		appliedOps++
 	}
 	if pruneHalted {

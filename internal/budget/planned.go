@@ -78,9 +78,9 @@ const (
 // and the intent schema enum).
 var PlannedKinds = []PlannedKind{PlannedDelete, PlannedUpdate, PlannedReimage, PlannedRecreate}
 
-// Approval is the approval information of a planned_change (§13.3).  It is
-// recorded and shown; checking it against the operational profile's
-// requirements (§14.4) is a separate task.
+// Approval is the approval information of a planned_change (§13.3).  The
+// loader checks it against the requirements (§14.4) of the declaration or of
+// the operational profile (§14.5) and records the verdict in Gate.
 type Approval struct {
 	PR        int
 	Approvers []string
@@ -100,6 +100,13 @@ type PlannedChange struct {
 	Start, End time.Time
 	// Approval is the recorded approval information.
 	Approval Approval
+	// Applicant is the applicant ID (the PR author); separation:
+	// applicant_ne_approver refuses its approval.
+	Applicant string
+	// Gate is what must hold before the lane opens (§14.4 / §14.5), resolved by
+	// the loader from the declaration and the operational profile.  The zero
+	// value opens the lane in its window unconditionally.
+	Gate PlannedGate
 }
 
 // Key identifies the declaration for its usage counter, so the counter
@@ -107,6 +114,13 @@ type PlannedChange struct {
 func (p PlannedChange) Key() string {
 	return fmt.Sprintf("%s|%s|%s|%s", p.Scope.String(), p.Kind,
 		p.Start.UTC().Format(time.RFC3339), p.End.UTC().Format(time.RFC3339))
+}
+
+// Fingerprint identifies the declaration for its cooling-off clock (§14.5): the
+// Key plus max_count, so widening a declaration (a larger max_count) is a new
+// declaration whose cooling-off starts over.
+func (p PlannedChange) Fingerprint() string {
+	return fmt.Sprintf("%s|%d", p.Key(), p.MaxCount)
 }
 
 // String is the human-readable name used in Events.
@@ -235,9 +249,14 @@ func (e *Engine) admitLanes(ops []core.Op) laneAdmission {
 	var out laneAdmission
 	var active []PlannedChange
 	for _, p := range e.planned {
+		if now.Before(p.End) {
+			e.noteDeclared(p, now, &out.events)
+		}
 		switch {
 		case p.Active(now):
-			active = append(active, p)
+			if e.gateOpen(p, now, &out.events) {
+				active = append(active, p)
+			}
 		case !now.Before(p.End):
 			if !e.expiredNoted[p.Key()] {
 				if e.expiredNoted == nil {

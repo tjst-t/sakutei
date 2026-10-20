@@ -108,17 +108,13 @@ func (r Run) rejection(gate string) (Approval, bool) {
 // 異なる承認者を承認順に返す（同じ承認者の二重承認は 1 と数える）。need は通過に
 // 要る人数。
 func (r Run) Tally() (approvers []string, need int) {
-	seen := map[string]bool{}
+	var forGate []Approval
 	for _, a := range r.Approvals {
-		if a.Gate != r.Gate || a.Decision != DecisionApprove || seen[a.Approver] {
-			continue
+		if a.Gate == r.Gate {
+			forGate = append(forGate, a)
 		}
-		if r.GateRequirements.qualify(a, r.Applicant) != "" {
-			continue
-		}
-		seen[a.Approver] = true
-		approvers = append(approvers, a.Approver)
 	}
+	approvers, _ = r.GateRequirements.Count(forGate, r.Applicant)
 	return approvers, r.GateRequirements.Needed()
 }
 

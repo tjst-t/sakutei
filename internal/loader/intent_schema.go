@@ -35,8 +35,9 @@ import (
 //   - remediation は時間帯連動の修復 mode（default / schedule[{window, mode}] / tz、§14.2）。
 //   - observe_tiers は Observe 頻度の tier（name / observe_every、§16.5）。resource は observe_tier で
 //     所属を書く（tier: は §8 の DAG 優先度帯 `tier: foundation` の予約名なので使わない）。
-//   - planned_change は大量正当作業の宣言（scope / kind / max_count / window / approval、§13.3）。
-//     1 件ならオブジェクト、複数なら配列で書く。
+//   - planned_change は大量正当作業の宣言（scope / kind / max_count / window / applicant / approval /
+//     requirements / cooling_off、§13.3 / §14.4 / §14.5）。1 件ならオブジェクト、複数なら配列で書く。
+//   - profile は運用プロファイル（solo / team / enterprise、§14.5）、solo はその設定（cooling_off）。
 //   - workflows は最小 Workflow の宣言（workflow / applicant / target / invariant / strategy / stages /
 //     steps / on_failure、§6.3 / §6.4）。書式の詳細と v1.5 で拒否するものは workflow.go。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
@@ -122,6 +123,15 @@ func intentSchema() schemaNode {
 			},
 			// planned_change は専用予算レーンの宣言（§13.3）。1 件はオブジェクト、複数は配列。
 			"planned_change": plannedChangeSchema(),
+			// profile は運用プロファイル（§14.5）。solo は solo の設定（cooling_off）。
+			"profile": schemaNode{"type": "string", "enum": []any{"solo", "team", "enterprise"}},
+			"solo": schemaNode{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"cooling_off": schemaNode{"type": []any{"string", "integer"}},
+				},
+			},
 			// workflows は最小 Workflow（§6.3）。直列 + invariant + 手動承認ゲート。
 			"workflows": workflowsSchema(),
 			// pools は採番プールの宣言（§19.8）。range は "下限-上限"（整数）。
@@ -261,14 +271,20 @@ func plannedChangeSchema() schemaNode {
 			"kind":      schemaNode{"type": "string", "enum": kinds},
 			"max_count": schemaNode{"type": "integer"},
 			"window":    schemaNode{"type": "string"},
+			"applicant": schemaNode{"type": "string"},
 			"approval": schemaNode{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties": map[string]any{
-					"pr":        schemaNode{"type": "integer"},
-					"approvers": schemaNode{"type": "array", "items": schemaNode{"type": "string"}},
+					"pr": schemaNode{"type": "integer"},
+					// 承認者は ID か { id, roles }（§14.4）。
+					"approvers": schemaNode{"type": "array", "items": schemaNode{"type": []any{"string", "object"}}},
 				},
 			},
+			// requirements は §14.4 の承認者要件（プロファイルの既定より優先）。
+			"requirements": schemaNode{"type": "object", "additionalProperties": true},
+			// cooling_off は宣言からレーンが開くまでの遅延（プロファイルの既定より優先、§14.5）。
+			"cooling_off": schemaNode{"type": []any{"string", "integer"}},
 		},
 	}
 	out := schemaNode{"type": []any{"object", "array"}, "items": decl}

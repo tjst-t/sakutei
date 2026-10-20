@@ -156,6 +156,28 @@ func (r *Requirements) qualify(a Approval, applicant string) string {
 	return ""
 }
 
+// Count は approvals のうち要件を満たす承認の異なる承認者を順に返す（同じ承認者の
+// 二重承認は 1 と数える）。rejected は要件を満たさず数えなかった承認の理由。
+// ゲートの数え上げ（Run.Tally）と planned_change の approval の検証（§13.3）が使う。
+func (r *Requirements) Count(approvals []Approval, applicant string) (approvers, rejected []string) {
+	seen := map[string]bool{}
+	for _, a := range approvals {
+		if a.Decision != DecisionApprove || seen[a.Approver] {
+			continue
+		}
+		if why := r.qualify(a, applicant); why != "" {
+			rejected = append(rejected, why)
+			continue
+		}
+		seen[a.Approver] = true
+		approvers = append(approvers, a.Approver)
+	}
+	return approvers, rejected
+}
+
+// Validate は要件の宣言を検証する（ロード時）。
+func (r *Requirements) Validate() error { return r.validate() }
+
 func hasAny(have, want []string) bool {
 	for _, h := range have {
 		for _, w := range want {

@@ -433,6 +433,9 @@ func ScopedReconcile(
 	// planned_change のレーン（§13.3）に入った op は、発射前にレーンの枠を消費する
 	// （同期 wave なので、ここで全 op 分を先に取る。skip された op の枠は戻さない＝保守側）。
 	budgetEngine.ReserveLanes(decision, allPlannedOps)
+	if err := budgetEngine.FlushLaneAudit(); err != nil {
+		fmt.Fprintf(errOut, "sakutei: scoped: warn: planned_change: cannot record lane executions in S4: %v\n", err)
+	}
 
 	// ---- Apply（同期 wave） -------------------------------------------------
 	//

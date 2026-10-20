@@ -56,6 +56,17 @@ const (
 	// KindBreakGlassKeyRetired は session で使った break-glass 鍵の失効（使い捨て原則）。
 	// 失効した鍵での break-glass 書込は拒否される。
 	KindBreakGlassKeyRetired Kind = "breakglass.key.retired"
+
+	// KindPlannedChangeDeclared は planned_change の宣言を初めて見た時刻（§14.5）。
+	// solo の cooling-off はこの時刻から数える（非常駐の reconcile は実行をまたいで
+	// この記録を読み直す）。PlannedChange は宣言の Key、Count は max_count。
+	KindPlannedChangeDeclared Kind = "planned_change.declared"
+	// KindPlannedChangeOpened は planned_change のレーンが開いたこと（承認が要件を
+	// 満たした、または cooling-off が明けた）。Detail にその根拠を書く。
+	KindPlannedChangeOpened Kind = "planned_change.opened"
+	// KindPlannedChangeExecuted はレーンで発射した変更の件数（Count）。reconcile は
+	// 実行をまたいで合計し、max_count を守る。
+	KindPlannedChangeExecuted Kind = "planned_change.executed"
 )
 
 // Record は監査の 1 件。
@@ -75,7 +86,10 @@ type Record struct {
 	Session string `json:"session,omitempty"`
 	Commit  string `json:"commit,omitempty"`
 	Key     string `json:"key,omitempty"`
-	Detail  string `json:"detail,omitempty"`
+	// PlannedChange・Count は planned_change の記録（宣言の Key と件数）。
+	PlannedChange string `json:"planned_change,omitempty"`
+	Count         int    `json:"count,omitempty"`
+	Detail        string `json:"detail,omitempty"`
 }
 
 // Log は1つのファイルへの append-only ログ。複数プロセスから追記してよい

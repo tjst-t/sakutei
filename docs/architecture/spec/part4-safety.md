@@ -166,6 +166,7 @@ planned_change:
   kind: reimage                                # 変更種別:delete | update | reimage | recreate 等
   max_count: 500                               # 上限件数(この宣言で許す破壊/変更の総数)
   window: "2026-08-01 00:00 .. 2026-08-01 06:00"  # 時間窓(この間だけ有効)
+  applicant: carol                             # 申請者(PR の作者。separation の判定に使う)
   approval: { pr: 1423, approvers: [alice, bob] }  # 承認情報(§14.4 の要件を満たす)
 ```
 
@@ -176,13 +177,20 @@ planned_change:
 - **reimage の delete 誤計上を解消**:再イメージは内部的に delete+create に見えて破壊予算を食い潰すが、**変更種別 `kind: reimage` を宣言**すれば「これは再イメージであって純粋な削除ではない」と分類され、一斉再イメージが破壊予算に delete としてカウントされない。
 - **窓を過ぎたら自動失効**し、通常予算に戻る（宣言の効力は window に閉じる。恒久緩和にならない）。
 
-**宣言外の変更は引き続き通常予算で評価される**。`planned_change` が site-a の reimage を許可していても、同じ周期で起きた宣言外の delete（別 scope・別種別・上限超過分）は通常の rate limit / 破壊予算 / halt が効く。すなわち **「宣言中でも、宣言外の暴発は止まる」**——これが「バイパスではなく専用レーン」の意味である。`planned_change` の型と専用予算レーンの評価は v1a に置く設計だったが、実装は v1.5 で入った（Backlog #39）。承認情報の requirements 連携（§14.4）は v1.5 の別タスクに属する。
+**宣言外の変更は引き続き通常予算で評価される**。`planned_change` が site-a の reimage を許可していても、同じ周期で起きた宣言外の delete（別 scope・別種別・上限超過分）は通常の rate limit / 破壊予算 / halt が効く。すなわち **「宣言中でも、宣言外の暴発は止まる」**——これが「バイパスではなく専用レーン」の意味である。`planned_change` の型と専用予算レーンの評価は v1a に置く設計だったが、実装は v1.5 で入った（Backlog #39）。承認情報の requirements 連携（§14.4）と運用プロファイル（§14.5）も v1.5 で入った（Backlog #44、下記「承認と運用プロファイル」）。
 
 **v1.5 の実装**（Backlog #39）：
 
-- **書式**：intent のトップレベルの `planned_change:`。1 件はオブジェクト、複数は配列で書く（v1b の YAML サブセットではブロックで書く・§21.3）。`scope`（空は拒否）・`kind`（`delete` / `update` / `reimage` / `recreate`）・`max_count`（1 以上）・`window` は必須、`approval`（`pr` / `approvers`）は任意で、記録するだけである。`window` は `"<開始> .. <終了>"` で、各端は RFC 3339 か `YYYY-MM-DD HH:MM`（ゾーン無しは UTC）。窓は `[開始, 終了)`。同じ scope・kind・窓の宣言を二度書くとロード時に拒否する。
+- **書式**：intent のトップレベルの `planned_change:`。1 件はオブジェクト、複数は配列で書く（v1b の YAML サブセットではブロックで書く・§21.3）。`scope`（空は拒否）・`kind`（`delete` / `update` / `reimage` / `recreate`）・`max_count`（1 以上）・`window` は必須、`approval`（`pr` / `approvers`）・`applicant`・`requirements`・`cooling_off` は任意で、レーンを開く条件になる（下記「承認と運用プロファイル」）。`window` は `"<開始> .. <終了>"` で、各端は RFC 3339 か `YYYY-MM-DD HH:MM`（ゾーン無しは UTC）。窓は `[開始, 終了)`。同じ scope・kind・窓の宣言を二度書くとロード時に拒否する。
 - **kind と Plan の操作種別（§29.1 kind 整合検証の決定）**：`delete` は Delete op、`update` は Update op、`reimage` / `recreate` は下記の対になった Delete+Create を通す（対 1 組で枠を 1 消費する。予算上 `reimage` と `recreate` は同じで、違いは監査上の名前だけ）。有効な宣言の scope 内にあるのに kind が合わずレーンに入らない破壊的 op は、通常予算で評価し、`PlannedChangeKindMismatch` Event を出す。
 - **reimage / recreate の対（§29.1 ペアリング判定の決定）**：同じ周期の Plan の Delete X と Create Y は、(1) 同じ provider、(2) scope のラベル集合が完全に一致（宣言 scope の内側、だけでは足りない。同じ置き場所の入れ替えであること）、(3) 1 対 1（同じ scope の中で Local ID 昇順に組む）のとき対になる。余った Delete は純粋な削除（kind 不一致）、余った Create はただの追加として通常予算で評価する。scope に機体を表すラベル（`slot` など）を持たせれば、1 台ずつの入れ替えとして判定される。
+
+**承認と運用プロファイル（v1.5 の実装、Backlog #44）**：窓の中でも、次の 2 つが揃うまでレーンは開かない（開かない間、scope 内の変更は通常予算で評価される）。
+
+- **承認**：`approval.approvers` を、宣言の `requirements`（書式はゲートと同じ `quorum` / `roles` / `separation`・§14.4）、書かなければ運用プロファイル（§14.5）の既定で検証する。既定は solo = 要件なし、team = 承認者 1 人、enterprise = `quorum: {n: 2, of: 2}` + `separation: applicant_ne_approver`（役割は現場ごとの名前なので既定化しない）。数えるのは要件を満たす異なる承認者だけで、申請者（`applicant`）本人・役割の合わない承認・同じ人の二重記載は数えない。承認者は ID か `{ id, roles: [...] }`（名乗った役割。真偽は上位 IdP・§7）で書く。separation が要るのに `applicant` が無い宣言は開かない。満たさなければ `PlannedChangeUnapproved` Event を出す（閉じている間は 1 回だけ）。ロードは失敗させない（宣言 1 つの不備で収束全体を止めない。レーンが閉じるのは保守側）。
+- **cooling-off**：宣言の `cooling_off`、書かなければ solo の `solo.cooling_off`（既定 2h）。宣言を**初めて見た時刻**から数え、過ぎるまで `PlannedChangeCoolingOff` を出してレーンを閉じる。その間に宣言を消せば（PR の revert）開かずに止まる。宣言の同一性は scope・kind・窓・`max_count` で、`max_count` を広げた宣言は別の宣言として cooling-off をやり直す（承認者の追記はやり直さない）。宣言の時刻は S4 にしか残らないので、cooling-off は S4（`--audit-log`）が無ければ評価できず、レーンは閉じたままにする。
+- **S4 の記録**：宣言を初めて見たとき `planned_change.declared`、レーンが開いたとき `planned_change.opened`（承認の根拠・cooling-off の経過を書く）、レーンで発射した件数を `planned_change.executed` として append する。S4 に書けない宣言は時計を動かさず、書けない開放はレーンを開かない。常駐の再起動・次の `reconcile` は S4 を読み直し、宣言の時刻とレーンの使用量（`max_count` の消費）を引き継ぐ。
+- **one-shot `reconcile`**：`--audit-log` を付けたときだけレーンを開く（S4 が実行をまたいで `max_count` と cooling-off の時計を持つ）。レーンの枠は発射前にまとめて取り、`executed` を S4 に書けてから発射する（書けなければ何も発射しない）。cooling-off は「**この回の reconcile の時点で N 経っていれば通す**」ゲートとして評価する（§23.7）。`--audit-log` が無ければ従来どおりレーンを開かず通常予算で評価する。
 - **レーンの計上**：レーンに入った op は通常の rate limit・累積時間窓予算の計算から外し、通常予算の halt でも止めない（capacity gate など予算以外のゲートは止める）。枠は op を provider へ発射する直前に消費する（halt や skip で発射しなかった op は枠を減らさない。発射して失敗した op の枠は戻さない＝保守側）。枠を超えた分は `PlannedChangeExhausted` を出して通常予算で評価する。窓を過ぎた宣言は `PlannedChangeExpired` を一度出して失効する。レーンで in-flight の Apply は通常予算の in-flight 計上に入れない。
 - **List 急減 halt との連動**：常駐ループがレーンで削除した ID は prune engine に記録し、次の List でそれが消えていれば、その件数を前周の基準件数から引いてから急減を測る。数えないのは**自分が宣言の下で消したもの**だけで、それ以外の減少は従来どおり halt する。
 - **経路**：レーンを開くのは常駐ループ（と同じ予算を共有する早期収束の scoped run）だけである。one-shot の `sakutei reconcile` は呼び出しごとに予算エンジンを作り直し、`max_count` を呼び出しをまたいで守れないため、宣言があっても全変更を通常予算で評価する（その旨を表示する）。
@@ -308,6 +316,12 @@ solo:
 - **enterprise**:N-of-M + 役割制約（§14.4 の `requirements`）を既定化する。個別ゲートに書かなくても、platform の破壊的変更は自動的に 4-eyes（separation）を要求する。
 - **段0-minimal（§23）と solo の対応**:段0-minimal（単一ノード・Vault/broker なし）は 1名運用と物理的に一致するため、段0-minimal では solo プロファイルを既定とする。規模が育って段0（3ノード）+ チーム運用へ移ったら team/enterprise へ切り替える。
 - **プロファイルは既定値セットであって上書きを禁じない**:solo でも特定 scope に N-of-M を明示でき、enterprise でも dev scope を緩められる。プロファイルは「よく使う既定の束」を1語で選ぶ糖衣であり、個別の `ownership` / ゲート / remediation 宣言が常に優先する。
+
+**v1.5 の実装**（Backlog #44）：
+
+- **書式**：intent のトップレベルに `profile: solo | team | enterprise`（書かなければ team）と、solo のときだけ `solo: { cooling_off: <duration> }`（既定 2h）。どちらも 1 ファイルにだけ書ける。`solo:` を solo 以外で書くのは拒否する（効かない cooling-off は、効いているように読める安全を作るので）。
+- **v1.5 で切り替えるもの**：planned_change の承認要件と cooling-off（§13.3「承認と運用プロファイル」）と、承認ゲートの既定（enterprise では `requirements` の無いゲートに `quorum: {n: 2, of: 2}` + `separation: applicant_ne_approver` を置く。Workflow に `applicant` が無ければロード時に拒否し、`applicant` を書くかゲートの `requirements` を明示するよう求める）。solo / team のゲートは単一承認のまま（ゲートの cooling-off 代替は v1.5 の外）。`ownership` の書込ポリシー・PR の自己マージ・remediation の既定をプロファイルで切り替えるのは v1.5 の外である。
+- **個別の宣言が優先**：planned_change の `requirements` / `cooling_off`、ゲートの `requirements` を書けば、プロファイルの既定より常にそちらが効く（`cooling_off: 0s` で solo の cooling-off を外せる。solo でも宣言の N-of-M は cooling-off の後も効く）。
 
 ### §14.6 ブラウンフィールドの alert-only 常用
 

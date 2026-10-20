@@ -119,7 +119,7 @@ func main() {
 //	--shard-id <id>      fencing holder ID of this shard
 //	--task-store <f>     S2 store of strategy: task progress phases (§6.2)
 //	--workflow-store <f> S2 store of the Workflows' progress (§6.3)
-//	--audit-log <f>      S4 audit log (append-only) of approvals and gate timeouts (§6.4)
+//	--audit-log <f>      S4 audit log (append-only) of approvals and gate timeouts (§6.4) and planned_change (§14.5)
 //	--approval-listen <addr>  serve the approval gate API (§6.4)
 //
 // The loop runs until SIGTERM or SIGINT is received, at which point it stops
@@ -194,7 +194,7 @@ func runDaemon() {
 	workflowStore := fs.String("workflow-store", "",
 		"S2 store file of the Workflows' progress (§6.3); empty=no Workflow advances (their targets are held)")
 	auditLog := fs.String("audit-log", "",
-		"S4 audit log file (append-only JSON lines) of gate approvals, rejections and timeouts (§6.4)")
+		"S4 audit log file (append-only JSON lines) of gate approvals, rejections and timeouts (§6.4), and of planned_change declarations, openings and lane executions (§14.5; needed by a cooling-off)")
 	approvalListen := fs.String("approval-listen", "",
 		"address to serve the approval gate API on, e.g. 127.0.0.1:8470 (§6.4; no authorization, §7); requires --workflow-store and --audit-log")
 	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。

@@ -153,6 +153,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.PlannedChanges = planned
+	prof, err := parseProfile(tree)
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.Profile = prof
 	wfs, err := parseWorkflows(tree["workflows"])
 	if err != nil {
 		return intentFile{}, err
@@ -233,7 +238,9 @@ type intentFile struct {
 	// Remediation is the remediation schedule (§14.2); nil when undeclared.
 	Remediation *remediation.Schedule `json:"-"`
 	// PlannedChanges is the top-level planned_change (§13.3).
-	PlannedChanges []budget.PlannedChange `json:"-"`
+	PlannedChanges []plannedDecl `json:"-"`
+	// Profile is the top-level profile: / solo: (§14.5).
+	Profile profileDecl `json:"-"`
 	// Workflows is the top-level workflows (§6.3).
 	Workflows []workflow.Definition `json:"-"`
 }
@@ -338,8 +345,11 @@ type Intent struct {
 	// Remediation is the remediation schedule (§14.2), declared in at most
 	// one intent file.  Nil when no file declares remediation:.
 	Remediation *remediation.Schedule
-	// PlannedChanges are the planned_change declarations (§13.3).
+	// PlannedChanges are the planned_change declarations (§13.3), each with
+	// its gate resolved from the operational profile (§14.5).
 	PlannedChanges []budget.PlannedChange
+	// Profile is the operational profile (§14.5); team when undeclared.
+	Profile Profile
 	// Workflows are the minimal Workflow declarations (§6.3).
 	Workflows []workflow.Definition
 	Revision  core.RevisionInfo
@@ -387,7 +397,8 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	var tiers []ObserveTier
 	var rem *remediation.Schedule
 	remFrom := ""
-	var planned []budget.PlannedChange
+	var decls []plannedDecl
+	var profiles []profileDecl
 	var workflows []workflow.Definition
 	for _, name := range names {
 		path := filepath.Join(dir, filepath.FromSlash(name))
@@ -405,7 +416,8 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 			}
 			rem, remFrom = file.Remediation, name
 		}
-		planned = append(planned, file.PlannedChanges...)
+		decls = append(decls, file.PlannedChanges...)
+		profiles = append(profiles, file.Profile)
 		workflows = append(workflows, file.Workflows...)
 	}
 
@@ -431,7 +443,20 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	if err := validateObserveTiers(tiers, resources); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
+	prof, err := mergeProfiles(profiles, names)
+	if err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
+	planned := make([]budget.PlannedChange, 0, len(decls))
+	for _, d := range decls {
+		pc := d.pc
+		pc.Gate = resolvePlannedGate(prof, d)
+		planned = append(planned, pc)
+	}
 	if err := validatePlannedChanges(planned); err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
+	if err := applyProfileToWorkflows(prof, workflows); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
 	if err := validateWorkflows(workflows, resources); err != nil {
@@ -447,7 +472,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Remediation: rem, PlannedChanges: planned, Workflows: workflows, Revision: ri}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, Revision: ri}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the
