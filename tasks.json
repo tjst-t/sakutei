@@ -886,7 +886,7 @@
       "number": 43,
       "kind": "task",
       "title": "v1.5: 承認ゲートの N-of-M・役割制約・申請者≠承認者",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-5-task-workflow-planned-change-remedi",
       "dependsOn": [
         "v1-5-workflow-s4"
@@ -900,7 +900,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T13:38:03.379Z",
+      "updatedAt": "2026-10-20T15:03:31.732Z",
       "closedAt": null,
       "extra": {}
     },
