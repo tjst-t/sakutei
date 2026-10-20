@@ -1014,7 +1014,7 @@
       "number": 37,
       "kind": "bug",
       "title": "dnszone が読めない行を黙って読み飛ばす（打ち間違いのレコードが「無い」扱いになる）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1029,7 +1029,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T11:12:52.590Z",
-      "updatedAt": "2026-10-20T20:07:53.790Z",
+      "updatedAt": "2026-10-20T20:19:11.744Z",
       "closedAt": null,
       "extra": {}
     },
