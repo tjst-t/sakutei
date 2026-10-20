@@ -821,7 +821,7 @@
       "number": 40,
       "kind": "task",
       "title": "v1.5: remediation schedule（時間帯連動）と most-restrictive-wins",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-5-task-workflow-planned-change-remedi",
       "dependsOn": [],
       "milestone": null,
@@ -833,7 +833,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T13:38:03.379Z",
+      "updatedAt": "2026-10-20T13:49:10.749Z",
       "closedAt": null,
       "extra": {}
     },
