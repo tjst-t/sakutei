@@ -381,8 +381,8 @@
       "id": "v1b-allocationauthority-interface-sqlite",
       "number": 24,
       "kind": "task",
-      "title": "v1b: AllocationAuthority interface と SQLite 最小実装、render フェーズ2 の採番連携展開",
-      "status": "in-progress",
+      "title": "v1b: AllocationAuthority interface とファイル版の最小実装、render フェーズ1 の採番連携",
+      "status": "done",
       "parent": "v1b",
       "dependsOn": [],
       "milestone": null,
@@ -390,7 +390,7 @@
       "labels": [],
       "body": "設計 §19 / §9。採番の権威 interface（AllocationAuthority）と SQLite の最小実装。render フェーズ2 で、採番を使う合成リソースを展開できるようにする（v1a は非採番の固定値展開のみ）。割当事実は Release まで不変。",
       "doneWhen": "採番を使う合成リソースが render で決定的に展開され、同じ intent で再 render しても同じ番号になる。Release まで割当が変わらないことをテストで示す",
-      "resolution": null,
+      "resolution": "コミット 1699021。pkg/allocation（設計どおりの 5 操作）、internal/allocator の FileAuthority（JSON + flock、外部依存なし）、loader の pools: と from_pool、render フェーズ1 の採番（reconcile と常駐ループは Allocate、plan と status は Lookup だけ）、--alloc-store を追加。合成リソースの子に割当の値が渡り、再実行しても同じ番号になることをテストで確認。SQLite 版は #36。make check と make test-race が合格。",
       "refs": [],
       "threads": [
         {
@@ -399,8 +399,8 @@
         }
       ],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T11:13:57.341Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T11:22:18.400Z",
+      "closedAt": "2026-10-20T11:22:18.400Z",
       "extra": {}
     },
     {
