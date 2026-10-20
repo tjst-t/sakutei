@@ -1063,7 +1063,7 @@
       "number": 46,
       "kind": "task",
       "title": "reconcile --expect-revision を実装する（plan と reconcile の同一性の担保）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1078,7 +1078,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:48:41.808Z",
-      "updatedAt": "2026-10-20T13:48:41.808Z",
+      "updatedAt": "2026-10-20T20:08:00.909Z",
       "closedAt": null,
       "extra": {}
     },
