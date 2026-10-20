@@ -1087,7 +1087,7 @@
       "number": 47,
       "kind": "bug",
       "title": "inventory の急減判定の境界が設計（50% 未満）と 1 点ずれている",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1102,7 +1102,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:48:43.056Z",
-      "updatedAt": "2026-10-20T13:48:43.056Z",
+      "updatedAt": "2026-10-20T20:15:28.323Z",
       "closedAt": null,
       "extra": {}
     },
