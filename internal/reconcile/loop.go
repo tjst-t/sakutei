@@ -142,7 +142,8 @@ type Config struct {
 	// scope is never Observed, Diffed or Applied — and the prune boundary is
 	// narrowed the same way (reality outside the claim is never an orphan).  The
 	// zero value (empty Scope, no labels) matches every scope — the daemon's
-	// default single-shard behaviour.
+	// default single-shard behaviour.  #25: only the pools of this claim are
+	// declared and allocated from (§19.8).
 	Claim core.Scope
 
 	// Fencing detects a double claim (§15.2, §17.1).  Each cycle the scopes in
@@ -183,9 +184,10 @@ type Config struct {
 	ExternalInputResolver *render.ResolverCache
 
 	// Allocation is the allocation authority for `from_pool` requests
-	// (#24, §19).  The daemon ALLOCATES (idempotently) each cycle; an
-	// authority error skips the cycle (logged, halt-safe).  Nil when the
-	// intent uses no allocations.
+	// (#24, §19).  The daemon ALLOCATES (idempotently) each cycle; a request
+	// the authority cannot serve makes only its resource waiting-allocation
+	// (#25, §19.9).  Wrap it in allocator.Cache so the steady state needs no
+	// allocator call (§19.6).  Nil when the intent uses no allocations.
 	Allocation allocation.AllocationAuthority
 
 	// Inventory composes the desired resources an external inventory (CMDB)
@@ -295,7 +297,7 @@ func Run(ctx context.Context, cfg Config) error {
 			// further down carries the detailed drift report.
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d drifted (alert-only, no changes)\n",
 				cycleNum, res.Observed)
-		} else if res.Applied == 0 && res.Launched == 0 {
+		} else if res.Applied == 0 && res.Launched == 0 && len(res.Waiting) == 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d converged (no changes)\n",
 				cycleNum, res.Observed)
 		} else {
@@ -310,6 +312,11 @@ func Run(ctx context.Context, cfg Config) error {
 			// #30 (§16.5): resources thinned by their tier this cycle.
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d resource(s) not due for Observe (tier thinning)\n",
 				cycleNum, len(res.NotDue))
+		}
+		if len(res.Waiting) > 0 {
+			// #25 (§19.9): only the resources needing a new allocation wait.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d resource(s) waiting-allocation (retry next cycle): %v\n",
+				cycleNum, len(res.Waiting), res.Waiting)
 		}
 		if len(res.InFlight) > 0 {
 			// S94f1f9-3: in-flight resources from a prior async Apply are still
@@ -585,6 +592,12 @@ type CycleResult struct {
 	// nor Diffed, and are not treated as unobservable.
 	NotDue []string
 
+	// Waiting is the list of resource Local IDs in waiting-allocation this
+	// cycle (#25, §19.9): their allocation could not be obtained (allocator
+	// unavailable, pool exhausted).  They and their downstream were skipped;
+	// everything else converged as usual.
+	Waiting []string
+
 	// Capacity gate fields (§13.4):
 
 	// CapacityHalted is true when a capacity gate halted changes this cycle
@@ -735,11 +748,20 @@ func runCycleAsync(
 
 	// #24 render phase 1: allocation (§9.1, §19).  Allocate is idempotent, so
 	// in the steady state every request resolves to the value it already
-	// holds.  An authority error skips this cycle: never converge on a
-	// partially allocated desired.
-	allocRes, allocErr := render.RenderAllocations(ctx, cfg.Allocation, render.AllocAllocate, in)
+	// holds (from the Lookup cache, without calling the allocator, §19.6).
+	// #25: a request that cannot be allocated now (allocator down, pool
+	// exhausted) makes only its resource waiting-allocation (§19.9); the rest
+	// of the cycle goes on.
+	allocRes, allocErr := render.RenderAllocations(ctx, cfg.Allocation, render.AllocAllocate, in, cfg.Claim)
 	if allocErr != nil {
 		return CycleResult{}, fmt.Errorf("render phase 1 (allocation): %w", allocErr)
+	}
+	for _, w := range allocRes.Warnings {
+		fmt.Fprintf(cfg.ErrOut, "sakutei: warn: allocation: %s\n", w)
+	}
+	for _, w := range allocRes.Waiting {
+		fmt.Fprintf(cfg.ErrOut, "sakutei: waiting-allocation: %s field %q from pool %q: %v (not converged until allocated; others continue, §19.9)\n",
+			w.ID, w.Field, w.Pool, w.Err)
 	}
 	intentResources := allocRes.Resources
 	phase1ExternalInputHashes = append(phase1ExternalInputHashes, allocRes.Inputs...)
@@ -842,6 +864,10 @@ func runCycleAsync(
 	// This maps composite parent Local IDs to their expanded child Local IDs.
 	parentToChildren := render.BuildParentChildMap(expanded)
 
+	// #25: waiting-allocation resources and the children they expand to.
+	waitingAlloc := allocRes.WaitingLocals(parentToChildren)
+	var waitingThisCycle []string
+
 	// F-5 (Scb0ecd-2 daemon wiring): build the per-cycle CauseContext from this
 	// cycle's revision + provider_version and the previous cycle's values held in
 	// memory by Run().  Passing an actual CauseContext (rather than the old
@@ -935,6 +961,15 @@ func runCycleAsync(
 
 	for _, res := range desired {
 		local := res.ID.Local
+
+		// #25 (§19.9): waiting-allocation — like converging, neither an error
+		// nor a halt.  Not Observed or Applied this cycle; downstream skipped;
+		// never a prune candidate (it stays in desired).
+		if waitingAlloc[local] {
+			waitingThisCycle = append(waitingThisCycle, local)
+			unobservable[local] = true
+			continue
+		}
 
 		// S94f1f9-3: in-flight resources are converging — skip re-plan.
 		if ifl.IsInFlight(local) {
@@ -1153,6 +1188,7 @@ func runCycleAsync(
 			DriftEvents: driftEvents,
 			GhostDiffs:  ghostDiffs,
 			NotDue:      notDue,
+			Waiting:     waitingThisCycle,
 		}, nil
 	}
 
@@ -1256,6 +1292,7 @@ func runCycleAsync(
 		BudgetReason: budgetReason,
 		GhostDiffs:   ghostDiffs,
 		NotDue:       notDue,
+		Waiting:      waitingThisCycle,
 
 		CapacityHalted: capacityHalted,
 		CapacityReason: capacityDecision.Reason,

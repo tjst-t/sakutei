@@ -65,14 +65,22 @@ type pool struct {
 }
 
 type store struct {
-	Version int              `json:"version"`
-	Pools   map[string]*pool `json:"pools"`
+	Version int `json:"version"`
+	// Generation is the fencing token of the active authority (§19.8).  It
+	// is 0 until an HA instance promotes itself; each promotion increments
+	// it, so every older instance is fenced from then on.
+	Generation uint64           `json:"generation,omitempty"`
+	Pools      map[string]*pool `json:"pools"`
 }
 
 // FileAuthority implements allocation.AllocationAuthority on a JSON file.
 type FileAuthority struct {
 	path string
 	mu   sync.Mutex
+	// gen is the fencing generation this instance holds (0 = never
+	// promoted: the single-instance mode of `--alloc-store`).  A write is
+	// refused unless it equals the store's generation (§19.8).
+	gen uint64
 
 	// Cooldown after Release; DefaultCooldown when zero.
 	Cooldown time.Duration
@@ -100,6 +108,61 @@ func (a *FileAuthority) cooldown() time.Duration {
 		return a.Cooldown
 	}
 	return DefaultCooldown
+}
+
+// Promote makes this instance the active authority (§19.8 active/standby):
+// it increments the store's fencing generation and takes it, so the previous
+// active — should it still be alive — is fenced from its next write on.
+// Called by a standby when it takes over.
+func (a *FileAuthority) Promote() (uint64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	unlock, err := lockFile(a.path + ".lock")
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	s, err := a.load()
+	if err != nil {
+		return 0, err
+	}
+	s.Generation++
+	if err := a.save(s); err != nil {
+		return 0, err
+	}
+	a.gen = s.Generation
+	return a.gen, nil
+}
+
+// Generation returns the fencing generation this instance holds.
+func (a *FileAuthority) Generation() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.gen
+}
+
+// CheckActive returns allocation.ErrFenced when another instance has been
+// promoted since this one (the store's generation moved on).
+func (a *FileAuthority) CheckActive() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	unlock, err := lockFile(a.path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	s, err := a.load()
+	if err != nil {
+		return err
+	}
+	return a.fence(s)
+}
+
+func (a *FileAuthority) fence(s *store) error {
+	if s.Generation != a.gen {
+		return fmt.Errorf("%w: holds generation %d, store is at %d", allocation.ErrFenced, a.gen, s.Generation)
+	}
+	return nil
 }
 
 // EnsurePool declares pool name with the inclusive range [lo, hi], creating
@@ -248,6 +311,7 @@ func (a *FileAuthority) Lookup(_ context.Context, poolName, owner string) (strin
 }
 
 // update runs fn on the store under the exclusive lock and writes the result.
+// A fenced instance (stale generation) writes nothing.
 func (a *FileAuthority) update(fn func(*store) error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -258,6 +322,9 @@ func (a *FileAuthority) update(fn func(*store) error) error {
 	defer unlock()
 	s, err := a.load()
 	if err != nil {
+		return err
+	}
+	if err := a.fence(s); err != nil {
 		return err
 	}
 	if err := fn(s); err != nil {

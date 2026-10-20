@@ -37,11 +37,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/allocator"
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/fencing"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/pkg/allocation"
 	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
 )
@@ -73,6 +75,8 @@ func main() {
 		runSync(os.Args[2:])
 	case "fence":
 		runFence(os.Args[2:])
+	case "allocator":
+		runAllocator(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Fprintf(os.Stdout, "sakutei %s\n", version)
 	case "help", "--help", "-h":
@@ -119,6 +123,7 @@ func runDaemon() {
 		"S072a14-3: inject deterministic inventory hash into rendered_revision (fake phase 1; empty=no external input)")
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
+	allocURL := fs.String("alloc-url", "", allocURLUsage)
 	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
 		"S072a14-3: simulate an unreachable ExternalInputResolver (triggers last-value-on-unreachable path §9.2)")
 	inventoryFile := fs.String("inventory-file", "",
@@ -290,6 +295,17 @@ func runDaemon() {
 			render.WithInventoryExpectedMin(*inventoryExpectedMin))
 	}
 
+	// #25: the daemon resolves allocations through the shard-local Lookup
+	// cache (S3): the steady state needs no allocator call, and a stopped
+	// allocator only puts new requests in waiting-allocation (§19.6, §19.9).
+	var allocAuth allocation.AllocationAuthority
+	if a, err := openAllocStore(*allocStore, *allocURL); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
+		os.Exit(1)
+	} else if a != nil {
+		allocAuth = allocator.NewCache(a)
+	}
+
 	cfg := reconcile.Config{
 		IntentDir:             *intentDir,
 		StatePath:             *statePath,
@@ -300,7 +316,7 @@ func runDaemon() {
 		Remediation:           remCfg,
 		GeneratedDir:          genDir,
 		ExternalInputResolver: resolverCache,
-		Allocation:            openAllocStore(*allocStore),
+		Allocation:            allocAuth,
 		Inventory:             inventory,
 		Claim:                 claimSelector,
 		Fencing:               guard,
@@ -324,6 +340,7 @@ Usage:
   sakutei import       export existing reality as intent YAML
   sakutei sync         record the reality of mode: sync scopes into generated/
   sakutei fence        show the fencing generations of claimed scopes (§17.6)
+  sakutei allocator    serve the allocation authority (active/standby, §19.8)
   sakutei version      print version information
   sakutei help         show this help message
 `)

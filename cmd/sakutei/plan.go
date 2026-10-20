@@ -89,6 +89,7 @@ func runPlan(args []string) {
 	// substituted inventory cache instead of the plain --inventory-hash resolver.
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
+	allocURL := fs.String("alloc-url", "", allocURLUsage)
 	devenv := fs.Bool("devenv", false,
 		"S33266e-3: devenv（坪庭）mode — render external inputs (inventory/allocation/secret) are substituted with fakes; no production pool/secret is touched (§26.2)")
 
@@ -178,7 +179,12 @@ func runPlan(args []string) {
 	// #24: render phase 1 — allocation (§9.1, §19).  plan is read-only, so it
 	// only LOOKS UP existing allocations; a request with none yet is shown as
 	// pending and is allocated by reconcile.
-	allocRes, allocErr := render.RenderAllocations(context.Background(), openAllocStore(*allocStore), render.AllocLookupOnly, in)
+	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
+	if allocErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei plan: %v\n", allocErr)
+		os.Exit(1)
+	}
+	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocLookupOnly, in, core.Scope{})
 	if allocErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei plan: %v\n", allocErr)
 		os.Exit(1)
@@ -189,7 +195,7 @@ func runPlan(args []string) {
 		recomputeRendered = true
 	}
 	for _, pa := range allocRes.Pending {
-		fmt.Fprintf(os.Stderr, "sakutei plan: pending allocation: %s field %q from pool %q (allocated by reconcile)\n", pa.ID, pa.Field, pa.Pool)
+		fmt.Fprintf(os.Stderr, "sakutei plan: pending allocation: %s field %q from pool %q (allocated by reconcile)%s\n", pa.ID, pa.Field, pa.Pool, pendingReason(pa))
 	}
 	if recomputeRendered {
 		rootScope := core.NewScope(nil)

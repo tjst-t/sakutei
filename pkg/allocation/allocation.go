@@ -66,4 +66,11 @@ var (
 	ErrPoolExhausted = errors.New("allocation: pool exhausted")
 	// ErrNoReservation: Confirm found no live reservation for the owner.
 	ErrNoReservation = errors.New("allocation: no live reservation")
+	// ErrUnavailable: the authority cannot be reached (stopped, failing over,
+	// network).  Render degrades the requesting resource to
+	// waiting-allocation instead of failing the cycle (§19.9).
+	ErrUnavailable = errors.New("allocation: authority unavailable")
+	// ErrFenced: this authority instance has been superseded by a promoted
+	// standby (its fencing generation is stale, §19.8); it must not write.
+	ErrFenced = errors.New("allocation: authority fenced (a newer generation is active)")
 )

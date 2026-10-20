@@ -98,6 +98,7 @@ func runReconcile(args []string) {
 	// S072a14-1: generated/ output directory for render phase 2 (§9.6).
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
+	allocURL := fs.String("alloc-url", "", allocURLUsage)
 	generatedDir := fs.String("generated", "",
 		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
 	// S072a14-2: render phase 1 — external input resolver flags.
@@ -229,14 +230,34 @@ func runReconcile(args []string) {
 		recomputeRendered = true
 	}
 
+	// Sf6a62f-3: parse the --claim scope-selector into a core.Scope matcher.
+	// #25: parsed before render so allocation follows the claim (§19.8).
+	claimSelector, claimErr := parseClaimSelector(*claim)
+	if claimErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: invalid --claim %q: %v\n", *claim, claimErr)
+		os.Exit(1)
+	}
+
 	// #24: render phase 1 — allocation (§9.1, §19).  reconcile ALLOCATES
-	// (idempotently: the same owner always gets the same value).  Any
-	// authority error stops the run before Apply (halt-safe): never converge
-	// on a partially allocated desired.
-	allocRes, allocErr := render.RenderAllocations(context.Background(), openAllocStore(*allocStore), render.AllocAllocate, in)
+	// (idempotently: the same owner always gets the same value).  #25: a
+	// request the authority cannot serve (allocator down, pool exhausted)
+	// makes only its resource waiting-allocation; the rest converges (§19.9).
+	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
+	if allocErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: %v\n", allocErr)
+		os.Exit(1)
+	}
+	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocAllocate, in, claimSelector)
 	if allocErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: %v\n  convergence not advanced (halt-safe, §9.2)\n", allocErr)
 		os.Exit(1)
+	}
+	for _, w := range allocRes.Warnings {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: warn: allocation: %s\n", w)
+	}
+	for _, w := range allocRes.Waiting {
+		fmt.Fprintf(os.Stderr, "sakutei reconcile: waiting-allocation: %s field %q from pool %q: %v (not converged until allocated; others continue, §19.9)\n",
+			w.ID, w.Field, w.Pool, w.Err)
 	}
 	intentResources = allocRes.Resources
 	if len(allocRes.Inputs) > 0 {
@@ -268,13 +289,6 @@ func runReconcile(args []string) {
 	// time for the same intent, preventing two-management drift).
 	if writeErr := render.WriteGenerated(genDir, expanded); writeErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: write generated/: %v\n", writeErr)
-		os.Exit(1)
-	}
-
-	// Sf6a62f-3: parse the --claim scope-selector into a core.Scope matcher.
-	claimSelector, claimErr := parseClaimSelector(*claim)
-	if claimErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: invalid --claim %q: %v\n", *claim, claimErr)
 		os.Exit(1)
 	}
 
@@ -400,6 +414,10 @@ func runReconcile(args []string) {
 	// != Ok (D-1).  They are NOT treated as converged: ApplyWaves marks them
 	// failed and skips their transitive downstream this cycle.
 	unobservable := make(map[string]bool)
+	// #25: waiting-allocation resources (and the children they expand to) are
+	// skipped like an unobservable one — not Observed, downstream skipped,
+	// never pruned — but they are not a safety failure (§19.9).
+	waitingAlloc := allocRes.WaitingLocals(parentToChildrenRec)
 	// ready holds the ready conditions observed this invocation (§8.3); a
 	// downstream whose ready_condition upstream is not ready is skipped.
 	ready := make(reconcile.Readiness)
@@ -415,6 +433,11 @@ func runReconcile(args []string) {
 			os.Exit(1)
 		}
 		engine := engines[res.ID.Provider]
+
+		if waitingAlloc[res.ID.Local] {
+			unobservable[res.ID.Local] = true
+			continue
+		}
 
 		// ADR-0002: Observe independently for each resource.
 		//
@@ -781,10 +804,21 @@ func runReconcile(args []string) {
 	// stem only from an upstream *Apply* failure remain exit 0 (level-triggered:
 	// the resource was observable, the failure is transient and self-healing on
 	// a subsequent reconcile) — this preserves AC-S94f1f9-2-2's exit-0 contract.
-	if len(unobservable) > 0 {
+	// #25: waiting-allocation is not a safety failure: like an Apply-failure
+	// skip it resolves itself on a later reconcile, once the allocation exists.
+	waitingCount := 0
+	for local := range unobservable {
+		if waitingAlloc[local] {
+			waitingCount++
+		}
+	}
+	if waitingCount > 0 {
+		fmt.Printf("Reconcile: %d resource(s) waiting-allocation (retry once the allocator can allocate)\n", waitingCount)
+	}
+	if len(unobservable) > waitingCount {
 		fmt.Fprintf(os.Stderr,
 			"sakutei reconcile: %d resource(s) were unobservable this cycle; convergence incomplete\n",
-			len(unobservable))
+			len(unobservable)-waitingCount)
 		os.Exit(1)
 	}
 	if budgetHalted || capacityHalted {

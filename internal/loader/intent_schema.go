@@ -27,7 +27,7 @@ import (
 // intentSchema は理想状態木のルートスキーマ。
 //
 //   - resources は配列（pools / scopes だけのファイルも書けるよう任意）。
-//   - pools は採番プールの宣言（name / range / claim、§19.8）。
+//   - pools は採番プールの宣言（name / range / claim / space、§19.8）。
 //   - scopes は scope ごとの mode（converge / sync）と sync.target_path（§24.5）。
 //   - observe_tiers は Observe 頻度の tier（name / observe_every、§16.5）。resource は observe_tier で
 //     所属を書く（tier: は §8 の DAG 優先度帯 `tier: foundation` の予約名なので使わない）。
@@ -97,6 +97,7 @@ func intentSchema() schemaNode {
 						"name":  schemaNode{"type": "string"},
 						"range": schemaNode{"type": "string"},
 						"claim": stringMap,
+						"space": schemaNode{"type": "string"},
 					},
 				},
 			},

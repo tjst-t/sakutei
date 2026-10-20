@@ -95,6 +95,7 @@ func runStatus(args []string) {
 	// cold start (no history), the same convention plan/reconcile use.
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file; status only looks allocations up, never allocates")
+	allocURL := fs.String("alloc-url", "", allocURLUsage)
 	causeStatePath := fs.String("cause-state", "",
 		"OPTIONAL path to a cause-state JSON file to READ previous-cycle revisions for consistent cause tags (Sc7a647); status never writes it (read-only)")
 
@@ -118,7 +119,12 @@ func runStatus(args []string) {
 
 	// #24: render phase 1 — allocation.  status is read-only: it only looks
 	// up existing allocations (a request without one shows as pending).
-	allocRes, allocErr := render.RenderAllocations(context.Background(), openAllocStore(*allocStore), render.AllocLookupOnly, in)
+	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
+	if allocErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei status: %v\n", allocErr)
+		os.Exit(1)
+	}
+	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocLookupOnly, in, core.Scope{})
 	if allocErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei status: %v\n", allocErr)
 		os.Exit(1)
@@ -128,7 +134,7 @@ func runStatus(args []string) {
 		rev.RenderedRevision = revision.ComputeRenderedRevision(core.NewScope(nil), rev.IntentRevision, allocRes.Inputs)
 	}
 	for _, pa := range allocRes.Pending {
-		fmt.Fprintf(os.Stderr, "sakutei status: pending allocation: %s field %q from pool %q (allocated by reconcile)\n", pa.ID, pa.Field, pa.Pool)
+		fmt.Fprintf(os.Stderr, "sakutei status: pending allocation: %s field %q from pool %q (allocated by reconcile)%s\n", pa.ID, pa.Field, pa.Pool, pendingReason(pa))
 	}
 
 	// render フェーズ2（合成リソースの展開）を in-memory で実施。

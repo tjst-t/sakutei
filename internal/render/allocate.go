@@ -43,24 +43,56 @@ const (
 // reaches Apply: only AllocAllocate renders feed the reconcile path.
 const PendingPrefix = "<pending allocation from pool "
 
-// PendingAllocation is a request that has no value yet (LookupOnly).
+// WaitingPrefix starts the placeholder value an AllocAllocate render puts in
+// a field whose allocation failed this cycle (allocator down, pool
+// exhausted).  The resource is waiting-allocation: the loop skips it and its
+// downstream, so the placeholder never reaches Apply (§19.9).
+const WaitingPrefix = "<waiting-allocation from pool "
+
+// PendingAllocation is a request that has no value yet: pending (LookupOnly)
+// or waiting-allocation (AllocAllocate, with the reason in Err).
 type PendingAllocation struct {
 	ID    core.ID
 	Field string
 	Pool  string
+	Err   error
 }
 
 // AllocationResult is the outcome of ResolveAllocations.
 type AllocationResult struct {
 	// Resources are copies of the input with every allocated field written
-	// into Fields (and pending ones set to the placeholder in LookupOnly).
+	// into Fields (and pending / waiting ones set to a placeholder).
 	Resources []diff.DesiredResource
 	// Inputs are "alloc:<owner>=<value>" strings, sorted, for
 	// revision.ComputeRenderedRevision: an allocation change is an external
-	// input change (cause E, §9.4).  Pending requests are not included.
+	// input change (cause E, §9.4).  Pending and waiting requests are not
+	// included.
 	Inputs []string
 	// Pending lists requests without a value (LookupOnly only), sorted.
 	Pending []PendingAllocation
+	// Waiting lists the requests that could not be allocated this cycle
+	// (AllocAllocate only), sorted.  Their resources are waiting-allocation
+	// (§19.9): not an error and not a halt — only they and their downstream
+	// are skipped, every other resource keeps converging.
+	Waiting []PendingAllocation
+	// Warnings are degradations that did not stop the render (a pool that
+	// could not be declared while the allocator is unavailable).
+	Warnings []string
+}
+
+// WaitingLocals returns the Local IDs that must not be converged this cycle
+// because of waiting-allocation: every waiting resource and, for a composite
+// one, the children it expands to (they carry the placeholder).
+// parentToChildren is render.BuildParentChildMap of the expansion.
+func (r AllocationResult) WaitingLocals(parentToChildren map[string][]string) map[string]bool {
+	out := make(map[string]bool, len(r.Waiting))
+	for _, w := range r.Waiting {
+		out[w.ID.Local] = true
+		for _, child := range parentToChildren[w.ID.Local] {
+			out[child] = true
+		}
+	}
+	return out
 }
 
 // AllocationOwner is the stable owner key for a field's allocation:
@@ -73,7 +105,7 @@ func AllocationOwner(id core.ID, field string) string {
 
 // ErrNoAllocationAuthority is returned when the intent requests allocations
 // but no authority is configured.
-var ErrNoAllocationAuthority = errors.New("render: the intent requests allocations (from_pool) but no allocation authority is configured (use --alloc-store)")
+var ErrNoAllocationAuthority = errors.New("render: the intent requests allocations (from_pool) but no allocation authority is configured (use --alloc-store or --alloc-url)")
 
 // ResolveAllocations is the allocation step of render phase 1 (§9.1): for
 // every `field: { from_pool: P }` request it obtains the value from auth and
@@ -81,10 +113,13 @@ var ErrNoAllocationAuthority = errors.New("render: the intent requests allocatio
 // plain value.  Idempotent by construction: the authority returns the same
 // value for the same owner until Release (§19.3).
 //
-// In AllocAllocate mode any authority error (unreachable, pool exhausted)
-// fails the whole render — the caller must not converge on a partially
-// allocated desired.  (Degrading per resource to waiting-allocation while the
-// rest keeps converging is #25.)
+// In AllocAllocate mode an authority error (allocator unavailable, pool
+// exhausted) does not fail the render: the request is listed in Waiting and
+// its field holds the WaitingPrefix placeholder.  The caller skips such
+// resources and their downstream — waiting-allocation, §19.9 — while every
+// other resource converges as usual.  With a Lookup cache (allocator.Cache)
+// in front of the authority, already-allocated requests are answered locally,
+// so a stopped allocator only holds back the new ones (§19.6).
 func ResolveAllocations(ctx context.Context, auth allocation.AllocationAuthority, mode AllocMode, resources []diff.DesiredResource) (AllocationResult, error) {
 	var res AllocationResult
 	res.Resources = make([]diff.DesiredResource, 0, len(resources))
@@ -108,20 +143,29 @@ func ResolveAllocations(ctx context.Context, auth allocation.AllocationAuthority
 			var err error
 			if mode == AllocAllocate {
 				value, err = auth.Allocate(ctx, pool, owner)
-				ok = err == nil
+				if err != nil {
+					fields[field] = WaitingPrefix + pool + ">"
+					res.Waiting = append(res.Waiting, PendingAllocation{ID: r.ID, Field: field, Pool: pool, Err: err})
+					continue
+				}
+				ok = true
 			} else {
 				value, ok, err = auth.Lookup(ctx, pool, owner)
-				if errors.Is(err, allocation.ErrUnknownPool) {
+				var reason error
+				switch {
+				case errors.Is(err, allocation.ErrUnknownPool):
 					ok, err = false, nil // pool not created yet: nothing allocated
+				case errors.Is(err, allocation.ErrUnavailable):
+					ok, err, reason = false, nil, err // read-only verbs degrade too
 				}
-			}
-			if err != nil {
-				return AllocationResult{}, fmt.Errorf("render: allocate %s from pool %q: %w", owner, pool, err)
-			}
-			if !ok {
-				fields[field] = PendingPrefix + pool + ">"
-				res.Pending = append(res.Pending, PendingAllocation{ID: r.ID, Field: field, Pool: pool})
-				continue
+				if err != nil {
+					return AllocationResult{}, fmt.Errorf("render: look up %s in pool %q: %w", owner, pool, err)
+				}
+				if !ok {
+					fields[field] = PendingPrefix + pool + ">"
+					res.Pending = append(res.Pending, PendingAllocation{ID: r.ID, Field: field, Pool: pool, Err: reason})
+					continue
+				}
 			}
 			fields[field] = value
 			res.Inputs = append(res.Inputs, "alloc:"+owner+"="+value)
@@ -130,14 +174,19 @@ func ResolveAllocations(ctx context.Context, auth allocation.AllocationAuthority
 		res.Resources = append(res.Resources, r)
 	}
 	sort.Strings(res.Inputs)
-	sort.Slice(res.Pending, func(i, j int) bool {
-		a, b := res.Pending[i], res.Pending[j]
+	sortPending(res.Pending)
+	sortPending(res.Waiting)
+	return res, nil
+}
+
+func sortPending(p []PendingAllocation) {
+	sort.Slice(p, func(i, j int) bool {
+		a, b := p[i], p[j]
 		if a.ID.String() != b.ID.String() {
 			return a.ID.String() < b.ID.String()
 		}
 		return a.Field < b.Field
 	})
-	return res, nil
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -160,15 +209,60 @@ type PoolEnsurer interface {
 // intent.  In AllocAllocate mode it first declares the intent's pools to the
 // authority (when it is a PoolEnsurer), then resolves every request.  In
 // AllocLookupOnly mode nothing is written to the authority.
-func RenderAllocations(ctx context.Context, auth allocation.AllocationAuthority, mode AllocMode, in loader.Intent) (AllocationResult, error) {
+//
+// claim is the shard's --claim selector (§17.1; empty = single shard).  Pools
+// are split by claim (§19.8): this shard declares only the shared pools (no
+// claim) and the pools whose claim agrees with its own, and resolves only the
+// requests of resources inside its claim — another shard's resources and
+// pools are that shard's business, so 1 pool keeps 1 authority (§19.7).
+// Resources outside the claim are returned unresolved; the caller excludes
+// them from convergence.
+//
+// A pool that cannot be declared because the allocator is unavailable is a
+// warning, not an error: requests from it simply wait (§19.9).
+func RenderAllocations(ctx context.Context, auth allocation.AllocationAuthority, mode AllocMode, in loader.Intent, claim core.Scope) (AllocationResult, error) {
+	var warnings []string
 	if auth != nil && mode == AllocAllocate {
 		if pe, ok := auth.(PoolEnsurer); ok {
 			for _, p := range in.Pools {
+				if !PoolInClaim(p, claim) {
+					continue
+				}
 				if err := pe.EnsurePool(p.Name, p.Lo, p.Hi); err != nil {
+					if errors.Is(err, allocation.ErrUnavailable) {
+						warnings = append(warnings, fmt.Sprintf("declare pool %q: %v (requests from it wait for the allocator)", p.Name, err))
+						continue
+					}
 					return AllocationResult{}, fmt.Errorf("render: declare pool %q: %w", p.Name, err)
 				}
 			}
 		}
 	}
-	return ResolveAllocations(ctx, auth, mode, in.Resources)
+	var inClaim, outside []diff.DesiredResource
+	for _, r := range in.Resources {
+		if r.ID.Scope.Matches(claim) {
+			inClaim = append(inClaim, r)
+		} else {
+			outside = append(outside, r)
+		}
+	}
+	res, err := ResolveAllocations(ctx, auth, mode, inClaim)
+	if err != nil {
+		return AllocationResult{}, err
+	}
+	res.Resources = append(res.Resources, outside...)
+	res.Warnings = warnings
+	return res, nil
+}
+
+// PoolInClaim reports whether pool p belongs to the shard with the claim
+// selector: a shared pool (no claim) belongs to every shard; a claimed pool
+// belongs to a shard whose selector does not contradict its claim.
+func PoolInClaim(p loader.Pool, claim core.Scope) bool {
+	for k, v := range p.Claim {
+		if sv, ok := claim.Labels[k]; ok && sv != v {
+			return false
+		}
+	}
+	return true
 }
