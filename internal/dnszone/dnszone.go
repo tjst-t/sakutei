@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package dnszone provides a provider.Provider and provider.Lister implementation
-// that manages DNS records in an RFC1035-format zone file (§27.2, decisions.json
-// S62dbba).
+// Package dnszone provides a provider.Provider, provider.Lister and
+// provider.BulkObserver implementation that manages DNS records in an
+// RFC1035-format zone file (§27.2, decisions.json S62dbba).
 //
 // Design decisions (decisions.json, S62dbba):
 //
@@ -28,6 +28,8 @@
 //     never leaves a truncated zone file (S2 progress class, §4.9).
 //   - Pruneable: true — DNS records are cheap/reversible to recreate (non-destructive
 //     type by the ADR-0005 classification); automatic orphan deletion is safe.
+//   - BulkObserve: true — one read of the zone file yields every record, so a
+//     cycle reads the file once instead of once per record (§5.7, Backlog #27).
 //
 // Zone file format supported (RFC1035 subset):
 //
@@ -95,7 +97,7 @@ func (r record) localID() string {
 }
 
 // Provider manages DNS records in an RFC1035 zone file.
-// It implements provider.Provider and provider.Lister.
+// It implements provider.Provider, provider.Lister and provider.BulkObserver.
 type Provider struct {
 	// zonePath is the path to the zone file.
 	zonePath string
@@ -147,12 +149,14 @@ func (p *Provider) Schema() provider.Schema {
 // TrueObserve: true — the zone file is the source of truth; Read returns real state.
 // List: true — we can enumerate all records in the zone file.
 // Pruneable: true — DNS records are cheap/reversible; orphans may be auto-deleted.
+// BulkObserve: true — BulkObserve reads the zone file once for every record.
 // ProviderVersion: a hard-coded source hash for fail-closed ghost-diff detection.
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
 		TrueObserve:     true,
 		List:            true,
 		Pruneable:       true,
+		BulkObserve:     true,
 		ProviderVersion: providerVersion,
 	}
 }
@@ -336,6 +340,62 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 	}
 	return core.ListResult{IDs: ids, Status: core.ListComplete}, nil
 }
+
+// BulkObserve observes every managed record in the zone file with ONE read of
+// the file (§5.7).  Each entry is exactly what Read returns for that record's
+// local id, keyed like List (root scope, "<name>/<type>").
+//
+// Read finds the FIRST record whose normalised {name, type} matches, so every
+// entry is built from the first such record — two lines that differ only in
+// the case of the name both get the first line's state, as Read gives them.
+//
+// complete-or-error: a zone file that cannot be read or scanned is an error for
+// the whole call (never a partial result).  A missing zone file is an empty
+// reality: no entries, no error — each resource then falls back to Read, which
+// reports it absent.  The result says nothing about what does not exist and is
+// never a prune input (it is not a core.ListResult, ADR-0011).
+func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkObservation, error) {
+	records, err := p.parseZone()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return provider.BulkObservation{Observations: map[core.IDKey]core.Observation{}}, nil
+		}
+		return provider.BulkObservation{}, provider.NewTransientError(
+			fmt.Errorf("dnszone: BulkObserve: parse zone %s: %w", p.zonePath, err))
+	}
+
+	now := time.Now()
+	first := make(map[string]record, len(records))
+	for _, r := range records {
+		k := normaliseName(r.name) + "/" + strings.ToUpper(r.rrtype)
+		if _, ok := first[k]; !ok {
+			first[k] = r
+		}
+	}
+	scope := core.NewScope(nil)
+	obs := make(map[core.IDKey]core.Observation, len(records))
+	for _, rec := range records {
+		r := first[normaliseName(rec.name)+"/"+strings.ToUpper(rec.rrtype)]
+		obs[core.NewID(ProviderName, scope, rec.localID()).Key()] = core.Observation{
+			Availability: core.AvailabilityOk,
+			State: core.State{
+				"name":  {Kind: core.FieldKindString, Value: r.name},
+				"type":  {Kind: core.FieldKindString, Value: r.rrtype},
+				"value": {Kind: core.FieldKindString, Value: r.value},
+				"ttl":   {Kind: core.FieldKindString, Value: r.ttl},
+			},
+			ObservedAt: now,
+		}
+	}
+	return provider.BulkObservation{Observations: obs}, nil
+}
+
+// Compile-time assertions.
+var (
+	_ provider.Provider     = (*Provider)(nil)
+	_ provider.Lister       = (*Provider)(nil)
+	_ provider.BulkObserver = (*Provider)(nil)
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers

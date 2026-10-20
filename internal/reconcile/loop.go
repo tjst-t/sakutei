@@ -121,6 +121,7 @@ import (
 	"github.com/tjst-t/sakutei/pkg/allocation"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
 // gracefulShutdownWait is the maximum time Run will wait for in-flight Apply
@@ -1335,6 +1336,11 @@ func runCycleAsync(
 		}
 	}
 
+	// #27 (§5.7): a provider that declares BulkObserve is observed with one
+	// bulk call for the whole claim, made at the first Observe of this cycle and
+	// discarded with it; any other provider gets one Read per resource.
+	cycleObs := sdk.NewCycleObserver(fp, cfg.Claim)
+
 	for _, res := range desired {
 		local := res.ID.Local
 
@@ -1370,8 +1376,9 @@ func runCycleAsync(
 			continue
 		}
 
-		// ADR-0002: fresh observation per resource per cycle.
-		obs, readErr := fp.Read(ctx, local)
+		// ADR-0002: fresh observation per resource per cycle (from this
+		// cycle's bulk call when the provider declares BulkObserve).
+		obs, readErr := cycleObs.Observe(ctx, res.ID)
 		if readErr != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
 			unobservable[local] = true

@@ -39,6 +39,7 @@ import (
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 	"github.com/tjst-t/sakutei/pkg/registry"
+	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
 // runReconcile implements "sakutei reconcile".
@@ -474,6 +475,10 @@ func runReconcile(args []string) {
 	// obsFields records the observed field values per resource (as strings) so
 	// we can populate the last-seen ring and report drift B diagnostics.
 	obsFields := make(map[string]map[string]string, len(desired))
+	// #27 (§5.7): one CycleObserver per provider for this invocation — a
+	// provider that declares BulkObserve is observed with one bulk call, any
+	// other with one Read per resource.
+	cycleObs := make(map[string]*sdk.CycleObserver, len(providers))
 	for _, res := range desired {
 		// S62dbba-2: route Read and Diff to the provider for this resource.
 		fp, ok := providers[res.ID.Provider]
@@ -493,9 +498,15 @@ func runReconcile(args []string) {
 		//
 		// This is a fresh observation: reconcile does NOT carry over any
 		// observation result from a prior "sakutei plan" invocation or from
-		// a previous iteration of this loop.  Every call to fp.Read reaches
-		// the state file directly, re-reading reality at this moment in time.
-		obs, err := fp.Read(ctx, res.ID.Local)
+		// a previous iteration of this loop.  Every Observe reaches reality
+		// at this moment in time — by Read, or by this invocation's single
+		// bulk call when the provider declares BulkObserve (§5.7).
+		obsv, ok := cycleObs[res.ID.Provider]
+		if !ok {
+			obsv = sdk.NewCycleObserver(fp, claimSelector)
+			cycleObs[res.ID.Provider] = obsv
+		}
+		obs, err := obsv.Observe(ctx, res.ID)
 		if err != nil {
 			// D-1: Observe error → unobservable, not converged.  Do not exit
 			// immediately: record it, keep observing the rest, and let ApplyWaves

@@ -301,7 +301,15 @@ type BulkObserver interface {
 - **型分離（prune の根拠には使えない）**:BulkObserve は **Observe 専用**であり、**prune の根拠には一切使えない**。prune は `Lister.List` + List 完全性検証（§12）を根拠にする。SDK は BulkObserve の戻りが集合差 prune の入力に渡る経路を型レベルで塞ぐ（§5.4 で `BulkObserve` と `List` の型を別に保ったのはこの誤用防止のためでもある——`List` は ID 集合、`BulkObserve` は状態）。
 - **走査窓内遷移の吸収**:走査中の DRS 移動が生む一時的不整合は既存機構が吸収する——runtime placement は managed fields 除外（§7）が diff から落とし、それ以外は converging / settle（§11.1）が自傷猶予として吸収する。
 - **`observed_at` を各 Observation に刻む**:bulk 結果は当該周期でのみ使用し、周期をまたいだ再利用は禁止する（§4.5）。
-- **SDK 等価性テストを標準装備**:fake provider 上で **`BulkObserve(scope) ≡ {Read(id) ∀ id ∈ scope}`** の等価性テストを SDK のテストハーネスに標準装備する。これを通ることが「完全階級 + bulk」を名乗る条件であり、バルク経路と個別経路が別の現実を返す実装バグを CI で捕まえる。v1b で `BulkEquivalenceTester` として実装済みである（検査項目は §28.3）。実バルク API を持つ provider の実装は未着手（§27.3）。
+- **SDK 等価性テストを標準装備**:fake provider 上で **`BulkObserve(scope) ≡ {Read(id) ∀ id ∈ scope}`** の等価性テストを SDK のテストハーネスに標準装備する。これを通ることが「完全階級 + bulk」を名乗る条件であり、バルク経路と個別経路が別の現実を返す実装バグを CI で捕まえる。v1b で `BulkEquivalenceTester` として実装済みである（検査項目は §28.3）。
+
+**v1b の実装（Backlog #27）:** v1 の実証は dnszone と nftables で行う（どちらもファイルを 1 回読めば全件が分かる素直なバルク。実際の一括 API を持つ対象〈Proxmox・vCenter 等〉は Backlog #49）。収束の経路（常駐ループの定期 Observe と `sakutei reconcile`）は SDK の `CycleObserver` を周期ごとに作って観測する。宣言した provider は、その周期の最初の Observe で `BulkObserve(claim)` を 1 回だけ呼び、残りはその結果から答える。SDK が強制する規律は次のとおり。
+
+- **宣言と実装の両方があるときだけ**バルク経路を使う。宣言しない実装・実装のない宣言は per-resource `Read` に回す（後者は `ValidateProvider` が登録時に拒否する）。
+- **complete-or-error の受け方**:バルクがエラーなら、その周期の全リソースを「`Read` が `unknown` を返したとき」と同じに扱う（`unknown` + エラー → unobservable、Apply しない）。このとき `Read` へは回さない（provider が「いま現実を読めない」と言っている）。`ObservedAt` の無いエントリが 1 つでもあれば、結果全体を契約違反として同じ扱いにする。
+- **バルクに無いリソースは `Read` で観測する**:バルクの結果は「何が無いか」を言わない（`unknown ≠ absent`）。結果に無い ID は個別に `Read` し、「無い」と言えるのは `Read` だけにする。ファイルが存在しないときのバルクは空の結果（エラーではない）で、各リソースは `Read` で absent になる。
+- **キーの照合**:desired の ID で引き、無ければ同じ provider・local id の root scope の ID で引く（scope の概念を持たない現実〈ファイル〉の provider は、`List` と同じく root scope でキーを作る）。
+- 結果はその周期だけで使い、周期をまたいで持たない（`CycleObserver` は周期ごとに作り直す）。早期収束パス（§8）は影響サブ DAG の数件だけを見るので per-resource `Read` のままとする。
 
 ### §5.8 観測不能階級 —— observability:none / ledger_only
 

@@ -67,7 +67,7 @@ v1b が実証するのは、**既存の大規模基盤に安全に入れる**こ
 - **allocator HA 最小形 + Lookup キャッシュ + waiting-allocation 縮退**（§19）：段0 VM-HA 上の active/standby + fencing、割当事実のシャードローカル無期限キャッシュ（S3）、allocator 停止時の `waiting-allocation` 縮退。**プール分割 by claim**（intent での disjoint レンジ宣言・§19）。
 - **テストハーネス**（契約テスト自動生成）+ golden path テンプレート（§28）+ **BulkObserve 等価性テスト**（fake provider 上で `BulkObserve(scope) ≡ {Read(id)}` を検証・§5/§28）。
 - **`ready_condition` と複数 Cycle に跨る依存解決**（§8）+ **capacity gate**（§13）——最初の実インフラ provider（VM / 物理）を書く段で必要になる。
-- **BulkObserve の実バルク実装 + 一貫性契約**（§5）——バルク API を持つ provider（vCenter / Proxmox 等）から書く。complete-or-error / prune 非流用 / `observed_at` 刻印を SDK で強制。型は v1a で切ってあるので追加は provider 単位で局所。
+- **BulkObserve の実バルク実装 + 一貫性契約**（§5）——v1 ではファイル系の dnszone・nftables で実証し、バルク API を持つ provider（vCenter / Proxmox 等）は v1 の後に書く（Backlog #49）。complete-or-error / prune 非流用 / `observed_at` 刻印を SDK で強制。型は v1a で切ってあるので追加は provider 単位で局所。
 - **静的シャーディングの実動作**（§17）：`--claim` フィルタ + fencing による二重 claim 検知 + 再シャード Workflow（drain → claim 変更 PR → fencing 世代更新）。型（起動フラグ）は v1a で切り済み。
 - **claim の git 配布 + S2-free シャード階級 + エッジ資格局所性**（§17/§20）：`intent/<scope>/...` レイアウト規約 + sparse checkout / partial clone、ミラー中継層、S2-free シャード（Resource 収束のみ）、店舗ローカル file SecretBackend への資格局所常駐、開店/閉店 = claim 変更 PR ハンドオフ。
 - **tier 別 Observe 頻度（間引き）** の導入余地（§16 の早期警戒線が立った層から）。
@@ -83,7 +83,7 @@ v1b が実証するのは、**既存の大規模基盤に安全に入れる**こ
 | allocator HA 最小形・Lookup キャッシュ・waiting-allocation・プール分割 by claim | 実装済み（`sakutei allocator`） | §19.6・§19.8・§19.9 |
 | 契約テストの Schema からの生成・golden path テンプレート・BulkObserve 等価性テスト | 実装済み | §28.3・§28.6 |
 | `ready_condition` + capacity gate | 実装済み（capacity gate は CLI フラグで宣言） | §11.2・§13.4 |
-| **BulkObserve の実バルク実装** | **未実装**（Backlog #27）。等価性テストと fake の bulk 版までで、実バルク API を持つ対象（vCenter / Proxmox 等）の provider が要る | §5.7 |
+| BulkObserve の実装 + 一貫性契約 | 実装済み（dnszone・nftables で実証。収束の経路は SDK の `CycleObserver` でバルク経路を使い、1 周のファイル読み込みは 1 回）。実際の一括 API を持つ対象（Proxmox・vCenter 等）の provider は Backlog #49 | §5.7 |
 | 静的シャーディング（claim フィルタ + fencing） | 実装済み。再シャードは手動手順（Workflow 化は v1.5） | §17.1・§17.6・§15.2 |
 | claim の git 配布 + S2-free + 資格局所性 | 実装済み（`sakutei mirror`・`sakutei secrets extract`）。資格の中央からのローテーションは v1.5 | §17.4・§17.5・§20.5 |
 | tier 別 Observe 頻度 | 実装済み（キーは `observe_tier` / `observe_tiers`） | §16.5 |

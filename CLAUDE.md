@@ -8,7 +8,7 @@
 
 Kubernetes からは *収束原理*（level-triggered な収束ループ）だけを借り、実装機構（apiserver・etcd・scheduler・admission・CRD）は意図的に捨てている。位置づけは「**Ansible の冪等性 + k8s のループ**」。最大の特徴は **観測 state レス**（キャッシュした「現在状態」を持たず毎周期リアルを再観測する）で、これにより Terraform の three-way-diff / state ドリフト問題を構造的に排除する。名称は平安期の作庭書『作庭記』に由来する。
 
-> **現状:** 設計は v3.9（v3.4 = v1b の実装に追いつかせた改訂、v3.5 = planned_change の実装上の決定、v3.6 = DR モードの実装上の決定、v3.7 = planned_change の承認連携と運用プロファイル、v3.8 = v1 の採番をファイル版で確定、v3.9 = Sync Mode の git コミット）。実装は **v1a が完成、v1b がほぼ完成**（残りは Backlog の #27）。次は v1.5（Backlog #19、タスク #39〜#45）。
+> **現状:** 設計は v3.10（v3.4 = v1b の実装に追いつかせた改訂、v3.5 = planned_change の実装上の決定、v3.6 = DR モードの実装上の決定、v3.7 = planned_change の承認連携と運用プロファイル、v3.8 = v1 の採番をファイル版で確定、v3.9 = Sync Mode の git コミット、v3.10 = BulkObserve の実装上の決定）。実装は **v1a と v1b が完成**（BulkObserve の一括 API を持つ対象は Backlog #49）。次は v1.5（Backlog #19、タスク #39〜#45）。
 
 ## 仕事の管理（Backlog）
 

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package nftables provides a provider.Provider and provider.Lister
-// implementation that manages firewall chains in a managed nftables-style
-// ruleset file (§27 の「FW（順序付き）」, 旧 ROADMAP Sc7a647-1). これは DNS に
+// Package nftables provides a provider.Provider, provider.Lister and
+// provider.BulkObserver implementation that manages firewall chains in a
+// managed nftables-style ruleset file (§27 の「FW（順序付き）」, 旧 ROADMAP Sc7a647-1). これは DNS に
 // 続く 2 つ目の実 provider であり、DNS が使わなかった Schema の `ordered`
 // フラグ（順序が意味を持つ list フィールド）を end-to-end で行使することを
 // 主眼とする。
@@ -44,6 +44,8 @@
 //     その chain のルールが一括で失われ、通信断・穴あきの outage に直結）。
 //     ADR-0005「破壊的型は pruneable:false 既定」に従い、orphan の自動削除は
 //     行わない（明示 opt-in が必要）。
+//   - BulkObserve: true — ruleset ファイルを 1 回読めば全 chain が分かるので、
+//     1 周のファイル読み込みは chain 数によらず 1 回で済む（§5.7, Backlog #27）。
 //
 // Ruleset ファイル形式（管理サブセット）:
 //
@@ -126,7 +128,7 @@ func (c chainRes) rulesEncoded() string {
 }
 
 // Provider manages nftables chains in a managed ruleset file.
-// provider.Provider と provider.Lister を実装する。
+// provider.Provider・provider.Lister・provider.BulkObserver を実装する。
 type Provider struct {
 	// rulesetPath は ruleset ファイルのパス。
 	rulesetPath string
@@ -187,12 +189,14 @@ func (p *Provider) Schema() provider.Schema {
 // List: true — ファイル内の全 chain を列挙できる。
 // Pruneable: false — firewall chain は破壊的型（消すと通信断）。ADR-0005 に
 // より orphan の自動削除は行わない。
+// BulkObserve: true — BulkObserve がファイル 1 回の読み込みで全 chain を観測する。
 // ProviderVersion: fail-closed な ghost-diff 検出用の固定ソースハッシュ。
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
 		TrueObserve:     true,
 		List:            true,
 		Pruneable:       false,
+		BulkObserve:     true,
 		ProviderVersion: providerVersion,
 	}
 }
@@ -354,6 +358,61 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 	}
 	return core.ListResult{IDs: ids, Status: core.ListComplete}, nil
 }
+
+// BulkObserve observes every managed chain in the ruleset file with ONE read of
+// the file (§5.7)。各エントリは、その chain の local id に Read が返すものと同じ
+// で、キーは List と同じ（root scope, "<family>/<table>/<chain>"）。
+//
+// Read は座標の一致する最初の chain を返すので、各エントリも最初の出現から作る。
+// 最初の出現が base chain の座標は返さない（Read はそこで PermanentError を返す
+// ので、収束の経路はその chain を Read に回して同じエラーを得る）。
+//
+// complete-or-error: 読めない・解釈できないファイルは呼び出し全体のエラーにし、
+// 一部だけを返さない。ファイル非存在は空の現実（エントリなし・エラーなし）で、
+// 各リソースは Read に回り absent になる。結果は「何が無いか」を言わず、prune の
+// 入力にもならない（core.ListResult ではない、ADR-0011）。
+func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkObservation, error) {
+	chains, err := p.parseRuleset()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return provider.BulkObservation{Observations: map[core.IDKey]core.Observation{}}, nil
+		}
+		return provider.BulkObservation{}, provider.NewTransientError(
+			fmt.Errorf("nftables: BulkObserve: parse ruleset %s: %w", p.rulesetPath, err))
+	}
+
+	now := time.Now()
+	scope := core.NewScope(nil)
+	seen := make(map[string]bool, len(chains))
+	obs := make(map[core.IDKey]core.Observation, len(chains))
+	for _, c := range chains {
+		if seen[c.localID()] {
+			continue
+		}
+		seen[c.localID()] = true
+		if c.base {
+			continue
+		}
+		obs[core.NewID(ProviderName, scope, c.localID()).Key()] = core.Observation{
+			Availability: core.AvailabilityOk,
+			State: core.State{
+				"family": {Kind: core.FieldKindString, Value: c.family},
+				"table":  {Kind: core.FieldKindString, Value: c.table},
+				"chain":  {Kind: core.FieldKindString, Value: c.chain},
+				"rules":  {Kind: core.FieldKindStringList, Value: c.rulesEncoded()},
+			},
+			ObservedAt: now,
+		}
+	}
+	return provider.BulkObservation{Observations: obs}, nil
+}
+
+// Compile-time assertions.
+var (
+	_ provider.Provider     = (*Provider)(nil)
+	_ provider.Lister       = (*Provider)(nil)
+	_ provider.BulkObserver = (*Provider)(nil)
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
