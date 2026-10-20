@@ -457,7 +457,7 @@
       "number": 27,
       "kind": "task",
       "title": "v1b: BulkObserve の実装（dnszone・nftables で実証）と一貫性契約の SDK 強制",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v1b",
       "dependsOn": [
         "v1b-golden-path-bulkobserve"
@@ -467,12 +467,12 @@
       "labels": [],
       "body": "設計 §5.7。2026-10-20 人が決定：v1 では dnszone と nftables に BulkObserve を付けて実証とする（どちらもファイルを 1 回読めば全件が分かる、素直なバルク）。実際の一括 API を持つ対象（Proxmox・vCenter など）は #49 に切り出した。\n\n- dnszone・nftables に BulkObserver を実装し、Capabilities.BulkObserve を宣言する。1 回の読み込みで scope 内の全件の Observation を返す。ObservedAt を刻む。\n- complete-or-error：ファイルが読めない・解釈できないときは、一部を返さずにエラーにする（Read が Unknown を返す場合と同じ扱い）。\n- prune に流用しない：型の分離（ADR-0011）はそのまま。\n- SDK の BulkEquivalenceTester（#21）を両 provider で通す。\n- 収束の経路で、宣言した provider は ObserveScope の一括経路を使う（Executor が一括で観測し、per-resource Read の回数が減る）。",
       "doneWhen": "dnszone と nftables で BulkEquivalenceTester と契約テストが合格し、壊れたファイルで一括の観測がエラーになること、収束 1 周あたりのファイルの読み込み回数が per-resource Read より減ることをテストで示す。make check と make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/v1b-bulkobserve-sdk）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T20:07:58.253Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T20:26:01.464Z",
+      "closedAt": "2026-10-20T20:26:01.464Z",
       "extra": {}
     },
     {
