@@ -234,6 +234,29 @@
       "updatedAt": "2026-10-20T08:43:20.864Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "item-1",
+      "number": 11,
+      "kind": "task",
+      "title": "タイミング依存の受入テストを堅牢にする",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "test"
+      ],
+      "body": "旧 ROADMAP.json の backlog（S94f1f9 で追加）。並行・周期のテスト（Inflight/Loop/DAG）で、時間に左右される失敗がまれに見られた（18 回以上回して再現せず）。interval/deadline の余白を広げるか、決定的な同期点を入れて、さらに起きにくくする。",
+      "doneWhen": "go test -count=20 ./tests/acceptance/ が全部合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:43:21.590Z",
+      "updatedAt": "2026-10-20T08:43:21.590Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
