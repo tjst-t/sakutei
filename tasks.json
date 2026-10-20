@@ -524,7 +524,7 @@
       "number": 30,
       "kind": "task",
       "title": "v1b: tier 別の Observe 頻度（間引き）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1b",
       "dependsOn": [],
       "milestone": null,
@@ -536,7 +536,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T08:44:17.592Z",
+      "updatedAt": "2026-10-20T12:15:07.940Z",
       "closedAt": null,
       "extra": {}
     },
