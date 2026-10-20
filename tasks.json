@@ -140,6 +140,29 @@
       "updatedAt": "2026-10-20T08:42:50.060Z",
       "closedAt": "2026-10-20T08:42:50.060Z",
       "extra": {}
+    },
+    {
+      "id": "v1a-7-bulkobserve-claim",
+      "number": 7,
+      "kind": "story",
+      "title": "v1a-7 早期収束パスと BulkObserve/--claim の型切り",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1a"
+      ],
+      "body": "旧 ROADMAP.json の Sprint 7（`Sf6a62f`）。\n\n早期収束パス（ChangeHint→影響サブ DAG→scoped reconcile、cause A/E 限定・集合差 prune 禁止・予算共有）と、BulkObserve capability・`--claim` scope-selector の seam を型として切る（実装は v1b）。ADR-0009/0011。\n\n- Sf6a62f-1 ChangeHint 型と DesiredSource.Watch の seam（3 件・change_hint_test.go）\n- Sf6a62f-2 scoped reconcile パスの seam と最小結線（4 件・scoped_reconcile_test.go）\n- Sf6a62f-3 BulkObserver interface（prune 非流用の型分離）と --claim の seam（4 件・bulk_observe_test.go, claim_selector_test.go, claim_prune_boundary_test.go）\n\n受け入れ条件の全文は git 履歴の `docs/ROADMAP.json`（コミット 9d7cf32）。テスト内タグ `[AC-Sf6a62f-x-y]`。\n\n**確認（2026-10-20）**：`make check` が通り、11 件すべて合格。旧 ROADMAP では受け入れ条件が pending のままだったが、記録の付け忘れだった。",
+      "doneWhen": "受け入れ条件 AC-Sf6a62f-* 11 件のテストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:42:50.793Z",
+      "updatedAt": "2026-10-20T08:42:50.793Z",
+      "closedAt": "2026-10-20T08:42:50.793Z",
+      "extra": {}
     }
   ]
 }
