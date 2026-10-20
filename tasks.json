@@ -873,11 +873,11 @@
       "labels": [],
       "body": "設計 §6.3 / §6.4 / §14.4。直列（one-at-a-time）+ 不変条件（invariant、各ステップの前後で検証し破れるなら進まない）+ 手動承認ゲートだけの最小 Workflow。動的 select・自動 canary・自動段階ロールアウトは v2。\n- ステージ完了 → StageAwaitingApproval Event → 「待ち」フェーズで停止（S2 に永続化し、再起動しても留まる）→ 承認 API → 次ステージ。却下は halt。ゲート単位の timeout（既定 24h）で halt。on_failure の既定は halt。\n- 承認 API：POST /workflows/{id}/gates/{gate}/approve（ボディに承認者 ID + 署名）。あわせて CLI（sakutei approve など）も。API 自体は認可を持たない（§7）。\n- 承認の事実を S4 監査に append-only で記録する（最小はファイルへの追記）。\n- Workflow のステップから単純 Task を呼べる。\n- requirements を宣言しないゲートは単一承認。N-of-M と separation は別タスク。",
       "doneWhen": "3 台のローリングで、invariant（min_active）が破れるステップで止まること、承認ゲートで待ち、デーモンを再起動しても待ちに留まり、承認で進み、却下と timeout で halt すること、承認が S4 に残ることをテストで示す",
-      "resolution": "Factory が取り込みました（factory/v1-5-workflow-s4）",
+      "resolution": "コミット 9448596。intent の workflows:（直列・invariant min_active・手動承認ゲート）、internal/workflow（Engine・S2 の FileStore・承認 API）、internal/audit（S4 の append-only）、sakutei approve と --workflow-store / --audit-log / --approval-listen。make check と make test-race が合格。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T15:01:17.536Z",
+      "updatedAt": "2026-10-20T15:04:23.223Z",
       "closedAt": "2026-10-20T15:01:17.536Z",
       "extra": {}
     },
