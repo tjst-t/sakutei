@@ -47,6 +47,30 @@
       "updatedAt": "2026-10-20T08:42:47.276Z",
       "closedAt": "2026-10-20T08:42:47.276Z",
       "extra": {}
+    },
+    {
+      "id": "v1a-3",
+      "number": 3,
+      "kind": "story",
+      "title": "v1a-3 安全機構の中核 — 壊れる前に止まる",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1a",
+        "milestone"
+      ],
+      "body": "旧 ROADMAP.json の Sprint 3（`Scf7762`）。マイルストーン。\n\npruneable:false 既定・DeletionPolicy・List 完全性検証・rate limit・累積時間窓予算・デフォルト halt・remediation mode（auto/alert-only）。chaos テストで「壊れる前に止まる」を実証する。ADR-0005/0014 の v1a サブセット。\n\n- Scf7762-1 削除の非対称（pruneable / List 完全性 / unknown≠absent）（3 件・deletion_test.go）\n- Scf7762-2 変更予算（rate limit・累積時間窓・デフォルト halt）（3 件・budget_test.go）\n- Scf7762-3 remediation mode（alert-only / freeze）（3 件・remediation_test.go）\n- Scf7762-4 chaos テスト（3 件・chaos_test.go）\n\n受け入れ条件の全文は git 履歴の `docs/ROADMAP.json`（コミット 9d7cf32）。テスト内タグ `[AC-Scf7762-x-y]`。\n\n**確認（2026-10-20）**：`make check` が通り、12 件すべて合格。",
+      "doneWhen": "受け入れ条件 AC-Scf7762-* 12 件のテストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:42:47.985Z",
+      "updatedAt": "2026-10-20T08:42:47.985Z",
+      "closedAt": "2026-10-20T08:42:47.985Z",
+      "extra": {}
     }
   ]
 }
