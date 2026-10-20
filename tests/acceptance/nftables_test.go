@@ -16,7 +16,7 @@
 // Sc7a647-1: the nftables ruleset-file provider — the SECOND real (non-fake)
 // provider, and the first to exercise the Schema `ordered` flag.
 //
-// AC tags (from ROADMAP.json .sprints.Sc7a647.stories["Sc7a647-1"]):
+// AC tags (from 旧 ROADMAP.json（Backlog に移行済み） .sprints.Sc7a647.stories["Sc7a647-1"]):
 //
 //	AC-Sc7a647-1-1  ordered flag end-to-end: same rules in a different order
 //	                produce a DIFF (reordering is a change); identical order → no diff.

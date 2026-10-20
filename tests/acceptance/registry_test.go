@@ -18,7 +18,7 @@
 // and inspect its stdout, stderr, and exit code.  No internal package is
 // imported directly; only the binary's observable behaviour is verified.
 //
-// AC tags map to scenario-S62dbba-2.json and ROADMAP.json:
+// AC tags map to scenario-S62dbba-2.json and 旧 ROADMAP.json（Backlog に移行済み）:
 //
 //	[AC-S62dbba-2-M] machine-executable scenario tests (exit code + output).
 //

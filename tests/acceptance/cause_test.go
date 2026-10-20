@@ -19,7 +19,7 @@
 // package is imported directly; only the binary's observable behaviour is
 // verified.
 //
-// AC tags map to scenario-Scb0ecd-2.json and ROADMAP.json:
+// AC tags map to scenario-Scb0ecd-2.json and 旧 ROADMAP.json（Backlog に移行済み）:
 //
 //	AC-Scb0ecd-2-1  sakutei plan shows cause: A when intent_revision changes
 //	AC-Scb0ecd-2-2  cause: B when reality drifts and intent/revision are stable

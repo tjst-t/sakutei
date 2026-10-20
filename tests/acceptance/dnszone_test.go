@@ -20,7 +20,7 @@
 //     exit code, stdout, stderr, and the zone-file contents.
 //   - Library tests (ContractTester) verify the SDK contracts directly.
 //
-// AC tags (from scenario-S62dbba-3.json and ROADMAP.json):
+// AC tags (from scenario-S62dbba-3.json and 旧 ROADMAP.json（Backlog に移行済み）):
 //
 //	[AC-S62dbba-3-M]   machine-executable scenario tests
 //	AC-S62dbba-3-1     dnszone Schema lint passes; ValidateProvider returns nil

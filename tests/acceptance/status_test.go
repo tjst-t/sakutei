@@ -25,7 +25,7 @@
 // has no genuine "previous cycle"; the mechanism is honestly tested where two
 // observations can be fed).
 //
-// AC tags map to ROADMAP.json Sc7a647-3:
+// AC tags map to 旧 ROADMAP.json（Backlog に移行済み） Sc7a647-3:
 //
 //	AC-Sc7a647-3-1  drifted list + cause tag; converged reported when in sync; fake/dnszone/nftables
 //	AC-Sc7a647-3-2  read-only: reality byte-for-byte unchanged; no CREATE/UPDATE/DELETE/applied lines

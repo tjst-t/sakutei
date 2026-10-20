@@ -19,7 +19,7 @@
 // package is imported directly; only the binary's observable behaviour is
 // verified.
 //
-// AC tags map to scenario-Scb0ecd-3.json and ROADMAP.json:
+// AC tags map to scenario-Scb0ecd-3.json and 旧 ROADMAP.json（Backlog に移行済み）:
 //
 //	AC-Scb0ecd-3-1  provider_version empty → startup rejected (fail-closed, §10.4)
 //

@@ -70,7 +70,7 @@
 //     then rendered_revision == intent_revision so E never fires.
 //
 // Do NOT add D/E activation logic here before those dependencies exist;
-// the seam is deliberately thin to avoid over-reach (ROADMAP Scb0ecd-2
+// the seam is deliberately thin to avoid over-reach (旧 ROADMAP Scb0ecd-2
 // constraint).
 package cause
 

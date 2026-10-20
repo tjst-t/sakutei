@@ -19,7 +19,7 @@
 // package is imported directly; only the binary's observable behaviour is
 // verified.
 //
-// AC tags map to scenario-Scb0ecd-3.json and ROADMAP.json:
+// AC tags map to scenario-Scb0ecd-3.json and 旧 ROADMAP.json（Backlog に移行済み）:
 //
 //	AC-Scb0ecd-3-2  drift B detection emits last-seen ring snapshot in Event log
 //	AC-Scb0ecd-3-3  last-seen ring is non-persistent (S3); resets on daemon restart

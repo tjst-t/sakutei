@@ -14,7 +14,7 @@
 
 // Package nftables provides a provider.Provider and provider.Lister
 // implementation that manages firewall chains in a managed nftables-style
-// ruleset file (§27 の「FW（順序付き）」, ROADMAP Sc7a647-1). これは DNS に
+// ruleset file (§27 の「FW（順序付き）」, 旧 ROADMAP Sc7a647-1). これは DNS に
 // 続く 2 つ目の実 provider であり、DNS が使わなかった Schema の `ordered`
 // フラグ（順序が意味を持つ list フィールド）を end-to-end で行使することを
 // 主眼とする。

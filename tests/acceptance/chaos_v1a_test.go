@@ -28,7 +28,7 @@
 // 誘発する。fake provider は既存のテスト専用 knob（fail_inject / provider_version /
 // apply_count）だけを使う。
 //
-// AC タグ（docs/ROADMAP.json .sprints.Sc7a647.stories["Sc7a647-2"]）:
+// AC タグ（旧 ROADMAP.json（Backlog に移行済み） .sprints.Sc7a647.stories["Sc7a647-2"]）:
 //
 //	[AC-Sc7a647-2-1] provider 到達不能（Read が transient error / Unknown）→
 //	                 unknown≠absent → 誤 prune なし。孤児は現実（zone/ruleset の

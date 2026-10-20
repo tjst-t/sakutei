@@ -18,7 +18,7 @@
 // and inspect its stdout, exit code, and side effects.  No internal package is
 // imported directly; only the binary's observable behaviour is verified.
 //
-// AC tags map to scenario-Scb0ecd-1.json and ROADMAP.json:
+// AC tags map to scenario-Scb0ecd-1.json and 旧 ROADMAP.json（Backlog に移行済み）:
 //
 //	AC-Scb0ecd-1-1  DesiredSource.Fetch returns intent_revision visible in plan/reconcile output
 //	AC-Scb0ecd-1-2  rendered_revision equals intent_revision in v1a (scope-unit seam)

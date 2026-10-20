@@ -22,7 +22,7 @@
 // delivers a hint; it is not yet auto-wired into the CLI, so a subprocess test
 // cannot reach it — hence the in-process style.
 //
-// AC tags map to docs/ROADMAP.json .sprints.Sf6a62f.stories["Sf6a62f-2"]:
+// AC tags map to 旧 ROADMAP.json（Backlog に移行済み） .sprints.Sf6a62f.stories["Sf6a62f-2"]:
 //
 //	AC-Sf6a62f-2-1  ScopedPlan: hint + old/new desired → impacted sub-DAG
 //	                (changed resource + downstream only; untouched scope excluded).

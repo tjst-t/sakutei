@@ -8,7 +8,26 @@
 
 Kubernetes からは *収束原理*（level-triggered な収束ループ）だけを借り、実装機構（apiserver・etcd・scheduler・admission・CRD）は意図的に捨てている。位置づけは「**Ansible の冪等性 + k8s のループ**」。最大の特徴は **観測 state レス**（キャッシュした「現在状態」を持たず毎周期リアルを再観測する）で、これにより Terraform の three-way-diff / state ドリフト問題を構造的に排除する。名称は平安期の作庭書『作庭記』に由来する。
 
-> **重要: 現時点でコードは未実装。** このリポジトリは設計仕様（ドキュメント）のみを保持する。ソースツリー・ビルド/テスト/デプロイのコマンドはまだ存在しない。
+> **現状:** 設計は v3.3 で収束済み。実装は **v1a（コア実証）が完成**（Go、約 3.2 万行、受け入れテスト 95 件）。次は v1b。
+
+## 仕事の管理（Backlog）
+
+- 仕事の一覧・優先順・状態は **Banto の Backlog**（git の `backlog` ブランチ）が唯一の正。旧 `docs/ROADMAP.json` は廃止した（v1a のスプリント 1〜9 は Backlog に done のストーリー `v1a-1`〜`v1a-9` として移行済み。受け入れ条件の全文は git 履歴のコミット 9d7cf32 の `docs/ROADMAP.json` にある）。
+- 受け入れテストには `[AC-<スプリントID>-<ストーリー>-<番号>]`（例 `[AC-Sc7a647-2-1]`）のタグが付いている。旧スプリント ID と Backlog の対応は各ストーリーの本文に書いてある。
+- 新しい作業はストーリー → タスクに分けて Backlog に置き、完了条件は計測できる形で書く。
+
+## 開発コマンド
+
+```console
+$ make build      # ./sakutei をビルド
+$ make test       # 全テスト（tests/acceptance の受け入れ・chaos を含む）
+$ make vet        # go vet
+$ make check      # build + vet + test
+$ make demo       # plan → converge → drift → self-heal のウォークスルー
+$ CGO_ENABLED=1 go test -race ./...   # race 検出（gcc が要る）
+```
+
+Go 1.22 以上。外部依存なし（stdlib のみ）。
 
 ## リポジトリ構成
 
@@ -16,10 +35,16 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 .
 ├── CLAUDE.md                                  # このファイル
 ├── README.md
+├── Makefile
+├── cmd/sakutei/                               # CLI（常駐ループ・plan・reconcile・status）
+├── pkg/                                       # 公開 API: core（正準型）/ provider / registry / sdk
+├── internal/                                  # reconcile・diff・budget・prune・cause・render・loader・
+│                                              #   remediation・statusreport・fakeprovider・dnszone・nftables 等
+├── tests/acceptance/                          # 受け入れテスト・chaos テスト（AC タグ付き）
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── architecture/
-    │   ├── spec/                              # ★設計の正（source of truth）v3.0 分冊
+    │   ├── spec/                              # ★設計の正（source of truth）v3.3 分冊
     │   │   ├── README.md                      #   索引（版・改訂規約・目次・§→ファイル対応）
     │   │   └── part1〜part8-*.md              #   8部29節の本文（§番号は全部で一意）
     │   ├── CHANGELOG-v3.0.md                  # v2.6→v3.0 構成対応マップ+分冊化の記録
@@ -38,7 +63,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」v3.0（v2.6 と内容等価の全面再構成）。`old/` は旧版（編集しない）、矛盾時は **v3.0 が優先**。すべて日本語で書かれている。
+**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」（現行 v3.3。骨格は v2.6 と内容等価の全面再構成 v3.0 で、v3.1〜v3.3 は分冊を直接改訂）。`old/` は旧版（編集しない）、矛盾時は **spec/ が優先**。すべて日本語で書かれている。
 
 ## v3.0 の構成（8部29節・分冊）
 
@@ -118,7 +143,7 @@ sakutei import       # 既存リアルを intent として書き出す  --scope 
 ## 作業時の指針
 
 - ドキュメントはすべて日本語。追記・修正時も**日本語**で、既存の用語（英語機能名の component 名、庭園メタファの別名: 関守/台帳/図面/坪庭/縮景）を踏襲する。
-- 設計に関する記述を変更するときは `docs/architecture/spec/` を正とする。旧版やサンプルとの矛盾は v3.0 に寄せる。**改訂は分冊（part1〜8）を直接編集**し、`CHANGELOG-vX.Y.md` を `docs/architecture/` に追加して `spec/README.md` の版番号を上げる（版ごとのファイル複製はしない。履歴は git）。大規模再構成時のみ `spec/` 一式を `old/vX.Y/` にスナップショットする。
+- 設計に関する記述を変更するときは `docs/architecture/spec/` を正とする。旧版やサンプルとの矛盾は spec/ に寄せる。**改訂は分冊（part1〜8）を直接編集**し、`CHANGELOG-vX.Y.md` を `docs/architecture/` に追加して `spec/README.md` の版番号を上げる（版ごとのファイル複製はしない。履歴は git）。大規模再構成時のみ `spec/` 一式を `old/vX.Y/` にスナップショットする。
 - `generated/` は自動生成専用（ヘッダ必須・直接コミット拒否）、`intent/` は人が書く intent の出力先（claim シャーディング時は `intent/<scope>/` 規約）。
 - **Schema 設計が最難関**（secret/managed/ordered/identity の誤宣言は安全保証を黙って無効化する。identity は運用上の変更頻度で選ぶ）。
 - コンポーネント名は機能的な英語名（reconciler / credential-broker / allocator / catalog）を使う。固有名詞は「Sakutei」のみ。
