@@ -186,6 +186,30 @@
       "updatedAt": "2026-10-20T08:42:51.493Z",
       "closedAt": "2026-10-20T08:42:51.493Z",
       "extra": {}
+    },
+    {
+      "id": "v1a-9-v1a-2-provider-chaos",
+      "number": 9,
+      "kind": "story",
+      "title": "v1a-9 v1a 完成 — 2 つ目の provider・全 chaos スイート・適合レポート",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1a",
+        "milestone"
+      ],
+      "body": "旧 ROADMAP.json の Sprint 9（`Sc7a647`）。v1a（コア実証）完成のマイルストーン。\n\n- Sc7a647-1 2 つ目の実 provider — nftables ruleset ファイル（順序付きルール）（4 件・nftables_test.go）\n- Sc7a647-2 chaos スイート拡充 — 両 provider・実 fault injection（3 件・chaos_v1a_test.go）\n- Sc7a647-3 `sakutei status` — 適合レポート / drifted 一覧（3 件・status_test.go）\n\n受け入れ条件の全文は git 履歴の `docs/ROADMAP.json`（コミット 9d7cf32）。テスト内タグ `[AC-Sc7a647-x-y]`。\n\nv1a 完成後の追加：cause A/B の判定を verb 間でそろえ、管理外の現実を status に出す修正（fc648a6）、`make demo`（d91527c）。\n\n既知の v1a の限界（設計 §29.2）：振動の隔離は未配線（`StatusOscillating` は型のみ）、Vault SecretBackend はスタブ、早期収束・BulkObserve・--claim は seam まで。\n\n**確認（2026-10-20）**：`make check` が通り、10 件すべて合格。旧 ROADMAP では受け入れ条件が pending のままだったが、記録の付け忘れだった。",
+      "doneWhen": "受け入れ条件 AC-Sc7a647-* 10 件のテストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:42:52.212Z",
+      "updatedAt": "2026-10-20T08:42:52.212Z",
+      "closedAt": "2026-10-20T08:42:52.212Z",
+      "extra": {}
     }
   ]
 }
