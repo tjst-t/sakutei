@@ -117,6 +117,29 @@
       "updatedAt": "2026-10-20T08:42:49.388Z",
       "closedAt": "2026-10-20T08:42:49.388Z",
       "extra": {}
+    },
+    {
+      "id": "v1a-6-provider-sdk-dns-provider-provider",
+      "number": 6,
+      "kind": "story",
+      "title": "v1a-6 Provider SDK と DNS provider（初の実 provider）",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v1a"
+      ],
+      "body": "旧 ROADMAP.json の Sprint 6（`S62dbba`）。\n\nProvider 作者が約4関数+List を書けば、SDK が横断保証（diff・秘匿マスク・managed 除外・バージョン埋め込み・エラー分類・テストハーネス・Schema lint）を担う。第一号の実 provider は DNS ゾーンファイル。ADR-0022。\n\n- S62dbba-1 Provider SDK — Schema lint・ContractTester・エラー分類（4 件・sdk_schema_lint_test.go, sdk_contract_test.go）\n- S62dbba-2 Provider registry / DI — cmd/ の provider 直 import を解消（4 件・registry_test.go）\n- S62dbba-3 DNS ゾーンファイル provider（stdlib のみ）（5 件・dnszone_test.go）\n\n受け入れ条件の全文は git 履歴の `docs/ROADMAP.json`（コミット 9d7cf32）。テスト内タグ `[AC-S62dbba-x-y]`。\n\n**確認（2026-10-20）**：`make check` が通り、13 件すべて合格。旧 ROADMAP では受け入れ条件が pending のままだったが、記録の付け忘れだった。",
+      "doneWhen": "受け入れ条件 AC-S62dbba-* 13 件のテストが合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:42:50.060Z",
+      "updatedAt": "2026-10-20T08:42:50.060Z",
+      "closedAt": "2026-10-20T08:42:50.060Z",
+      "extra": {}
     }
   ]
 }
