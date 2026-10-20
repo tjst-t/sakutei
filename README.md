@@ -88,6 +88,8 @@ sakutei sync         # mode: sync の scope の現実を generated/ に記録す
 
 **採番（v1b）**：VLAN などの番号はプールから払い出せます。intent のトップレベルの `pools:` にプール（`name`・`range: "100-199"`）を宣言し、フィールドに `from_pool: <プール名>` と書きます。`reconcile` と常駐ループは `--alloc-store <ファイル>` の採番記録から払い出し（同じリソースには常に同じ値）、`plan` と `status` は既存の割当を引くだけです（未割当は「割り当て待ち」と表示）。
 
+**tier 別の Observe 頻度（v1b）**：常駐ループは既定で毎周すべてのリソースを Observe します。Observe が重い層（NETCONF・CLI・Ansible など）は、intent のトップレベルの `tiers:` に tier（`name`・`observe_every: N`）を宣言し、リソースに `tier: <名前>` と書くと、収束しているあいだは N 周に1回だけ Observe されます。初回・未収束（差分・エラー）・desired が変わった周は間引かずに Observe するので、遅れるのは安定したリソースの drift 検知だけです（最大 N−1 周）。tier を書かないリソースは毎周のままです（Ansible executor の既定値も、executor を実装するまで「毎周」です）。
+
 `apply` は意図的に主 verb にしていません（「いつ変えるか」は収束が決める）。`plan` と `status` を前面に置くこと自体が、このソフトのレビュー体験です。
 
 ---

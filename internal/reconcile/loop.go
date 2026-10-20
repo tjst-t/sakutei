@@ -183,6 +183,11 @@ type Config struct {
 	// ExpanderRegistry is the render phase 2 expander registry (§9.5).
 	// If nil, render.DefaultRegistry() is used (includes the FakeCompositeExpander).
 	ExpanderRegistry *render.ExpanderRegistry
+
+	// ObserveScheduler decides which resources are Observed each cycle
+	// (§16.5).  Nil means a TierScheduler fed by the intent's `tiers:` —
+	// with no tiers declared, every resource is Observed every cycle.
+	ObserveScheduler ObserveScheduler
 }
 
 // DefaultInterval is the default convergence cycle period.
@@ -232,68 +237,8 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.Interval, cfg.IntentDir, cfg.StatePath, effectiveMode)
 	}
 
-	// S94f1f9-3: shared in-flight set + backoff table for the lifetime of this
-	// daemon run.  These are S3 state (memory only, ADR-0015): reset on restart,
-	// not a violation of observation state-less (they record self-initiated
-	// Applies, not cached observations of reality).
-	ifl := NewInFlightSet()
-
-	// F-1: the daemon depends on the provider.Provider seam, not any concrete
-	// provider type.  The caller (cmd layer) injects cfg.Provider; the concrete
-	// type never leaks into the reconcile core.  Swapping in a real provider is a
-	// call-site change only.
-	fp := cfg.Provider
-	engine := diff.New(fp.Schema())
-	var exec executor.Executor = executor.New()
-
-	// Scf7762-1: create the prune Engine ONCE, here, outside the cycle loop, so
-	// its S3 baseline (lastListCount) survives across cycles for the whole daemon
-	// lifetime.  This is what makes the List count-drop halt (§12.4b) work: cycle
-	// N records the baseline, and cycle N+1 compares against it.  If the engine
-	// were recreated each cycle (as the one-shot "sakutei reconcile" is forced to
-	// do, per process), the baseline would reset every cycle and the count-drop
-	// gate could never fire.  The daemon is the intended home for prune.
-	//
-	// This is memory-only S3 state (ADR-0015): it resets on daemon restart, which
-	// is correct — the first post-restart cycle re-establishes the baseline.
-	var pruneEngine *prune.Engine
-	if _, isLister := fp.(provider.Lister); isLister {
-		pruneEngine = prune.New()
-	}
-
-	// Scf7762-2: create the budget Engine ONCE per daemon run so the cumulative
-	// time-window counter (S3, memory-only) accumulates across cycles.  Resetting
-	// on restart is intentional: the first post-restart window starts fresh.
-	budgetEngine := budget.New(cfg.BudgetConfig)
-
-	// Scb0ecd-3: last-seen ring (S3, memory-only, non-persistent, §10.5,
-	// ADR-0008).  Created ONCE per daemon run so it survives across cycles.
-	// Reset on restart is correct: the first post-restart cycle reports
-	// "no previous snapshot", which is the correct S3 non-persistent behaviour
-	// (scenario-Scb0ecd-3 step 3).
-	// Accessed only from the single-threaded Observe/Diff phase in
-	// runCycleAsync; async Apply goroutines do not touch it.
-	lastSeenRing := lastseen.NewResourceRing(lastseen.DefaultRingSize)
-
-	// F-5 (Scb0ecd-2 daemon wiring): previous-cycle revision + provider_version,
-	// held in memory for the daemon's lifetime (S3, memory-only, ADR-0015 —
-	// alongside budget/prune/inflight/last-seen).  These are the "prev" side of
-	// the CauseContext that lets cause.Classify distinguish A (intent commit) /
-	// B (drift) / C (provider upgrade / ghost diff) in the daemon path.
-	// runCycleAsync reads them to build the context, then advances them: the
-	// intent/rendered baseline every cycle, the provider_version baseline only
-	// on a cycle with no outstanding ghost diff (the sticky-baseline rule
-	// documented inside runCycleAsync).
-	//
-	// Reset-on-restart is the correct S3 behaviour: the first post-restart cycle
-	// sees empty prev values → first-run A for whatever is not yet converged,
-	// then subsequent cycles compare against the just-recorded values.  This is
-	// the same "record self-initiated signals, not cached observations of
-	// reality" property that keeps the daemon observation-state-less (ADR-0002):
-	// the tracked values are hashes of intent files and the provider's own
-	// version, never a cached snapshot of what reality looked like.
-	var prevRev core.RevisionInfo
-	var prevProviderVersion string
+	d := NewDaemon(cfg)
+	ifl := d.ifl
 
 	cycleNum := 0
 	for {
@@ -307,8 +252,8 @@ func Run(ctx context.Context, cfg Config) error {
 		default:
 		}
 
-		cycleNum++
-		res, cycleErr := runCycleAsync(ctx, engine, pruneEngine, budgetEngine, fp, exec, ifl, lastSeenRing, &prevRev, &prevProviderVersion, cfg)
+		res, cycleErr := d.RunCycle(ctx)
+		cycleNum = d.cycle
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
@@ -329,6 +274,11 @@ func Run(ctx context.Context, cfg Config) error {
 		} else {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d applied=%d launched=%d\n",
 				cycleNum, res.Observed, res.Applied, res.Launched)
+		}
+		if len(res.NotDue) > 0 {
+			// #30 (§16.5): resources thinned by their tier this cycle.
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d resource(s) not due for Observe (tier thinning)\n",
+				cycleNum, len(res.NotDue))
 		}
 		if len(res.InFlight) > 0 {
 			// S94f1f9-3: in-flight resources from a prior async Apply are still
@@ -406,6 +356,126 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 }
 
+// Daemon is the convergence loop's state across cycles: the in-flight set,
+// prune/budget engines, last-seen ring, cause baselines and the Observe
+// scheduler.  All of it is S3 (memory only, reset on restart).  Run drives a
+// Daemon on a timer; tests may step it one cycle at a time with RunCycle.
+type Daemon struct {
+	cfg                 Config
+	engine              *diff.Engine
+	pruneEngine         *prune.Engine
+	budgetEngine        *budget.Engine
+	fp                  provider.Provider
+	exec                executor.Executor
+	ifl                 *InFlightSet
+	lsRing              *lastseen.ResourceRing
+	sched               ObserveScheduler
+	prevRev             core.RevisionInfo
+	prevProviderVersion string
+	cycle               int
+}
+
+// NewDaemon prepares the cross-cycle state for cfg.  cfg.Out / cfg.ErrOut
+// default to os.Stdout / os.Stderr.
+func NewDaemon(cfg Config) *Daemon {
+	if cfg.Out == nil {
+		cfg.Out = os.Stdout
+	}
+	if cfg.ErrOut == nil {
+		cfg.ErrOut = os.Stderr
+	}
+	// S94f1f9-3: shared in-flight set + backoff table for the lifetime of this
+	// daemon run.  These are S3 state (memory only, ADR-0015): reset on restart,
+	// not a violation of observation state-less (they record self-initiated
+	// Applies, not cached observations of reality).
+	ifl := NewInFlightSet()
+
+	// F-1: the daemon depends on the provider.Provider seam, not any concrete
+	// provider type.  The caller (cmd layer) injects cfg.Provider; the concrete
+	// type never leaks into the reconcile core.  Swapping in a real provider is a
+	// call-site change only.
+	fp := cfg.Provider
+	engine := diff.New(fp.Schema())
+	var exec executor.Executor = executor.New()
+
+	// Scf7762-1: create the prune Engine ONCE, here, outside the cycle loop, so
+	// its S3 baseline (lastListCount) survives across cycles for the whole daemon
+	// lifetime.  This is what makes the List count-drop halt (§12.4b) work: cycle
+	// N records the baseline, and cycle N+1 compares against it.  If the engine
+	// were recreated each cycle (as the one-shot "sakutei reconcile" is forced to
+	// do, per process), the baseline would reset every cycle and the count-drop
+	// gate could never fire.  The daemon is the intended home for prune.
+	//
+	// This is memory-only S3 state (ADR-0015): it resets on daemon restart, which
+	// is correct — the first post-restart cycle re-establishes the baseline.
+	var pruneEngine *prune.Engine
+	if _, isLister := fp.(provider.Lister); isLister {
+		pruneEngine = prune.New()
+	}
+
+	// Scf7762-2: create the budget Engine ONCE per daemon run so the cumulative
+	// time-window counter (S3, memory-only) accumulates across cycles.  Resetting
+	// on restart is intentional: the first post-restart window starts fresh.
+	budgetEngine := budget.New(cfg.BudgetConfig)
+
+	// Scb0ecd-3: last-seen ring (S3, memory-only, non-persistent, §10.5,
+	// ADR-0008).  Created ONCE per daemon run so it survives across cycles.
+	// Reset on restart is correct: the first post-restart cycle reports
+	// "no previous snapshot", which is the correct S3 non-persistent behaviour
+	// (scenario-Scb0ecd-3 step 3).
+	// Accessed only from the single-threaded Observe/Diff phase in
+	// runCycleAsync; async Apply goroutines do not touch it.
+	lastSeenRing := lastseen.NewResourceRing(lastseen.DefaultRingSize)
+
+	// F-5 (Scb0ecd-2 daemon wiring): previous-cycle revision + provider_version,
+	// held in memory for the daemon's lifetime (S3, memory-only, ADR-0015 —
+	// alongside budget/prune/inflight/last-seen).  These are the "prev" side of
+	// the CauseContext that lets cause.Classify distinguish A (intent commit) /
+	// B (drift) / C (provider upgrade / ghost diff) in the daemon path.
+	// runCycleAsync reads them to build the context, then advances them: the
+	// intent/rendered baseline every cycle, the provider_version baseline only
+	// on a cycle with no outstanding ghost diff (the sticky-baseline rule
+	// documented inside runCycleAsync).
+	//
+	// Reset-on-restart is the correct S3 behaviour: the first post-restart cycle
+	// sees empty prev values → first-run A for whatever is not yet converged,
+	// then subsequent cycles compare against the just-recorded values.  This is
+	// the same "record self-initiated signals, not cached observations of
+	// reality" property that keeps the daemon observation-state-less (ADR-0002):
+	// the tracked values are hashes of intent files and the provider's own
+	// version, never a cached snapshot of what reality looked like.  Both
+	// start empty (Daemon.prevRev / Daemon.prevProviderVersion).
+
+	sched := cfg.ObserveScheduler
+	if sched == nil {
+		sched = NewTierScheduler()
+	}
+	return &Daemon{
+		cfg:          cfg,
+		engine:       engine,
+		pruneEngine:  pruneEngine,
+		budgetEngine: budgetEngine,
+		fp:           fp,
+		exec:         exec,
+		ifl:          ifl,
+		lsRing:       lastSeenRing,
+		sched:        sched,
+	}
+}
+
+// RunCycle runs one convergence cycle (Observe → Diff → Apply → prune) and
+// returns its summary.  Apply is asynchronous; use Wait to drain it.
+func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
+	d.cycle++
+	return runCycleAsync(ctx, d.engine, d.pruneEngine, d.budgetEngine, d.fp, d.exec, d.ifl, d.lsRing,
+		&d.prevRev, &d.prevProviderVersion, d.sched, d.cycle, d.cfg)
+}
+
+// Wait blocks until in-flight Applies finish or timeout elapses.
+func (d *Daemon) Wait(timeout time.Duration) {
+	d.ifl.Wait(timeout)
+}
+
 // CycleResult holds the summary of one convergence cycle.
 type CycleResult struct {
 	Observed int
@@ -469,6 +539,11 @@ type CycleResult struct {
 	// provider's interpretation changed but intent and reality did not, so
 	// applying would be an unreviewed side effect of a provider upgrade.
 	GhostDiffs int
+
+	// NotDue is the list of resource Local IDs the Observe scheduler did not
+	// schedule this cycle (tier thinning, §16.5).  They were neither Observed
+	// nor Diffed, and are not treated as unobservable.
+	NotDue []string
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -519,6 +594,8 @@ func runCycleAsync(
 	lsRing *lastseen.ResourceRing,
 	prevRev *core.RevisionInfo,
 	prevProviderVersion *string,
+	sched ObserveScheduler,
+	cycle int,
 	cfg Config,
 ) (CycleResult, error) {
 	// S072a14-3: resolve generated/ directory.
@@ -717,6 +794,10 @@ func runCycleAsync(
 	// apply it with no chance of operator review.
 	*prevRev = rev
 
+	// #30 (§16.5): the Observe scheduler sees this cycle's desired and tiers.
+	sched.BeginCycle(cycle, desired, in.TierIntervals())
+	var notDue []string
+
 	// Phase 1: Observe all resources fresh (ADR-0002).
 	// Resources in-flight are observed but excluded from the plan (they are
 	// still converging from a prior cycle's Apply).
@@ -750,11 +831,20 @@ func runCycleAsync(
 			continue
 		}
 
+		// #30 (§16.5): a resource whose tier is not due this cycle is not
+		// Observed.  Nothing is reused from an earlier Observe: it simply has
+		// no plan this cycle, and its downstream is not held back.
+		if !sched.Due(res) {
+			notDue = append(notDue, local)
+			continue
+		}
+
 		// ADR-0002: fresh observation per resource per cycle.
 		obs, readErr := fp.Read(ctx, local)
 		if readErr != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
 			unobservable[local] = true
+			sched.Observed(res, false)
 			continue
 		}
 		observed++
@@ -762,6 +852,7 @@ func runCycleAsync(
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: availability=%v (not Ok); treating as unobservable this cycle\n",
 				res.ID, obs.Availability)
 			unobservable[local] = true
+			sched.Observed(res, false)
 			continue
 		}
 
@@ -790,6 +881,7 @@ func runCycleAsync(
 		if err := engine.ValidateDesired(res); err != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: %v\n", err)
 			unobservable[local] = true
+			sched.Observed(res, false)
 			continue
 		}
 
@@ -844,6 +936,9 @@ func runCycleAsync(
 		if len(nonCOps) > 0 {
 			plans[local] = core.Plan{Ops: nonCOps}
 		}
+		// A held ghost diff (all C) is not converged either: keep Observing
+		// it every cycle until the operator resolves it.
+		sched.Observed(res, len(plan.Ops) == 0)
 	}
 
 	// F-5 ghost-diff gate — sticky provider_version baseline.
@@ -939,6 +1034,7 @@ func runCycleAsync(
 			DriftCount:  driftCount,
 			DriftEvents: driftEvents,
 			GhostDiffs:  ghostDiffs,
+			NotDue:      notDue,
 		}, nil
 	}
 
@@ -1028,6 +1124,7 @@ func runCycleAsync(
 		BudgetHalted: budgetHalted,
 		BudgetReason: budgetReason,
 		GhostDiffs:   ghostDiffs,
+		NotDue:       notDue,
 	}, nil
 }
 

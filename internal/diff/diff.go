@@ -66,6 +66,10 @@ type DesiredResource struct {
 	// AllocationAuthority for the value and writes it into Fields; until then
 	// the field is absent from Fields.  Nil when the resource requests nothing.
 	Allocations map[string]string
+	// Tier names the Observe-frequency tier the resource belongs to (intent:
+	// `tier: <name>`, declared under top-level `tiers:`, §16.5).  Empty means
+	// the default: Observed every cycle (§8).
+	Tier string
 }
 
 // Engine holds the provider schema used to drive the diff.

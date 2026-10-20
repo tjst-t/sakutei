@@ -168,6 +168,11 @@ func ExpandAll(registry *ExpanderRegistry, intent []diff.DesiredResource) ([]Exp
 			if child.ManagedBy == "" {
 				child.ManagedBy = res.ID.Local
 			}
+			// #30 (§16.5): a child is observed at its parent's tier unless
+			// the expander chose one.
+			if child.Tier == "" {
+				child.Tier = res.Tier
+			}
 			out = append(out, child)
 		}
 	}

@@ -29,6 +29,7 @@ import (
 //   - resources は配列（pools / scopes だけのファイルも書けるよう任意）。
 //   - pools は採番プールの宣言（name / range / claim、§19.8）。
 //   - scopes は scope ごとの mode（converge / sync）と sync.target_path（§24.5）。
+//   - tiers は Observe 頻度の tier（name / observe_every、§16.5）。resource は tier で所属を書く。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
 //     depends_on（文字列配列）、fields（文字列→スカラーのマップ）、
 //     deletion_policy（enum）を持つ。
@@ -71,6 +72,19 @@ func intentSchema() schemaNode {
 					},
 				},
 			},
+			// tiers は Observe 頻度の tier の宣言（§16.5）。observe_every は「N 周に1回」。
+			"tiers": schemaNode{
+				"type": "array",
+				"items": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"name", "observe_every"},
+					"properties": map[string]any{
+						"name":          schemaNode{"type": "string"},
+						"observe_every": schemaNode{"type": "integer"},
+					},
+				},
+			},
 			// pools は採番プールの宣言（§19.8）。range は "下限-上限"（整数）。
 			"pools": schemaNode{
 				"type": "array",
@@ -97,6 +111,7 @@ func intentSchema() schemaNode {
 						"scope":      stringMap,
 						"depends_on": schemaNode{"type": "array", "items": schemaNode{"type": "string"}},
 						"fields":     stringMap,
+						"tier":       schemaNode{"type": "string"},
 						"deletion_policy": schemaNode{
 							"type": "string",
 							"enum": []any{"ExplicitAbsentOnly", "PruneWithinScope"},

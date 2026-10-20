@@ -87,6 +87,7 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		r.Provider, _ = m["provider"].(string)
 		r.ID, _ = m["id"].(string)
 		r.DeletionPolicy, _ = m["deletion_policy"].(string)
+		r.Tier, _ = m["tier"].(string)
 		r.Scope = stringifyStringMap(m["scope"])
 		fields, allocs, err := splitFields(m["fields"])
 		if err != nil {
@@ -112,6 +113,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.Scopes = scopes
+	tiers, err := parseTiers(tree["tiers"])
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.Tiers = tiers
 	return out, nil
 }
 
@@ -183,6 +189,7 @@ type intentFile struct {
 	Resources []intentResource `json:"resources"`
 	Pools     []Pool           `json:"pools"`
 	Scopes    []ScopePolicy    `json:"scopes"`
+	Tiers     []Tier           `json:"tiers"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -208,6 +215,9 @@ type intentResource struct {
 	// legacy "pruneable" key in an intent file is silently ignored (provisional
 	// format; S33266e will formalise the schema and reject unknown keys).
 	DeletionPolicy string `json:"deletion_policy"`
+
+	// Tier is the Observe-frequency tier (§16.5).  Empty means every cycle.
+	Tier string `json:"tier"`
 
 	// Allocations maps a field to the pool it is allocated from — the
 	// `field: { from_pool: <pool> }` request form (§19.1).
@@ -247,6 +257,7 @@ type Intent struct {
 	Resources []diff.DesiredResource
 	Pools     []Pool
 	Scopes    []ScopePolicy
+	Tiers     []Tier
 	Revision  core.RevisionInfo
 }
 
@@ -262,6 +273,7 @@ func LoadIntent(dir string) (Intent, error) {
 	var resources []diff.DesiredResource
 	var pools []Pool
 	var scopes []ScopePolicy
+	var tiers []Tier
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -279,6 +291,7 @@ func LoadIntent(dir string) (Intent, error) {
 		resources = append(resources, loaded...)
 		pools = append(pools, file.Pools...)
 		scopes = append(scopes, file.Scopes...)
+		tiers = append(tiers, file.Tiers...)
 	}
 
 	// D-2: reject duplicate Local IDs.  Two resources sharing a Local ID would
@@ -300,6 +313,9 @@ func LoadIntent(dir string) (Intent, error) {
 	if err := validateScopes(scopes, resources); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
+	if err := validateTiers(tiers, resources); err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
 
 	// Scb0ecd-1: compute revision info after all validation passes so that only
 	// valid intent contributes to the hash.  Use the root scope (empty labels)
@@ -310,7 +326,7 @@ func LoadIntent(dir string) (Intent, error) {
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, Revision: rev}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, Tiers: tiers, Revision: rev}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the
@@ -459,6 +475,7 @@ func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 			DependsOn:      dependsOn,
 			DeletionPolicy: parseDeletionPolicy(r.DeletionPolicy),
 			Allocations:    r.Allocations,
+			Tier:           strings.TrimSpace(r.Tier),
 		})
 	}
 	return resources, intent, nil
