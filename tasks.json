@@ -619,6 +619,29 @@
       "extra": {}
     },
     {
+      "id": "v1b-allocationauthority-sqlite",
+      "number": 36,
+      "kind": "task",
+      "title": "v1b: AllocationAuthority の SQLite 実装（ファイル版からの差し替え）",
+      "status": "backlog",
+      "parent": "v1b",
+      "dependsOn": [
+        "v1b-allocationauthority-interface-sqlite"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "設計 §19。#24 では外部依存を入れず、ファイル（JSON）とロックで最小実装した（2026-10-20 人が決定）。設計どおりの SQLite 版を、AllocationAuthority の interface の別実装として足す。\n\n着手時に人と決めること：初めての外部依存を入れてよいか（cgo の要らない modernc.org/sqlite など）。",
+      "doneWhen": "SQLite 版が、ファイル版と同じ AllocationAuthority の契約テストに合格する",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T11:11:07.437Z",
+      "updatedAt": "2026-10-20T11:11:07.437Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "item-1",
       "number": 11,
       "kind": "task",
