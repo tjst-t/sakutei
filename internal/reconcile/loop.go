@@ -101,6 +101,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -140,7 +141,16 @@ type Config struct {
 	// Provider is the target Provider the loop converges against.  It is injected
 	// by the caller (cmd layer) so the reconcile core depends only on the
 	// provider.Provider seam, never on a concrete provider type (F-1).
+	// Every resource is converged against it whatever its provider name.
 	Provider provider.Provider
+	// Providers resolves each resource's provider name to its provider (#67,
+	// §5) when Provider is nil: Read/Diff (with that provider's Schema),
+	// Apply, List/BulkObserve, prune, the provider_version baseline and the
+	// external-upstream Observe all go to the resource's own provider.  A
+	// resolved provider must pass sdk.ValidateProvider (fail-closed, §10.4); a
+	// name that cannot be resolved leaves its resources unobservable for the
+	// cycle (no Apply, no prune) and is retried next cycle.
+	Providers ProviderResolver
 	// Interval is the base duration between convergence cycles.
 	// A random jitter of up to 10% of Interval is added to each sleep.
 	Interval time.Duration
@@ -152,7 +162,9 @@ type Config struct {
 	// Zero value means no budget limits are enforced (unlimited).
 	BudgetConfig budget.Config
 	// CapacityGates are the capacity gates (§11.4, §13.4).  Each cycle the pool
-	// resource of every gate is observed fresh through Provider; utilization
+	// resource of every gate is observed fresh through the gate's provider
+	// (Provider, or Providers by the gate's name — "fake" when it names none);
+	// utilization
 	// above the threshold (or unknown) halts new changes per the gate's
 	// on_exceed.  Empty means no capacity gate.
 	CapacityGates []capacity.Gate
@@ -666,19 +678,19 @@ func shortRev(rev string) string {
 // scheduler.  All of it is S3 (memory only, reset on restart).  Run drives a
 // Daemon on a timer; tests may step it one cycle at a time with RunCycle.
 type Daemon struct {
-	cfg                 Config
-	engine              *diff.Engine
-	pruneEngine         *prune.Engine
-	budgetEngine        *budget.Engine
-	fp                  provider.Provider
-	exec                executor.Executor
-	ifl                 *InFlightSet
-	lsRing              *lastseen.ResourceRing
-	sched               ObserveScheduler
-	prevRev             core.RevisionInfo
-	prevParentRevs      map[string]string
-	prevProviderVersion string
-	cycle               int
+	cfg          Config
+	providers    *providerSet
+	budgetEngine *budget.Engine
+	exec         executor.Executor
+	ifl          *InFlightSet
+	lsRing       *lastseen.ResourceRing
+	sched        ObserveScheduler
+	prevRev      core.RevisionInfo
+	// prevProviderVersions is the provider_version baseline per provider
+	// (key "" for the single Config.Provider), #67.
+	prevProviderVersions map[string]string
+	prevParentRevs       map[string]string
+	cycle                int
 	// tasks launches strategy: task Tasks (§6.5).  Nil when no TaskStore or
 	// no runner is configured; tasksOff then says why.
 	tasks    *task.Manager
@@ -704,18 +716,20 @@ func NewDaemon(cfg Config) *Daemon {
 	ifl := NewInFlightSet()
 
 	// F-1: the daemon depends on the provider.Provider seam, not any concrete
-	// provider type.  The caller (cmd layer) injects cfg.Provider; the concrete
-	// type never leaks into the reconcile core.  Swapping in a real provider is a
-	// call-site change only.
-	fp := cfg.Provider
-	engine := diff.New(fp.Schema())
+	// provider type.  The caller (cmd layer) injects cfg.Provider or
+	// cfg.Providers; the concrete type never leaks into the reconcile core.
+	// Swapping in a real provider is a call-site change only.  #67: each
+	// resource is routed to its own provider; fp applies plans through it.
+	providers := newProviderSet(cfg)
+	fp := providers.router()
 	var exec executor.Executor = executor.New()
 	if cfg.Fencing != nil {
 		// §15.2: every Apply/Delete passes the token check first.
 		exec = &fencing.Executor{Inner: exec, Guard: cfg.Fencing}
 	}
 
-	// Scf7762-1: create the prune Engine ONCE, here, outside the cycle loop, so
+	// Scf7762-1: the prune Engine is created ONCE per provider (providerEntry,
+	// #67: each provider's List has its own count baseline), not per cycle, so
 	// its S3 baseline (lastListCount) survives across cycles for the whole daemon
 	// lifetime.  This is what makes the List count-drop halt (§12.4b) work: cycle
 	// N records the baseline, and cycle N+1 compares against it.  If the engine
@@ -725,10 +739,6 @@ func NewDaemon(cfg Config) *Daemon {
 	//
 	// This is memory-only S3 state (ADR-0015): it resets on daemon restart, which
 	// is correct — the first post-restart cycle re-establishes the baseline.
-	var pruneEngine *prune.Engine
-	if _, isLister := fp.(provider.Lister); isLister {
-		pruneEngine = prune.New()
-	}
 
 	// Scf7762-2: create the budget Engine ONCE per daemon run so the cumulative
 	// time-window counter (S3, memory-only) accumulates across cycles.  Resetting
@@ -769,7 +779,7 @@ func NewDaemon(cfg Config) *Daemon {
 	// reality" property that keeps the daemon observation-state-less (ADR-0002):
 	// the tracked values are hashes of intent files and the provider's own
 	// version, never a cached snapshot of what reality looked like.  Both
-	// start empty (Daemon.prevRev / Daemon.prevProviderVersion).
+	// start empty (Daemon.prevRev / Daemon.prevProviderVersions).
 
 	sched := cfg.ObserveScheduler
 	if sched == nil {
@@ -783,7 +793,7 @@ func NewDaemon(cfg Config) *Daemon {
 	tasksOff := ""
 	runner := cfg.TaskRunner
 	if runner == nil {
-		runner, _ = fp.(task.Runner)
+		runner = providers.taskRunner()
 	}
 	switch {
 	case cfg.TaskStore == nil:
@@ -803,6 +813,11 @@ func NewDaemon(cfg Config) *Daemon {
 			Store:    cfg.WorkflowStore,
 			Audit:    cfg.Audit,
 			Provider: fp,
+			// #67: each Workflow target is Observed and Diffed through its
+			// own provider.
+			ProviderFor: func(id core.ID) provider.Provider {
+				return providers.provider(diff.DesiredResource{ID: id})
+			},
 			Exec:     func(ctx context.Context, plan core.Plan) error { return exec.Execute(ctx, fp, plan) },
 			Tasks:    tasks,
 			TasksOff: tasksOff,
@@ -816,14 +831,14 @@ func NewDaemon(cfg Config) *Daemon {
 		tasks:        tasks,
 		tasksOff:     tasksOff,
 		cfg:          cfg,
-		engine:       engine,
-		pruneEngine:  pruneEngine,
+		providers:    providers,
 		budgetEngine: budgetEngine,
-		fp:           fp,
 		exec:         exec,
 		ifl:          ifl,
 		lsRing:       lastSeenRing,
 		sched:        sched,
+
+		prevProviderVersions: map[string]string{},
 	}
 }
 
@@ -831,8 +846,8 @@ func NewDaemon(cfg Config) *Daemon {
 // returns its summary.  Apply is asynchronous; use Wait to drain it.
 func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 	d.cycle++
-	return runCycleAsync(ctx, d.engine, d.pruneEngine, d.budgetEngine, d.fp, d.exec, d.ifl, d.lsRing,
-		&d.prevRev, &d.prevParentRevs, &d.prevProviderVersion, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows)
+	return runCycleAsync(ctx, d.providers, d.budgetEngine, d.exec, d.ifl, d.lsRing,
+		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows)
 }
 
 // Wait blocks until in-flight Applies and running Tasks finish or timeout
@@ -1021,16 +1036,14 @@ type CycleResult struct {
 // window counter.
 func runCycleAsync(
 	ctx context.Context,
-	engine *diff.Engine,
-	pruneEngine *prune.Engine,
+	providers *providerSet,
 	budgetEngine *budget.Engine,
-	fp provider.Provider,
 	exec executor.Executor,
 	ifl *InFlightSet,
 	lsRing *lastseen.ResourceRing,
 	prevRev *core.RevisionInfo,
 	prevParentRevs *map[string]string,
-	prevProviderVersion *string,
+	prevProviderVersions map[string]string,
 	sched ObserveScheduler,
 	cycle int,
 	cfg Config,
@@ -1117,9 +1130,8 @@ func runCycleAsync(
 	for _, sp := range in.SyncScopes() {
 		syncScopes = append(syncScopes, sp.Scope)
 	}
-	if pruneEngine != nil {
-		pruneEngine.SetExcludedScopes(syncScopes)
-	}
+	// pruneExcluded is handed to every provider's prune engine below.
+	pruneExcluded := syncScopes
 
 	// §13.3: the planned_change declarations open their lanes in the budget
 	// engine.  Refreshed every cycle with the intent; a declaration removed from
@@ -1244,9 +1256,7 @@ func runCycleAsync(
 				kept = append(kept, r)
 			}
 			desired = kept
-			if pruneEngine != nil {
-				pruneEngine.SetExcludedScopes(excluded)
-			}
+			pruneExcluded = excluded
 		}
 	}
 
@@ -1329,8 +1339,18 @@ func runCycleAsync(
 	//
 	// provider_version comes from the provider.Provider seam
 	// (Capabilities().ProviderVersion), so the daemon never depends on a concrete
-	// provider type (F-1 discipline preserved).
-	curProviderVersion := fp.Capabilities().ProviderVersion
+	// provider type (F-1 discipline preserved).  #67: it is tracked per
+	// provider, so one provider's upgrade (or a provider newly appearing in the
+	// intent) never turns another provider's diffs into ghost diffs.
+	//
+	// The providers of this cycle's desired are resolved here (fail-closed:
+	// a name that cannot be resolved or validated leaves its resources
+	// unobservable — no Apply, no prune — and is retried next cycle).
+	cycleProviders, unresolved := resolveCycleProviders(providers, desired, cfg.ErrOut)
+	curProviderVersions := make(map[string]string, len(cycleProviders))
+	for _, e := range cycleProviders {
+		curProviderVersions[providers.key(e.name)] = e.p.Capabilities().ProviderVersion
+	}
 
 	// S072a14-3: compute RenderedRevisionChanged flag for cause E.
 	// E fires when rendered_revision changed but intent_revision is stable.
@@ -1354,9 +1374,9 @@ func runCycleAsync(
 		IntentCurRevision:       rev.IntentRevision,
 		RenderedPrevRevision:    prevRev.RenderedRevision,
 		RenderedCurRevision:     rev.RenderedRevision,
-		ProviderPrevVersion:     *prevProviderVersion,
-		ProviderCurVersion:      curProviderVersion,
 		RenderedRevisionChanged: renderedRevisionChanged,
+		// ProviderPrevVersion/ProviderCurVersion are set per-resource below
+		// from the resource's own provider (#67).
 		// UpstreamChanged is set per-resource below for D-tagged children.
 	}
 
@@ -1393,13 +1413,16 @@ func runCycleAsync(
 	var backedOff []string
 	// F-5: count resources whose diff was a cause-C ghost diff (held, not applied).
 	ghostDiffs := 0
+	// ghostByProvider counts them per provider for the sticky baseline (#67).
+	ghostByProvider := map[string]int{}
 	// #41: strategy: task resources whose completion mark was observed.
 	var tasksCompleted []string
 
 	// #27 (§5.7): a provider that declares BulkObserve is observed with one
 	// bulk call for the whole claim, made at the first Observe of this cycle and
 	// discarded with it; any other provider gets one Read per resource.
-	cycleObs := sdk.NewCycleObserver(fp, cfg.Claim)
+	// #67: one CycleObserver per provider.
+	cycleObs := make(map[string]*sdk.CycleObserver, len(cycleProviders))
 
 	for _, res := range desired {
 		local := res.ID.Local
@@ -1436,9 +1459,24 @@ func runCycleAsync(
 			continue
 		}
 
+		// #67: the resource's own provider; one that cannot be resolved
+		// leaves the resource unobservable (resolveCycleProviders logged why).
+		if unresolved[res.ID.Provider] {
+			unobservable[local] = true
+			sched.Observed(res, false)
+			continue
+		}
+		pe, _ := providers.get(res.ID.Provider)
+		pkey := providers.key(pe.name)
+		co, ok := cycleObs[pkey]
+		if !ok {
+			co = sdk.NewCycleObserver(pe.p, cfg.Claim)
+			cycleObs[pkey] = co
+		}
+
 		// ADR-0002: fresh observation per resource per cycle (from this
 		// cycle's bulk call when the provider declares BulkObserve).
-		obs, readErr := cycleObs.Observe(ctx, res.ID)
+		obs, readErr := co.Observe(ctx, res.ID)
 		if readErr != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
 			unobservable[local] = true
@@ -1465,6 +1503,8 @@ func runCycleAsync(
 		// for children of composite parents that changed this cycle (cause D).
 		// All other resources use baseCauseCtx unchanged.
 		resCauseCtx := baseCauseCtx
+		resCauseCtx.ProviderPrevVersion = prevProviderVersions[pkey]
+		resCauseCtx.ProviderCurVersion = curProviderVersions[pkey]
 		if childrenWithUpstreamChange[res.ID.Local] {
 			resCauseCtx.UpstreamChanged = true
 		}
@@ -1477,7 +1517,7 @@ func runCycleAsync(
 		// BEFORE diffing.  Such a value is a plaintext secret in the intent AND
 		// a perpetual non-converging diff.  Fail loud and skip this resource;
 		// the error names the field only, never the value.
-		if err := engine.ValidateDesired(res); err != nil {
+		if err := pe.engine.ValidateDesired(res); err != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: %v\n", err)
 			unobservable[local] = true
 			sched.Observed(res, false)
@@ -1486,7 +1526,7 @@ func runCycleAsync(
 
 		// F-5 (Scb0ecd-2 daemon wiring): classify this resource's diff with the
 		// real CauseContext so A/B/C/D/E are attributed correctly in the daemon path.
-		plan := engine.Diff(obs, res, resCauseCtx)
+		plan := pe.engine.Diff(obs, res, resCauseCtx)
 
 		// Scb0ecd-3: for cause B (drift), emit a DriftEvent with the last-seen
 		// ring's previous-cycle snapshot diff.  The ring is read BEFORE we record
@@ -1520,9 +1560,10 @@ func runCycleAsync(
 		for _, op := range plan.Ops {
 			if op.Cause == core.CauseTagC {
 				ghostDiffs++
+				ghostByProvider[pkey]++
 				fmt.Fprintf(cfg.ErrOut,
 					"sakutei: ProviderUpgradeDiff: %s [cause: C] provider_version changed (%s → %s); NOT applying (review required)\n",
-					op.Target, baseCauseCtx.ProviderPrevVersion, baseCauseCtx.ProviderCurVersion)
+					op.Target, resCauseCtx.ProviderPrevVersion, resCauseCtx.ProviderCurVersion)
 				continue
 			}
 			nonCOps = append(nonCOps, op)
@@ -1553,8 +1594,8 @@ func runCycleAsync(
 
 	// §8.3: ready_condition upstreams outside the desired set (external owner,
 	// §7) are observed here so they can still gate their dependents.
-	ObserveExternalUpstreams(ctx, func(diff.DesiredResource) provider.Provider { return fp },
-		desired, ready, cfg.ErrOut)
+	// #67: through the dependent's provider.
+	ObserveExternalUpstreams(ctx, providers.provider, desired, ready, cfg.ErrOut)
 
 	// F-5 ghost-diff gate — sticky provider_version baseline.
 	//
@@ -1577,8 +1618,13 @@ func runCycleAsync(
 	// This is memory-only S3 state and resets on restart, which is safe: the
 	// first post-restart cycle re-establishes the baseline from the current
 	// version and re-detects any still-outstanding ghost diff on the next change.
-	if ghostDiffs == 0 {
-		*prevProviderVersion = curProviderVersion
+	//
+	// #67: per provider — a ghost diff held for one provider pins only that
+	// provider's baseline.
+	for key, cur := range curProviderVersions {
+		if ghostByProvider[key] == 0 {
+			prevProviderVersions[key] = cur
+		}
 	}
 
 	// Phase 2a: Compute prune ops (dry-run, no Apply yet).
@@ -1598,10 +1644,10 @@ func runCycleAsync(
 	// destructive side effect: computeDaemonPrune never executes a Delete (that
 	// is executePruneOps in Phase 3), and Phase 2b returns early before Phase 3,
 	// so in alert-only the List runs but Apply/prune never do.
-	var pruneResult prune.PruneResult
-	if pruneEngine != nil {
-		pruneResult = computeDaemonPrune(ctx, pruneEngine, fp, cfg.Claim, desired, unobservable, cfg.ErrOut)
-	}
+	//
+	// #67: each Lister provider prunes its own reality against its own
+	// resources, with its own count baseline.
+	pruneResult := computeDaemonPruneAll(ctx, providers, cycleProviders, pruneExcluded, cfg.Claim, desired, unobservable, cfg.ErrOut)
 
 	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3; #40 §14.2/§14.3).
 	//
@@ -1685,8 +1731,15 @@ func runCycleAsync(
 	// Remediation is outside the reconciler: only the Event is emitted here.
 	// The decision is merged into the budget decision so both gates filter
 	// Apply plans and prune ops through the same path below.
-	capacityDecision := capacity.CheckAll(ctx, cfg.CapacityGates,
-		func(capacity.Gate) provider.Provider { return fp })
+	capacityDecision := capacity.CheckAll(ctx, cfg.CapacityGates, func(g capacity.Gate) provider.Provider {
+		// #67: the gate's provider ("fake" when it names none, as in the
+		// one-shot reconcile); with a single Config.Provider, that one.
+		name := g.Provider
+		if name == "" {
+			name = "fake"
+		}
+		return providers.provider(diff.DesiredResource{ID: core.ID{Provider: name}})
+	})
 	capacityHalted := capacityDecision.HaltAll || capacityDecision.HaltDestructive
 	if capacityHalted {
 		fmt.Fprintf(cfg.ErrOut, "sakutei: %s: %s\n", capacity.EventName, capacityDecision.Reason)
@@ -1741,6 +1794,12 @@ func runCycleAsync(
 			fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: strategy: task, not applying; no Task launched: %s\n", r.ID, tasksOff)
 			return
 		}
+		if cfg.TaskRunner == nil && !providers.hasTaskRunner(r.ID) {
+			// #67: the resource's own provider cannot run Tasks.
+			tasksHeld = append(tasksHeld, local)
+			fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: strategy: task, not applying; no Task launched: provider %q has no task runner\n", r.ID, r.ID.Provider)
+			return
+		}
 		if cfg.Fencing != nil {
 			// §15.2: a fenced writer launches nothing either.
 			if err := cfg.Fencing.Check(ctx, r.ID.Scope); err != nil {
@@ -1771,7 +1830,7 @@ func runCycleAsync(
 	}
 
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
-		ctx, fp, exec, ifl, desired, filteredPlans, unobservable, ready, cfg.ErrOut,
+		ctx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, ready, cfg.ErrOut,
 		dispatch, commit, launchTask)
 	backedOff = backedOffList
 	if waveErr != nil {
@@ -1786,7 +1845,7 @@ func runCycleAsync(
 	//
 	// CommitOps is called for each successfully applied Delete to advance the
 	// cumulative window counter (S3, §13.2).
-	pruned, pruneHalted := executePruneOps(ctx, pruneResult, allowedPruneOps, fp, exec, budgetEngine, pruneEngine, budgetDecision, cfg.ErrOut)
+	pruned, pruneHalted := executePruneOps(ctx, pruneResult, allowedPruneOps, providers, exec, budgetEngine, budgetDecision, cfg.ErrOut)
 
 	// #44 (§14.5): record this cycle's lane executions in S4.
 	if err := budgetEngine.FlushLaneAudit(); err != nil {
@@ -1922,27 +1981,71 @@ func computeDaemonPrune(
 	return result
 }
 
+// computeDaemonPruneAll runs computeDaemonPrune for every Lister provider of
+// the cycle (#67): each provider's List is set-differenced against that
+// provider's own resources, with that provider's long-lived prune engine.
+// The results are merged; a safety-guard halt of any provider halts the
+// whole prune phase this cycle (unsure → do not subtract, §3 principle 3).
+func computeDaemonPruneAll(
+	ctx context.Context,
+	providers *providerSet,
+	entries []*providerEntry,
+	excluded []core.Scope,
+	claim core.Scope,
+	desired []diff.DesiredResource,
+	unobservable map[string]bool,
+	errOut io.Writer,
+) prune.PruneResult {
+	var merged prune.PruneResult
+	var reasons []string
+	for _, e := range entries {
+		if e.prune == nil {
+			continue
+		}
+		e.prune.SetExcludedScopes(excluded)
+		own := desired
+		if providers.single == nil {
+			own = nil
+			for _, r := range desired {
+				if r.ID.Provider == e.name {
+					own = append(own, r)
+				}
+			}
+		}
+		r := computeDaemonPrune(ctx, e.prune, e.p, claim, own, unobservable, errOut)
+		merged.DeleteOps = append(merged.DeleteOps, r.DeleteOps...)
+		merged.Deferred = append(merged.Deferred, r.Deferred...)
+		if r.Halted {
+			merged.Halted = true
+			reasons = append(reasons, r.HaltReason)
+		}
+	}
+	merged.HaltReason = strings.Join(reasons, "; ")
+	return merged
+}
+
 // executePruneOps applies the subset of prune Delete ops that survived both the
 // prune-engine guards and the budget gate.
 //
 // allowedOps is the budget-filtered subset of pruneResult.DeleteOps.
 // budgetEngine is called with CommitOps for each successfully applied Delete
 // outside the planned_change lanes; a lane Delete consumes its lane instead and
-// is noted to pruneEngine so the next List drop does not count it (§13.3).
+// is noted to its provider's prune engine so the next List drop does not count
+// it (§13.3).
 func executePruneOps(
 	ctx context.Context,
 	pruneResult prune.PruneResult,
 	allowedOps []core.Op,
-	fp provider.Provider,
+	providers *providerSet,
 	exec executor.Executor,
 	budgetEngine *budget.Engine,
-	pruneEngine *prune.Engine,
 	decision budget.CycleDecision,
 	errOut io.Writer,
 ) (pruned int, halted bool) {
 	if pruneResult.Halted {
 		return 0, true
 	}
+	fp := providers.router()
 	for _, op := range allowedOps {
 		plan := core.Plan{Ops: []core.Op{op}}
 		inLane := decision.InLane(op)
@@ -1955,8 +2058,8 @@ func executePruneOps(
 		}
 		if inLane {
 			fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; planned_change lane)\n", op.Target)
-			if pruneEngine != nil {
-				pruneEngine.NotePlannedRemoval(op.Target)
+			if e, err := providers.get(op.Target.Provider); err == nil && e.prune != nil {
+				e.prune.NotePlannedRemoval(op.Target)
 			}
 		} else {
 			fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; PruneWithinScope)\n", op.Target)

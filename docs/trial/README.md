@@ -43,11 +43,10 @@ W=/tmp/sakutei-trial; rm -rf $W; mkdir -p $W
 cp docs/trial/v1/initial/* $W/; cp -r docs/trial/v1/intent $W/
 go build -o $W/sakutei ./cmd/sakutei
 cd $W
-ONE="--intent intent --zone example.com.zone --state firewall.rules"
+ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 ```
 
-`plan`・`reconcile` には今のところ nftables 用の `--ruleset` が無いので、ruleset のパスは `--state` で渡す（Backlog #67 で `--ruleset` を足す）。
-`status`・`import` には `--ruleset` がある。
+`plan`・`reconcile`・`status`・`import`・デーモンのどれも、dnszone のゾーンファイルは `--zone`、nftables の ruleset は `--ruleset` で渡す（fake provider は `--state`）。
 
 | 手順 | コマンド | 確かめること |
 |---|---|---|
@@ -58,10 +57,9 @@ ONE="--intent intent --zone example.com.zone --state firewall.rules"
 | 5. alert-only | `www` を手で書き換え → `./sakutei reconcile $ONE --mode alert-only` | 「would be UPDATE」と知らせるだけで、ファイルは書き換えない |
 | 6. 消さない | intent から `api` を消して `plan` | `Converged`（削除の計画が出ない）。現実の `api` は残る。消すには `deletion_policy: PruneWithinScope` を明示する |
 
-## 常駐デーモン（Backlog #67 が直ってから）
+## 常駐デーモン
 
-いまのデーモンは fake provider にしか対応していない（provider を決め打ちしている）ので、dnszone・nftables の intent は回せない。
-#67 が直ったら、次の形で回す予定：
+デーモンは intent に出てくる provider 名ごとに provider を引いて回す（Backlog #67）。dnszone・nftables の intent は次の形で回す：
 
 ```sh
 ./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 5s
@@ -83,7 +81,7 @@ halt する／Ctrl-C で周期の切れ目で止まる。
 
 | 見つかったこと | 扱い |
 |---|---|
-| デーモンが fake provider にしか対応していない。plan・reconcile に `--ruleset` が無い | Backlog #67（バグ） |
+| デーモンが fake provider にしか対応していない。plan・reconcile に `--ruleset` が無い | Backlog #67（バグ）。直した（デーモンに `--zone`・`--ruleset`、plan・reconcile に `--ruleset`） |
 | **nftables の Apply が base chain の `type … hook … priority …; policy …;` の行を消す**（直す前は、手順 3 の後の ruleset で `input` の宣言行が消えていた） | Backlog #68（バグ・安全）。直した：Apply は管理する chain の行だけを書き直し、base chain・set/map などの行はバイト単位で残す |
 | dnszone が $ORIGIN を解釈しない。ゾーンに絶対名 `www.example.com.` で書いたレコードを、intent の `www/A` は「無い」とみなして CREATE する（同じ名前が 2 つになる）。パッケージコメントの ID の例（`www.example.com./A`）も実装と食い違う | Backlog #69 で直した。名前は $ORIGIN・`@` を解いた FQDN で比べ、ID は `www.example.com./A`。相対名の ID はロードで拒否する |
 | SOA のシリアルが上がらない | 設計書 v3.12 §29.1 で「書き換えた Apply のときだけ YYYYMMDDnn で上げる（既定。`--zone-soa-serial keep` で止める）」と決めた。Backlog #70 で実装 |

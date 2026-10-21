@@ -19,8 +19,8 @@ step "0. ビルド"
 (cd "$REPO" && go build -o "$W/sakutei" ./cmd/sakutei)
 cd "$W"
 S=./sakutei
-# dnszone は --zone、nftables は --state（plan・reconcile に --ruleset が入るまで。Backlog #67）
-ONE="--intent intent --zone example.com.zone --state firewall.rules"
+# dnszone は --zone、nftables は --ruleset
+ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 
 step "1. import（いまの現実を intent の形で書き出す。理想ではなくスナップショット）"
 $S import --provider dnszone,nftables --zone example.com.zone --ruleset firewall.rules --out imported --samples 1

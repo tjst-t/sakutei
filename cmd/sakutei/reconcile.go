@@ -95,6 +95,9 @@ func runReconcile(args []string) {
 	// empty, dnszone falls back to --state (registry alias) as before.
 	zonePath := fs.String("zone", "",
 		"path to the dnszone provider zone file (default: falls back to --state)")
+	// #67: distinct file for the nftables provider, same meaning as in status.
+	rulesetPath := fs.String("ruleset", "",
+		"path to the nftables provider ruleset file (default: falls back to --state)")
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
@@ -370,12 +373,16 @@ func runReconcile(args []string) {
 
 	// S62dbba-2: resolve providers via registry based on intent resource declarations.
 	// The --state flag is passed as the "state" config key for the "fake" provider;
-	// --zone (when set) is passed as "zone" for the dnszone provider so a mixed
-	// fake+dnszone intent can keep each provider's backing file separate.
+	// --zone / --ruleset (when set) are passed as "zone" / "ruleset" for the
+	// dnszone / nftables providers so a mixed intent can keep each provider's
+	// backing file separate.
 	reg := registry.DefaultRegistry()
 	providerConfig := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		providerConfig["zone"] = *zonePath
+	}
+	if *rulesetPath != "" {
+		providerConfig["ruleset"] = *rulesetPath
 	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
 	if resolveErr != nil {

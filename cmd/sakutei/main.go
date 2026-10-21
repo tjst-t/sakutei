@@ -41,6 +41,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/audit"
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/fencing"
+	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
@@ -48,6 +49,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/workflow"
 	"github.com/tjst-t/sakutei/pkg/allocation"
 	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/pkg/provider"
 	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
 )
@@ -113,6 +115,8 @@ func main() {
 //
 //	--intent <dir>       directory containing intent JSON files (required)
 //	--state  <file>      path to the fake provider state file (default: sakutei-fake-state.json)
+//	--zone   <file>      path to the dnszone provider zone file (default: falls back to --state)
+//	--ruleset <file>     path to the nftables provider ruleset file (default: falls back to --state)
 //	--interval <dur>     convergence cycle period (default: 10s; use short values in tests)
 //	--claim <selector>   converge only the matching scopes (§17.1)
 //	--fencing-store <f>  fencing generation store shared by all shards (§15.2)
@@ -127,10 +131,11 @@ func main() {
 // The loop runs until SIGTERM or SIGINT is received, at which point it stops
 // at the next cycle boundary and exits 0.
 //
-// S62dbba-2: the provider is now resolved via ProviderRegistry instead of being
-// directly imported from internal/fakeprovider.  The daemon still uses a single
-// provider (the "fake" provider) for the initial implementation; multi-provider
-// daemon support is a future Story once the DNS provider (S62dbba-3) is ready.
+// S62dbba-2 / #67: each resource's provider is resolved by its provider name
+// via the ProviderRegistry (the same rule as resolveProviders in plan and
+// reconcile), so one intent can mix e.g. dnszone and nftables resources.  A
+// provider that fails sdk.ValidateProvider is never used (fail-closed): its
+// resources stay unobservable, with no Apply and no prune.
 func runDaemon() {
 	fs := flag.NewFlagSet("sakutei", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -138,6 +143,12 @@ func runDaemon() {
 	intentDir := fs.String("intent", "", "directory containing intent JSON files (required)")
 	statePath := fs.String("state", "sakutei-fake-state.json",
 		"path to the fake provider state file (default: sakutei-fake-state.json)")
+	// #67: distinct files for the dnszone / nftables providers (same meaning as
+	// in plan, reconcile and status).
+	zonePath := fs.String("zone", "",
+		"path to the dnszone provider zone file (default: falls back to --state)")
+	rulesetPath := fs.String("ruleset", "",
+		"path to the nftables provider ruleset file (default: falls back to --state)")
 	intervalStr := fs.String("interval", "",
 		"convergence cycle interval, e.g. 200ms or 30s (default: 10s)")
 	// S072a14-3: render pipeline flags for the daemon.
@@ -291,23 +302,28 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
-	// S62dbba-2: resolve the "fake" provider via the ProviderRegistry.
-	// The daemon currently supports a single provider (the state file path is
-	// provided via --state).  Multi-provider daemon support is a future Story.
+	// S62dbba-2 / #67: resolve each resource's provider by name via the
+	// ProviderRegistry.  --state is the "state" config key of the fake
+	// provider; --zone / --ruleset (when set) keep the dnszone / nftables
+	// files apart from it.
 	reg := registry.DefaultRegistry()
-	fp, err := reg.Get("fake", map[string]string{"state": *statePath})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sakutei: provider resolution failed: %v\n", err)
-		os.Exit(1)
+	providerConfig := map[string]string{"state": *statePath}
+	if *zonePath != "" {
+		providerConfig["zone"] = *zonePath
+	}
+	if *rulesetPath != "" {
+		providerConfig["ruleset"] = *rulesetPath
 	}
 
 	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
 	// A provider without a version cannot support ghost-diff (cause C) detection;
-	// starting the loop would silently misclassify ghost diffs as drift (B) and
-	// auto-apply them — the dangerous outcome this gate exists to prevent.
-	if err := sdk.ValidateProvider(fp); err != nil {
-		fmt.Fprintf(os.Stderr, "sakutei: provider validation failed: %v\n", err)
-		os.Exit(1)
+	// using it would silently misclassify ghost diffs as drift (B) and
+	// auto-apply them — the dangerous outcome this gate exists to prevent.  The
+	// loop runs sdk.ValidateProvider on every provider it resolves; the
+	// providers the intent names at startup are also checked here, so a bad one
+	// stops the daemon before its first cycle.
+	if src == nil {
+		validateIntentProviders(reg, *intentDir, providerConfig)
 	}
 
 	// S072a14-3: resolve generated/ directory.
@@ -356,9 +372,11 @@ func runDaemon() {
 	}
 
 	cfg := reconcile.Config{
-		IntentDir:             *intentDir,
-		StatePath:             *statePath,
-		Provider:              fp,
+		IntentDir: *intentDir,
+		StatePath: *statePath,
+		Providers: func(name string) (provider.Provider, error) {
+			return reg.Get(name, providerConfig)
+		},
 		Interval:              interval,
 		BudgetConfig:          budgetCfg,
 		CapacityGates:         capacityGates,
@@ -426,4 +444,33 @@ Usage:
   sakutei version      print version information
   sakutei help         show this help message
 `)
+}
+
+// validateIntentProviders resolves and validates (sdk.ValidateProvider) the
+// registered providers named by the intent in intentDir, and exits 1 when one
+// fails (#67).  A name the registry does not know is left to the loop, which
+// reports it every cycle and never converges its resources; an intent that
+// cannot be loaded yet is left to the loop as well.
+func validateIntentProviders(reg *registry.ProviderRegistry, intentDir string, providerConfig map[string]string) {
+	in, err := loader.LoadIntent(intentDir)
+	if err != nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, r := range in.Resources {
+		name := r.ID.Provider
+		if _, known := reg.Lookup(name); seen[name] || !known {
+			continue
+		}
+		seen[name] = true
+		p, err := reg.Get(name, providerConfig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei: provider resolution failed (%q): %v\n", name, err)
+			os.Exit(1)
+		}
+		if err := sdk.ValidateProvider(p); err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei: provider validation failed (%q): %v\n", name, err)
+			os.Exit(1)
+		}
+	}
 }

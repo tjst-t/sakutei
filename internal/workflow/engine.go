@@ -66,6 +66,10 @@ type Engine struct {
 	// Audit は S4 監査ログ。ゲート timeout の halt を記録する（承認・却下の記録は Decide）。
 	Audit    *audit.Log
 	Provider provider.Provider
+	// ProviderFor は対象ごとの provider を返す（#67: 複数 provider のデーモン）。
+	// 対象の Observe と Diff（その provider の Schema）はこれを通す。nil なら
+	// Provider。nil を返した対象は観測できないもの（unknown）として待つ。
+	ProviderFor func(id core.ID) provider.Provider
 	// Exec は apply ステップの Plan を実行する（常駐ループの Executor = fencing 込み）。
 	// nil なら Provider.Apply。
 	Exec func(ctx context.Context, plan core.Plan) error
@@ -77,7 +81,8 @@ type Engine struct {
 	// Now は時刻。nil なら time.Now。
 	Now func() time.Time
 
-	differ *diff.Engine
+	// differs は provider 名ごとの diff エンジン（ProviderFor が nil なら "" の 1 つ）。
+	differs map[string]*diff.Engine
 }
 
 func (e *Engine) now() time.Time {
@@ -87,11 +92,34 @@ func (e *Engine) now() time.Time {
 	return time.Now()
 }
 
-func (e *Engine) diff() *diff.Engine {
-	if e.differ == nil {
-		e.differ = diff.New(e.Provider.Schema())
+// providerOf は対象 id の provider を返す。解決できなければ nil。
+func (e *Engine) providerOf(id core.ID) provider.Provider {
+	if e.ProviderFor != nil {
+		return e.ProviderFor(id)
 	}
-	return e.differ
+	return e.Provider
+}
+
+// diff は対象 id の provider の Schema に従う diff エンジンを返す。provider が
+// 解決できなければ nil。
+func (e *Engine) diff(id core.ID) *diff.Engine {
+	key := ""
+	if e.ProviderFor != nil {
+		key = id.Provider
+	}
+	if d, ok := e.differs[key]; ok {
+		return d
+	}
+	p := e.providerOf(id)
+	if p == nil {
+		return nil
+	}
+	if e.differs == nil {
+		e.differs = map[string]*diff.Engine{}
+	}
+	d := diff.New(p.Schema())
+	e.differs[key] = d
+	return d
 }
 
 // Held は収束ループが Apply してはならない対象（Local ID → Workflow 名）を返す。
@@ -397,11 +425,15 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 	}
 
 	if step.Kind == StepApply {
-		plan := s.e.diff().Diff(obs, diff.DesiredResource{ID: target, Fields: step.Fields}, cause.CauseContext{})
+		d := s.e.diff(target)
+		if d == nil {
+			return stepPending, "the target's provider is unavailable; waiting"
+		}
+		plan := d.Diff(obs, diff.DesiredResource{ID: target, Fields: step.Fields}, cause.CauseContext{})
 		if err := s.e.execute(ctx, plan); err != nil {
 			return stepFailed, fmt.Sprintf("apply %v: %v", step.Fields, err)
 		}
-		fresh, err := s.e.Provider.Read(ctx, target.Local)
+		fresh, err := s.e.providerOf(target).Read(ctx, target.Local)
 		if err == nil && s.satisfied(fresh, target, step.Fields) {
 			return stepDone, fmt.Sprintf("applied %v", step.Fields)
 		}
@@ -442,14 +474,23 @@ func (s *stepper) satisfied(obs core.Observation, id core.ID, fields map[string]
 	if obs.Availability != core.AvailabilityOk || obs.State == nil {
 		return false
 	}
-	return len(s.e.diff().Diff(obs, diff.DesiredResource{ID: id, Fields: fields}, cause.CauseContext{}).Ops) == 0
+	d := s.e.diff(id)
+	if d == nil {
+		return false
+	}
+	return len(d.Diff(obs, diff.DesiredResource{ID: id, Fields: fields}, cause.CauseContext{}).Ops) == 0
 }
 
 // observeAll は全対象を新しく Observe する（観測 state は持たない）。
 func (s *stepper) observeAll(ctx context.Context) map[string]core.Observation {
 	out := map[string]core.Observation{}
 	for _, id := range s.def.Targets() {
-		obs, err := s.e.Provider.Read(ctx, id.Local)
+		p := s.e.providerOf(id)
+		if p == nil {
+			out[id.Local] = core.Observation{Availability: core.AvailabilityUnknown}
+			continue
+		}
+		obs, err := p.Read(ctx, id.Local)
 		if err != nil {
 			obs = core.Observation{Availability: core.AvailabilityUnknown}
 		}
