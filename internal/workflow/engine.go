@@ -30,22 +30,22 @@ import (
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
-// EventKind は Workflow の Event の種別（§4.7 Event の kind）。
-type EventKind string
+// EventKind は Workflow の Event の種別。core.Event の kind に寄せる（§22.3）。
+type EventKind = core.EventKind
 
 const (
-	EventStarted   EventKind = "WorkflowStarted"
-	EventStepDone  EventKind = "WorkflowStepDone"
-	EventWaiting   EventKind = "WorkflowWaiting"
-	EventBlocked   EventKind = "InvariantBlocked"
-	EventAwaiting  EventKind = "StageAwaitingApproval"
-	EventApproved  EventKind = "GateApproved"
-	EventHalted    EventKind = "WorkflowHalted"
-	EventCompleted EventKind = "WorkflowCompleted"
-	EventError     EventKind = "WorkflowError"
+	EventStarted   = core.EventWorkflowStarted
+	EventStepDone  = core.EventWorkflowStepDone
+	EventWaiting   = core.EventWorkflowWaiting
+	EventBlocked   = core.EventInvariantBlocked
+	EventAwaiting  = core.EventStageAwaitingApproval
+	EventApproved  = core.EventGateApproved
+	EventHalted    = core.EventWorkflowHalted
+	EventCompleted = core.EventWorkflowCompleted
+	EventError     = core.EventWorkflowError
 )
 
-// Event は 1 周の Workflow の出来事。
+// Event は 1 周の Workflow の出来事。出すときは Core で core.Event にする。
 type Event struct {
 	Kind     EventKind
 	Workflow string
@@ -54,6 +54,21 @@ type Event struct {
 
 func (e Event) String() string {
 	return fmt.Sprintf("%s: workflow %s: %s", e.Kind, e.Workflow, e.Message)
+}
+
+// Core は e を core.Event にする（edge、§22.3）。halt と error は warning。
+func (e Event) Core() core.Event {
+	sev := core.SeverityInfo
+	switch e.Kind {
+	case EventHalted, EventError, EventBlocked:
+		sev = core.SeverityWarning
+	}
+	return core.Event{
+		Kind:     e.Kind,
+		Severity: sev,
+		Message:  e.Message,
+		Attrs:    map[string]string{"workflow": e.Workflow},
+	}
 }
 
 // maxStepsPerTick は 1 周で進める手順数の上限（暴走の歯止め）。

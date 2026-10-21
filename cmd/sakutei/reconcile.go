@@ -28,6 +28,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/capacity"
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/lastseen"
 	"github.com/tjst-t/sakutei/internal/loader"
@@ -157,14 +158,17 @@ func runReconcile(args []string) {
 	expectRevision := fs.String("expect-revision", "",
 		"rendered_revision confirmed by plan; if this run's rendered_revision differs, abort before any Apply (§26.6); empty=no check")
 
+	logFormat := addLogFormatFlag(fs)
+
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
 		os.Exit(1)
 	}
+	setLogFormat("sakutei reconcile", *logFormat)
 	soaSerial := checkZoneSOASerial("sakutei reconcile", *zoneSOASerial)
 
 	if *intentDir == "" {
-		fmt.Fprintln(os.Stderr, "sakutei reconcile: --intent <dir> is required")
+		fmt.Fprintln(logErr, "sakutei reconcile: --intent <dir> is required")
 		fs.Usage()
 		os.Exit(1)
 	}
@@ -172,7 +176,7 @@ func runReconcile(args []string) {
 	// Parse remediation configuration (Scf7762-3, §14.1).
 	remMode, remModeErr := remediation.ParseMode(*modeStr)
 	if remModeErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: invalid --mode %q: %v\n", *modeStr, remModeErr)
+		fmt.Fprintf(logErr, "sakutei reconcile: invalid --mode %q: %v\n", *modeStr, remModeErr)
 		os.Exit(1)
 	}
 	remCfg := remediation.Config{
@@ -190,7 +194,7 @@ func runReconcile(args []string) {
 	if *windowDurationStr != "" {
 		d, err := time.ParseDuration(*windowDurationStr)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "sakutei reconcile: invalid --window-duration %q: %v\n", *windowDurationStr, err)
+			fmt.Fprintf(logErr, "sakutei reconcile: invalid --window-duration %q: %v\n", *windowDurationStr, err)
 			os.Exit(1)
 		}
 		budgetCfg.WindowDuration = d
@@ -201,7 +205,7 @@ func runReconcile(args []string) {
 	case "halt-all", "":
 		budgetCfg.OnExceed = budget.OnExceedHaltAll
 	default:
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: unknown --on-exceed value %q; use halt-all or halt-destructive-only\n", *onExceedStr)
+		fmt.Fprintf(logErr, "sakutei reconcile: unknown --on-exceed value %q; use halt-all or halt-destructive-only\n", *onExceedStr)
 		os.Exit(1)
 	}
 	budgetEngine := budget.New(budgetCfg)
@@ -218,7 +222,7 @@ func runReconcile(args []string) {
 	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
 	in, err := loader.LoadIntent(*intentDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: load intent: %v\n", err)
+		fmt.Fprintf(logErr, "sakutei reconcile: load intent: %v\n", err)
 		os.Exit(1)
 	}
 	// §13.3 / §14.5: one-shot reconcile builds a fresh budget engine every
@@ -229,12 +233,12 @@ func runReconcile(args []string) {
 	// normal budget (conservative).
 	if *auditLog != "" {
 		if err := budgetEngine.AttachAudit(audit.NewLog(*auditLog)); err != nil {
-			fmt.Fprintf(os.Stderr, "sakutei reconcile: read audit log: %v\n", err)
+			fmt.Fprintf(logErr, "sakutei reconcile: read audit log: %v\n", err)
 			os.Exit(1)
 		}
 		budgetEngine.SetPlannedChanges(in.PlannedChanges)
 	} else if len(in.PlannedChanges) > 0 {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: note: %d planned_change declaration(s) need --audit-log to open their lanes in a one-shot run (max_count and the cooling-off are held in S4 across runs); this run evaluates every change by the normal budget\n", len(in.PlannedChanges))
+		fmt.Fprintf(logErr, "sakutei reconcile: note: %d planned_change declaration(s) need --audit-log to open their lanes in a one-shot run (max_count and the cooling-off are held in S4 across runs); this run evaluates every change by the normal budget\n", len(in.PlannedChanges))
 	}
 	// #42 (§6.3): a Workflow target is driven only by its Workflow in the
 	// resident loop, where its progress (S2) is known.  The one-shot run cannot
@@ -259,11 +263,11 @@ func runReconcile(args []string) {
 		cache := render.NewResolverCache(fakeResolver, 0)
 		phase1Result := render.ResolveExternalInputs(context.Background(), cache)
 		if phase1Result.UnreachableFallback {
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(logErr,
 				"sakutei reconcile: ExternalInputUnreachable: resolver returned error; using last cached value (§9.2 last-value-on-unreachable)\n")
 		}
 		if phase1Result.FirstCallFailed {
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(logErr,
 				"sakutei reconcile: ExternalInputUnreachable (first call): %v\n"+
 					"  No prior cached value available; convergence not advanced (halt-safe, §9.2)\n",
 				phase1Result.Err)
@@ -277,7 +281,7 @@ func runReconcile(args []string) {
 	// #25: parsed before render so allocation follows the claim (§19.8).
 	claimSelector, claimErr := parseClaimSelector(*claim)
 	if claimErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: invalid --claim %q: %v\n", *claim, claimErr)
+		fmt.Fprintf(logErr, "sakutei reconcile: invalid --claim %q: %v\n", *claim, claimErr)
 		os.Exit(1)
 	}
 
@@ -287,19 +291,19 @@ func runReconcile(args []string) {
 	// makes only its resource waiting-allocation; the rest converges (§19.9).
 	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
 	if allocErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: %v\n", allocErr)
+		fmt.Fprintf(logErr, "sakutei reconcile: %v\n", allocErr)
 		os.Exit(1)
 	}
 	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocAllocate, in, claimSelector)
 	if allocErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: %v\n  convergence not advanced (halt-safe, §9.2)\n", allocErr)
+		fmt.Fprintf(logErr, "sakutei reconcile: %v\n  convergence not advanced (halt-safe, §9.2)\n", allocErr)
 		os.Exit(1)
 	}
 	for _, w := range allocRes.Warnings {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: warn: allocation: %s\n", w)
+		fmt.Fprintf(logErr, "sakutei reconcile: warn: allocation: %s\n", w)
 	}
 	for _, w := range allocRes.Waiting {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: waiting-allocation: %s field %q from pool %q: %v (not converged until allocated; others continue, §19.9)\n",
+		fmt.Fprintf(logErr, "sakutei reconcile: waiting-allocation: %s field %q from pool %q: %v (not converged until allocated; others continue, §19.9)\n",
 			w.ID, w.Field, w.Pool, w.Err)
 	}
 	intentResources = allocRes.Resources
@@ -315,8 +319,8 @@ func runReconcile(args []string) {
 	// #46 (§26.6): checked before render phase 2 writes generated/ and before
 	// any Observe/Apply, so a mismatch leaves reality untouched.
 	if *expectRevision != "" && *expectRevision != rev.RenderedRevision {
-		fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(logOut, "intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
+		fmt.Fprintf(logErr,
 			"sakutei reconcile: RevisionMismatch: --expect-revision %s but rendered_revision is %s (intent, allocations or inventory changed since plan); nothing applied — re-run plan (§26.6)\n",
 			*expectRevision, rev.RenderedRevision)
 		os.Exit(1)
@@ -326,21 +330,21 @@ func runReconcile(args []string) {
 	expRegistry := render.DefaultRegistry()
 	expanded, expandErr := render.ExpandAll(expRegistry, intentResources)
 	if expandErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: render phase 2: %v\n", expandErr)
+		fmt.Fprintf(logErr, "sakutei reconcile: render phase 2: %v\n", expandErr)
 		os.Exit(1)
 	}
 
 	// §9.6: validate existing generated/ file and warn on direct human edits.
 	genFilePath := filepath.Join(genDir, render.GeneratedFileName)
 	if valErr := render.ValidateGeneratedFile(genFilePath); valErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: WARNING: %v\n", valErr)
+		fmt.Fprintf(logErr, "sakutei reconcile: WARNING: %v\n", valErr)
 	}
 
 	// §9.6: write expanded children to generated/expanded.json (overwrites any
 	// prior contents — render is deterministic so the result is identical each
 	// time for the same intent, preventing two-management drift).
 	if writeErr := render.WriteGenerated(genDir, expanded); writeErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: write generated/: %v\n", writeErr)
+		fmt.Fprintf(logErr, "sakutei reconcile: write generated/: %v\n", writeErr)
 		os.Exit(1)
 	}
 
@@ -364,14 +368,17 @@ func runReconcile(args []string) {
 		desired = append(desired, r.DesiredResource)
 	}
 	if len(claimSelector.Labels) > 0 {
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(logErr,
 			"sakutei reconcile: --claim %s: %d resource(s) in claim, %d excluded (out of scope)\n",
 			claimSelector.String(), len(desired), excludedByClaim)
 	}
 
 	// Scb0ecd-1: print revision header so the caller can observe revision values.
 	// In v1a rendered_revision = intent_revision (seam for S072a14).
-	fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
+	fmt.Fprintf(logOut, "intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
+	// §22.3: the Events of this run carry its revision.
+	logOut = eventlog.Stamp(logOut, 0, rev)
+	logErr = eventlog.Stamp(logErr, 0, rev)
 
 	// S62dbba-2: resolve providers via registry based on intent resource declarations.
 	// The --state flag is passed as the "state" config key for the "fake" provider;
@@ -389,7 +396,7 @@ func runReconcile(args []string) {
 	providerConfig["soa_serial"] = soaSerial
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
 	if resolveErr != nil {
-		fmt.Fprintln(os.Stderr, resolveErr)
+		fmt.Fprintln(logErr, resolveErr)
 		os.Exit(1)
 	}
 
@@ -410,7 +417,7 @@ func runReconcile(args []string) {
 	// Scb0ecd-2: load cause state (previous-cycle revision + provider_version).
 	prevState, csErr := loadCauseState(*causeStatePath)
 	if csErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: warn: load cause-state %q: %v (treating as first-run)\n",
+		fmt.Fprintf(logErr, "sakutei reconcile: warn: load cause-state %q: %v (treating as first-run)\n",
 			*causeStatePath, csErr)
 		prevState = causeStateFile{}
 	}
@@ -487,7 +494,7 @@ func runReconcile(args []string) {
 		fp, ok := providers[res.ID.Provider]
 		if !ok {
 			// Should not happen: resolveProviders already validated all names.
-			fmt.Fprintf(os.Stderr, "sakutei reconcile: internal error: no provider for %q\n", res.ID.Provider)
+			fmt.Fprintf(logErr, "sakutei reconcile: internal error: no provider for %q\n", res.ID.Provider)
 			os.Exit(1)
 		}
 		engine := engines[res.ID.Provider]
@@ -515,14 +522,14 @@ func runReconcile(args []string) {
 			// immediately: record it, keep observing the rest, and let ApplyWaves
 			// skip this resource and its downstream.  A non-zero exit is emitted
 			// below if anything was skipped (unified skip policy with the loop).
-			fmt.Fprintf(os.Stderr, "sakutei reconcile: observe %s: %v\n", res.ID, err)
+			fmt.Fprintf(logErr, "sakutei reconcile: observe %s: %v\n", res.ID, err)
 			unobservable[res.ID.Local] = true
 			continue
 		}
 		if obs.Availability != core.AvailabilityOk {
 			// D-1: reachable-but-unknown/converging is still not "converged".
 			// unknown ≠ absent: do not proceed downstream on uncertainty.
-			fmt.Fprintf(os.Stderr, "sakutei reconcile: observe %s: availability=%v (not Ok); treating as unobservable\n",
+			fmt.Fprintf(logErr, "sakutei reconcile: observe %s: availability=%v (not Ok); treating as unobservable\n",
 				res.ID, obs.Availability)
 			unobservable[res.ID.Local] = true
 			continue
@@ -530,10 +537,9 @@ func runReconcile(args []string) {
 		ready.Record(res.ID.Local, obs)
 
 		// Convert observed State to string map for last-seen ring storage.
-		curFields := make(map[string]string, len(obs.State))
-		for fname, tv := range obs.State {
-			curFields[fname] = fmt.Sprintf("%v", tv.Value)
-		}
+		// Secret fields stay in their ref form (§20.2): this map is quoted in
+		// drift Events.
+		curFields := engine.SnapshotFields(obs.State)
 		obsFields[res.ID.Local] = curFields
 
 		// S072a14-3: set UpstreamChanged=true for children of composite parents
@@ -552,7 +558,7 @@ func runReconcile(args []string) {
 		// before diffing (plaintext secret + perpetual non-converging diff).
 		// The error names the field only, never the value.
 		if err := engine.ValidateDesired(res); err != nil {
-			fmt.Fprintf(os.Stderr, "sakutei reconcile: %v\n", err)
+			fmt.Fprintf(logErr, "sakutei reconcile: %v\n", err)
 			os.Exit(1)
 		}
 
@@ -564,22 +570,19 @@ func runReconcile(args []string) {
 		var nonCOps []core.Op
 		for _, op := range resourcePlan.Ops {
 			if op.Cause == core.CauseTagC {
-				fmt.Fprintf(os.Stderr,
-					"sakutei reconcile: ProviderUpgradeDiff: %s [cause: C] provider_version changed (%s → %s); NOT applying (review required)\n",
-					op.Target, prevState.PrevProviderVersion, curProviderVersion)
+				reconcile.EmitProviderUpgradeDiff(logErr, "sakutei reconcile: ", op,
+					prevState.PrevProviderVersion, curProviderVersion, "NOT applying (review required)")
 			} else {
 				// Scb0ecd-3: for cause B (drift), attach last-seen ring summary.
 				if op.Cause == core.CauseTagB {
 					summary := lastSeenRing.DriftSummary(res.ID.Local, curFields)
-					fmt.Fprintf(os.Stderr,
-						"sakutei reconcile: DriftEvent: %s [cause: B] %s\n",
-						op.Target, summary)
+					reconcile.EmitDrift(logErr, "sakutei reconcile: ", op.Target, op, summary)
 				}
 				nonCOps = append(nonCOps, op)
 			}
 		}
 		if wf, ok := workflowOf[res.ID.Local]; ok && len(nonCOps) > 0 {
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(logErr,
 				"sakutei reconcile: %s: target of workflow %s — not applying; the daemon drives it through the Workflow (§6.3)\n",
 				res.ID, wf)
 			unobservable[res.ID.Local] = true
@@ -588,9 +591,8 @@ func runReconcile(args []string) {
 			// #41 (§6.5 RequiresTaskEvent): a non-idempotent resource is never
 			// Applied.  Only the daemon launches its Task (1-outstanding, S2);
 			// here it is not converged, so its downstream waits.
-			fmt.Fprintf(os.Stderr,
-				"sakutei reconcile: RequiresTaskEvent: %s: strategy: task — not applying; the daemon launches its Task (§6.5)\n",
-				res.ID)
+			reconcile.EmitRequiresTask(logErr, "sakutei reconcile: ", core.SeverityWarning, res.ID,
+				"strategy: task — not applying; the daemon launches its Task (§6.5)")
 			unobservable[res.ID.Local] = true
 			taskHeld[res.ID.Local] = true
 		} else if len(nonCOps) > 0 {
@@ -612,7 +614,7 @@ func runReconcile(args []string) {
 	// through the dependent's provider, so they can still gate it.
 	reconcile.ObserveExternalUpstreams(ctx, func(r diff.DesiredResource) provider.Provider {
 		return providers[r.ID.Provider]
-	}, desired, ready, os.Stderr)
+	}, desired, ready, logErr)
 
 	// Scb0ecd-3: populate the last-seen ring AFTER Diff so the ring records
 	// the current cycle's observations.  The ring is read on the NEXT cycle
@@ -636,7 +638,7 @@ func runReconcile(args []string) {
 		PrevProviderVersion:  curProviderVersion,
 		PrevParentRevisions:  curParentRevsRec,
 	}); saveErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: warn: save cause-state %q: %v\n", *causeStatePath, saveErr)
+		fmt.Fprintf(logErr, "sakutei reconcile: warn: save cause-state %q: %v\n", *causeStatePath, saveErr)
 	}
 
 	// Phase 2a: Compute prune ops (dry-run, no Apply yet — Scf7762-2 budget gate).
@@ -680,29 +682,31 @@ func runReconcile(args []string) {
 			modeLabel = "alert-only [FROZEN]"
 		}
 		if in.Remediation != nil {
-			fmt.Printf("Remediation mode: alert-only (%s)\n", decision.Reason)
+			fmt.Fprintf(logOut, "Remediation mode: alert-only (%s)\n", decision.Reason)
 		}
 		if held.DriftCount == 0 {
-			fmt.Printf("Reconcile (%s): no drift detected\n", modeLabel)
+			runSummary(fmt.Sprintf("Reconcile (%s): no drift detected", modeLabel))
 		} else {
-			fmt.Printf("Reconcile (%s): %d drifted resource(s) detected — no changes applied\n", modeLabel, held.DriftCount)
+			runSummary(fmt.Sprintf("Reconcile (%s): %d drifted resource(s) detected — no changes applied", modeLabel, held.DriftCount))
 			for _, ev := range held.Events {
-				fmt.Printf("  DRIFT EVENT: %s\n", ev)
+				ev.Text = "  " + ev.TextLine()
+				eventlog.Emit(logOut, ev)
 			}
 		}
 		// alert-only exits 0: detection without action is not a failure.
 		os.Exit(0)
 	}
 	if in.Remediation != nil {
-		fmt.Printf("Remediation mode: auto (%s)\n", decision.Reason)
+		fmt.Fprintf(logOut, "Remediation mode: auto (%s)\n", decision.Reason)
 	}
 	// §14.3: scopes declared remediation: alert-only are held even in auto.
 	scopeHeld := reconcile.HoldAlertOnly(desired, plans, unobservable, precomputedPruneOps, in.AlertOnlyScopes())
 	precomputedPruneOps = scopeHeld.PruneOps
 	if scopeHeld.DriftCount > 0 {
-		fmt.Printf("Alert-only scope(s): %d drifted resource(s) held — not remediated\n", scopeHeld.DriftCount)
+		fmt.Fprintf(logOut, "Alert-only scope(s): %d drifted resource(s) held — not remediated\n", scopeHeld.DriftCount)
 		for _, ev := range scopeHeld.Events {
-			fmt.Printf("  DRIFT EVENT: %s\n", ev)
+			ev.Text = "  " + ev.TextLine()
+			eventlog.Emit(logOut, ev)
 		}
 	}
 
@@ -724,11 +728,11 @@ func runReconcile(args []string) {
 	// reconcile, in-flight is always 0 (synchronous Apply, no prior goroutines).
 	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, budget.InFlight{}, len(desired))
 	for _, ev := range budgetDecision.Events {
-		fmt.Printf("%s\n", ev)
+		reconcile.EmitPlannedChange(logOut, ev, ev)
 	}
 	budgetHalted := budgetDecision.HaltAll || budgetDecision.HaltDestructive
 	if budgetHalted {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: BUDGET HALTED: %s\n", budgetDecision.Reason)
+		reconcile.EmitBudgetHalted(logErr, budgetDecision.Reason, "sakutei reconcile: BUDGET HALTED: "+budgetDecision.Reason)
 	}
 
 	// Phase 2d': Capacity gate (§11.4, §13.4).  Observe each pool's current
@@ -751,7 +755,8 @@ func runReconcile(args []string) {
 	})
 	capacityHalted := capacityDecision.HaltAll || capacityDecision.HaltDestructive
 	if capacityHalted {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: %s: CAPACITY HALTED: %s\n", capacity.EventName, capacityDecision.Reason)
+		reconcile.EmitCapacityHalted(logErr, capacityDecision.Reason,
+			fmt.Sprintf("sakutei reconcile: %s: CAPACITY HALTED: %s", capacity.EventName, capacityDecision.Reason))
 	}
 	budgetDecision = budget.Merge(budgetDecision, capacityDecision)
 
@@ -763,7 +768,7 @@ func runReconcile(args []string) {
 			if !budgetDecision.IsHalted(op) {
 				allowed = append(allowed, op)
 			} else {
-				fmt.Fprintf(os.Stderr, "sakutei reconcile: budget: blocked %v op for %s\n", op.Kind, op.Target)
+				fmt.Fprintf(logErr, "sakutei reconcile: budget: blocked %v op for %s\n", op.Kind, op.Target)
 			}
 		}
 		if len(allowed) > 0 {
@@ -784,7 +789,7 @@ func runReconcile(args []string) {
 		laneOps = append(laneOps, allowedPrune...)
 		budgetEngine.ReserveLanes(budgetDecision, laneOps)
 		if err := budgetEngine.FlushLaneAudit(); err != nil {
-			fmt.Fprintf(os.Stderr, "sakutei reconcile: planned_change: cannot record lane executions in S4: %v; nothing applied\n", err)
+			fmt.Fprintf(logErr, "sakutei reconcile: planned_change: cannot record lane executions in S4: %v; nothing applied\n", err)
 			os.Exit(1)
 		}
 	}
@@ -802,15 +807,15 @@ func runReconcile(args []string) {
 	// internal/reconcile.  The adapter routes each Apply call to the correct
 	// per-resource provider based on the Op's target provider.
 	applyProvider := newMultiProviderApply(providers, desired)
-	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, ready, os.Stderr)
+	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, ready, logErr)
 	if waveErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: wave apply: %v\n", waveErr)
+		fmt.Fprintf(logErr, "sakutei reconcile: wave apply: %v\n", waveErr)
 		os.Exit(1)
 	}
 
 	// Report skipped resources (upstream failure or unobservable) to stderr.
 	for _, sk := range skipped {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: skip %s (unobservable, upstream failure, or upstream not ready; not converged this cycle)\n", sk)
+		fmt.Fprintf(logErr, "sakutei reconcile: skip %s (unobservable, upstream failure, or upstream not ready; not converged this cycle)\n", sk)
 	}
 
 	// Advance the cumulative window counter for applied ops.
@@ -851,7 +856,7 @@ func runReconcile(args []string) {
 	// Apply the subset of precomputed prune Delete ops that survived the budget gate.
 	allowedPruneOps, blockedPruneOps := budgetDecision.FilterOps(precomputedPruneOps)
 	for _, op := range blockedPruneOps {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: budget: blocked destructive op DELETE %s (budget limit)\n", op.Target)
+		fmt.Fprintf(logErr, "sakutei reconcile: budget: blocked destructive op DELETE %s (budget limit)\n", op.Target)
 	}
 
 	pruneOps, pruneHalted := runPruneWithPrecomputed(ctx, applyProvider, exec, precomputedPruneOps, allowedPruneOps, pruneWasHaltedBySafetyGuard)
@@ -861,33 +866,33 @@ func runReconcile(args []string) {
 		appliedOps++
 	}
 	if pruneHalted {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune halted this cycle (safety guard triggered); see above for reason\n")
+		fmt.Fprintf(logErr, "sakutei reconcile: prune halted this cycle (safety guard triggered); see above for reason\n")
 	}
 
 	switch {
 	case capacityHalted && appliedOps == 0:
-		fmt.Printf("Reconcile: CAPACITY HALTED (no changes applied): %s\n", capacityDecision.Reason)
+		runSummary(fmt.Sprintf("Reconcile: CAPACITY HALTED (no changes applied): %s", capacityDecision.Reason))
 		os.Exit(1)
 	case budgetHalted && appliedOps == 0:
 		// A (Scf7762-2): the BUDGET HALTED stderr line is already emitted once,
 		// above, right after CheckCycle (the single stderr source of truth).  Do
 		// NOT repeat it here — only the stdout summary belongs in this switch.
-		fmt.Printf("Reconcile: BUDGET HALTED (no changes applied): %s\n", budgetDecision.Reason)
+		runSummary(fmt.Sprintf("Reconcile: BUDGET HALTED (no changes applied): %s", budgetDecision.Reason))
 		os.Exit(1)
 	case appliedOps > 0:
 		if budgetHalted {
-			fmt.Printf("Reconcile: %d change(s) applied (budget halted some ops)\n", appliedOps)
+			runSummary(fmt.Sprintf("Reconcile: %d change(s) applied (budget halted some ops)", appliedOps))
 		} else {
-			fmt.Printf("Reconcile: %d change(s) applied\n", appliedOps)
+			runSummary(fmt.Sprintf("Reconcile: %d change(s) applied", appliedOps))
 		}
 	case len(skipped) > 0:
 		// Do not claim convergence: some resources were skipped this cycle
 		// (unobservable upstream or upstream Apply failure).
-		fmt.Printf("Reconcile: no changes applied; %d resource(s) skipped\n", len(skipped))
+		runSummary(fmt.Sprintf("Reconcile: no changes applied; %d resource(s) skipped", len(skipped)))
 	case scopeHeld.DriftCount > 0:
-		fmt.Printf("Reconcile: no changes applied; %d drifted resource(s) held by alert-only scope(s)\n", scopeHeld.DriftCount)
+		runSummary(fmt.Sprintf("Reconcile: no changes applied; %d drifted resource(s) held by alert-only scope(s)", scopeHeld.DriftCount))
 	default:
-		fmt.Println("Converged (no changes)")
+		runSummary("Converged (no changes)")
 	}
 
 	// D-1 exit policy: an *unobservable* upstream is a safety failure — the
@@ -916,16 +921,16 @@ func runReconcile(args []string) {
 		}
 	}
 	if waitingCount > 0 {
-		fmt.Printf("Reconcile: %d resource(s) waiting-allocation (retry once the allocator can allocate)\n", waitingCount)
+		runSummary(fmt.Sprintf("Reconcile: %d resource(s) waiting-allocation (retry once the allocator can allocate)", waitingCount))
 	}
 	if taskCount > 0 {
-		fmt.Printf("Reconcile: %d strategy: task resource(s) await their Task (launched by the daemon, §6.5)\n", taskCount)
+		runSummary(fmt.Sprintf("Reconcile: %d strategy: task resource(s) await their Task (launched by the daemon, §6.5)", taskCount))
 	}
 	if workflowCount > 0 {
-		fmt.Printf("Reconcile: %d Workflow target(s) held for the daemon's Workflow (§6.3)\n", workflowCount)
+		runSummary(fmt.Sprintf("Reconcile: %d Workflow target(s) held for the daemon's Workflow (§6.3)", workflowCount))
 	}
 	if n := waitingCount + heldCount + taskCount + workflowCount; len(unobservable) > n {
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(logErr,
 			"sakutei reconcile: %d resource(s) were unobservable this cycle; convergence incomplete\n",
 			len(unobservable)-n)
 		os.Exit(1)
@@ -992,7 +997,7 @@ func computePruneForProvider(
 
 	// Validate PruneWithinScope declarations against Lister capability.
 	if err := prune.ValidatePrunePolicy(desired, fp); err != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune policy error: %v\n", err)
+		fmt.Fprintf(logErr, "sakutei reconcile: prune policy error: %v\n", err)
 		return nil, false
 	}
 
@@ -1006,20 +1011,20 @@ func computePruneForProvider(
 	// An empty selector matches everything → unchanged single-shard behaviour.
 	engine := prune.New()
 	engine.SetExcludedScopes(syncScopes) // #23: sync scopes are never pruned (§24.5)
-	result, err := engine.ComputePrune(ctx, lister, fp, scope, claim, desired, unobservable, os.Stderr)
+	result, err := engine.ComputePrune(ctx, lister, fp, scope, claim, desired, unobservable, logErr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune compute error: %v\n", err)
+		fmt.Fprintf(logErr, "sakutei reconcile: prune compute error: %v\n", err)
 		return nil, false
 	}
 
 	if result.Halted {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune halted: %s\n", result.HaltReason)
+		reconcile.EmitPruneHalted(logErr, result, "sakutei reconcile: prune halted: "+result.HaltReason)
 		return nil, true
 	}
 
 	// Log deferred resources.
 	for _, id := range result.Deferred {
-		fmt.Fprintf(os.Stderr, "sakutei reconcile: prune deferred for %s (safety guard: pruneable:false or unknown)\n", id)
+		fmt.Fprintf(logErr, "sakutei reconcile: prune deferred for %s (safety guard: pruneable:false or unknown)\n", id)
 	}
 
 	return result.DeleteOps, false
@@ -1048,7 +1053,7 @@ func runPruneWithPrecomputed(
 	for _, op := range allowed {
 		plan := core.Plan{Ops: []core.Op{op}}
 		if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
-			fmt.Fprintf(os.Stderr, "sakutei reconcile: prune apply %s: %v\n", op.Target, applyErr)
+			reconcile.EmitApplyFailed(logErr, "sakutei reconcile: ", "prune apply", op.Target, applyErr)
 			// Continue with remaining ops (level-triggered: retry next cycle).
 			continue
 		}
@@ -1209,4 +1214,10 @@ func (m *multiProviderApply) providerFor(localID string) provider.Provider {
 		return m.fallback
 	}
 	return p
+}
+
+// runSummary writes a result line of the one-shot reconcile.  It is not an
+// Event, but with --log-format json it is one line of the same form (§22.3).
+func runSummary(text string) {
+	eventlog.Emit(logOut, core.Event{Kind: core.EventCycleSummary, Severity: core.SeverityInfo, Message: text, Text: text})
 }

@@ -25,8 +25,10 @@ import (
 
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
+	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
@@ -97,14 +99,17 @@ func runPlan(args []string) {
 	devenv := fs.Bool("devenv", false,
 		"S33266e-3: devenv（坪庭）mode — render external inputs (inventory/allocation/secret) are substituted with fakes; no production pool/secret is touched (§26.2)")
 
+	logFormat := addLogFormatFlag(fs)
+
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
 		os.Exit(1)
 	}
+	setLogFormat("sakutei plan", *logFormat)
 	soaSerial := checkZoneSOASerial("sakutei plan", *zoneSOASerial)
 
 	if *intentDir == "" {
-		fmt.Fprintln(os.Stderr, "sakutei plan: --intent <dir> is required")
+		fmt.Fprintln(logErr, "sakutei plan: --intent <dir> is required")
 		fs.Usage()
 		os.Exit(1)
 	}
@@ -119,7 +124,7 @@ func runPlan(args []string) {
 	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
 	in, err := loader.LoadIntent(*intentDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sakutei plan: load intent: %v\n", err)
+		fmt.Fprintf(logErr, "sakutei plan: load intent: %v\n", err)
 		os.Exit(1)
 	}
 	intentResources, rev := in.Resources, in.Revision
@@ -146,7 +151,7 @@ func runPlan(args []string) {
 				opts = append(opts, render.WithDevenvInventoryHash(*inventoryHash))
 			}
 			cache = render.NewDevenvProfile(opts...).ExternalInputCache()
-			fmt.Fprintln(os.Stderr,
+			fmt.Fprintln(logErr,
 				"sakutei plan: devenv（坪庭）mode — external inputs substituted with fakes; no production pool/secret contacted (§26.2)")
 		} else {
 			fakeResolver := &render.FakeInventoryResolver{
@@ -159,12 +164,12 @@ func runPlan(args []string) {
 		ctx := context.Background()
 		phase1Result := render.ResolveExternalInputs(ctx, cache)
 		if phase1Result.UnreachableFallback {
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(logErr,
 				"sakutei plan: ExternalInputUnreachable: resolver returned error; using last cached value (§9.2 last-value-on-unreachable)\n")
 		}
 		if phase1Result.FirstCallFailed {
 			// No prior value — halt-safe: do not converge (§9.2).
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(logErr,
 				"sakutei plan: ExternalInputUnreachable (first call): %v\n"+
 					"  No prior cached value available; convergence not advanced (halt-safe, §9.2)\n",
 				phase1Result.Err)
@@ -186,12 +191,12 @@ func runPlan(args []string) {
 	// pending and is allocated by reconcile.
 	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
 	if allocErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei plan: %v\n", allocErr)
+		fmt.Fprintf(logErr, "sakutei plan: %v\n", allocErr)
 		os.Exit(1)
 	}
 	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocLookupOnly, in, core.Scope{})
 	if allocErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei plan: %v\n", allocErr)
+		fmt.Fprintf(logErr, "sakutei plan: %v\n", allocErr)
 		os.Exit(1)
 	}
 	intentResources = allocRes.Resources
@@ -200,7 +205,7 @@ func runPlan(args []string) {
 		recomputeRendered = true
 	}
 	for _, pa := range allocRes.Pending {
-		fmt.Fprintf(os.Stderr, "sakutei plan: pending allocation: %s field %q from pool %q (allocated by reconcile)%s\n", pa.ID, pa.Field, pa.Pool, pendingReason(pa))
+		fmt.Fprintf(logErr, "sakutei plan: pending allocation: %s field %q from pool %q (allocated by reconcile)%s\n", pa.ID, pa.Field, pa.Pool, pendingReason(pa))
 	}
 	if recomputeRendered {
 		rootScope := core.NewScope(nil)
@@ -214,7 +219,7 @@ func runPlan(args []string) {
 	expRegistry := render.DefaultRegistry()
 	expanded, expandErr := render.ExpandAll(expRegistry, intentResources)
 	if expandErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei plan: render phase 2: %v\n", expandErr)
+		fmt.Fprintf(logErr, "sakutei plan: render phase 2: %v\n", expandErr)
 		os.Exit(1)
 	}
 
@@ -222,12 +227,12 @@ func runPlan(args []string) {
 	// A missing file is fine; a file without _generated:true triggers a warning.
 	genFilePath := filepath.Join(genDir, render.GeneratedFileName)
 	if valErr := render.ValidateGeneratedFile(genFilePath); valErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei plan: WARNING: %v\n", valErr)
+		fmt.Fprintf(logErr, "sakutei plan: WARNING: %v\n", valErr)
 	}
 
 	// §9.6: write expanded children to generated/expanded.json.
 	if writeErr := render.WriteGenerated(genDir, expanded); writeErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei plan: write generated/: %v\n", writeErr)
+		fmt.Fprintf(logErr, "sakutei plan: write generated/: %v\n", writeErr)
 		os.Exit(1)
 	}
 
@@ -243,7 +248,10 @@ func runPlan(args []string) {
 	// Scb0ecd-1: print revision header so the caller can observe revision values.
 	// In v1a rendered_revision = intent_revision (no external inputs yet; seam
 	// for S072a14 where external inputs enter the rendered hash).
-	fmt.Printf("intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
+	fmt.Fprintf(logOut, "intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
+	// §22.3: the Events of this run carry its revision.
+	logOut = eventlog.Stamp(logOut, 0, rev)
+	logErr = eventlog.Stamp(logErr, 0, rev)
 
 	// S62dbba-2: resolve providers via registry based on intent resource declarations.
 	// The --state flag is passed as the "state" config key for the "fake" provider;
@@ -261,7 +269,7 @@ func runPlan(args []string) {
 	providerConfig["soa_serial"] = soaSerial
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei plan")
 	if resolveErr != nil {
-		fmt.Fprintln(os.Stderr, resolveErr)
+		fmt.Fprintln(logErr, resolveErr)
 		os.Exit(1)
 	}
 
@@ -280,7 +288,7 @@ func runPlan(args []string) {
 	// Scb0ecd-2: load cause state (previous-cycle revision + provider_version).
 	prevState, csErr := loadCauseState(*causeStatePath)
 	if csErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei plan: warn: load cause-state %q: %v (treating as first-run)\n",
+		fmt.Fprintf(logErr, "sakutei plan: warn: load cause-state %q: %v (treating as first-run)\n",
 			*causeStatePath, csErr)
 		prevState = causeStateFile{}
 	}
@@ -328,7 +336,7 @@ func runPlan(args []string) {
 		fp, ok := providers[res.ID.Provider]
 		if !ok {
 			// Should not happen: resolveProviders already validated all names.
-			fmt.Fprintf(os.Stderr, "sakutei plan: internal error: no provider for %q\n", res.ID.Provider)
+			fmt.Fprintf(logErr, "sakutei plan: internal error: no provider for %q\n", res.ID.Provider)
 			os.Exit(1)
 		}
 		engine := engines[res.ID.Provider]
@@ -337,7 +345,7 @@ func runPlan(args []string) {
 		// Read is fresh; no observation is carried across resources or cycles.
 		obs, err := fp.Read(ctx, res.ID.Local)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "sakutei plan: observe %s: %v\n", res.ID, err)
+			fmt.Fprintf(logErr, "sakutei plan: observe %s: %v\n", res.ID, err)
 			os.Exit(1)
 		}
 		if obs.Availability != core.AvailabilityOk {
@@ -361,7 +369,7 @@ func runPlan(args []string) {
 		// intent error (plaintext secret + perpetual non-converging diff).  Fail
 		// loud; the error names the field only, never the value.
 		if err := engine.ValidateDesired(res); err != nil {
-			fmt.Fprintf(os.Stderr, "sakutei plan: %v\n", err)
+			fmt.Fprintf(logErr, "sakutei plan: %v\n", err)
 			os.Exit(1)
 		}
 
@@ -369,9 +377,8 @@ func runPlan(args []string) {
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff).
 		for _, op := range plan.Ops {
 			if op.Cause == core.CauseTagC {
-				fmt.Fprintf(os.Stderr,
-					"sakutei plan: ProviderUpgradeDiff: %s [cause: C] provider_version changed (%s → %s); review before applying\n",
-					op.Target, prevState.PrevProviderVersion, curProviderVersion)
+				reconcile.EmitProviderUpgradeDiff(logErr, "sakutei plan: ", op,
+					prevState.PrevProviderVersion, curProviderVersion, "review before applying")
 			}
 		}
 		allOps = append(allOps, plan.Ops...)
@@ -385,7 +392,7 @@ func runPlan(args []string) {
 		PrevProviderVersion:  curProviderVersion,
 		PrevParentRevisions:  curParentRevs,
 	}); saveErr != nil {
-		fmt.Fprintf(os.Stderr, "sakutei plan: warn: save cause-state %q: %v\n", *causeStatePath, saveErr)
+		fmt.Fprintf(logErr, "sakutei plan: warn: save cause-state %q: %v\n", *causeStatePath, saveErr)
 	}
 
 	// Prune phase (dry-run): show what would be deleted (§12, ADR-0005).
@@ -424,31 +431,31 @@ func runPlan(args []string) {
 	if len(allOps) == 0 {
 		// Even if no ops, print composite status if there are composites.
 		if len(compositeSummaries) > 0 {
-			fmt.Println("Composite status:")
+			fmt.Fprintln(logOut, "Composite status:")
 			// F-3: sort parent IDs so the output order is deterministic
 			// (map iteration order is randomised in Go).
 			parentIDs := sortedCompositeParentIDs(compositeSummaries)
 			for _, parentID := range parentIDs {
-				fmt.Printf("  composite %s: %s\n", parentID, compositeSummaries[parentID].AggregatedStatus)
+				fmt.Fprintf(logOut, "  composite %s: %s\n", parentID, compositeSummaries[parentID].AggregatedStatus)
 			}
 		}
-		fmt.Println("Converged (no changes)")
+		fmt.Fprintln(logOut, "Converged (no changes)")
 		os.Exit(0)
 	}
 
-	fmt.Printf("Plan: %d change(s)\n\n", len(allOps))
+	fmt.Fprintf(logOut, "Plan: %d change(s)\n\n", len(allOps))
 	for _, op := range allOps {
 		printOp(op)
 	}
 
 	// S072a14-3: print composite status aggregation (§9.7).
 	if len(compositeSummaries) > 0 {
-		fmt.Println("Composite status (§9.7 worst-first):")
+		fmt.Fprintln(logOut, "Composite status (§9.7 worst-first):")
 		// F-3: sort parent IDs so the output order is deterministic
 		// (map iteration order is randomised in Go).
 		parentIDs := sortedCompositeParentIDs(compositeSummaries)
 		for _, parentID := range parentIDs {
-			fmt.Printf("  composite %s: %s\n", parentID, compositeSummaries[parentID].AggregatedStatus)
+			fmt.Fprintf(logOut, "  composite %s: %s\n", parentID, compositeSummaries[parentID].AggregatedStatus)
 		}
 	}
 	os.Exit(0)
@@ -501,7 +508,7 @@ func planPruneOpsMulti(
 		// FIX #6: plan does not (yet) accept --claim, so the claim selector is
 		// empty here — an empty selector matches every scope, keeping plan's
 		// whole-world prune preview behaviour unchanged.
-		result, err := engine.ComputePrune(ctx, lister, fp, scope, core.NewScope(nil), provDesired, unobservable, os.Stderr)
+		result, err := engine.ComputePrune(ctx, lister, fp, scope, core.NewScope(nil), provDesired, unobservable, logErr)
 		if err != nil || result.Halted {
 			continue
 		}
@@ -534,23 +541,23 @@ func printOp(op core.Op) {
 		destructiveNote = " [DESTRUCTIVE]"
 	}
 
-	fmt.Printf("%s %s %s%s\n", marker, kindStr, op.Target, destructiveNote)
+	fmt.Fprintf(logOut, "%s %s %s%s\n", marker, kindStr, op.Target, destructiveNote)
 	if op.Diagnostic != "" {
-		fmt.Printf("  reason: %s\n", op.Diagnostic)
+		fmt.Fprintf(logOut, "  reason: %s\n", op.Diagnostic)
 	}
 	if op.Cause != "" {
-		fmt.Printf("  cause:  %s\n", string(op.Cause))
+		fmt.Fprintf(logOut, "  cause:  %s\n", string(op.Cause))
 	}
 	for _, fd := range op.Fields {
 		if fd.From == "" {
-			fmt.Printf("  + %-20s  (new) → %q\n", fd.Field, fd.To)
+			fmt.Fprintf(logOut, "  + %-20s  (new) → %q\n", fd.Field, fd.To)
 		} else if fd.To == "" {
-			fmt.Printf("  - %-20s  %q → (removed)\n", fd.Field, fd.From)
+			fmt.Fprintf(logOut, "  - %-20s  %q → (removed)\n", fd.Field, fd.From)
 		} else {
-			fmt.Printf("  ~ %-20s  %q → %q\n", fd.Field, fd.From, fd.To)
+			fmt.Fprintf(logOut, "  ~ %-20s  %q → %q\n", fd.Field, fd.From, fd.To)
 		}
 	}
-	fmt.Println()
+	fmt.Fprintln(logOut)
 }
 
 // joinedProviderVersions returns a combined provider version string for all

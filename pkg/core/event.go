@@ -1,0 +1,177 @@
+// Copyright 2026 tjst-t
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package core
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// EventKind は Event の種別（§22.3 の kind enum、§27.2）。
+//
+// 収束失敗・drift・halt・Workflow の出来事を個別の通知にせず、単一の Event 型の
+// kind で区別する。通知は Event の consumer（sink）が kind を見て分ける。
+type EventKind string
+
+const (
+	// EventDrift は cause B のずれ（現実が desired から外れた）。
+	EventDrift EventKind = "Drift"
+	// EventDriftWouldApply は alert-only（freeze・schedule・scope 宣言）で
+	// 直さずに持ち越したずれ。直すなら行う操作を知らせる（§14.1, §14.3）。
+	EventDriftWouldApply EventKind = "DriftWouldApply"
+	// EventBudgetHalted は変更予算が操作を止めた周（§13）。
+	EventBudgetHalted EventKind = "BudgetHalted"
+	// EventCapacityHalted は容量の関門が変更を止めた周（§13.4）。
+	EventCapacityHalted EventKind = "CapacityHalted"
+	// EventPruneHalted は prune の安全装置（List 不完全・急減）が削除を止めた周（§12.4）。
+	EventPruneHalted EventKind = "PruneHalted"
+	// EventPruned は prune が orphan を消した（reality − desired、§12）。
+	EventPruned EventKind = "Pruned"
+	// EventApplyFailed は Apply（prune の Delete を含む）の失敗。
+	EventApplyFailed EventKind = "ApplyFailed"
+	// EventCycleSkipped は外部入力の不達で周を飛ばした（halt-safe、§9.2）。
+	EventCycleSkipped EventKind = "CycleSkipped"
+	// EventExternalInputUnreachableProlonged は外部入力不達の連続スキップが上限に達した（§9.2）。
+	EventExternalInputUnreachableProlonged EventKind = "ExternalInputUnreachableProlonged"
+	// EventInventoryHalted は inventory が不完全で周を止めた（incomplete ≠ empty、§9.2）。
+	EventInventoryHalted EventKind = "InventoryHalted"
+	// EventBreakGlassWriteUsed は break-glass の緊急書込が使われた（§25.1）。
+	EventBreakGlassWriteUsed EventKind = "BreakGlassWriteUsed"
+	// EventDRPlanActive は DR プランが有効になり claim がそれに従う（§25）。
+	EventDRPlanActive EventKind = "DRPlanActive"
+	// EventFenced は新しい fencing 世代を他シャードが持つ scope を収束しない（§15）。
+	EventFenced EventKind = "Fenced"
+	// EventProviderUpgradeDiff は cause C の ghost diff を適用せずに止めた（§10.4）。
+	EventProviderUpgradeDiff EventKind = "ProviderUpgradeDiff"
+	// EventRequiresTask は strategy: task の資源を Apply せず Task に回した（§6.5）。
+	EventRequiresTask EventKind = "RequiresTask"
+	// EventPlannedChange は planned_change のレーンの知らせ（§13.3）。
+	EventPlannedChange EventKind = "PlannedChange"
+
+	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。
+	EventWorkflowStarted       EventKind = "WorkflowStarted"
+	EventWorkflowStepDone      EventKind = "WorkflowStepDone"
+	EventWorkflowWaiting       EventKind = "WorkflowWaiting"
+	EventInvariantBlocked      EventKind = "InvariantBlocked"
+	EventStageAwaitingApproval EventKind = "StageAwaitingApproval"
+	EventGateApproved          EventKind = "GateApproved"
+	EventWorkflowHalted        EventKind = "WorkflowHalted"
+	EventWorkflowCompleted     EventKind = "WorkflowCompleted"
+	EventWorkflowError         EventKind = "WorkflowError"
+)
+
+// 次の 2 つは Event ではない。--log-format json のとき、周の要約やその他のログ行を
+// Event と同じ形の 1 行にするための kind。
+const (
+	// EventCycleSummary は周の要約の行（cycle N: observed=…）。
+	EventCycleSummary EventKind = "CycleSummary"
+	// EventLog は Event でないログ行（診断・進捗）。
+	EventLog EventKind = "Log"
+)
+
+// Severity は Event の重さ。
+type Severity string
+
+const (
+	SeverityInfo     Severity = "info"
+	SeverityWarning  Severity = "warning"
+	SeverityCritical Severity = "critical"
+)
+
+// Event は Sakutei の知らせの単一型（§22.3, §27.2）。
+//
+// secret の値は載せない（§20.2）。secret の欄は SecretRef の文字列（マスク済みの
+// ref）のまま Message・Attrs に入れる。
+type Event struct {
+	Kind     EventKind
+	Severity Severity
+	// Time は発生時刻。ゼロなら出すときに埋める。
+	Time time.Time
+	// Cycle は常駐ループの周の番号（1 回収束・plan では 0）。
+	Cycle int
+	// Resource は対象の資源。資源に紐づかない Event ではゼロ値。
+	Resource ID
+	// Scope は対象の scope。空で Resource があれば Resource の scope を出す。
+	Scope Scope
+	// IntentRevision / RenderedRevision はその周の revision（§9.4）。
+	IntentRevision   string
+	RenderedRevision string
+	// Cause は cause tag（A〜E、あれば）。
+	Cause CauseTag
+	// Message は人が読む文。
+	Message string
+	// Attrs は付属情報（キーと値）。
+	Attrs map[string]string
+	// Text は --log-format text での 1 行（"sakutei: " などの接頭辞を含む）。
+	// 空なら "<Kind>: <Message>"。JSON には出さない。
+	Text string
+}
+
+// HasResource は Event が資源に紐づくかを返す。
+func (e Event) HasResource() bool {
+	return e.Resource.Provider != "" || e.Resource.Local != ""
+}
+
+// TextLine は text 形式の 1 行（改行なし）。
+func (e Event) TextLine() string {
+	if e.Text != "" {
+		return e.Text
+	}
+	return string(e.Kind) + ": " + e.Message
+}
+
+// eventJSON は Event の JSON lines の 1 行の形。
+type eventJSON struct {
+	Time             string            `json:"time"`
+	Kind             EventKind         `json:"kind"`
+	Severity         Severity          `json:"severity"`
+	Cycle            int               `json:"cycle,omitempty"`
+	Resource         string            `json:"resource,omitempty"`
+	Scope            string            `json:"scope,omitempty"`
+	IntentRevision   string            `json:"intent_revision,omitempty"`
+	RenderedRevision string            `json:"rendered_revision,omitempty"`
+	Cause            CauseTag          `json:"cause,omitempty"`
+	Message          string            `json:"message"`
+	Attrs            map[string]string `json:"attrs,omitempty"`
+}
+
+// MarshalJSON は Event を JSON lines の 1 行の形にする（Resource は ID.String()）。
+func (e Event) MarshalJSON() ([]byte, error) {
+	j := eventJSON{
+		Time:             e.Time.UTC().Format(time.RFC3339Nano),
+		Kind:             e.Kind,
+		Severity:         e.Severity,
+		Cycle:            e.Cycle,
+		IntentRevision:   e.IntentRevision,
+		RenderedRevision: e.RenderedRevision,
+		Cause:            e.Cause,
+		Message:          e.Message,
+		Attrs:            e.Attrs,
+	}
+	if j.Severity == "" {
+		j.Severity = SeverityInfo
+	}
+	scope := e.Scope
+	if e.HasResource() {
+		j.Resource = e.Resource.String()
+		if len(scope.Labels) == 0 {
+			scope = e.Resource.Scope
+		}
+	}
+	if len(scope.Labels) > 0 {
+		j.Scope = scope.String()
+	}
+	return json.Marshal(j)
+}

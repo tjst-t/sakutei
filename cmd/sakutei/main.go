@@ -217,6 +217,7 @@ func runDaemon() {
 		"address to serve the approval gate API on, e.g. 127.0.0.1:8470 (§6.4; no authorization, §7); requires --workflow-store and --audit-log")
 	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。
 	gd := addGitDistFlags(fs)
+	logFormat := addLogFormatFlag(fs)
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// "-h"/"--help" makes flag.Parse return flag.ErrHelp after printing
@@ -228,6 +229,7 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
+	setLogFormat("sakutei", *logFormat)
 	soaSerial := checkZoneSOASerial("sakutei", *zoneSOASerial)
 
 	src := setupGitDist(gd, *intentDir, *claim, *allocStore)
@@ -393,6 +395,8 @@ func runDaemon() {
 		Fencing:               guard,
 		DaemonStatusPath:      *daemonStatus,
 		UnreachableSkipLimit:  *unreachableSkipLimit,
+		Out:                   logOut,
+		ErrOut:                logErr,
 	}
 	if *taskStore != "" {
 		cfg.TaskStore = task.NewFileStore(*taskStore)

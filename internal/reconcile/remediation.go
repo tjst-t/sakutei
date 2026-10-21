@@ -26,8 +26,9 @@ import (
 type Held struct {
 	// DriftCount is the number of held drifted resources (and held orphans).
 	DriftCount int
-	// Events are the drift event strings ("would be UPDATE fake/x", ...).
-	Events []string
+	// Events are the DriftWouldApply Events of the held ops; Message is the
+	// drift event string ("would be UPDATE fake/x", ...).
+	Events []core.Event
 	// PruneOps are the prune Deletes outside the held scopes.
 	PruneOps []core.Op
 	// Locals are the Local IDs of the held resources (scope hold only; they
@@ -77,7 +78,7 @@ func hold(desired []diff.DesiredResource, plans map[string]core.Plan, unobservab
 		}
 		h.DriftCount++
 		for _, op := range plan.Ops {
-			h.Events = append(h.Events, fmt.Sprintf("would be %s %s", opKindLabel(op.Kind), op.Target))
+			h.Events = append(h.Events, wouldApply(op, fmt.Sprintf("would be %s %s", opKindLabel(op.Kind), op.Target)))
 		}
 		if remove {
 			delete(plans, local)
@@ -91,12 +92,25 @@ func hold(desired []diff.DesiredResource, plans map[string]core.Plan, unobservab
 	for _, op := range pruneOps {
 		if held(op.Target.Scope) {
 			h.DriftCount++
-			h.Events = append(h.Events, fmt.Sprintf("DELETE %s (orphan; would be pruned)", op.Target))
+			h.Events = append(h.Events, wouldApply(op, fmt.Sprintf("DELETE %s (orphan; would be pruned)", op.Target)))
 			continue
 		}
 		h.PruneOps = append(h.PruneOps, op)
 	}
 	return h
+}
+
+// wouldApply is the DriftWouldApply Event of a held op (§14.1, §14.3).
+func wouldApply(op core.Op, msg string) core.Event {
+	return core.Event{
+		Kind:     core.EventDriftWouldApply,
+		Severity: core.SeverityWarning,
+		Resource: op.Target,
+		Cause:    op.Cause,
+		Message:  msg,
+		Attrs:    map[string]string{"op": opKindLabel(op.Kind)},
+		Text:     "DRIFT EVENT: " + msg,
+	}
 }
 
 func opKindLabel(k core.OpKind) string {

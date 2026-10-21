@@ -316,6 +316,22 @@ func desiredFieldDiffs(desired map[string]string, schema provider.Schema) []core
 	return diffs
 }
 
+// SnapshotFields renders an observed State as the field → string map kept by
+// the last-seen ring and quoted in drift Events (§20.2).  A field the Schema
+// flags secret, or one observed as a SecretRef, is reduced to its ref form
+// ("***" if it is not a recognised ref): the plaintext never enters an Event.
+func (e *Engine) SnapshotFields(state core.State) map[string]string {
+	out := make(map[string]string, len(state))
+	for name, tv := range state {
+		v := typedValueToString(tv)
+		if e.schema.Fields[name].Secret || tv.Kind == core.FieldKindSecretRef {
+			v = secretMaskField(v)
+		}
+		out[name] = v
+	}
+	return out
+}
+
 // typedValueToString converts a TypedValue to its string representation for
 // comparison purposes.  Precision/formatting is intentionally simple in Sprint
 // 1; a full normalisation layer comes in a later Story.

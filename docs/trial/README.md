@@ -92,6 +92,7 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
   sakutei: cycle 4: DRIFT EVENT: would be UPDATE nftables//inet/filter/sakutei_allow
   ```
 - 気づいたこと：同じ知らせが毎周そのまま出続ける。設計 §22.3 は「firing / resolved の level 報告で、毎周同じアラートを撒かない」と決めているので、Backlog #74 で実装の状況を確かめる。
+- `--log-format json` を足すと（デーモン・`reconcile`・`plan`。既定は `text`）、同じ知らせが 1 行 1 Event の JSON lines で出る（#77）。`DRIFT EVENT` は `{"kind":"DriftWouldApply","cycle":4,"resource":"dnszone//api.example.com./A","cause":"B","intent_revision":…}` の形。周の要約は `kind":"CycleSummary"`、そのほかのログ行は `"kind":"Log"` の同じ形の行になる。
 
 ### D3. 破壊的な操作の上限で halt（2026-10-21 に確かめた）
 

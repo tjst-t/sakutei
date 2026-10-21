@@ -101,6 +101,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -110,6 +111,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/capacity"
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/internal/fencing"
 	"github.com/tjst-t/sakutei/internal/lastseen"
@@ -286,6 +288,10 @@ type Config struct {
 	// skips), so "sakutei status --daemon-status" can report it.  Empty means
 	// no file.
 	DaemonStatusPath string
+
+	// cycleBase is the number of cycles run by earlier daemons of this Run
+	// (claim handoffs), so Events carry the cycle number Run prints.
+	cycleBase int
 }
 
 // DefaultUnreachableSkipLimit is the default Config.UnreachableSkipLimit.
@@ -448,13 +454,25 @@ func Run(ctx context.Context, cfg Config) error {
 					shortRev(st.Revision), st.Stale)
 			}
 			for _, c := range st.BreakGlass {
-				fmt.Fprintf(cfg.ErrOut, "sakutei: EVENT BreakGlassWriteUsed severity=critical: break-glass commit %s arrived at revision %s (signed emergency write to the local mirror, §25.1)\n",
+				msg := fmt.Sprintf("break-glass commit %s arrived at revision %s (signed emergency write to the local mirror, §25.1)",
 					shortRev(c), shortRev(st.Revision))
+				eventlog.Emit(cfg.ErrOut, core.Event{
+					Kind: core.EventBreakGlassWriteUsed, Severity: core.SeverityCritical,
+					IntentRevision: st.Revision, Message: msg,
+					Attrs: map[string]string{"commit": c},
+					Text:  "sakutei: EVENT BreakGlassWriteUsed severity=critical: " + msg,
+				})
 			}
 			if st.DRPlan != drPlan {
 				if st.DRPlan != "" {
-					fmt.Fprintf(cfg.Out, "sakutei: EVENT DRPlanActive: DR plan %s is enabled at revision %s; this shard's claim follows it\n",
+					msg := fmt.Sprintf("DR plan %s is enabled at revision %s; this shard's claim follows it",
 						st.DRPlan, shortRev(st.Revision))
+					eventlog.Emit(cfg.Out, core.Event{
+						Kind: core.EventDRPlanActive, Severity: core.SeverityWarning,
+						IntentRevision: st.Revision, Message: msg,
+						Attrs: map[string]string{"dr_plan": st.DRPlan},
+						Text:  "sakutei: EVENT DRPlanActive: " + msg,
+					})
 				} else {
 					fmt.Fprintf(cfg.Out, "sakutei: DR plan %s no longer moves this shard at revision %s\n", drPlan, shortRev(st.Revision))
 				}
@@ -487,6 +505,7 @@ func Run(ctx context.Context, cfg Config) error {
 				}
 				next := cfg
 				next.Claim = st.Claim
+				next.cycleBase = cycleBase
 				if next.Fencing != nil {
 					next.Fencing.Reset()
 				}
@@ -497,6 +516,19 @@ func Run(ctx context.Context, cfg Config) error {
 
 		res, cycleErr := d.RunCycle(ctx)
 		cycleNum = cycleBase + d.cycle
+		// note は周の知らせを core.Event として出す（周の番号と revision を付ける）。
+		cycleRev := d.prevRev
+		note := func(w io.Writer, ev core.Event) {
+			ev.Cycle = cycleNum
+			ev.IntentRevision = cycleRev.IntentRevision
+			ev.RenderedRevision = cycleRev.RenderedRevision
+			eventlog.Emit(w, ev)
+		}
+		// summary は周の要約の行（Event ではないが、json では同じ形の 1 行）。
+		summary := func(w io.Writer, text string) {
+			note(w, core.Event{Kind: core.EventCycleSummary, Severity: core.SeverityInfo,
+				Message: text, Text: fmt.Sprintf("sakutei: cycle %d: %s", cycleNum, text)})
+		}
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
@@ -505,30 +537,43 @@ func Run(ctx context.Context, cfg Config) error {
 			// a long outage of the external authority does not stop
 			// convergence silently.
 			unreachableSkips++
-			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: SKIPPED (external input unreachable, no previous value): consecutive_unreachable_skips=%d\n",
-				cycleNum, unreachableSkips)
+			msg := fmt.Sprintf("SKIPPED (external input unreachable, no previous value): consecutive_unreachable_skips=%d", unreachableSkips)
+			note(cfg.ErrOut, core.Event{
+				Kind: core.EventCycleSkipped, Severity: core.SeverityWarning, Message: msg,
+				Attrs: map[string]string{"consecutive_unreachable_skips": strconv.Itoa(unreachableSkips)},
+				Text:  fmt.Sprintf("sakutei: cycle %d: %s", cycleNum, msg),
+			})
 			if unreachableSkips >= cfg.UnreachableSkipLimit {
-				fmt.Fprintf(cfg.ErrOut, "sakutei: EVENT ExternalInputUnreachableProlonged severity=critical: %d consecutive cycles skipped (limit %d); convergence is stopped until the external input is reachable (§9.2)\n",
+				msg := fmt.Sprintf("%d consecutive cycles skipped (limit %d); convergence is stopped until the external input is reachable (§9.2)",
 					unreachableSkips, cfg.UnreachableSkipLimit)
+				note(cfg.ErrOut, core.Event{
+					Kind: core.EventExternalInputUnreachableProlonged, Severity: core.SeverityCritical, Message: msg,
+					Attrs: map[string]string{
+						"consecutive_unreachable_skips": strconv.Itoa(unreachableSkips),
+						"limit":                         strconv.Itoa(cfg.UnreachableSkipLimit),
+					},
+					Text: "sakutei: EVENT ExternalInputUnreachableProlonged severity=critical: " + msg,
+				})
 			}
 		} else if res.InventoryHalted {
 			// #31: render phase 1 halted the cycle; do NOT print "converged".
-			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: INVENTORY HALTED: %s; no Apply, no prune\n",
-				cycleNum, res.InventoryReason)
+			msg := fmt.Sprintf("INVENTORY HALTED: %s; no Apply, no prune", res.InventoryReason)
+			note(cfg.ErrOut, core.Event{
+				Kind: core.EventInventoryHalted, Severity: core.SeverityWarning, Message: msg,
+				Text: fmt.Sprintf("sakutei: cycle %d: %s", cycleNum, msg),
+			})
 		} else if res.AlertOnly && res.DriftCount > 0 {
 			// Scf7762-3: in alert-only mode drift was detected but nothing was
 			// applied — do NOT print "converged (no changes)" (it contradicts the
 			// "alert-only: N drifted" line emitted below).  The alert-only block
 			// further down carries the detailed drift report.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d drifted (alert-only, no changes)\n",
-				cycleNum, res.Observed)
+			summary(cfg.Out, fmt.Sprintf("observed=%d drifted (alert-only, no changes)", res.Observed))
 		} else {
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d %s\n",
-				cycleNum, res.Observed, cycleSummary(res))
+			summary(cfg.Out, fmt.Sprintf("observed=%d %s", res.Observed, cycleSummary(res)))
 		}
 		if len(res.Fenced) > 0 {
-			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: FENCED scope(s) %v: another shard holds a newer fencing generation; not converging them\n",
-				cycleNum, res.Fenced)
+			// Each fenced scope was its own Fenced Event; this is the cycle's account.
+			summary(cfg.ErrOut, fmt.Sprintf("FENCED scope(s) %v: another shard holds a newer fencing generation; not converging them", res.Fenced))
 		}
 		if len(res.TasksLaunched) > 0 {
 			// #41 (§6.5): RequiresTaskEvent — Tasks launched instead of Apply.
@@ -541,7 +586,9 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		for _, ev := range res.WorkflowEvents {
 			// #42 (§6.3, §6.4): Workflow progress, gates and halts.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %s\n", cycleNum, ev)
+			cev := ev.Core()
+			cev.Text = fmt.Sprintf("sakutei: cycle %d: %s", cycleNum, ev)
+			note(cfg.Out, cev)
 		}
 		if len(res.WorkflowHeld) > 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d Workflow target(s) driven by their Workflow (not converged by the loop): %v\n",
@@ -574,28 +621,34 @@ func Run(ctx context.Context, cfg Config) error {
 				cycleNum, len(res.BackedOff), res.BackedOff)
 		}
 		if res.Pruned > 0 {
-			// Scf7762-1: orphans deleted by the prune phase this cycle.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: pruned=%d orphan(s) (reality − desired)\n",
-				cycleNum, res.Pruned)
+			// Scf7762-1: orphans deleted by the prune phase this cycle.  Each
+			// deleted orphan was its own Pruned Event; this is the cycle's count.
+			summary(cfg.Out, fmt.Sprintf("pruned=%d orphan(s) (reality − desired)", res.Pruned))
 		}
 		if res.PruneHalted {
-			// Scf7762-1: a prune safety guard halted deletion this cycle.
-			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: prune HALTED (safety guard); no orphan deleted this cycle\n",
-				cycleNum)
+			// Scf7762-1: a prune safety guard halted deletion this cycle.  The
+			// PruneHalted Event itself came from the guard, with its reason.
+			summary(cfg.ErrOut, "prune HALTED (safety guard); no orphan deleted this cycle")
 		}
 		for _, ev := range res.PlannedChangeEvents {
 			// §13.3: planned_change lane notices.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %s\n", cycleNum, ev)
+			note(cfg.Out, core.Event{
+				Kind: core.EventPlannedChange, Severity: core.SeverityInfo, Message: ev,
+				Text: fmt.Sprintf("sakutei: cycle %d: %s", cycleNum, ev),
+			})
 		}
 		if res.BudgetHalted {
 			// Scf7762-2: change budget gate blocked ops this cycle.
-			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: BUDGET HALTED: %s\n",
-				cycleNum, res.BudgetReason)
+			note(cfg.ErrOut, core.Event{
+				Kind: core.EventBudgetHalted, Severity: core.SeverityWarning, Message: res.BudgetReason,
+				Attrs: map[string]string{"held": strconv.Itoa(res.Held)},
+				Text:  fmt.Sprintf("sakutei: cycle %d: BUDGET HALTED: %s", cycleNum, res.BudgetReason),
+			})
 		}
 		if res.CapacityHalted {
-			// §13.4: capacity gate halted changes this cycle.
-			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: CAPACITY HALTED: %s\n",
-				cycleNum, res.CapacityReason)
+			// §13.4: capacity gate halted changes this cycle.  The
+			// CapacityHalted Event itself came from the gate.
+			summary(cfg.ErrOut, "CAPACITY HALTED: "+res.CapacityReason)
 		}
 		if res.GhostDiffs > 0 {
 			// F-5 (Scb0ecd-2 daemon wiring): one or more resources produced a
@@ -603,8 +656,7 @@ func Run(ctx context.Context, cfg Config) error {
 			// as ProviderUpgradeDiff Events and NOT applied this cycle.  Surface a
 			// single cycle-numbered summary line so the daemon log makes the
 			// ghost-diff gate visible.
-			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: %d ghost diff(s) held (cause C, provider upgrade); NOT applied — review provider version\n",
-				cycleNum, res.GhostDiffs)
+			summary(cfg.ErrOut, fmt.Sprintf("%d ghost diff(s) held (cause C, provider upgrade); NOT applied — review provider version", res.GhostDiffs))
 		}
 		if cycleErr == nil && !res.SkippedDueToUnreachable && unreachableSkips > 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: external input reachable again after %d skipped cycle(s)\n",
@@ -634,7 +686,8 @@ func Run(ctx context.Context, cfg Config) error {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: alert-only scope(s): %d drifted resource(s) held — not remediated\n",
 				cycleNum, res.DriftCount)
 			for _, ev := range res.DriftEvents {
-				fmt.Fprintf(cfg.Out, "sakutei: cycle %d: DRIFT EVENT: %s\n", cycleNum, ev)
+				ev.Text = fmt.Sprintf("sakutei: cycle %d: DRIFT EVENT: %s", cycleNum, ev.Message)
+				note(cfg.Out, ev)
 			}
 		}
 		if res.AlertOnly {
@@ -648,7 +701,8 @@ func Run(ctx context.Context, cfg Config) error {
 					cycleNum, res.DriftCount)
 			}
 			for _, ev := range res.DriftEvents {
-				fmt.Fprintf(cfg.Out, "sakutei: cycle %d: DRIFT EVENT: %s\n", cycleNum, ev)
+				ev.Text = fmt.Sprintf("sakutei: cycle %d: DRIFT EVENT: %s", cycleNum, ev.Message)
+				note(cfg.Out, ev)
 			}
 		}
 
@@ -943,8 +997,8 @@ type CycleResult struct {
 	// this cycle: all of them when AlertOnly, otherwise those in scopes
 	// declared remediation: alert-only (§14.3).
 	DriftCount int
-	// DriftEvents is the list of drift event strings for the held resources.
-	DriftEvents []string
+	// DriftEvents are the DriftWouldApply Events of the held resources.
+	DriftEvents []core.Event
 
 	// #31 render phase 1 inventory field:
 
@@ -1189,6 +1243,9 @@ func runCycleAsync(
 		rev.RenderedRevision = revision.ComputeRenderedRevision(
 			rootScope, rev.IntentRevision, phase1ExternalInputHashes)
 	}
+	// §22.3: every Event raised from here on carries this cycle and revision.
+	cfg.Out = eventlog.Stamp(cfg.Out, cfg.cycleBase+cycle, rev)
+	cfg.ErrOut = eventlog.Stamp(cfg.ErrOut, cfg.cycleBase+cycle, rev)
 
 	// S072a14-3 render phase 2: expand composite resources into concrete children
 	// (§9.5, §9.1 フェーズ2).
@@ -1274,7 +1331,11 @@ func runCycleAsync(
 			for _, fe := range sr.Fenced {
 				fenced[fe.Scope] = true
 				fencedScopes = append(fencedScopes, fe.Scope)
-				fmt.Fprintf(cfg.ErrOut, "sakutei: FENCED: %v\n", fe)
+				eventlog.Emit(cfg.ErrOut, core.Event{
+					Kind: core.EventFenced, Severity: core.SeverityWarning, Message: fe.Error(),
+					Attrs: map[string]string{"scope": fe.Scope},
+					Text:  fmt.Sprintf("sakutei: FENCED: %v", fe),
+				})
 			}
 			kept := desired[:0]
 			for _, r := range desired {
@@ -1523,10 +1584,9 @@ func runCycleAsync(
 		ready.Record(local, obs)
 
 		// Scb0ecd-3: convert observed State to string map for last-seen ring.
-		curFields := make(map[string]string, len(obs.State))
-		for fname, tv := range obs.State {
-			curFields[fname] = fmt.Sprintf("%v", tv.Value)
-		}
+		// Secret fields stay in their ref form (§20.2): this map is quoted in
+		// drift Events.
+		curFields := pe.engine.SnapshotFields(obs.State)
 
 		// S072a14-3: build per-resource CauseContext, setting UpstreamChanged=true
 		// for children of composite parents that changed this cycle (cause D).
@@ -1563,7 +1623,7 @@ func runCycleAsync(
 		for _, op := range plan.Ops {
 			if op.Cause == core.CauseTagB {
 				summary := lsRing.DriftSummary(local, curFields)
-				fmt.Fprintf(cfg.ErrOut, "sakutei: DriftEvent: %s [cause: B] %s\n", res.ID, summary)
+				EmitDrift(cfg.ErrOut, "sakutei: ", res.ID, op, summary)
 			}
 		}
 
@@ -1590,9 +1650,8 @@ func runCycleAsync(
 			if op.Cause == core.CauseTagC {
 				ghostDiffs++
 				ghostByProvider[pkey]++
-				fmt.Fprintf(cfg.ErrOut,
-					"sakutei: ProviderUpgradeDiff: %s [cause: C] provider_version changed (%s → %s); NOT applying (review required)\n",
-					op.Target, resCauseCtx.ProviderPrevVersion, resCauseCtx.ProviderCurVersion)
+				EmitProviderUpgradeDiff(cfg.ErrOut, "sakutei: ", op,
+					resCauseCtx.ProviderPrevVersion, resCauseCtx.ProviderCurVersion, "NOT applying (review required)")
 				continue
 			}
 			nonCOps = append(nonCOps, op)
@@ -1771,7 +1830,8 @@ func runCycleAsync(
 	})
 	capacityHalted := capacityDecision.HaltAll || capacityDecision.HaltDestructive
 	if capacityHalted {
-		fmt.Fprintf(cfg.ErrOut, "sakutei: %s: %s\n", capacity.EventName, capacityDecision.Reason)
+		EmitCapacityHalted(cfg.ErrOut, capacityDecision.Reason,
+			fmt.Sprintf("sakutei: %s: %s", capacity.EventName, capacityDecision.Reason))
 	}
 	budgetDecision = budget.Merge(budgetDecision, capacityDecision)
 	// E (Scf7762-2): do NOT log BUDGET HALTED here.  This helper has no cycle
@@ -1830,27 +1890,27 @@ func runCycleAsync(
 		local := r.ID.Local
 		if tasks == nil {
 			tasksHeld = append(tasksHeld, local)
-			fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: strategy: task, not applying; no Task launched: %s\n", r.ID, tasksOff)
+			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("strategy: task, not applying; no Task launched: %s", tasksOff))
 			return
 		}
 		if cfg.TaskRunner == nil && !providers.hasTaskRunner(r.ID) {
 			// #67: the resource's own provider cannot run Tasks.
 			tasksHeld = append(tasksHeld, local)
-			fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: strategy: task, not applying; no Task launched: provider %q has no task runner\n", r.ID, r.ID.Provider)
+			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("strategy: task, not applying; no Task launched: provider %q has no task runner", r.ID.Provider))
 			return
 		}
 		if cfg.Fencing != nil {
 			// §15.2: a fenced writer launches nothing either.
 			if err := cfg.Fencing.Check(ctx, r.ID.Scope); err != nil {
 				tasksHeld = append(tasksHeld, local)
-				fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: no Task launched: %v\n", r.ID, err)
+				EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("no Task launched: %v", err))
 				return
 			}
 		}
 		dec, err := tasks.Trigger(ctx, r.ID, r.Fields, plan, r.UpdatePolicy)
 		if err != nil {
 			tasksHeld = append(tasksHeld, local)
-			fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: no Task launched: %v\n", r.ID, err)
+			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("no Task launched: %v", err))
 			return
 		}
 		switch dec.Outcome {
@@ -1859,12 +1919,12 @@ func runCycleAsync(
 			// §13.3: a Task launched for a lane op consumes the lane instead.
 			budgetEngine.ReserveLanes(laneDecision, plan.Ops)
 			budgetEngine.CommitOps(laneDecision.OutsideLanes(plan.Ops))
-			fmt.Fprintf(cfg.Out, "sakutei: RequiresTaskEvent: %s: task %s launched (strategy: task; not applying)\n", r.ID, dec.Record.TaskID)
+			EmitRequiresTask(cfg.Out, "sakutei: ", core.SeverityInfo, r.ID, fmt.Sprintf("task %s launched (strategy: task; not applying)", dec.Record.TaskID))
 		case task.Running:
 			tasksHeld = append(tasksHeld, local)
 		default:
 			tasksHeld = append(tasksHeld, local)
-			fmt.Fprintf(cfg.ErrOut, "sakutei: RequiresTaskEvent: %s: no Task launched (%s): %s\n", r.ID, dec.Outcome, dec.Reason)
+			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("no Task launched (%s): %s", dec.Outcome, dec.Reason))
 		}
 	}
 
@@ -2013,7 +2073,7 @@ func computeDaemonPrune(
 		return prune.PruneResult{}
 	}
 	if result.Halted {
-		fmt.Fprintf(errOut, "sakutei: prune halted this cycle: %s\n", result.HaltReason)
+		EmitPruneHalted(errOut, result, "sakutei: prune halted this cycle: "+result.HaltReason)
 	}
 	for _, id := range result.Deferred {
 		fmt.Fprintf(errOut, "sakutei: prune deferred for %s (safety guard: type not pruneable or unknown≠absent)\n", id)
@@ -2095,16 +2155,16 @@ func executePruneOps(
 			budgetEngine.ReserveLanes(decision, plan.Ops)
 		}
 		if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
-			fmt.Fprintf(errOut, "sakutei: prune apply %s: %v\n", op.Target, applyErr)
+			EmitApplyFailed(errOut, "sakutei: ", "prune apply", op.Target, applyErr)
 			continue
 		}
 		if inLane {
-			fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; planned_change lane)\n", op.Target)
+			EmitPruned(errOut, "sakutei: ", op.Target, "planned_change lane")
 			if e, err := providers.get(op.Target.Provider); err == nil && e.prune != nil {
 				e.prune.NotePlannedRemoval(op.Target)
 			}
 		} else {
-			fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; PruneWithinScope)\n", op.Target)
+			EmitPruned(errOut, "sakutei: ", op.Target, "PruneWithinScope")
 			// Scf7762-2: advance the cumulative window counter for applied destructive ops.
 			budgetEngine.CommitOps([]core.Op{op})
 			// §12.4b (v3.13, #75): our own Delete is an intended shrink, so
@@ -2321,7 +2381,7 @@ func applyWavesAsync(
 				defer ifl.Remove(localCopy)
 
 				if applyErr := exec.Execute(ctx, fp, planCopy); applyErr != nil {
-					fmt.Fprintf(errOut, "sakutei: apply %s: %v\n", idCopy, applyErr)
+					EmitApplyFailed(errOut, "sakutei: ", "apply", idCopy, applyErr)
 					ifl.RecordFailure(localCopy, applyErr)
 				} else {
 					// Success: clear any prior backoff for this resource.

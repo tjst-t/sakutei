@@ -24,7 +24,9 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/gitdist"
+	"github.com/tjst-t/sakutei/pkg/core"
 )
 
 const breakGlassUsage = `usage:
@@ -92,8 +94,13 @@ func runBreakGlass(args []string) {
 		if err != nil {
 			fail("%v", err)
 		}
-		fmt.Fprintf(os.Stderr, "sakutei: EVENT BreakGlassWriteUsed severity=critical: %s wrote %s to the local mirror %s with key %s (session %s); recorded in S4 %s; the central %s is unreachable\n",
+		msg := fmt.Sprintf("%s wrote %s to the local mirror %s with key %s (session %s); recorded in S4 %s; the central %s is unreachable",
 			*actor, res.Commit, res.Mirror, res.Key, res.Session, *auditLog, res.Upstream)
+		eventlog.Emit(os.Stderr, core.Event{
+			Kind: core.EventBreakGlassWriteUsed, Severity: core.SeverityCritical, Message: msg,
+			Attrs: map[string]string{"commit": res.Commit, "session": res.Session, "actor": *actor, "key": res.Key},
+			Text:  "sakutei: EVENT BreakGlassWriteUsed severity=critical: " + msg,
+		})
 		fmt.Fprintf(os.Stdout, "sakutei breakglass: committed %s (session %s); \"sakutei mirror\" opens the merge-back PR once the central git is back\n",
 			res.Commit, res.Session)
 

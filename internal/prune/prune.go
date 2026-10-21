@@ -176,10 +176,23 @@ type PruneResult struct {
 	Halted bool
 	// HaltReason explains why prune was halted (non-empty when Halted is true).
 	HaltReason string
+	// CountDrop is true when the halt is the List count-drop guard (§12.4b).
+	// The caller raises the one PruneHalted Event of the halt; its text form
+	// starts with HaltLine() for a count drop.
+	CountDrop bool
 	// HeldOrphans is the number of orphans (reality − desired) that the halt
 	// kept from being deleted (#73).  Known only when the List itself was
 	// usable (the drop-rate halt); 0 when the List failed or was incomplete.
 	HeldOrphans int
+}
+
+// HaltLine is the text-form line of the count-drop guard ("sakutei: prune
+// HALT: <reason>"), or "" for any other result.
+func (r PruneResult) HaltLine() string {
+	if !r.CountDrop {
+		return ""
+	}
+	return "sakutei: prune HALT: " + r.HaltReason
 }
 
 // ComputePrune runs the set-difference prune computation for one scope and
@@ -294,10 +307,10 @@ func (e *Engine) ComputePrune(
 				baseline, currentCount,
 				drop*100, e.dropThreshold*100,
 			)
-			fmt.Fprintf(errOut, "sakutei: prune HALT: %s\n", reason)
 			return PruneResult{
 				Halted:      true,
 				HaltReason:  reason,
+				CountDrop:   true,
 				HeldOrphans: countOrphans(listResult.IDs, desired),
 			}, nil
 		}

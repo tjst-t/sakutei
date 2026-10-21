@@ -214,7 +214,7 @@ func applyWaves(
 
 			// Apply.
 			if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
-				fmt.Fprintf(errOut, "sakutei: apply %s: %v\n", r.ID, applyErr)
+				EmitApplyFailed(errOut, "sakutei: ", "apply", r.ID, applyErr)
 				failed[local] = true
 				// Still advance downstream so they can be evaluated (and skipped).
 				for _, m := range adj[idx] {

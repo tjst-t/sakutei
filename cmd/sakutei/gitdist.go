@@ -61,7 +61,7 @@ func addGitDistFlags(fs *flag.FlagSet) gitDistFlags {
 // (nil when --intent-repo is not set).  It exits on a usage error.
 func setupGitDist(f gitDistFlags, intentDir, claim, allocStore string) *gitdist.Source {
 	fail := func(format string, a ...any) {
-		fmt.Fprintf(os.Stderr, "sakutei: "+format+"\n", a...)
+		fmt.Fprintf(logErr, "sakutei: "+format+"\n", a...)
 		os.Exit(1)
 	}
 	if *f.repo == "" {
@@ -125,7 +125,7 @@ func setupGitDist(f gitDistFlags, intentDir, claim, allocStore string) *gitdist.
 		src.Claim = sel
 	}
 	if *f.s2free {
-		fmt.Fprintf(os.Stdout, "sakutei: shard class: S2-free (Resource convergence only; everything local lives under %s and is rebuilt by pull, §17.5)\n", *f.workdir)
+		fmt.Fprintf(logOut, "sakutei: shard class: S2-free (Resource convergence only; everything local lives under %s and is rebuilt by pull, §17.5)\n", *f.workdir)
 	}
 	return src
 }

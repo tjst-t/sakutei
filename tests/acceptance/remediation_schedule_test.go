@@ -230,7 +230,7 @@ func TestRemediationSchedule_ScopeAlertOnlyBeatsScheduleAuto(t *testing.T) {
 	if got := mustSize(t, r.fp, "db"); got != 1 {
 		t.Errorf("[AC-v1.5-remediation-schedule-3] alert-only scope の db は修復されないはず: size=%d", got)
 	}
-	if res.DriftCount != 1 || len(res.DriftEvents) != 1 || !strings.Contains(res.DriftEvents[0], "db") {
+	if res.DriftCount != 1 || len(res.DriftEvents) != 1 || !strings.Contains(res.DriftEvents[0].Message, "db") {
 		t.Errorf("[AC-v1.5-remediation-schedule-3] db の drift だけが報告されるはず: count=%d events=%v", res.DriftCount, res.DriftEvents)
 	}
 	counts, _ := r.fp.GetApplyCount()

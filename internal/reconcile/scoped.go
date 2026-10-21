@@ -66,6 +66,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/executor"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
@@ -424,14 +425,21 @@ func ScopedReconcile(
 		res.BudgetHalted = true
 		res.BudgetReason = decision.Reason
 		res.Deferred = true
-		fmt.Fprintf(errOut,
-			"sakutei: scoped: BUDGET HALTED: %s\n  → scoped run を縮退し、次の定期周期へ委ねる（バイパスしない）\n",
-			decision.Reason)
+		eventlog.Emit(errOut, core.Event{
+			Kind: core.EventBudgetHalted, Severity: core.SeverityWarning, Message: decision.Reason,
+			Attrs: map[string]string{"path": "scoped"},
+			Text: fmt.Sprintf("sakutei: scoped: BUDGET HALTED: %s\n  → scoped run を縮退し、次の定期周期へ委ねる（バイパスしない）",
+				decision.Reason),
+		})
 		return res
 	}
 
 	for _, ev := range decision.Events {
-		fmt.Fprintf(errOut, "sakutei: scoped: %s\n", ev)
+		eventlog.Emit(errOut, core.Event{
+			Kind: core.EventPlannedChange, Severity: core.SeverityInfo, Message: ev,
+			Attrs: map[string]string{"path": "scoped"},
+			Text:  "sakutei: scoped: " + ev,
+		})
 	}
 
 	// planned_change のレーン（§13.3）に入った op は、発射前にレーンの枠を消費する
@@ -468,7 +476,7 @@ func ScopedReconcile(
 	for _, op := range tombstoneOps {
 		plan := core.Plan{Ops: []core.Op{op}}
 		if err := exec.Execute(ctx, fp, plan); err != nil {
-			fmt.Fprintf(errOut, "sakutei: scoped: tombstone delete %s: %v\n", op.Target, err)
+			EmitApplyFailed(errOut, "sakutei: scoped: ", "tombstone delete", op.Target, err)
 			continue
 		}
 		fmt.Fprintf(errOut, "sakutei: scoped: deleted %s (explicit absent; 個別削除)\n", op.Target)
