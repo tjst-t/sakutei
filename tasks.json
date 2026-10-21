@@ -755,7 +755,7 @@
       "number": 15,
       "kind": "task",
       "title": "外部入力不達でサイクルをスキップし続けるときの上限と通知",
-      "status": "backlog",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -771,7 +771,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:43:24.592Z",
-      "updatedAt": "2026-10-20T08:43:24.592Z",
+      "updatedAt": "2026-10-21T10:02:57.820Z",
       "closedAt": null,
       "extra": {}
     },
