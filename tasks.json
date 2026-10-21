@@ -1709,7 +1709,7 @@
       "number": 72,
       "kind": "bug",
       "title": "dnszone・nftables の Apply に排他が無く、デーモンの非同期 Apply が同じファイルを同時に書き換えて変更を取りこぼす",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [
         "dnszone-apply-soa-yyyymmddnn"
@@ -1724,12 +1724,12 @@
       ],
       "body": "2026-10-21、#67 の後にデーモンを手で回して見つけた（docs/trial/README.md の「常駐デーモン」）。\n\n## 症状\n`./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 1s` を初期状態から回すと、cycle 1 で 3 件を launch したのに、cycle 2 で `dnszone//www.example.com./A` をもう一度 launch している（ログ「cycle 2: observed=3 applied=0 launched=1」）。cycle 3 からは収束。\n\n## 原因（コードを読んで判断）\n- `internal/dnszone` と `internal/nftables` の Apply は、ファイル全体を読み、1 件を書き換え、temp + rename で置き換える。プロセス内の mutex もファイルのロックも無い。\n- デーモンは Apply を非同期に並べて走らせる（launched=N）。同じファイルへの 2 つの Apply が同じ古い中身を読むと、後から rename した方が先の変更を消す（lost update）。\n- level-triggered なので次の周期で直るが、そのぶん余計な書き込み・余計な Event（cause B に見える揺れ）が出る。#70 の SOA シリアルの更新も同じ競合で取りこぼしうる。外のプロセス（人の編集・別のツール）との競合とは別の、Sakutei 自身の中の問題。\n\n## 直し方（設計の範囲：§4.9 の原子的な書き込み、§5 Apply の契約）\n- 同じファイルへの Apply（と BulkObserve を含む読み込み）を、ファイルのパスごとの排他でくくる。プロセス内は mutex、別プロセス（plan と reconcile を同時に回すなど）にも効くよう flock も取る（採番の FileAuthority と同じやり方）。\n- 読み → 書き換え → rename を 1 つの排他区間の中で行う。\n\n#70 と同じファイルを触るので #70 の後に流す。#71 はこの後に流す。",
       "doneWhen": "同じゾーンファイル・ruleset ファイルに対して多数の Apply を並行に走らせても、全部の変更が残ることを -race 付きのテストで示す（排他を外すと落ちることも確かめる）。デーモンを初期状態から回すと、cycle 1 の launch だけで収束し、cycle 2 で同じリソースを launch し直さないことを受入テストで示す。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/dnszone-nftables-apply-apply）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T10:40:07.561Z",
-      "updatedAt": "2026-10-21T10:48:12.293Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T11:00:11.969Z",
+      "closedAt": "2026-10-21T11:00:11.969Z",
       "extra": {}
     }
   ]
