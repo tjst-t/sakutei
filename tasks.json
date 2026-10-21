@@ -1811,7 +1811,7 @@
       "number": 76,
       "kind": "bug",
       "title": "デーモンのログが、prune で orphan を消した周にも「converged (no changes)」と出る",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1823,12 +1823,12 @@
       ],
       "body": "2026-10-21、docs/trial/README.md の D3 を #75 の後に流し直して見つけた。#73（止めた操作がある周の要約）と同じ種類で、prune で実際に消した周は #73 の対象外だった。\n\n```\nsakutei: cycle 1: observed=1 converged (no changes)\nsakutei: cycle 1: pruned=2 orphan(s) (reality − desired)\n```\n\n2 件を消したのに、その周の要約が「converged (no changes)」と読める。\n\n直し方：prune で orphan を消した周の要約に消した件数を出し（例 `pruned=2`）、「converged (no changes)」とは出さない。#73 の「halted (N op(s) held)」と同じ要約の作り方に乗せる。止めた操作と消した操作が同じ周にあれば両方出す。何も変えず何も止めていない周だけ「converged (no changes)」。",
       "doneWhen": "prune で orphan を消した周のログの要約に消した件数が出て「converged」と出ないこと、消した操作と止めた操作が同じ周にあれば両方出ること、何もしない周は従来どおり「converged (no changes)」であることをテストで示す。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/prune-orphan-converged-no-changes）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T12:57:03.959Z",
-      "updatedAt": "2026-10-21T12:57:11.587Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T13:15:54.642Z",
+      "closedAt": "2026-10-21T13:15:54.642Z",
       "extra": {}
     }
   ]
