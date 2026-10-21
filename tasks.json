@@ -1760,9 +1760,9 @@
     {
       "id": "halt-22-3-firing-resolved-level-event-si",
       "number": 74,
-      "kind": "task",
-      "title": "ずれ・halt の知らせを毎周同じ文で出している（設計 §22.3 は firing / resolved の level 報告）——Event と sink の実装状況を確かめる",
-      "status": "backlog",
+      "kind": "story",
+      "title": "v1 の抜け：§22.3 の単一 Event 型・sink・level（firing / resolved）報告を実装する",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1772,12 +1772,12 @@
         "event"
       ],
       "body": "2026-10-21、docs/trial/README.md の「常駐デーモン」の手順で見つけた。\n\nデーモンを `--mode alert-only` で回し、手でずらしたままにすると、毎周 `DriftEvent ... [cause: B]` と `DRIFT EVENT: would be UPDATE ...` が同じ文で出続ける。予算の halt と prune の急減 halt も毎周出る。\n\n## 設計の決まり\n- §22.3：収束失敗・Workflow 失敗・drift・canary 失敗・振動を個別に通知実装せず、**単一の Event 型**に一本化し、通知は Event の consumer（sink）として分ける。収束失敗は **level（firing / resolved）**で報告し、毎周同じアラートを撒かない。Since と連続失敗回数から transient / stuck / oscillating / blocked に自動昇格。Workflow・canary の失敗は edge（1 回）。\n- §27.2（v1a の範囲）：コア型に「`Event`（単一型 + kind enum + scope/resource/revision 参照）」、出力に「Event 型 + 構造化ログ（JSON）出力」。\n\n## 調べた結果（2026-10-21、コードを読んで）\n| 設計の要素 | 実装 |\n|---|---|\n| 単一の `Event` 型（pkg/core） | **無い**。pkg/core に Event 型が無い |\n| 構造化ログ（JSON）出力 | **無い**。知らせはすべて `fmt.Fprintf` で標準エラー・標準出力に書く文。JSON の出力も、出力形式を選ぶフラグも無い |\n| sink（Event の consumer の分離） | **無い**。出力先は Config.Out / ErrOut の io.Writer だけ |\n| level（firing / resolved）・Since・連続回数・自動昇格 | **無い**。ずれ・halt は毎周同じ文で出る。連続回数を数えているのは、外部入力不達の連続スキップ（#15、`consecutive_unreachable_skips` と `ExternalInputUnreachableProlonged`）だけ |\n| 振動（oscillating）の点灯 | **無い**（v1 の既知の限界として README・§29.2 に記載済み。`core.StatusOscillating` は型だけ） |\n| ある近いもの | `internal/workflow` の Workflow 専用の `Event`（edge、文字列化してログに出す）。S4 監査ログ（`internal/audit`、承認・planned_change・break-glass の JSON lines）。`sakutei status` の適合レポート（その時点の drifted 一覧）。`sakutei: EVENT <Kind> severity=critical: ...` という形の文（break-glass・DR plan・外部入力不達の長期化の 3 か所） |\n\n## 結論\n§22.3 の Event・sink・level 報告は、v1a の範囲（§27.2）に入っているのに実装されていない。v1 の完成（2026-10-21、タグ v1.0.0）の時点の抜け。README の「v1 の既知の限界」にも書かれていない。",
-      "doneWhen": "",
+      "doneWhen": "子タスク 3 件が done。README の「v1 の既知の限界」を見直し済み",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T12:03:03.440Z",
-      "updatedAt": "2026-10-21T14:24:35.035Z",
+      "updatedAt": "2026-10-21T14:27:38.117Z",
       "closedAt": null,
       "extra": {}
     },
