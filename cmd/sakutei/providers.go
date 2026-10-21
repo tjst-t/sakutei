@@ -76,5 +76,13 @@ func resolveProviders(
 		}
 		result[name] = p
 	}
+	// §28.4 (#69): an id the provider would never List (e.g. a relative DNS
+	// name) is rejected before the first Read, so it can neither be Created a
+	// second time nor turn the real resource into a prune orphan.
+	for _, r := range resources {
+		if err := provider.ValidateIntent(result[r.ID.Provider], r.ID.Local, r.Fields); err != nil {
+			return nil, fmt.Errorf("%s: resource %s: %w", commandName, r.ID, err)
+		}
+	}
 	return result, nil
 }

@@ -10,7 +10,10 @@ v2（Backlog #20）に入るかどうかは、この手順で v1 を使ってみ
   カーネルへの `nft -f` は Sakutei はしない。実機で試すなら、書き出されたファイルを自分で読み込ませる（下の「実機につなぐ」）。
 - **devenv について**：設計書の devenv（§26.2、物理 1 台にネストで段 0〜段 2 を再現する）はまだ無い。この手順は 1 つの作業ディレクトリ
   （既定 `/tmp/sakutei-trial`）で完結する、いちばん小さい devenv である。
-- **ID の書き方**：dnszone は「ゾーンファイルに書いた名前/型」（例 `www/A`。FQDN にはしない）。nftables は「family/table/chain」
+- **ID の書き方**：dnszone は「FQDN/型」（例 `www.example.com./A`。`name` も同じ FQDN）。ゾーンファイルの `$ORIGIN` と `@` は解釈するので、
+  ファイルに相対名 `www` で書いても絶対名 `www.example.com.` で書いても同じレコードになる（`www.` は別のレコード）。intent に相対名の ID
+  （`www/A`）を書くとロードで拒否される。書き戻しはファイルの書き方を保つ（相対名の行は相対名のまま書き換え、新しいレコードは FQDN で足す）。
+  nftables は「family/table/chain」
   （例 `inet/filter/sakutei_allow`）。迷ったら手順 1 の `import` が出す ID をそのまま使う。
 - **nftables の rules** は順序つきの 1 本の文字列で、ルールの区切りは ` ; `。並べ替えも差分になる。
 
@@ -51,7 +54,7 @@ ONE="--intent intent --zone example.com.zone --state firewall.rules"
 | 1. import | `./sakutei import --provider dnszone,nftables --zone example.com.zone --ruleset firewall.rules --out imported --samples 1` | いまの現実が intent の形で `imported/` に出る。全部 `ExplicitAbsentOnly`（消さない）。base chain の `input` は出ない（管理の外） |
 | 2. plan | `./sakutei plan $ONE` | `www` が UPDATE、`api` が CREATE、`sakutei_allow` が UPDATE（cause A／B 付き）。ファイルは変わらない |
 | 3. reconcile | `./sakutei reconcile $ONE` → もう一度 `plan` | 3 件が適用され、2 回目の plan は `Converged (no changes)` |
-| 4. ずれ | ゾーンファイルの `api` を手で書き換え → `./sakutei status --intent intent --zone example.com.zone --ruleset firewall.rules` → `reconcile` | status に `DRIFTED dnszone//api/A`（cause B）が出て、reconcile で元に戻る |
+| 4. ずれ | ゾーンファイルの `api` を手で書き換え → `./sakutei status --intent intent --zone example.com.zone --ruleset firewall.rules` → `reconcile` | status に `DRIFTED dnszone//api.example.com./A`（cause B）が出て、reconcile で元に戻る |
 | 5. alert-only | `www` を手で書き換え → `./sakutei reconcile $ONE --mode alert-only` | 「would be UPDATE」と知らせるだけで、ファイルは書き換えない |
 | 6. 消さない | intent から `api` を消して `plan` | `Converged`（削除の計画が出ない）。現実の `api` は残る。消すには `deletion_policy: PruneWithinScope` を明示する |
 
@@ -82,7 +85,7 @@ halt する／Ctrl-C で周期の切れ目で止まる。
 |---|---|
 | デーモンが fake provider にしか対応していない。plan・reconcile に `--ruleset` が無い | Backlog #67（バグ） |
 | **nftables の Apply が base chain の `type … hook … priority …; policy …;` の行を消す**（直す前は、手順 3 の後の ruleset で `input` の宣言行が消えていた） | Backlog #68（バグ・安全）。直した：Apply は管理する chain の行だけを書き直し、base chain・set/map などの行はバイト単位で残す |
-| dnszone が $ORIGIN を解釈しない。ゾーンに絶対名 `www.example.com.` で書いたレコードを、intent の `www/A` は「無い」とみなして CREATE する（同じ名前が 2 つになる）。パッケージコメントの ID の例（`www.example.com./A`）も実装と食い違う | Backlog #69（バグ・identity）。直るまで、ゾーンファイルの名前は相対名で統一して試す |
+| dnszone が $ORIGIN を解釈しない。ゾーンに絶対名 `www.example.com.` で書いたレコードを、intent の `www/A` は「無い」とみなして CREATE する（同じ名前が 2 つになる）。パッケージコメントの ID の例（`www.example.com./A`）も実装と食い違う | Backlog #69 で直した。名前は $ORIGIN・`@` を解いた FQDN で比べ、ID は `www.example.com./A`。相対名の ID はロードで拒否する |
 | SOA のシリアルが上がらない | 設計書 v3.12 §29.1 で「書き換えた Apply のときだけ YYYYMMDDnn で上げる（既定。`--zone-soa-serial keep` で止める）」と決めた。Backlog #70 で実装 |
 
 ## 試した結果の残し方

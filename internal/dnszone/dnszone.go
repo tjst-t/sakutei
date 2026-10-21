@@ -39,7 +39,21 @@
 //	name type value         (bare minimum)
 //
 // Comment lines (;) and blank lines are preserved verbatim on write.
-// $ORIGIN and $TTL directives are preserved verbatim (not interpreted).
+// $ORIGIN and $TTL directives are preserved verbatim.  $ORIGIN is interpreted
+// (RFC1035 §5.1): an owner name not ending in "." is relative to the $ORIGIN
+// in effect at its line, and "@" is that origin.  $TTL is not interpreted (a
+// record without a TTL reads as 300).
+//
+// Names (Backlog #69, §28.4): every owner name is resolved to its FQDN, and
+// records are compared by FQDN (case-insensitively).  With "$ORIGIN
+// example.com.", the lines "www …", "www.example.com. …" and (under "$ORIGIN
+// www.example.com.") "@ …" all name the same record; "www. …" names a
+// different one.  A managed record whose owner is relative (or "@") with no
+// $ORIGIN before it makes the zone a parse error: its FQDN depends on the
+// server's configuration, which we cannot see.  (SOA/NS lines are outside the
+// management boundary and are not resolved.)  On write, a record that already
+// has a line keeps that line's place and its owner exactly as written (a
+// relative "www" stays "www"); a new record is appended with its FQDN.
 //
 // Any other line that cannot be read as a record (a typo, an unknown record
 // type, an unsupported directive such as $INCLUDE, a multi-line "( … )" record,
@@ -49,9 +63,14 @@
 // unknown ≠ absent); silently skipping it would make the core Create a
 // duplicate.  The error names the offending line number.
 //
-// Local ID convention: "<name>/<type>" (e.g. "www.example.com./A").
-// This encodes the composite {name, type} identity into a single opaque string
-// that the convergence core passes to Read/Apply.
+// Local ID convention: "<FQDN>/<TYPE>" (e.g. "www.example.com./A"), the FQDN
+// with the case of the zone file and the type upper-cased.  List, BulkObserve
+// and import report exactly this form, for a line written "www" under
+// "$ORIGIN example.com." as well as for one written "www.example.com.".  The
+// intent MUST use it too: ValidateIntent rejects at load an id (or a "name"
+// field) that is not an FQDN ending in ".", such as "www/A", because List would
+// never report it — the intent resource would look absent and the real record
+// would look like an orphan.  The "name" field is the same FQDN as the id.
 package dnszone
 
 import (
@@ -77,7 +96,7 @@ const ProviderName = "dnszone"
 // so the fail-closed gate (§10.4) passes on registration.
 // Increment this constant whenever normalisation or diff logic changes so that
 // the cause-tag C (ghost diff) mechanism can detect provider upgrades.
-const providerVersion = "dnszone-v1.0.0"
+const providerVersion = "dnszone-v1.1.0"
 
 // managedSkipTypes lists the record types that are NOT managed by this provider.
 // SOA and NS are zone-metadata records that named/CoreDNS manages itself;
@@ -112,8 +131,13 @@ var supportedDirectives = map[string]bool{
 
 // record is a parsed DNS resource record from the zone file.
 type record struct {
-	// name is the owner name (FQDN, e.g. "www.example.com.").
+	// name is the owner name resolved to its FQDN (e.g. "www.example.com."),
+	// with the case it has in the file.
 	name string
+	// owner is the owner name as written on the line ("www", "@",
+	// "www.example.com." …); kept so an Update rewrites the line in the same
+	// form.
+	owner string
 	// ttl is the time-to-live in seconds (string, preserved as-is).
 	ttl string
 	// rrtype is the record type (A, AAAA, CNAME, TXT, MX, etc.).
@@ -122,7 +146,7 @@ type record struct {
 	value string
 }
 
-// localID returns the provider-local ID for this record: "<name>/<type>".
+// localID returns the provider-local ID for this record: "<FQDN>/<TYPE>".
 func (r record) localID() string {
 	return r.name + "/" + r.rrtype
 }
@@ -143,7 +167,7 @@ func New(zonePath string) *Provider {
 // Schema returns the field declarations for DNS records.
 //
 // Fields:
-//   - name   (string, identity, required): owner name (FQDN).
+//   - name   (string, identity, required): owner name (FQDN, same as the id's).
 //   - type   (string, identity, required): record type (A/AAAA/CNAME/TXT/MX/…).
 //   - value  (string, required): rdata.
 //   - ttl    (string): time-to-live in seconds (default "300" if absent).
@@ -194,7 +218,9 @@ func (p *Provider) Capabilities() provider.Capabilities {
 
 // Read observes the current state of the DNS record identified by localID.
 //
-// localID format: "<name>/<type>" (e.g. "www.example.com./A").
+// localID format: "<FQDN>/<TYPE>" (e.g. "www.example.com./A").  A name that is
+// not an FQDN is a permanent error (Unknown, never "absent"): see the package
+// doc and ValidateIntent.
 //
 // Constraints (ADR-0002):
 //   - Does NOT consult desired state.
@@ -217,6 +243,13 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 			State:        nil, // absent from management
 			ObservedAt:   time.Now(),
 		}, nil
+	}
+
+	if err := checkFQDN(name); err != nil {
+		return core.Observation{
+			Availability: core.AvailabilityUnknown,
+			ObservedAt:   time.Now(),
+		}, provider.NewPermanentError(fmt.Errorf("dnszone: Read: local id %q: %w", localID, err))
 	}
 
 	records, err := p.parseZone()
@@ -270,8 +303,9 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 // so a crash mid-write never leaves a truncated zone file (decisions.json).
 //
 // For Create/Update: the record is inserted or replaced in the zone file.
-// Existing lines for the same {name, type} are removed; the new line is
-// appended at the end (outside managed skip types).
+// The first existing line for the same {name, type} is rewritten in place with
+// its owner as written; any further such lines are removed.  With no existing
+// line, the new line (owner = FQDN) is appended at the end.
 // For Delete: lines matching {name, type} are removed.
 //
 // MUST be idempotent: Apply(same plan) twice yields the same file content.
@@ -295,6 +329,9 @@ func (p *Provider) applyOp(op core.Op) error {
 	// Guard: never touch SOA/NS.
 	if managedSkipTypes[strings.ToUpper(rrtype)] {
 		return provider.NewPermanentError(fmt.Errorf("dnszone: Apply: refusing to manage SOA/NS record %q (management boundary)", localID))
+	}
+	if err := checkFQDN(name); err != nil {
+		return provider.NewPermanentError(fmt.Errorf("dnszone: Apply: local id %q: %w", localID, err))
 	}
 
 	// Extract desired field values from FieldDiffs.
@@ -364,9 +401,16 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 	}
 
 	// Use empty scope (provisional — v1a uses root scope).
+	// Two lines may resolve to the same id ("www" and "www.example.com.");
+	// the id is listed once.
 	scope := core.NewScope(nil)
 	ids := make([]core.ID, 0, len(records))
+	seen := make(map[string]bool, len(records))
 	for _, r := range records {
+		if seen[r.localID()] {
+			continue
+		}
+		seen[r.localID()] = true
 		ids = append(ids, core.NewID(ProviderName, scope, r.localID()))
 	}
 	return core.ListResult{IDs: ids, Status: core.ListComplete}, nil
@@ -374,11 +418,12 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 
 // BulkObserve observes every managed record in the zone file with ONE read of
 // the file (§5.7).  Each entry is exactly what Read returns for that record's
-// local id, keyed like List (root scope, "<name>/<type>").
+// local id, keyed like List (root scope, "<FQDN>/<TYPE>").
 //
 // Read finds the FIRST record whose normalised {name, type} matches, so every
 // entry is built from the first such record — two lines that differ only in
-// the case of the name both get the first line's state, as Read gives them.
+// the case of the name, or in being written relative or absolute, both get
+// the first line's state, as Read gives them.
 //
 // complete-or-error: a zone file that cannot be read or scanned is an error for
 // the whole call (never a partial result).  A missing zone file is an empty
@@ -423,10 +468,39 @@ func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkOb
 
 // Compile-time assertions.
 var (
-	_ provider.Provider     = (*Provider)(nil)
-	_ provider.Lister       = (*Provider)(nil)
-	_ provider.BulkObserver = (*Provider)(nil)
+	_ provider.Provider        = (*Provider)(nil)
+	_ provider.Lister          = (*Provider)(nil)
+	_ provider.BulkObserver    = (*Provider)(nil)
+	_ provider.IntentValidator = (*Provider)(nil)
 )
+
+// ValidateIntent rejects, at load, a desired record whose id or "name" field is
+// not the FQDN form List reports (Backlog #69, §28.4).  "www/A" is rejected
+// rather than resolved: the origin it is relative to lives in the zone file,
+// which the loader does not read, and a guessed origin would be the very
+// identity mix-up this check is for.  The "name" and "type" fields, when
+// given, must name the same record as the id.
+func (p *Provider) ValidateIntent(localID string, fields map[string]string) error {
+	name, rrtype, err := splitLocalID(localID)
+	if err != nil {
+		return fmt.Errorf("dnszone: invalid id %q: %w", localID, err)
+	}
+	if err := checkFQDN(name); err != nil {
+		return fmt.Errorf("dnszone: id %q: %w", localID, err)
+	}
+	if f, ok := fields["name"]; ok {
+		if err := checkFQDN(f); err != nil {
+			return fmt.Errorf("dnszone: id %q: field name %q: %w", localID, f, err)
+		}
+		if normaliseName(f) != normaliseName(name) {
+			return fmt.Errorf("dnszone: id %q: field name %q names a different record than the id", localID, f)
+		}
+	}
+	if f, ok := fields["type"]; ok && !strings.EqualFold(f, rrtype) {
+		return fmt.Errorf("dnszone: id %q: field type %q names a different record than the id", localID, f)
+	}
+	return nil
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
@@ -443,14 +517,54 @@ func splitLocalID(localID string) (name, rrtype string, err error) {
 	return localID[:idx], localID[idx+1:], nil
 }
 
-// normaliseName canonicalises a DNS name for comparison.
-// Trailing dot is always added; name is lowercased for case-insensitive match.
+// normaliseName canonicalises an FQDN for comparison: lowercased for a
+// case-insensitive match.  Relative names are resolved (absName) before they
+// get here; they are never compared.
 func normaliseName(name string) string {
-	n := strings.ToLower(name)
-	if !strings.HasSuffix(n, ".") {
-		n += "."
+	return strings.ToLower(name)
+}
+
+// isAbsolute reports whether a zone-file name ends in an unescaped ".".
+func isAbsolute(name string) bool {
+	if !strings.HasSuffix(name, ".") {
+		return false
 	}
-	return n
+	bs := 0
+	for i := len(name) - 2; i >= 0 && name[i] == '\\'; i-- {
+		bs++
+	}
+	return bs%2 == 0
+}
+
+// checkFQDN returns an error unless name is an FQDN (ends in an unescaped ".").
+func checkFQDN(name string) error {
+	if !isAbsolute(name) {
+		return fmt.Errorf("name %q is not a fully-qualified name: write the FQDN ending in \".\" (e.g. %q), not a name relative to $ORIGIN", name, name+".example.com.")
+	}
+	return nil
+}
+
+// absName resolves a zone-file name against origin (RFC1035 §5.1): "@" is the
+// origin, a name ending in "." is already absolute, any other name is relative
+// to the origin.  With no origin ("" — no $ORIGIN yet), only absolute names
+// resolve.
+func absName(name, origin string) (string, error) {
+	if name == "@" {
+		if origin == "" {
+			return "", fmt.Errorf("\"@\" with no $ORIGIN before it")
+		}
+		return origin, nil
+	}
+	if isAbsolute(name) {
+		return name, nil
+	}
+	if origin == "" {
+		return "", fmt.Errorf("relative name %q with no $ORIGIN before it", name)
+	}
+	if origin == "." {
+		return name + ".", nil
+	}
+	return name + "." + origin, nil
 }
 
 // readRecord reads a single record from the zone file by {name, type}.
@@ -474,66 +588,91 @@ func (p *Provider) readRecord(name, rrtype string) (*record, error) {
 }
 
 // writeRecord inserts or replaces a record in the zone file (Create/Update).
-// Existing lines for the same {name, type} are removed; the new line is
-// appended.  Atomic write via temp file + rename.
+// rec.name is the FQDN.  The first existing line for the same {name, type} is
+// rewritten in place, keeping its owner as written (so a relative "www" stays
+// "www" and still resolves under the same $ORIGIN); further such lines are
+// removed.  With no existing line, the record is appended with its FQDN as
+// owner, which reads the same under any $ORIGIN.  Atomic write via temp file +
+// rename.
 func (p *Provider) writeRecord(rec record) error {
-	// Refuse to write a line we could not read back (an unknown type, a TTL
-	// like "1h", a value with "(" …).  Writing it would make the whole zone a
-	// parse error on the next cycle and stop every record in it; refusing
-	// here confines the failure to this one resource.
-	newLine := formatRecord(rec)
-	if strings.ContainsAny(newLine, "\r\n") {
-		// parseLine splits on any whitespace, so a line break would read back
-		// as one line here yet become two lines in the file.
-		return provider.NewPermanentError(fmt.Errorf("dnszone: writeRecord: refusing to write a record containing a line break: %q", newLine))
-	}
-	back, ok, perr := parseLine(newLine)
-	if perr == nil && !ok {
-		perr = fmt.Errorf("not a resource record: %q", newLine)
-	}
-	if perr == nil && (normaliseName(back.name) != normaliseName(rec.name) || back.rrtype != strings.ToUpper(rec.rrtype)) {
-		perr = fmt.Errorf("reads back as %s/%s: %q", back.name, back.rrtype, newLine)
-	}
-	if perr != nil {
-		return provider.NewPermanentError(fmt.Errorf("dnszone: writeRecord: refusing to write a line the zone parser cannot read back: %w", perr))
-	}
-
 	lines, err := p.readLines()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return provider.NewTransientError(fmt.Errorf("dnszone: writeRecord: read zone: %w", err))
+	}
+	scanned, err := scanLines(lines)
+	if err != nil {
+		// Refuse to rewrite a zone we cannot fully read (unknown ≠ absent).
+		return provider.NewTransientError(fmt.Errorf("dnszone: writeRecord: %s: %w", p.zonePath, err))
 	}
 
 	normName := normaliseName(rec.name)
 	normType := strings.ToUpper(rec.rrtype)
 
-	// Remove existing lines for this {name, type}.
 	filtered := make([]string, 0, len(lines)+1)
-	for i, line := range lines {
-		r, ok, perr := parseLine(line)
-		if perr != nil {
-			// Refuse to rewrite a zone we cannot fully read (unknown ≠ absent).
-			return provider.NewTransientError(fmt.Errorf("dnszone: writeRecord: %s: line %d: %w", p.zonePath, i+1, perr))
-		}
-		if !ok {
-			// Not a resource record (comment, directive, blank) — preserve.
-			filtered = append(filtered, line)
+	replaced := false
+	for _, zl := range scanned {
+		if !zl.ok || normaliseName(zl.rec.name) != normName || zl.rec.rrtype != normType {
+			// Not this record (comment, directive, blank, other record) — preserve.
+			filtered = append(filtered, zl.text)
 			continue
 		}
-		if normaliseName(r.name) == normName && strings.ToUpper(r.rrtype) == normType {
-			// This is the record we are replacing — skip (drop) it.
+		if replaced {
+			// A further line for the record we are replacing — drop it.
 			continue
 		}
-		filtered = append(filtered, line)
+		in := rec
+		in.owner = zl.rec.owner
+		newLine, err := checkedLine(in, zl.origin)
+		if err != nil {
+			return err
+		}
+		filtered = append(filtered, newLine)
+		replaced = true
 	}
-
-	// Append the new record.
-	filtered = append(filtered, newLine)
+	if !replaced {
+		in := rec
+		in.owner = rec.name
+		newLine, err := checkedLine(in, "")
+		if err != nil {
+			return err
+		}
+		filtered = append(filtered, newLine)
+	}
 
 	return p.writeLines(filtered)
 }
 
-// deleteRecord removes all lines for {name, type} from the zone file.
-// Atomic write via temp file + rename.
+// checkedLine formats rec as a zone-file line and refuses (Permanent) a line
+// we could not read back under origin (an unknown type, a TTL like "1h", a
+// value with "(" …).  Writing it would make the whole zone a parse error on
+// the next cycle and stop every record in it; refusing here confines the
+// failure to this one resource.
+func checkedLine(rec record, origin string) (string, error) {
+	newLine := formatRecord(rec)
+	if strings.ContainsAny(newLine, "\r\n") {
+		// parseLine splits on any whitespace, so a line break would read back
+		// as one line here yet become two lines in the file.
+		return "", provider.NewPermanentError(fmt.Errorf("dnszone: writeRecord: refusing to write a record containing a line break: %q", newLine))
+	}
+	back, ok, perr := parseLine(newLine)
+	if perr == nil && !ok {
+		perr = fmt.Errorf("not a resource record: %q", newLine)
+	}
+	if perr == nil {
+		back.name, perr = absName(back.owner, origin)
+	}
+	if perr == nil && (normaliseName(back.name) != normaliseName(rec.name) || back.rrtype != strings.ToUpper(rec.rrtype)) {
+		perr = fmt.Errorf("reads back as %s/%s: %q", back.name, back.rrtype, newLine)
+	}
+	if perr != nil {
+		return "", provider.NewPermanentError(fmt.Errorf("dnszone: writeRecord: refusing to write a line the zone parser cannot read back: %w", perr))
+	}
+	return newLine, nil
+}
+
+// deleteRecord removes all lines for {name, type} (name = FQDN) from the zone
+// file, however each line writes the owner.  Atomic write via temp file +
+// rename.
 func (p *Provider) deleteRecord(name, rrtype string) error {
 	lines, err := p.readLines()
 	if err != nil {
@@ -543,28 +682,28 @@ func (p *Provider) deleteRecord(name, rrtype string) error {
 		}
 		return provider.NewTransientError(fmt.Errorf("dnszone: deleteRecord: read zone: %w", err))
 	}
+	scanned, err := scanLines(lines)
+	if err != nil {
+		return provider.NewTransientError(fmt.Errorf("dnszone: deleteRecord: %s: %w", p.zonePath, err))
+	}
 
 	normName := normaliseName(name)
 	normType := strings.ToUpper(rrtype)
 
 	filtered := make([]string, 0, len(lines))
-	for i, line := range lines {
-		r, ok, perr := parseLine(line)
-		if perr != nil {
-			return provider.NewTransientError(fmt.Errorf("dnszone: deleteRecord: %s: line %d: %w", p.zonePath, i+1, perr))
-		}
-		if ok && normaliseName(r.name) == normName && strings.ToUpper(r.rrtype) == normType {
+	for _, zl := range scanned {
+		if zl.ok && normaliseName(zl.rec.name) == normName && zl.rec.rrtype == normType {
 			// Drop this line.
 			continue
 		}
-		filtered = append(filtered, line)
+		filtered = append(filtered, zl.text)
 	}
 
 	return p.writeLines(filtered)
 }
 
-// parseZone reads the zone file and returns all managed records.
-// SOA and NS records are excluded (management boundary).
+// parseZone reads the zone file and returns all managed records, names
+// resolved to FQDNs.  SOA and NS records are excluded (management boundary).
 // Returns os.ErrNotExist if the zone file does not exist.
 // Returns an error naming the line number if any line cannot be read
 // (never a partial record set — unknown ≠ absent).
@@ -573,22 +712,82 @@ func (p *Provider) parseZone() ([]record, error) {
 	if err != nil {
 		return nil, err
 	}
+	scanned, err := scanLines(lines)
+	if err != nil {
+		return nil, err
+	}
 
 	var records []record
-	for i, line := range lines {
-		r, ok, perr := parseLine(line)
-		if perr != nil {
-			return nil, fmt.Errorf("line %d: %w", i+1, perr)
-		}
-		if !ok {
+	for _, zl := range scanned {
+		if !zl.ok || managedSkipTypes[zl.rec.rrtype] {
 			continue
 		}
-		if managedSkipTypes[strings.ToUpper(r.rrtype)] {
-			continue
-		}
-		records = append(records, r)
+		records = append(records, zl.rec)
 	}
 	return records, nil
+}
+
+// zoneLine is one line of the zone file as scanLines reads it.
+type zoneLine struct {
+	// text is the line as it is in the file.
+	text string
+	// ok is true when the line is a resource record; rec is then the record.
+	ok  bool
+	rec record
+	// origin is the $ORIGIN in effect at this line ("" before any $ORIGIN).
+	origin string
+}
+
+// scanLines reads every line in order, tracking $ORIGIN, and resolves each
+// managed record's owner to its FQDN.  SOA/NS owners are not resolved (their
+// name stays as written): they are outside the management boundary and a zone
+// may write them as "@" without a $ORIGIN, leaving the origin to the server.
+// Any line that cannot be read is an error naming its line number.
+func scanLines(lines []string) ([]zoneLine, error) {
+	out := make([]zoneLine, 0, len(lines))
+	origin := ""
+	for i, line := range lines {
+		zl := zoneLine{text: line, origin: origin}
+		r, ok, err := parseLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", i+1, err)
+		}
+		if !ok {
+			if o, isOrigin, err := originDirective(line, origin); err != nil {
+				return nil, fmt.Errorf("line %d: %w", i+1, err)
+			} else if isOrigin {
+				origin = o
+			}
+			out = append(out, zl)
+			continue
+		}
+		if managedSkipTypes[r.rrtype] {
+			r.name = r.owner
+		} else if r.name, err = absName(r.owner, origin); err != nil {
+			return nil, fmt.Errorf("line %d: %w: %q", i+1, err, line)
+		}
+		zl.ok, zl.rec = true, r
+		out = append(out, zl)
+	}
+	return out, nil
+}
+
+// originDirective reports whether line is a $ORIGIN directive and, if so,
+// returns the new origin as an FQDN.  A relative argument is relative to the
+// current origin (RFC1035 §5.1).
+func originDirective(line, origin string) (string, bool, error) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 || strings.ToUpper(fields[0]) != "$ORIGIN" {
+		return "", false, nil
+	}
+	if len(fields) < 2 || strings.HasPrefix(fields[1], ";") {
+		return "", false, fmt.Errorf("$ORIGIN without a name: %q", line)
+	}
+	o, err := absName(fields[1], origin)
+	if err != nil {
+		return "", false, fmt.Errorf("$ORIGIN: %w: %q", err, line)
+	}
+	return o, true, nil
 }
 
 // readLines reads the zone file and returns its lines (without trailing newline).
@@ -647,8 +846,9 @@ func (p *Provider) writeLines(lines []string) error {
 	return nil
 }
 
-// parseLine parses a single zone-file line into a record.
-// Returns (zero, false, nil) if the line is a comment, blank, or a supported
+// parseLine parses a single zone-file line into a record whose owner is set
+// as written and whose name is left empty (scanLines resolves it against
+// $ORIGIN).  Returns (zero, false, nil) if the line is a comment, blank, or a supported
 // directive ($ORIGIN / $TTL).  Returns a non-nil error if the line is neither
 // that nor a record we can read (see the package doc).
 //
@@ -737,7 +937,7 @@ func parseLine(line string) (record, bool, error) {
 	value := strings.Join(fields[idx:], " ")
 
 	return record{
-		name:   name,
+		owner:  name,
 		ttl:    ttl,
 		rrtype: rrtype,
 		value:  value,
@@ -773,13 +973,13 @@ func hasUnquotedParen(s string) bool {
 }
 
 // formatRecord converts a record to a canonical zone-file line.
-// Format: "<name> <ttl> IN <type> <value>"
+// Format: "<owner> <ttl> IN <type> <value>"
 func formatRecord(r record) string {
 	ttl := r.ttl
 	if ttl == "" {
 		ttl = "300"
 	}
-	return fmt.Sprintf("%s %s IN %s %s", r.name, ttl, strings.ToUpper(r.rrtype), r.value)
+	return fmt.Sprintf("%s %s IN %s %s", r.owner, ttl, strings.ToUpper(r.rrtype), r.value)
 }
 
 // isNumeric returns true if s represents a non-negative integer (TTL value).

@@ -174,12 +174,13 @@ func TestStatus_DNSZoneDrift(t *testing.T) {
 	}
 	zonePath := filepath.Join(tmp, "example.com.zone")
 
-	// Desired: www A 1.2.3.4. The dnszone provider-local id is "<name>/<type>".
+	// Desired: www A 1.2.3.4. The dnszone provider-local id is "<FQDN>/<TYPE>"
+	// (#69): the relative "www" line below resolves to www.example.com.
 	writeDNSZoneIntent(t, intentDir, []map[string]any{
-		dnszoneResource("www/A", "www", "A", "1.2.3.4", "300", ""),
+		dnszoneResource("www.example.com./A", "www.example.com.", "A", "1.2.3.4", "300", ""),
 	})
 	// Reality: www A 9.9.9.9 (drift). Minimal RFC1035 zone record line.
-	writeZoneFile(t, zonePath, "www\t300\tIN\tA\t9.9.9.9\n")
+	writeZoneFile(t, zonePath, "$ORIGIN example.com.\nwww\t300\tIN\tA\t9.9.9.9\n")
 
 	// dnszone reads config["zone"]; --state is the alias fallback but we pass --zone.
 	stdout, stderr, code := runStatusCmd(t, intentDir, zonePath, "--zone", zonePath)
