@@ -1278,7 +1278,7 @@
       "number": 63,
       "kind": "task",
       "title": "v2: watch 併用ハイブリッドと Observe 間引きの本格化",
-      "status": "ready",
+      "status": "backlog",
       "parent": "v2-task-ui",
       "dependsOn": [],
       "milestone": null,
@@ -1292,7 +1292,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:58:14.988Z",
+      "updatedAt": "2026-10-21T09:59:58.399Z",
       "closedAt": null,
       "extra": {}
     },
