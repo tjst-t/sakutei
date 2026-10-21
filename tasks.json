@@ -1183,14 +1183,16 @@
       "dependsOn": [],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "v2"
+      ],
       "body": "設計 §20.4・§27.5。v1 は provider の到達資格を SecretRef（Vault の静的資格）で直結している（層 B 相当の暫定）。これを CredentialProvider interface（Acquire / Release）経由に移す。\n\n- Executor が Read / Apply の実行時に Acquire し、使い終えたら Release する。desired には資格の参照だけが載る。\n- 発行済みの短命資格を TTL 内でキャッシュする。broker に届かない間は該当リソースを unknown にする（absent と断じない）。\n- 層 B（静的資格）は同じ interface の裏で SecretRef に振り分け、既存の provider を壊さない。",
       "doneWhen": "CredentialProvider を通して資格を受ける provider が収束し、資格の発行元を止めると該当リソースが unknown になって削除も操作もしないこと、TTL 内はキャッシュで回ることをテストで示す。既存の SecretRef の provider が変わらず通る。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:04.700Z",
+      "updatedAt": "2026-10-21T09:58:11.036Z",
       "closedAt": null,
       "extra": {}
     },
