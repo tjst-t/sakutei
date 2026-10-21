@@ -1289,21 +1289,24 @@
       "number": 64,
       "kind": "task",
       "title": "v2: intent UI（catalog）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "v2-task-ui",
       "dependsOn": [
         "v2-dbsource-tenant-append-only-revision"
       ],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "v2",
+        "needs-decision"
+      ],
       "body": "設計 §21.4・§27.5。UI は独自のデータモデル・DB を持たない薄いフロントエンドで、git が真実の源。\n\n- 書き込み経路は ownership に従う：tenant のカタログ操作は即時反映（DBSource）、platform の基盤設定は UI → PR 起票 → 承認。\n- カタログの各商品 = 合成リソースのテンプレート（§9）。UI → 合成リソース → 採番 → git / 収束が一本につながる。\n- 難所は round-trip。platform 層は UI → PR 生成にして、git を単一の書き込み経路に保つ。\n\n**着手時に決めること**：UI の技術（stdlib の net/http + html/template か、別のフロントエンドか）と、PR 起票先（GitHub / GitLab）の扱い。",
       "doneWhen": "UI からカタログの商品を選ぶと、tenant 層なら即時に収束し、platform 層なら PR が起票されること、UI 側に独自の状態を持たないことを示す。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:04.700Z",
+      "updatedAt": "2026-10-21T09:57:49.520Z",
       "closedAt": null,
       "extra": {}
     },
