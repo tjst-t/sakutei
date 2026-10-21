@@ -1209,8 +1209,14 @@ func runCycleAsync(
 	// §28.4 (#69): an id the provider would never List (e.g. a relative DNS
 	// name) skips the whole cycle, before any Observe/Apply/prune: left in,
 	// it would Create a duplicate and make the real resource a prune orphan.
+	// #67: checked by the resource's own provider; a provider that cannot be
+	// resolved leaves its resources unobservable below (no Apply, no prune).
 	for _, r := range desired {
-		if err := provider.ValidateIntent(fp, r.ID.Local, r.Fields); err != nil {
+		p := providers.provider(r)
+		if p == nil {
+			continue
+		}
+		if err := provider.ValidateIntent(p, r.ID.Local, r.Fields); err != nil {
 			return CycleResult{ExcludedByClaim: excludedByClaim},
 				fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): resource %s: %w", r.ID, err)
 		}
