@@ -1786,7 +1786,7 @@
       "number": 75,
       "kind": "bug",
       "title": "Sakutei 自身が prune で消した分を、次の周の List 急減判定で差し引く（承認して消すと prune が止まり続ける）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1802,7 +1802,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T12:15:33.658Z",
-      "updatedAt": "2026-10-21T12:15:33.658Z",
+      "updatedAt": "2026-10-21T12:16:59.452Z",
       "closedAt": null,
       "extra": {}
     }
