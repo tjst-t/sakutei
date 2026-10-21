@@ -1529,7 +1529,7 @@
       "kind": "task",
       "title": "v2: 実際の一括 API を持つ対象（Proxmox など）での BulkObserve",
       "status": "backlog",
-      "parent": null,
+      "parent": "v2-task-ui",
       "dependsOn": [
         "v1b-bulkobserve-sdk"
       ],
@@ -1546,7 +1546,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:07:08.343Z",
-      "updatedAt": "2026-10-20T20:07:08.343Z",
+      "updatedAt": "2026-10-21T09:58:28.201Z",
       "closedAt": null,
       "extra": {}
     },
