@@ -111,7 +111,7 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
   ```
 - `--approve-large-change 2` を足して起動し直すと、cycle 1 で 2 件を消す（`pruned=2`）。SOA のシリアルは 2 つ上がる。
 - 気づいたこと（2 つ）：
-  - halt した周の要約にも `converged (no changes)` と出て紛らわしい。Backlog #73。
+  - halt した周の要約にも `converged (no changes)` と出て紛らわしい。Backlog #73（直した：止めた操作がある周の要約は `halted (N op(s) held)`）。
   - 承認して 2 件を消したあと、cycle 2 から毎周 `prune HALT: List count dropped from 3 to 1 (67% > threshold 50%)` で prune が止まり続ける。
     件数が減ったのは Sakutei 自身が承認つきで消したからだが、急減の判定（§12.4（b））は planned_change で消した分しか差し引かない。
     また、止まった周は比べる基準の件数を更新しないので、デーモンを起こし直すまで止まり続ける。人に判断を仰いでいる。

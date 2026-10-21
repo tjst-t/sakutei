@@ -160,6 +160,10 @@ type PruneResult struct {
 	Halted bool
 	// HaltReason explains why prune was halted (non-empty when Halted is true).
 	HaltReason string
+	// HeldOrphans is the number of orphans (reality − desired) that the halt
+	// kept from being deleted (#73).  Known only when the List itself was
+	// usable (the drop-rate halt); 0 when the List failed or was incomplete.
+	HeldOrphans int
 }
 
 // ComputePrune runs the set-difference prune computation for one scope and
@@ -274,8 +278,9 @@ func (e *Engine) ComputePrune(
 			)
 			fmt.Fprintf(errOut, "sakutei: prune HALT: %s\n", reason)
 			return PruneResult{
-				Halted:     true,
-				HaltReason: reason,
+				Halted:      true,
+				HaltReason:  reason,
+				HeldOrphans: countOrphans(listResult.IDs, desired),
 			}, nil
 		}
 	}
@@ -406,4 +411,26 @@ func inAnyScope(s core.Scope, scopes []core.Scope) bool {
 		}
 	}
 	return false
+}
+
+// countOrphans counts the listed IDs that the set-difference below would take
+// as deletion candidates (reality − desired, inside a PruneWithinScope scope),
+// without the per-candidate Read.  Used only to report how many orphans a
+// halt held (#73); it never drives a Delete.
+func countOrphans(ids []core.ID, desired []diff.DesiredResource) int {
+	desiredSet := make(map[string]bool, len(desired))
+	var pruneScopes []core.Scope
+	for _, res := range desired {
+		if res.DeletionPolicy == core.PruneWithinScope {
+			desiredSet[res.ID.Local] = true
+			pruneScopes = append(pruneScopes, res.ID.Scope)
+		}
+	}
+	n := 0
+	for _, id := range ids {
+		if !desiredSet[id.Local] && inAnyScope(id.Scope, pruneScopes) {
+			n++
+		}
+	}
+	return n
 }

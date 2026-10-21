@@ -522,6 +522,11 @@ func Run(ctx context.Context, cfg Config) error {
 			// further down carries the detailed drift report.
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d drifted (alert-only, no changes)\n",
 				cycleNum, res.Observed)
+		} else if res.Held > 0 || res.PruneHalted {
+			// #73: a budget / capacity gate or a prune safety guard stopped
+			// ops this cycle — it did not converge, so never say "converged".
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d halted (%d op(s) held) applied=%d launched=%d\n",
+				cycleNum, res.Observed, res.Held, res.Applied, res.Launched)
 		} else if res.Applied == 0 && res.Launched == 0 && len(res.Waiting) == 0 && res.DriftCount == 0 &&
 			len(res.TasksLaunched) == 0 && len(res.TasksHeld) == 0 && len(res.WorkflowHeld) == 0 {
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d converged (no changes)\n",
@@ -903,6 +908,11 @@ type CycleResult struct {
 	BudgetHalted bool
 	// BudgetReason is the human-readable explanation of the budget halt.
 	BudgetReason string
+	// Held is the number of ops the budget / capacity gate or a prune safety
+	// guard stopped this cycle (#73): blocked Apply ops, blocked prune
+	// Deletes, and the orphans a prune halt kept.  A cycle with Held > 0 (or
+	// PruneHalted) is summarised as "halted", never as "converged".
+	Held int
 	// PlannedChangeEvents are the planned_change lane notices of the cycle
 	// (§13.3): admissions, exhaustion, kind mismatches, expiry.
 	PlannedChangeEvents []string
@@ -1759,9 +1769,14 @@ func runCycleAsync(
 
 	// Filter prune ops through the budget decision.
 	var allowedPruneOps []core.Op
-	if !pruneResult.Halted {
+	held := 0
+	if pruneResult.Halted {
+		// #73: the safety guard holds every Delete of the cycle.
+		held += len(pruneResult.DeleteOps) + pruneResult.HeldOrphans
+	} else {
 		allowed, blocked := budgetDecision.FilterOps(pruneResult.DeleteOps)
 		allowedPruneOps = allowed
+		held += len(blocked)
 		for _, op := range blocked {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: budget: blocked destructive op DELETE %s (budget limit)\n", op.Target)
 		}
@@ -1773,6 +1788,11 @@ func runCycleAsync(
 	// plans to remove destructive ops before passing them to applyWavesAsync.
 	// When budget fires with halt-all, we pass an empty plans map.
 	filteredPlans := filterPlansByBudget(plans, budgetDecision)
+	for local, plan := range plans {
+		if !unobservable[local] {
+			held += len(plan.Ops) - len(filteredPlans[local].Ops)
+		}
+	}
 
 	// §13.3: a planned_change lane op consumes its lane when dispatched and is
 	// never recorded in the normal window budget.
@@ -1869,6 +1889,7 @@ func runCycleAsync(
 		PruneHalted:  pruneHalted,
 		BudgetHalted: budgetHalted,
 		BudgetReason: budgetReason,
+		Held:         held,
 		GhostDiffs:   ghostDiffs,
 		NotDue:       notDue,
 		Waiting:      waitingThisCycle,
@@ -2021,6 +2042,7 @@ func computeDaemonPruneAll(
 		r := computeDaemonPrune(ctx, e.prune, e.p, claim, own, unobservable, errOut)
 		merged.DeleteOps = append(merged.DeleteOps, r.DeleteOps...)
 		merged.Deferred = append(merged.Deferred, r.Deferred...)
+		merged.HeldOrphans += r.HeldOrphans
 		if r.Halted {
 			merged.Halted = true
 			reasons = append(reasons, r.HaltReason)
