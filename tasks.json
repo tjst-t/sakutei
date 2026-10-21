@@ -1737,7 +1737,7 @@
       "number": 73,
       "kind": "bug",
       "title": "デーモンのログが、予算で halt した周にも「converged (no changes)」と出る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1753,7 +1753,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T12:02:59.361Z",
-      "updatedAt": "2026-10-21T12:02:59.361Z",
+      "updatedAt": "2026-10-21T12:03:34.722Z",
       "closedAt": null,
       "extra": {}
     },
