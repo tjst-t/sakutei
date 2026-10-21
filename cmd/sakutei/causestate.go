@@ -47,6 +47,11 @@ type causeStateFile struct {
 	PrevRenderedRevision string `json:"prev_rendered_revision,omitempty"`
 	// PrevProviderVersion is the provider_version from the previous invocation.
 	PrevProviderVersion string `json:"prev_provider_version,omitempty"`
+	// PrevParentRevisions is composite parent Local ID → rendered contribution
+	// hash from the previous invocation (render.ParentRevisions, #14).  Only
+	// the children of a parent whose hash changed get cause D.  Absent (a file
+	// written before #14) means no previous cycle: nothing is tagged D.
+	PrevParentRevisions map[string]string `json:"prev_parent_revisions"`
 }
 
 // loadCauseState reads the cause-state file at path.

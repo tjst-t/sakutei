@@ -70,9 +70,10 @@
 //     but intent_revision is stable, CauseContext.RenderedRevisionChanged is set
 //     to true and cause.Classify returns CauseTagE.
 //   - Cause tag D activated (§10.2, ADR-0008): when a composite parent's desired
-//     state changes (intent or rendered revision changed for the parent), the
-//     daemon sets UpstreamChanged=true for each of the parent's children.
-//     cause.Classify returns CauseTagD for those children.
+//     state changes, the daemon sets UpstreamChanged=true for each of the
+//     parent's children.  cause.Classify returns CauseTagD for those children.
+//     #14: "changed" is tracked per parent (render.ParentRevisions), so only
+//     the children of the parent that changed get D.
 //
 // #41 additions (§6.2, §6.5):
 //   - RequiresTaskEvent: a resource with update_policy.strategy: task is never
@@ -626,6 +627,7 @@ type Daemon struct {
 	lsRing              *lastseen.ResourceRing
 	sched               ObserveScheduler
 	prevRev             core.RevisionInfo
+	prevParentRevs      map[string]string
 	prevProviderVersion string
 	cycle               int
 	// tasks launches strategy: task Tasks (§6.5).  Nil when no TaskStore or
@@ -781,7 +783,7 @@ func NewDaemon(cfg Config) *Daemon {
 func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 	d.cycle++
 	return runCycleAsync(ctx, d.engine, d.pruneEngine, d.budgetEngine, d.fp, d.exec, d.ifl, d.lsRing,
-		&d.prevRev, &d.prevProviderVersion, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows)
+		&d.prevRev, &d.prevParentRevs, &d.prevProviderVersion, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows)
 }
 
 // Wait blocks until in-flight Applies and running Tasks finish or timeout
@@ -972,6 +974,7 @@ func runCycleAsync(
 	ifl *InFlightSet,
 	lsRing *lastseen.ResourceRing,
 	prevRev *core.RevisionInfo,
+	prevParentRevs *map[string]string,
 	prevProviderVersion *string,
 	sched ObserveScheduler,
 	cycle int,
@@ -1269,12 +1272,13 @@ func runCycleAsync(
 		rev.RenderedRevision != prevRev.RenderedRevision &&
 		rev.IntentRevision == prevRev.IntentRevision
 
-	// S072a14-3: determine which composite parents changed this cycle (for cause D).
-	// A parent "changed" when its intent_revision or rendered_revision changed.
-	// Children of changed parents get UpstreamChanged=true in their CauseContext.
-	intentChanged := prevRev.IntentRevision != "" && rev.IntentRevision != prevRev.IntentRevision
-	renderedChanged := prevRev.RenderedRevision != "" && rev.RenderedRevision != prevRev.RenderedRevision
-	parentDesiredChanged := intentChanged || renderedChanged
+	// #14: determine which composite parents changed this cycle (for cause D).
+	// A parent "changed" when its own rendered contribution (the rendered
+	// desired state of its children) differs from the previous cycle's — not
+	// merely when the global revision moved, so a change to one parent does not
+	// tag another parent's children D.
+	curParentRevs := render.ParentRevisions(expanded)
+	childrenWithUpstreamChange := render.UpstreamChangedChildren(*prevParentRevs, curParentRevs, parentToChildren)
 
 	// baseCauseCtx is the global (non-upstream-specific) cause context shared by
 	// all resources this cycle.  Per-resource UpstreamChanged overrides are
@@ -1304,6 +1308,7 @@ func runCycleAsync(
 	// a fast daemon would "hold" a ghost diff for a few milliseconds and then
 	// apply it with no chance of operator review.
 	*prevRev = rev
+	*prevParentRevs = curParentRevs
 
 	// #30 (§16.5): the Observe scheduler sees this cycle's desired and tiers.
 	sched.BeginCycle(cycle, desired, in.ObserveTierIntervals())
@@ -1324,17 +1329,6 @@ func runCycleAsync(
 	ghostDiffs := 0
 	// #41: strategy: task resources whose completion mark was observed.
 	var tasksCompleted []string
-
-	// S072a14-3: build a set of child Local IDs whose parent changed, for D tag.
-	// Children in this set get UpstreamChanged=true in their CauseContext.
-	childrenWithUpstreamChange := make(map[string]bool)
-	if parentDesiredChanged {
-		for _, childIDs := range parentToChildren {
-			for _, childID := range childIDs {
-				childrenWithUpstreamChange[childID] = true
-			}
-		}
-	}
 
 	// #27 (§5.7): a provider that declares BulkObserve is observed with one
 	// bulk call for the whole claim, made at the first Observe of this cycle and

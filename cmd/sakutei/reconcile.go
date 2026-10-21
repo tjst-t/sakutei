@@ -411,18 +411,11 @@ func runReconcile(args []string) {
 		rev.IntentRevision == prevState.PrevIntentRevision
 
 	// S072a14-3: build parent→children map for cause D.
+	// #14: only the children of a parent whose own rendered contribution
+	// changed since the previous invocation get D.
 	parentToChildrenRec := render.BuildParentChildMap(expanded)
-	intentChangedRec := prevState.PrevIntentRevision != "" && rev.IntentRevision != prevState.PrevIntentRevision
-	renderedChangedRec := prevState.PrevRenderedRevision != "" && rev.RenderedRevision != prevState.PrevRenderedRevision
-	parentDesiredChangedRec := intentChangedRec || renderedChangedRec
-	childrenWithUpstreamChangeRec := make(map[string]bool)
-	if parentDesiredChangedRec {
-		for _, childIDs := range parentToChildrenRec {
-			for _, childID := range childIDs {
-				childrenWithUpstreamChangeRec[childID] = true
-			}
-		}
-	}
+	curParentRevsRec := render.ParentRevisions(expanded)
+	childrenWithUpstreamChangeRec := render.UpstreamChangedChildren(prevState.PrevParentRevisions, curParentRevsRec, parentToChildrenRec)
 
 	// Build the base per-cycle CauseContext.  All resources in this invocation
 	// share the same revision signals (§10.3: global revision for candidate
@@ -631,6 +624,7 @@ func runReconcile(args []string) {
 		PrevIntentRevision:   rev.IntentRevision,
 		PrevRenderedRevision: rev.RenderedRevision,
 		PrevProviderVersion:  curProviderVersion,
+		PrevParentRevisions:  curParentRevsRec,
 	}); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei reconcile: warn: save cause-state %q: %v\n", *causeStatePath, saveErr)
 	}

@@ -206,14 +206,21 @@ func runStatus(args []string) {
 	}
 
 	// 下流波及 D: 合成親 → 子の対応から、親 desired が変わった子を特定する。
-	// status は cause-state を持たないため親の「前周」は不明だが、合成展開が
-	// 起きた（親が子を生んだ）ケースでは子は upstream 由来として cause D 対象になる。
-	// これにより「依存変更由来の波及」を一覧に反映する。
+	// cause-state に親ごとの rendered 寄与ハッシュ（#14）があれば、それと比べて
+	// 変わった親の子だけを D 対象にする（plan/reconcile と同じ判定）。無ければ
+	// 親の「前周」は不明なので、合成展開が起きた（親が子を生んだ）ケースでは
+	// 子は upstream 由来として cause D 対象になる。
 	parentToChildren := render.BuildParentChildMap(expanded)
-	childrenWithUpstreamChange := make(map[string]bool)
-	for _, childIDs := range parentToChildren {
-		for _, childID := range childIDs {
-			childrenWithUpstreamChange[childID] = true
+	var childrenWithUpstreamChange map[string]bool
+	if prevState.PrevParentRevisions != nil {
+		childrenWithUpstreamChange = render.UpstreamChangedChildren(
+			prevState.PrevParentRevisions, render.ParentRevisions(expanded), parentToChildren)
+	} else {
+		childrenWithUpstreamChange = make(map[string]bool)
+		for _, childIDs := range parentToChildren {
+			for _, childID := range childIDs {
+				childrenWithUpstreamChange[childID] = true
+			}
 		}
 	}
 

@@ -588,3 +588,98 @@ func TestCauseTag_D_DaemonCompositeCycle(t *testing.T) {
 	}
 	t.Logf("[AC-S072a14-3-2] PASS: daemon handled composite parent change + child drift; still cycling")
 }
+
+// writeTwoCompositeIntentE writes two composite parents with their own
+// discriminating "extra" fields.
+func writeTwoCompositeIntentE(t *testing.T, intentDir, id1, extra1, id2, extra2 string) {
+	t.Helper()
+	var resources []map[string]any
+	for _, p := range [][2]string{{id1, extra1}, {id2, extra2}} {
+		resources = append(resources, map[string]any{
+			"provider": "fake",
+			"id":       p[0],
+			"fields":   map[string]string{"name": p[0], "kind": "composite", "extra": p[1]},
+		})
+	}
+	writeIntentFile(t, intentDir, map[string]any{"resources": resources})
+}
+
+// causeTagsByTarget maps each Op target in plan output to its cause tag.
+func causeTagsByTarget(output string) map[string]string {
+	tags := make(map[string]string)
+	target := ""
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		parts := strings.Fields(trimmed)
+		switch {
+		case len(parts) >= 3 && (parts[1] == "CREATE" || parts[1] == "UPDATE" || parts[1] == "DELETE"):
+			target = parts[2]
+		case strings.HasPrefix(trimmed, "cause:") && len(parts) >= 2 && target != "":
+			tags[target] = parts[1]
+		}
+	}
+	return tags
+}
+
+// tagForLocal returns the cause tag of the Op whose target ends in "/"+local.
+func tagForLocal(tags map[string]string, local string) string {
+	for target, tag := range tags {
+		if target == local || strings.HasSuffix(target, "/"+local) {
+			return tag
+		}
+	}
+	return ""
+}
+
+// TestCauseTag_D_OnlyChangedParent verifies #14: with two composite parents,
+// changing only one of them tags only that parent's children cause: D.  The
+// other parent's drifted child is plain drift (cause: B).
+//
+// [AC-14-1]
+func TestCauseTag_D_OnlyChangedParent(t *testing.T) {
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	generatedDir := filepath.Join(tmp, "generated")
+	statePath := filepath.Join(tmp, "state.json")
+	causeStatePath := filepath.Join(tmp, "cause-state.json")
+
+	const alpha, beta = "alpha", "beta"
+
+	writeTwoCompositeIntentE(t, intentDir, alpha, "v1", beta, "v1")
+	initStateFile(t, statePath)
+	if stdout, stderr, code := runReconcile(t, intentDir, statePath,
+		"--cause-state", causeStatePath, "--generated", generatedDir); code != 0 {
+		t.Fatalf("[AC-14-1] setup reconcile exited %d; stderr=%s stdout=%s", code, stderr, stdout)
+	}
+	if stdout, _, code := runPlan(t, intentDir, statePath,
+		"--cause-state", causeStatePath, "--generated", generatedDir); code != 0 {
+		t.Fatalf("[AC-14-1] converged plan exited %d; stdout=%s", code, stdout)
+	}
+
+	// Drift child-a of BOTH parents, then change only alpha.
+	seedState(t, statePath, map[string]map[string]any{
+		alpha + "-child-a": {"name": "wrong", "managed_by": alpha},
+		alpha + "-child-b": {"name": alpha + "-child-b", "managed_by": alpha},
+		beta + "-child-a":  {"name": "wrong", "managed_by": beta},
+		beta + "-child-b":  {"name": beta + "-child-b", "managed_by": beta},
+	})
+	writeTwoCompositeIntentE(t, intentDir, alpha, "v2", beta, "v1")
+
+	stdout, _, code := runPlan(t, intentDir, statePath,
+		"--cause-state", causeStatePath, "--generated", generatedDir)
+	if code != 0 {
+		t.Fatalf("[AC-14-1] plan exited %d; stdout=%s", code, stdout)
+	}
+	tags := causeTagsByTarget(stdout)
+	t.Logf("[AC-14-1] tags by target: %v", tags)
+
+	if got := tagForLocal(tags, alpha+"-child-a"); got != "D" {
+		t.Errorf("[AC-14-1] changed parent's child: cause %q, want D\nstdout:\n%s", got, stdout)
+	}
+	if got := tagForLocal(tags, beta+"-child-a"); got == "D" || got == "" {
+		t.Errorf("[AC-14-1] unchanged parent's child: cause %q, want a non-D tag\nstdout:\n%s", got, stdout)
+	}
+}

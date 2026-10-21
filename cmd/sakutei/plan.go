@@ -282,19 +282,11 @@ func runPlan(args []string) {
 		rev.IntentRevision == prevState.PrevIntentRevision
 
 	// S072a14-3: build the parent→children map for cause D propagation.
-	// A parent "changed" this cycle if intent or rendered revision changed.
+	// #14: a parent "changed" this cycle if its own rendered contribution
+	// differs from the previous invocation's, so only its children get D.
 	parentToChildren := render.BuildParentChildMap(expanded)
-	intentChanged := prevState.PrevIntentRevision != "" && rev.IntentRevision != prevState.PrevIntentRevision
-	renderedChanged := prevState.PrevRenderedRevision != "" && rev.RenderedRevision != prevState.PrevRenderedRevision
-	parentDesiredChanged := intentChanged || renderedChanged
-	childrenWithUpstreamChange := make(map[string]bool)
-	if parentDesiredChanged {
-		for _, childIDs := range parentToChildren {
-			for _, childID := range childIDs {
-				childrenWithUpstreamChange[childID] = true
-			}
-		}
-	}
+	curParentRevs := render.ParentRevisions(expanded)
+	childrenWithUpstreamChange := render.UpstreamChangedChildren(prevState.PrevParentRevisions, curParentRevs, parentToChildren)
 
 	// Build the base per-invocation CauseContext.  All resources in this invocation
 	// share the same revision signals (intent_revision, rendered_revision,
@@ -381,6 +373,7 @@ func runPlan(args []string) {
 		PrevIntentRevision:   rev.IntentRevision,
 		PrevRenderedRevision: rev.RenderedRevision,
 		PrevProviderVersion:  curProviderVersion,
+		PrevParentRevisions:  curParentRevs,
 	}); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei plan: warn: save cause-state %q: %v\n", *causeStatePath, saveErr)
 	}
