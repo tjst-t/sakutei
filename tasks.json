@@ -706,7 +706,7 @@
       "number": 13,
       "kind": "task",
       "title": "in-flight の op 種別を記録し、破壊的なものだけを予算に計上する",
-      "status": "backlog",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -721,7 +721,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:43:22.949Z",
-      "updatedAt": "2026-10-20T08:43:22.949Z",
+      "updatedAt": "2026-10-21T10:02:50.463Z",
       "closedAt": null,
       "extra": {}
     },
