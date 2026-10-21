@@ -99,6 +99,9 @@ func runStatus(args []string) {
 	causeStatePath := fs.String("cause-state", "",
 		"OPTIONAL path to a cause-state JSON file to READ previous-cycle revisions for consistent cause tags (Sc7a647); status never writes it (read-only)")
 
+	daemonStatus := fs.String("daemon-status", "",
+		"OPTIONAL path to the daemon status file written by `sakutei --daemon-status` (#15): reports the consecutive cycles skipped because an external input was unreachable")
+
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
@@ -318,6 +321,15 @@ func runStatus(args []string) {
 	//
 	// v1a single-claim: status に --claim は無いので managed scope 全体を列挙する。
 	detectUnmanaged(ctx, providers, desired, builder)
+
+	// #15 (§9.2): デーモンの連続スキップ回数（デーモンが書いたファイルを READ するだけ）。
+	if *daemonStatus != "" {
+		if h, err := statusreport.ReadDaemonHealth(*daemonStatus); err != nil {
+			builder.NoteDaemonHealthUnavailable(fmt.Sprintf("デーモン健全性: 読めない（%v）", err))
+		} else {
+			builder.SetDaemonHealth(h)
+		}
+	}
 
 	// 適合レポートを整形して出力。Apply（CREATE/UPDATE/DELETE/applied）系の行は
 	// 一切含まれない —— drift を「一覧」するだけで実行はしない（read-only 契約）。

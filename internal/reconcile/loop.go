@@ -117,6 +117,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/internal/revision"
+	"github.com/tjst-t/sakutei/internal/statusreport"
 	"github.com/tjst-t/sakutei/internal/task"
 	"github.com/tjst-t/sakutei/internal/workflow"
 	"github.com/tjst-t/sakutei/pkg/allocation"
@@ -261,7 +262,22 @@ type Config struct {
 	// Audit is the S4 audit log (append-only).  The daemon records gate
 	// timeouts there; approvals are recorded by the approval API.
 	Audit *audit.Log
+
+	// UnreachableSkipLimit is the number of consecutive cycles skipped because
+	// an external input was unreachable with no previous value (#15, §9.2)
+	// after which Run raises an ExternalInputUnreachableProlonged alert every
+	// cycle until a cycle runs again.  The skip itself stays halt-safe: the
+	// daemon keeps running and retries.  <= 0 means DefaultUnreachableSkipLimit.
+	UnreachableSkipLimit int
+	// DaemonStatusPath is the file Run rewrites after every cycle with the
+	// daemon's health (statusreport.DaemonHealth: the consecutive unreachable
+	// skips), so "sakutei status --daemon-status" can report it.  Empty means
+	// no file.
+	DaemonStatusPath string
 }
+
+// DefaultUnreachableSkipLimit is the default Config.UnreachableSkipLimit.
+const DefaultUnreachableSkipLimit = 3
 
 // Source refreshes the desired source of the daemon (§17.4).
 type Source interface {
@@ -324,6 +340,9 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.Interval <= 0 {
 		cfg.Interval = DefaultInterval
 	}
+	if cfg.UnreachableSkipLimit <= 0 {
+		cfg.UnreachableSkipLimit = DefaultUnreachableSkipLimit
+	}
 
 	// Install SIGTERM/SIGINT handler.  The loop checks ctx at cycle boundaries.
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
@@ -364,6 +383,9 @@ func Run(ctx context.Context, cfg Config) error {
 	idle := false
 	drPlan := ""
 	var lastMode remediation.Decision
+	// #15: consecutive cycles skipped halt-safe because an external input was
+	// unreachable with no previous value (S3, memory only).
+	unreachableSkips := 0
 	drain := func() {
 		if d != nil {
 			d.Wait(gracefulShutdownWait)
@@ -466,6 +488,17 @@ func Run(ctx context.Context, cfg Config) error {
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
+		} else if res.SkippedDueToUnreachable {
+			// #15 (§9.2): halt-safe skip; do NOT print "converged".  Count it so
+			// a long outage of the external authority does not stop
+			// convergence silently.
+			unreachableSkips++
+			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: SKIPPED (external input unreachable, no previous value): consecutive_unreachable_skips=%d\n",
+				cycleNum, unreachableSkips)
+			if unreachableSkips >= cfg.UnreachableSkipLimit {
+				fmt.Fprintf(cfg.ErrOut, "sakutei: EVENT ExternalInputUnreachableProlonged severity=critical: %d consecutive cycles skipped (limit %d); convergence is stopped until the external input is reachable (§9.2)\n",
+					unreachableSkips, cfg.UnreachableSkipLimit)
+			}
 		} else if res.InventoryHalted {
 			// #31: render phase 1 halted the cycle; do NOT print "converged".
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: INVENTORY HALTED: %s; no Apply, no prune\n",
@@ -564,6 +597,22 @@ func Run(ctx context.Context, cfg Config) error {
 			// ghost-diff gate visible.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: %d ghost diff(s) held (cause C, provider upgrade); NOT applied — review provider version\n",
 				cycleNum, res.GhostDiffs)
+		}
+		if cycleErr == nil && !res.SkippedDueToUnreachable && unreachableSkips > 0 {
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: external input reachable again after %d skipped cycle(s)\n",
+				cycleNum, unreachableSkips)
+			unreachableSkips = 0
+		}
+		if cfg.DaemonStatusPath != "" {
+			h := statusreport.DaemonHealth{
+				Cycle:                       cycleNum,
+				ConsecutiveUnreachableSkips: unreachableSkips,
+				UnreachableSkipLimit:        cfg.UnreachableSkipLimit,
+				UpdatedAt:                   time.Now().UTC(),
+			}
+			if err := statusreport.WriteDaemonHealth(cfg.DaemonStatusPath, h); err != nil {
+				fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: write daemon status: %v\n", cycleNum, err)
+			}
 		}
 		if res.Mode.Reason != "" && res.Mode != lastMode {
 			// #40 (§14.2): the schedule switches the mode by the clock; log
@@ -868,6 +917,12 @@ type CycleResult struct {
 	// InventoryReason explains InventoryHalted.
 	InventoryReason string
 
+	// #15 (§9.2): SkippedDueToUnreachable is true when render phase 1 skipped
+	// the cycle halt-safe because an external input (ExternalInputResolver or
+	// the inventory) was unreachable and no previous value existed.  Nothing
+	// was observed, applied or pruned.  Run counts consecutive such cycles.
+	SkippedDueToUnreachable bool
+
 	// F-5 (Scb0ecd-2 daemon wiring) cause-classification field:
 
 	// GhostDiffs is the number of resources whose diff this cycle was classified
@@ -1011,7 +1066,7 @@ func runCycleAsync(
 		if p1.FirstCallFailed {
 			// No prior value — halt-safe: do not advance convergence.
 			fmt.Fprintf(cfg.ErrOut, "sakutei: ExternalInputUnreachable (first call): %v\n  No prior cached value; skipping cycle (halt-safe, §9.2)\n", p1.Err)
-			return CycleResult{}, nil
+			return CycleResult{SkippedDueToUnreachable: true}, nil
 		}
 		phase1ExternalInputHashes = p1.ExternalInputHashes
 	}
@@ -1045,7 +1100,8 @@ func runCycleAsync(
 			} else {
 				fmt.Fprintf(cfg.ErrOut, "sakutei: ExternalInputUnreachable (first call): %s; skipping cycle (halt-safe, §9.2)\n", inv.Reason)
 			}
-			return CycleResult{InventoryHalted: true, InventoryReason: inv.Reason}, nil
+			return CycleResult{InventoryHalted: true, InventoryReason: inv.Reason,
+				SkippedDueToUnreachable: !inv.Incomplete}, nil
 		}
 		if err := checkInventoryIDs(in.Resources, inv.Resources); err != nil {
 			return CycleResult{}, err

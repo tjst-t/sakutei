@@ -47,6 +47,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tjst-t/sakutei/internal/lastseen"
 	"github.com/tjst-t/sakutei/pkg/core"
@@ -117,6 +118,10 @@ type Report struct {
 	// （List 非対応 / List エラー）。検出不能を「宣言外ゼロ」と混同しないための
 	// graceful degradation の可視化。
 	UnmanagedNotes []string
+	// Daemon は常駐デーモンの健全性（#15）。status に --daemon-status が無ければ nil。
+	Daemon *DaemonHealth
+	// DaemonNote はデーモン健全性を読めなかったときの注記（読めないことを隠さない）。
+	DaemonNote string
 }
 
 // DriftSummaryProvider は last-seen リングの「前周は X だった」注記を提供する
@@ -140,6 +145,8 @@ type Builder struct {
 	unobservable     int
 	unmanaged        []core.ID
 	unmanagedNotes   []string
+	daemon           *DaemonHealth
+	daemonNote       string
 }
 
 // NewBuilder は指定した版情報と last-seen リングでビルダを作る。
@@ -188,6 +195,12 @@ func (b *Builder) NoteUnmanagedUndetectable(note string) {
 	b.unmanagedNotes = append(b.unmanagedNotes, note)
 }
 
+// SetDaemonHealth は常駐デーモンが書いた健全性（#15）をレポートに載せる。
+func (b *Builder) SetDaemonHealth(h DaemonHealth) { b.daemon = &h }
+
+// NoteDaemonHealthUnavailable はデーモン健全性を読めなかったことを注記する。
+func (b *Builder) NoteDaemonHealthUnavailable(note string) { b.daemonNote = note }
+
 // Build は蓄積した項目からレポートを組み立てる。drifted 一覧は Local ID 昇順に
 // 整列される（map 由来の非決定順を排除）。
 func (b *Builder) Build() Report {
@@ -212,6 +225,8 @@ func (b *Builder) Build() Report {
 		UnobservableCount: b.unobservable,
 		Unmanaged:         unmanaged,
 		UnmanagedNotes:    notes,
+		Daemon:            b.daemon,
+		DaemonNote:        b.daemonNote,
 	}
 }
 
@@ -277,6 +292,20 @@ func (r Report) String() string {
 		for _, note := range r.UnmanagedNotes {
 			fmt.Fprintf(&sb, "  %s\n", note)
 		}
+	}
+
+	// #15 (§9.2): 外部入力不達による連続スキップ。デーモンが静かに止まり続けて
+	// いることを status でも見えるようにする。
+	if r.Daemon != nil {
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "デーモン（cycle %d, %s 時点）: 外部入力不達による連続スキップ consecutive_unreachable_skips=%d（上限 %d）\n",
+			r.Daemon.Cycle, r.Daemon.UpdatedAt.Format(time.RFC3339), r.Daemon.ConsecutiveUnreachableSkips, r.Daemon.UnreachableSkipLimit)
+		if r.Daemon.Prolonged() {
+			sb.WriteString("  警告: ExternalInputUnreachableProlonged — 外部の権威が長く届かず、収束が止まっている（§9.2）。\n")
+		}
+	} else if r.DaemonNote != "" {
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "  %s\n", r.DaemonNote)
 	}
 
 	fmt.Fprintf(&sb, "\n要約: drifted=%d converged=%d unobservable=%d unmanaged=%d\n",

@@ -121,6 +121,8 @@ func main() {
 //	--workflow-store <f> S2 store of the Workflows' progress (§6.3)
 //	--audit-log <f>      S4 audit log (append-only) of approvals and gate timeouts (§6.4) and planned_change (§14.5)
 //	--approval-listen <addr>  serve the approval gate API (§6.4)
+//	--daemon-status <f>  rewritten every cycle with the daemon health (consecutive unreachable skips, #15)
+//	--unreachable-skip-limit <n>  consecutive unreachable skips before the Prolonged alert (default 3)
 //
 // The loop runs until SIGTERM or SIGINT is received, at which point it stops
 // at the next cycle boundary and exits 0.
@@ -195,6 +197,10 @@ func runDaemon() {
 		"S2 store file of the Workflows' progress (§6.3); empty=no Workflow advances (their targets are held)")
 	auditLog := fs.String("audit-log", "",
 		"S4 audit log file (append-only JSON lines) of gate approvals, rejections and timeouts (§6.4), and of planned_change declarations, openings and lane executions (§14.5; needed by a cooling-off)")
+	daemonStatus := fs.String("daemon-status", "",
+		"#15: file rewritten after every cycle with the daemon's health (consecutive cycles skipped because an external input was unreachable); read by `sakutei status --daemon-status`")
+	unreachableSkipLimit := fs.Int("unreachable-skip-limit", 0,
+		"#15: consecutive unreachable-skipped cycles after which ExternalInputUnreachableProlonged is raised every cycle (default 3)")
 	approvalListen := fs.String("approval-listen", "",
 		"address to serve the approval gate API on, e.g. 127.0.0.1:8470 (§6.4; no authorization, §7); requires --workflow-store and --audit-log")
 	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。
@@ -363,6 +369,8 @@ func runDaemon() {
 		Inventory:             inventory,
 		Claim:                 claimSelector,
 		Fencing:               guard,
+		DaemonStatusPath:      *daemonStatus,
+		UnreachableSkipLimit:  *unreachableSkipLimit,
 	}
 	if *taskStore != "" {
 		cfg.TaskStore = task.NewFileStore(*taskStore)
