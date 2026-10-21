@@ -1555,7 +1555,7 @@
       "number": 50,
       "kind": "task",
       "title": "Factory のレビューの任意指摘 2 件（Sync Mode のシンボリックリンク、prune のコメント）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1569,7 +1569,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:42:42.675Z",
-      "updatedAt": "2026-10-20T20:42:42.675Z",
+      "updatedAt": "2026-10-21T10:03:04.732Z",
       "closedAt": null,
       "extra": {}
     }
