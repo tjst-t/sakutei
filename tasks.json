@@ -634,7 +634,7 @@
       "kind": "task",
       "title": "v1b: AllocationAuthority の SQLite 実装（ファイル版からの差し替え）",
       "status": "backlog",
-      "parent": null,
+      "parent": "v2-task-ui",
       "dependsOn": [
         "v1b-allocationauthority-interface-sqlite"
       ],
@@ -650,7 +650,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T11:11:07.437Z",
-      "updatedAt": "2026-10-20T20:07:04.939Z",
+      "updatedAt": "2026-10-21T09:58:22.994Z",
       "closedAt": null,
       "extra": {}
     },
