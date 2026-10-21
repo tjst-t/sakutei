@@ -969,13 +969,13 @@
       "labels": [
         "v2"
       ],
-      "body": "設計 §27.5。スケールの上位と高度な自律運用。v1 系の実地検証を経てから着手する。\n\n- 多相 Task 状態機械\n- 自動段階ロールアウト + 自動 canary ゲート、health、常設 canary、Prometheus exporter\n- DBSource（と連動する Watch）\n- credential-broker（JIT 短命発行・bastion）\n- 分散 Executor + lease 縮退、動的ルーター / 自動リバランス\n- Observe 間引き・tier 別頻度・watch 併用の本格化\n- intent UI（catalog）、twin のフル機能、抽象リソース（§28.8）",
-      "doneWhen": "",
+      "body": "設計 §27.5。スケールの上位と高度な自律運用。v1 系の実地検証を経てから着手する。\n\n2026-10-21 に §27.5 の 8 項目を、下の 16 タスク（#51〜#66）に分けた。既にあった #36（採番の SQLite 版）と #49（一括 API の対象での BulkObserve）もこの下に入れた。\n\n| §27.5 の項目 | タスク |\n|---|---|\n| 採番の SQLite 版（§19.9） | #36 |\n| 多相 Task 状態機械（§6.2） | #51 → #52（Applying 中の停止を人手ゲートに・§29.1） |\n| 自動段階ロールアウト + 自動 canary ゲート / health / 常設 canary / Prometheus exporter | #53 health、#54 exporter、#55 常設 canary、#56 ロールアウト（#53・#55 の後） |\n| DBSource と連動の Watch（§21） | #57 → #58 |\n| credential-broker（§20.4） | #59 CredentialProvider 経路 → #60 broker（人向け JIT・bastion から） |\n| 分散 Executor + lease 縮退 / 動的ルーター・自動リバランス（§18.4） | #61 → #62 |\n| Observe 間引き・tier 別頻度・watch 併用の本格化（§16） | #63（一括 API の BulkObserve は #49） |\n| intent UI / twin / 抽象リソース（§21.4・§26.2・§28.8） | #64（#57 の後）、#65、#66 |\n\n- ready（設計で決まっていて着手できる）：#51・#52・#54・#55・#59・#63・#65\n- backlog・ラベル needs-decision（着手時に人と決めることがある）：#53・#56・#57・#60・#61・#64（それぞれの本文に「着手時に決めること」）\n- backlog・ラベル trigger-gated（§29.2 の再検討トリガが来るまで着手しない）：#61・#62（単一デーモンの天井の早期警戒線）、#66（2 つ目の同種 provider が要るとき）\n\n§27.5 に無いが v1 の既知の限界として残るもの：振動の隔離の配線（§29.2）、Vault SecretBackend の本実装。",
+      "doneWhen": "子タスク（#36・#49・#51〜#66）がすべて done か、理由付きで dropped になっている",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:43:48.404Z",
-      "updatedAt": "2026-10-20T08:43:48.404Z",
+      "updatedAt": "2026-10-21T09:58:43.284Z",
       "closedAt": null,
       "extra": {}
     },
