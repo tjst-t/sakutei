@@ -330,7 +330,7 @@ func TestEventLog_SecretNotInEvent(t *testing.T) {
 	for _, format := range []eventlog.Format{eventlog.FormatJSON, eventlog.FormatText} {
 		var buf bytes.Buffer
 		w := eventlog.New(&buf, format, core.SeverityWarning)
-		reconcile.EmitDrift(w, "sakutei: ", id, core.Op{Kind: core.OpKindUpdate, Target: id, Cause: core.CauseTagB}, summary)
+		reconcile.EmitDrift(w, "sakutei: ", id, core.Op{Kind: core.OpKindUpdate, Target: id, Cause: core.CauseTagB}, summary, cur)
 		out := buf.String()
 		if strings.Contains(out, theSecret) {
 			t.Fatalf("[AC-77-4] %s: the secret value leaked into the Event: %s", format, out)

@@ -15,12 +15,16 @@
 package reconcile
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
 // The notices of the convergence paths (the daemon, scoped runs, and the
@@ -30,11 +34,19 @@ import (
 
 // emitApplyFailed raises ApplyFailed for an Apply (what = "apply") or a prune
 // Delete (what = "prune apply") of id.
+//
+// A permanent failure (sdk.IsPermanent: permission, missing, ...) carries
+// failure=permanent, which the daemon's level report raises as stuck at once
+// (§22.3).
 func EmitApplyFailed(w io.Writer, prefix, what string, id core.ID, err error) {
+	attrs := map[string]string{"op": what}
+	if sdk.IsPermanent(err) {
+		attrs[eventlog.AttrFailure] = eventlog.FailurePermanent
+	}
 	eventlog.Emit(w, core.Event{
 		Kind: core.EventApplyFailed, Severity: core.SeverityWarning,
 		Resource: id, Message: err.Error(),
-		Attrs: map[string]string{"op": what},
+		Attrs: attrs,
 		Text:  fmt.Sprintf("%s%s %s: %v", prefix, what, id, err),
 	})
 }
@@ -70,9 +82,14 @@ func EmitCapacityHalted(w io.Writer, reason, text string) {
 // EmitPruneHalted raises the one PruneHalted Event of a prune safety guard
 // halt (List error, incomplete List, count drop; §12.4); line is the caller's
 // text-form line, after the count-drop guard's own line when it fired.
-func EmitPruneHalted(w io.Writer, result prune.PruneResult, line string) {
+// providerName ("" when there is one provider) names whose List halted: the
+// daemon's level report keeps one PruneHalted per provider (§22.3).
+func EmitPruneHalted(w io.Writer, result prune.PruneResult, providerName, line string) {
 	text := line
 	attrs := map[string]string{"reason": result.HaltReason, "guard": "list"}
+	if providerName != "" {
+		attrs["provider"] = providerName
+	}
 	if h := result.HaltLine(); h != "" {
 		text = h + "\n" + line
 		attrs["guard"] = "count_drop"
@@ -98,11 +115,14 @@ func EmitProviderUpgradeDiff(w io.Writer, prefix string, op core.Op, prevVersion
 
 // EmitDrift raises Drift for a cause-B op of id; summary is the last-seen
 // ring's account of what changed (secret fields in their ref form, §20.2).
-func EmitDrift(w io.Writer, prefix string, id core.ID, op core.Op, summary string) {
+// observed is the observed snapshot: its digest (attr "observed") is what the
+// level report compares to tell a drift that moved again from one that
+// merely persists (§22.3); the summary changes every cycle.
+func EmitDrift(w io.Writer, prefix string, id core.ID, op core.Op, summary string, observed map[string]string) {
 	eventlog.Emit(w, core.Event{
 		Kind: core.EventDrift, Severity: core.SeverityWarning,
 		Resource: id, Cause: core.CauseTagB, Message: summary,
-		Attrs: map[string]string{"op": opKindLabel(op.Kind)},
+		Attrs: map[string]string{"op": opKindLabel(op.Kind), "observed": snapshotDigest(observed)},
 		Text:  fmt.Sprintf("%sDriftEvent: %s [cause: B] %s", prefix, id, summary),
 	})
 }
@@ -123,4 +143,20 @@ func EmitPlannedChange(w io.Writer, notice, text string) {
 		Kind: core.EventPlannedChange, Severity: core.SeverityInfo,
 		Message: notice, Text: text,
 	})
+}
+
+// snapshotDigest is a short digest of an observed snapshot (secret fields are
+// already in their ref form, §20.2), so an Event can say "reality moved"
+// without quoting it.
+func snapshotDigest(fields map[string]string) string {
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := sha256.New()
+	for _, k := range keys {
+		fmt.Fprintf(h, "%s=%s\x00", k, fields[k])
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }

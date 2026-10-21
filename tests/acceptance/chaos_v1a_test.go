@@ -545,8 +545,9 @@ keep.example.com. 300 IN A 1.1.1.1
 //  2. baseline 確立を "cycle 1:" のログで待ってから、provider_version を v2 に
 //     bump し、同時に reality を drift（size 10→11）させる（原子的に 1 回書き込む）。
 //     以後、毎サイクル同じ diff が cause C（ghost diff）として分類され held される。
-//  3. ProviderUpgradeDiff が複数サイクルにわたり繰り返し出ることを確認（＝振動的な
-//     反復 diff が封じ込められ、hold し続けている）。
+//  3. ghost diff の held が複数サイクルにわたり続くことを確認（＝振動的な
+//     反復 diff が封じ込められ、hold し続けている）。ProviderUpgradeDiff の Event は
+//     level（#79、§22.3）なので firing の 1 回だけで、周ごとの要約の行で数える。
 //
 // 証明（現実の実カウンタ）:
 //   - reality の size は 11 のまま（ghost diff は決して適用されない）。
@@ -604,8 +605,10 @@ func TestChaosV1a_RepeatedGhostDiff_NoDestructiveLoop(t *testing.T) {
 		t.Fatalf("[AC-Sc7a647-2-3] expected a ProviderUpgradeDiff (cause C) after version bump; log:\n%s", readFileString(logPath))
 	}
 	// 複数サイクルにわたり held し続けることを確認するため少し回してから止める。
-	if !waitForLogFileCount(logPath, "ProviderUpgradeDiff", 3, 5*time.Second) {
-		t.Fatalf("[AC-Sc7a647-2-3] expected the ghost diff to be HELD across multiple cycles (>=3 ProviderUpgradeDiff); log:\n%s",
+	// #79 (§22.3): the ProviderUpgradeDiff Event is level (firing once); the
+	// cycle summary says every cycle that the ghost diff is still held.
+	if !waitForLogFileCount(logPath, "ghost diff(s) held (cause C", 3, 5*time.Second) {
+		t.Fatalf("[AC-Sc7a647-2-3] expected the ghost diff to be HELD across multiple cycles (>=3 cycles); log:\n%s",
 			readFileString(logPath))
 	}
 	_ = cmd.Process.Kill()

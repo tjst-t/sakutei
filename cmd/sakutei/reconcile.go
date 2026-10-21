@@ -578,7 +578,7 @@ func runReconcile(args []string) {
 				// Scb0ecd-3: for cause B (drift), attach last-seen ring summary.
 				if op.Cause == core.CauseTagB {
 					summary := lastSeenRing.DriftSummary(res.ID.Local, curFields)
-					reconcile.EmitDrift(logErr, "sakutei reconcile: ", op.Target, op, summary)
+					reconcile.EmitDrift(logErr, "sakutei reconcile: ", op.Target, op, summary, curFields)
 				}
 				nonCOps = append(nonCOps, op)
 			}
@@ -1020,7 +1020,7 @@ func computePruneForProvider(
 	}
 
 	if result.Halted {
-		reconcile.EmitPruneHalted(logErr, result, "sakutei reconcile: prune halted: "+result.HaltReason)
+		reconcile.EmitPruneHalted(logErr, result, "", "sakutei reconcile: prune halted: "+result.HaltReason)
 		return nil, true
 	}
 

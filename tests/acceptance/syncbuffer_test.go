@@ -48,3 +48,9 @@ func (s *syncBuffer) Len() int {
 	defer s.mu.Unlock()
 	return s.buf.Len()
 }
+
+func (s *syncBuffer) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buf.Reset()
+}

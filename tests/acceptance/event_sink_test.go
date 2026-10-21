@@ -65,6 +65,18 @@ func (s *recordingSink) ofKind(k core.EventKind) []core.Event {
 	return out
 }
 
+// firingOf is the Events of kind k in state firing (§22.3: a level Event is
+// also resolved once when it is gone).
+func (s *recordingSink) firingOf(k core.EventKind) []core.Event {
+	var out []core.Event
+	for _, ev := range s.ofKind(k) {
+		if ev.State == core.EventFiring {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 // sinkRig is a daemon (reconcile.Run) whose Events also go to sinks.
 type sinkRig struct {
 	t         *testing.T
@@ -140,7 +152,7 @@ func TestEventSink_DriftHaltPruneReachSink(t *testing.T) {
 	r.waitFor("Drift Event", func() bool { return len(rec.ofKind(core.EventDrift)) > 0 })
 	r.waitFor("cycle 2", func() bool { return strings.Contains(r.out.String(), "sakutei: cycle 2:") })
 	r.stop()
-	drift := rec.ofKind(core.EventDrift)
+	drift := rec.firingOf(core.EventDrift)
 	if len(drift) != 1 || drift[0].Resource.Local != "db-vm" || drift[0].Cause != core.CauseTagB ||
 		drift[0].Cycle != 1 || drift[0].IntentRevision == "" || drift[0].Time.IsZero() {
 		t.Errorf("[AC-78-1] Drift Events at the sink = %+v, want one for db-vm (cause B, cycle 1, revision, time)", drift)
@@ -268,7 +280,7 @@ func TestEventSink_FailingSinkDoesNotStopConvergence(t *testing.T) {
 	if got := readFileString(r.statePath); !strings.Contains(got, `"size": "10"`) && !strings.Contains(got, `"size":"10"`) {
 		t.Errorf("[AC-78-3] reality not converged to size 10; state:\n%s", got)
 	}
-	if len(rec.ofKind(core.EventDrift)) != 1 {
+	if len(rec.firingOf(core.EventDrift)) != 1 {
 		t.Errorf("[AC-78-3] the other sink did not get the Drift Event: %+v", rec.evs)
 	}
 	mu.Lock()

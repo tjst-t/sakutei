@@ -91,6 +91,12 @@
 //     Workflow that is not done are converging for the loop: not Observed, not
 //     Applied, their downstream waits.  In alert-only / freeze no Workflow
 //     advances (the mode gate holds every change).
+//
+// #79 additions (§22.3):
+//   - Drift, convergence failures and halts are level Events: the Daemon's
+//     eventlog.Level reports each one firing on its first cycle, again only
+//     when its content changes or it is promoted to stuck (Config.StuckAfter),
+//     and resolved once on the first cycle that saw it gone (CycleResult.level).
 package reconcile
 
 import (
@@ -293,6 +299,12 @@ type Config struct {
 	// skips), so "sakutei status --daemon-status" can report it.  Empty means
 	// no file.
 	DaemonStatusPath string
+
+	// StuckAfter is the number of consecutive cycles a level Event (drift,
+	// convergence failure, halt) stays firing before it is promoted
+	// transient → stuck (§22.3).  A permanent failure (sdk.IsPermanent) and a
+	// capacity halt are stuck at once.  <= 0 means eventlog.DefaultStuckAfter.
+	StuckAfter int
 
 	// cycleBase is the number of cycles run by earlier daemons of this Run
 	// (claim handoffs), so Events carry the cycle number Run prints.
@@ -515,6 +527,9 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 
 		res, cycleErr := d.RunCycle(ctx)
+		// The cycle's reports go through the daemon's writers, so the level
+		// Events among them are reported as firing / resolved (§22.3).
+		out, errOut := d.cfg.Out, d.cfg.ErrOut
 		cycleNum = cycleBase + d.cycle
 		// note は周の知らせを core.Event として出す（周の番号と revision を付ける）。
 		cycleRev := d.prevRev
@@ -531,22 +546,26 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		if cycleErr != nil {
 			// Log the error but keep looping: level-triggered resilience.
-			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
+			fmt.Fprintf(errOut, "sakutei: cycle %d error: %v\n", cycleNum, cycleErr)
 		} else if res.SkippedDueToUnreachable {
 			// #15 (§9.2): halt-safe skip; do NOT print "converged".  Count it so
 			// a long outage of the external authority does not stop
 			// convergence silently.
 			unreachableSkips++
-			msg := fmt.Sprintf("SKIPPED (external input unreachable, no previous value): consecutive_unreachable_skips=%d", unreachableSkips)
-			note(cfg.ErrOut, core.Event{
+			// The cycle's summary carries the count every cycle; the
+			// CycleSkipped Event is level (§22.3): firing on the first skipped
+			// cycle, resolved on the first cycle that runs again.
+			summary(errOut, fmt.Sprintf("SKIPPED (external input unreachable, no previous value): consecutive_unreachable_skips=%d", unreachableSkips))
+			msg := "external input unreachable with no previous value; cycles are skipped halt-safe (no Observe/Apply/prune) until it is reachable (§9.2)"
+			note(errOut, core.Event{
 				Kind: core.EventCycleSkipped, Severity: core.SeverityWarning, Message: msg,
 				Attrs: map[string]string{"consecutive_unreachable_skips": strconv.Itoa(unreachableSkips)},
-				Text:  fmt.Sprintf("sakutei: cycle %d: %s", cycleNum, msg),
+				Text:  "sakutei: EVENT CycleSkipped: " + msg,
 			})
 			if unreachableSkips >= cfg.UnreachableSkipLimit {
 				msg := fmt.Sprintf("%d consecutive cycles skipped (limit %d); convergence is stopped until the external input is reachable (§9.2)",
 					unreachableSkips, cfg.UnreachableSkipLimit)
-				note(cfg.ErrOut, core.Event{
+				note(errOut, core.Event{
 					Kind: core.EventExternalInputUnreachableProlonged, Severity: core.SeverityCritical, Message: msg,
 					Attrs: map[string]string{
 						"consecutive_unreachable_skips": strconv.Itoa(unreachableSkips),
@@ -557,89 +576,91 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 		} else if res.InventoryHalted {
 			// #31: render phase 1 halted the cycle; do NOT print "converged".
-			msg := fmt.Sprintf("INVENTORY HALTED: %s; no Apply, no prune", res.InventoryReason)
-			note(cfg.ErrOut, core.Event{
+			// The summary every cycle; the InventoryHalted Event is level (§22.3).
+			summary(errOut, fmt.Sprintf("INVENTORY HALTED: %s; no Apply, no prune", res.InventoryReason))
+			msg := fmt.Sprintf("inventory incomplete: %s; cycles halt (no Apply, no prune) until it is complete (§9.2)", res.InventoryReason)
+			note(errOut, core.Event{
 				Kind: core.EventInventoryHalted, Severity: core.SeverityWarning, Message: msg,
-				Text: fmt.Sprintf("sakutei: cycle %d: %s", cycleNum, msg),
+				Text: "sakutei: EVENT InventoryHalted: " + msg,
 			})
 		} else if res.AlertOnly && res.DriftCount > 0 {
 			// Scf7762-3: in alert-only mode drift was detected but nothing was
 			// applied — do NOT print "converged (no changes)" (it contradicts the
 			// "alert-only: N drifted" line emitted below).  The alert-only block
 			// further down carries the detailed drift report.
-			summary(cfg.Out, fmt.Sprintf("observed=%d drifted (alert-only, no changes)", res.Observed))
+			summary(out, fmt.Sprintf("observed=%d drifted (alert-only, no changes)", res.Observed))
 		} else {
-			summary(cfg.Out, fmt.Sprintf("observed=%d %s", res.Observed, cycleSummary(res)))
+			summary(out, fmt.Sprintf("observed=%d %s", res.Observed, cycleSummary(res)))
 		}
 		if len(res.Fenced) > 0 {
 			// Each fenced scope was its own Fenced Event; this is the cycle's account.
-			summary(cfg.ErrOut, fmt.Sprintf("FENCED scope(s) %v: another shard holds a newer fencing generation; not converging them", res.Fenced))
+			summary(errOut, fmt.Sprintf("FENCED scope(s) %v: another shard holds a newer fencing generation; not converging them", res.Fenced))
 		}
 		if len(res.TasksLaunched) > 0 {
 			// #41 (§6.5): RequiresTaskEvent — Tasks launched instead of Apply.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d task(s) launched (strategy: task): %v\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: %d task(s) launched (strategy: task): %v\n",
 				cycleNum, len(res.TasksLaunched), res.TasksLaunched)
 		}
 		if len(res.TasksHeld) > 0 {
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d strategy: task resource(s) awaiting their Task (not applied): %v\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: %d strategy: task resource(s) awaiting their Task (not applied): %v\n",
 				cycleNum, len(res.TasksHeld), res.TasksHeld)
 		}
 		for _, ev := range res.WorkflowEvents {
 			// #42 (§6.3, §6.4): Workflow progress, gates and halts.
 			cev := ev.Core()
 			cev.Text = fmt.Sprintf("sakutei: cycle %d: %s", cycleNum, ev)
-			note(cfg.Out, cev)
+			note(out, cev)
 		}
 		if len(res.WorkflowHeld) > 0 {
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d Workflow target(s) driven by their Workflow (not converged by the loop): %v\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: %d Workflow target(s) driven by their Workflow (not converged by the loop): %v\n",
 				cycleNum, len(res.WorkflowHeld), res.WorkflowHeld)
 		}
 		if len(res.NotDue) > 0 {
 			// #30 (§16.5): resources thinned by their tier this cycle.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d resource(s) not due for Observe (tier thinning)\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: %d resource(s) not due for Observe (tier thinning)\n",
 				cycleNum, len(res.NotDue))
 		}
 		if len(res.Waiting) > 0 {
 			// #25 (§19.9): only the resources needing a new allocation wait.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d resource(s) waiting-allocation (retry next cycle): %v\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: %d resource(s) waiting-allocation (retry next cycle): %v\n",
 				cycleNum, len(res.Waiting), res.Waiting)
 		}
 		if len(res.InFlight) > 0 {
 			// S94f1f9-3: in-flight resources from a prior async Apply are still
 			// running; they are treated as converging for this cycle.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: in-flight (converging): %v\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: in-flight (converging): %v\n",
 				cycleNum, res.InFlight)
 		}
 		if len(res.Skipped) > 0 {
 			// D-1/A-2: surface skips.
-			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: %d resource(s) skipped (retry next cycle): %v\n",
+			fmt.Fprintf(errOut, "sakutei: cycle %d: %d resource(s) skipped (retry next cycle): %v\n",
 				cycleNum, len(res.Skipped), res.Skipped)
 		}
 		if len(res.BackedOff) > 0 {
 			// S94f1f9-3: resources suppressed by per-resource backoff.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: %d resource(s) in backoff (will retry later): %v\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: %d resource(s) in backoff (will retry later): %v\n",
 				cycleNum, len(res.BackedOff), res.BackedOff)
 		}
 		if res.Pruned > 0 {
 			// Scf7762-1: orphans deleted by the prune phase this cycle.  Each
 			// deleted orphan was its own Pruned Event; this is the cycle's count.
-			summary(cfg.Out, fmt.Sprintf("pruned=%d orphan(s) (reality − desired)", res.Pruned))
+			summary(out, fmt.Sprintf("pruned=%d orphan(s) (reality − desired)", res.Pruned))
 		}
 		if res.PruneHalted {
 			// Scf7762-1: a prune safety guard halted deletion this cycle.  The
 			// PruneHalted Event itself came from the guard, with its reason.
-			summary(cfg.ErrOut, "prune HALTED (safety guard); no orphan deleted this cycle")
+			summary(errOut, "prune HALTED (safety guard); no orphan deleted this cycle")
 		}
 		for _, ev := range res.PlannedChangeEvents {
 			// §13.3: planned_change lane notices.
-			note(cfg.Out, core.Event{
+			note(out, core.Event{
 				Kind: core.EventPlannedChange, Severity: core.SeverityInfo, Message: ev,
 				Text: fmt.Sprintf("sakutei: cycle %d: %s", cycleNum, ev),
 			})
 		}
 		if res.BudgetHalted {
 			// Scf7762-2: change budget gate blocked ops this cycle.
-			note(cfg.ErrOut, core.Event{
+			note(errOut, core.Event{
 				Kind: core.EventBudgetHalted, Severity: core.SeverityWarning, Message: res.BudgetReason,
 				Attrs: map[string]string{"held": strconv.Itoa(res.Held)},
 				Text:  fmt.Sprintf("sakutei: cycle %d: BUDGET HALTED: %s", cycleNum, res.BudgetReason),
@@ -648,7 +669,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if res.CapacityHalted {
 			// §13.4: capacity gate halted changes this cycle.  The
 			// CapacityHalted Event itself came from the gate.
-			summary(cfg.ErrOut, "CAPACITY HALTED: "+res.CapacityReason)
+			summary(errOut, "CAPACITY HALTED: "+res.CapacityReason)
 		}
 		if res.GhostDiffs > 0 {
 			// F-5 (Scb0ecd-2 daemon wiring): one or more resources produced a
@@ -656,10 +677,10 @@ func Run(ctx context.Context, cfg Config) error {
 			// as ProviderUpgradeDiff Events and NOT applied this cycle.  Surface a
 			// single cycle-numbered summary line so the daemon log makes the
 			// ghost-diff gate visible.
-			summary(cfg.ErrOut, fmt.Sprintf("%d ghost diff(s) held (cause C, provider upgrade); NOT applied — review provider version", res.GhostDiffs))
+			summary(errOut, fmt.Sprintf("%d ghost diff(s) held (cause C, provider upgrade); NOT applied — review provider version", res.GhostDiffs))
 		}
 		if cycleErr == nil && !res.SkippedDueToUnreachable && unreachableSkips > 0 {
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: external input reachable again after %d skipped cycle(s)\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: external input reachable again after %d skipped cycle(s)\n",
 				cycleNum, unreachableSkips)
 			unreachableSkips = 0
 		}
@@ -671,40 +692,42 @@ func Run(ctx context.Context, cfg Config) error {
 				UpdatedAt:                   time.Now().UTC(),
 			}
 			if err := statusreport.WriteDaemonHealth(cfg.DaemonStatusPath, h); err != nil {
-				fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: write daemon status: %v\n", cycleNum, err)
+				fmt.Fprintf(errOut, "sakutei: cycle %d: write daemon status: %v\n", cycleNum, err)
 			}
 		}
 		if res.Mode.Reason != "" && res.Mode != lastMode {
 			// #40 (§14.2): the schedule switches the mode by the clock; log
 			// every switch with the sources that decided it.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: remediation mode=%s (%s)\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: remediation mode=%s (%s)\n",
 				cycleNum, res.Mode.Mode, res.Mode.Reason)
 			lastMode = res.Mode
 		}
 		if !res.AlertOnly && res.DriftCount > 0 {
 			// #40 (§14.3): scope-explicit alert-only held part of the world.
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: alert-only scope(s): %d drifted resource(s) held — not remediated\n",
+			fmt.Fprintf(out, "sakutei: cycle %d: alert-only scope(s): %d drifted resource(s) held — not remediated\n",
 				cycleNum, res.DriftCount)
 			for _, ev := range res.DriftEvents {
 				ev.Text = fmt.Sprintf("sakutei: cycle %d: DRIFT EVENT: %s", cycleNum, ev.Message)
-				note(cfg.Out, ev)
+				note(out, ev)
 			}
 		}
 		if res.AlertOnly {
 			// Scf7762-3: alert-only mode — no Apply was executed; drifted resources
 			// are reported via the DriftEvents list.
 			if cfg.Remediation.Freeze {
-				fmt.Fprintf(cfg.Out, "sakutei: cycle %d: FROZEN (alert-only): %d drifted resource(s) detected — no changes applied\n",
+				fmt.Fprintf(out, "sakutei: cycle %d: FROZEN (alert-only): %d drifted resource(s) detected — no changes applied\n",
 					cycleNum, res.DriftCount)
 			} else {
-				fmt.Fprintf(cfg.Out, "sakutei: cycle %d: alert-only: %d drifted resource(s) detected — no changes applied\n",
+				fmt.Fprintf(out, "sakutei: cycle %d: alert-only: %d drifted resource(s) detected — no changes applied\n",
 					cycleNum, res.DriftCount)
 			}
 			for _, ev := range res.DriftEvents {
 				ev.Text = fmt.Sprintf("sakutei: cycle %d: DRIFT EVENT: %s", cycleNum, ev.Message)
-				note(cfg.Out, ev)
+				note(out, ev)
 			}
 		}
+		// §22.3: what was firing and is now gone is resolved, once.
+		d.EndCycle(res, cycleErr)
 
 		if !sleep() {
 			return nil
@@ -748,6 +771,10 @@ type Daemon struct {
 	// workflows advances the intent's Workflows (§6.3).  Nil when no
 	// WorkflowStore is configured.
 	workflows *workflow.Engine
+	// level keeps the level Events that are firing (§22.3, S3): cfg.Out /
+	// cfg.ErrOut pass every Event through it.  A new Daemon (restart, claim
+	// handoff) starts empty, so what still holds fires afresh.
+	level *eventlog.Level
 }
 
 // routeEvents defaults cfg.Out / cfg.ErrOut and routes the Events emitted
@@ -773,6 +800,12 @@ func routeEvents(cfg *Config) {
 // default to os.Stdout / os.Stderr.
 func NewDaemon(cfg Config) *Daemon {
 	routeEvents(&cfg)
+	// §22.3: drift, convergence failures and halts are reported as level
+	// (firing / resolved), not once per cycle.  The level filter sits in front
+	// of the sinks, so every sink sees the same firing / resolved.
+	level := eventlog.NewLevel(cfg.StuckAfter)
+	cfg.Out = level.Wrap(cfg.Out)
+	cfg.ErrOut = level.Wrap(cfg.ErrOut)
 	// S94f1f9-3: shared in-flight set + backoff table for the lifetime of this
 	// daemon run.  These are S3 state (memory only, ADR-0015): reset on restart,
 	// not a violation of observation state-less (they record self-initiated
@@ -891,6 +924,7 @@ func NewDaemon(cfg Config) *Daemon {
 	}
 
 	return &Daemon{
+		level:        level,
 		workflows:    workflows,
 		tasks:        tasks,
 		tasksOff:     tasksOff,
@@ -912,6 +946,18 @@ func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 	d.cycle++
 	return runCycleAsync(ctx, d.providers, d.budgetEngine, d.exec, d.ifl, d.lsRing,
 		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows)
+}
+
+// EndCycle closes the level report of the cycle that returned res and
+// cycleErr (§22.3): a level Event firing before that did not recur this cycle
+// and whose subject the cycle saw gone is emitted once as resolved.  Run calls
+// it after the cycle's own reports; a caller stepping RunCycle itself calls it
+// after each cycle.
+func (d *Daemon) EndCycle(res CycleResult, cycleErr error) {
+	w := eventlog.Stamp(d.cfg.ErrOut, d.cfg.cycleBase+d.cycle, d.prevRev)
+	d.level.EndCycle(w, d.cfg.cycleBase+d.cycle, func(ev core.Event) bool {
+		return res.level.resolves(ev, res, cycleErr)
+	})
 }
 
 // Wait blocks until in-flight Applies and running Tasks finish or timeout
@@ -1086,6 +1132,61 @@ type CycleResult struct {
 	// WorkflowHeld lists the Workflow targets the loop did not converge this
 	// cycle (their Workflow is not done).
 	WorkflowHeld []string
+
+	// level is what this cycle established about reality, so the daemon's
+	// level report can tell a level Event that is gone from one that was
+	// merely not looked at (§22.3).
+	level levelCoverage
+}
+
+// levelCoverage is what a cycle saw, for resolving level Events (§22.3).  A
+// level Event that did not recur is resolved only when the cycle actually
+// looked at its subject; otherwise it stays firing (unsure → keep reporting).
+type levelCoverage struct {
+	// observed: the Observe phase ran.  settled holds the resources
+	// (ID.String()) Observed Ok with no diff; desired the resources of the
+	// cycle's desired (after the claim and fencing).
+	observed bool
+	settled  map[string]bool
+	desired  map[string]bool
+	// pruneRan: the prune List phase ran; pruneHalted: a safety guard halted
+	// it (the orphans are then unknown); orphans: the prune candidates
+	// (Deletes and deferred) of the cycle.
+	pruneRan    bool
+	pruneHalted bool
+	orphans     map[string]bool
+	// gates: the budget and capacity gates were evaluated (not in alert-only).
+	gates bool
+}
+
+// resolves reports whether a level Event ev that did not recur this cycle is
+// gone.  A cycle that errored resolves nothing.
+func (c levelCoverage) resolves(ev core.Event, res CycleResult, cycleErr error) bool {
+	if cycleErr != nil {
+		return false
+	}
+	switch ev.Kind {
+	case core.EventCycleSkipped, core.EventExternalInputUnreachableProlonged:
+		return !res.SkippedDueToUnreachable
+	case core.EventInventoryHalted:
+		return !res.InventoryHalted && !res.SkippedDueToUnreachable
+	case core.EventBudgetHalted, core.EventCapacityHalted:
+		return c.gates
+	case core.EventPruneHalted:
+		return c.pruneRan
+	}
+	if !ev.HasResource() || !c.observed {
+		return false
+	}
+	id := ev.Resource.String()
+	if c.desired[id] {
+		// Gone when Observed Ok with no diff this cycle (not when in flight,
+		// thinned by its tier, waiting, held or unobservable).
+		return c.settled[id]
+	}
+	// Not desired (an orphan, or a resource removed from intent): gone when
+	// the prune List ran unhalted and it is no prune candidate any more.
+	return c.pruneRan && !c.pruneHalted && !c.orphans[id]
 }
 
 // F-2: the one-shot "sakutei reconcile" command (cmd/sakutei/reconcile.go) does
@@ -1504,6 +1605,12 @@ func runCycleAsync(
 	sched.BeginCycle(cycle, desired, in.ObserveTierIntervals())
 	var notDue []string
 
+	// §22.3: what this cycle sees, for the level report.
+	cov := levelCoverage{observed: true, settled: map[string]bool{}, desired: make(map[string]bool, len(desired))}
+	for _, r := range desired {
+		cov.desired[r.ID.String()] = true
+	}
+
 	// Phase 1: Observe all resources fresh (ADR-0002).
 	// Resources in-flight are observed but excluded from the plan (they are
 	// still converging from a prior cycle's Apply).
@@ -1637,7 +1744,7 @@ func runCycleAsync(
 		for _, op := range plan.Ops {
 			if op.Cause == core.CauseTagB {
 				summary := lsRing.DriftSummary(local, curFields)
-				EmitDrift(cfg.ErrOut, "sakutei: ", res.ID, op, summary)
+				EmitDrift(cfg.ErrOut, "sakutei: ", res.ID, op, summary, curFields)
 			}
 		}
 
@@ -1692,6 +1799,9 @@ func runCycleAsync(
 		// A held ghost diff (all C) is not converged either: keep Observing
 		// it every cycle until the operator resolves it.
 		sched.Observed(res, len(plan.Ops) == 0)
+		if len(plan.Ops) == 0 {
+			cov.settled[res.ID.String()] = true
+		}
 	}
 
 	// §8.3: ready_condition upstreams outside the desired set (external owner,
@@ -1750,6 +1860,14 @@ func runCycleAsync(
 	// #67: each Lister provider prunes its own reality against its own
 	// resources, with its own count baseline.
 	pruneResult := computeDaemonPruneAll(ctx, providers, cycleProviders, pruneExcluded, cfg.Claim, desired, unobservable, cfg.ErrOut)
+	cov.pruneRan, cov.pruneHalted = true, pruneResult.Halted
+	cov.orphans = make(map[string]bool, len(pruneResult.DeleteOps)+len(pruneResult.Deferred))
+	for _, op := range pruneResult.DeleteOps {
+		cov.orphans[op.Target.String()] = true
+	}
+	for _, id := range pruneResult.Deferred {
+		cov.orphans[id.String()] = true
+	}
 
 	// Phase 2b: Remediation mode gate (§14.1, Scf7762-3; #40 §14.2/§14.3).
 	//
@@ -1778,6 +1896,8 @@ func runCycleAsync(
 
 			WorkflowEvents: wfEvents,
 			WorkflowHeld:   wfHeldThisCycle,
+
+			level: cov,
 		}, nil
 	}
 
@@ -1825,6 +1945,7 @@ func runCycleAsync(
 		}
 	}
 	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, inFlight, len(desired))
+	cov.gates = true
 	budgetHalted := budgetDecision.HaltAll || budgetDecision.HaltDestructive
 	budgetReason := budgetDecision.Reason
 
@@ -1999,6 +2120,8 @@ func runCycleAsync(
 
 		WorkflowEvents: wfEvents,
 		WorkflowHeld:   wfHeldThisCycle,
+
+		level: cov,
 	}, nil
 }
 
@@ -2056,6 +2179,7 @@ func computeDaemonPrune(
 	ctx context.Context,
 	pruneEngine *prune.Engine,
 	fp provider.Provider,
+	providerName string,
 	claim core.Scope,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
@@ -2087,7 +2211,7 @@ func computeDaemonPrune(
 		return prune.PruneResult{}
 	}
 	if result.Halted {
-		EmitPruneHalted(errOut, result, "sakutei: prune halted this cycle: "+result.HaltReason)
+		EmitPruneHalted(errOut, result, providerName, "sakutei: prune halted this cycle: "+result.HaltReason)
 	}
 	for _, id := range result.Deferred {
 		fmt.Fprintf(errOut, "sakutei: prune deferred for %s (safety guard: type not pruneable or unknown≠absent)\n", id)
@@ -2118,7 +2242,9 @@ func computeDaemonPruneAll(
 		}
 		e.prune.SetExcludedScopes(excluded)
 		own := desired
+		name := ""
 		if providers.single == nil {
+			name = e.name
 			own = nil
 			for _, r := range desired {
 				if r.ID.Provider == e.name {
@@ -2126,7 +2252,7 @@ func computeDaemonPruneAll(
 				}
 			}
 		}
-		r := computeDaemonPrune(ctx, e.prune, e.p, claim, own, unobservable, errOut)
+		r := computeDaemonPrune(ctx, e.prune, e.p, name, claim, own, unobservable, errOut)
 		merged.DeleteOps = append(merged.DeleteOps, r.DeleteOps...)
 		merged.Deferred = append(merged.Deferred, r.Deferred...)
 		merged.HeldOrphans += r.HeldOrphans

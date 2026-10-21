@@ -72,6 +72,19 @@ const (
 	EventWorkflowError         EventKind = "WorkflowError"
 )
 
+// IsLevel は k が level（継続状態）の Event かを返す（§22.3）。収束失敗・ずれ・
+// halt は level で、firing / resolved で出し、続く間は毎周は出さない。それ以外
+// （Workflow の出来事・prune・break-glass など）は edge（起きた周に 1 回）。
+func (k EventKind) IsLevel() bool {
+	switch k {
+	case EventDrift, EventDriftWouldApply, EventApplyFailed,
+		EventBudgetHalted, EventCapacityHalted, EventPruneHalted, EventInventoryHalted,
+		EventCycleSkipped, EventExternalInputUnreachableProlonged, EventProviderUpgradeDiff:
+		return true
+	}
+	return false
+}
+
 // 次の 2 つは Event ではない。--log-format json のとき、周の要約やその他のログ行を
 // Event と同じ形の 1 行にするための kind。
 const (
@@ -88,6 +101,28 @@ const (
 	SeverityInfo     Severity = "info"
 	SeverityWarning  Severity = "warning"
 	SeverityCritical Severity = "critical"
+)
+
+// EventState は level の Event の状態（§22.3）。edge の Event では空。
+type EventState string
+
+const (
+	// EventFiring は続いている状態（初めて出た周と、内容が変わった周・stuck に
+	// 上がった周に出る）。
+	EventFiring EventState = "firing"
+	// EventResolved は消えた状態（消えた周に 1 回出る）。
+	EventResolved EventState = "resolved"
+)
+
+// EventClass は level の Event の分類（§22.3）。
+type EventClass string
+
+const (
+	// EventTransient は自己回復の見込みがある（続いた周数が stuck のしきい値未満）。
+	EventTransient EventClass = "transient"
+	// EventStuck は自己回復の見込みがない（しきい値を超えて続いた、または
+	// 権限・欠損・容量など permanent な失敗）。
+	EventStuck EventClass = "stuck"
 )
 
 // Event は Sakutei の知らせの単一型（§22.3, §27.2）。
@@ -114,6 +149,13 @@ type Event struct {
 	Message string
 	// Attrs は付属情報（キーと値）。
 	Attrs map[string]string
+	// State・Since・Count・Class は level の Event（収束失敗・ずれ・halt）にだけ
+	// 付く（§22.3）。Since は始まった周の時刻、Count は続いた周数。edge の Event
+	// では空。
+	State EventState
+	Since time.Time
+	Count int
+	Class EventClass
 	// Text は --log-format text での 1 行（"sakutei: " などの接頭辞を含む）。
 	// 空なら "<Kind>: <Message>"。JSON には出さない。
 	Text string
@@ -145,6 +187,10 @@ type eventJSON struct {
 	Cause            CauseTag          `json:"cause,omitempty"`
 	Message          string            `json:"message"`
 	Attrs            map[string]string `json:"attrs,omitempty"`
+	State            EventState        `json:"state,omitempty"`
+	Since            string            `json:"since,omitempty"`
+	Count            int               `json:"count,omitempty"`
+	Class            EventClass        `json:"class,omitempty"`
 }
 
 // MarshalJSON は Event を JSON lines の 1 行の形にする（Resource は ID.String()）。
@@ -159,6 +205,12 @@ func (e Event) MarshalJSON() ([]byte, error) {
 		Cause:            e.Cause,
 		Message:          e.Message,
 		Attrs:            e.Attrs,
+		State:            e.State,
+		Count:            e.Count,
+		Class:            e.Class,
+	}
+	if !e.Since.IsZero() {
+		j.Since = e.Since.UTC().Format(time.RFC3339Nano)
 	}
 	if j.Severity == "" {
 		j.Severity = SeverityInfo

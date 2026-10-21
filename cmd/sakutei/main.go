@@ -127,6 +127,7 @@ func main() {
 //	--approval-listen <addr>  serve the approval gate API (§6.4)
 //	--daemon-status <f>  rewritten every cycle with the daemon health (consecutive unreachable skips, #15)
 //	--unreachable-skip-limit <n>  consecutive unreachable skips before the Prolonged alert (default 3)
+//	--stuck-after <n>    consecutive cycles after which a level Event is promoted transient → stuck (default 5, §22.3)
 //
 // The loop runs until SIGTERM or SIGINT is received, at which point it stops
 // at the next cycle boundary and exits 0.
@@ -213,6 +214,8 @@ func runDaemon() {
 		"#15: file rewritten after every cycle with the daemon's health (consecutive cycles skipped because an external input was unreachable); read by `sakutei status --daemon-status`")
 	unreachableSkipLimit := fs.Int("unreachable-skip-limit", 0,
 		"#15: consecutive unreachable-skipped cycles after which ExternalInputUnreachableProlonged is raised every cycle (default 3)")
+	stuckAfter := fs.Int("stuck-after", 0,
+		"§22.3: consecutive cycles a level Event (drift, convergence failure, halt) stays firing before it is promoted transient → stuck (default 5)")
 	approvalListen := fs.String("approval-listen", "",
 		"address to serve the approval gate API on, e.g. 127.0.0.1:8470 (§6.4; no authorization, §7); requires --workflow-store and --audit-log")
 	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。
@@ -397,6 +400,7 @@ func runDaemon() {
 		Fencing:               guard,
 		DaemonStatusPath:      *daemonStatus,
 		UnreachableSkipLimit:  *unreachableSkipLimit,
+		StuckAfter:            *stuckAfter,
 		Out:                   logOut,
 		ErrOut:                logErr,
 		EventSinks:            eventSinks,

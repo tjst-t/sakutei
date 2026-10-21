@@ -468,6 +468,16 @@ vm:
 - **Since / 連続失敗回数から transient ↔ stuck を自動昇格**（level-triggered が過去を毎周持っていることの無料の副産物。edge 型監視には出せない情報）。分類：**transient**（自己回復見込み）/ **stuck**（権限・欠損・容量 = 即 critical）/ **oscillating**（綱引き）/ **blocked**（依存未達 = 上流 Event に集約）。
 - **Workflow / canary 失敗は edge（事件）**：停止位置・到達済み step・invariant 状態を1回通知。canary の cleanup 反復失敗のみ level に昇格する。
 
+**v1 の level 報告の決まり（v3.14、Backlog #79）**：
+
+- **level の Event**：drift（`Drift`・alert-only で持ち越した `DriftWouldApply`）・Apply の失敗（`ApplyFailed`、prune の Delete を含む）・halt（`BudgetHalted`・`CapacityHalted`・`PruneHalted`・`InventoryHalted`・外部入力不達の `CycleSkipped` と `ExternalInputUnreachableProlonged`）・ghost diff の hold（`ProviderUpgradeDiff`）。これ以外（`Pruned`・Workflow の Event・break-glass・DR plan・fencing・RequiresTask など）は edge のまま、起きた周に 1 回出す。
+- **キー**：kind + resource（資源に紐づかないものは scope、prune の halt は provider）。同じキーの Event は続く間 1 つの level として扱う。
+- **firing / 更新 / resolved**：初めて出た周に `state: firing`・`count: 1`・`since`（その時刻）で出す。続く周は count を 1 つ上げるだけで出さない。内容（severity・cause・Message・Attrs）が変わった周と stuck に上がった周だけ、firing の更新として出す（毎周変わる値——前の周との比較の文・連続スキップの回数——は内容に数えない。drift は観測値の digest で比べる）。その周に上がらず、**その周に対象を確かめられて消えていた**とき、`state: resolved` を 1 回出して忘れる。確かめられなかった周（観測していない・in-flight・tier で間引いた・周を飛ばした・周がエラー）は消えたとみなさず firing のまま（確信が持てないときは報告を減らさない）。資源の Event は「Observe して差分が無い」か「desired に無く、prune の List が止まらずに回って orphan の候補にも無い」で消えたとする。予算・容量の halt は関門を評価した周、prune の halt は prune の List を回した周、外部入力・inventory の halt は周が回った周に、上がらなければ消えたとする。
+- **transient → stuck の自動昇格**：既定で**連続 5 周**続いたら stuck に上げる（`--stuck-after <n>`、`Config.StuckAfter`）。permanent な失敗（provider が `PermanentError` を返した Apply。権限・欠損など）と容量の halt は初めから stuck。stuck の Event は `severity: critical`。続く間は stuck から下げない。
+- **oscillating** は v1 では点灯しない（振動の検知は §29.2 の既知の限界のまま）。**blocked**（依存未達）は、下流が自分の Event を出さない（周の要約の skipped に数えるだけ）ことで上流の Event に集約する。
+- **状態は S3（メモリ）**：デーモンを起こし直すと空から始まり、続いているものは改めて firing になる（取りこぼさない側）。claim のハンドオフも同じ。周の要約（`cycle N: …` の行）は Event ではなく、毎周出る。
+- **一回性の `reconcile`・`plan`** は周をまたがないので level にせず、従来どおり出す。
+
 Break Glass の使用（`BreakGlassUsed`・§20.6）や監査アンカーの push（§26）も、この単一 Event → sink に流れる。発生源と sink を分けることで、通知系の交換が収束コアに波及しない。
 
 ### §22.4 衛星停止影響表（何を止め、何を止めないか）

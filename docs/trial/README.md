@@ -84,14 +84,20 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 ./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 1s --mode alert-only
 ```
 
-- 書き換えた次の周期から毎周、次のように出て、**ファイルは書き換えない**（手で変えた値が残り、SOA のシリアルも変わらない）。
+- 書き換えた次の周期に次のように出て（`alert-only: … detected` の要約の行はその後も毎周）、**ファイルは書き換えない**（手で変えた値が残り、SOA のシリアルも変わらない）。
 
   ```
   sakutei: cycle 4: alert-only: 2 drifted resource(s) detected — no changes applied
   sakutei: cycle 4: DRIFT EVENT: would be UPDATE dnszone//api.example.com./A
   sakutei: cycle 4: DRIFT EVENT: would be UPDATE nftables//inet/filter/sakutei_allow
   ```
-- 気づいたこと：同じ知らせが毎周そのまま出続ける。設計 §22.3 は「firing / resolved の level 報告で、毎周同じアラートを撒かない」と決めているので、Backlog #74 で実装の状況を確かめる。
+- 気づいたこと：同じ知らせが毎周そのまま出続けた。設計 §22.3 は「firing / resolved の level 報告で、毎周同じアラートを撒かない」と決めている。Backlog #79 で直した：ずれの Event（`DriftEvent`・`DRIFT EVENT`）は書き換えた周に 1 回だけ出て、続く間は出ない（周の要約 `alert-only: 2 drifted resource(s) detected` の行は毎周出る）。手で戻すと、戻した周に 1 回だけ次の形で出る。
+
+  ```
+  sakutei: cycle 9: RESOLVED DriftWouldApply dnszone//api.example.com./A: resolved after 5 cycle(s) (firing since 2026-10-21T15:20:01Z)
+  ```
+
+  5 周（`--stuck-after` で変えられる）続くと、`[firing stuck count=5 since=…]` の付いた行が 1 回出て critical に上がる。JSON（`--log-format json`・`--event-log`）では `"state":"firing"`／`"resolved"`・`"since"`・`"count"`・`"class":"transient"`／`"stuck"` が付く。デーモンを起こし直すと、続いているずれは改めて 1 回出る。予算の halt・prune の急減 halt（D3）も同じく、始まった周と消えた周に 1 回ずつ。
 - `--log-format json` を足すと（デーモン・`reconcile`・`plan`。既定は `text`）、同じ知らせが 1 行 1 Event の JSON lines で出る（#77）。`DRIFT EVENT` は `{"kind":"DriftWouldApply","cycle":4,"resource":"dnszone//api.example.com./A","cause":"B","intent_revision":…}` の形。周の要約は `kind":"CycleSummary"`、そのほかのログ行は `"kind":"Log"` の同じ形の行になる。
 - `--event-log <path>` を足すと（デーモン・`reconcile`）、標準エラーへの出力はそのままに、知らせ（Event）をファイルにも JSON lines で追記する（#78）。1 Event を 1 行で書き切り、周の要約とそのほかのログ行は入れない。Alertmanager などへ送るのはこのファイルを読む側に任せる（§22.3）。ファイルに書けなくても収束は止まらず、`sakutei: warn: event sink: …` の 1 行が出る。S4 監査ログ（`--audit-log`）とは別物。
 
@@ -104,7 +110,7 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 ./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 1s --max-destructive-per-cycle 1
 ```
 
-- 毎周、2 件の DELETE を止めて halt する。**1 件も消さない**（上限 1 件に対して 2 件なので、1 件だけ消すこともしない）。
+- 毎周、2 件の DELETE を止めて halt する。**1 件も消さない**（上限 1 件に対して 2 件なので、1 件だけ消すこともしない）。`BUDGET HALTED` の Event は #79 から始まった周に 1 回だけ出る（`budget: blocked destructive op` の行と周の要約 `halted (2 op(s) held)` は毎周出る）。
 
   ```
   sakutei: budget: blocked destructive op DELETE dnszone//old1.example.com./A (budget limit)

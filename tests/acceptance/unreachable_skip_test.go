@@ -97,8 +97,9 @@ func TestUnreachableSkip_CountInLogAndStatus(t *testing.T) {
 			t.Errorf("[AC-15-1] log lacks consecutive_unreachable_skips=%d", i)
 		}
 	}
-	if c := strings.Count(log, "ExternalInputUnreachableProlonged"); c < n-2 {
-		t.Errorf("[AC-15-1] ExternalInputUnreachableProlonged logged %d times, want >= %d (every cycle from the limit 3)", c, n-2)
+	// #79 (§22.3): the alert is level — firing once at the limit, not every cycle.
+	if c := strings.Count(log, "ExternalInputUnreachableProlonged"); c != 1 {
+		t.Errorf("[AC-15-1] ExternalInputUnreachableProlonged logged %d times, want 1 (firing once at the limit 3)", c)
 	}
 	if strings.Contains(log, "converged (no changes)") {
 		t.Errorf("[AC-15-1] a skipped cycle was reported as converged:\n%s", log)
