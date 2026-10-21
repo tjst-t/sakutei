@@ -2057,9 +2057,10 @@ func computeDaemonPruneAll(
 //
 // allowedOps is the budget-filtered subset of pruneResult.DeleteOps.
 // budgetEngine is called with CommitOps for each successfully applied Delete
-// outside the planned_change lanes; a lane Delete consumes its lane instead and
-// is noted to its provider's prune engine so the next List drop does not count
-// it (§13.3).
+// outside the planned_change lanes; a lane Delete consumes its lane instead
+// (§13.3).  Every successful Delete is noted to its provider's prune engine so
+// the next List drop does not count it (§12.4b, §13.3); a Delete the budget
+// held back is not in allowedOps, and a failed one is not noted.
 func executePruneOps(
 	ctx context.Context,
 	pruneResult prune.PruneResult,
@@ -2093,6 +2094,11 @@ func executePruneOps(
 			fmt.Fprintf(errOut, "sakutei: pruned %s (reality − desired; PruneWithinScope)\n", op.Target)
 			// Scf7762-2: advance the cumulative window counter for applied destructive ops.
 			budgetEngine.CommitOps([]core.Op{op})
+			// §12.4b (v3.13, #75): our own Delete is an intended shrink, so
+			// the next List drop does not count it.
+			if e, err := providers.get(op.Target.Provider); err == nil && e.prune != nil {
+				e.prune.NotePrunedRemoval(op.Target)
+			}
 		}
 		pruned++
 	}

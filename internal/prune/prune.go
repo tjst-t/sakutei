@@ -35,7 +35,9 @@
 //     than the configured threshold relative to the previous cycle's count, the
 //     engine halts prune for this cycle and emits a PruneHalted event.
 //     Removals the daemon made in a planned_change lane (§13.3) are noted with
-//     NotePlannedRemoval and are not counted as a drop.
+//     NotePlannedRemoval, and orphans it pruned itself (budget and approval
+//     passed, Delete succeeded; v3.13, #75) with NotePrunedRemoval; those that
+//     are indeed gone from the next List are not counted as a drop.
 //  5. unknown ≠ absent (ADR-0002): resources whose Observe returned
 //     AvailabilityUnknown or AvailabilityConverging are excluded from the
 //     deletion candidate set even if they are absent from the intent.
@@ -101,10 +103,11 @@ type Engine struct {
 	// cycle by SetExcludedScopes.
 	excluded []core.Scope
 
-	// plannedGone are the IDs removed in a planned_change lane since the
-	// baseline was last recorded (§13.3): their absence from the next List is
-	// declared, not a sudden drop.  Cleared when the baseline is updated.
-	plannedGone map[core.IDKey]bool
+	// ownGone are the IDs the daemon itself removed since the baseline was
+	// last recorded — in a planned_change lane (§13.3) or by its own prune
+	// (§12.4b, v3.13, #75): their absence from the next List is intended, not
+	// a sudden drop.  S3 like the baseline; cleared when it is updated.
+	ownGone map[core.IDKey]bool
 }
 
 // NotePlannedRemoval records that id was deleted in a planned_change lane
@@ -112,10 +115,23 @@ type Engine struct {
 // drop-rate gate (§12.4b).  Only removals the daemon itself made under a
 // declaration are discounted; any other shrink still halts.
 func (e *Engine) NotePlannedRemoval(id core.ID) {
-	if e.plannedGone == nil {
-		e.plannedGone = map[core.IDKey]bool{}
+	e.noteOwnRemoval(id)
+}
+
+// NotePrunedRemoval records that the daemon's own prune deleted id — the
+// Delete passed the budget and approval gates and Apply succeeded (§12.4b,
+// v3.13, #75) — so its disappearance from the next List is not counted by
+// the drop-rate gate.  Do not call it for a Delete the budget held back or
+// that failed: only removals Sakutei actually made are discounted.
+func (e *Engine) NotePrunedRemoval(id core.ID) {
+	e.noteOwnRemoval(id)
+}
+
+func (e *Engine) noteOwnRemoval(id core.ID) {
+	if e.ownGone == nil {
+		e.ownGone = map[core.IDKey]bool{}
 	}
-	e.plannedGone[id.Key()] = true
+	e.ownGone[id.Key()] = true
 }
 
 // SetExcludedScopes sets the scopes whose reality is dropped before the
@@ -245,17 +261,19 @@ func (e *Engine) ComputePrune(
 
 	// (b) Drop-rate gate (§12.4b): compare with last observed count.
 	//
-	// §13.3: the declared removals (planned_change lane deletes since the
-	// baseline) that are indeed gone from this List are taken off the baseline
-	// before the drop is measured.
+	// §13.3 / §12.4b (v3.13): the daemon's own removals since the baseline
+	// (planned_change lane deletes and its own prune deletes) that are indeed
+	// gone from this List are taken off the baseline before the drop is
+	// measured.  One still listed (e.g. a Delete not yet complete in reality)
+	// is not taken off — it is still counted in currentCount, so it is no drop.
 	currentCount := len(listResult.IDs)
 	baseline := e.lastListCount
-	if len(e.plannedGone) > 0 {
+	if len(e.ownGone) > 0 {
 		present := make(map[core.IDKey]bool, len(listResult.IDs))
 		for _, id := range listResult.IDs {
 			present[id.Key()] = true
 		}
-		for k := range e.plannedGone {
+		for k := range e.ownGone {
 			if !present[k] {
 				baseline--
 			}
@@ -287,7 +305,7 @@ func (e *Engine) ComputePrune(
 
 	// Update last count for the next cycle.
 	e.lastListCount = currentCount
-	e.plannedGone = nil
+	e.ownGone = nil
 
 	// (2) Pruneable gate — TYPE level (§12.3, ADR-0005).
 	//

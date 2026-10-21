@@ -23,6 +23,7 @@ package prune_test
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -455,5 +456,78 @@ func TestPruneEngine_CountDrop_PlannedRemovalNotCounted(t *testing.T) {
 	}
 	if res := run(engine, ids[:2]); !res.Halted {
 		t.Fatalf("an undeclared shrink on top of the declared one must still halt")
+	}
+}
+
+// TestPruneEngine_CountDrop_OwnPruneNotCounted verifies §12.4b (v3.13, #75):
+// orphans the engine's own prune deleted are taken off the baseline when they
+// are gone from the next List; an extra shrink nobody noted still halts; and a
+// noted ID still listed (Delete not yet complete in reality) is not taken off.
+func TestPruneEngine_CountDrop_OwnPruneNotCounted(t *testing.T) {
+	run := func(engine *prune.Engine, list []core.ID) prune.PruneResult {
+		t.Helper()
+		res, err := engine.ComputePrune(context.Background(), &fakeCompleteList{ids: list}, &fakeObserver{},
+			core.NewScope(nil), core.NewScope(nil), pruneDesired("www"), nil, &bytes.Buffer{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	www, old1, old2 := makeID("www"), makeID("old1"), makeID("old2")
+
+	// D3: 3 → 1 after pruning old1 and old2 ourselves: not halted, and the
+	// next cycle (baseline 1) stays quiet too.
+	engine := prune.New()
+	run(engine, []core.ID{www, old1, old2})
+	engine.NotePrunedRemoval(old1)
+	engine.NotePrunedRemoval(old2)
+	if res := run(engine, []core.ID{www}); res.Halted {
+		t.Fatalf("own prune deletes must not trip the drop gate: %s", res.HaltReason)
+	}
+	if res := run(engine, []core.ID{www}); res.Halted {
+		t.Fatalf("the baseline must be updated after the own-prune cycle: %s", res.HaltReason)
+	}
+
+	// 6 → 1 with 2 own deletes: 4 → 1 is still a 75% drop → halt, and the
+	// reason reports the discounted baseline.
+	ids := make([]core.ID, 6)
+	for i := range ids {
+		ids[i] = makeID("vm-" + string(rune('a'+i)))
+	}
+	engine = prune.New()
+	run(engine, ids)
+	engine.NotePrunedRemoval(ids[4])
+	engine.NotePrunedRemoval(ids[5])
+	res := run(engine, ids[:1])
+	if !res.Halted {
+		t.Fatalf("a shrink we did not make, on top of our own deletes, must still halt")
+	}
+	if !strings.Contains(res.HaltReason, "from 4 to 1") {
+		t.Errorf("halt reason %q, want the baseline 6 − 2 own deletes = 4", res.HaltReason)
+	}
+
+	// Delete not yet complete: the 4 noted IDs are still listed while 6 others
+	// vanished.  The noted ones are not taken off (10 → 4 = 60% → halt).
+	ids = make([]core.ID, 10)
+	for i := range ids {
+		ids[i] = makeID("vm-" + string(rune('a'+i)))
+	}
+	engine = prune.New()
+	run(engine, ids)
+	for _, id := range ids[:4] {
+		engine.NotePrunedRemoval(id)
+	}
+	res = run(engine, ids[:4])
+	if !res.Halted || !strings.Contains(res.HaltReason, "from 10 to 4") {
+		t.Fatalf("still-listed own deletes must not be taken off the baseline; got halted=%v %q", res.Halted, res.HaltReason)
+	}
+
+	// Delete not yet complete, nothing else gone: no drop, no halt.
+	engine = prune.New()
+	run(engine, []core.ID{www, old1, old2})
+	engine.NotePrunedRemoval(old1)
+	engine.NotePrunedRemoval(old2)
+	if res := run(engine, []core.ID{www, old1, old2}); res.Halted {
+		t.Fatalf("own deletes still in the List are no drop: %s", res.HaltReason)
 	}
 }
