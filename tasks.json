@@ -1623,6 +1623,31 @@
       "updatedAt": "2026-10-21T10:05:11.951Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "dnszone-origin-id",
+      "number": 69,
+      "kind": "bug",
+      "title": "dnszone の名前の正規化が $ORIGIN を解釈せず、相対名と絶対名を取り違える（ID のコメントも実装と食い違う）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "dnszone",
+        "provider",
+        "identity"
+      ],
+      "body": "2026-10-21、v1 を手で試していて見つけた（docs/trial/README.md）。\n\n## 症状\n- `internal/dnszone` の `normaliseName` は小文字にして末尾に `.` を足すだけで、$ORIGIN を解釈しない（$ORIGIN は「そのまま保持」）。そのため、ゾーンファイルの相対名 `www`（DNS では www.example.com.）は `www.` として扱われ、\n  - 絶対名で書いた `www.example.com.` とは別のレコードになる（同じ名前なのに 2 つに分かれる）\n  - 本当に別の名前である絶対名 `www.` とは同じレコードになる（取り違える）\n- パッケージコメント（52 行目・197 行目）は ID の例を `www.example.com./A` としているが、実際の ID はゾーンファイルに書いたまま（`www/A`）。`import` が出す ID も `www/A`。\n\n## なぜ問題か\nidentity の取り違えは「別リソースを消す」危険に直結する（§28.4）。実際のゾーンファイルでは相対名と絶対名が混ざるのがふつう。\n\n## 直し方（設計の範囲：§28.4 identity、dnszone の管理境界は変えない）\n- parse で $ORIGIN（と `@`）を解釈して名前を FQDN に正規化し、比較と ID は FQDN で行う。ファイルへの書き戻しは元の書き方（相対名なら相対名）を保つ。\n- intent の ID・name は相対名・FQDN のどちらで書いても同じレコードを指すようにするか、どちらか一方に決めて他方をロードで拒否する。どちらにするかは実装時に決め、パッケージコメントと docs/trial/README.md に書く。\n- 既存の受入テスト（tests/acceptance/dnszone_test.go・import_test.go・bulk_observe_file_test.go）が通ること。",
+      "doneWhen": "$ORIGIN example.com. のゾーンで、相対名 www と絶対名 www.example.com. が同じレコードとして扱われ、絶対名 www. が別のレコードとして扱われることをテストで示す。書き戻しで元の書き方が保たれる。パッケージコメントの ID の例が実装と一致する。make check・make test-race が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-21T10:06:51.548Z",
+      "updatedAt": "2026-10-21T10:06:51.548Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
