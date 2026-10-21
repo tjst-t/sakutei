@@ -81,7 +81,7 @@ halt する／Ctrl-C で周期の切れ目で止まる。
 | 見つかったこと | 扱い |
 |---|---|
 | デーモンが fake provider にしか対応していない。plan・reconcile に `--ruleset` が無い | Backlog #67（バグ） |
-| **nftables の Apply が base chain の `type … hook … priority …; policy …;` の行を消す**（手順 3 の後の ruleset を見ると分かる。`status` で `input` が unmanaged の regular chain として出る） | Backlog #68（バグ・安全）。直した：Apply は管理する chain の行だけを書き直し、base chain・set/map などの行はバイト単位で残す |
+| **nftables の Apply が base chain の `type … hook … priority …; policy …;` の行を消す**（直す前は、手順 3 の後の ruleset で `input` の宣言行が消えていた） | Backlog #68（バグ・安全）。直した：Apply は管理する chain の行だけを書き直し、base chain・set/map などの行はバイト単位で残す |
 | dnszone が $ORIGIN を解釈しない。ゾーンに絶対名 `www.example.com.` で書いたレコードを、intent の `www/A` は「無い」とみなして CREATE する（同じ名前が 2 つになる）。パッケージコメントの ID の例（`www.example.com./A`）も実装と食い違う | Backlog #69（バグ・identity）。直るまで、ゾーンファイルの名前は相対名で統一して試す |
 | SOA のシリアルが上がらない | 設計書 v3.12 §29.1 で「書き換えた Apply のときだけ YYYYMMDDnn で上げる（既定。`--zone-soa-serial keep` で止める）」と決めた。Backlog #70 で実装 |
 
