@@ -1094,7 +1094,7 @@
       "number": 56,
       "kind": "task",
       "title": "v2: 自動段階ロールアウトと自動 canary ゲート",
-      "status": "ready",
+      "status": "backlog",
       "parent": "v2-task-ui",
       "dependsOn": [
         "v2-health-observability-as-resource-reso",
@@ -1102,14 +1102,17 @@
       ],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "v2",
+        "needs-decision"
+      ],
       "body": "設計 §14・§15.1（爆発半径の「速」の軸）・§27.5。v1.5 の最小 Workflow（直列 + 不変条件 + 手動承認ゲート）を骨格に、canary → broad の段階昇格を自動にする。\n\n- 段（canary 群 → 次の群 → …）を宣言し、各段の後に自動 canary ゲートで健全性を判定して次へ進む。判定材料は health（observability as Resource）と常設 canary の結果。\n- 判定が悪ければ自動で止め（halt）、人の判断に回す。自動の巻き戻しをするかは着手時に決める。\n- 動的 select（対象を条件で選ぶ）もここで扱う（§27.4 で v2 に残したもの）。\n\n**着手時に決めること**：段の宣言の書式、ゲートの判定式（何を何分見て合格とするか）、失敗時に巻き戻すか止めるだけか。設計書に詳細が無いので、案を作って人に確かめる。",
       "doneWhen": "fake provider で 3 段のロールアウトが自動で進み、途中の段で health を悪くすると次の段へ進まず halt することをテストで示す。決めた書式と判定を設計書に書く。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:04.700Z",
+      "updatedAt": "2026-10-21T09:57:28.908Z",
       "closedAt": null,
       "extra": {}
     },
