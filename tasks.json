@@ -1056,7 +1056,7 @@
       "number": 54,
       "kind": "task",
       "title": "v2: Prometheus exporter（収束の状態を metrics で出す）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "v2-task-ui",
       "dependsOn": [],
       "milestone": null,
@@ -1070,7 +1070,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:58:03.991Z",
+      "updatedAt": "2026-10-21T09:59:47.990Z",
       "closedAt": null,
       "extra": {}
     },
