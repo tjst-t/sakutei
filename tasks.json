@@ -1598,6 +1598,31 @@
       "updatedAt": "2026-10-21T10:04:00.367Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "nftables-apply-base-chain-type-hook-prio",
+      "number": 68,
+      "kind": "bug",
+      "title": "nftables の Apply が base chain の宣言（type・hook・priority・policy）を消す",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "nftables",
+        "provider",
+        "safety"
+      ],
+      "body": "2026-10-21、v1 を手で試していて見つけた。\n\n## 再現\nruleset ファイル：\n```\ntable inet filter {\n    chain input {\n        type filter hook input priority 0; policy drop;\n        jump sakutei_allow\n    }\n    chain sakutei_allow {\n        tcp dport 22 accept\n    }\n}\n```\nintent で regular chain の `inet/filter/sakutei_allow` の rules を `tcp dport 22 accept ; tcp dport 443 accept` にして `sakutei reconcile`。書き直されたファイルでは `chain input` の `type filter hook input priority 0; policy drop;` の行が消え、`jump sakutei_allow` だけが残る。その後の `sakutei status` では `inet/filter/input` が unmanaged の regular chain として出る。\n\n## なぜ問題か\nbase chain の hook・priority・policy は、provider が管理しない「管理境界の外」（internal/nftables のパッケージコメント、§27 FW〈順序付き〉、dnszone の SOA/NS と同じ扱い）。それなのに Apply のファイル全体の書き直しで宣言が消え、policy drop の入口チェーンがただの regular chain になる——実機に読み込めば、フィルタが外れて穴が開く。管理していないものを壊さない（§7 の管理境界）に反する。\n\n## 直し方\n- Read（parse）で base chain の宣言行と中身をそのまま保持し、Apply の書き直しで元のとおりに出す（管理する regular chain だけを置き換える）。\n- 管理サブセットの外の行（set・map など）が書き直しで消える既知の限界（パッケージコメント）も、同じ仕組みで保持できるならそうする。できなければ、その行がある ruleset への Apply を PermanentError で止める（黙って消さない）。",
+      "doneWhen": "base chain（type・hook・priority・policy 付き）を含む ruleset で regular chain を Apply しても、base chain の宣言行と中身がバイト単位で変わらないことをテストで示す（上の再現の手順を受入テストにする）。管理サブセットの外の行が消えないか、消える場合は Apply が止まることをテストで示す。make check・make test-race が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-21T10:05:11.951Z",
+      "updatedAt": "2026-10-21T10:05:11.951Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
