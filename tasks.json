@@ -1811,7 +1811,7 @@
       "number": 76,
       "kind": "bug",
       "title": "デーモンのログが、prune で orphan を消した周にも「converged (no changes)」と出る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1827,7 +1827,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T12:57:03.959Z",
-      "updatedAt": "2026-10-21T12:57:03.959Z",
+      "updatedAt": "2026-10-21T12:57:11.587Z",
       "closedAt": null,
       "extra": {}
     }
