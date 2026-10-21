@@ -1242,21 +1242,24 @@
       "number": 62,
       "kind": "task",
       "title": "v2: 動的ルーターと自動リバランス",
-      "status": "ready",
+      "status": "backlog",
       "parent": "v2-task-ui",
       "dependsOn": [
         "v2-executor-remoteexecutor-lease"
       ],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "v2",
+        "trigger-gated"
+      ],
       "body": "設計 §17 段 3・§18.4・§18.5・§27.5。静的シャーディング（claim + fencing、v1b で実装済み）の上に、「どのリソースがどのシャードか」を動的に引く薄い層を足す。\n\n- 状態は割当表（S2）に閉じる。割当表に fencing token / 世代番号を持たせ、復元・再割当時に古い世代を fence する。\n- 自動リバランスはシャード間の負荷を再配分する。再シャードは Workflow（drain → claim 変更 → 世代更新・§17.6）の上に載せる。\n- メタ収束器は作らない（§18.5）。上位は司令塔ではなくルーター。\n\n**着手条件**：分散 Executor と同じ（§29.2 の早期警戒線）。",
       "doneWhen": "割当表で動くルーターが、シャードの負荷の偏りを検知して再シャードの Workflow を起こし、古い世代の writer の書き込みが fence されることをテストで示す。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:04.700Z",
+      "updatedAt": "2026-10-21T09:57:46.092Z",
       "closedAt": null,
       "extra": {}
     },
