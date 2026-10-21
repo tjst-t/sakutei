@@ -57,9 +57,10 @@ const typoZone = "; managed zone\n" +
 func TestDNSZone_UnreadableLine_ReadUnknownListError(t *testing.T) {
 	// [AC-37-1]
 	cases := map[string]string{
-		"typo":          typoZone,
-		"not a zone":    "keep.example.com. 300 IN A 1.1.1.1\nthis is { not a zone file\n",
-		"multi-line":    "@ IN SOA ns1 admin (\n 2024010101 3600 900 604800 300 )\nkeep.example.com. 300 IN A 1.1.1.1\n",
+		"typo":       typoZone,
+		"not a zone": "keep.example.com. 300 IN A 1.1.1.1\nthis is { not a zone file\n",
+		// 括弧で複数行に分けられるのは SOA だけ（#70）。ほかの型は読めない行。
+		"multi-line":    "txt.example.com. IN TXT (\n \"a\" \"b\" )\nkeep.example.com. 300 IN A 1.1.1.1\n",
 		"$INCLUDE":      "$INCLUDE other.zone\nkeep.example.com. 300 IN A 1.1.1.1\n",
 		"owner omitted": "keep.example.com. 300 IN A 1.1.1.1\n\t300 IN TXT \"v=spf1\"\n",
 	}

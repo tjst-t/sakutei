@@ -115,7 +115,8 @@ func TestDNSZone_OriginWriteBackKeepsForm(t *testing.T) {
 	ctx := context.Background()
 	zone := filepath.Join(t.TempDir(), "example.com.zone")
 	writeZoneFile(t, zone, originZone)
-	p := dnszone.New(zone)
+	// 行の書き方だけを見るので、SOA のシリアルは上げない（#70 は dnszone_soa_serial_test.go）。
+	p := dnszone.New(zone, dnszone.WithSOASerial(dnszone.SOASerialKeep))
 	id := func(local string) core.ID { return core.NewID(dnszone.ProviderName, core.NewScope(nil), local) }
 
 	err := p.Apply(ctx, core.Plan{Ops: []core.Op{

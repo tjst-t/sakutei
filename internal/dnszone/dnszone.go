@@ -23,7 +23,8 @@
 //   - identity is {name, type}: same FQDN with different record types (A vs CNAME)
 //     are distinct resources.  TTL and value are non-identity attributes.
 //   - SOA and NS records are explicitly excluded from management (management
-//     boundary, §27.2).  Read/Apply/List silently skip them.
+//     boundary, §27.2).  Read/Apply/List silently skip them.  The one thing
+//     Apply does to the SOA is raise its serial (see "SOA serial" below).
 //   - Atomic write: Apply uses os.CreateTemp + os.Rename so a crash mid-write
 //     never leaves a truncated zone file (S2 progress class, §4.9).
 //   - Pruneable: true — DNS records are cheap/reversible to recreate (non-destructive
@@ -55,9 +56,26 @@
 // has a line keeps that line's place and its owner exactly as written (a
 // relative "www" stays "www"); a new record is appended with its FQDN.
 //
-// Any other line that cannot be read as a record (a typo, an unknown record
-// type, an unsupported directive such as $INCLUDE, a multi-line "( … )" record,
-// an indented line that omits the owner name) makes the whole zone a parse
+// SOA serial (Backlog #70, §29.1): an Apply that actually changes the zone
+// file (a Create / Update / Delete whose result differs from the file) raises
+// the serial of every SOA in the zone in the same atomic write, so secondaries
+// transfer the zone and servers reload it.  The new serial is
+// max(today's YYYYMMDD00 in UTC, current + 1): always greater than the current
+// value, even when it is not date-shaped, is in the future or has used up the
+// day's 99.  Above 4294967295 the Apply fails with a PermanentError instead
+// (wrapping around breaks secondaries under RFC 1982 comparison).  Only the
+// serial digits are replaced; every other SOA field and the layout of its
+// line(s) are kept.  An Apply that changes nothing does not write the file
+// and does not raise the serial; a zone without an SOA is written as is.  The
+// serial is not observed, so it is never a diff.  WithSOASerial(SOASerialKeep)
+// (config "soa_serial: keep") turns this off for zones whose serial is
+// numbered by another tool or person.
+//
+// An SOA may be split over several lines with "( … )"; that is the only
+// multi-line form read.  Any other line that cannot be read as a record (a
+// typo, an unknown record type, an unsupported directive such as $INCLUDE, a
+// multi-line "( … )" record of another type, an indented line that omits the
+// owner name) makes the whole zone a parse
 // error: Read returns Unknown and List returns an error so prune halts.  A
 // record we cannot read is not proof that it is absent (§3 principle 3,
 // unknown ≠ absent); silently skipping it would make the core Create a
@@ -80,6 +98,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -156,12 +175,57 @@ func (r record) localID() string {
 type Provider struct {
 	// zonePath is the path to the zone file.
 	zonePath string
+	// soaSerial says whether a changing Apply raises the SOA serial.
+	soaSerial SOASerialMode
+	// now is the clock the new serial's date is taken from.
+	now func() time.Time
+}
+
+// SOASerialMode says what a changing Apply does to the SOA serial
+// (config "soa_serial", CLI --zone-soa-serial).
+type SOASerialMode string
+
+const (
+	// SOASerialBump raises the serial to YYYYMMDDnn (the default).
+	SOASerialBump SOASerialMode = "bump"
+	// SOASerialKeep leaves the serial to whoever else writes the zone.
+	SOASerialKeep SOASerialMode = "keep"
+)
+
+// ParseSOASerialMode parses a "soa_serial" setting.  "" is the default, bump.
+func ParseSOASerialMode(s string) (SOASerialMode, error) {
+	switch m := SOASerialMode(s); m {
+	case "":
+		return SOASerialBump, nil
+	case SOASerialBump, SOASerialKeep:
+		return m, nil
+	}
+	return "", fmt.Errorf("dnszone: soa_serial %q: want %q or %q", s, SOASerialBump, SOASerialKeep)
+}
+
+// Option configures a Provider.
+type Option func(*Provider)
+
+// WithSOASerial sets what a changing Apply does to the SOA serial.
+func WithSOASerial(m SOASerialMode) Option {
+	return func(p *Provider) { p.soaSerial = m }
+}
+
+// WithClock replaces the clock the new SOA serial's date is taken from
+// (tests).
+func WithClock(now func() time.Time) Option {
+	return func(p *Provider) { p.now = now }
 }
 
 // New creates a new dnszone Provider backed by the zone file at zonePath.
-// The zone file need not exist yet; Apply will create it.
-func New(zonePath string) *Provider {
-	return &Provider{zonePath: zonePath}
+// The zone file need not exist yet; Apply will create it.  By default a
+// changing Apply raises the SOA serial (SOASerialBump).
+func New(zonePath string, opts ...Option) *Provider {
+	p := &Provider{zonePath: zonePath, soaSerial: SOASerialBump, now: time.Now}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
 }
 
 // Schema returns the field declarations for DNS records.
@@ -298,8 +362,10 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 
 // Apply converges the DNS record to the desired state described in plan.
 //
-// Handles Create, Update, and Delete ops.  SOA/NS records are never modified.
-// Writes are atomic: a temp file is written then os.Rename'd over the target
+// Handles Create, Update, and Delete ops.  SOA/NS records are never managed;
+// an op that changes the file also raises the SOA serial in the same write
+// (see the package doc).  An op that would leave the file as it is does not
+// write it.  Writes are atomic: a temp file is written then os.Rename'd over the target
 // so a crash mid-write never leaves a truncated zone file (decisions.json).
 //
 // For Create/Update: the record is inserted or replaced in the zone file.
@@ -639,7 +705,7 @@ func (p *Provider) writeRecord(rec record) error {
 		filtered = append(filtered, newLine)
 	}
 
-	return p.writeLines(filtered)
+	return p.commitLines(lines, filtered)
 }
 
 // checkedLine formats rec as a zone-file line and refuses (Permanent) a line
@@ -699,7 +765,7 @@ func (p *Provider) deleteRecord(name, rrtype string) error {
 		filtered = append(filtered, zl.text)
 	}
 
-	return p.writeLines(filtered)
+	return p.commitLines(lines, filtered)
 }
 
 // parseZone reads the zone file and returns all managed records, names
@@ -736,18 +802,35 @@ type zoneLine struct {
 	rec record
 	// origin is the $ORIGIN in effect at this line ("" before any $ORIGIN).
 	origin string
+	// span is the number of lines the record takes (more than 1 for an SOA
+	// split with "( … )"; the further lines follow as zoneLines with ok false).
+	span int
 }
 
 // scanLines reads every line in order, tracking $ORIGIN, and resolves each
 // managed record's owner to its FQDN.  SOA/NS owners are not resolved (their
 // name stays as written): they are outside the management boundary and a zone
 // may write them as "@" without a $ORIGIN, leaving the origin to the server.
+// An SOA split over several lines with "( … )" is read as one record.
 // Any line that cannot be read is an error naming its line number.
 func scanLines(lines []string) ([]zoneLine, error) {
 	out := make([]zoneLine, 0, len(lines))
 	origin := ""
-	for i, line := range lines {
-		zl := zoneLine{text: line, origin: origin}
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		zl := zoneLine{text: line, origin: origin, span: 1}
+		if r, last, isSOA, err := parenSOA(lines, i); err != nil {
+			return nil, fmt.Errorf("line %d: %w", i+1, err)
+		} else if isSOA {
+			r.name = r.owner
+			zl.ok, zl.rec, zl.span = true, r, last-i+1
+			out = append(out, zl)
+			for j := i + 1; j <= last; j++ {
+				out = append(out, zoneLine{text: lines[j], origin: origin, span: 1})
+			}
+			i = last
+			continue
+		}
 		r, ok, err := parseLine(line)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", i+1, err)
@@ -770,6 +853,168 @@ func scanLines(lines []string) ([]zoneLine, error) {
 		out = append(out, zl)
 	}
 	return out, nil
+}
+
+// parenSOA reports whether lines[i] starts an SOA written with "( … )"
+// (possibly over several lines) and, if so, returns it as a record and the
+// index of its last line.  A "( … )" record of any other type is left to
+// parseLine, which refuses it.
+func parenSOA(lines []string, i int) (record, int, bool, error) {
+	line := lines[i]
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || trimmed != line && (line[0] == ' ' || line[0] == '\t') || !hasUnquotedParen(trimmed) {
+		return record{}, 0, false, nil
+	}
+	toks, last, err := soaTokens(lines, i)
+	if err != nil {
+		return record{}, 0, false, err
+	}
+	words := make([]string, len(toks))
+	for k, t := range toks {
+		words[k] = t.text
+	}
+	r, ok, err := parseLine(strings.Join(words, " "))
+	if err != nil || !ok || r.rrtype != "SOA" {
+		return record{}, 0, false, nil
+	}
+	return r, last, true, nil
+}
+
+// soaToken is one whitespace-separated token of a record, where it is in the
+// zone file.
+type soaToken struct {
+	text       string
+	line       int // index into lines
+	start, end int // byte offsets in lines[line]
+}
+
+// soaTokens splits the record starting at lines[i] into tokens, following
+// "( … )" onto further lines.  Parentheses and ";" comments are not tokens.
+// It returns the tokens and the index of the record's last line.
+func soaTokens(lines []string, i int) ([]soaToken, int, error) {
+	var toks []soaToken
+	depth := 0
+	for j := i; j < len(lines); j++ {
+		s := lines[j]
+		for k := 0; k < len(s); {
+			c := s[k]
+			switch {
+			case c == ';':
+				k = len(s)
+			case c == ' ' || c == '\t' || c == '\r':
+				k++
+			case c == '(':
+				depth++
+				k++
+			case c == ')':
+				depth--
+				if depth < 0 {
+					return nil, 0, fmt.Errorf("\")\" without \"(\": %q", s)
+				}
+				k++
+			default:
+				start := k
+				inQuote := false
+				for k < len(s) {
+					c := s[k]
+					if inQuote {
+						if c == '\\' {
+							k++
+						} else if c == '"' {
+							inQuote = false
+						}
+					} else if c == '"' {
+						inQuote = true
+					} else if c == ' ' || c == '\t' || c == '\r' || c == '(' || c == ')' || c == ';' {
+						break
+					}
+					k++
+				}
+				if k > len(s) {
+					k = len(s)
+				}
+				toks = append(toks, soaToken{text: s[start:k], line: j, start: start, end: k})
+			}
+		}
+		if depth == 0 {
+			return toks, j, nil
+		}
+	}
+	return nil, 0, fmt.Errorf("\"(\" is never closed: %q", lines[i])
+}
+
+// maxSOASerial is the largest SOA serial (32-bit unsigned, RFC 1035).
+const maxSOASerial = 4294967295
+
+// nextSOASerial returns max(today's YYYYMMDD00 in UTC, cur + 1), or an error
+// when that does not fit in 32 bits.
+func nextSOASerial(cur uint64, now time.Time) (uint64, error) {
+	y, m, d := now.UTC().Date()
+	next := uint64(y)*1000000 + uint64(m)*10000 + uint64(d)*100
+	if cur+1 > next {
+		next = cur + 1
+	}
+	if next > maxSOASerial {
+		return 0, fmt.Errorf("SOA serial %d cannot be raised: the next value %d is above %d", cur, next, uint64(maxSOASerial))
+	}
+	return next, nil
+}
+
+// bumpSOASerial returns lines with the serial of every SOA raised
+// (nextSOASerial).  Only the serial's digits change; the rest of each line is
+// kept byte for byte.  Lines without an SOA are returned as they are.
+func bumpSOASerial(lines []string, now time.Time) ([]string, error) {
+	scanned, err := scanLines(lines)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]string(nil), lines...)
+	for i, zl := range scanned {
+		if !zl.ok || zl.rec.rrtype != "SOA" {
+			continue
+		}
+		toks, _, err := soaTokens(lines, i)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", i+1, err)
+		}
+		// owner [TTL] [CLASS] SOA MNAME RNAME SERIAL …
+		k := 1
+		for k < len(toks) && !strings.EqualFold(toks[k].text, "SOA") {
+			k++
+		}
+		if k+3 >= len(toks) {
+			return nil, fmt.Errorf("line %d: SOA without a serial: %q", i+1, lines[i])
+		}
+		t := toks[k+3]
+		cur, err := strconv.ParseUint(t.text, 10, 64)
+		if err != nil || cur > maxSOASerial {
+			return nil, fmt.Errorf("line %d: SOA serial %q is not a number from 0 to %d", t.line+1, t.text, uint64(maxSOASerial))
+		}
+		next, err := nextSOASerial(cur, now)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", t.line+1, err)
+		}
+		l := out[t.line]
+		out[t.line] = l[:t.start] + strconv.FormatUint(next, 10) + l[t.end:]
+	}
+	return out, nil
+}
+
+// commitLines writes updated over the zone file when it differs from old
+// (the file as read), raising the SOA serial in the same write unless the
+// provider keeps it.  When nothing changes the file is not written.
+func (p *Provider) commitLines(old, updated []string) error {
+	if slices.Equal(old, updated) {
+		return nil
+	}
+	if p.soaSerial != SOASerialKeep {
+		bumped, err := bumpSOASerial(updated, p.now())
+		if err != nil {
+			return provider.NewPermanentError(fmt.Errorf("dnszone: Apply: %s: %w", p.zonePath, err))
+		}
+		updated = bumped
+	}
+	return p.writeLines(updated)
 }
 
 // originDirective reports whether line is a $ORIGIN directive and, if so,

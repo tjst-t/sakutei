@@ -29,10 +29,12 @@ package main
 //     packages; this file depends only on the pkg/registry seam.
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
 	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/pkg/provider"
 	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
@@ -85,4 +87,24 @@ func resolveProviders(
 		}
 	}
 	return result, nil
+}
+
+// zoneSOASerialFlag registers --zone-soa-serial, the dnszone provider's
+// "soa_serial" setting (§29.1, Backlog #70), on every command that takes
+// --zone.
+func zoneSOASerialFlag(fs *flag.FlagSet) *string {
+	return fs.String("zone-soa-serial", string(dnszone.SOASerialBump),
+		"dnszone: what an Apply that changes the zone does to the SOA serial: bump (raise it to YYYYMMDDnn) | keep (leave it to whoever else numbers it)")
+}
+
+// checkZoneSOASerial validates --zone-soa-serial at startup, before any
+// provider is built (a provider the intent does not use is never built), and
+// exits 1 on a bad value.  It returns the value for the provider config.
+func checkZoneSOASerial(commandName, v string) string {
+	m, err := dnszone.ParseSOASerialMode(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: --zone-soa-serial: %v\n", commandName, err)
+		os.Exit(1)
+	}
+	return string(m)
 }

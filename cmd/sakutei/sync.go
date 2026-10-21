@@ -56,6 +56,7 @@ func runSync(args []string) {
 	providersFlag := fs.String("provider", "", "provider(s) to record, comma-separated (required)")
 	statePath := fs.String("state", "sakutei-fake-state.json", "path to the fake provider state file")
 	zonePath := fs.String("zone", "", "path to the dnszone provider zone file (default: falls back to --state)")
+	zoneSOASerial := zoneSOASerialFlag(fs)
 	rulesetPath := fs.String("ruleset", "", "path to the nftables provider ruleset file (default: falls back to --state)")
 	intervalStr := fs.String("interval", "", "repeat every interval, e.g. 30s (default: one pass)")
 	samples := fs.Int("samples", 3, "how many times to observe reality per pass; a field that changes between observations is a managed candidate and its changes alone are not committed")
@@ -66,6 +67,7 @@ func runSync(args []string) {
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
+	soaSerial := checkZoneSOASerial("sakutei sync", *zoneSOASerial)
 	if *intentDir == "" || *providersFlag == "" {
 		fmt.Fprintln(os.Stderr, "sakutei sync: --intent and --provider are required")
 		fs.Usage()
@@ -94,6 +96,7 @@ func runSync(args []string) {
 	if *zonePath != "" {
 		cfg["zone"] = *zonePath
 	}
+	cfg["soa_serial"] = soaSerial
 	if *rulesetPath != "" {
 		cfg["ruleset"] = *rulesetPath
 	}

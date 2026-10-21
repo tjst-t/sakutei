@@ -147,6 +147,7 @@ func runDaemon() {
 	// in plan, reconcile and status).
 	zonePath := fs.String("zone", "",
 		"path to the dnszone provider zone file (default: falls back to --state)")
+	zoneSOASerial := zoneSOASerialFlag(fs)
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	intervalStr := fs.String("interval", "",
@@ -226,6 +227,8 @@ func runDaemon() {
 		}
 		os.Exit(1)
 	}
+
+	soaSerial := checkZoneSOASerial("sakutei", *zoneSOASerial)
 
 	src := setupGitDist(gd, *intentDir, *claim, *allocStore)
 	if src == nil && *intentDir == "" {
@@ -314,6 +317,7 @@ func runDaemon() {
 	if *rulesetPath != "" {
 		providerConfig["ruleset"] = *rulesetPath
 	}
+	providerConfig["soa_serial"] = soaSerial
 
 	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
 	// A provider without a version cannot support ghost-diff (cause C) detection;

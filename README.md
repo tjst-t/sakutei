@@ -126,7 +126,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 
 | 名前 | 種別 | 説明 |
 | --- | --- | --- |
-| `dnszone` | 実 | ゾーンファイルを宣言的現実として管理（RFC1035 サブセット、原子的書込、SOA/NS は管理外） |
+| `dnszone` | 実 | ゾーンファイルを宣言的現実として管理（RFC1035 サブセット、原子的書込、SOA/NS は管理外。書き換えたときは SOA のシリアルだけ上げる） |
 | `nftables` | 実 | nftables ルールセットファイルを管理。**ordered ルール**（並べ替え＝変更）を実証 |
 | `fake` | テスト | fault-injection 可能な検証用 provider（chaos テストの主戦場） |
 

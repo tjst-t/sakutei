@@ -83,6 +83,7 @@ func runStatus(args []string) {
 		"path to the fake provider state file (default: sakutei-fake-state.json)")
 	zonePath := fs.String("zone", "",
 		"path to the dnszone provider zone file (default: falls back to --state)")
+	zoneSOASerial := zoneSOASerialFlag(fs)
 	// last-seen リングは S3・非永続（in-memory）。単一の status 呼び出しでは通常
 	// 「前周」は存在しない（初回扱い）。前周比較の機構は statusreport の report-builder
 	// 層で単体テストする。--cause-state と同様、リングの永続化は行わない。
@@ -105,6 +106,7 @@ func runStatus(args []string) {
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
+	soaSerial := checkZoneSOASerial("sakutei status", *zoneSOASerial)
 
 	if *intentDir == "" {
 		fmt.Fprintln(os.Stderr, "sakutei status: --intent <dir> is required")
@@ -164,6 +166,7 @@ func runStatus(args []string) {
 	if *zonePath != "" {
 		providerConfig["zone"] = *zonePath
 	}
+	providerConfig["soa_serial"] = soaSerial
 	if *rulesetPath != "" {
 		providerConfig["ruleset"] = *rulesetPath
 	}

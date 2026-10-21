@@ -70,6 +70,7 @@ func runPlan(args []string) {
 	// #67: distinct file for the nftables provider, same meaning as in status.
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
+	zoneSOASerial := zoneSOASerialFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
@@ -100,6 +101,7 @@ func runPlan(args []string) {
 		// flag package already printed the error.
 		os.Exit(1)
 	}
+	soaSerial := checkZoneSOASerial("sakutei plan", *zoneSOASerial)
 
 	if *intentDir == "" {
 		fmt.Fprintln(os.Stderr, "sakutei plan: --intent <dir> is required")
@@ -256,6 +258,7 @@ func runPlan(args []string) {
 	if *rulesetPath != "" {
 		providerConfig["ruleset"] = *rulesetPath
 	}
+	providerConfig["soa_serial"] = soaSerial
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei plan")
 	if resolveErr != nil {
 		fmt.Fprintln(os.Stderr, resolveErr)

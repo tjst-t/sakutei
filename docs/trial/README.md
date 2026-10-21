@@ -74,7 +74,8 @@ halt する／Ctrl-C で周期の切れ目で止まる。
 ファイルを書き出すだけなので、実機で効き目を見るには自分で読み込ませる。
 
 - DNS：BIND なら `named-checkzone example.com example.com.zone` で確かめ、`rndc reload`。
-  **注意**：Backlog #70 が入るまで、Sakutei は SOA のシリアルを上げない。セカンダリへの転送はシリアルが変わらないと起きない。
+  レコードを書き換えた Apply では、Sakutei が同じ書き込みで SOA のシリアルを `YYYYMMDDnn`（UTC）に上げるので、セカンダリへの転送も起きる。
+  ゾーンのシリアルを別のツールや人が採番しているなら、`--zone-soa-serial keep` で上げないようにする。
 - nftables：`nft -c -f firewall.rules` で文法を確かめる（`-c` は読み込まない）。読み込むなら、ネットワーク名前空間など壊れてもよい場所で。
 
 ## この手順を作ったときに見つかったこと（2026-10-21）
@@ -85,7 +86,7 @@ halt する／Ctrl-C で周期の切れ目で止まる。
 | **nftables の Apply が base chain の `type … hook … priority …; policy …;` の行を消す**（直す前は、手順 3 の後の ruleset で `input` の宣言行が消えていた） | Backlog #68（バグ・安全）。直した：Apply は管理する chain の行だけを書き直し、base chain・set/map などの行はバイト単位で残す |
 | dnszone が $ORIGIN を解釈しない。ゾーンに絶対名 `www.example.com.` で書いたレコードを、intent の `www/A` は「無い」とみなして CREATE する（同じ名前が 2 つになる）。パッケージコメントの ID の例（`www.example.com./A`）も実装と食い違う | Backlog #69 で直した。名前は $ORIGIN・`@` を解いた FQDN で比べ、ID は `www.example.com./A`。相対名の ID はロードで拒否する |
 | デーモンの非同期 Apply が同じファイルを同時に書き換え、変更を取りこぼす（初期状態から回すと cycle 2 で同じリソースを launch し直す。次の周期で直る）。2026-10-21 にデーモンを回して確認 | Backlog #72（バグ） |
-| SOA のシリアルが上がらない | 設計書 v3.12 §29.1 で「書き換えた Apply のときだけ YYYYMMDDnn で上げる（既定。`--zone-soa-serial keep` で止める）」と決めた。Backlog #70 で実装 |
+| SOA のシリアルが上がらない | 設計書 v3.12 §29.1 で「書き換えた Apply のときだけ YYYYMMDDnn で上げる（既定。`--zone-soa-serial keep` で止める）」と決め、Backlog #70 で直した。括弧で複数行に分けた SOA も読めるようにした（シリアルの数字だけを置き換える） |
 
 ## 試した結果の残し方
 

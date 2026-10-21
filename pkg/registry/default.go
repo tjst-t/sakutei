@@ -32,6 +32,8 @@ import (
 //     config["zone"] is the path to the zone file.  If absent, defaults to
 //     "sakutei-zone.db".  Manages A/AAAA/CNAME/TXT/MX/… records; SOA and NS
 //     are excluded (management boundary, decisions.json S62dbba).
+//     config["soa_serial"] is "bump" (default: a changing Apply raises the
+//     SOA serial to YYYYMMDDnn) or "keep" (§29.1, Backlog #70).
 //
 //   - "nftables": nftables ruleset-file provider (nftables.New, Sc7a647-1).
 //     config["ruleset"] is the path to the managed ruleset file.  If absent,
@@ -64,7 +66,11 @@ func DefaultRegistry() *ProviderRegistry {
 		if zonePath == "" {
 			zonePath = "sakutei-zone.db"
 		}
-		return dnszone.New(zonePath), nil
+		mode, err := dnszone.ParseSOASerialMode(config["soa_serial"])
+		if err != nil {
+			return nil, err
+		}
+		return dnszone.New(zonePath, dnszone.WithSOASerial(mode)), nil
 	})
 
 	// "nftables" — nftables ruleset-file provider (Sc7a647-1).
