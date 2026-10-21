@@ -1708,7 +1708,7 @@
       "number": 72,
       "kind": "bug",
       "title": "dnszone・nftables の Apply に排他が無く、デーモンの非同期 Apply が同じファイルを同時に書き換えて変更を取りこぼす",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [
         "dnszone-apply-soa-yyyymmddnn"
@@ -1727,7 +1727,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T10:40:07.561Z",
-      "updatedAt": "2026-10-21T10:40:07.561Z",
+      "updatedAt": "2026-10-21T10:48:12.293Z",
       "closedAt": null,
       "extra": {}
     }
