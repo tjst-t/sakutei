@@ -1756,6 +1756,30 @@
       "updatedAt": "2026-10-21T12:02:59.361Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "halt-22-3-firing-resolved-level-event-si",
+      "number": 74,
+      "kind": "task",
+      "title": "ずれ・halt の知らせを毎周同じ文で出している（設計 §22.3 は firing / resolved の level 報告）——Event と sink の実装状況を確かめる",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "trial-feedback",
+        "event"
+      ],
+      "body": "2026-10-21、docs/trial/README.md の「常駐デーモン」の手順で見つけた。\n\nデーモンを `--mode alert-only` で回し、手でずらしたままにすると、毎周 `DriftEvent ... [cause: B]` と `DRIFT EVENT: would be UPDATE ...` が同じ文で出続ける。予算の halt と prune の急減 halt も毎周出る。\n\n設計 §22.3 は「収束失敗は level（継続状態）として報告し、firing / resolved にする。毎周同じアラートを撒く破綻を回避」「単一の Event 型に一本化し、通知は sink に分ける」と決めている。いまのデーモンの出力が sink に流す Event なのか、ただのログなのか、Event と sink がどこまで実装されているかをまず確かめる。そのうえで、設計どおりに firing / resolved（と Since・連続回数）を出す作業を切り出すか、v1 の既知の限界として設計書に書くかを決める。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-21T12:03:03.440Z",
+      "updatedAt": "2026-10-21T12:03:03.440Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
