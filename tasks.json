@@ -1084,14 +1084,16 @@
       "dependsOn": [],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "v2"
+      ],
       "body": "設計 §26.5。「その操作が今も動くか」を、時間トリガで起動する Workflow として実際に作って消して確かめる。狙いは削除経路の健全性。\n\n- synthetic_check（name・every・scope・steps〈create / assert / delete〉・on_fail）を intent に書けるようにする。\n- 隔離 scope を必須にする（本番プールに触れない）。作成物に TTL を付け、消し忘れを自動で GC する。\n- cleanup が繰り返し失敗したら level に昇格して通知し、canary を自動停止する（canary 自身を drift 源にしない）。canary の失敗そのものは edge として 1 回通知。\n- v1.5 の最小 Workflow の上に載せる。",
       "doneWhen": "fake provider で作成・確認・削除の canary が周期で回り、削除を失敗させると繰り返しの後に自動停止して通知が 1 回出ること、隔離 scope の無い宣言がロードで拒否されることをテストで示す。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:04.700Z",
+      "updatedAt": "2026-10-21T09:58:07.463Z",
       "closedAt": null,
       "extra": {}
     },
