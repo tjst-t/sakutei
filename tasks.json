@@ -682,7 +682,7 @@
       "number": 12,
       "kind": "task",
       "title": "非同期 wave の同一サイクル内バリア（楽観的な下流 launch の窓を消す）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -697,7 +697,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:43:22.279Z",
-      "updatedAt": "2026-10-21T10:02:46.757Z",
+      "updatedAt": "2026-10-21T10:10:46.814Z",
       "closedAt": null,
       "extra": {}
     },
