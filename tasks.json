@@ -730,7 +730,7 @@
       "number": 14,
       "kind": "task",
       "title": "cause D を合成親ごとに追跡する（複数の合成親で誤って D が付く）",
-      "status": "backlog",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -746,7 +746,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:43:23.910Z",
-      "updatedAt": "2026-10-20T08:43:23.910Z",
+      "updatedAt": "2026-10-21T10:02:54.292Z",
       "closedAt": null,
       "extra": {}
     },
