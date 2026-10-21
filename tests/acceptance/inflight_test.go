@@ -512,8 +512,7 @@ func TestInflight_BackoffDoesNotBlockUnrelatedResources(t *testing.T) {
 // The distinguishing DD-1 signal: while "dd1-up" is in backoff, every cycle must
 // log a skip of "dd1-down" attributed to the failed/in-flight upstream.  Without
 // the fix, "dd1-up" would NOT be marked failed during backoff, so "dd1-down"
-// would be evaluated on its own (and, being converged after its one optimistic
-// cycle-1 launch, would silently produce no skip line at all).  The presence of
+// would be evaluated on its own (and launched on top of the broken upstream).  The presence of
 // MANY "skip … dd1-down: upstream … dd1-up" lines is therefore only possible
 // when DD-1 is active.
 //
@@ -594,8 +593,8 @@ func TestInflight_BackedOffUpstreamSkipsDownstream(t *testing.T) {
 	// (2) DD-1 signal: while dd1-up is in backoff, dd1-down must be actively
 	// skipped because of the failed/in-flight upstream — on many cycles.  This
 	// line is only produced when the backoff gate marks the upstream failed
-	// (the DD-1 fix).  Without the fix, dd1-down converges silently after its
-	// cycle-1 launch and no such skip line appears.
+	// (the DD-1 fix).  Without the fix, dd1-down is launched on top of the
+	// broken upstream and converges silently; no such skip line appears.
 	skipDownLines := strings.Count(log, "skip fake//dd1-down: upstream")
 	t.Logf("[DD-1] 'skip dd1-down: upstream …' lines: %d", skipDownLines)
 	if skipDownLines < 3 {
@@ -608,12 +607,10 @@ func TestInflight_BackedOffUpstreamSkipsDownstream(t *testing.T) {
 		t.Errorf("[DD-1] expected dd1-up to enter backoff; log:\n%s", log)
 	}
 
-	// (4) dd1-down must not be re-applied every cycle while its upstream is
-	// broken.  It may be applied at most once (the unavoidable optimistic
-	// cycle-1 launch before dd1-up's first failure is recorded); DD-1 prevents
-	// any further applies during the backoff window.  Assert apply_count stays
-	// tiny (≤1) despite ~30 cycles — without DD-1 a still-drifted downstream
-	// would be retried far more often.
+	// (4) dd1-down must never be applied while its upstream is broken.  In
+	// cycle 1 dd1-up is in-flight (#12: same-cycle wave barrier), and from then
+	// on it is in backoff (DD-1), so dd1-down's apply_count stays 0 over ~30
+	// cycles.
 	var finalSF map[string]any
 	if err := json.Unmarshal(finalData, &finalSF); err != nil {
 		t.Fatalf("[DD-1] parse final state: %v", err)
@@ -626,8 +623,147 @@ func TestInflight_BackedOffUpstreamSkipsDownstream(t *testing.T) {
 		}
 	}
 	t.Logf("[DD-1] dd1-down apply_count over ~30 cycles: %d", downCount)
-	if downCount > 1 {
-		t.Errorf("[DD-1] dd1-down was applied %d times while upstream dd1-up was broken (expected ≤1: the optimistic cycle-1 launch only); DD-1 must skip downstream during backoff; log:\n%s",
+	if downCount != 0 {
+		t.Errorf("[DD-1] dd1-down was applied %d times while upstream dd1-up was broken (expected 0); DD-1 / #12 must skip downstream while upstream is in-flight or in backoff; log:\n%s",
 			downCount, log)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// [AC-12-1] Same-cycle wave barrier: a downstream is not launched while its
+//
+//	upstream (launched in the same cycle) is still in-flight.
+//
+// ---------------------------------------------------------------------------
+
+// TestInflight_SameCycleBarrierHoldsDownstream verifies Backlog #12.
+//
+// Before #12, applyWavesAsync advanced the downstream wave optimistically right
+// after launching the upstream goroutine, so in the very cycle that launched
+// "wb-up" the downstream "wb-down" was launched too — before wb-up's failure
+// could be recorded (apply_count[wb-down] == 1).
+//
+// Setup:
+//   - "wb-up" has apply_delay 400ms and always fails (fail_inject): it is
+//     in-flight for 400ms after launch, then enters backoff.
+//   - "wb-down" depends_on "wb-up".
+//   - "wb-ok-up" has apply_delay 400ms and succeeds; "wb-ok-down" depends_on it
+//     (positive control: the barrier only delays the downstream).
+//
+// Expected:
+//   - apply_count[wb-down] == 0 (never launched on top of the in-flight, then
+//     failed, upstream).
+//   - wb-ok-down is applied in a later cycle, after wb-ok-up has converged.
+//
+// [AC-12-1]
+func TestInflight_SameCycleBarrierHoldsDownstream(t *testing.T) {
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+
+	writeIntentFile(t, intentDir, map[string]any{
+		"resources": []map[string]any{
+			{
+				"provider": "fake",
+				"id":       "wb-up",
+				"fields":   map[string]string{"name": "wb-up", "size": "1"},
+			},
+			{
+				"provider":   "fake",
+				"id":         "wb-down",
+				"depends_on": []string{"wb-up"},
+				"fields":     map[string]string{"name": "wb-down", "size": "2"},
+			},
+			{
+				"provider": "fake",
+				"id":       "wb-ok-up",
+				"fields":   map[string]string{"name": "wb-ok-up", "size": "3"},
+			},
+			{
+				"provider":   "fake",
+				"id":         "wb-ok-down",
+				"depends_on": []string{"wb-ok-up"},
+				"fields":     map[string]string{"name": "wb-ok-down", "size": "4"},
+			},
+		},
+	})
+
+	initState := map[string]any{
+		"resources": map[string]any{},
+		"apply_delay": map[string]string{
+			"wb-up":    "400ms",
+			"wb-ok-up": "400ms",
+		},
+		"fail_inject": map[string]string{
+			"wb-up": "injected-failure-for-wave-barrier-test",
+		},
+		"apply_count":      map[string]int{},
+		"provider_version": testProviderVersion,
+	}
+	initData, _ := json.MarshalIndent(initState, "", "  ")
+	if err := writeFileAtomic(statePath, initData, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd, stdout := startDaemon(t, intentDir, statePath, "100ms")
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	// Positive control: the downstream of the succeeding upstream converges in
+	// a later cycle.
+	waitForResourceInState(t, statePath, "wb-ok-down", 5*time.Second)
+	// Let wb-up's failure land and a few backoff cycles pass.
+	time.Sleep(300 * time.Millisecond)
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Logf("[AC-12-1] SIGTERM: %v", err)
+	}
+	_ = cmd.Wait()
+
+	log := stdout.String()
+	finalData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("[AC-12-1] read final state: %v", err)
+	}
+	var finalSF map[string]any
+	if err := json.Unmarshal(finalData, &finalSF); err != nil {
+		t.Fatalf("[AC-12-1] parse final state: %v", err)
+	}
+	applyCount, _ := finalSF["apply_count"].(map[string]any)
+	count := func(local string) int {
+		if cnt, ok := applyCount[local].(float64); ok {
+			return int(cnt)
+		}
+		return 0
+	}
+
+	// Precondition: wb-up was launched and failed.
+	if count("wb-up") < 1 {
+		t.Fatalf("[AC-12-1] wb-up was never applied (precondition); log:\n%s", log)
+	}
+	if resourceInState(finalData, "wb-up") {
+		t.Errorf("[AC-12-1] wb-up must not be in reality (its Apply always fails)")
+	}
+
+	// Core: wb-down was never launched while wb-up was in-flight (same cycle)
+	// nor after its failure.
+	if c := count("wb-down"); c != 0 {
+		t.Errorf("[AC-12-1] wb-down apply_count = %d, want 0 — downstream was launched while upstream wb-up was in-flight; log:\n%s", c, log)
+	}
+	if resourceInState(finalData, "wb-down") {
+		t.Errorf("[AC-12-1] wb-down must not be in reality")
+	}
+
+	// Positive control: wb-ok-down applied exactly once, after wb-ok-up.
+	if c := count("wb-ok-down"); c != 1 {
+		t.Errorf("[AC-12-1] wb-ok-down apply_count = %d, want 1; log:\n%s", c, log)
+	}
+	if !resourceInState(finalData, "wb-ok-up") {
+		t.Errorf("[AC-12-1] wb-ok-up must be in reality")
 	}
 }

@@ -1976,7 +1976,10 @@ func executePruneOps(
 // upstreams (D-1).
 //
 // The function returns immediately after launching all goroutines; it does NOT
-// wait for them.  The in-flight set tracks their completion.
+// wait for them.  The in-flight set tracks their completion.  A resource
+// launched this cycle is treated as an unconverged upstream (#12): its
+// transitive downstream is skipped until a later cycle observes it converged,
+// so no downstream is optimistically launched on top of an in-flight upstream.
 //
 // dispatchFn is called (synchronously, before the goroutine starts) with each
 // plan about to be applied, so planned_change lanes are consumed at dispatch
@@ -2170,10 +2173,14 @@ func applyWavesAsync(
 				}
 			}()
 
-			// Downstream: we optimistically advance downstream (they were waiting
-			// on this node to be processed, not necessarily to succeed).  The
-			// downstream will be skipped on the next cycle if this Apply fails
-			// because the resource will still be drifted (level-triggered).
+			// #12: same-cycle wave barrier.  The Apply just launched is in-flight
+			// and its outcome is unknown, so this node is an unconverged upstream
+			// exactly like an in-flight resource from a prior cycle: mark it
+			// failed so its transitive downstream is NOT launched this cycle.
+			// A later cycle (after the goroutine completes) observes the upstream
+			// converged and releases the downstream; if the Apply fails, the
+			// downstream is never launched on top of it (apply_count stays 0).
+			failed[local] = true
 			for _, m := range adj[idx] {
 				inDeg[m]--
 				if inDeg[m] == 0 {
