@@ -1786,7 +1786,7 @@
       "number": 75,
       "kind": "bug",
       "title": "Sakutei 自身が prune で消した分を、次の周の List 急減判定で差し引く（承認して消すと prune が止まり続ける）",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1798,12 +1798,12 @@
       ],
       "body": "2026-10-21 人が決定。設計書 v3.13 §12.4（b）「Sakutei 自身の prune との連動」が正。docs/trial/README.md の D3 で見つけた。\n\n## 症状\nゾーンに www・old1・old2 の 3 件、intent は www だけを PruneWithinScope で宣言し、`--max-destructive-per-cycle 1 --approve-large-change 2` でデーモンを回す。cycle 1 で old1・old2 を prune で消したあと、cycle 2 から毎周 `prune HALT: List count dropped from 3 to 1 (67% > threshold 50%)` で prune が止まり、止まった周は基準の件数を更新しないので、デーモンを起こし直すまで止まり続ける。\n\n## 直し方\n- `internal/prune` の Engine で、prune が Delete に成功した ID を記録し、次の周の急減判定で、そのうち List に実際に無いものの数を基準の件数から差し引く。planned_change の `NotePlannedRemoval`・`plannedGone` と同じ仕組みに乗せる（同じ集合にまとめてよい）。\n- 差し引くのは「予算と承認を通って Delete が成功したもの」だけ。予算で止めた・失敗した Delete は記録しない。\n- それ以外の減り方（自分が消していない ID の消失）は今どおり halt する。\n- 記録は基準と同じく S3（メモリ）。基準を更新した周に消す。\n- 非同期の Apply で、Delete の完了が次の周の List より後になる場合の扱いも確かめる（完了前は List にまだあるので差し引かれない＝問題ない、を含めてテストする）。",
       "doneWhen": "3 件中 2 件を承認つきで prune したデーモンが、次の周から急減 halt せず収束すること（D3 の手順を受入テストにする）。同じ周に自分が消していない ID が別に消えた場合は、差し引いたうえで急減なら今どおり halt すること。予算で止めた Delete は差し引かれないこと。以上をテストで示す。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/sakutei-prune-list-prune）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T12:15:33.658Z",
-      "updatedAt": "2026-10-21T12:16:59.452Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T12:25:40.083Z",
+      "closedAt": "2026-10-21T12:25:40.083Z",
       "extra": {}
     }
   ]
