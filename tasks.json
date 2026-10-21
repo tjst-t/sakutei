@@ -1145,21 +1145,23 @@
       "number": 58,
       "kind": "task",
       "title": "v2: DBSource 連動の Watch（書込通知で早期収束）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "v2-task-ui",
       "dependsOn": [
         "v2-dbsource-tenant-append-only-revision"
       ],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "v2"
+      ],
       "body": "設計 §21.2・§27.5 の注。v1a で切った Watch seam（Watcher・ChangeHint）に、DBSource の書込通知をつなぐ。\n\n- 流すのは ChangeHint（intent_revision と触られた scope）だけで、値・状態は運ばない。\n- 同じ scope への複数のヒントは 1 回の scoped run に合流し、実行時に最新の desired を読む（§8）。\n- ヒントを取りこぼしても定期周期が正しさを保証することをテストで示す。",
       "doneWhen": "DBSource への書込みが定期周期を待たずに scoped run で収束すること、連続した書込みが 1 回に合流すること、通知を落としても定期周期で収束することをテストで示す。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:04.700Z",
+      "updatedAt": "2026-10-21T09:57:35.904Z",
       "closedAt": null,
       "extra": {}
     },
