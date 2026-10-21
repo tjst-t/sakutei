@@ -21,7 +21,7 @@
 //
 // 設計判断（dnszone.go に揃える）:
 //
-//   - stdlib only: bufio.Scanner + strings による nftables サブセットの
+//   - stdlib only: strings による nftables サブセットの
 //     parse。`nft` バイナリは呼び出さない（offline/CI 検証可）。宣言する
 //     現実は「管理された ruleset ファイルそのもの」であり、Read は parse・
 //     Apply は atomic write を行う。
@@ -37,6 +37,10 @@
 //     この provider が管理しないため、管理境界外として PermanentError を
 //     返す（dnszone の SOA/NS skip の類推）。regular chain（hook を持たない）
 //     のみを管理する。
+//   - 管理境界の外は壊さない（§7, Backlog #68）: parse はファイルの各行を
+//     そのまま持ち、Apply は対象の chain の行（中身、または Create/Delete
+//     ならブロック全体）だけを差し替えて書き戻す。base chain の宣言行と中身・
+//     set/map・コメント・他の table はバイト単位で変わらない。
 //   - Atomic write: Apply は os.CreateTemp + os.Rename でファイル全体を
 //     置換するので、途中クラッシュでも ruleset が truncate されない
 //     （S2 progress class, §4.9）。
@@ -57,15 +61,18 @@
 //	    }
 //	}
 //
-// - table 行の <family> は "ip"/"ip6"/"inet" 等。table 名・chain 名は識別子。
-// - chain ブロック内の各行が 1 ルール（順序保存）。
-// - `type ... hook ...` を含む chain 行は base chain（管理対象外）として扱う。
-// - `#` から始まる行はコメント。空行は無視。
-// - このサブセット外の構文（set/map/named counter 等）は parse しないので、
-//   本 provider は「自分が emit する構文のみを round-trip する」ことを honest
-//   な限界として明記する（想定外行は当該 chain のルールとして素通しせず、
-//   ファイル全体を書き換える Apply が既存の未知ブロックを消し得る点に注意
-//   ——本 provider が管理するのは自分の書いた ruleset ファイルのみである）。
+//   - table 行の <family> は "ip"/"ip6"/"inet" 等。table 名・chain 名は識別子。
+//   - chain ブロック内の各行が 1 ルール（順序保存）。
+//   - `type ... hook ...`（または `policy ...`）を含む chain は base chain
+//     （管理対象外）として扱う。
+//   - `#` から始まる行はコメント。空行は無視。
+//   - table 直下の chain 以外のブロック（set/map/named counter 等）と table の
+//     外の行は parse せず、Apply でもそのまま残す。
+//   - chain の中の複数行にわたる構文（複数行の匿名 set 等）や 1 行で書いた
+//     chain は書き直せないので opaque として管理対象外にし、Read・Apply は
+//     PermanentError を返す（黙って書き換えない）。
+//   - 管理する chain の中のコメント行は、その chain の Update/Delete で消える。
+//   - 括弧が閉じきらない/閉じすぎのファイルは parse エラー（unknown）。
 //
 // Local ID convention: "<family>/<table>/<chain>"（例 "ip/filter/input"）。
 // これは合成 identity {family, table, chain} を収束コアが Read/Apply に渡す
@@ -115,6 +122,16 @@ type chainRes struct {
 	rules []string
 	// base は base chain（type/hook を持つ）かどうか。base chain は管理対象外。
 	base bool
+	// opaque は chain の中に管理サブセット外の構文（複数行の匿名 set 等）を
+	// 含むかどうか。opaque な chain は書き直せないので管理対象外。
+	opaque bool
+	// start・end はファイル内の chain 行と閉じ括弧の行の番号（0 始まり）。
+	start, end int
+}
+
+// unmanaged は chain が管理境界の外（base chain か opaque）かどうか。
+func (c chainRes) unmanaged() bool {
+	return c.base || c.opaque
 }
 
 // localID は "<family>/<table>/<chain>" を返す。
@@ -248,6 +265,13 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 			}, provider.NewPermanentError(fmt.Errorf(
 				"nftables: Read: refusing to manage base chain %q (has type/hook/policy; management boundary)", localID))
 		}
+		if c.opaque {
+			return core.Observation{
+				Availability: core.AvailabilityUnknown,
+				ObservedAt:   time.Now(),
+			}, provider.NewPermanentError(fmt.Errorf(
+				"nftables: Read: refusing to manage chain %q (contains syntax outside the managed subset)", localID))
+		}
 		st := core.State{
 			"family": {Kind: core.FieldKindString, Value: c.family},
 			"table":  {Kind: core.FieldKindString, Value: c.table},
@@ -271,8 +295,9 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 
 // Apply converges the chain to the desired state described in plan.
 //
-// Create/Update/Delete を扱う。base chain は決して変更しない。
-// 書込は atomic（temp + rename）。
+// Create/Update/Delete を扱う。base chain・opaque な chain は決して変更せず
+// PermanentError を返す。書き直すのは対象の chain の行だけで、他の行は
+// バイト単位でそのまま残す。書込は atomic（temp + rename）。
 //
 // idempotent: 同一 plan を二度適用しても同じファイル内容になる。
 func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
@@ -290,12 +315,6 @@ func (p *Provider) applyOp(op core.Op) error {
 	family, table, chain, err := splitLocalID(localID)
 	if err != nil {
 		return provider.NewPermanentError(fmt.Errorf("nftables: Apply: invalid local id %q: %w", localID, err))
-	}
-
-	// Guard: 既存が base chain なら触らない。
-	if existing, gerr := p.readChain(family, table, chain); gerr == nil && existing != nil && existing.base {
-		return provider.NewPermanentError(fmt.Errorf(
-			"nftables: Apply: refusing to manage base chain %q (management boundary)", localID))
 	}
 
 	desired := make(map[string]string, len(op.Fields))
@@ -350,8 +369,8 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 	scope := core.NewScope(nil)
 	ids := make([]core.ID, 0, len(chains))
 	for _, c := range chains {
-		if c.base {
-			// base chain は管理対象外 → List にも出さない。
+		if c.unmanaged() {
+			// base chain・opaque な chain は管理対象外 → List にも出さない。
 			continue
 		}
 		ids = append(ids, core.NewID(ProviderName, scope, c.localID()))
@@ -364,7 +383,7 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 // で、キーは List と同じ（root scope, "<family>/<table>/<chain>"）。
 //
 // Read は座標の一致する最初の chain を返すので、各エントリも最初の出現から作る。
-// 最初の出現が base chain の座標は返さない（Read はそこで PermanentError を返す
+// 最初の出現が base chain・opaque な chain の座標は返さない（Read はそこで PermanentError を返す
 // ので、収束の経路はその chain を Read に回して同じエラーを得る）。
 //
 // complete-or-error: 読めない・解釈できないファイルは呼び出し全体のエラーにし、
@@ -390,7 +409,7 @@ func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkOb
 			continue
 		}
 		seen[c.localID()] = true
-		if c.base {
+		if c.unmanaged() {
 			continue
 		}
 		obs[core.NewID(ProviderName, scope, c.localID()).Key()] = core.Observation{
@@ -470,34 +489,67 @@ func (p *Provider) readChain(family, table, chain string) (*chainRes, error) {
 }
 
 // writeChain inserts or replaces a chain in the ruleset file (Create/Update)。
-// 同一 {family,table,chain} の既存ブロックは差し替える。atomic write。
+//
+// 同一 {family,table,chain} の既存ブロックがあれば、その中身の行（chain 行と
+// 閉じ括弧の間）だけを差し替える。無ければ同じ table の閉じ括弧の直前に chain
+// ブロックを足し、table も無ければファイル末尾に table ブロックを足す。
+// それ以外の行（base chain・set/map・コメント・他の table）はバイト単位で
+// そのまま残す（§7 の管理境界）。atomic write。
 func (p *Provider) writeChain(newChain chainRes) error {
-	chains, err := p.parseRuleset()
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return provider.NewTransientError(fmt.Errorf("nftables: writeChain: parse ruleset: %w", err))
+	doc, err := p.parseDoc()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return provider.NewTransientError(fmt.Errorf("nftables: writeChain: parse ruleset: %w", err))
+		}
+		// ファイル非存在 → ヘッダコメント付きの新しいファイルを作る。
+		doc = &rulesetDoc{lines: []string{"# Managed by Sakutei nftables provider — do not edit by hand.", ""}}
 	}
 
-	// 既存を差し替え or 追加。
-	replaced := false
-	out := make([]chainRes, 0, len(chains)+1)
-	for _, c := range chains {
-		if sameChain(c, newChain.family, newChain.table, newChain.chain) {
-			out = append(out, newChain)
-			replaced = true
+	matches, err := doc.matching(newChain.family, newChain.table, newChain.chain)
+	if err != nil {
+		return err
+	}
+
+	lines := doc.lines
+	if len(matches) > 0 {
+		// 後ろから差し替えて、前のブロックの行番号をずらさない。
+		for i := len(matches) - 1; i >= 0; i-- {
+			lines = spliceLines(lines, matches[i].start, matches[i].end+1, rewriteChain(lines, matches[i], newChain.rules))
+		}
+		return p.writeLines(lines)
+	}
+
+	// 同じ table の最後のブロックに足す（閉じ括弧が単独行のものに限る）。
+	for i := len(doc.tables) - 1; i >= 0; i-- {
+		t := doc.tables[i]
+		if t.family != newChain.family || t.table != newChain.table {
 			continue
 		}
-		out = append(out, c)
-	}
-	if !replaced {
-		out = append(out, newChain)
+		if t.end == t.start || strings.TrimSpace(lines[t.end]) != "}" {
+			continue
+		}
+		indent := leadingSpace(lines[t.start]) + "\t"
+		block := chainBlock(newChain, indent)
+		return p.writeLines(spliceLines(lines, t.end, t.end, block))
 	}
 
-	return p.writeRuleset(out)
+	// table が無い → 末尾に table ブロックを足す。
+	block := []string{fmt.Sprintf("table %s %s {", newChain.family, newChain.table)}
+	block = append(block, chainBlock(newChain, "\t")...)
+	block = append(block, "}")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		// 末尾の改行の手前に足す。
+		lines = spliceLines(lines, n-1, n-1, block)
+	} else {
+		lines = append(append(lines, block...), "")
+	}
+	return p.writeLines(lines)
 }
 
-// deleteChain removes a chain from the ruleset file。atomic write。
+// deleteChain removes a chain from the ruleset file。
+// その chain のブロックの行だけを消し、他の行はそのまま残す。atomic write。
 func (p *Provider) deleteChain(family, table, chain string) error {
-	chains, err := p.parseRuleset()
+	doc, err := p.parseDoc()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// ファイル非存在 → 削除は no-op（idempotent）。
@@ -506,41 +558,103 @@ func (p *Provider) deleteChain(family, table, chain string) error {
 		return provider.NewTransientError(fmt.Errorf("nftables: deleteChain: parse ruleset: %w", err))
 	}
 
-	out := make([]chainRes, 0, len(chains))
-	for _, c := range chains {
-		if sameChain(c, family, table, chain) {
+	matches, err := doc.matching(family, table, chain)
+	if err != nil {
+		return err
+	}
+	if len(matches) == 0 {
+		return nil // 既に無い（idempotent）。
+	}
+	lines := doc.lines
+	for i := len(matches) - 1; i >= 0; i-- {
+		lines = spliceLines(lines, matches[i].start, matches[i].end+1, nil)
+	}
+	return p.writeLines(lines)
+}
+
+// rulesetDoc は parse した ruleset ファイル。lines はファイルの各行（改行で
+// 分割したそのまま。末尾が改行なら最後の要素は ""）で、Apply は管理する chain
+// の行だけを差し替えて lines を書き戻す。
+type rulesetDoc struct {
+	lines  []string
+	chains []chainRes
+	tables []tableSpan
+}
+
+// tableSpan は 1 つの table ブロックの位置（start は table 行、end は閉じ括弧の行）。
+type tableSpan struct {
+	family, table string
+	start, end    int
+}
+
+// matching は座標の一致する chain をファイル内の出現順に返す。一つでも base
+// chain か管理サブセット外の構文を含む chain があれば、Apply を止める
+// PermanentError を返す（黙って書き換えない）。
+func (d *rulesetDoc) matching(family, table, chain string) ([]chainRes, error) {
+	var out []chainRes
+	for _, c := range d.chains {
+		if !sameChain(c, family, table, chain) {
 			continue
+		}
+		if c.base {
+			return nil, provider.NewPermanentError(fmt.Errorf(
+				"nftables: Apply: refusing to manage base chain %q (management boundary)", c.localID()))
+		}
+		if c.opaque {
+			return nil, provider.NewPermanentError(fmt.Errorf(
+				"nftables: Apply: refusing to rewrite chain %q (contains syntax outside the managed subset)", c.localID()))
 		}
 		out = append(out, c)
 	}
-	return p.writeRuleset(out)
+	return out, nil
 }
 
 // parseRuleset reads and parses the ruleset file into chains。
 // os.ErrNotExist を保持して返す（ファイル非存在時）。
 func (p *Provider) parseRuleset() ([]chainRes, error) {
-	f, err := os.Open(p.rulesetPath)
+	doc, err := p.parseDoc()
+	if err != nil {
+		return nil, err
+	}
+	return doc.chains, nil
+}
+
+// parseDoc reads and parses the ruleset file, keeping every line verbatim.
+//
+// 括弧の深さを数えてブロックを追う。深さ 0 の `table` 行が table を、table
+// 直下（深さ 1）の `chain` 行が chain を開く。table 直下のそれ以外のブロック
+// （set/map 等）と table の外の行は parse せず、lines にそのまま残る。chain の
+// 中で 1 行に収まらない構文（複数行の匿名 set 等）や 1 行の chain は opaque
+// として印を付け、管理しない。括弧が閉じきらない/閉じすぎのファイルはエラー。
+// os.ErrNotExist を保持して返す（ファイル非存在時）。
+func (p *Provider) parseDoc() (*rulesetDoc, error) {
+	data, err := os.ReadFile(p.rulesetPath)
 	if err != nil {
 		return nil, err // os.ErrNotExist は errors.Is で保たれる
 	}
-	defer f.Close()
 
-	var chains []chainRes
-	var cur *chainRes
+	doc := &rulesetDoc{lines: strings.Split(string(data), "\n")}
+	depth := 0
+	tableIdx, chainIdx := -1, -1
 	var curFamily, curTable string
-	inTable := false
 
-	scanner := bufio.NewScanner(f)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := strings.TrimSpace(scanner.Text())
+	for i, raw := range doc.lines {
+		lineNo := i + 1
+		if len(raw) > bufio.MaxScanTokenSize {
+			return nil, fmt.Errorf("line %d: too long (%d bytes)", lineNo, len(raw))
+		}
+		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		net := netBraces(line)
+		next := depth + net
+		if next < 0 {
+			return nil, fmt.Errorf("line %d: unbalanced '}'", lineNo)
+		}
 
 		switch {
-		case strings.HasPrefix(line, "table "):
+		case depth == 0 && strings.HasPrefix(line, "table "):
 			// "table <family> <table> {"
 			fields := strings.Fields(strings.TrimSuffix(line, "{"))
 			if len(fields) < 3 {
@@ -548,83 +662,169 @@ func (p *Provider) parseRuleset() ([]chainRes, error) {
 			}
 			curFamily = fields[1]
 			curTable = fields[2]
-			inTable = true
+			doc.tables = append(doc.tables, tableSpan{family: curFamily, table: curTable, start: i, end: i})
+			tableIdx = len(doc.tables) - 1
 
-		case strings.HasPrefix(line, "chain "):
-			// "chain <name> {"（regular chain）
-			if !inTable {
-				return nil, fmt.Errorf("line %d: chain outside table: %q", lineNo, line)
-			}
+		case strings.HasPrefix(line, "chain ") && (depth == 0 || tableIdx < 0):
+			return nil, fmt.Errorf("line %d: chain outside table: %q", lineNo, line)
+
+		case depth == 1 && tableIdx >= 0 && strings.HasPrefix(line, "chain "):
+			// "chain <name> {"
 			fields := strings.Fields(strings.TrimSuffix(line, "{"))
 			if len(fields) < 2 {
 				return nil, fmt.Errorf("line %d: malformed chain header %q", lineNo, line)
 			}
-			c := chainRes{family: curFamily, table: curTable, chain: fields[1]}
-			chains = append(chains, c)
-			cur = &chains[len(chains)-1]
-
-		case line == "}":
-			// chain または table ブロックの終端。
-			if cur != nil {
-				cur = nil
-			} else {
-				inTable = false
+			c := chainRes{family: curFamily, table: curTable, chain: fields[1], start: i, end: i}
+			if net != 1 {
+				// 1 行の chain（"chain x { ... }"）等は管理サブセット外。
+				c.opaque = true
+			} else if _, rest, ok := strings.Cut(line, "{"); ok {
+				// "chain x { <rule>" のように '{' の後ろに書いた行も中身として読む。
+				c.addLine(rest)
+			}
+			doc.chains = append(doc.chains, c)
+			if next > depth {
+				chainIdx = len(doc.chains) - 1
 			}
 
-		case strings.HasPrefix(line, "type ") && cur != nil:
-			// base chain の宣言（"type ... hook ... priority ...; policy ...;"）。
-			// hook を持つ chain は base chain として印を付け、管理対象外にする。
-			if strings.Contains(line, "hook ") {
-				cur.base = true
+		case chainIdx >= 0:
+			cur := &doc.chains[chainIdx]
+			switch {
+			case next == 1 && depth == 2 && net == -1:
+				// chain ブロックの終端。"<rule> }" のように '}' の前に書いた行も
+				// 中身として読む。
+				cur.addLine(line[:strings.LastIndex(line, "}")])
+				cur.end = i
+				chainIdx = -1
+			case next == 1:
+				// 複数行にわたる構文の終わりと chain の終端が同じ行にある。
+				cur.opaque = true
+				cur.end = i
+				chainIdx = -1
+			case depth != 2 || net != 0:
+				// 複数行にわたる構文は管理サブセット外。
+				cur.opaque = true
+			default:
+				cur.addLine(line)
 			}
-			// type 行自体はルールとして扱わない。
+		}
 
-		default:
-			if cur != nil {
-				// chain ブロック内の行 = 1 ルール（順序保存）。
-				cur.rules = append(cur.rules, line)
-			}
-			// table 直下・ブロック外の未知行は無視（honest な限界: 本 provider
-			// が管理するのは自分の書いた ruleset のみ）。
+		depth = next
+		if depth == 0 && tableIdx >= 0 {
+			doc.tables[tableIdx].end = i
+			tableIdx = -1
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan ruleset file: %w", err)
+	if depth != 0 {
+		return nil, fmt.Errorf("unbalanced '{' at end of file")
 	}
-	return chains, nil
+	return doc, nil
 }
 
-// writeRuleset writes chains to the ruleset file atomically（temp + rename）。
-// family/table でグループ化して table ブロックを emit する。
-func (p *Provider) writeRuleset(chains []chainRes) error {
-	// family+table 単位でグループ化（安定順: 出現順を保つため順序リストを使う）。
-	type tableKey struct{ family, table string }
-	order := make([]tableKey, 0, len(chains))
-	seen := make(map[tableKey]bool)
-	grouped := make(map[tableKey][]chainRes)
-	for _, c := range chains {
-		k := tableKey{c.family, c.table}
-		if !seen[k] {
-			seen[k] = true
-			order = append(order, k)
+// addLine は chain ブロック内の 1 行（前後の空白は除いてよい）を読む。
+func (c *chainRes) addLine(text string) {
+	line := strings.TrimSpace(text)
+	switch {
+	case line == "" || strings.HasPrefix(line, "#"):
+		// 空行・コメントはルールではない。
+	case strings.HasPrefix(line, "type "):
+		// base chain の宣言（"type ... hook ... priority ...; policy ...;"）。
+		// hook を持つ chain は base chain として印を付け、管理対象外にする。
+		// type 行自体はルールとして扱わない。
+		if strings.Contains(line, "hook ") {
+			c.base = true
 		}
-		grouped[k] = append(grouped[k], c)
+	case strings.HasPrefix(line, "policy "):
+		// policy は base chain にしか書けない。
+		c.base = true
+	default:
+		// chain ブロック内の行 = 1 ルール（順序保存）。
+		c.rules = append(c.rules, line)
 	}
+}
 
-	var b strings.Builder
-	b.WriteString("# Managed by Sakutei nftables provider — do not edit by hand.\n")
-	for _, k := range order {
-		fmt.Fprintf(&b, "table %s %s {\n", k.family, k.table)
-		for _, c := range grouped[k] {
-			fmt.Fprintf(&b, "\tchain %s {\n", c.chain)
-			for _, r := range c.rules {
-				fmt.Fprintf(&b, "\t\t%s\n", r)
-			}
-			b.WriteString("\t}\n")
+// netBraces は 1 行の中の '{' の数から '}' の数を引いたものを返す。
+// 引用符の中と '#' 以降のコメントは数えない。
+func netBraces(line string) int {
+	n := 0
+	inQuote := false
+	for _, r := range line {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+		case inQuote:
+		case r == '#':
+			return n
+		case r == '{':
+			n++
+		case r == '}':
+			n--
 		}
-		b.WriteString("}\n")
 	}
+	return n
+}
 
+// leadingSpace は行頭の空白（インデント）を返す。
+func leadingSpace(s string) string {
+	return s[:len(s)-len(strings.TrimLeft(s, " \t"))]
+}
+
+// rewriteChain は既存の chain ブロック c（lines[c.start..c.end]）を rules に
+// 書き直した行を返す。chain 行・閉じ括弧の行は、中身を含まなければ元のまま
+// 残す。ルールのインデントは既存の最初のルール行に揃える。
+func rewriteChain(lines []string, c chainRes, rules []string) []string {
+	indent := leadingSpace(lines[c.start])
+	header := lines[c.start]
+	if !strings.HasSuffix(strings.TrimSpace(header), "{") {
+		header = fmt.Sprintf("%schain %s {", indent, c.chain)
+	}
+	closing := lines[c.end]
+	if strings.TrimSpace(closing) != "}" {
+		closing = indent + "}"
+	}
+	ruleIndent := indent + "\t"
+	for _, l := range lines[c.start+1 : c.end] {
+		if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "#") {
+			ruleIndent = leadingSpace(l)
+			break
+		}
+	}
+	out := []string{header}
+	out = append(out, ruleLines(rules, ruleIndent)...)
+	return append(out, closing)
+}
+
+// ruleLines はルールを indent 付きの行にする。
+func ruleLines(rules []string, indent string) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, indent+r)
+	}
+	return out
+}
+
+// chainBlock は chain ブロック全体（chain 行・ルール・閉じ括弧）の行を返す。
+func chainBlock(c chainRes, indent string) []string {
+	out := []string{fmt.Sprintf("%schain %s {", indent, c.chain)}
+	out = append(out, ruleLines(c.rules, indent+"\t")...)
+	return append(out, indent+"}")
+}
+
+// spliceLines は lines[from:to] を repl で置き換えた新しいスライスを返す。
+func spliceLines(lines []string, from, to int, repl []string) []string {
+	out := make([]string, 0, len(lines)-(to-from)+len(repl))
+	out = append(out, lines[:from]...)
+	out = append(out, repl...)
+	return append(out, lines[to:]...)
+}
+
+// writeLines joins lines with "\n" and writes the ruleset file atomically.
+func (p *Provider) writeLines(lines []string) error {
+	return p.writeFile(strings.Join(lines, "\n"))
+}
+
+// writeFile writes content to the ruleset file atomically（temp + rename）。
+func (p *Provider) writeFile(content string) error {
 	dir := filepath.Dir(p.rulesetPath)
 	tmp, err := os.CreateTemp(dir, "sakutei-nftables-*.tmp")
 	if err != nil {
@@ -632,7 +832,7 @@ func (p *Provider) writeRuleset(chains []chainRes) error {
 	}
 	tmpPath := tmp.Name()
 
-	if _, werr := tmp.WriteString(b.String()); werr != nil {
+	if _, werr := tmp.WriteString(content); werr != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
 		return provider.NewTransientError(fmt.Errorf("nftables: writeRuleset: write: %w", werr))
