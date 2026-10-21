@@ -1604,7 +1604,7 @@
       "number": 68,
       "kind": "bug",
       "title": "nftables の Apply が base chain の宣言（type・hook・priority・policy）を消す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1620,7 +1620,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T10:05:11.951Z",
-      "updatedAt": "2026-10-21T10:05:11.951Z",
+      "updatedAt": "2026-10-21T10:11:06.838Z",
       "closedAt": null,
       "extra": {}
     },
