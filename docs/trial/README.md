@@ -114,7 +114,7 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
   - halt した周の要約にも `converged (no changes)` と出て紛らわしい。Backlog #73（直した：止めた操作がある周の要約は `halted (N op(s) held)`）。
   - 承認して 2 件を消したあと、cycle 2 から毎周 `prune HALT: List count dropped from 3 to 1 (67% > threshold 50%)` で prune が止まり続ける。
     件数が減ったのは Sakutei 自身が承認つきで消したからだが、急減の判定（§12.4（b））は planned_change で消した分しか差し引かない。
-    また、止まった周は比べる基準の件数を更新しないので、デーモンを起こし直すまで止まり続ける。人に判断を仰いでいる。
+    また、止まった周は比べる基準の件数を更新しないので、デーモンを起こし直すまで止まり続ける。設計書 v3.13 §12.4（b）で「自分が prune で消した分は差し引く」と決め、Backlog #75 で直す。
 
 ## 実機につなぐ（任意）
 
