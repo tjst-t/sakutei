@@ -1830,7 +1830,7 @@
       "number": 79,
       "kind": "task",
       "title": "level 報告：ずれ・halt を firing / resolved と Since・連続回数で出し、毎周同じ知らせを撒かない",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "halt-22-3-firing-resolved-level-event-si",
       "dependsOn": [
         "event-sink-json-lines"
@@ -1844,7 +1844,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T14:27:46.439Z",
-      "updatedAt": "2026-10-21T14:27:46.439Z",
+      "updatedAt": "2026-10-21T15:01:41.608Z",
       "closedAt": null,
       "extra": {}
     },
