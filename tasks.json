@@ -1786,7 +1786,7 @@
       "number": 77,
       "kind": "task",
       "title": "Event の単一型（pkg/core）と JSON lines の出力（--log-format json）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "halt-22-3-firing-resolved-level-event-si",
       "dependsOn": [],
       "milestone": null,
@@ -1798,7 +1798,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T14:27:46.439Z",
-      "updatedAt": "2026-10-21T14:27:46.439Z",
+      "updatedAt": "2026-10-21T14:27:55.587Z",
       "closedAt": null,
       "extra": {}
     },
