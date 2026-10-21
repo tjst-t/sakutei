@@ -10,7 +10,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 
 - **ライセンス:** Apache-2.0
 - **言語:** Go（1.22・標準ライブラリのみ、外部依存なし）
-- **状態:** 設計 v3.10／ 実装 **v1a・v1b 完成**（BulkObserve の一括 API を持つ対象〈Proxmox・vCenter 等〉は Backlog #49）
+- **状態:** 設計 v3.11／ 実装 **v1 完成**（v1a・v1b・v1.5。タグ `v1.0.0`）
 
 ---
 
@@ -156,7 +156,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 コードは設計仕様の**射影**です。設計に関する記述は `docs/` を正とします。
 
 - **[docs/README.md](docs/README.md)** — ドキュメント索引（まずここ）
-- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.1（8 部 29 節・分冊）。§番号は全体で一意
+- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.11（8 部 29 節・分冊）。§番号は全体で一意
 - **[docs/web/sakutei.html](docs/web/sakutei.html)** — 設計思想を庭園メタファで表したランディングページ
 - **[docs/web/buildout.html](docs/web/buildout.html)** — 段0だけがある状態から、20台規模のポッド(リーフスイッチ→BMC→ハイパーバイザー導入→クラスタ構築)を1つの intent PR から積み上げる様子を追う構築ウォークスルー
 - **[docs/web/scenarios.html](docs/web/scenarios.html)** — 稼働中の仮想基盤を題材に、増設/物理交換/FW更新/HVローリング更新が実際どう実行されるかを追う運用シナリオ集
@@ -179,11 +179,11 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 | スライス | 内容 | 状態 |
 | --- | --- | --- |
 | **v1a** | コア型・収束ループ・安全機構（累積予算・List 完全性）・早期収束/BulkObserve/--claim の型切り・最小 SDK・実 provider 2 個・devenv・secret（file backend）・loader・status・chaos | ✅ 完成 |
-| **v1b** | import / Sync Mode、tier 別 Observe 頻度、採番連携、静的シャーディング実装（claim の git 配布・S2-free シャードを含む）、inventory 検証 | 予定 |
-| **v1.5** | 単純 Task ＋ 最小 Workflow（直列＋不変条件＋N-of-M 手動承認）＋ remediation schedule ＋ planned_change | 予定 |
-| **v2+** | 多相 Task、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、intent UI | 予定 |
+| **v1b** | import / Sync Mode（git コミットまで）、tier 別 Observe 頻度、採番連携（ファイル版・HA 最小形）、静的シャーディング（claim の git 配布・S2-free シャードを含む）、inventory 検証、BulkObserve（dnszone・nftables で実証） | ✅ 完成 |
+| **v1.5** | 単純 Task ＋ 最小 Workflow（直列＋不変条件＋N-of-M 手動承認）＋ remediation schedule ＋ planned_change ＋ 運用プロファイル ＋ DR モード（break-glass） | ✅ 完成 |
+| **v2+** | 多相 Task、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、intent UI、採番の SQLite 版、一括 API を持つ対象（Proxmox・vCenter 等）の provider | 予定 |
 
-既知の v1a 限界（設計 §29 に記録）: 振動検知/隔離は未配線（`StatusOscillating` は型のみ・破壊的 flip-flop は ghost-diff hold で抑制）／ Vault SecretBackend はオフラインスタブ（file backend は実装済み）／ 早期収束・BulkObserve・--claim シャーディングは seam まで（実配線は v1b）。
+既知の v1 の限界（設計 §29 に記録）: 振動の検知と隔離は未配線（`StatusOscillating` は型のみ。破壊的な flip-flop は ghost-diff hold で抑制）／ Vault SecretBackend はスタブ（file backend は実装済み）／ 採番はファイル版（同一ホストでの同時払い出しは flock で直列化。SQLite 版は v2）／ BulkObserve は dnszone・nftables での実証まで（一括 API を持つ対象は Backlog #49）。
 
 ---
 
