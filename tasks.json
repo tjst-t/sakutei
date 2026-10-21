@@ -1283,14 +1283,16 @@
       "dependsOn": [],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "v2"
+      ],
       "body": "設計 §16.5・§16.6・§27.5。v1b は Observe のスケジューラの型と tier 別の間引き（observe_tier・observe_tiers）まで。\n\n- provider が watch を持つなら、drift を即座に知り、保険として低頻度のポーリングを残すハイブリッドにする。watch が流すのはヒント（触られた scope）だけで、真実は運ばない。\n- 間引きの最適化（tier の既定値・Ansible executor のような高レイテンシ層の既定（§29.1））を本格化する。\n- provider 側の watch の capability を SDK に足す（宣言制。実装しない provider は定期周期だけ）。",
       "doneWhen": "watch を持つ fake provider で、手で変えたずれが定期周期を待たずに直り、watch を止めても低頻度ポーリングで直ることをテストで示す。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:04.700Z",
+      "updatedAt": "2026-10-21T09:58:14.988Z",
       "closedAt": null,
       "extra": {}
     },
