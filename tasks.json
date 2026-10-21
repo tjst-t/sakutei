@@ -1654,7 +1654,7 @@
       "number": 70,
       "kind": "task",
       "title": "dnszone：管理するレコードを書き換えた Apply で SOA のシリアルを YYYYMMDDnn で上げる（既定。設定で止められる）",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [
         "dnszone-origin-id"
@@ -1667,12 +1667,12 @@
       ],
       "body": "2026-10-21 人が決定。設計書 v3.12 §29.1「dnszone の SOA シリアル」と docs/architecture/CHANGELOG-v3.12.md が正。\n\n## やること\n- 管理するレコードを実際に書き換えた Apply（Create / Update / Delete でファイルの中身が変わったとき）だけ、同じ原子的な書き込み（temp + rename）で SOA のシリアルを上げる。中身が変わらない Apply では上げない。\n- 新しい値 = max(今日の YYYYMMDD00〈UTC〉, 今の値 + 1)。今の値より必ず大きい。4294967295 を超えるときは上げずに Apply を PermanentError で止める。時刻は差し替えられるようにしてテストする。\n- SOA のそれ以外の欄（MNAME・RNAME・refresh・retry・expire・minimum）と、行の書き方（括弧で複数行に分けた SOA を含む）は変えない。シリアルの数字だけを置き換える。\n- シリアルは Diff の対象にしない（自分で上げた値をずれと見なさない。SOA はもともとレコードとして観測しない）。ゾーンに SOA が無ければ何もしない。\n- 設定：provider の config `soa_serial`（`bump` 既定 / `keep`）。CLI は `--zone` を受け付けるコマンド（plan・reconcile・status・import・sync、#67 のあとはデーモンも）に `--zone-soa-serial bump|keep` を足す。不正な値は起動時にエラー。\n- dnszone のパッケージコメントと docs/trial/README.md の「SOA のシリアルが上がらない」の注意を直す。\n\n#69（$ORIGIN の解釈）と同じファイルを触るので、#69 の後に流す。",
       "doneWhen": "レコードを変えた reconcile で SOA のシリアルが今の値より大きい YYYYMMDDnn になり、SOA のほかの欄が変わらないこと。変更の無い reconcile ではシリアルが変わらないこと。同じ日に 2 回変えると nn が進むこと、今の値が日付の形でない・未来の日付でも今の値 + 1 になること、上限を超えるときは Apply が止まること。--zone-soa-serial keep では上げないこと。次の plan が Converged になる（シリアルをずれと見なさない）こと。以上をテストで示す。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/dnszone-apply-soa-yyyymmddnn）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T10:14:40.596Z",
-      "updatedAt": "2026-10-21T10:34:23.784Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T10:48:01.771Z",
+      "closedAt": "2026-10-21T10:48:01.771Z",
       "extra": {}
     },
     {
