@@ -1807,7 +1807,7 @@
       "number": 78,
       "kind": "task",
       "title": "Event の sink の口（標準エラーと JSON lines のファイル）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "halt-22-3-firing-resolved-level-event-si",
       "dependsOn": [
         "event-pkg-core-json-lines-log-format-jso"
@@ -1821,7 +1821,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T14:27:46.439Z",
-      "updatedAt": "2026-10-21T14:27:46.439Z",
+      "updatedAt": "2026-10-21T14:49:58.565Z",
       "closedAt": null,
       "extra": {}
     },
