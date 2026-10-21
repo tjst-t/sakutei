@@ -290,8 +290,9 @@ type Config struct {
 
 	// UnreachableSkipLimit is the number of consecutive cycles skipped because
 	// an external input was unreachable with no previous value (#15, §9.2)
-	// after which Run raises an ExternalInputUnreachableProlonged alert every
-	// cycle until a cycle runs again.  The skip itself stays halt-safe: the
+	// after which Run raises an ExternalInputUnreachableProlonged Event.  It is
+	// level-reported (#79, §22.3): firing once when the limit is reached, then
+	// resolved once when a cycle runs again — not repeated every cycle.  The skip itself stays halt-safe: the
 	// daemon keeps running and retries.  <= 0 means DefaultUnreachableSkipLimit.
 	UnreachableSkipLimit int
 	// DaemonStatusPath is the file Run rewrites after every cycle with the

@@ -213,7 +213,7 @@ func runDaemon() {
 	daemonStatus := fs.String("daemon-status", "",
 		"#15: file rewritten after every cycle with the daemon's health (consecutive cycles skipped because an external input was unreachable); read by `sakutei status --daemon-status`")
 	unreachableSkipLimit := fs.Int("unreachable-skip-limit", 0,
-		"#15: consecutive unreachable-skipped cycles after which ExternalInputUnreachableProlonged is raised every cycle (default 3)")
+		"#15: consecutive unreachable-skipped cycles after which ExternalInputUnreachableProlonged fires (once, level-reported: firing / resolved, §22.3) (default 3)")
 	stuckAfter := fs.Int("stuck-after", 0,
 		"§22.3: consecutive cycles a level Event (drift, convergence failure, halt) stays firing before it is promoted transient → stuck (default 5)")
 	approvalListen := fs.String("approval-listen", "",
