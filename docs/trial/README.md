@@ -65,9 +65,56 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 ./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 5s
 ```
 
-確かめること：起動して数周で収束する／別の端末でゾーンファイルや ruleset を手で変えると、次の周期で戻る／
-`--mode alert-only` では戻さずに知らせる／`--max-destructive-per-cycle 1` で、intent から 2 件を `PruneWithinScope` で消すと
-halt する／Ctrl-C で周期の切れ目で止まる。
+別の端末からゾーンファイルや ruleset を手で書き換えて、次の周期の動きを見る。止めるのは Ctrl-C（周期の切れ目で止まる）。
+
+### D1. 収束と自己修復（2026-10-21 に確かめた）
+
+初期状態（`docs/trial/v1/initial/`）から `--interval 1s` で起動する。
+
+- cycle 1 で 3 件を適用し、cycle 2 から `converged (no changes)`。SOA のシリアルは DNS の書き換え 2 回ぶん上がる（…01 → …03）。
+- ゾーンファイルの `api` の値と ruleset の `tcp dport 443 accept` を手で書き換えると、次の周期に
+  `DriftEvent ... [cause: B] drift B: value was "192.0.2.30" prev cycle now "198.51.100.99"` が出て、元に戻る。
+- base chain の `type filter hook input priority 0; policy drop;` は残る。
+
+### D2. alert-only（2026-10-21 に確かめた）
+
+収束させてから `--mode alert-only` を足して起動し、D1 と同じように手で書き換える。
+
+```sh
+./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 1s --mode alert-only
+```
+
+- 書き換えた次の周期から毎周、次のように出て、**ファイルは書き換えない**（手で変えた値が残り、SOA のシリアルも変わらない）。
+
+  ```
+  sakutei: cycle 4: alert-only: 2 drifted resource(s) detected — no changes applied
+  sakutei: cycle 4: DRIFT EVENT: would be UPDATE dnszone//api.example.com./A
+  sakutei: cycle 4: DRIFT EVENT: would be UPDATE nftables//inet/filter/sakutei_allow
+  ```
+- 気づいたこと：同じ知らせが毎周そのまま出続ける。設計 §22.3 は「firing / resolved の level 報告で、毎周同じアラートを撒かない」と決めているので、Backlog #74 で実装の状況を確かめる。
+
+### D3. 破壊的な操作の上限で halt（2026-10-21 に確かめた）
+
+ゾーンに intent に無いレコードを 2 件置き、intent 側を `deletion_policy: PruneWithinScope` にして、上限 1 件で起動する。
+
+```sh
+# ゾーン：www・old1・old2 の 3 件。intent：www だけを PruneWithinScope で宣言（old1・old2 が prune の対象になる）
+./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 1s --max-destructive-per-cycle 1
+```
+
+- 毎周、2 件の DELETE を止めて halt する。**1 件も消さない**（上限 1 件に対して 2 件なので、1 件だけ消すこともしない）。
+
+  ```
+  sakutei: budget: blocked destructive op DELETE dnszone//old1.example.com./A (budget limit)
+  sakutei: budget: blocked destructive op DELETE dnszone//old2.example.com./A (budget limit)
+  sakutei: cycle 1: BUDGET HALTED: rate-limit (per-cycle): 2 destructive ops (+ 0 in-flight = 2) exceeds max_destructive_per_cycle=1 (approve-large-change=0)
+  ```
+- `--approve-large-change 2` を足して起動し直すと、cycle 1 で 2 件を消す（`pruned=2`）。SOA のシリアルは 2 つ上がる。
+- 気づいたこと（2 つ）：
+  - halt した周の要約にも `converged (no changes)` と出て紛らわしい。Backlog #73。
+  - 承認して 2 件を消したあと、cycle 2 から毎周 `prune HALT: List count dropped from 3 to 1 (67% > threshold 50%)` で prune が止まり続ける。
+    件数が減ったのは Sakutei 自身が承認つきで消したからだが、急減の判定（§12.4（b））は planned_change で消した分しか差し引かない。
+    また、止まった周は比べる基準の件数を更新しないので、デーモンを起こし直すまで止まり続ける。人に判断を仰いでいる。
 
 ## 実機につなぐ（任意）
 
