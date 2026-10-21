@@ -1332,14 +1332,16 @@
       "dependsOn": [],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "v2"
+      ],
       "body": "設計 §26.2・§27.5。twin = render の外部入力を差し替えた環境。本番の intent を同じ reconciler でツインに流す。\n\n- ツイン専用の AllocationAuthority（本番のスナップショットから seed できる）、専用 / フェイクの SecretBackend、ツイン用の inventory のスナップショットを差し替え点として揃える。\n- 本番のプールを消費せず、本番のシークレットも展開しないことを型で保証する。\n- 用途：変更の事前検証（爆発半径・cause D の波及の可視化）、provider 更新の検証（幽霊 diff C を本番前に観測）、DR・ローリングのリハーサル、カオスの常設先。",
       "doneWhen": "本番用の intent をツインの設定で流すと、採番・秘密・inventory がツイン側に差し替わり本番の資源に一切触れないこと、provider の更新で出る幽霊 diff をツインで観測できることをテストで示す。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:04.700Z",
+      "updatedAt": "2026-10-21T09:58:19.308Z",
       "closedAt": null,
       "extra": {}
     },
