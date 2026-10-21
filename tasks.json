@@ -1674,6 +1674,34 @@
       "updatedAt": "2026-10-21T10:34:23.784Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "dnszone-id-list-read-delete-prune",
+      "number": 71,
+      "kind": "bug",
+      "title": "dnszone の ID の大文字・小文字がそろっていない（List は元の書き方、Read・Delete は区別しない）——prune で揺れうる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [
+        "dnszone-apply-soa-yyyymmddnn"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "dnszone",
+        "provider",
+        "identity",
+        "review-followup"
+      ],
+      "body": "#69 の Factory レビュー（2026-10-21、任意の指摘）から。#69 の前からある挙動。\n\n## 症状\n- ValidateIntent は大文字を含む ID（例 `WWW.example.com./A`）を通す。Read・Delete は大文字・小文字を区別せずに比べる。List・BulkObserve はゾーンファイルの書き方のまま（大文字・小文字も）ID を返す。\n- ゾーンに `www`、intent に `WWW.example.com./A` があると、core は ID が違うので別のリソースとみなす。PruneWithinScope の下では List の `www.example.com./A` が orphan として prune され、deleteRecord は区別せずにその行を消し、次の周期で intent 側が Create し直す——揺れる。§28.4 の identity の取り違え。\n\n## 直し方（実装の選択。設計 §28.4 の範囲）\n- ID は小文字の FQDN にそろえる：List・BulkObserve が返す ID を小文字にし、ValidateIntent は小文字以外を含む ID をロードで拒否する（エラーで小文字の形を示す）。ゾーンファイルへの書き戻しは元の書き方を保つ。\n- ID の形が変わるので providerVersion を上げる（cause C で吸収）。\n- #70 と同じファイルを触るので #70 の後に流す。",
+      "doneWhen": "ゾーンに大文字を含む名前（WWW）があっても List・BulkObserve の ID が小文字になり、intent の小文字 ID と同じリソースとして扱われ、PruneWithinScope で消されないことをテストで示す。大文字を含む intent の ID はロードで拒否される。書き戻しで元の書き方が保たれる。make check・make test-race が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-21T10:34:27.938Z",
+      "updatedAt": "2026-10-21T10:34:27.938Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
