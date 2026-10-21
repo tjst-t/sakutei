@@ -1683,7 +1683,7 @@
       "status": "ready",
       "parent": null,
       "dependsOn": [
-        "dnszone-apply-soa-yyyymmddnn"
+        "dnszone-nftables-apply-apply"
       ],
       "milestone": null,
       "priority": "normal",
@@ -1699,7 +1699,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T10:34:27.938Z",
-      "updatedAt": "2026-10-21T10:34:27.938Z",
+      "updatedAt": "2026-10-21T10:40:11.451Z",
       "closedAt": null,
       "extra": {}
     },
