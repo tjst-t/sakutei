@@ -1,0 +1,28 @@
+# v1 を試すための intent（docs/trial/README.md）。
+# dnszone の id は「ゾーンファイルに書いた名前/型」（例 www/A）。
+# nftables の id は「family/table/chain」。rules は順序つきで、区切りは " ; "。
+version: "1"
+resources:
+  - provider: dnszone
+    id: www/A
+    fields:
+      name: www
+      type: A
+      value: 192.0.2.20
+      ttl: "300"
+  # api-begin（run.sh の手順 6 がこの範囲を消して試す）
+  - provider: dnszone
+    id: api/A
+    fields:
+      name: api
+      type: A
+      value: 192.0.2.30
+      ttl: "300"
+  # api-end
+  - provider: nftables
+    id: inet/filter/sakutei_allow
+    fields:
+      family: inet
+      table: filter
+      chain: sakutei_allow
+      rules: tcp dport 22 accept ; tcp dport 443 accept
