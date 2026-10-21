@@ -191,8 +191,9 @@ type CycleDecision struct {
 //
 //	ops           — the full set of ops planned for this cycle (desired changes
 //	                from Diff + prune DeleteOps combined).
-//	inFlightCount — number of destructive changes currently in-flight (async
-//	                Apply goroutines from prior cycles, §13.1).
+//	inFlight      — changes currently in-flight (async Apply goroutines from
+//	                prior cycles, §13.1): Destructive counts toward the
+//	                destructive limit, Total toward the total-change limit.
 //	totalDesired  — total number of desired resources this cycle (denominator
 //	                for percentage rate-limit).
 //
@@ -204,24 +205,36 @@ type CycleDecision struct {
 // Ops admitted to a planned_change lane (§13.3) are taken out first: the limits
 // below see only the remaining ops, and the returned halt does not block the
 // lane ops (IsHalted).
-func (e *Engine) CheckCycle(ops []core.Op, inFlightCount int, totalDesired int) CycleDecision {
+func (e *Engine) CheckCycle(ops []core.Op, inFlight InFlight, totalDesired int) CycleDecision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	adm := e.admitLanes(ops)
-	d := e.checkNormal(adm.normal, inFlightCount, totalDesired)
+	d := e.checkNormal(adm.normal, inFlight, totalDesired)
 	d.lane = adm.lane
 	d.Events = adm.events
 	return d
 }
 
+// InFlight is the number of changes still in flight from earlier cycles
+// (async Apply, §8), excluding planned_change lane Applies (§13.3).
+type InFlight struct {
+	// Destructive is the number of in-flight Applies whose plan contains a
+	// destructive op.  It counts toward max_destructive_per_cycle.
+	Destructive int
+	// Total is the number of all in-flight Applies.  It counts toward
+	// max_changes_per_cycle_absolute.
+	Total int
+}
+
 // checkNormal evaluates the normal budget over ops.  Must be called with e.mu
 // held.
-func (e *Engine) checkNormal(ops []core.Op, inFlightCount int, totalDesired int) CycleDecision {
+func (e *Engine) checkNormal(ops []core.Op, inFlight InFlight, totalDesired int) CycleDecision {
 	destructive, _ := countOps(ops)
-	// in-flight counts toward the cycle budget (§13.1): Add in-flight to the
-	// destructive count for the rate-limit check (not the window budget).
-	destructiveWithInFlight := destructive + inFlightCount
+	// in-flight counts toward the cycle budget (§13.1): Add destructive
+	// in-flight to the destructive count for the rate-limit check (not the
+	// window budget).  In-flight Creates are not destructive.
+	destructiveWithInFlight := destructive + inFlight.Destructive
 
 	// --- Approve-large-change override (cycle rate-limit only) ---------------
 	//
@@ -244,7 +257,7 @@ func (e *Engine) checkNormal(ops []core.Op, inFlightCount int, totalDesired int)
 		if destructiveWithInFlight > effectiveLimit {
 			reason := fmt.Sprintf(
 				"rate-limit (per-cycle): %d destructive ops (+ %d in-flight = %d) exceeds max_destructive_per_cycle=%d (approve-large-change=%d)",
-				destructive, inFlightCount, destructiveWithInFlight,
+				destructive, inFlight.Destructive, destructiveWithInFlight,
 				e.cfg.MaxDestructivePerCycle, e.cfg.ApproveLargeChange,
 			)
 			return e.haltDecision(reason)
@@ -253,11 +266,11 @@ func (e *Engine) checkNormal(ops []core.Op, inFlightCount int, totalDesired int)
 
 	// Check 2: absolute total-change limit.
 	if e.cfg.MaxChangesPerCycleAbsolute > 0 {
-		total := len(ops) + inFlightCount
+		total := len(ops) + inFlight.Total
 		if total > e.cfg.MaxChangesPerCycleAbsolute {
 			reason := fmt.Sprintf(
 				"rate-limit (per-cycle): %d total ops (+ %d in-flight = %d) exceeds max_changes_per_cycle_absolute=%d",
-				len(ops), inFlightCount, total, e.cfg.MaxChangesPerCycleAbsolute,
+				len(ops), inFlight.Total, total, e.cfg.MaxChangesPerCycleAbsolute,
 			)
 			return e.haltDecision(reason)
 		}

@@ -106,6 +106,11 @@ type InFlightSet struct {
 	// lane marks in-flight resources whose Apply was dispatched in a
 	// planned_change lane (§13.3); they are not counted in the normal budget.
 	lane map[string]bool
+
+	// destructive marks in-flight resources whose dispatched plan contains at
+	// least one destructive op (§13.1).  Only these count toward the
+	// destructive rate limit; in-flight Creates do not.
+	destructive map[string]bool
 }
 
 // NewInFlightSet creates an empty InFlightSet.
@@ -114,6 +119,8 @@ func NewInFlightSet() *InFlightSet {
 		inflight: make(map[string]bool),
 		backoff:  make(map[backoffKey]backoffEntry),
 		lane:     make(map[string]bool),
+
+		destructive: make(map[string]bool),
 	}
 }
 
@@ -125,12 +132,18 @@ func (s *InFlightSet) IsInFlight(local string) bool {
 	return s.inflight[local]
 }
 
-// Add inserts local into the in-flight set.
+// Add inserts local into the in-flight set.  destructive records whether the
+// dispatched plan contains a destructive op (§13.1).
 // Callers must call Remove when the Apply goroutine completes.
-func (s *InFlightSet) Add(local string) {
+func (s *InFlightSet) Add(local string, destructive bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.inflight[local] = true
+	if destructive {
+		s.destructive[local] = true
+	} else {
+		delete(s.destructive, local)
+	}
 }
 
 // Remove removes local from the in-flight set.  It is idempotent.
@@ -139,6 +152,7 @@ func (s *InFlightSet) Remove(local string) {
 	defer s.mu.Unlock()
 	delete(s.inflight, local)
 	delete(s.lane, local)
+	delete(s.destructive, local)
 }
 
 // MarkLane records that the in-flight Apply of local was dispatched in a
@@ -156,6 +170,14 @@ func (s *InFlightSet) IsLane(local string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lane[local]
+}
+
+// IsDestructive reports whether local is in flight with a plan that contains
+// a destructive op.
+func (s *InFlightSet) IsDestructive(local string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.destructive[local]
 }
 
 // InFlightLocals returns a snapshot of all Local IDs currently in-flight.

@@ -68,7 +68,7 @@ func TestPlannedChange_LaneIsSeparateFromNormalBudget(t *testing.T) {
 	e.SetPlannedChanges([]PlannedChange{decl(PlannedDelete, decomScope, 500)})
 
 	all := append(deletesIn(decomScope, "decom", 500), deletesIn(otherScope, "stray", 5)...)
-	d := e.CheckCycle(all, 0, 10)
+	d := e.CheckCycle(all, InFlight{}, 10)
 
 	if !d.HaltAll {
 		t.Fatalf("5 undeclared deletes > 3 must halt the normal budget; got %+v", d)
@@ -104,7 +104,7 @@ func TestPlannedChange_OverMaxCountFallsToNormalBudget(t *testing.T) {
 	e.SetPlannedChanges([]PlannedChange{decl(PlannedDelete, decomScope, 10)})
 
 	ops := deletesIn(decomScope, "decom", 12)
-	d := e.CheckCycle(ops, 0, 1)
+	d := e.CheckCycle(ops, InFlight{}, 1)
 	if d.LaneAdmitted() != 10 || d.HaltAll {
 		t.Fatalf("12 deletes, max_count 10, per-cycle 3: want 10 in lane and the 2 extra within the normal budget; got lane=%d %+v", d.LaneAdmitted(), d)
 	}
@@ -114,7 +114,7 @@ func TestPlannedChange_OverMaxCountFallsToNormalBudget(t *testing.T) {
 	e.ReserveLanes(d, ops)
 
 	// The next cycle: the lane is used up — everything is normal budget again.
-	d = e.CheckCycle(deletesIn(decomScope, "more", 4), 0, 1)
+	d = e.CheckCycle(deletesIn(decomScope, "more", 4), InFlight{}, 1)
 	if d.LaneAdmitted() != 0 || !d.HaltAll {
 		t.Fatalf("lane exhausted: 4 deletes must be normal budget and halt; got lane=%d %+v", d.LaneAdmitted(), d)
 	}
@@ -126,7 +126,7 @@ func TestPlannedChange_UndispatchedOpsKeepTheLane(t *testing.T) {
 	e := newEngineWithClock(Config{}, clk)
 	e.SetPlannedChanges([]PlannedChange{decl(PlannedDelete, decomScope, 5)})
 	for i := 0; i < 3; i++ {
-		if d := e.CheckCycle(deletesIn(decomScope, "decom", 5), 0, 1); d.LaneAdmitted() != 5 {
+		if d := e.CheckCycle(deletesIn(decomScope, "decom", 5), InFlight{}, 1); d.LaneAdmitted() != 5 {
 			t.Fatalf("cycle %d: LaneAdmitted = %d, want 5 (nothing dispatched yet)", i, d.LaneAdmitted())
 		}
 	}
@@ -138,22 +138,22 @@ func TestPlannedChange_WindowExpiry(t *testing.T) {
 	e := newEngineWithClock(Config{MaxDestructivePerCycle: 3}, clk)
 	e.SetPlannedChanges([]PlannedChange{decl(PlannedDelete, decomScope, 500)})
 
-	if d := e.CheckCycle(deletesIn(decomScope, "decom", 10), 0, 1); d.LaneAdmitted() != 0 || !d.HaltAll {
+	if d := e.CheckCycle(deletesIn(decomScope, "decom", 10), InFlight{}, 1); d.LaneAdmitted() != 0 || !d.HaltAll {
 		t.Fatalf("before the window: want normal budget halt; got lane=%d %+v", d.LaneAdmitted(), d)
 	}
 	clk.t = t0
-	if d := e.CheckCycle(deletesIn(decomScope, "decom", 10), 0, 1); d.LaneAdmitted() != 10 || d.HaltAll {
+	if d := e.CheckCycle(deletesIn(decomScope, "decom", 10), InFlight{}, 1); d.LaneAdmitted() != 10 || d.HaltAll {
 		t.Fatalf("at window start: want lane; got lane=%d %+v", d.LaneAdmitted(), d)
 	}
 	clk.t = t0.Add(6 * time.Hour) // end is exclusive
-	d := e.CheckCycle(deletesIn(decomScope, "decom", 10), 0, 1)
+	d := e.CheckCycle(deletesIn(decomScope, "decom", 10), InFlight{}, 1)
 	if d.LaneAdmitted() != 0 || !d.HaltAll {
 		t.Fatalf("after the window: want normal budget halt; got lane=%d %+v", d.LaneAdmitted(), d)
 	}
 	if !hasEvent(d, "PlannedChangeExpired") {
 		t.Errorf("want PlannedChangeExpired; got %v", d.Events)
 	}
-	if d := e.CheckCycle(nil, 0, 1); hasEvent(d, "PlannedChangeExpired") {
+	if d := e.CheckCycle(nil, InFlight{}, 1); hasEvent(d, "PlannedChangeExpired") {
 		t.Errorf("PlannedChangeExpired must be reported once; got %v", d.Events)
 	}
 }
@@ -173,7 +173,7 @@ func TestPlannedChange_ReimagePairing(t *testing.T) {
 			scopedOp(core.OpKindDelete, slot, fmt.Sprintf("node-%02d-gen1", i)),
 			scopedOp(core.OpKindCreate, slot, fmt.Sprintf("node-%02d-gen2", i)))
 	}
-	d := e.CheckCycle(ops, 0, 5)
+	d := e.CheckCycle(ops, InFlight{}, 5)
 	if d.HaltAll || d.HaltDestructive {
 		t.Fatalf("5 reimage pairs must not count as 5 deletes against per-cycle 1; got %+v", d)
 	}
@@ -197,7 +197,7 @@ func TestPlannedChange_ReimagePairing(t *testing.T) {
 		scopedOp(core.OpKindDelete, map[string]string{"pool": "hpc", "slot": "02"}, "node-02-gen1"),
 		scopedOp(core.OpKindCreate, map[string]string{"pool": "hpc", "slot": "03"}, "node-03-gen2"),
 	}
-	d = e2.CheckCycle(unpaired, 0, 3)
+	d = e2.CheckCycle(unpaired, InFlight{}, 3)
 	if d.LaneAdmitted() != 0 || !d.HaltAll {
 		t.Fatalf("unpaired deletes must be normal budget (2 > 1 halts); got lane=%d %+v", d.LaneAdmitted(), d)
 	}
@@ -219,7 +219,7 @@ func TestPlannedChange_KindAndScopeMustMatch(t *testing.T) {
 		scopedOp(core.OpKindDelete, decomScope, "d"), // wrong kind
 		scopedOp(core.OpKindUpdate, otherScope, "e"), // wrong scope
 	}
-	d := e.CheckCycle(ops, 0, 5)
+	d := e.CheckCycle(ops, InFlight{}, 5)
 	if d.LaneAdmitted() != 3 {
 		t.Fatalf("LaneAdmitted = %d, want 3", d.LaneAdmitted())
 	}
@@ -237,7 +237,7 @@ func TestPlannedChange_OtherGatesStillHaltLane(t *testing.T) {
 	e := newEngineWithClock(Config{}, clk)
 	e.SetPlannedChanges([]PlannedChange{decl(PlannedDelete, decomScope, 10)})
 	ops := deletesIn(decomScope, "decom", 3)
-	d := Merge(e.CheckCycle(ops, 0, 1), CycleDecision{HaltAll: true, HaltDestructive: true, Reason: "capacity"})
+	d := Merge(e.CheckCycle(ops, InFlight{}, 1), CycleDecision{HaltAll: true, HaltDestructive: true, Reason: "capacity"})
 	if allowed, _ := d.FilterOps(ops); len(allowed) != 0 {
 		t.Fatalf("capacity halt must stop lane ops too; %d allowed", len(allowed))
 	}

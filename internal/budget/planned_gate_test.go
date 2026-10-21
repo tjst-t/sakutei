@@ -44,7 +44,7 @@ func TestPlannedGate_UnapprovedKeepsLaneClosed(t *testing.T) {
 	p.Gate = PlannedGate{Profile: "enterprise", Unapproved: "approval has 1 of the 2 approver(s) required"}
 	e.SetPlannedChanges([]PlannedChange{p})
 
-	d := e.CheckCycle(deletesIn(decomScope, "d", 5), 0, 0)
+	d := e.CheckCycle(deletesIn(decomScope, "d", 5), InFlight{}, 0)
 	if d.LaneAdmitted() != 0 || !d.HaltDestructive {
 		t.Fatalf("unapproved lane must stay closed and the normal budget halt: lane=%d halt=%v", d.LaneAdmitted(), d.HaltDestructive)
 	}
@@ -52,7 +52,7 @@ func TestPlannedGate_UnapprovedKeepsLaneClosed(t *testing.T) {
 		t.Errorf("want PlannedChangeUnapproved, got %v", d.Events)
 	}
 	// Reported once, not every cycle.
-	if d := e.CheckCycle(deletesIn(decomScope, "d", 5), 0, 0); hasEvent(d, "PlannedChangeUnapproved") {
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 5), InFlight{}, 0); hasEvent(d, "PlannedChangeUnapproved") {
 		t.Errorf("the closed gate must be reported once")
 	}
 }
@@ -70,16 +70,16 @@ func TestPlannedGate_CoolingOff(t *testing.T) {
 	e.SetPlannedChanges([]PlannedChange{p})
 
 	ops := deletesIn(decomScope, "d", 5)
-	d := e.CheckCycle(ops, 0, 0)
+	d := e.CheckCycle(ops, InFlight{}, 0)
 	if d.LaneAdmitted() != 0 || !hasEvent(d, "PlannedChangeCoolingOff") {
 		t.Fatalf("before the cooling-off the lane is closed: lane=%d events=%v", d.LaneAdmitted(), d.Events)
 	}
 	clk.advance(119 * time.Minute)
-	if d := e.CheckCycle(ops, 0, 0); d.LaneAdmitted() != 0 {
+	if d := e.CheckCycle(ops, InFlight{}, 0); d.LaneAdmitted() != 0 {
 		t.Fatalf("1 minute before the cooling-off ends the lane must still be closed")
 	}
 	clk.advance(time.Minute)
-	d = e.CheckCycle(ops, 0, 0)
+	d = e.CheckCycle(ops, InFlight{}, 0)
 	if d.LaneAdmitted() != 5 || !hasEvent(d, "PlannedChangeOpened") {
 		t.Fatalf("after the cooling-off the lane opens: lane=%d events=%v", d.LaneAdmitted(), d.Events)
 	}
@@ -106,7 +106,7 @@ func TestPlannedGate_RestoredFromAudit(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.SetPlannedChanges([]PlannedChange{p})
-		return e, e.CheckCycle(deletesIn(decomScope, "d", 4), 0, 0)
+		return e, e.CheckCycle(deletesIn(decomScope, "d", 4), InFlight{}, 0)
 	}
 	if _, d := run(); d.LaneAdmitted() != 0 {
 		t.Fatalf("first run: cooling-off just started")
@@ -134,7 +134,7 @@ func TestPlannedGate_CoolingOffNeedsAudit(t *testing.T) {
 	p.Gate = PlannedGate{Profile: "solo", CoolingOff: time.Minute}
 	e.SetPlannedChanges([]PlannedChange{p})
 	clk.advance(time.Hour)
-	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0); d.LaneAdmitted() != 0 || !hasEvent(d, "PlannedChangeCoolingOff") {
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), InFlight{}, 0); d.LaneAdmitted() != 0 || !hasEvent(d, "PlannedChangeCoolingOff") {
 		t.Fatalf("lane=%d events=%v", d.LaneAdmitted(), d.Events)
 	}
 }
@@ -150,11 +150,11 @@ func TestPlannedGate_WideningRestartsCoolingOff(t *testing.T) {
 	p := decl(PlannedDelete, decomScope, 10)
 	p.Gate = PlannedGate{Profile: "solo", CoolingOff: time.Hour}
 	e.SetPlannedChanges([]PlannedChange{p})
-	e.CheckCycle(nil, 0, 0)
+	e.CheckCycle(nil, InFlight{}, 0)
 	clk.advance(2 * time.Hour)
 	p.MaxCount = 100
 	e.SetPlannedChanges([]PlannedChange{p})
-	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0); d.LaneAdmitted() != 0 {
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), InFlight{}, 0); d.LaneAdmitted() != 0 {
 		t.Fatalf("a widened declaration must cool off again")
 	}
 }
@@ -175,14 +175,14 @@ func TestPlannedGate_WithdrawnRedeclareRestartsCoolingOff(t *testing.T) {
 
 	e := newEngine()
 	e.SetPlannedChanges([]PlannedChange{p})
-	e.CheckCycle(nil, 0, 0)  // declared at t0+1m
-	e.SetPlannedChanges(nil) // removed during the cooling-off
-	if d := e.CheckCycle(nil, 0, 0); !hasEvent(d, "PlannedChangeWithdrawn") {
+	e.CheckCycle(nil, InFlight{}, 0) // declared at t0+1m
+	e.SetPlannedChanges(nil)         // removed during the cooling-off
+	if d := e.CheckCycle(nil, InFlight{}, 0); !hasEvent(d, "PlannedChangeWithdrawn") {
 		t.Fatalf("want PlannedChangeWithdrawn, got %v", d.Events)
 	}
 	clk.advance(2 * time.Hour)
 	e.SetPlannedChanges([]PlannedChange{p}) // written back
-	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0); d.LaneAdmitted() != 0 {
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), InFlight{}, 0); d.LaneAdmitted() != 0 {
 		t.Fatalf("resident: a written-back declaration must cool off again")
 	}
 
@@ -190,7 +190,7 @@ func TestPlannedGate_WithdrawnRedeclareRestartsCoolingOff(t *testing.T) {
 	if d := func() CycleDecision {
 		e := newEngine()
 		e.SetPlannedChanges([]PlannedChange{p})
-		return e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0)
+		return e.CheckCycle(deletesIn(decomScope, "d", 2), InFlight{}, 0)
 	}(); d.LaneAdmitted() != 0 {
 		t.Fatalf("next run: the withdrawn declaration time must not count")
 	}
@@ -203,11 +203,11 @@ func TestPlannedGate_WithdrawnRedeclareRestartsCoolingOff(t *testing.T) {
 	clk.advance(2 * time.Hour)
 	e = newEngine()
 	e.SetPlannedChanges([]PlannedChange{p})
-	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0); d.LaneAdmitted() != 0 {
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), InFlight{}, 0); d.LaneAdmitted() != 0 {
 		t.Fatalf("reconcile: a declaration removed between runs must cool off again when written back")
 	}
 	clk.advance(time.Hour)
-	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), 0, 0); d.LaneAdmitted() != 2 {
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 2), InFlight{}, 0); d.LaneAdmitted() != 2 {
 		t.Fatalf("after the new cooling-off the lane opens: %v", d.Events)
 	}
 }

@@ -405,14 +405,18 @@ func ScopedReconcile(
 	allPlannedOps = append(allPlannedOps, tombstoneOps...)
 
 	// in-flight（定期経路 or 先の scoped run 由来）も cycle 予算に数える（loop.go と同じ
-	// 保守的カウント）。ここでは影響サブ DAG 内の in-flight を数える。
-	inFlightDestructive := 0
+	// 数え方）。ここでは影響サブ DAG 内の in-flight を数える。破壊的上限には破壊的な
+	// in-flight だけを数える（§13.1）。
+	var inFlight budget.InFlight
 	for _, r := range desired {
 		if ifl.IsInFlight(r.ID.Local) && !ifl.IsLane(r.ID.Local) {
-			inFlightDestructive++
+			inFlight.Total++
+			if ifl.IsDestructive(r.ID.Local) {
+				inFlight.Destructive++
+			}
 		}
 	}
-	decision := budgetEngine.CheckCycle(allPlannedOps, inFlightDestructive, len(desired))
+	decision := budgetEngine.CheckCycle(allPlannedOps, inFlight, len(desired))
 	if decision.HaltAll || decision.HaltDestructive {
 		// 予算超過 → scoped run は halt して定期周期へ縮退（バイパス禁止・§13）。
 		// halt-destructive-only の場合でも scoped 経路は保守的に「今回は何もせず縮退」

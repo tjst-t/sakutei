@@ -1602,20 +1602,21 @@ func runCycleAsync(
 	//
 	// Evaluate rate-limit (cycle unit, including in-flight) and cumulative
 	// time-window budget before issuing ANY Apply or prune Delete.
-	inFlightDestructive := 0
+	var inFlight budget.InFlight
 	for _, local := range inFlightThisCycle {
 		// §13.3: an Apply dispatched in a planned_change lane is not counted in
 		// the normal budget, in flight or not.
 		if ifl.IsLane(local) {
 			continue
 		}
-		inFlightDestructive++ // conservative: count each in-flight as destructive
-		// B (backlog): counting every in-flight op as destructive is safe (biases
-		// toward halt) but can false-positive halt a Create-heavy cycle.  Future
-		// improvement: record each in-flight op's kind in InFlightSet and count
-		// only the destructive ones here (not fixed in Scf7762-2).
+		inFlight.Total++
+		// §13.1: only in-flight ops recorded as destructive count toward the
+		// destructive limit; in-flight Creates do not halt a Create-heavy cycle.
+		if ifl.IsDestructive(local) {
+			inFlight.Destructive++
+		}
 	}
-	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, inFlightDestructive, len(desired))
+	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, inFlight, len(desired))
 	budgetHalted := budgetDecision.HaltAll || budgetDecision.HaltDestructive
 	budgetReason := budgetDecision.Reason
 
@@ -2092,7 +2093,7 @@ func applyWavesAsync(
 			// S94f1f9-3: per-resource in-flight exclusion.
 			// Add to in-flight BEFORE launching the goroutine to ensure that a
 			// concurrent Cycle cannot launch a second goroutine for the same resource.
-			ifl.Add(local)
+			ifl.Add(local, hasDestructive(plan.Ops))
 			if dispatchFn != nil {
 				dispatchFn(local, plan.Ops)
 			}
@@ -2136,4 +2137,15 @@ func applyWavesAsync(
 	// launched counts goroutines started; backedOff and skipped are reported.
 	_ = applied // keep return signature consistent with sync path
 	return 0, launched, backedOff, skipped, nil
+}
+
+// hasDestructive reports whether ops contains at least one destructive op; it
+// decides how an in-flight Apply counts toward the cycle rate limit (§13.1).
+func hasDestructive(ops []core.Op) bool {
+	for _, op := range ops {
+		if op.Destructive {
+			return true
+		}
+	}
+	return false
 }

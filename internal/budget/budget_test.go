@@ -93,7 +93,7 @@ func TestWindowBudget_ProgressiveDestruction_AccumulatesAcrossCycles(t *testing.
 	if got := e.WindowTotal(); got != 0 {
 		t.Fatalf("cycle 1 precondition: windowTotal=%d, want 0", got)
 	}
-	d1 := e.CheckCycle(destructiveOps(2), 0, 10)
+	d1 := e.CheckCycle(destructiveOps(2), InFlight{}, 10)
 	if d1.HaltAll || d1.HaltDestructive {
 		t.Fatalf("cycle 1: unexpected halt (2 ≤ cap 3): %+v", d1)
 	}
@@ -103,7 +103,7 @@ func TestWindowBudget_ProgressiveDestruction_AccumulatesAcrossCycles(t *testing.
 	}
 
 	// --- cycle 2: 2 committed + 1 planned = 3 ≤ 3 → allowed (boundary) ---
-	d2 := e.CheckCycle(destructiveOps(1), 0, 10)
+	d2 := e.CheckCycle(destructiveOps(1), InFlight{}, 10)
 	if d2.HaltAll || d2.HaltDestructive {
 		t.Fatalf("cycle 2: unexpected halt (2+1=3 == cap 3, must be allowed): %+v", d2)
 	}
@@ -113,7 +113,7 @@ func TestWindowBudget_ProgressiveDestruction_AccumulatesAcrossCycles(t *testing.
 	}
 
 	// --- cycle 3: 3 committed + 1 planned = 4 > 3 → HALT (window) ---
-	d3 := e.CheckCycle(destructiveOps(1), 0, 10)
+	d3 := e.CheckCycle(destructiveOps(1), InFlight{}, 10)
 	if !d3.HaltAll {
 		t.Fatalf("cycle 3: expected HaltAll (window budget, 3+1=4 > cap 3), got %+v", d3)
 	}
@@ -148,7 +148,7 @@ func TestWindowBudget_EvictOld_ReopensBudgetAfterWindowElapses(t *testing.T) {
 		t.Fatalf("precondition: windowTotal=%d, want 3", got)
 	}
 	// Budget is now full: even 1 more planned would exceed cap.
-	if d := e.CheckCycle(destructiveOps(1), 0, 10); !d.HaltAll {
+	if d := e.CheckCycle(destructiveOps(1), InFlight{}, 10); !d.HaltAll {
 		t.Fatalf("with 3 committed, 1 planned must halt (3+1=4 > 3), got %+v", d)
 	}
 
@@ -164,7 +164,7 @@ func TestWindowBudget_EvictOld_ReopensBudgetAfterWindowElapses(t *testing.T) {
 		t.Fatalf("at +61m the committed entry must be evicted; windowTotal=%d, want 0", got)
 	}
 	// Budget is available again: a fresh destructive op is allowed.
-	if d := e.CheckCycle(destructiveOps(3), 0, 10); d.HaltAll || d.HaltDestructive {
+	if d := e.CheckCycle(destructiveOps(3), InFlight{}, 10); d.HaltAll || d.HaltDestructive {
 		t.Errorf("after decay, 3 planned must be allowed again (window empty), got %+v", d)
 	}
 
@@ -197,10 +197,10 @@ func TestWindowBudget_PartialDecay_FreesProportionalBudget(t *testing.T) {
 		t.Fatalf("only entry B should remain; windowTotal=%d, want 1", got)
 	}
 	// 1 committed leaves room for 2 more before the cap of 3.
-	if d := e.CheckCycle(destructiveOps(2), 0, 10); d.HaltAll || d.HaltDestructive {
+	if d := e.CheckCycle(destructiveOps(2), InFlight{}, 10); d.HaltAll || d.HaltDestructive {
 		t.Errorf("1 committed + 2 planned = 3 == cap must be allowed, got %+v", d)
 	}
-	if d := e.CheckCycle(destructiveOps(3), 0, 10); !d.HaltAll {
+	if d := e.CheckCycle(destructiveOps(3), InFlight{}, 10); !d.HaltAll {
 		t.Errorf("1 committed + 3 planned = 4 > cap must halt, got %+v", d)
 	}
 
@@ -222,7 +222,7 @@ func TestWindowBudget_ApproveLargeChange_DoesNotBypassWindow(t *testing.T) {
 
 	// Cycle 1: 2 planned.  Per-cycle limit is 1 but approval raises it to 100, so
 	// the rate limit does NOT fire.  The window cap of 2 permits exactly 2.
-	if d := e.CheckCycle(destructiveOps(2), 0, 10); d.HaltAll || d.HaltDestructive {
+	if d := e.CheckCycle(destructiveOps(2), InFlight{}, 10); d.HaltAll || d.HaltDestructive {
 		t.Fatalf("cycle 1: 2 planned within window cap 2 and approved, must pass, got %+v", d)
 	}
 	e.CommitOps(destructiveOps(2))
@@ -230,9 +230,26 @@ func TestWindowBudget_ApproveLargeChange_DoesNotBypassWindow(t *testing.T) {
 	// Cycle 2: window now full (2 committed).  Even with approval=100, one more
 	// planned destructive op exceeds the window cap → HALT.  Approval must NOT
 	// bypass the cumulative budget.
-	if d := e.CheckCycle(destructiveOps(1), 0, 10); !d.HaltAll {
+	if d := e.CheckCycle(destructiveOps(1), InFlight{}, 10); !d.HaltAll {
 		t.Errorf("cycle 2: window full (2/2); approve-large-change must NOT bypass window, expected HaltAll, got %+v", d)
 	}
 
 	t.Logf("[AC-Scf7762-2-2] PASS: approve-large-change raised the per-cycle gate but not the window budget")
+}
+
+// Backlog #13: only destructive in-flight counts toward the destructive
+// per-cycle limit; all in-flight still counts toward the total-change limit.
+func TestCycleRateLimit_InFlightDestructiveOnly(t *testing.T) {
+	e := New(Config{MaxDestructivePerCycle: 2})
+	if d := e.CheckCycle(destructiveOps(1), InFlight{Destructive: 0, Total: 50}, 100); d.HaltAll || d.HaltDestructive {
+		t.Errorf("in-flight Creates must not count as destructive; got halt: %s", d.Reason)
+	}
+	if d := e.CheckCycle(destructiveOps(1), InFlight{Destructive: 2, Total: 2}, 100); !d.HaltDestructive {
+		t.Errorf("1 planned + 2 destructive in-flight must exceed max_destructive_per_cycle=2")
+	}
+
+	e = New(Config{MaxChangesPerCycleAbsolute: 10})
+	if d := e.CheckCycle(destructiveOps(1), InFlight{Total: 10}, 100); !d.HaltDestructive && !d.HaltAll {
+		t.Errorf("1 planned + 10 in-flight must exceed max_changes_per_cycle_absolute=10")
+	}
 }

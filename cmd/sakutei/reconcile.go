@@ -718,7 +718,7 @@ func runReconcile(args []string) {
 	//
 	// Evaluate rate-limit and cumulative time-window budget.  For the one-shot
 	// reconcile, in-flight is always 0 (synchronous Apply, no prior goroutines).
-	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, 0, len(desired))
+	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, budget.InFlight{}, len(desired))
 	for _, ev := range budgetDecision.Events {
 		fmt.Printf("%s\n", ev)
 	}
