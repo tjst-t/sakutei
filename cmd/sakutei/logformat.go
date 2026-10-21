@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -49,4 +50,34 @@ func setLogFormat(command, value string) {
 	}
 	logOut = eventlog.New(os.Stdout, f, core.SeverityInfo)
 	logErr = eventlog.New(os.Stderr, f, core.SeverityWarning)
+}
+
+const eventLogUsage = "file to append every notice (core.Event) to as JSON lines, one Event per line, besides standard error (§22.3); empty=none. A write failure is logged and convergence goes on"
+
+// addEventLogFlag registers --event-log on fs.
+func addEventLogFlag(fs *flag.FlagSet) *string {
+	return fs.String("event-log", "", eventLogUsage)
+}
+
+// openEventLog opens the --event-log file sink at path (nil when empty); it
+// exits when the file cannot be opened.
+func openEventLog(command, path string) []eventlog.Sink {
+	if path == "" {
+		return nil
+	}
+	s, err := eventlog.OpenFileSink(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", command, err)
+		os.Exit(1)
+	}
+	return []eventlog.Sink{s}
+}
+
+// routeEventLog hands the Events written to logOut / logErr to the
+// --event-log file at path as well (the one-shot reconcile).
+func routeEventLog(command, path string) {
+	sinks := openEventLog(command, path)
+	errOut := logErr
+	logOut = eventlog.Route(context.Background(), logOut, sinks, errOut)
+	logErr = eventlog.Route(context.Background(), logErr, sinks, errOut)
 }

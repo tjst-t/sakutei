@@ -160,6 +160,11 @@ type Config struct {
 	Out io.Writer
 	// ErrOut is where error lines are written.  Defaults to os.Stderr.
 	ErrOut io.Writer
+	// EventSinks are the sinks every notice (core.Event) is handed to besides
+	// Out / ErrOut (§22.3): the --event-log JSON lines file, a test sink.  The
+	// core only emits; it does not know where the Events go.  A failing sink
+	// is logged in one line on ErrOut and convergence goes on.
+	EventSinks []eventlog.Sink
 	// BudgetConfig holds the change-budget configuration (§13, Scf7762-2).
 	// Zero value means no budget limits are enforced (unlimited).
 	BudgetConfig budget.Config
@@ -349,12 +354,7 @@ const DefaultInterval = 10 * time.Second
 // next cycle will re-observe and retry (level-triggered resilience).  Repeated
 // failures are subject to per-resource exponential backoff (inflight.go).
 func Run(ctx context.Context, cfg Config) error {
-	if cfg.Out == nil {
-		cfg.Out = os.Stdout
-	}
-	if cfg.ErrOut == nil {
-		cfg.ErrOut = os.Stderr
-	}
+	routeEvents(&cfg)
 	if cfg.Interval <= 0 {
 		cfg.Interval = DefaultInterval
 	}
@@ -750,15 +750,29 @@ type Daemon struct {
 	workflows *workflow.Engine
 }
 
-// NewDaemon prepares the cross-cycle state for cfg.  cfg.Out / cfg.ErrOut
-// default to os.Stdout / os.Stderr.
-func NewDaemon(cfg Config) *Daemon {
+// routeEvents defaults cfg.Out / cfg.ErrOut and routes the Events emitted
+// to them to cfg.EventSinks as well (§22.3).  It clears cfg.EventSinks so a
+// config routed once (Run, then NewDaemon) does not hand an Event twice.
+func routeEvents(cfg *Config) {
 	if cfg.Out == nil {
 		cfg.Out = os.Stdout
 	}
 	if cfg.ErrOut == nil {
 		cfg.ErrOut = os.Stderr
 	}
+	if len(cfg.EventSinks) == 0 {
+		return
+	}
+	errOut := cfg.ErrOut
+	cfg.Out = eventlog.Route(context.Background(), cfg.Out, cfg.EventSinks, errOut)
+	cfg.ErrOut = eventlog.Route(context.Background(), cfg.ErrOut, cfg.EventSinks, errOut)
+	cfg.EventSinks = nil
+}
+
+// NewDaemon prepares the cross-cycle state for cfg.  cfg.Out / cfg.ErrOut
+// default to os.Stdout / os.Stderr.
+func NewDaemon(cfg Config) *Daemon {
+	routeEvents(&cfg)
 	// S94f1f9-3: shared in-flight set + backoff table for the lifetime of this
 	// daemon run.  These are S3 state (memory only, ADR-0015): reset on restart,
 	// not a violation of observation state-less (they record self-initiated

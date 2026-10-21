@@ -159,12 +159,14 @@ func runReconcile(args []string) {
 		"rendered_revision confirmed by plan; if this run's rendered_revision differs, abort before any Apply (§26.6); empty=no check")
 
 	logFormat := addLogFormatFlag(fs)
+	eventLog := addEventLogFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
 		os.Exit(1)
 	}
 	setLogFormat("sakutei reconcile", *logFormat)
+	routeEventLog("sakutei reconcile", *eventLog)
 	soaSerial := checkZoneSOASerial("sakutei reconcile", *zoneSOASerial)
 
 	if *intentDir == "" {

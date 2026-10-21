@@ -218,6 +218,7 @@ func runDaemon() {
 	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。
 	gd := addGitDistFlags(fs)
 	logFormat := addLogFormatFlag(fs)
+	eventLog := addEventLogFlag(fs)
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// "-h"/"--help" makes flag.Parse return flag.ErrHelp after printing
@@ -230,6 +231,7 @@ func runDaemon() {
 	}
 
 	setLogFormat("sakutei", *logFormat)
+	eventSinks := openEventLog("sakutei", *eventLog)
 	soaSerial := checkZoneSOASerial("sakutei", *zoneSOASerial)
 
 	src := setupGitDist(gd, *intentDir, *claim, *allocStore)
@@ -397,6 +399,7 @@ func runDaemon() {
 		UnreachableSkipLimit:  *unreachableSkipLimit,
 		Out:                   logOut,
 		ErrOut:                logErr,
+		EventSinks:            eventSinks,
 	}
 	if *taskStore != "" {
 		cfg.TaskStore = task.NewFileStore(*taskStore)
