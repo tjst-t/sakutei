@@ -1807,7 +1807,7 @@
       "number": 78,
       "kind": "task",
       "title": "Event の sink の口（標準エラーと JSON lines のファイル）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "halt-22-3-firing-resolved-level-event-si",
       "dependsOn": [
         "event-pkg-core-json-lines-log-format-jso"
@@ -1817,12 +1817,12 @@
       "labels": [],
       "body": "設計 §22.3（発生源と sink を分ける。ルーティング・エスカレーション・沈黙は Alertmanager 等に委譲）。\n\n- `EventSink` interface（Emit(ctx, core.Event) error）を作り、収束コアは sink だけに向けて Event を出す（出力先を知らない）。複数の sink に配る fan-out を用意する。\n- 最初の実装は 2 つ：標準エラー（--log-format に従う。いまの振る舞い）と、JSON lines のファイル（`--event-log <path>`、追記・行ごとに書き切る）。\n- sink が失敗しても収束を止めない（ログに 1 行出して続ける）。設計の「衛星の停止は変化を止めるが維持を止めない」と同じ考え。\n- S4 監査ログ（internal/audit）とは別物のままにする（監査は改竄耐性を持つ別の記録・§26.3）。",
       "doneWhen": "テスト用の sink を差して、ずれ・halt・prune の Event が sink に届くこと。--event-log でファイルに JSON lines が追記されること。sink がエラーを返してもデーモンが収束を続けること。以上をテストで示す。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/event-sink-json-lines）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T14:27:46.439Z",
-      "updatedAt": "2026-10-21T14:49:58.565Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T15:01:28.295Z",
+      "closedAt": "2026-10-21T15:01:28.295Z",
       "extra": {}
     },
     {
