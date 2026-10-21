@@ -58,7 +58,7 @@ func findRepo(ctx context.Context, root string) string {
 // written by Sync.  A snapshot not in HEAD (never committed, or deleted in a
 // commit) is fine: Sync writes it afresh.
 func checkCommitted(ctx context.Context, root, path string) error {
-	rel, err := filepath.Rel(root, path)
+	rel, err := relPath(root, path)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func checkCommitted(ctx context.Context, root, path string) error {
 func commitSnapshots(ctx context.Context, root string, paths, subjects []string, c Committer) (string, error) {
 	var rels, trailers []string
 	for i, p := range paths {
-		rel, err := filepath.Rel(root, p)
+		rel, err := relPath(root, p)
 		if err != nil {
 			return "", err
 		}
@@ -117,6 +117,42 @@ func commitSnapshots(ctx context.Context, root string, paths, subjects []string,
 		return "", err
 	}
 	return git(ctx, root, nil, "rev-parse", "HEAD")
+}
+
+// relPath returns path relative to the work tree top root.  git reports root
+// with symbolic links resolved, so path is resolved too before comparing;
+// otherwise a path through a link (macOS's /var → /private/var) comes out as
+// "../.." and slips past checkCommitted.  path need not exist yet: its
+// longest existing ancestor is resolved and the rest appended.
+func relPath(root, path string) (string, error) {
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	dir, rest := abs, ""
+	for {
+		if r, err := filepath.EvalSymlinks(dir); err == nil {
+			abs = filepath.Join(r, rest)
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("syncmode: %s is outside the repository %s", path, root)
+	}
+	return rel, nil
 }
 
 // git runs git in dir and returns its trimmed standard output.  On failure the

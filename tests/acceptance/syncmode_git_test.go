@@ -25,6 +25,8 @@
 //   [#35-4] a snapshot a person changed in a commit is never overwritten
 //           (even with a matching body hash); deleting it in a commit lets
 //           Sync write it afresh
+//   [#50-1] [#35-4] holds when the intent path goes through a symbolic link
+//           (git reports the work tree with links resolved; macOS's /var)
 
 package acceptance
 
@@ -32,6 +34,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -263,5 +266,32 @@ func TestSyncModeGit_RefusesHandCommit(t *testing.T) {
 				t.Fatalf("[#35-4] the fresh snapshot must record reality")
 			}
 		})
+	}
+}
+
+func TestSyncModeGit_RefusesHandCommitThroughSymlink(t *testing.T) {
+	// [#50-1]
+	root, _, state := setupSyncRepo(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	intent := filepath.Join(link, "intent")
+	if out, code := syncCLI(t, intent, state); code != 0 || !strings.Contains(out, "committed") {
+		t.Fatalf("sync through a link (exit %d):\n%s", code, out)
+	}
+	snapPath := filepath.Join(root, syncSnapRel)
+	edited := rehash(t, strings.Replace(readFile(t, snapPath), `size: "1"`, `size: "100"`, 1))
+	writeStateJSON(t, snapPath, edited)
+	gitCmd(t, root, "commit", "-q", "-am", "fix legacy size by hand")
+	base := commitCount(t, root)
+
+	setRealityField(t, state, "old-1", "size", "2")
+	out, code := syncCLI(t, intent, state)
+	if code == 0 || !strings.Contains(out, "by hand") {
+		t.Fatalf("[#50-1] a hand commit must be detected through a linked intent path (exit %d):\n%s", code, out)
+	}
+	if readFile(t, snapPath) != edited || commitCount(t, root) != base {
+		t.Fatalf("[#50-1] the hand-committed snapshot must be left as it is, with no new commit")
 	}
 }

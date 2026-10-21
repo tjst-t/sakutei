@@ -89,7 +89,7 @@ const DefaultDropThreshold = 0.50
 type Engine struct {
 	// dropThreshold is the maximum tolerated fractional decrease in List count
 	// between cycles before prune is halted (§12.4b).
-	// 0.50 means a 50%+ drop triggers halt.
+	// 0.50 means a drop of more than 50% triggers halt (exactly 50% does not).
 	dropThreshold float64
 
 	// lastListCount is the List count observed in the previous cycle
@@ -140,7 +140,7 @@ func New() *Engine {
 }
 
 // NewWithThreshold creates a prune Engine with a custom drop threshold.
-// threshold must be in (0, 1]; 0.10 means 10% drop triggers halt.
+// threshold must be in (0, 1]; 0.10 means a drop of more than 10% triggers halt.
 func NewWithThreshold(threshold float64) *Engine {
 	if threshold <= 0 || threshold > 1 {
 		threshold = DefaultDropThreshold
