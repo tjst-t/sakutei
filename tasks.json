@@ -1327,7 +1327,7 @@
       "number": 65,
       "kind": "task",
       "title": "v2: twin（縮景）のフル機能",
-      "status": "ready",
+      "status": "backlog",
       "parent": "v2-task-ui",
       "dependsOn": [],
       "milestone": null,
@@ -1341,7 +1341,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:58:19.308Z",
+      "updatedAt": "2026-10-21T10:00:02.536Z",
       "closedAt": null,
       "extra": {}
     },
