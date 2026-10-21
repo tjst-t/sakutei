@@ -161,7 +161,11 @@ func TestDNSZone_OriginIntentIsFQDN(t *testing.T) {
 		ok     bool
 	}{
 		{"www.example.com./A", map[string]string{"name": "www.example.com.", "type": "A"}, true},
-		{"WWW.example.com./A", map[string]string{"name": "www.example.com.", "type": "a"}, true},
+		// 大文字・小文字は List の形（名前は小文字、型は大文字）でなければ拒否（#71）。
+		{"WWW.example.com./A", map[string]string{"name": "www.example.com.", "type": "A"}, false},
+		{"www.example.com./a", nil, false},
+		{"www.example.com./A", map[string]string{"name": "WWW.example.com."}, false},
+		{"www.example.com./A", map[string]string{"type": "a"}, false},
 		{"www/A", map[string]string{"name": "www", "type": "A"}, false},
 		{"@/A", nil, false},
 		{"www.example.com./A", map[string]string{"name": "www"}, false},

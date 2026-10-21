@@ -88,13 +88,18 @@
 // duplicate.  The error names the offending line number.
 //
 // Local ID convention: "<FQDN>/<TYPE>" (e.g. "www.example.com./A"), the FQDN
-// with the case of the zone file and the type upper-cased.  List, BulkObserve
-// and import report exactly this form, for a line written "www" under
-// "$ORIGIN example.com." as well as for one written "www.example.com.".  The
+// lower-cased and the type upper-cased (Backlog #71).  List, BulkObserve and
+// import report exactly this form, for a line written "www" under
+// "$ORIGIN example.com." as well as for one written "www.example.com." or
+// "WWW.example.com.", and Read reports the same FQDN in the "name" field.  The
 // intent MUST use it too: ValidateIntent rejects at load an id (or a "name"
-// field) that is not an FQDN ending in ".", such as "www/A", because List would
-// never report it — the intent resource would look absent and the real record
-// would look like an orphan.  The "name" field is the same FQDN as the id.
+// field) that is not an FQDN ending in ".", such as "www/A", or that is not in
+// this case, such as "WWW.example.com./A" or "www.example.com./a", because
+// List would never report it — the intent resource would look absent and the
+// real record would look like an orphan (and PruneWithinScope would delete
+// it, the next cycle Create it again).  The "name" field is the same FQDN as
+// the id.  Only the id is lower-cased: a line in the zone file keeps its owner
+// as written, case included, when it is rewritten.
 package dnszone
 
 import (
@@ -130,7 +135,7 @@ const ProviderName = "dnszone"
 // so the fail-closed gate (§10.4) passes on registration.
 // Increment this constant whenever normalisation or diff logic changes so that
 // the cause-tag C (ghost diff) mechanism can detect provider upgrades.
-const providerVersion = "dnszone-v1.1.0"
+const providerVersion = "dnszone-v1.2.0"
 
 // managedSkipTypes lists the record types that are NOT managed by this provider.
 // SOA and NS are zone-metadata records that named/CoreDNS manages itself;
@@ -166,7 +171,7 @@ var supportedDirectives = map[string]bool{
 // record is a parsed DNS resource record from the zone file.
 type record struct {
 	// name is the owner name resolved to its FQDN (e.g. "www.example.com."),
-	// with the case it has in the file.
+	// with the case it has in the file (the id lower-cases it: localID).
 	name string
 	// owner is the owner name as written on the line ("www", "@",
 	// "www.example.com." …); kept so an Update rewrites the line in the same
@@ -180,9 +185,22 @@ type record struct {
 	value string
 }
 
-// localID returns the provider-local ID for this record: "<FQDN>/<TYPE>".
+// localID returns the provider-local ID for this record: "<FQDN>/<TYPE>",
+// the FQDN lower-cased (Backlog #71) and the type upper-cased.
 func (r record) localID() string {
-	return r.name + "/" + r.rrtype
+	return normaliseName(r.name) + "/" + strings.ToUpper(r.rrtype)
+}
+
+// observedState is the State Read and BulkObserve report for r.  "name" is
+// the FQDN of the id (lower-cased), so an intent's "name" never differs from
+// it only in case.
+func (r record) observedState() core.State {
+	return core.State{
+		"name":  {Kind: core.FieldKindString, Value: normaliseName(r.name)},
+		"type":  {Kind: core.FieldKindString, Value: r.rrtype},
+		"value": {Kind: core.FieldKindString, Value: r.value},
+		"ttl":   {Kind: core.FieldKindString, Value: r.ttl},
+	}
 }
 
 // Provider manages DNS records in an RFC1035 zone file.
@@ -354,15 +372,9 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 	normType := strings.ToUpper(rrtype)
 	for _, r := range records {
 		if normaliseName(r.name) == normName && strings.ToUpper(r.rrtype) == normType {
-			st := core.State{
-				"name":  {Kind: core.FieldKindString, Value: r.name},
-				"type":  {Kind: core.FieldKindString, Value: r.rrtype},
-				"value": {Kind: core.FieldKindString, Value: r.value},
-				"ttl":   {Kind: core.FieldKindString, Value: r.ttl},
-			}
 			return core.Observation{
 				Availability: core.AvailabilityOk,
-				State:        st,
+				State:        r.observedState(),
 				ObservedAt:   time.Now(),
 			}, nil
 		}
@@ -511,10 +523,10 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 // the file (§5.7).  Each entry is exactly what Read returns for that record's
 // local id, keyed like List (root scope, "<FQDN>/<TYPE>").
 //
-// Read finds the FIRST record whose normalised {name, type} matches, so every
+// Read finds the FIRST record whose normalised {name, type} matches, so each
 // entry is built from the first such record — two lines that differ only in
-// the case of the name, or in being written relative or absolute, both get
-// the first line's state, as Read gives them.
+// the case of the name, or in being written relative or absolute, have one id
+// and one entry, the first line's state, as Read gives it.
 //
 // complete-or-error: a zone file that cannot be read or scanned is an error for
 // the whole call (never a partial result).  A missing zone file is an empty
@@ -533,26 +545,17 @@ func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkOb
 	}
 
 	now := time.Now()
-	first := make(map[string]record, len(records))
-	for _, r := range records {
-		k := normaliseName(r.name) + "/" + strings.ToUpper(r.rrtype)
-		if _, ok := first[k]; !ok {
-			first[k] = r
-		}
-	}
 	scope := core.NewScope(nil)
 	obs := make(map[core.IDKey]core.Observation, len(records))
-	for _, rec := range records {
-		r := first[normaliseName(rec.name)+"/"+strings.ToUpper(rec.rrtype)]
-		obs[core.NewID(ProviderName, scope, rec.localID()).Key()] = core.Observation{
+	for _, r := range records {
+		k := core.NewID(ProviderName, scope, r.localID()).Key()
+		if _, ok := obs[k]; ok {
+			continue
+		}
+		obs[k] = core.Observation{
 			Availability: core.AvailabilityOk,
-			State: core.State{
-				"name":  {Kind: core.FieldKindString, Value: r.name},
-				"type":  {Kind: core.FieldKindString, Value: r.rrtype},
-				"value": {Kind: core.FieldKindString, Value: r.value},
-				"ttl":   {Kind: core.FieldKindString, Value: r.ttl},
-			},
-			ObservedAt: now,
+			State:        r.observedState(),
+			ObservedAt:   now,
 		}
 	}
 	return provider.BulkObservation{Observations: obs}, nil
@@ -567,11 +570,14 @@ var (
 )
 
 // ValidateIntent rejects, at load, a desired record whose id or "name" field is
-// not the FQDN form List reports (Backlog #69, §28.4).  "www/A" is rejected
-// rather than resolved: the origin it is relative to lives in the zone file,
-// which the loader does not read, and a guessed origin would be the very
-// identity mix-up this check is for.  The "name" and "type" fields, when
-// given, must name the same record as the id.
+// not the form List reports (Backlog #69, #71, §28.4): the FQDN, lower-cased,
+// and the type upper-cased.  "www/A" is rejected rather than resolved: the
+// origin it is relative to lives in the zone file, which the loader does not
+// read, and a guessed origin would be the very identity mix-up this check is
+// for.  "WWW.example.com./A" is rejected rather than folded for the same
+// reason the error names the id to write instead: the id is the identity the
+// core compares, and folding it in one place would leave it different in
+// another.  The "name" and "type" fields, when given, must be the id's.
 func (p *Provider) ValidateIntent(localID string, fields map[string]string) error {
 	name, rrtype, err := splitLocalID(localID)
 	if err != nil {
@@ -580,16 +586,25 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	if err := checkFQDN(name); err != nil {
 		return fmt.Errorf("dnszone: id %q: %w", localID, err)
 	}
+	if canon := normaliseName(name) + "/" + strings.ToUpper(rrtype); canon != localID {
+		return fmt.Errorf("dnszone: id %q: write the name in lower case and the type in upper case, as List reports it: %q", localID, canon)
+	}
 	if f, ok := fields["name"]; ok {
 		if err := checkFQDN(f); err != nil {
 			return fmt.Errorf("dnszone: id %q: field name %q: %w", localID, f, err)
 		}
-		if normaliseName(f) != normaliseName(name) {
+		if normaliseName(f) != name {
 			return fmt.Errorf("dnszone: id %q: field name %q names a different record than the id", localID, f)
 		}
+		if f != name {
+			return fmt.Errorf("dnszone: id %q: field name %q: write it as the id does: %q", localID, f, name)
+		}
 	}
-	if f, ok := fields["type"]; ok && !strings.EqualFold(f, rrtype) {
-		return fmt.Errorf("dnszone: id %q: field type %q names a different record than the id", localID, f)
+	if f, ok := fields["type"]; ok && f != rrtype {
+		if !strings.EqualFold(f, rrtype) {
+			return fmt.Errorf("dnszone: id %q: field type %q names a different record than the id", localID, f)
+		}
+		return fmt.Errorf("dnszone: id %q: field type %q: write it as the id does: %q", localID, f, rrtype)
 	}
 	return nil
 }

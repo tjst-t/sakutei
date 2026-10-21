@@ -100,15 +100,19 @@ func TestBulkObserve_DNSZoneEquivalentToRead(t *testing.T) {
 	bt := sdk.BulkEquivalenceTester{Provider: p, Lister: p, Scope: core.NewScope(nil)}
 	bt.Run(t)
 
-	// The two A lines that differ only in the case of the name: Read gives both
-	// the first line's state, and so must the bulk call.
+	// The two A lines that differ only in the case of the name have one
+	// (lower-cased, #71) id: Read gives it the first line's state, and so must
+	// the bulk call.
 	b, err := p.BulkObserve(context.Background(), core.NewScope(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := b.Observations[core.NewID(dnszone.ProviderName, core.NewScope(nil), "WWW.example.com./A").Key()]
+	got := b.Observations[core.NewID(dnszone.ProviderName, core.NewScope(nil), "www.example.com./A").Key()]
 	if v := got.State["value"].Value; v != "192.0.2.1" {
-		t.Errorf("[#27-1] WWW.example.com./A value = %v, want the first line's 192.0.2.1", v)
+		t.Errorf("[#27-1] www.example.com./A value = %v, want the first line's 192.0.2.1", v)
+	}
+	if _, ok := b.Observations[core.NewID(dnszone.ProviderName, core.NewScope(nil), "WWW.example.com./A").Key()]; ok {
+		t.Errorf("[#27-1] BulkObserve must not report the upper-case id WWW.example.com./A")
 	}
 }
 
