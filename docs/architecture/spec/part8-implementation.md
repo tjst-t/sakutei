@@ -262,6 +262,7 @@ Ansible provider では横断保証の多くが落ちる。**check mode は「�
 | **List 急減閾値のチューニング** | scope 単位で宣言する件数急減 halt の閾値の実運用値（誤発火と見逃しの均衡） | §12 |
 | **Ansible executor の Observe 頻度** | fork + SSH の高レイテンシ層で tier 別間引き（§16。`observe_tier`）をどう既定するか。executor を実装するまでの既定は「毎周」 | §16 |
 | **運用パラメータ** | Sync Mode の commit 主体（bot / 署名有無）、scope 昇格の「N 日間 diff ゼロ」の N、reconcile 間隔既定値、freeze の粒度。**Sync Mode の commit 主体は v1b で決定**：既定のコミッター（author も同じ）は `sakutei-sync <sakutei-sync@localhost>`、署名なし。名前・メールは `--committer-name` / `--committer-email` で変えられる。署名は既定でオフとし、足すときはコミットを作る 1 か所に鍵を渡す形にする（§24.5「v1b の実装」） | §14/§24 |
+| **dnszone の SOA シリアル**（Backlog #70） | ゾーンファイルの SOA は管理の外（provider はレコードとして観測も Apply もしない）だが、シリアルが上がらないとセカンダリへの転送やサーバの再読み込みが起きず、収束した値が DNS の答えに出ない。**v1 で決定（v3.12）**：管理するレコードを実際に書き換えた Apply（Create / Update / Delete でファイルの中身が変わったとき）だけ、同じ書き込みで SOA のシリアルを上げる。新しい値は `YYYYMMDDnn`（日付は UTC）で、「今日の `YYYYMMDD00`」と「今の値 + 1」の大きいほう——今の値より必ず大きくなる（今の値が日付の形でない・未来の日付・その日の 99 を使い切ったときも + 1 で進む）。32 ビットの上限（4294967295）を超えるときは上げずに Apply を PermanentError で止める（巻き戻しは RFC 1982 の比較でセカンダリを壊すため）。SOA のそれ以外の欄（MNAME・RNAME・refresh・retry・expire・minimum）は引き続き管理の外で、書き換えない。シリアルは Diff の対象にしない（自分で上げた値をずれと見なさない）。ゾーンに SOA が無ければ何もしない。既定は「上げる」、provider の設定 `soa_serial: keep`（CLI は `--zone-soa-serial keep`、既定 `bump`）で上げないようにできる——ゾーンを別のツールや人も書き、シリアルの採番をそちらに任せる環境のため。Apply は 1 操作ずつなので、1 周で複数のレコードを変えるとシリアルも複数回上がる（単調増加は保たれる） | §27.2・§28.4 |
 
 ### §29.2 意図的な先送りと再検討トリガ
 
