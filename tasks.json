@@ -1079,7 +1079,7 @@
       "number": 55,
       "kind": "task",
       "title": "v2: 常設 canary（合成検証の synthetic_check）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "v2-task-ui",
       "dependsOn": [],
       "milestone": null,
@@ -1093,7 +1093,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:58:07.463Z",
+      "updatedAt": "2026-10-21T09:59:51.478Z",
       "closedAt": null,
       "extra": {}
     },
