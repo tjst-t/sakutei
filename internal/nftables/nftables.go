@@ -44,6 +44,12 @@
 //   - Atomic write: Apply は os.CreateTemp + os.Rename でファイル全体を
 //     置換するので、途中クラッシュでも ruleset が truncate されない
 //     （S2 progress class, §4.9）。
+//   - Apply の排他（Backlog #72）: Apply はファイル全体を読み、書き換え、
+//     rename で置き換えるまでを ruleset のパスの filelock.Lock（プロセス内の
+//     mutex + "<ruleset>.lock" の flock）の中で行う。デーモンは Apply を並行に
+//     走らせ、plan・reconcile は別プロセスでも動くので、同じ古い中身を読んだ
+//     2 つの Apply が片方の変更を消さないようにする。Read・List・BulkObserve は
+//     共有の filelock.RLock を取る。
 //   - Pruneable: false — firewall chain は破壊的型である（chain を消すと
 //     その chain のルールが一括で失われ、通信断・穴あきの outage に直結）。
 //     ADR-0005「破壊的型は pruneable:false 既定」に従い、orphan の自動削除は
@@ -93,8 +99,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/filelock"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
+)
+
+// Test seams (Backlog #72): the concurrency test swaps lockRuleset for a no-op to
+// show that without the lock concurrent Applies lose changes, and widens the
+// read-to-write window with beforeWrite.
+var (
+	lockRuleset    = filelock.Lock
+	beforeWrite = func() {}
 )
 
 // ProviderName is the canonical name for this provider in the registry.
@@ -228,6 +243,7 @@ func (p *Provider) Capabilities() provider.Capabilities {
 //   - parse 不能なら AvailabilityUnknown（transient・unknown≠absent）。
 //   - base chain（type/hook を持つ）は管理境界外で PermanentError。
 func (p *Provider) Read(_ context.Context, localID string) (core.Observation, error) {
+	defer filelock.RLock(p.rulesetPath)()
 	family, table, chain, err := splitLocalID(localID)
 	if err != nil {
 		return core.Observation{
@@ -301,6 +317,12 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 //
 // idempotent: 同一 plan を二度適用しても同じファイル内容になる。
 func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
+	// 各 op の読み → 書き換え → rename を 1 つの排他区間で行う（Backlog #72）。
+	unlock, err := lockRuleset(p.rulesetPath)
+	if err != nil {
+		return provider.NewTransientError(fmt.Errorf("nftables: Apply: %w", err))
+	}
+	defer unlock()
 	for _, op := range plan.Ops {
 		if err := p.applyOp(op); err != nil {
 			return err
@@ -357,6 +379,7 @@ func (p *Provider) applyOp(op core.Op) error {
 // ファイル非存在は ListComplete + 空（現実が空）。parse 失敗は error
 // （truncated な ListComplete は返さない — complete-or-error, §5.4）。
 func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error) {
+	defer filelock.RLock(p.rulesetPath)()
 	chains, err := p.parseRuleset()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -391,6 +414,7 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 // 各リソースは Read に回り absent になる。結果は「何が無いか」を言わず、prune の
 // 入力にもならない（core.ListResult ではない、ADR-0011）。
 func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkObservation, error) {
+	defer filelock.RLock(p.rulesetPath)()
 	chains, err := p.parseRuleset()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -825,6 +849,7 @@ func (p *Provider) writeLines(lines []string) error {
 
 // writeFile writes content to the ruleset file atomically（temp + rename）。
 func (p *Provider) writeFile(content string) error {
+	beforeWrite()
 	dir := filepath.Dir(p.rulesetPath)
 	tmp, err := os.CreateTemp(dir, "sakutei-nftables-*.tmp")
 	if err != nil {

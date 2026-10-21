@@ -27,6 +27,12 @@
 //     Apply does to the SOA is raise its serial (see "SOA serial" below).
 //   - Atomic write: Apply uses os.CreateTemp + os.Rename so a crash mid-write
 //     never leaves a truncated zone file (S2 progress class, §4.9).
+//   - Exclusive Apply (Backlog #72): an Apply reads the whole file, changes it
+//     and renames a new file over it, all under filelock.Lock on the zone path
+//     (an in-process mutex + an flock on "<zone>.lock").  The daemon runs
+//     Applies concurrently and plan/reconcile may run in other processes; two
+//     Applies that read the same old file would otherwise lose one change.
+//     Read, List and BulkObserve take the shared filelock.RLock.
 //   - Pruneable: true — DNS records are cheap/reversible to recreate (non-destructive
 //     type by the ADR-0005 classification); automatic orphan deletion is safe.
 //   - BulkObserve: true — one read of the zone file yields every record, so a
@@ -103,8 +109,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/filelock"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
+)
+
+// Test seams (Backlog #72): the concurrency test swaps lockZone for a no-op to
+// show that without the lock concurrent Applies lose changes, and widens the
+// read-to-write window with beforeWrite.
+var (
+	lockZone    = filelock.Lock
+	beforeWrite = func() {}
 )
 
 // ProviderName is the canonical name for this provider in the registry.
@@ -292,6 +307,7 @@ func (p *Provider) Capabilities() provider.Capabilities {
 //   - If the zone file cannot be parsed, returns AvailabilityUnknown (transient).
 //   - SOA/NS records are never returned (management boundary).
 func (p *Provider) Read(_ context.Context, localID string) (core.Observation, error) {
+	defer filelock.RLock(p.zonePath)()
 	name, rrtype, err := splitLocalID(localID)
 	if err != nil {
 		return core.Observation{
@@ -376,6 +392,14 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 //
 // MUST be idempotent: Apply(same plan) twice yields the same file content.
 func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
+	// Every op reads, changes and writes the file inside one critical section
+	// (Backlog #72): no other Apply, in this process or another, writes in
+	// between.
+	unlock, err := lockZone(p.zonePath)
+	if err != nil {
+		return provider.NewTransientError(fmt.Errorf("dnszone: Apply: %w", err))
+	}
+	defer unlock()
 	for _, op := range plan.Ops {
 		if err := p.applyOp(op); err != nil {
 			return err
@@ -455,6 +479,7 @@ func (p *Provider) applyOp(op core.Op) error {
 // with an empty list (reality is empty).  If parsing fails, returns an error
 // (never returns a truncated ListComplete — complete-or-error, §5.4).
 func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error) {
+	defer filelock.RLock(p.zonePath)()
 	records, err := p.parseZone()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -497,6 +522,7 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 // reports it absent.  The result says nothing about what does not exist and is
 // never a prune input (it is not a core.ListResult, ADR-0011).
 func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkObservation, error) {
+	defer filelock.RLock(p.zonePath)()
 	records, err := p.parseZone()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1058,6 +1084,7 @@ func (p *Provider) readLines() ([]string, error) {
 // writeLines writes lines to the zone file atomically (temp + rename).
 // Each line is written with a newline terminator.
 func (p *Provider) writeLines(lines []string) error {
+	beforeWrite()
 	dir := filepath.Dir(p.zonePath)
 	tmp, err := os.CreateTemp(dir, "sakutei-dnszone-*.tmp")
 	if err != nil {
