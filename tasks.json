@@ -1681,7 +1681,7 @@
       "number": 71,
       "kind": "bug",
       "title": "dnszone の ID の大文字・小文字がそろっていない（List は元の書き方、Read・Delete は区別しない）——prune で揺れうる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [
         "dnszone-nftables-apply-apply"
@@ -1700,7 +1700,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T10:34:27.938Z",
-      "updatedAt": "2026-10-21T10:40:11.451Z",
+      "updatedAt": "2026-10-21T11:00:22.559Z",
       "closedAt": null,
       "extra": {}
     },
