@@ -1654,7 +1654,7 @@
       "number": 70,
       "kind": "task",
       "title": "dnszone：管理するレコードを書き換えた Apply で SOA のシリアルを YYYYMMDDnn で上げる（既定。設定で止められる）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [
         "dnszone-origin-id"
@@ -1671,7 +1671,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T10:14:40.596Z",
-      "updatedAt": "2026-10-21T10:14:40.596Z",
+      "updatedAt": "2026-10-21T10:34:23.784Z",
       "closedAt": null,
       "extra": {}
     }
