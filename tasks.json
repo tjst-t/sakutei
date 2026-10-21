@@ -1191,21 +1191,24 @@
       "number": 60,
       "kind": "task",
       "title": "v2: credential-broker（人向けの JIT 短命発行と bastion から）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "v2-task-ui",
       "dependsOn": [
         "v2-credentialprovider-provider-secretref"
       ],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "v2",
+        "needs-decision"
+      ],
       "body": "設計 §20.4・§27.5。core から分けた別プロセスの関守。設計の決まりどおり、まず人向けの短命発行（bastion + JIT）から作る（段階 1 で即座に実利があり、デーモン向けは同じ interface の発行先を変えるだけで後から乗る）。\n\n- 静的資格を配らず、使う瞬間に短命資格を発行して使用後に失効させる。発行ログを監査にする。\n- identity は 2 入口（マシン：Vault への自己証明／ヒューマン：IdP で認証）。機器に個人アカウントを永続作成しない。\n- 段 0 の VM-HA 保護対象（§23）。\n\n**着手時に決めること**：短命発行の実体（Vault の SSH 署名証明書・PKI など、どれから始めるか）、IdP との連携方法、bastion を自作するか既存のものを使うか。外部の仕組みに大きく依存するので、案を作って人に確かめる。",
       "doneWhen": "人が IdP で認証して短命資格を受け取り、bastion 経由で機器（テスト用の SSH 対象）に入れ、期限で失効し、発行ログが個人単位で残ることを統合テストで示す。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:04.700Z",
+      "updatedAt": "2026-10-21T09:57:39.178Z",
       "closedAt": null,
       "extra": {}
     },
