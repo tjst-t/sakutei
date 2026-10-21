@@ -115,6 +115,7 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
   - 承認して 2 件を消したあと、cycle 2 から毎周 `prune HALT: List count dropped from 3 to 1 (67% > threshold 50%)` で prune が止まり続ける。
     件数が減ったのは Sakutei 自身が承認つきで消したからだが、急減の判定（§12.4（b））は planned_change で消した分しか差し引かない。
     また、止まった周は比べる基準の件数を更新しないので、デーモンを起こし直すまで止まり続ける。設計書 v3.13 §12.4（b）で「自分が prune で消した分は差し引く」と決め、Backlog #75 で直した（承認つきで 2 件消したあとも次の周から `converged (no changes)` が続く）。
+  - #75 の後に流し直すと、2 件を消した cycle 1 の要約が `converged (no changes)` と出ていた。Backlog #76（直した：prune で消した周の要約は `pruned=N` を出し、`converged` と出さない。止めた操作と同じ周なら `halted (N op(s) held) ... pruned=M`）。
 
 ## 実機につなぐ（任意）
 

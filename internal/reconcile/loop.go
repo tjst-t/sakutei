@@ -522,18 +522,9 @@ func Run(ctx context.Context, cfg Config) error {
 			// further down carries the detailed drift report.
 			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d drifted (alert-only, no changes)\n",
 				cycleNum, res.Observed)
-		} else if res.Held > 0 || res.PruneHalted {
-			// #73: a budget / capacity gate or a prune safety guard stopped
-			// ops this cycle — it did not converge, so never say "converged".
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d halted (%d op(s) held) applied=%d launched=%d\n",
-				cycleNum, res.Observed, res.Held, res.Applied, res.Launched)
-		} else if res.Applied == 0 && res.Launched == 0 && len(res.Waiting) == 0 && res.DriftCount == 0 &&
-			len(res.TasksLaunched) == 0 && len(res.TasksHeld) == 0 && len(res.WorkflowHeld) == 0 {
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d converged (no changes)\n",
-				cycleNum, res.Observed)
 		} else {
-			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d applied=%d launched=%d\n",
-				cycleNum, res.Observed, res.Applied, res.Launched)
+			fmt.Fprintf(cfg.Out, "sakutei: cycle %d: observed=%d %s\n",
+				cycleNum, res.Observed, cycleSummary(res))
 		}
 		if len(res.Fenced) > 0 {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: cycle %d: FENCED scope(s) %v: another shard holds a newer fencing generation; not converging them\n",
@@ -873,6 +864,28 @@ func taskHolder(cfg Config) string {
 	}
 	host, _ := os.Hostname()
 	return fmt.Sprintf("%s-%d", host, os.Getpid())
+}
+
+// cycleSummary is the per-cycle summary of the daemon log after "observed=N".
+// #73: a budget / capacity gate or a prune safety guard stopped ops this cycle
+// — it did not converge, so never say "converged".  #76: neither did a cycle
+// whose prune deleted orphans; it reports how many.  Only a cycle that changed
+// nothing and held nothing says "converged (no changes)".
+func cycleSummary(res CycleResult) string {
+	pruned := ""
+	if res.Pruned > 0 {
+		pruned = fmt.Sprintf(" pruned=%d", res.Pruned)
+	}
+	switch {
+	case res.Held > 0 || res.PruneHalted:
+		return fmt.Sprintf("halted (%d op(s) held) applied=%d launched=%d%s",
+			res.Held, res.Applied, res.Launched, pruned)
+	case res.Applied == 0 && res.Launched == 0 && res.Pruned == 0 && len(res.Waiting) == 0 && res.DriftCount == 0 &&
+		len(res.TasksLaunched) == 0 && len(res.TasksHeld) == 0 && len(res.WorkflowHeld) == 0:
+		return "converged (no changes)"
+	default:
+		return fmt.Sprintf("applied=%d launched=%d%s", res.Applied, res.Launched, pruned)
+	}
 }
 
 // CycleResult holds the summary of one convergence cycle.
