@@ -1578,7 +1578,7 @@
       "number": 67,
       "kind": "bug",
       "title": "常駐デーモンが fake provider にしか対応していない（dnszone・nftables を回せない）。plan・reconcile に --ruleset が無い",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [
         "item-2"
@@ -1595,7 +1595,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T10:04:00.367Z",
-      "updatedAt": "2026-10-21T10:04:00.367Z",
+      "updatedAt": "2026-10-21T10:20:46.493Z",
       "closedAt": null,
       "extra": {}
     },
