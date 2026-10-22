@@ -1551,7 +1551,7 @@
       "number": 81,
       "kind": "task",
       "title": "Redfish provider: システム（電源・起動先の上書き・観測だけの値）と契約テスト",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "redfish-bmc-provider-qemu-bmc-containerl",
       "dependsOn": [
         "redfish-http-bmc-httptest"
@@ -1565,7 +1565,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T03:31:46.414Z",
-      "updatedAt": "2026-10-22T03:31:46.414Z",
+      "updatedAt": "2026-10-22T03:43:45.348Z",
       "closedAt": null,
       "extra": {}
     },
