@@ -66,6 +66,7 @@ type rfRig struct {
 	clk    *rfClock
 	bmcs   map[string]*redfishtest.Server
 	p      *system.Provider
+	m      *system.MediaProvider
 	d      *reconcile.Daemon
 	dir    string
 	out    *syncBuffer
@@ -92,6 +93,7 @@ func newRFRig(t *testing.T, nodes []string, opts redfishtest.Options, resources 
 		r.bmcs[n], clients[n] = srv, c
 	}
 	r.p = system.New(clients, system.Options{Now: clk.Now})
+	r.m = system.NewMedia(clients)
 
 	root := t.TempDir()
 	r.dir = filepath.Join(root, "intent")
@@ -102,10 +104,13 @@ func newRFRig(t *testing.T, nodes []string, opts redfishtest.Options, resources 
 	cfg.IntentDir = r.dir
 	cfg.GeneratedDir = filepath.Join(root, "generated")
 	cfg.Providers = func(name string) (provider.Provider, error) {
-		if name != system.Name {
-			return nil, fmt.Errorf("unknown provider %q", name)
+		switch name {
+		case system.Name:
+			return r.p, nil
+		case system.MediaName:
+			return r.m, nil
 		}
-		return r.p, nil
+		return nil, fmt.Errorf("unknown provider %q", name)
 	}
 	cfg.Out, cfg.ErrOut = r.out, r.errOut
 	cfg.EventSinks = []eventlog.Sink{r.rec}

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package system は Redfish の BMC provider のリソース「システム」（電源・
-// 起動先の上書き）。設計書 v3.15 §29.1「Redfish の BMC provider」の（2）〜（5）、
+// 起動先の上書き）と「仮想メディア」（CD、media.go の MediaProvider）。設計書 v3.15 §29.1「Redfish の BMC provider」の（2）〜（5）、
 // Backlog #48。templates/provider/full から作った標準階級の provider で、
 // List と BulkObserve を持たない（サーバは Sakutei が作ったり消したりしない
 // ので prune の対象にしない）。
