@@ -2012,6 +2012,29 @@
       "updatedAt": "2026-10-21T13:15:54.642Z",
       "closedAt": "2026-10-21T13:15:54.642Z",
       "extra": {}
+    },
+    {
+      "id": "converged-availability",
+      "number": 85,
+      "kind": "bug",
+      "title": "デーモンの周の要約：観測できず飛ばした資源があっても「converged」と出る・availability が数字で出る",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "log"
+      ],
+      "body": "#84 の統合テスト（make integration-redfish）のログで気づいた。\n\n- BMC を止めて Unknown で飛ばした周に `cycle 2: observed=2 converged (no changes)` と出る（次の行に `2 resource(s) skipped` は出る）。飛ばした資源がある周は converged と言わない方が誤解がない（#76 の「prune した周に converged と出さない」と同じ系統）。\n- `observe redfish-system//node1: availability=2 (not Ok)` と Availability が数字で出る。Converging などの名前で出す。\n\n害は表示だけ。",
+      "doneWhen": "飛ばした資源がある周の要約が converged ではなく、飛ばした件数を含む文になる。Availability が名前で出る。make check・make test-race が合格する",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-22T05:06:28.085Z",
+      "updatedAt": "2026-10-22T05:06:28.085Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
