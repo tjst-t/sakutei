@@ -15,7 +15,7 @@
 package system
 
 // media.go は Redfish の BMC provider のリソース「仮想メディア」（CD）。設計書
-// v3.15 §29.1「Redfish の BMC provider」の（6）、Backlog #48。システムと同じ
+// v3.16 §29.1「Redfish の BMC provider」の（2）（6）、Backlog #48。システムと同じ
 // パッケージに別の型（MediaProvider）として置き、ノードごとの redfish.Client
 // を共有する。標準階級で List と BulkObserve を持たない（CD のドライブは BMC に
 // 前からあり、Sakutei が作ったり消したりしないので prune の対象にしない）。
