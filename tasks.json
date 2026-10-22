@@ -1517,11 +1517,12 @@
       "refs": [
         "https://github.com/tjst-t/qemu-bmc/releases/tag/v0.7.0",
         "https://github.com/tjst-t/qemu-bmc/releases/tag/v0.7.1",
-        "https://github.com/tjst-t/qemu-bmc/releases/tag/v0.8.0"
+        "https://github.com/tjst-t/qemu-bmc/releases/tag/v0.8.0",
+        "https://github.com/tjst-t/qemu-bmc/releases/tag/v0.9.0"
       ],
       "threads": [],
       "createdAt": "2026-10-20T14:47:41.650Z",
-      "updatedAt": "2026-10-22T03:30:57.957Z",
+      "updatedAt": "2026-10-22T04:17:41.874Z",
       "closedAt": null,
       "extra": {}
     },
