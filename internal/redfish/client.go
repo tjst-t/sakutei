@@ -87,6 +87,10 @@ type Config struct {
 	// （§20）から解決して渡す。
 	Username string
 	Password string
+	// PasswordFunc は要求のたびに Password を解決する（SecretRef の JIT 解決、
+	// §20.2。値を Client に持たない）。設定すれば Password より優先する。解決
+	// できなければその要求は KindUnreachable（何も操作しない側）。
+	PasswordFunc func(ctx context.Context) (string, error)
 	// CAFile は BMC の証明書を検証する CA（PEM）のファイル。指定すれば
 	// システムの CA の代わりにこれだけを使う。
 	CAFile string
@@ -168,6 +172,7 @@ type HTTPClient struct {
 	base     *url.URL
 	username string
 	password string
+	pwFunc   func(ctx context.Context) (string, error)
 	sysPath  string
 	mgrPath  string
 	hc       *http.Client
@@ -225,6 +230,7 @@ func New(cfg Config) (*HTTPClient, error) {
 		base:     u,
 		username: cfg.Username,
 		password: cfg.Password,
+		pwFunc:   cfg.PasswordFunc,
 		sysPath:  cfg.SystemPath,
 		mgrPath:  cfg.ManagerPath,
 		hc: &http.Client{
@@ -531,7 +537,16 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte) (
 	if err != nil {
 		return 0, nil, fmt.Errorf("redfish: %s %s: %w", method, path, err)
 	}
-	req.SetBasicAuth(c.username, c.password)
+	password := c.password
+	if c.pwFunc != nil {
+		pw, err := c.pwFunc(ctx)
+		if err != nil {
+			return 0, nil, &Error{Kind: KindUnreachable, Method: method, Path: path,
+				Message: "cannot resolve the password", Err: err}
+		}
+		password = pw
+	}
+	req.SetBasicAuth(c.username, password)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

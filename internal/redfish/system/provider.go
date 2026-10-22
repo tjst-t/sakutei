@@ -292,6 +292,9 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 			return fmt.Errorf("%s %q: force_after %q: want a positive duration such as \"5m\"", Name, localID, fa)
 		}
 	}
+	if _, ok := p.clients[localID]; !ok {
+		return fmt.Errorf("%s %q: no BMC is configured for node %q (add it to the BMC list, --redfish-config)", Name, localID, localID)
+	}
 	return nil
 }
 

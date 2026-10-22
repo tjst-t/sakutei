@@ -15,9 +15,14 @@
 package registry
 
 import (
+	"errors"
+
 	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/nftables"
+	"github.com/tjst-t/sakutei/internal/redfish"
+	"github.com/tjst-t/sakutei/internal/redfish/bmcconfig"
+	"github.com/tjst-t/sakutei/internal/redfish/system"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
@@ -92,5 +97,33 @@ func DefaultRegistry() *ProviderRegistry {
 		return nftables.New(rulesetPath), nil
 	})
 
+	// "redfish-system" / "redfish-virtual-media" — Redfish の BMC provider
+	// （§29.1、#83）。config["redfish_config"] は BMC の一覧（--redfish-config）。
+	// --state は代わりにならない（BMC のアドレスと資格は推測しない）。
+	r.Register(system.Name, func(config map[string]string) (provider.Provider, error) {
+		clients, err := redfishClients(config)
+		if err != nil {
+			return nil, err
+		}
+		return system.New(clients, system.Options{}), nil
+	})
+	r.Register(system.MediaName, func(config map[string]string) (provider.Provider, error) {
+		clients, err := redfishClients(config)
+		if err != nil {
+			return nil, err
+		}
+		return system.NewMedia(clients), nil
+	})
+
 	return r
+}
+
+// redfishClients は config["redfish_config"] の BMC の一覧からノードごとの
+// Client を作る。
+func redfishClients(config map[string]string) (map[string]redfish.Client, error) {
+	path := config["redfish_config"]
+	if path == "" {
+		return nil, errors.New("the BMC list is not set: pass --redfish-config <file>")
+	}
+	return bmcconfig.LoadClients(path)
 }

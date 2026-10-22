@@ -108,7 +108,7 @@ func TestMedia_ReadUnreachableIsUnknown(t *testing.T) {
 }
 
 func TestMedia_ValidateIntent(t *testing.T) {
-	p := NewMedia(nil)
+	p := NewMedia(map[string]redfish.Client{"n": nil})
 	for _, f := range []map[string]string{
 		{"name": "n", "image": "https://repo.example/a.iso"},
 		{"image": "http://10.0.0.1/a.iso"},
@@ -132,6 +132,7 @@ func TestMedia_ValidateIntent(t *testing.T) {
 		{"n/cd", map[string]string{"power": "On"}, "unknown field"},
 		{"n/cd", map[string]string{"name": "m"}, "must equal the node name"},
 		{"n", map[string]string{"image": "/a.iso"}, `want "<node>/cd"`},
+		{"m/cd", map[string]string{"image": "/a.iso"}, "no BMC is configured"},
 	}
 	for _, b := range bad {
 		err := p.ValidateIntent(b.id, b.fields)

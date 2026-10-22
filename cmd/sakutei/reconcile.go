@@ -100,6 +100,7 @@ func runReconcile(args []string) {
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
+	redfishConfig := redfishConfigFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
@@ -396,6 +397,9 @@ func runReconcile(args []string) {
 		providerConfig["ruleset"] = *rulesetPath
 	}
 	providerConfig["soa_serial"] = soaSerial
+	if *redfishConfig != "" {
+		providerConfig["redfish_config"] = *redfishConfig
+	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
 	if resolveErr != nil {
 		fmt.Fprintln(logErr, resolveErr)

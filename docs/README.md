@@ -17,6 +17,12 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 | --- | --- |
 | [examples/proxmox-mysql-dbaas-schema.md](examples/proxmox-mysql-dbaas-schema.md) | v2.2 の §5（Provider 実装ガイド）と §7.5（合成リソース）の worked example。`proxmox_vm` を基底 Provider として定義し、その上に MySQL DBaaS を合成リソースとして構築する具体例。規範仕様ではなく解説用。 |
 
+## provider の使い方（providers/）
+
+| ドキュメント | 内容 |
+| --- | --- |
+| [providers/redfish.md](providers/redfish.md) | Redfish の BMC provider（`redfish-system`・`redfish-virtual-media`）。BMC の一覧（`--redfish-config`、パスワードは SecretRef）と intent の例。 |
+
 ## レビュー・適用可能性検討（review/）
 
 | ドキュメント | 内容 |

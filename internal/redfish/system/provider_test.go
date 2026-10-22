@@ -168,7 +168,7 @@ func TestRead_UnreachableIsUnknown(t *testing.T) {
 }
 
 func TestValidateIntent(t *testing.T) {
-	p := New(nil, Options{})
+	p := New(map[string]redfish.Client{"n": nil}, Options{})
 	ok := []map[string]string{
 		{"name": "n", "power": "On"},
 		{"power": "Off", "power_off": "graceful"},
@@ -206,6 +206,9 @@ func TestValidateIntent(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), b.want) {
 			t.Errorf("ValidateIntent(%v) = %v, want an error containing %q", b.fields, err, b.want)
 		}
+	}
+	if err := p.ValidateIntent("m", map[string]string{"power": "On"}); err == nil || !strings.Contains(err.Error(), "no BMC is configured") {
+		t.Errorf("a node without a BMC: %v, want an error", err)
 	}
 	if err := p.ValidateIntent("n", map[string]string{"boot_enabled": "Once"}); !strings.Contains(err.Error(), "never converges") {
 		t.Errorf("the Once error does not say why: %v", err)

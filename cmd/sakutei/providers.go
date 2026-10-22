@@ -108,3 +108,11 @@ func checkZoneSOASerial(commandName, v string) string {
 	}
 	return string(m)
 }
+
+// redfishConfigFlag registers --redfish-config, the BMC list of the Redfish
+// providers (redfish-system / redfish-virtual-media, §29.1, #83): per node the
+// BMC address, username and the password as a SecretRef.
+func redfishConfigFlag(fs *flag.FlagSet) *string {
+	return fs.String("redfish-config", "",
+		"redfish: BMC list (JSON / YAML): per node address, system / manager path, username, password (a SecretRef resolved from secret_store), ca_file, insecure_skip_verify, timeout")
+}

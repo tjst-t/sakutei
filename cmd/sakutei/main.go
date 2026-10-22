@@ -117,6 +117,7 @@ func main() {
 //	--state  <file>      path to the fake provider state file (default: sakutei-fake-state.json)
 //	--zone   <file>      path to the dnszone provider zone file (default: falls back to --state)
 //	--ruleset <file>     path to the nftables provider ruleset file (default: falls back to --state)
+//	--redfish-config <file>  BMC list of the Redfish providers (address, username, password SecretRef, §29.1)
 //	--interval <dur>     convergence cycle period (default: 10s; use short values in tests)
 //	--claim <selector>   converge only the matching scopes (§17.1)
 //	--fencing-store <f>  fencing generation store shared by all shards (§15.2)
@@ -149,6 +150,7 @@ func runDaemon() {
 	zonePath := fs.String("zone", "",
 		"path to the dnszone provider zone file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
+	redfishConfig := redfishConfigFlag(fs)
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	intervalStr := fs.String("interval", "",
@@ -325,6 +327,9 @@ func runDaemon() {
 		providerConfig["ruleset"] = *rulesetPath
 	}
 	providerConfig["soa_serial"] = soaSerial
+	if *redfishConfig != "" {
+		providerConfig["redfish_config"] = *redfishConfig
+	}
 
 	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
 	// A provider without a version cannot support ghost-diff (cause C) detection;

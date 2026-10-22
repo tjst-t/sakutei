@@ -191,6 +191,9 @@ func (p *MediaProvider) ValidateIntent(localID string, fields map[string]string)
 	if v := fields[FieldImage]; v != "" && !imageForm.MatchString(v) {
 		return fmt.Errorf("%s %q: image %q: want a URL (such as https://host/x.iso) or an absolute path the BMC can see; an empty image means ejected", MediaName, localID, v)
 	}
+	if _, ok := p.clients[node]; !ok {
+		return fmt.Errorf("%s %q: no BMC is configured for node %q (add it to the BMC list, --redfish-config)", MediaName, localID, node)
+	}
 	return nil
 }
 
