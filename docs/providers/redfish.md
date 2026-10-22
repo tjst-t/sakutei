@@ -116,3 +116,75 @@ $ sakutei           --intent intent/ --redfish-config bmcs.yaml --interval 30s
 ```
 
 偽 BMC（`internal/redfish/redfishtest`）を相手に plan → reconcile を通す受け入れテストは `tests/acceptance/redfish_cli_test.go`（`[AC-83-*]`）。
+
+## 統合テスト（qemu-bmc + containerlab、`make integration-redfish`）
+
+設計 §26.1 の 3 段目（§29.1 の（7））。本物の Redfish（[qemu-bmc](https://github.com/tjst-t/qemu-bmc) **0.9.0**、イメージ `ghcr.io/tjst-t/qemu-bmc:0.9.0` に固定）を containerlab で 2 台立て、sakutei の CLI と常駐ループを向ける。KVM・docker・containerlab と sudo が要るので、`make check`・`make test`・CI には入れない（テストは build tag `integration_redfish` の付いたファイルにあり、`go test ./...` では空のパッケージになる）。
+
+### 要るもの
+
+- `/dev/kvm`（accel=kvm で動かす）と `/dev/net/tun`
+- docker と containerlab（確かめた版: docker 29.1.3、containerlab 0.81.1）
+- パスワードなしの `sudo`（containerlab と docker を sudo で動かす。環境変数 `SAKUTEI_SUDO=` を空にすると sudo を付けない）
+- Go 1.22 以上（テストが sakutei をビルドする）
+
+### 回し方
+
+```console
+$ make integration-redfish
+```
+
+`go vet -tags integration_redfish` のあと `go test -tags integration_redfish -v ./tests/integration/redfish/` を回す。テスト（`TestMain`）は次を自分でやる。
+
+1. 一時ディレクトリにトポロジ（`tests/integration/redfish/topology.clab.yml`）を写し、小さな ISO 9660 を 2 つ（`iso/sakutei-a.iso`・`iso/sakutei-b.iso`、テストがその場で書く）と sakutei のバイナリ、BMC の一覧（`insecure_skip_verify: true`、パスワードは file SecretBackend の SecretRef）を置く。
+2. 同じ名前の lab の残りを消してから `sudo containerlab deploy` する。lab 名と管理ネットは `sakutei-rf84`（`172.31.84.0/24`、BMC は node1 = `172.31.84.11`・node2 = `172.31.84.12`、Redfish は HTTPS 443・自己署名・`admin`/`password`）。
+3. (1)〜(6) を順に回す（前の段の現実を次の段が使うので、1 つ落ちたら残りは回さない）。
+4. **終わったら必ず `containerlab destroy --cleanup`**（失敗しても・Ctrl-C で止めても）。テストのプロセスごと落ちた（`-timeout` など）ときは、Makefile が lab の残りを見つけて消す。
+
+トポロジの要点: 2 台とも `/dev/kvm`・`/dev/net/tun` を渡し、`SYSTEM_UUID`・`VM_MACS` を固定、VM の NIC は eth1（2 台を直結）、`GRACEFUL_TIMEOUT` は 10 秒。**`VM_DISK_SIZE` は付けない**——ディスクの無い VM は BIOS のまま ACPI の電源ボタンに応えないので、GracefulShutdown は PoweringOff のあと `GRACEFUL_TIMEOUT` 秒で On に戻る。これを既定停止の stuck と graceful_then_force の確かめに使う。`POWER_ON_AT_START` の既定（false）で VM は Off から始まる。
+
+手で lab を立てて触るとき（後で必ず消す）:
+
+```console
+$ cd tests/integration/redfish && mkdir -p iso && cp /path/to/some.iso iso/
+$ sudo containerlab deploy -t topology.clab.yml
+$ curl -sk -u admin:password https://172.31.84.11/redfish/v1/Systems/1
+$ curl -sk -u admin:password -X POST -H 'Content-Type: application/json' \
+    -d '{"ResetType": "ForceOff"}' https://172.31.84.12/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
+$ sudo containerlab destroy -t topology.clab.yml --cleanup && rm -rf iso
+```
+
+### 確かめること
+
+| | 内容 | 確かめ方 |
+| --- | --- | --- |
+| (0) | lab が想定どおり | Managers/1 の FirmwareVersion が `v0.9.0`。0.9 ではサービスルート（`/redfish/v1`）は認証なしで 200、`Systems/1` は認証なしで 401。UUID は `SYSTEM_UUID` のとおり、最初は Off。 |
+| (1) `[AC-84-1]` | plan → reconcile で宣言に収束 | node1 = On・Continuous の Pxe・CD に `sakutei-a.iso`、node2 = On・Disabled・CD は空。plan は差分を出して BMC に書かない。reconcile のあと Redfish の GET が宣言どおりで、QEMU が `accel=kvm` で動いている（`docker top`）。続く plan は `Converged (no changes)`。image を `sakutei-b.iso` に変えると同じ Apply の中で Eject → Insert して収束。 |
+| (2) `[AC-84-2]` | 手で変えたものを次の周で戻す | 常駐の sakutei（`--interval 2s`）を回したまま、curl 相当の要求で node2 を ForceOff、node1 の起動先の上書きを Disabled、node1 の CD を Eject。次の周で 3 つとも cause B の Drift として出て、On・Continuous/Pxe・`sakutei-b.iso` に戻る。 |
+| (3) `[AC-84-3]` | 既定の停止（graceful）は ForceOff しない | node1 を `power: "Off"`（power_off は既定）にして常駐（`--stuck-after 3`）。電源は On → PoweringOff → On を繰り返し、一度も Off にならない。BMC のログに「guest did not power off」が 2 回以上（GracefulShutdown を送り直している）。Drift が `class: stuck`・`severity: critical` に上がる（`--event-log`）。plan はまだ Off を求める。 |
+| (4) `[AC-84-4]` | graceful_then_force は force_after 後に ForceOff | `power_off: graceful_then_force`・`force_after: 10s`。電源の移り変わりは On → PoweringOff →（BMC があきらめて）On → **Off**（PoweringOff を経ずに Off = ForceOff）。Off になったのは起動から force_after 以上あと。予算で止まらない（BudgetHalted なし）。続く plan は Converged。 |
+| (5) `[AC-84-5]` | BMC を止めると Unknown で何も操作しない | node2 を手で ForceOff・node1 の起動先を手で外してから、node2 のコンテナを `docker pause`。plan は node2 の観測が unreachable でエラー。常駐は node2 を毎周「unobservable」として飛ばし（3 周以上）、node1 は収束を続ける（起動先が戻る）。node2 には Apply を出さない。unpause して 5 秒待っても node2 は Off のまま（止まっている間に送った要求が受信待ちに溜まっていれば、ここで実行されてしまう）。reconcile で On に戻る。 |
+| (6) `[AC-84-6]` | Once は計画の時点でエラー | node2 を `boot_enabled: Once` にすると、plan も reconcile も `boot_enabled "Once" cannot be declared` で失敗し、node2 は変わらない。 |
+
+### 結果（2026-10-22、このリポジトリの作業コンテナ）
+
+baremetal 上の Incus のコンテナ（72 コア・メモリ 243 GiB、`/dev/kvm` あり、docker 29.1.3・containerlab 0.81.1）で `make integration-redfish` が合格した。lab の deploy から destroy まで約 80 秒。
+
+```
+--- PASS: TestRedfishIntegration (75.80s)
+    --- PASS: TestRedfishIntegration/0_lab (0.00s)
+    --- PASS: TestRedfishIntegration/1_plan_reconcile (0.34s)
+    --- PASS: TestRedfishIntegration/2_daemon_restores_drift (2.54s)
+    --- PASS: TestRedfishIntegration/3_graceful_stuck (31.10s)
+    --- PASS: TestRedfishIntegration/4_graceful_then_force (11.03s)
+    --- PASS: TestRedfishIntegration/5_bmc_paused_unknown (30.78s)
+    --- PASS: TestRedfishIntegration/6_once_rejected (0.01s)
+ok  	github.com/tjst-t/sakutei/tests/integration/redfish	80.072s
+```
+
+見えたこと:
+
+- (3) の電源の移り変わりは `[On PoweringOff On PoweringOff On PoweringOff]`。GRACEFUL_TIMEOUT（10 秒）ごとに BMC が On に戻し、sakutei が次の周に GracefulShutdown を送り直す。Drift は送り直すたびに数えられ、3 回目（約 30 秒）で stuck に上がった。PoweringOff の間は Converging で、周は数えない。
+- (4) は `[On PoweringOff On Off]`、起動から 11 秒で Off。
+- (5) の BMC が止まっている間は、要求が 3 秒（BMC の一覧の `timeout`）で切れて Unknown になる（TCP は張れるが HTTPS の応答が来ない）。
+- qemu-bmc 0.9.0 は path の InsertMedia でファイルの中身を確かめないが、テストは正しい ISO 9660 を差している。

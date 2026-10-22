@@ -195,6 +195,7 @@ $ make test       # 全テスト（acceptance・chaos 含む）
 $ make vet        # go vet
 $ make check      # build + vet + test
 $ make demo       # レビュー用デモ
+$ make integration-redfish  # Redfish の統合テスト（qemu-bmc + containerlab、KVM と sudo が要る。check には入らない）
 $ make clean      # 生成物削除
 ```
 

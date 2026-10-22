@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check demo clean
+.PHONY: build test test-race vet check demo clean integration-redfish
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -18,6 +18,22 @@ vet:
 	go vet ./...
 
 check: build vet test
+
+# Redfish の統合テスト（#84、設計 §26.1 の 3 段目）。qemu-bmc 0.9.0 を containerlab
+# で 2 台立てて回し、終わったら（失敗しても）消す。KVM・docker・containerlab と
+# sudo（パスワードなし）が要るので、check・test・CI には入れない。
+# 手順と結果は docs/providers/redfish.md の「統合テスト」。
+REDFISH_IT := ./tests/integration/redfish/
+integration-redfish:
+	go vet -tags integration_redfish $(REDFISH_IT)
+	@status=0; \
+	go test -tags integration_redfish -count=1 -v -timeout 20m $(REDFISH_IT) || status=$$?; \
+	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^clab-sakutei-rf84-'; then \
+	  echo 'integration-redfish: the lab was left behind; destroying it'; \
+	  sudo -n docker unpause clab-sakutei-rf84-node1 clab-sakutei-rf84-node2 >/dev/null 2>&1; \
+	  sudo -n containerlab destroy --name sakutei-rf84 --cleanup || status=1; \
+	fi; \
+	exit $$status
 
 clean:
 	rm -rf $(BIN) $(DEMODIR)

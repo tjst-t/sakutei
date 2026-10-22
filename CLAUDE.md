@@ -25,6 +25,7 @@ $ make vet        # go vet
 $ make check      # build + vet + test
 $ make demo       # plan → converge → drift → self-heal のウォークスルー
 $ make test-race  # race 検出付きのテスト（cgo のため gcc が要る）
+$ make integration-redfish  # Redfish の統合テスト（qemu-bmc 0.9.0 × 2 を containerlab で。KVM・docker・sudo が要る。check・CI には入れない）
 ```
 
 Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflows/ci.yml`（GitHub Actions）。push（main）と PR のたびに、Go 1.22 と最新の安定版で `make check` を、最新の安定版で `make test-race` を回す。
@@ -41,6 +42,7 @@ Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflo
 ├── internal/                                  # reconcile・diff・budget・prune・cause・render・loader・
 │                                              #   remediation・statusreport・fakeprovider・dnszone・nftables 等
 ├── tests/acceptance/                          # 受け入れテスト・chaos テスト（AC タグ付き）
+├── tests/integration/redfish/                 # Redfish の統合テスト（build tag integration_redfish）
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── architecture/

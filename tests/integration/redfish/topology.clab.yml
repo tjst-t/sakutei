@@ -1,0 +1,56 @@
+# Redfish の統合テスト（#84、設計 §26.1 の 3 段目・§29.1 の（7））のトポロジ。
+#
+# qemu-bmc 0.9.0 を 2 台。BMC（Redfish、HTTPS 443、自己署名、admin/password）は
+# containerlab の管理ネット（eth0）に固定のアドレスで置き、ホストの sakutei から
+# 直に届く。VM の NIC は eth1（2 台を直結）で、VM_MACS で MAC を固定する。
+#
+#   host (sakutei) ── sakutei-rf84 (172.31.84.0/24) ──┬─ node1 BMC 172.31.84.11
+#                                                      └─ node2 BMC 172.31.84.12
+#   node1 VM NIC (eth1) ──────────── node2 VM NIC (eth1)
+#
+# ディスクは作らない（VM_DISK_SIZE を付けない）。ディスクの無い VM は BIOS の
+# まま ACPI の電源ボタンに応えないので、GracefulShutdown は PoweringOff のあと
+# GRACEFUL_TIMEOUT 秒で On に戻る（既定停止の stuck と graceful_then_force を
+# 確かめるのに使う）。
+#
+# ./iso（テストが作る小さな ISO）を /iso に読み取り専用で差す。
+#
+# 名前（lab・管理ネット）はほかの lab と衝突しないものにしている。手で回すときは
+# docs/providers/redfish.md の「統合テスト」を見る。
+name: sakutei-rf84
+
+mgmt:
+  network: sakutei-rf84
+  ipv4-subnet: 172.31.84.0/24
+
+topology:
+  defaults:
+    kind: linux
+    image: ghcr.io/tjst-t/qemu-bmc:0.9.0
+    devices:
+      - /dev/kvm       # accel=kvm
+      - /dev/net/tun   # VM の NIC（eth1 を VM に渡す）
+    binds:
+      - ./iso:/iso:ro
+    env:
+      VM_MEMORY: "256"
+      VM_CPUS: "1"
+      IPMI_USER: "admin"
+      IPMI_PASS: "password"
+      VM_NETWORKS: "eth1"
+      GRACEFUL_TIMEOUT: "10"
+
+  nodes:
+    node1:
+      mgmt-ipv4: 172.31.84.11
+      env:
+        SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008401"
+        VM_MACS: "52:54:00:84:01:01"
+    node2:
+      mgmt-ipv4: 172.31.84.12
+      env:
+        SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008402"
+        VM_MACS: "52:54:00:84:02:01"
+
+  links:
+    - endpoints: ["node1:eth1", "node2:eth1"]

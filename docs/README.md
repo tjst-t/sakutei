@@ -21,7 +21,7 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 
 | ドキュメント | 内容 |
 | --- | --- |
-| [providers/redfish.md](providers/redfish.md) | Redfish の BMC provider（`redfish-system`・`redfish-virtual-media`）。BMC の一覧（`--redfish-config`、パスワードは SecretRef）と intent の例。 |
+| [providers/redfish.md](providers/redfish.md) | Redfish の BMC provider（`redfish-system`・`redfish-virtual-media`）。BMC の一覧（`--redfish-config`、パスワードは SecretRef）と intent の例。qemu-bmc + containerlab の統合テスト（`make integration-redfish`）の回し方と結果。 |
 
 ## レビュー・適用可能性検討（review/）
 
