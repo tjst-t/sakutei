@@ -1621,7 +1621,7 @@
       "number": 84,
       "kind": "task",
       "title": "Redfish の統合テスト：qemu-bmc + containerlab（make integration-redfish）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "redfish-bmc-provider-qemu-bmc-containerl",
       "dependsOn": [
         "redfish-provider-cli-bmc-secretref"
@@ -1635,7 +1635,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T03:31:46.414Z",
-      "updatedAt": "2026-10-22T04:17:38.043Z",
+      "updatedAt": "2026-10-22T04:41:18.043Z",
       "closedAt": null,
       "extra": {}
     },
