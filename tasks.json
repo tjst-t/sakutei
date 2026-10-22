@@ -1574,7 +1574,7 @@
       "number": 82,
       "kind": "task",
       "title": "Redfish provider: 仮想メディア（CD の Insert/Eject）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "redfish-bmc-provider-qemu-bmc-containerl",
       "dependsOn": [
         "redfish-provider"
@@ -1588,7 +1588,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T03:31:46.414Z",
-      "updatedAt": "2026-10-22T03:31:46.414Z",
+      "updatedAt": "2026-10-22T04:02:23.899Z",
       "closedAt": null,
       "extra": {}
     },
