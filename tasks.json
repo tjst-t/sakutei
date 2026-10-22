@@ -1598,7 +1598,7 @@
       "number": 83,
       "kind": "task",
       "title": "Redfish provider を CLI につなぐ（BMC の設定ファイルとパスワードの SecretRef）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "redfish-bmc-provider-qemu-bmc-containerl",
       "dependsOn": [
         "redfish-provider-cd-insert-eject"
@@ -1608,12 +1608,12 @@
       "labels": [],
       "body": "plan・reconcile・daemon で redfish のリソースを intent に書けるようにする（dnszone・nftables と混ぜられる、既存の provider の登録のしかたに合わせる）。\n- BMC の一覧は設定ファイル（--redfish-config <file>）：ノード名ごとに address（https://…）、system / manager のパス（省略可）、username、password（SecretRef。値を設定ファイルや intent に直接書かない。既存のファイル版 SecretBackend〈internal/render/secretbackend_file.go〉で解決する）、ca_file、insecure_skip_verify（明示したときだけ）、timeout。書式はリポジトリの既存の設定・intent の読み方（stdlib のみ）に合わせる。\n- 設定に無いノードを intent に書いたら計画の時点でエラー。\n- intent の例を docs（provider の説明のある場所。無ければ docs/providers/redfish.md を作る）に書く：システム（power・boot_enabled・boot_target・power_off・force_after）と仮想メディア（image）。\n- 偽 BMC を立てて CLI（plan → reconcile）を通しで回す受け入れテストを tests/acceptance に足す。",
       "doneWhen": "--redfish-config で BMC を指定し、偽 BMC を相手に sakutei plan・reconcile が redfish のシステムと仮想メディアを収束させる受け入れテストが通る。パスワードは SecretRef でしか渡せない。make check・make test-race が合格する",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/redfish-provider-cli-bmc-secretref）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T03:31:46.414Z",
-      "updatedAt": "2026-10-22T04:19:26.818Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-22T04:41:09.165Z",
+      "closedAt": "2026-10-22T04:41:09.165Z",
       "extra": {}
     },
     {
