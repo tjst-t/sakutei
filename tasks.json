@@ -2018,7 +2018,7 @@
       "number": 85,
       "kind": "bug",
       "title": "デーモンの周の要約：観測できず飛ばした資源があっても「converged」と出る・availability が数字で出る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -2032,7 +2032,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T05:06:28.085Z",
-      "updatedAt": "2026-10-22T10:56:51.577Z",
+      "updatedAt": "2026-10-22T10:56:56.080Z",
       "closedAt": null,
       "extra": {}
     }
