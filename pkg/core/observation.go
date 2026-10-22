@@ -14,7 +14,10 @@
 
 package core
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Availability is the three-valued result of a Read call (§4.5).
 //
@@ -37,6 +40,21 @@ const (
 	// of a convergence operation.  Do not re-Apply; wait for it to finish.
 	AvailabilityConverging
 )
+
+// String returns the name of a ("ok" / "unknown" / "converging") so logs
+// show it by name, not as a number (#85).
+func (a Availability) String() string {
+	switch a {
+	case AvailabilityOk:
+		return "ok"
+	case AvailabilityUnknown:
+		return "unknown"
+	case AvailabilityConverging:
+		return "converging"
+	default:
+		return fmt.Sprintf("Availability(%d)", int(a))
+	}
+}
 
 // Observation is the return value of Provider.Read (§4.5, §5.1).
 //

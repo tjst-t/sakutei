@@ -984,22 +984,30 @@ func taskHolder(cfg Config) string {
 // cycleSummary is the per-cycle summary of the daemon log after "observed=N".
 // #73: a budget / capacity gate or a prune safety guard stopped ops this cycle
 // — it did not converge, so never say "converged".  #76: neither did a cycle
-// whose prune deleted orphans; it reports how many.  Only a cycle that changed
-// nothing and held nothing says "converged (no changes)".
+// whose prune deleted orphans; it reports how many.  #85: nor did a cycle that
+// skipped resources it could not observe (unknown ≠ converged); it reports how
+// many.  Only a cycle that changed nothing, held nothing and skipped nothing
+// says "converged (no changes)".
 func cycleSummary(res CycleResult) string {
-	pruned := ""
+	extra := ""
 	if res.Pruned > 0 {
-		pruned = fmt.Sprintf(" pruned=%d", res.Pruned)
+		extra += fmt.Sprintf(" pruned=%d", res.Pruned)
+	}
+	if len(res.Skipped) > 0 {
+		extra += fmt.Sprintf(" skipped=%d", len(res.Skipped))
 	}
 	switch {
 	case res.Held > 0 || res.PruneHalted:
 		return fmt.Sprintf("halted (%d op(s) held) applied=%d launched=%d%s",
-			res.Held, res.Applied, res.Launched, pruned)
+			res.Held, res.Applied, res.Launched, extra)
 	case res.Applied == 0 && res.Launched == 0 && res.Pruned == 0 && len(res.Waiting) == 0 && res.DriftCount == 0 &&
 		len(res.TasksLaunched) == 0 && len(res.TasksHeld) == 0 && len(res.WorkflowHeld) == 0:
+		if len(res.Skipped) > 0 {
+			return fmt.Sprintf("not converged: %d resource(s) skipped (no changes)", len(res.Skipped))
+		}
 		return "converged (no changes)"
 	default:
-		return fmt.Sprintf("applied=%d launched=%d%s", res.Applied, res.Launched, pruned)
+		return fmt.Sprintf("applied=%d launched=%d%s", res.Applied, res.Launched, extra)
 	}
 }
 
