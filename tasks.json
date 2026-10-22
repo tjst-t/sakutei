@@ -1501,7 +1501,7 @@
       "number": 48,
       "kind": "story",
       "title": "Redfish の BMC provider（電源・起動デバイス・ハードウェア情報）と qemu-bmc + containerlab の統合テスト",
-      "status": "ready",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -1513,7 +1513,7 @@
       ],
       "body": "物理サーバの BMC を Redfish で扱う provider。**決まりは設計書 v3.15 §29.1「Redfish の BMC provider」が正**（2026-10-22 人が決定、CHANGELOG-v3.15）。背景：設計 §1.5（物理（電源/BMC））、§28（Provider SDK）、レビューの scenario 20。\n\n## 決まったこと（2026-10-22）\n- IPMI は入れない（Redfish だけ）。\n- 仮想メディア（CD の Insert/Eject、Inserted・Image の観測）は #48 に入れる。\n- 起動先の上書きで宣言できるのは Continuous と Disabled だけ。Once は計画の時点でエラー（将来 Task 側）。\n- 停止は宣言の power_off で選ぶ。既定 graceful は ForceOff に進まず、ずれの level が続いて stuck で知らせる。power_off: graceful_then_force + force_after のときだけ ForceOff に進み、ForceOff は予算で破壊的に数える。\n- 統合テストは作業場所のコンテナ（baremetal、KVM あり）で回す。docker 29.1.3 と containerlab 0.81.1 を入れ、qemu-bmc 0.8 の 2 台を /dev/kvm 付きで deploy できること、ホスト側から 172.20.20.x の Redfish に届くこと、accel=kvm で動くこと、ディスクの無い VM（BIOS のまま）では GracefulShutdown のあと PoweringOff が続くこと（GRACEFUL_TIMEOUT で On に戻る）を 2026-10-22 に確かめた。containerlab は sudo で動かす。\n\n## qemu-bmc で使えるもの（統合テストは v0.8.0 以降）\n- イメージ ghcr.io/tjst-t/qemu-bmc:0.8（amd64・arm64）。Redfish は Basic 認証・HTTPS 443（自己署名）。例：qemu-bmc リポジトリ v0.8.0 の containerlab/mgmt-network.yml（devices に /dev/kvm を足すこと）。\n- Systems/1：PowerState（On・Off・PoweringOff・PoweringOn）、UUID、MemorySummary.TotalSystemMemoryGiB、ProcessorSummary.Count、EthernetInterfaces（MACAddress・LinkStatus）、Boot（Enabled・Target・Mode、Target@Redfish.AllowableValues）、Actions の ResetType@Redfish.AllowableValues。\n- Reset：On・ForceOff・GracefulShutdown・ForceRestart・GracefulRestart（204）。Graceful の間は PoweringOff → Off（応えなければ GRACEFUL_TIMEOUT 秒〈既定 120〉で On に戻る）。途中で別の電源操作が来ると打ち切ってそれに従う。\n- Boot：Disabled のときも GET の Target は設定した値のまま返る（比べない）。Once は 1 回起動で Disabled・None に戻る。Continuous は On・ForceRestart のあとも残る。\n- VirtualMedia：Managers/1/VirtualMedia/CD1 の InsertMedia（コンテナ内のパスか http(s) URL）・EjectMedia（204）。電源オフ中も残る。ダウンロード失敗で Inserted は false に戻る。\n- 値の固定：SYSTEM_UUID・VM_MACS・VM_MEMORY・VM_CPUS。\n\n## 分け方\n子タスク（クライアントと偽 BMC → システム（電源・起動先） → 仮想メディア → CLI と設定 → containerlab の統合テスト）。",
       "doneWhen": "qemu-bmc を相手にした containerlab の統合テスト（make の別ターゲット）で、電源・起動先・仮想メディアの宣言に収束し、手で変えた電源を次の周期で戻し、既定の停止では ForceOff せず stuck が出て、graceful_then_force では force_after 後に ForceOff し、BMC を止めると Unknown になって何も操作しないことを示す。契約テストと make check・make test-race が合格する",
-      "resolution": null,
+      "resolution": "#80〜#84 で完了（main 85d8a1c）。make integration-redfish（qemu-bmc 0.9.0 × 2、containerlab、KVM）で (1) 収束 (2) 手で変えた電源を戻す (3) 既定停止で ForceOff せず stuck (4) graceful_then_force で 11 秒後に Off (5) BMC を止めると Unknown で無操作 (6) Once を計画時に拒否、を 2026-10-22 に通した。make check・make test-race も合格。",
       "refs": [
         "https://github.com/tjst-t/qemu-bmc/releases/tag/v0.7.0",
         "https://github.com/tjst-t/qemu-bmc/releases/tag/v0.7.1",
@@ -1522,8 +1522,8 @@
       ],
       "threads": [],
       "createdAt": "2026-10-20T14:47:41.650Z",
-      "updatedAt": "2026-10-22T04:17:41.874Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-22T05:06:23.730Z",
+      "closedAt": "2026-10-22T05:06:23.730Z",
       "extra": {}
     },
     {
