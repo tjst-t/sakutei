@@ -8,7 +8,7 @@
 
 Kubernetes からは *収束原理*（level-triggered な収束ループ）だけを借り、実装機構（apiserver・etcd・scheduler・admission・CRD）は意図的に捨てている。位置づけは「**Ansible の冪等性 + k8s のループ**」。最大の特徴は **観測 state レス**（キャッシュした「現在状態」を持たず毎周期リアルを再観測する）で、これにより Terraform の three-way-diff / state ドリフト問題を構造的に排除する。名称は平安期の作庭書『作庭記』に由来する。
 
-> **現状:** 設計は v3.14（v3.4〜v3.11 は v1b・v1.5 の実装に設計書を追いつかせた改訂、v3.12〜v3.14 は v1 の試用で出た決定（SOA シリアル・自分の prune を急減判定から差し引く・level 報告の既定値）。経緯は `docs/architecture/CHANGELOG-v3.*.md`）。実装は **v1（v1a・v1b・v1.5）が完成**（タグ `v1.0.0`、Go 約 5.7 万行）。次は v1 を実際に使って確かめること（手順は `docs/trial/README.md`）。v2（Backlog #20）は v1 を試してから人が着手を決める。provider の追加（#48 Redfish BMC など）も残っている。
+> **現状:** 設計は v3.15（v3.4〜v3.11 は v1b・v1.5 の実装に設計書を追いつかせた改訂、v3.12〜v3.14 は v1 の試用で出た決定（SOA シリアル・自分の prune を急減判定から差し引く・level 報告の既定値）、v3.15 は Redfish BMC provider（#48）の決まり。経緯は `docs/architecture/CHANGELOG-v3.*.md`）。実装は **v1（v1a・v1b・v1.5）が完成**（タグ `v1.0.0`、Go 約 5.7 万行）。次は v1 を実際に使って確かめること（手順は `docs/trial/README.md`）。v2（Backlog #20）は v1 を試してから人が着手を決める。provider の追加（#48 Redfish BMC など）も残っている。
 
 ## 仕事の管理（Backlog）
 
@@ -44,7 +44,7 @@ Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflo
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── architecture/
-    │   ├── spec/                              # ★設計の正（source of truth）v3.14 分冊
+    │   ├── spec/                              # ★設計の正（source of truth）v3.15 分冊
     │   │   ├── README.md                      #   索引（版・改訂規約・目次・§→ファイル対応）
     │   │   └── part1〜part8-*.md              #   8部29節の本文（§番号は全部で一意）
     │   ├── CHANGELOG-v3.0.md                  # v2.6→v3.0 構成対応マップ+分冊化の記録
@@ -63,7 +63,7 @@ Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflo
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」（現行 v3.14。骨格は v2.6 と内容等価の全面再構成 v3.0 で、v3.1〜v3.14 は分冊を直接改訂）。`old/` は旧版（編集しない）、矛盾時は **spec/ が優先**。すべて日本語で書かれている。
+**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」（現行 v3.15。骨格は v2.6 と内容等価の全面再構成 v3.0 で、v3.1〜v3.15 は分冊を直接改訂）。`old/` は旧版（編集しない）、矛盾時は **spec/ が優先**。すべて日本語で書かれている。
 
 ## v3.0 の構成（8部29節・分冊）
 
