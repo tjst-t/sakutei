@@ -8,7 +8,7 @@
 
 Kubernetes からは *収束原理*（level-triggered な収束ループ）だけを借り、実装機構（apiserver・etcd・scheduler・admission・CRD）は意図的に捨てている。位置づけは「**Ansible の冪等性 + k8s のループ**」。最大の特徴は **観測 state レス**（キャッシュした「現在状態」を持たず毎周期リアルを再観測する）で、これにより Terraform の three-way-diff / state ドリフト問題を構造的に排除する。名称は平安期の作庭書『作庭記』に由来する。
 
-> **現状:** 設計は v3.16（v3.4〜v3.11 は v1b・v1.5 の実装に設計書を追いつかせた改訂、v3.12〜v3.14 は v1 の試用で出た決定（SOA シリアル・自分の prune を急減判定から差し引く・level 報告の既定値）、v3.15・v3.16 は Redfish BMC provider（#48）の決まり。経緯は `docs/architecture/CHANGELOG-v3.*.md`）。実装は **v1（v1a・v1b・v1.5）が完成**（タグ `v1.0.0`、Go 約 5.7 万行）。次は v1 を実際に使って確かめること（手順は `docs/trial/README.md`）。v2（Backlog #20）は v1 を試してから人が着手を決める。provider の追加（#48 Redfish BMC など）も残っている。
+> **現状:** 設計は v3.16（v3.4〜v3.11 は v1b・v1.5 の実装に設計書を追いつかせた改訂、v3.12〜v3.14 は v1 の試用で出た決定（SOA シリアル・自分の prune を急減判定から差し引く・level 報告の既定値）、v3.15・v3.16 は Redfish BMC provider（#48）の決まり。経緯は `docs/architecture/CHANGELOG-v3.*.md`）。実装は **v1（v1a・v1b・v1.5）が完成**（タグ `v1.0.0`。試用での修正と Redfish BMC provider を足した `v1.1.0`、変更点は `CHANGELOG.md`）。次は v1 を実際に使って確かめること（手順は `docs/trial/README.md`）。v2（Backlog #20）は v1 を試してから人が着手を決める。Redfish BMC provider（#48）は v1.1.0 で完了。
 
 ## 仕事の管理（Backlog）
 

@@ -10,7 +10,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 
 - **ライセンス:** Apache-2.0
 - **言語:** Go（1.22・標準ライブラリのみ、外部依存なし）
-- **状態:** 設計 v3.16／ 実装 **v1 完成**（v1a・v1b・v1.5。タグ `v1.0.0`）
+- **状態:** 設計 v3.16／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v1.1.0`、変更点は [CHANGELOG.md](CHANGELOG.md)）
 
 ---
 
@@ -128,6 +128,8 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 | --- | --- | --- |
 | `dnszone` | 実 | ゾーンファイルを宣言的現実として管理（RFC1035 サブセット、原子的書込、SOA/NS は管理外。書き換えたときは SOA のシリアルだけ上げる） |
 | `nftables` | 実 | nftables ルールセットファイルを管理。**ordered ルール**（並べ替え＝変更）を実証 |
+| `redfish-system` | 実 | BMC（Redfish）越しにサーバの電源（On / Off）と起動先の上書き（Continuous / Disabled）を管理。UUID・MAC・CPU・メモリは観測だけ。停止は既定で正常停止のみ、`power_off: graceful_then_force` のときだけ強制停止（予算に数える）。v1.1.0 で追加、[docs/providers/redfish.md](docs/providers/redfish.md) |
+| `redfish-virtual-media` | 実 | BMC の仮想メディア（CD）の挿入・取り出しを `image` の宣言で管理。v1.1.0 で追加 |
 | `fake` | テスト | fault-injection 可能な検証用 provider（chaos テストの主戦場） |
 
 ---
@@ -183,7 +185,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 | **v1.5** | 単純 Task ＋ 最小 Workflow（直列＋不変条件＋N-of-M 手動承認）＋ remediation schedule ＋ planned_change ＋ 運用プロファイル ＋ DR モード（break-glass） | ✅ 完成 |
 | **v2+** | 多相 Task、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、intent UI、採番の SQLite 版、一括 API を持つ対象（Proxmox・vCenter 等）の provider | 予定 |
 
-既知の v1 の限界（設計 §29 に記録）: 振動の検知と隔離は未配線（`StatusOscillating` は型のみ。破壊的な flip-flop は ghost-diff hold で抑制）／ Vault SecretBackend はスタブ（file backend は実装済み）／ 採番はファイル版（同一ホストでの同時払い出しは flock で直列化。SQLite 版は v2）／ BulkObserve は dnszone・nftables での実証まで（一括 API を持つ対象は Backlog #49）／ Event の出し先（sink）は標準エラーと JSON lines のファイル（`--event-log`）だけで、Alertmanager などへ直接送る sink は無い（ファイルを外の仕組みで拾う）。firing / resolved の状態はメモリに持つので、デーモンを起こし直すと続いているものを改めて firing として出す。
+既知の v1 の限界（設計 §29 に記録）: 振動の検知と隔離は未配線（`StatusOscillating` は型のみ。破壊的な flip-flop は ghost-diff hold で抑制）／ Vault SecretBackend はスタブ（file backend は実装済み）／ 採番はファイル版（同一ホストでの同時払い出しは flock で直列化。SQLite 版は v2）／ BulkObserve は dnszone・nftables での実証まで（一括 API を持つ対象は Backlog #49）／ Event の出し先（sink）は標準エラーと JSON lines のファイル（`--event-log`）だけで、Alertmanager などへ直接送る sink は無い（ファイルを外の仕組みで拾う）。firing / resolved の状態はメモリに持つので、デーモンを起こし直すと続いているものを改めて firing として出す。／ Redfish provider は qemu-bmc（0.9.0）を相手にした統合テストまでで、実機のサーバの BMC では確かめていない。IPMI は持たない。起動先の `Once` は宣言できない（将来 Task 側）。
 
 ---
 
