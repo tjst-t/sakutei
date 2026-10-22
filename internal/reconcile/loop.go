@@ -1737,7 +1737,15 @@ func runCycleAsync(
 
 		// F-5 (Scb0ecd-2 daemon wiring): classify this resource's diff with the
 		// real CauseContext so A/B/C/D/E are attributed correctly in the daemon path.
-		plan := pe.engine.Diff(obs, res, resCauseCtx)
+		// §28.4: Plan also runs the provider's plan-time refinement
+		// (provider.PlanRefiner); an error keeps the resource unchanged.
+		plan, planErr := pe.engine.Plan(obs, res, resCauseCtx)
+		if planErr != nil {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: plan: %v\n", planErr)
+			unobservable[local] = true
+			sched.Observed(res, false)
+			continue
+		}
 
 		// Scb0ecd-3: for cause B (drift), emit a DriftEvent with the last-seen
 		// ring's previous-cycle snapshot diff.  The ring is read BEFORE we record

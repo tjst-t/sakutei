@@ -9,6 +9,8 @@ provider を書き始めるときの雛形。コピーして名前を 1 語置�
 
 標準階級（Read が値を返すが List は無い）が欲しいときは `full/` から `List` と `BulkObserve` を消し、`Capabilities` の `List` / `BulkObserve` を false にする（等価性テストも消す）。
 
+対象を作ったり消したりしない provider（例：BMC の向こうのサーバの電源、`internal/redfish/system`）は、契約テストに `Preexisting: true` を付ける（Apply の前の Read は、今ある対象を SampleDesired と違う値で返すこと）。Schema だけでは書けない決まり（別のフィールドしだいで比べない値・「どう収束させるか」の宣言だけの値・場合によって破壊的になる Op・対象の `AllowableValues` との照合）は、任意の `provider.PlanRefiner` で計画の時点に足す。core は、差分を落とすことと Destructive を上げることだけを受け付ける。
+
 ## 使い方
 
 ```console

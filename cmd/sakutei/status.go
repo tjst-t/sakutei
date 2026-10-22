@@ -179,7 +179,7 @@ func runStatus(args []string) {
 	// provider ごとの diff エンジンを用意（各 provider は固有 Schema を持つ）。
 	engines := make(map[string]*diff.Engine, len(providers))
 	for name, p := range providers {
-		engines[name] = diff.New(p.Schema())
+		engines[name] = diff.ForProvider(p)
 	}
 
 	// cause 分類のための版・バージョン信号を組み立てる。
@@ -282,7 +282,11 @@ func runStatus(args []string) {
 		// but a cold-start drift-repair UPDATE is B — identical to plan/reconcile.
 		resCauseCtx.ResourceObservedAbsent = obs.State == nil
 
-		plan := engine.Diff(obs, res, resCauseCtx)
+		plan, planErr := engine.Plan(obs, res, resCauseCtx)
+		if planErr != nil {
+			fmt.Fprintf(os.Stderr, "sakutei status: %v\n", planErr)
+			os.Exit(1)
+		}
 
 		// drift あり: 原因タグ・provider 階級・last-seen 注記を添えて一覧へ。
 		// last-seen 注記は「この観測を記録する前の」リング状態と比較する。単一実行では

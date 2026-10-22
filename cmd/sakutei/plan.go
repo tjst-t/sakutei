@@ -276,7 +276,7 @@ func runPlan(args []string) {
 	// Build per-provider diff engines (each provider has its own Schema).
 	engines := make(map[string]*diff.Engine, len(providers))
 	for name, p := range providers {
-		engines[name] = diff.New(p.Schema())
+		engines[name] = diff.ForProvider(p)
 	}
 
 	// Scb0ecd-2: compute curProviderVersion for cause-state tracking.
@@ -373,7 +373,11 @@ func runPlan(args []string) {
 			os.Exit(1)
 		}
 
-		plan := engine.Diff(obs, res, resCauseCtx)
+		plan, planErr := engine.Plan(obs, res, resCauseCtx)
+		if planErr != nil {
+			fmt.Fprintf(logErr, "sakutei plan: %v\n", planErr)
+			os.Exit(1)
+		}
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff).
 		for _, op := range plan.Ops {
 			if op.Cause == core.CauseTagC {

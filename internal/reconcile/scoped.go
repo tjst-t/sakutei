@@ -315,7 +315,12 @@ func ScopedReconcile(
 		// changes the cold-start decision, kept here for uniformity.
 		resCauseCtx := baseCauseCtx
 		resCauseCtx.ResourceObservedAbsent = obs.State == nil
-		plan := engine.Diff(obs, r, resCauseCtx)
+		plan, planErr := engine.Plan(obs, r, resCauseCtx)
+		if planErr != nil {
+			fmt.Fprintf(errOut, "sakutei: scoped: plan: %v\n", planErr)
+			unobservable[local] = true
+			continue
+		}
 		if len(plan.Ops) == 0 {
 			continue // 既に収束。
 		}

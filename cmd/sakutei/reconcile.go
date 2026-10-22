@@ -405,7 +405,7 @@ func runReconcile(args []string) {
 	// Build per-provider diff engines (each provider has its own Schema).
 	engines := make(map[string]*diff.Engine, len(providers))
 	for name, p := range providers {
-		engines[name] = diff.New(p.Schema())
+		engines[name] = diff.ForProvider(p)
 	}
 
 	// Scb0ecd-2: compute curProviderVersion for cause-state tracking.
@@ -564,7 +564,11 @@ func runReconcile(args []string) {
 			os.Exit(1)
 		}
 
-		resourcePlan := engine.Diff(obs, res, resCauseCtxRec)
+		resourcePlan, planErr := engine.Plan(obs, res, resCauseCtxRec)
+		if planErr != nil {
+			fmt.Fprintf(logErr, "sakutei reconcile: %v\n", planErr)
+			os.Exit(1)
+		}
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff),
 		// and filter them out of the Apply set (§10.4, task Scb0ecd-2-2).
 		// C ops are shown in plan output but NOT applied; the operator must

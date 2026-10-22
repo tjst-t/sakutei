@@ -57,7 +57,7 @@ type providerEntry struct {
 }
 
 func newProviderEntry(name string, p provider.Provider) *providerEntry {
-	e := &providerEntry{name: name, p: p, engine: diff.New(p.Schema())}
+	e := &providerEntry{name: name, p: p, engine: diff.ForProvider(p)}
 	if _, ok := p.(provider.Lister); ok {
 		e.prune = prune.New()
 	}

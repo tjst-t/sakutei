@@ -88,11 +88,87 @@ type DesiredResource struct {
 // Engine holds the provider schema used to drive the diff.
 type Engine struct {
 	schema provider.Schema
+	// refiner is the provider's optional plan-time refinement (Plan); nil for
+	// an Engine built from a Schema alone.
+	refiner provider.PlanRefiner
 }
 
 // New creates a diff Engine for the given provider schema.
 func New(schema provider.Schema) *Engine {
 	return &Engine{schema: schema}
+}
+
+// ForProvider creates a diff Engine for p: its Schema drives Diff, and Plan
+// also runs p's PlanRefiner when p implements it.
+func ForProvider(p provider.Provider) *Engine {
+	e := New(p.Schema())
+	if r, ok := p.(provider.PlanRefiner); ok {
+		e.refiner = r
+	}
+	return e
+}
+
+// Plan is Diff followed by the provider's plan-time refinement
+// (provider.PlanRefiner, §28.4).  The convergence paths (daemon, scoped,
+// plan, reconcile, status) plan through it; Diff alone is the pure
+// Schema-driven diff.
+//
+// The refinement runs only for an Ok observation with a State (a target that
+// is unknown, converging or absent gives the provider nothing to check
+// against).  The core keeps it safe whatever the provider returns: an op can
+// only lose FieldDiffs (one left without any is dropped), Destructive can
+// only be raised, and Kind / Target / Cause stay the core's.  An error from
+// the provider is returned with an empty Plan: the resource is not changed
+// this cycle.
+func (e *Engine) Plan(obs core.Observation, desired DesiredResource, ctx cause.CauseContext) (core.Plan, error) {
+	plan := e.Diff(obs, desired, ctx)
+	if e.refiner == nil || obs.Availability != core.AvailabilityOk || obs.State == nil {
+		return plan, nil
+	}
+	refined, err := e.refiner.RefinePlan(desired.ID.Local, obs.State, desired.Fields, plan.Ops)
+	if err != nil {
+		return core.Plan{}, fmt.Errorf("resource %s: %w", desired.ID, err)
+	}
+	return core.Plan{Ops: mergeRefined(plan.Ops, refined)}, nil
+}
+
+// mergeRefined applies the provider's refinement to the core's ops under the
+// rules of Plan.  A refined op is matched to the core's op by Target and Kind;
+// a core op with no match is dropped (the provider found nothing to change).
+func mergeRefined(orig, refined []core.Op) []core.Op {
+	var out []core.Op
+	for _, op := range orig {
+		var r *core.Op
+		for i := range refined {
+			if refined[i].Target.Key() == op.Target.Key() && refined[i].Kind == op.Kind {
+				r = &refined[i]
+				break
+			}
+		}
+		if r == nil {
+			continue
+		}
+		keep := make(map[string]bool, len(r.Fields))
+		for _, f := range r.Fields {
+			keep[f.Field] = true
+		}
+		var fields []core.FieldDiff
+		for _, f := range op.Fields {
+			if keep[f.Field] {
+				fields = append(fields, f)
+			}
+		}
+		if len(fields) == 0 && op.Kind != core.OpKindDelete {
+			continue
+		}
+		op.Fields = fields
+		op.Destructive = op.Destructive || r.Destructive
+		if r.Diagnostic != "" {
+			op.Diagnostic = r.Diagnostic
+		}
+		out = append(out, op)
+	}
+	return out
 }
 
 // ValidateDesired checks a desired resource's intent fields against the Schema

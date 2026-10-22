@@ -132,7 +132,7 @@ func (e *Engine) diff(id core.ID) *diff.Engine {
 	if e.differs == nil {
 		e.differs = map[string]*diff.Engine{}
 	}
-	d := diff.New(p.Schema())
+	d := diff.ForProvider(p)
 	e.differs[key] = d
 	return d
 }
@@ -444,7 +444,10 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 		if d == nil {
 			return stepPending, "the target's provider is unavailable; waiting"
 		}
-		plan := d.Diff(obs, diff.DesiredResource{ID: target, Fields: step.Fields}, cause.CauseContext{})
+		plan, err := d.Plan(obs, diff.DesiredResource{ID: target, Fields: step.Fields}, cause.CauseContext{})
+		if err != nil {
+			return stepFailed, fmt.Sprintf("plan %v: %v", step.Fields, err)
+		}
 		if err := s.e.execute(ctx, plan); err != nil {
 			return stepFailed, fmt.Sprintf("apply %v: %v", step.Fields, err)
 		}
@@ -493,7 +496,8 @@ func (s *stepper) satisfied(obs core.Observation, id core.ID, fields map[string]
 	if d == nil {
 		return false
 	}
-	return len(d.Diff(obs, diff.DesiredResource{ID: id, Fields: fields}, cause.CauseContext{}).Ops) == 0
+	plan, err := d.Plan(obs, diff.DesiredResource{ID: id, Fields: fields}, cause.CauseContext{})
+	return err == nil && len(plan.Ops) == 0
 }
 
 // observeAll は全対象を新しく Observe する（観測 state は持たない）。

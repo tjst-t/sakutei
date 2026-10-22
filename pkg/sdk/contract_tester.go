@@ -121,6 +121,16 @@ type ContractTester struct {
 	// return an error or Availability Unknown — never Ok with a nil State,
 	// which would claim the resource is absent (unknown ≠ absent).
 	MakeUnreachable func() (restore func(), err error)
+
+	// Preexisting says the sample resource already exists in the target before
+	// any Apply: the provider manages properties of something it never creates
+	// or deletes (e.g. the power of a server behind a BMC, §29.1).  The
+	// absent→Create→Read contract then starts from that existing resource:
+	// the Read before Apply must be Ok with a State, and that State must NOT
+	// already match SampleDesired (a provider that peeks desired would report
+	// it, ADR-0002) — so the test author sets up the target to differ from the
+	// sample.  The Create plan is still what Apply receives.
+	Preexisting bool
 }
 
 // DefaultValueForKind is the value used for a field without an Example when
@@ -314,7 +324,20 @@ func (ct *ContractTester) runAbsentCreateRead(t TB) {
 	// Best-effort: an error from this early Read is not itself a contract
 	// violation (the target may be legitimately unreachable), so it is tolerated;
 	// only a non-nil State on a successful Read is flagged.
-	if obs0, err0 := ct.Provider.Read(ctx, ct.SampleID); err0 == nil && obs0.State != nil {
+	if ct.Preexisting {
+		obs0, err0 := ct.Provider.Read(ctx, ct.SampleID)
+		switch {
+		case err0 != nil:
+			t.Fatalf("ContractTester/AbsentCreateRead: Read of the preexisting sample before Apply failed: %v", err0)
+			return
+		case obs0.Availability != core.AvailabilityOk || obs0.State == nil:
+			t.Fatalf("ContractTester/AbsentCreateRead: Read of the preexisting sample before Apply: availability=%v state=%v, want Ok with a State",
+				obs0.Availability, obs0.State)
+			return
+		case ct.stateMatchesDesired(obs0.State):
+			t.Errorf("ContractTester/AbsentCreateRead: Read before Apply already reports SampleDesired (provider may be peeking desired, ADR-0002; or the target was not set up to differ from the sample)")
+		}
+	} else if obs0, err0 := ct.Provider.Read(ctx, ct.SampleID); err0 == nil && obs0.State != nil {
 		t.Errorf("ContractTester/AbsentCreateRead: Read before Apply returned non-nil State (provider may be peeking desired; ADR-0002)")
 	}
 
@@ -464,6 +487,18 @@ func (ct *ContractTester) buildCreatePlan() core.Plan {
 			},
 		},
 	}
+}
+
+// stateMatchesDesired reports whether every SampleDesired field is present in
+// state with the same value.
+func (ct *ContractTester) stateMatchesDesired(state core.State) bool {
+	for field, want := range ct.SampleDesired {
+		tv, ok := state[field]
+		if !ok || fmt.Sprintf("%v", tv.Value) != want {
+			return false
+		}
+	}
+	return true
 }
 
 // statesEqual returns true if two State maps contain the same field keys and
