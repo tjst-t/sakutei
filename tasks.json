@@ -1598,7 +1598,7 @@
       "number": 83,
       "kind": "task",
       "title": "Redfish provider を CLI につなぐ（BMC の設定ファイルとパスワードの SecretRef）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "redfish-bmc-provider-qemu-bmc-containerl",
       "dependsOn": [
         "redfish-provider-cd-insert-eject"
@@ -1612,7 +1612,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T03:31:46.414Z",
-      "updatedAt": "2026-10-22T03:31:46.414Z",
+      "updatedAt": "2026-10-22T04:19:26.818Z",
       "closedAt": null,
       "extra": {}
     },
