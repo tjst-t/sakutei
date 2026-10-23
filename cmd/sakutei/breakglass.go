@@ -88,7 +88,7 @@ func runBreakGlass(args []string) {
 		}
 		w := &gitdist.Write{
 			Repo: *repo, Branch: *branch, Key: key, Actor: *actor, Reason: *reason, AuditLog: *auditLog,
-			Probe: gitdist.Probe{Attempts: *attempts, Interval: *interval, Timeout: *timeout},
+			Probe: gitdist.Probe{Attempts: *attempts, Interval: *interval, Timeout: *timeout, Log: os.Stderr},
 		}
 		res, err := w.Commit(ctx)
 		if err != nil {

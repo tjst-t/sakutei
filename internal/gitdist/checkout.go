@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // DefaultBranch は intent リポジトリの既定ブランチ。
@@ -49,10 +50,17 @@ func gitCommand(ctx context.Context, dir string, env []string, args ...string) (
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
+	killGroupOnCancel(cmd)
+	// 止めた後も孫が標準出力を握っていたら、待たずに戻る。
+	cmd.WaitDelay = 5 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			// 止めた git の標準エラーは空なので、止めた理由（timeout など）を返す。
+			return "", fmt.Errorf("git %s: %w", args[0], cerr)
+		}
 		return "", fmt.Errorf("git %s: %w: %s", args[0], err, gitErrLine(stderr.String()))
 	}
 	return stdout.String(), nil

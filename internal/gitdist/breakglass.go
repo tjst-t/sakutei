@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,6 +146,9 @@ type Probe struct {
 	Attempts int
 	Interval time.Duration
 	Timeout  time.Duration
+	// Log は 1 回ごとの判定の出力先（nil なら捨てる）。既定では判定に 20 秒以上かかるので、
+	// 運用者に何を待っているかを見せる（試用 docs/trial/dr-mode で見つけた）。
+	Log io.Writer
 }
 
 // 判定基準の既定値と下限。
@@ -173,7 +177,18 @@ func CheckUnreachable(ctx context.Context, upstream string, p Probe) error {
 		}
 		pctx, cancel := context.WithTimeout(ctx, p.Timeout)
 		_, err := runGit(pctx, "", "ls-remote", "--heads", upstream)
+		timedOut := pctx.Err() == context.DeadlineExceeded
 		cancel()
+		if p.Log != nil {
+			switch {
+			case err == nil:
+				fmt.Fprintf(p.Log, "sakutei breakglass: probe %d/%d: the central git %s answered\n", i+1, p.Attempts, upstream)
+			case timedOut:
+				fmt.Fprintf(p.Log, "sakutei breakglass: probe %d/%d: no answer from %s within %s\n", i+1, p.Attempts, upstream, p.Timeout)
+			default:
+				fmt.Fprintf(p.Log, "sakutei breakglass: probe %d/%d: %s unreachable: %v\n", i+1, p.Attempts, upstream, err)
+			}
+		}
 		if err == nil {
 			return fmt.Errorf("breakglass: the central git %s is reachable (probe %d/%d answered); write through the normal PR flow", upstream, i+1, p.Attempts)
 		}

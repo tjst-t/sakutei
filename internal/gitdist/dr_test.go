@@ -17,10 +17,12 @@ package gitdist
 import (
 	"context"
 	"crypto/ed25519"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -106,6 +108,23 @@ func TestResolveClaim_DRPlan(t *testing.T) {
 	} {
 		if _, _, err := ResolveClaim(with(tc.files), tc.shard); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+
+	// 発動中の plan の矛盾は、plan に出てこないシャードも含めて全シャードが周を飛ばす
+	// （片側だけが plan に従わない。試用 docs/trial/dr-mode で見つけた）。
+	for name, files := range map[string]map[string]string{
+		"standby not idle": {"shards/dr/x.yaml": drPlanYAML("x", "tokyo", "osaka", true)},
+		"from not primary": {"shards/dr/x.yaml": drPlanYAML("x", "osaka", "osaka-dr", true)},
+		"two active plans": {"shards/dr/x.yaml": drPlanYAML("x", "tokyo", "osaka-dr", true),
+			"shards/dr/y.yaml": drPlanYAML("y", "tokyo", "osaka-dr2", true), "shards/osaka-dr2.yaml": "claim:\n"},
+		"undeclared standby": {"shards/dr/x.yaml": drPlanYAML("x", "tokyo", "nowhere", true)},
+	} {
+		dir := with(files)
+		for _, shard := range []string{"tokyo", "osaka", "osaka-dr"} {
+			if sc, _, err := ResolveClaim(dir, shard); err == nil {
+				t.Errorf("%s: shard %s resolved to %+v; want the cycle skipped", name, shard, sc)
+			}
 		}
 	}
 }
@@ -223,5 +242,104 @@ func TestBreakGlass_SignAndVerify(t *testing.T) {
 	}
 	if got := BreakGlassCommits(ctx, mirror, "refs/heads/main~1", "refs/heads/main"); len(got) != 1 || got[0] != res.Commit {
 		t.Errorf("BreakGlassCommits = %v", got)
+	}
+}
+
+// silentCentral は接続を受けるが何も返さない中央（TCP はつながるが応答しない）の URL を返す。
+func silentCentral(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			c.Close()
+		}
+	})
+	return "git://" + ln.Addr().String() + "/central.git"
+}
+
+// TestBreakGlass_SilentCentral: 応答しない中央は 1 回の timeout で「届かない」に数え、
+// 判定の経過を出す。ミラーの Sync も応答しない中央で止まったままにならない
+// （試用 docs/trial/dr-mode で見つけた）。
+func TestBreakGlass_SilentCentral(t *testing.T) {
+	requireGitBin(t)
+	ctx := context.Background()
+	url := silentCentral(t)
+
+	var log strings.Builder
+	start := time.Now()
+	if err := CheckUnreachable(ctx, url, Probe{Attempts: 3, Interval: 10 * time.Millisecond, Timeout: 300 * time.Millisecond, Log: &log}); err != nil {
+		t.Fatalf("a silent central was judged reachable: %v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("the judgment took %s; each probe must give up after its timeout", d)
+	}
+	if n := strings.Count(log.String(), "no answer from"); n != 3 {
+		t.Errorf("probe log has %d timeout lines, want 3:\n%s", n, log.String())
+	}
+
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "init", "-q", "-b", "main")
+	git(t, src, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init")
+	mirror := filepath.Join(root, "mirror.git")
+	if err := (&Mirror{Upstream: src, Dir: mirror}).Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	git(t, mirror, "remote", "set-url", "origin", url)
+	start = time.Now()
+	if err := (&Mirror{Upstream: url, Dir: mirror, Timeout: 300 * time.Millisecond}).Sync(ctx); err == nil {
+		t.Error("a sync against a silent central succeeded")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("the mirror sync hung for %s against a silent central", d)
+	}
+}
+
+// TestMirror_RelativeDir: 相対パスの Dir（親がカレントでない）でもミラーを作れる
+// （試用 docs/trial/dr-mode で見つけた）。
+func TestMirror_RelativeDir(t *testing.T) {
+	requireGitBin(t)
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "init", "-q", "-b", "main")
+	git(t, src, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := (&Mirror{Upstream: src, Dir: filepath.Join("site", "mirror.git")}).Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := git(t, filepath.Join(root, "site", "mirror.git"), "rev-parse", "refs/heads/main"), git(t, src, "rev-parse", "HEAD"); got != want {
+		t.Errorf("mirror main = %s, want %s", got, want)
 	}
 }

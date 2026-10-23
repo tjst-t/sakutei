@@ -139,6 +139,7 @@ func runMirror(args []string) {
 	dir := fs.String("dir", "", "bare mirror repository to serve sites from (required)")
 	interval := fs.Duration("interval", 30*time.Second, "how often to follow the upstream")
 	once := fs.Bool("once", false, "sync once and exit")
+	timeout := fs.Duration("timeout", gitdist.DefaultMirrorSyncTimeout, "give up one sync after this long (an upstream that accepts but never answers)")
 	_ = fs.Parse(args)
 	if *upstream == "" || *dir == "" {
 		fmt.Fprintln(os.Stderr, "sakutei mirror: --upstream and --dir are required")
@@ -146,7 +147,7 @@ func runMirror(args []string) {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	m := &gitdist.Mirror{Upstream: *upstream, Dir: *dir, Log: os.Stdout}
+	m := &gitdist.Mirror{Upstream: *upstream, Dir: *dir, Log: os.Stdout, Timeout: *timeout}
 	for {
 		if err := m.Sync(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "sakutei mirror: %v\n", err)

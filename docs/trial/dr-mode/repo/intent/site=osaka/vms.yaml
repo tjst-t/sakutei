@@ -1,0 +1,10 @@
+# 大阪（生き残る側）の VM。大阪のシャードが収束させる
+version: "1"
+resources:
+  - provider: fake
+    id: os-web
+    scope:
+      site: osaka
+    fields:
+      name: os-web
+      size: "2"

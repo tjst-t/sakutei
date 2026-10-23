@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Mirror は拠点が pull する読み取り専用の git ミラー（§17.4 ミラー中継層）。
@@ -37,7 +38,14 @@ type Mirror struct {
 	Dir string
 	// Log は break-glass session の進み具合の出力先（nil なら捨てる）。
 	Log io.Writer
+	// Timeout は 1 回の Sync の上限（0 なら DefaultMirrorSyncTimeout）。応答しない中央
+	// （TCP はつながるが返事が無い）で Sync が止まったままになり、中央が戻っても追従や
+	// 事後合流が始まらないことがないように切る（試用 docs/trial/dr-mode で見つけた）。
+	Timeout time.Duration
 }
+
+// DefaultMirrorSyncTimeout は 1 回の Sync の上限の既定値。
+const DefaultMirrorSyncTimeout = 5 * time.Minute
 
 func (m *Mirror) logf(format string, a ...any) {
 	if m.Log != nil {
@@ -48,6 +56,12 @@ func (m *Mirror) logf(format string, a ...any) {
 // Sync はミラーを上流に追従させる。ミラーが無ければ作る（一時ディレクトリに
 // 作ってから rename するので、拠点が作りかけのミラーを見ることはない）。
 func (m *Mirror) Sync(ctx context.Context) error {
+	timeout := m.Timeout
+	if timeout <= 0 {
+		timeout = DefaultMirrorSyncTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if _, err := os.Stat(filepath.Join(m.Dir, "HEAD")); err == nil {
 		sess, err := ReadSession(m.Dir)
 		if err != nil {
@@ -62,7 +76,13 @@ func (m *Mirror) Sync(ctx context.Context) error {
 		_, err = runGit(ctx, m.Dir, "remote", "update", "--prune")
 		return err
 	}
-	parent := filepath.Dir(m.Dir)
+	// 作りかけの置き場は絶対パスにする（相対の --dir だと、clone は parent で、config は
+	// 呼び手のカレントで解釈されて食い違う。試用 docs/trial/dr-mode で見つけた）。
+	dir, err := filepath.Abs(m.Dir)
+	if err != nil {
+		return fmt.Errorf("gitdist: %w", err)
+	}
+	parent := filepath.Dir(dir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("gitdist: %w", err)
 	}
@@ -83,10 +103,10 @@ func (m *Mirror) Sync(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := os.RemoveAll(m.Dir); err != nil {
+	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("gitdist: %w", err)
 	}
-	if err := os.Rename(tmp, m.Dir); err != nil {
+	if err := os.Rename(tmp, dir); err != nil {
 		return fmt.Errorf("gitdist: %w", err)
 	}
 	return nil

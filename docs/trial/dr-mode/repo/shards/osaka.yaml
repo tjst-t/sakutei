@@ -1,0 +1,3 @@
+# 大阪のシャード。site=osaka を claim する
+claim:
+  site: osaka

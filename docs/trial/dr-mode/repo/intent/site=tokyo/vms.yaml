@@ -1,0 +1,17 @@
+# 東京（被災する側）の VM。平時は東京のシャードが、DR 中は大阪の DR シャードが収束させる
+version: "1"
+resources:
+  - provider: fake
+    id: tk-web
+    scope:
+      site: tokyo
+    fields:
+      name: tk-web
+      size: "2"
+  - provider: fake
+    id: tk-db
+    scope:
+      site: tokyo
+    fields:
+      name: tk-db
+      size: "4"

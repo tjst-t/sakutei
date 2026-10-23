@@ -1,0 +1,14 @@
+# 平時に PR 承認済みで保持する DR intent（§25.1 (a)）。発動は enabled: true への切替だけ（§25.4 人間トリガ）
+dr_plan:
+  name: tokyo-to-osaka
+  primary:
+    site: tokyo
+  standby:
+    site: osaka
+  on_activation:
+    claim_change:
+      from:
+        shard: tokyo
+      to:
+        shard: osaka-dr
+    enabled: false

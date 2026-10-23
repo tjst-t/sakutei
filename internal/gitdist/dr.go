@@ -168,10 +168,14 @@ func parseDRPlan(rel, stem string, tree map[string]any) (DRPlan, error) {
 // ResolveClaim は shards/<name>.yaml の claim に、有効な DR plan を効かせた claim を返す。
 // plan は from/to のどちらかが name のとき、発動中の plan 名を返す（それ以外は ""）。
 //
-//   - 発動中の plan の from のシャード: 平時の claim が primary と一致していれば idle になる
-//     （一致しなければ宣言の矛盾としてエラー）。
-//   - 発動中の plan の to のシャード: 平時は idle でなければならず（エラー）、primary を claim する。
-//   - 1 つのシャードを 2 つ以上の発動中 plan が動かすのはエラー。
+//   - 発動中の plan の from のシャード: idle になる。
+//   - 発動中の plan の to のシャード: primary を claim する。
+//
+// 発動中の plan の宣言の矛盾（from の平時の claim が primary と一致しない・to が平時に idle で
+// ない・1 つのシャードを 2 つ以上の発動中 plan が動かす）は、name に関わる plan かどうかに
+// よらずエラーにする。片側のシャードだけが矛盾に気づくと、もう片側だけが plan に従って
+// しまう（from だけが idle になり誰も primary を収束させない、など。試用 docs/trial/dr-mode
+// で見つけた）。
 func ResolveClaim(dir, name string) (sc ShardClaim, plan string, err error) {
 	sc, err = ReadShardClaim(dir, name)
 	if err != nil {
@@ -181,27 +185,52 @@ func ResolveClaim(dir, name string) (sc ShardClaim, plan string, err error) {
 	if err != nil {
 		return sc, "", err
 	}
+	if err := checkActivePlans(dir, plans); err != nil {
+		return sc, "", err
+	}
 	for _, p := range plans {
 		if !p.Enabled || (p.From != name && p.To != name) {
 			continue
 		}
-		if plan != "" {
-			return sc, "", fmt.Errorf("gitdist: shard %q is moved by two active DR plans (%s, %s)", name, plan, p.Name)
-		}
 		plan = p.Name
 		if p.From == name {
-			if sc.Idle || !sc.Claim.Equal(p.Primary) {
-				return sc, "", fmt.Errorf("gitdist: DR plan %s: shard %q does not claim primary %s (claims %s)", p.Name, name, p.Primary, sc.Claim)
-			}
 			sc.Claim, sc.Idle = core.Scope{}, true
-			continue
+		} else {
+			sc.Claim, sc.Idle = p.Primary, false
 		}
-		if !sc.Idle {
-			return sc, "", fmt.Errorf("gitdist: DR plan %s: standby shard %q already claims %s; a DR shard must stand by idle", p.Name, name, sc.Claim)
-		}
-		sc.Claim, sc.Idle = p.Primary, false
 	}
 	return sc, plan, nil
+}
+
+// checkActivePlans は発動中の plan の宣言を、両側のシャードの平時の claim と突き合わせる。
+func checkActivePlans(dir string, plans []DRPlan) error {
+	movedBy := map[string]string{}
+	for _, p := range plans {
+		if !p.Enabled {
+			continue
+		}
+		for _, shard := range []string{p.From, p.To} {
+			if other, ok := movedBy[shard]; ok {
+				return fmt.Errorf("gitdist: shard %q is moved by two active DR plans (%s, %s)", shard, other, p.Name)
+			}
+			movedBy[shard] = p.Name
+		}
+		from, err := ReadShardClaim(dir, p.From)
+		if err != nil {
+			return fmt.Errorf("gitdist: DR plan %s: %w", p.Name, err)
+		}
+		if from.Idle || !from.Claim.Equal(p.Primary) {
+			return fmt.Errorf("gitdist: DR plan %s: shard %q does not claim primary %s (claims %s)", p.Name, p.From, p.Primary, from.Claim)
+		}
+		to, err := ReadShardClaim(dir, p.To)
+		if err != nil {
+			return fmt.Errorf("gitdist: DR plan %s: %w", p.Name, err)
+		}
+		if !to.Idle {
+			return fmt.Errorf("gitdist: DR plan %s: standby shard %q already claims %s; a DR shard must stand by idle", p.Name, p.To, to.Claim)
+		}
+	}
+	return nil
 }
 
 func onlyKeys(m map[string]any, allowed ...string) error {
