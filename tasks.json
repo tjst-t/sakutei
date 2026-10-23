@@ -2593,7 +2593,7 @@
       "number": 110,
       "kind": "bug",
       "title": "reconcile：Apply が Permanent で失敗しても要約が「Converged (no changes)」と出る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -2607,7 +2607,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T16:30:55.119Z",
-      "updatedAt": "2026-10-23T16:30:55.119Z",
+      "updatedAt": "2026-10-23T16:31:12.863Z",
       "closedAt": null,
       "extra": {}
     },
