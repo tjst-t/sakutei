@@ -2176,10 +2176,13 @@
       "body": "2026-10-22 の OS インストールの試用で見つけた穴 6/6。インストーラそのもの（自動インストールの ISO・PXE・autoinstall の設定）は設計どおり Sakutei の責務の外（§29.3 (c)）。その線引きと、今の v1 でできる範囲の使い方が文書に無い。\n\n## 書くこと（docs/trial か docs/providers/redfish.md）\n- 試用の構成：qemu-bmc 0.9.0（VM_DISK_SIZE 2G、VM_MEMORY 512）1 台、Alpine 3.24 の virt ISO を作り直した自動インストールの ISO（apkovl で /dev/vda に setup-disk -m sys して poweroff。Alpine の ISO にはカーネルのパッケージが無いので linux-virt・syslinux・mkinitfs などを ISO の中のリポジトリに足す。apkovl を使うときは sysinit に modloop を入れる）。\n- intent：最終形（power On・boot_enabled Disabled・CD に ISO）と Workflow（apply Continuous/Cd/On → wait power:Off（timeout 15m）→ apply Disabled/On）。YAML はブロックスタイル。\n- 結果（2026-10-22）：インストール約 20 秒、Workflow 全体約 35 秒、ディスクから起動。\n- 限界：完了は電源オフでしか判断できない（失敗も成功と見なす）、CD を差す順番は保証されない、入れ直しは手で cancel（v2 の各タスクを参照）。\n- ISO の作り方のスクリプトを置くなら、リポジトリの stdlib のみの方針と別（docs の下のシェル）であることを明記。",
       "doneWhen": "手順書に、利用者が用意するもの・intent と Workflow の例・試用の結果・限界が書かれ、例の intent が loader で読み込める",
       "resolution": null,
-      "refs": [],
+      "refs": [
+        "/tmp/osinst/ovl/etc/local.d/autoinstall.start（試用で作った自動インストールのスクリプト。コンテナの /tmp にあり、消えている場合もある）",
+        "/tmp/osinst/lab/intent/os.yaml（試用の intent と Workflow）"
+      ],
       "threads": [],
       "createdAt": "2026-10-23T01:14:43.611Z",
-      "updatedAt": "2026-10-23T01:14:43.611Z",
+      "updatedAt": "2026-10-23T01:14:53.322Z",
       "closedAt": null,
       "extra": {}
     }
