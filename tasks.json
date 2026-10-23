@@ -2664,7 +2664,7 @@
       "number": 113,
       "kind": "bug",
       "title": "Task の表示：task list に rollback の有無と戻した版が出ない・周の要約の launched が Task の起動を数えない",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -2679,7 +2679,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T16:58:02.783Z",
-      "updatedAt": "2026-10-23T16:58:02.783Z",
+      "updatedAt": "2026-10-23T16:58:19.594Z",
       "closedAt": null,
       "extra": {}
     }
