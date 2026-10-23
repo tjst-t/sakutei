@@ -1,0 +1,9 @@
+# BMC の一覧（--redfish-config）。docs/providers/redfish.md の「BMC の一覧」を見る。
+secret_store: secrets.json
+bmcs:
+  node1:
+    address: https://172.31.85.11
+    username: admin
+    password: secretref:file/bmc/node1
+    insecure_skip_verify: true    # qemu-bmc は自己署名
+    timeout: 5s

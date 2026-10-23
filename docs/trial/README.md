@@ -144,6 +144,11 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 | デーモンの非同期 Apply が同じファイルを同時に書き換え、変更を取りこぼす（初期状態から回すと cycle 2 で同じリソースを launch し直す。次の周期で直る）。2026-10-21 にデーモンを回して確認 | Backlog #72（バグ）で直した。dnszone・nftables の Apply は、ファイルを読んで書き換えて rename するまでを、ファイルのパスごとの排他（プロセス内の mutex と `<ファイル>.lock` の flock）の中で行う。Read・List・BulkObserve は共有の排他を取る。そのため作業ディレクトリに `example.com.zone.lock`・`firewall.rules.lock` ができる |
 | SOA のシリアルが上がらない | 設計書 v3.12 §29.1 で「書き換えた Apply のときだけ YYYYMMDDnn で上げる（既定。`--zone-soa-serial keep` で止める）」と決め、Backlog #70 で直した。括弧で複数行に分けた SOA も読めるようにした（シリアルの数字だけを置き換える） |
 
+## Redfish と Workflow で OS を入れる
+
+BMC（qemu-bmc 0.9.0）越しに、利用者が用意した自動インストールの ISO で OS を入れる手順と、2026-10-22 の試用の結果は
+[redfish-os-install/README.md](redfish-os-install/README.md)。
+
 ## 試した結果の残し方
 
 v2 に入るかを決める材料にするので、気づいたことは Backlog に積む。

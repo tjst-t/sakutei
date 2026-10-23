@@ -107,6 +107,12 @@ YAML の `On` / `Off` は文字列のまま読まれる（bool になるのは `
 
 観測だけの値: `inserted`・`media_image`。
 
+## OS を入れる（Workflow と組み合わせる）
+
+「CD から起動 → インストーラが電源を切るのを待つ → ディスクから起動」は、最小 Workflow（§6.3）の手順として書ける。
+自動インストールの ISO は利用者が用意する（Sakutei の責務の外、§29.3 (c)）。intent と Workflow の例・試用の結果（qemu-bmc 0.9.0 + Alpine 3.24）・限界は
+[docs/trial/redfish-os-install/README.md](../trial/redfish-os-install/README.md)。
+
 ## 実行例
 
 ```console

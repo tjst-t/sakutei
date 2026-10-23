@@ -1,0 +1,51 @@
+#!/bin/sh
+# 自動インストール（docs/trial/redfish-os-install/README.md）。make-iso.sh が apkovl の
+# /etc/local.d/autoinstall.start に入れる。Alpine の live 環境（ルートが tmpfs）でだけ動き、
+# /dev/vda に setup-disk -m sys で入れて電源を切る。入れた OS の側では動かない（消してから切る）。
+# Sakutei はこの中身を知らない。Workflow は「電源が切れた」ことだけを見る。
+exec >/dev/ttyS0 2>&1
+[ "$(awk '$2=="/"{print $3}' /proc/mounts)" = "tmpfs" ] || exit 0
+echo "SAKUTEI-AUTOINSTALL: start $(date -u +%FT%TZ)"
+cat > /tmp/answers <<'ANS'
+KEYMAPOPTS=none
+HOSTNAMEOPTS=sakutei-node
+INTERFACESOPTS="auto lo
+iface lo inet loopback
+"
+DNSOPTS=none
+TIMEZONEOPTS=none
+PROXYOPTS=none
+APKREPOSOPTS="/media/cdrom/extra"
+USEROPTS=none
+SSHDOPTS=none
+NTPOPTS=none
+DISKOPTS=none
+LBUOPTS=none
+APKCACHEOPTS=none
+ANS
+setup-alpine -e -f /tmp/answers || { echo "SAKUTEI-AUTOINSTALL: setup-alpine failed"; exit 1; }
+# カーネル（linux-virt）・syslinux・mkinitfs は ISO の /extra のリポジトリから入れる
+printf '/media/cdrom/apks\n/media/cdrom/extra\n' > /etc/apk/repositories
+apk update
+modprobe ext4; modprobe vfat
+export BOOTLOADER=syslinux
+ERASE_DISKS=/dev/vda setup-disk -m sys -s 0 /dev/vda || { echo "SAKUTEI-AUTOINSTALL: setup-disk failed"; exit 1; }
+# 入れた OS に目印を置く（ディスクから起動したことをシリアルで確かめるため）
+mkdir -p /mnt/t
+for p in /dev/vda3 /dev/vda2; do
+  mount $p /mnt/t 2>/dev/null || continue
+  if [ -d /mnt/t/etc/apk ]; then
+    rm -f /mnt/t/etc/local.d/autoinstall.start
+    echo "installed by sakutei trial $(date -u +%FT%TZ)" > /mnt/t/etc/sakutei-installed
+    cat > /mnt/t/etc/local.d/hello.start <<'H'
+#!/bin/sh
+echo "SAKUTEI-INSTALLED-OS: booted from disk: $(cat /etc/sakutei-installed)" > /dev/ttyS0
+H
+    chmod +x /mnt/t/etc/local.d/hello.start
+    ln -sf /etc/init.d/local /mnt/t/etc/runlevels/default/local
+    echo "SAKUTEI-AUTOINSTALL: marked $p"
+  fi
+  umount /mnt/t
+done
+echo "SAKUTEI-AUTOINSTALL: done, powering off"
+sync; sleep 2; poweroff

@@ -1,0 +1,29 @@
+# Redfish と Workflow で OS を入れる試用（docs/trial/redfish-os-install/README.md）のトポロジ。
+#
+# qemu-bmc 0.9.0 を 1 台。統合テスト（tests/integration/redfish）と違ってディスク（VM_DISK_SIZE）を
+# 付け、そこへ OS を入れる。./iso（make-iso.sh で作った ISO を置く）を /iso に読み取り専用で差す。
+# BMC は 172.31.85.11（HTTPS 443、自己署名、admin/password）。VM は Off から始まる（POWER_ON_AT_START の既定）。
+name: sakutei-os
+
+mgmt:
+  network: sakutei-os
+  ipv4-subnet: 172.31.85.0/24
+
+topology:
+  nodes:
+    node1:
+      kind: linux
+      image: ghcr.io/tjst-t/qemu-bmc:0.9.0
+      mgmt-ipv4: 172.31.85.11
+      devices:
+        - /dev/kvm
+        - /dev/net/tun
+      binds:
+        - ./iso:/iso:ro
+      env:
+        VM_MEMORY: "512"
+        VM_CPUS: "1"
+        VM_DISK_SIZE: "2G"
+        IPMI_USER: admin
+        IPMI_PASS: password
+        SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008501"
