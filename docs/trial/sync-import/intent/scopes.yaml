@@ -1,0 +1,17 @@
+# Sync Mode を試すための intent（docs/trial/sync-import/README.md）。
+# site=legacy は人手で運用している scope。Sakutei は現実を generated/legacy/ に記録するだけで、収束させない（§24.5）。
+# site=tokyo は従来どおり収束させる scope（ここに書いたリソースだけ）。
+scopes:
+  - scope:
+      site: legacy
+    mode: sync
+    sync:
+      target_path: generated/legacy/
+resources:
+  - provider: fake
+    id: web-1
+    scope:
+      site: tokyo
+    fields:
+      name: web-1
+      size: "2"

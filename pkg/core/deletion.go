@@ -14,6 +14,8 @@
 
 package core
 
+import "fmt"
+
 // DeletionPolicy controls how the convergence engine treats resources that
 // exist in reality but are absent from desired state (§12.2, ADR-0005).
 //
@@ -68,6 +70,21 @@ const (
 	// The engine defers prune for this cycle.
 	ListUnknown
 )
+
+// String returns the name of s ("complete" / "partial" / "unknown") so an
+// error about an incomplete List shows it by name, not as a number (#97).
+func (s ListStatus) String() string {
+	switch s {
+	case ListComplete:
+		return "complete"
+	case ListPartial:
+		return "partial"
+	case ListUnknown:
+		return "unknown"
+	default:
+		return fmt.Sprintf("ListStatus(%d)", int(s))
+	}
+}
 
 // ListResult wraps the output of provider.Lister.List with a completeness
 // assertion (ListStatus) so the prune engine can apply the correct safety
