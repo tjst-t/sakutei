@@ -2209,6 +2209,73 @@
       "updatedAt": "2026-10-23T15:09:32.106Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "sqlmigrate-provider-schema-migrations-ta",
+      "number": 93,
+      "kind": "task",
+      "title": "sqlmigrate provider：観測（schema_migrations）と Task の実行体（up/down・トランザクション・rollback）",
+      "status": "ready",
+      "parent": "task-provider-sqlmigrate-sqlite",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "設計書 v3.17 §29.1「単純 Task の実 provider：sqlmigrate」を実装する。新しいパッケージ internal/sqlmigrate（Go の標準ライブラリだけ。DB のドライバは入れず、sqlite3 の CLI を os/exec で呼ぶ。CLI のパスは設定で変えられ、既定は PATH の sqlite3）。templates/provider の雛形と契約テスト（#32）のやり方に合わせる。task.Runner（internal/task/task.go の RunTask / RollbackTask）を実装する。参考：internal/fakeprovider/task.go、tests/acceptance/task_strategy_test.go。\n\n## 決まり\n- リソース：ID はデータベース名。設定（provider に渡す）は名前ごとに path（DB ファイル）と migrations（ディレクトリ）。\n- 宣言するフィールドは version（非負の整数）だけ。マイグレーションのディレクトリに無い版を宣言したら計画の時点でエラー。\n- Read：schema_migrations（version INTEGER PRIMARY KEY, applied_at TEXT）の最大の版。表が無ければ 0。DB ファイルが無い場合は 0 として扱ってよいかを考え、設計の「unknown ≠ absent」に反しないようにする（ディレクトリも無い・読めないなどは Unknown）。sqlite3 が無い・起動できない・DB がロック中で読めないときは Unknown（何もしない）。観測だけの値として pending（未適用の up の本数など）を出してもよい。\n- 収束ループの Apply は拒否する。strategy: task でない宣言は計画の時点でエラー（provider.IntentValidator など既存の口を使う）。\n- RunTask：今の版の次から宣言の版まで NNNN_<名前>.up.sql を 1 本ずつ、BEGIN … その SQL … INSERT INTO schema_migrations … COMMIT を 1 回の sqlite3 の呼び出しで流す（-bail で失敗を拾い、失敗したらその 1 本は巻き戻るようにする）。宣言の版が今より小さいときは .down.sql を逆順に流し schema_migrations から消す（down が無ければ失敗）。版の飛び・同じ版の二重は読み込みでエラー。\n- RollbackTask：起動したときの版（Request.Plan の古い値、無ければ RunTask の頭で記録した値）まで down で戻す。\n- 実行中の二重起動は Task の仕組み（1-outstanding）が防ぐが、念のため DB ごとにプロセス内の排他を持つ。\n- SQL の中身やパスにシェルを通さない（exec に引数で渡し、SQL は標準入力）。\n\n## テスト\n- 契約テストと単体テスト。本物の sqlite3 を使うテストは、sqlite3 が PATH に無ければ t.Skip（CI に無いかもしれない）。このコンテナには sqlite3 3.45.1 があるので実際に回ること。\n- up で収束、down で戻る、途中の 1 本が失敗するとその版は残らず前の版は残る、RollbackTask で起動時の版に戻る、Apply は拒否、strategy: task でない宣言はエラー、sqlite3 が無いと Unknown。",
+      "doneWhen": "本物の sqlite3 を相手に、RunTask が宣言の版まで up（または down）を 1 本ずつトランザクションで流して完了印を書き、失敗した 1 本は残らず、RollbackTask で起動時の版に戻り、Apply と strategy: task 以外の宣言を拒否し、sqlite3 が無いと Unknown になることをテストで示す。契約テスト・make check・make test-race が合格する",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T15:11:11.923Z",
+      "updatedAt": "2026-10-23T15:11:11.923Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "sqlmigrate-provider-cli-sqlmigrate-confi",
+      "number": 94,
+      "kind": "task",
+      "title": "sqlmigrate provider を CLI につなぐ（--sqlmigrate-config）と受け入れテスト",
+      "status": "ready",
+      "parent": "task-provider-sqlmigrate-sqlite",
+      "dependsOn": [
+        "sqlmigrate-provider-schema-migrations-ta"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "plan・reconcile・status・常駐の sakutei で sqlmigrate のリソースを intent に書けるようにする（redfish の --redfish-config と同じ登録のしかた、dnszone などと混ぜられる）。\n- 設定ファイル --sqlmigrate-config <file>：databases の下に名前ごとに path・migrations（相対パスは設定ファイルのあるディレクトリから）、全体に sqlite3（CLI のパス、省略可）。未知のキーはエラー。設定に無い名前を intent に書いたら計画の時点でエラー。\n- 一回性の reconcile は strategy: task のリソースを Apply しない（既存の決まり AC-v1.5-task-9）。plan の表示で Task を起動する差分であることが分かること。\n- docs/providers/sqlmigrate.md に設定・intent の例（update_policy の strategy: task・window・rollback_on_fail）・マイグレーションのファイル名の決まりを書く。README の provider の表に足す。\n- tests/acceptance に、本物の sqlite3 で常駐の sakutei（--task-store 付き）を回し Task が起動して宣言の版に収束する受け入れテストを足す（sqlite3 が無ければ Skip）。",
+      "doneWhen": "--sqlmigrate-config で DB を指定し、本物の sqlite3 を相手に常駐の sakutei が Task を起動して宣言の版に収束する受け入れテストが通る。docs/providers/sqlmigrate.md がある。make check・make test-race が合格する",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T15:11:11.923Z",
+      "updatedAt": "2026-10-23T15:11:11.923Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "sqlmigrate-task",
+      "number": 95,
+      "kind": "task",
+      "title": "sqlmigrate で単純 Task を実物で試す（試用手順と結果）",
+      "status": "ready",
+      "parent": "task-provider-sqlmigrate-sqlite",
+      "dependsOn": [
+        "sqlmigrate-provider-cli-sqlmigrate-confi"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "docs/trial/sqlmigrate/ に試用手順（intent・設定・マイグレーションの例・回すスクリプト）を作り、このコンテナの本物の sqlite3 と常駐の sakutei（--task-store）で実際に回して、結果（デーモンの出力・`sakutei task list`・`sqlite3 … 'select * from schema_migrations'` の抜粋）を書く。確かめること：\n1. 版 0 → 3 を宣言すると Task が 1 回だけ起動し（1-outstanding。遅いマイグレーションで実行中に周を跨ぐようにし、二重に起動しないこと）、完了印を観測して記録が片づき、収束する。\n2. メンテ窓（window）の外では起動しない。窓に入ると起動する（時刻をいじれなければ、今の時刻を含む窓と含まない窓で確かめる）。\n3. 壊れたマイグレーションで失敗 → halt（再起動しない、レベルの知らせが出る）。rollback_on_fail のときは起動時の版に戻る。\n4. `sakutei task cancel` のあと、差分が残っていれば改めて起動する（マイグレーションを直してから）。\n5. 実行中にデーモンを殺す（SIGKILL）と、起こし直したデーモンは自動で再実行しない（中断扱い、人が cancel するまで）。DB の中身（途中までの版）を記録する。\n6. 版を下げる宣言（3 → 1）で down が流れる。\n見つけた不具合は直せるものは直し、大きいものは手順書に書いて報告する。docs/trial/README.md からリンクする。",
+      "doneWhen": "docs/trial/sqlmigrate/ に手順と、このコンテナで実際に回した (1)〜(6) の結果がある。make check・make test-race が合格する",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T15:11:11.923Z",
+      "updatedAt": "2026-10-23T15:11:11.923Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
