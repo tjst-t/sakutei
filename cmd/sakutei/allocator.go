@@ -53,6 +53,14 @@ func runAllocator(args []string) {
 		os.Exit(2)
 	}
 
+	// Listen before promoting: a promotion fences the current active, so an
+	// instance that then fails to start (port in use) would leave the pair
+	// with no active at all.
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei allocator: listen: %v\n", err)
+		os.Exit(1)
+	}
 	srv := allocator.NewServer(allocator.New(*store))
 	role := "standby"
 	if !*standby {
@@ -64,11 +72,6 @@ func runAllocator(args []string) {
 		role = fmt.Sprintf("active (generation %d)", gen)
 	}
 
-	ln, err := net.Listen("tcp", *listen)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sakutei allocator: listen: %v\n", err)
-		os.Exit(1)
-	}
 	fmt.Printf("sakutei allocator: %s listening on http://%s\n", role, ln.Addr())
 
 	hs := &http.Server{Handler: srv, ReadHeaderTimeout: 5 * time.Second}

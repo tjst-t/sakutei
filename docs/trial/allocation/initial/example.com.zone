@@ -1,0 +1,6 @@
+; 採番の試用の最初の現実（docs/trial/allocation/README.md）
+$ORIGIN example.com.
+$TTL 300
+@ IN SOA ns1.example.com. admin.example.com. ( 2026102300 3600 600 86400 300 )
+@ IN NS ns1.example.com.
+ns1 IN A 192.0.2.1

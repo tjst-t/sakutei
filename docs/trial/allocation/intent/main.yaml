@@ -1,0 +1,30 @@
+# 採番を試すための intent（docs/trial/allocation/README.md）。
+# v1 のプールは整数だけ（§19.8）。ここではサービスのポート番号をプールから払い出し、
+# dnszone の TXT レコード（_port.<名前>）に入れる。
+version: "1"
+pools:
+  - name: svc-ports
+    range: "8000-8002"
+resources:
+  - provider: dnszone
+    id: _port.app1.example.com./TXT
+    fields:
+      name: _port.app1.example.com.
+      type: TXT
+      value:
+        from_pool: svc-ports
+  # app2-begin（run.sh の手順 4 がこの範囲を消して試す）
+  - provider: dnszone
+    id: _port.app2.example.com./TXT
+    fields:
+      name: _port.app2.example.com.
+      type: TXT
+      value:
+        from_pool: svc-ports
+  # app2-end
+  - provider: dnszone
+    id: www.example.com./A
+    fields:
+      name: www.example.com.
+      type: A
+      value: 192.0.2.10

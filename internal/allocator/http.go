@@ -103,7 +103,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	op := strings.TrimPrefix(r.URL.Path, "/v1/")
 	if op == "health" {
 		role := "standby"
-		if s.Active() {
+		// An instance fenced by a newer promotion steps down here too, not
+		// only on its next operation: health must never show two actives.
+		if s.Active() && !errors.Is(s.stepDownIfFenced(s.auth.CheckActive()), allocation.ErrFenced) {
 			role = "active"
 		}
 		writeJSON(w, http.StatusOK, response{Role: role, Generation: s.auth.Generation()})
@@ -128,12 +130,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// A newer generation may have been promoted elsewhere: step down rather
 	// than answer as a second authority (reads included).
-	if err := s.auth.CheckActive(); err != nil {
-		if errors.Is(err, allocation.ErrFenced) {
-			s.mu.Lock()
-			s.active = false
-			s.mu.Unlock()
-		}
+	if err := s.stepDownIfFenced(s.auth.CheckActive()); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -162,16 +159,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, response{Error: "unknown operation " + op, Code: codeInternal})
 		return
 	}
-	if err != nil {
-		if errors.Is(err, allocation.ErrFenced) {
-			s.mu.Lock()
-			s.active = false
-			s.mu.Unlock()
-		}
+	if err := s.stepDownIfFenced(err); err != nil {
 		writeErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// stepDownIfFenced turns the server standby when err says a newer generation
+// was promoted, and returns err unchanged.
+func (s *Server) stepDownIfFenced(err error) error {
+	if errors.Is(err, allocation.ErrFenced) {
+		s.mu.Lock()
+		s.active = false
+		s.mu.Unlock()
+	}
+	return err
 }
 
 func writeErr(w http.ResponseWriter, err error) {

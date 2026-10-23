@@ -107,6 +107,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -774,7 +775,31 @@ func checkedLine(rec record, origin string) (string, error) {
 	if perr != nil {
 		return "", provider.NewPermanentError(fmt.Errorf("dnszone: writeRecord: refusing to write a line the zone parser cannot read back: %w", perr))
 	}
+	if err := checkAddress(rec.rrtype, rec.value); err != nil {
+		return "", provider.NewPermanentError(fmt.Errorf("dnszone: writeRecord: refusing to write %s/%s: %w", rec.name, strings.ToUpper(rec.rrtype), err))
+	}
 	return newLine, nil
+}
+
+// checkAddress rejects an A value that is not an IPv4 address and an AAAA
+// value that is not an IPv6 address.  Our parser reads "A 8001" back fine,
+// but a DNS server refuses to load the whole zone over it — e.g. an integer
+// handed out by an allocation pool (from_pool, §19.1) into an A record.
+func checkAddress(rrtype, value string) error {
+	var family string
+	switch strings.ToUpper(rrtype) {
+	case "A":
+		family = "IPv4"
+	case "AAAA":
+		family = "IPv6"
+	default:
+		return nil
+	}
+	a, err := netip.ParseAddr(value)
+	if err != nil || a.Zone() != "" || (family == "IPv4") != a.Is4() {
+		return fmt.Errorf("value %q is not an %s address", value, family)
+	}
+	return nil
 }
 
 // deleteRecord removes all lines for {name, type} (name = FQDN) from the zone
