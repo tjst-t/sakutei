@@ -85,6 +85,9 @@ func resolveProviders(
 		if err := provider.ValidateIntent(result[r.ID.Provider], r.ID.Local, r.Fields); err != nil {
 			return nil, fmt.Errorf("%s: resource %s: %w", commandName, r.ID, err)
 		}
+		if err := provider.ValidateUpdatePolicy(result[r.ID.Provider], r.ID.Local, r.UpdatePolicy); err != nil {
+			return nil, fmt.Errorf("%s: resource %s: %w", commandName, r.ID, err)
+		}
 	}
 	return result, nil
 }

@@ -1424,6 +1424,12 @@ func runCycleAsync(
 			return CycleResult{ExcludedByClaim: excludedByClaim},
 				fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): resource %s: %w", r.ID, err)
 		}
+		// §6.2 / §29.1: a provider that refuses Apply (e.g. sqlmigrate) requires
+		// update_policy.strategy: task.
+		if err := provider.ValidateUpdatePolicy(p, r.ID.Local, r.UpdatePolicy); err != nil {
+			return CycleResult{ExcludedByClaim: excludedByClaim},
+				fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): resource %s: %w", r.ID, err)
+		}
 	}
 
 	// §15.2 / §17.1: double-claim detection.  Fenced scopes leave the cycle
