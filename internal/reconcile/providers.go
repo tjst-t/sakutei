@@ -248,10 +248,10 @@ func (r routedTaskRunner) RunTask(ctx context.Context, req task.Request) error {
 	return tr.RunTask(ctx, req)
 }
 
-func (r routedTaskRunner) RollbackTask(ctx context.Context, req task.Request) error {
+func (r routedTaskRunner) RollbackTask(ctx context.Context, req task.Request) (string, error) {
 	tr, err := r.runner(req.Resource)
 	if err != nil {
-		return err
+		return "", err
 	}
 	return tr.RollbackTask(ctx, req)
 }

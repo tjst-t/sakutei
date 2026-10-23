@@ -78,8 +78,8 @@ func (p *Provider) RunTask(ctx context.Context, req task.Request) error {
 }
 
 // RollbackTask implements task.Runner.
-func (p *Provider) RollbackTask(_ context.Context, req task.Request) error {
-	return p.bumpTaskCount(req.Resource.Local, true)
+func (p *Provider) RollbackTask(_ context.Context, req task.Request) (string, error) {
+	return "", p.bumpTaskCount(req.Resource.Local, true)
 }
 
 func (p *Provider) bumpTaskCount(local string, rollback bool) error {

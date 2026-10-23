@@ -63,7 +63,9 @@ type Runner interface {
 	// RunTask は Task を1回実行する。成功したら完了印が現実に残っていること。
 	RunTask(ctx context.Context, req Request) error
 	// RollbackTask は失敗した RunTask を巻き戻す（rollback_on_fail: true のときだけ呼ぶ）。
-	RollbackTask(ctx context.Context, req Request) error
+	// 返す文字列は巻き戻した後の現実の短い説明（例: "the database is at version 1"。
+	// 無ければ空）で、記録のエラーに足す。
+	RollbackTask(ctx context.Context, req Request) (string, error)
 }
 
 // Outcome は Trigger の結果。
@@ -226,8 +228,13 @@ func (m *Manager) Trigger(ctx context.Context, id core.ID, desired map[string]st
 			phase, msg = PhaseFailed, runErr.Error()
 			if pol.RollbackOnFail {
 				rolledBack = true
-				if rbErr := m.runner.RollbackTask(runCtx, req); rbErr != nil {
+				switch note, rbErr := m.runner.RollbackTask(runCtx, req); {
+				case rbErr != nil:
 					msg += "; rollback failed: " + rbErr.Error()
+				case note != "":
+					msg += "; rolled back: " + note
+				default:
+					msg += "; rolled back"
 				}
 			}
 		}

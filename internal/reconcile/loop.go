@@ -1025,9 +1025,13 @@ func observePathText(co *sdk.CycleObserver) string {
 // whose prune deleted orphans; it reports how many.  #85: nor did a cycle that
 // skipped resources it could not observe (unknown ≠ converged); it reports how
 // many.  Only a cycle that changed nothing, held nothing and skipped nothing
-// says "converged (no changes)".
+// says "converged (no changes)".  #113: launched= counts async Applies; the
+// Tasks launched this cycle (strategy: task) are tasks=N.
 func cycleSummary(res CycleResult) string {
 	extra := ""
+	if len(res.TasksLaunched) > 0 {
+		extra += fmt.Sprintf(" tasks=%d", len(res.TasksLaunched))
+	}
 	if res.Pruned > 0 {
 		extra += fmt.Sprintf(" pruned=%d", res.Pruned)
 	}

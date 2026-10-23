@@ -288,8 +288,12 @@ func TestRollbackTask(t *testing.T) {
 		if v := f.version(t); v != "2" {
 			t.Fatalf("withPlan=%v: version after failure = %s, want 2", withPlan, v)
 		}
-		if err := f.p.RollbackTask(ctx, r); err != nil {
+		note, err := f.p.RollbackTask(ctx, r)
+		if err != nil {
 			t.Fatalf("withPlan=%v: RollbackTask: %v", withPlan, err)
+		}
+		if note != "the database is at version 1" {
+			t.Errorf("withPlan=%v: RollbackTask note = %q", withPlan, note)
 		}
 		if v := f.version(t); v != "1" {
 			t.Fatalf("withPlan=%v: version after rollback = %s, want 1 (the version at launch)", withPlan, v)
@@ -303,7 +307,7 @@ func TestRollbackTask(t *testing.T) {
 func TestRollbackTask_UnknownStart(t *testing.T) {
 	needSQLite(t)
 	f := newFixture(t, defaultMigrations)
-	if err := f.p.RollbackTask(context.Background(), req("never-ran", "3")); err == nil {
+	if _, err := f.p.RollbackTask(context.Background(), req("never-ran", "3")); err == nil {
 		t.Fatal("RollbackTask without a plan or a RunTask succeeded, want an error")
 	}
 }
@@ -332,6 +336,10 @@ func TestManager_FailureRollsBackAndHalts(t *testing.T) {
 	}
 	if rec.Phase != task.PhaseFailed || !rec.RolledBack || !strings.Contains(rec.Error, "0003_orders.up.sql") {
 		t.Errorf("record = %+v, want failed + rolled back naming 0003", rec)
+	}
+	// #113: 記録のエラーに rollback の後の版が出る。
+	if !strings.Contains(rec.Error, "rolled back: the database is at version 1") {
+		t.Errorf("record error = %q, want the version after the rollback", rec.Error)
 	}
 	if strings.Contains(rec.Error, "rollback failed") {
 		t.Errorf("rollback failed: %s", rec.Error)

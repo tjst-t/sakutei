@@ -67,11 +67,11 @@ func (p *Provider) RunTask(ctx context.Context, req task.Request) error {
 
 // RollbackTask implements task.Runner: 起動したときの版（Request.Plan の古い値、
 // 無ければ RunTask の頭で観測した値）まで down で戻す。
-func (p *Provider) RollbackTask(ctx context.Context, req task.Request) error {
+func (p *Provider) RollbackTask(ctx context.Context, req task.Request) (string, error) {
 	name := req.Resource.Local
 	db, err := p.database(name)
 	if err != nil {
-		return err
+		return "", err
 	}
 	start, ok := planFrom(req)
 	if !ok {
@@ -80,22 +80,22 @@ func (p *Provider) RollbackTask(ctx context.Context, req task.Request) error {
 		p.mu.Unlock()
 	}
 	if !ok {
-		return fmt.Errorf("%s %q: rollback: the version at launch is unknown (no plan and no RunTask of task %s in this process)", Name, name, req.TaskID)
+		return "", fmt.Errorf("%s %q: rollback: the version at launch is unknown (no plan and no RunTask of task %s in this process)", Name, name, req.TaskID)
 	}
 	unlock := p.lock(db)
 	defer unlock()
 
 	cur, err := p.currentVersion(ctx, db)
 	if err != nil {
-		return fmt.Errorf("%s %q: rollback: read the current version: %w", Name, name, err)
+		return "", fmt.Errorf("%s %q: rollback: read the current version: %w", Name, name, err)
 	}
 	if err := p.migrate(ctx, name, db, cur, start); err != nil {
-		return fmt.Errorf("rollback to version %d: %w", start, err)
+		return "", fmt.Errorf("rollback to version %d: %w", start, err)
 	}
 	p.mu.Lock()
 	delete(p.started, req.TaskID)
 	p.mu.Unlock()
-	return nil
+	return fmt.Sprintf("the database is at version %d", start), nil
 }
 
 // planFrom は起動を決めた差分の version の古い値（観測した版）を返す。
@@ -160,7 +160,7 @@ func (p *Provider) migrate(ctx context.Context, name string, db Database, cur, t
 	}
 	for _, s := range steps {
 		if _, err := p.sqlite(ctx, db.Path, s.script); err != nil {
-			return fmt.Errorf("%s %q: %s failed (rolled back; the database stays at version %d): %w", Name, name, s.file, cur, err)
+			return fmt.Errorf("%s %q: %s failed (its transaction was rolled back; the database was left at version %d): %w", Name, name, s.file, cur, err)
 		}
 		got, err := p.currentVersion(ctx, db)
 		if err != nil {

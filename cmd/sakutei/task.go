@@ -60,9 +60,14 @@ func runTask(args []string) {
 			fmt.Fprintln(os.Stdout, "no outstanding task")
 			return
 		}
-		fmt.Fprintf(os.Stdout, "%-40s %-10s %-30s %-20s %s\n", "RESOURCE", "PHASE", "TASK", "STARTED", "ERROR")
+		// #113: ROLLBACK says whether rollback_on_fail rolled the failed Task back.
+		fmt.Fprintf(os.Stdout, "%-40s %-10s %-11s %-30s %-20s %s\n", "RESOURCE", "PHASE", "ROLLBACK", "TASK", "STARTED", "ERROR")
 		for _, r := range recs {
-			fmt.Fprintf(os.Stdout, "%-40s %-10s %-30s %-20s %s\n", r.Resource, r.Phase, r.TaskID, r.StartedAt.Format(time.RFC3339), r.Error)
+			rb := "-"
+			if r.RolledBack {
+				rb = "rolled-back"
+			}
+			fmt.Fprintf(os.Stdout, "%-40s %-10s %-11s %-30s %-20s %s\n", r.Resource, r.Phase, rb, r.TaskID, r.StartedAt.Format(time.RFC3339), r.Error)
 		}
 	case "cancel":
 		if fs.NArg() != 1 {
