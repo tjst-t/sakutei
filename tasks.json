@@ -2616,7 +2616,7 @@
       "number": 111,
       "kind": "bug",
       "title": "試用で見つけた表示の細かな不具合（文言・出し方）をまとめて直す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -2630,7 +2630,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T16:30:58.993Z",
-      "updatedAt": "2026-10-23T16:30:58.993Z",
+      "updatedAt": "2026-10-23T16:31:14.220Z",
       "closedAt": null,
       "extra": {}
     }
