@@ -149,6 +149,21 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 BMC（qemu-bmc 0.9.0）越しに、利用者が用意した自動インストールの ISO で OS を入れる手順と、2026-10-22 の試用の結果は
 [redfish-os-install/README.md](redfish-os-install/README.md)。
 
+## 機能ごとの試用（2026-10-23）
+
+v1 の機能のうち、それまで自動テストでしか確かめていなかったものを、このコンテナで実際の CLI とデーモンを回して確かめた（Backlog #96）。それぞれの手順・結果・見つけたことは各ディレクトリの README にある。
+
+| 手順 | 試したこと |
+|---|---|
+| [sync-import/](sync-import/README.md) | import（既存を intent に書き出す）と Sync Mode（現実を generated/ に記録して git にコミット） |
+| [allocation/](allocation/README.md) | 採番（ファイル版 AllocationAuthority・pools・HA 最小形） |
+| [sharding/](sharding/README.md) | 静的シャーディング（claim の git 配布・S2-free シャード・ハンドオフ）と inventory 検証 |
+| [planned-change/](planned-change/README.md) | planned_change（専用の予算レーン・kind の整合・reimage の対・承認情報） |
+| [workflow-gates/](workflow-gates/README.md) | Workflow の承認ゲート（単一・N-of-M・roles・separation・timeout、CLI と承認 API） |
+| [remediation-profile/](remediation-profile/README.md) | 直してよい時間帯（remediation schedule）と運用プロファイル（cooling-off） |
+| [dr-mode/](dr-mode/README.md) | DR モード（DR plan・break-glass・事後合流） |
+| [observe/](observe/README.md) | tier 別の Observe 頻度・BulkObserve・status とデーモンの状態 |
+
 ## 試した結果の残し方
 
 v2 に入るかを決める材料にするので、気づいたことは Backlog に積む。
