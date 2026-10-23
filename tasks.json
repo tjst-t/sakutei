@@ -2616,7 +2616,7 @@
       "number": 111,
       "kind": "bug",
       "title": "試用で見つけた表示の細かな不具合（文言・出し方）をまとめて直す",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -2626,12 +2626,12 @@
       ],
       "body": "2026-10-23 の試用（docs/trial/*/README.md の見つけたこと）で出た、動きに関わらない表示の不具合。設計の範囲で直す。\n\n1. 採番を待つリソースが「unobservable this cycle (Observe error or Availability != Ok)」とも出る。観測はできていて、理由は割当待ち（allocation の 9）。\n2. plan・status が、プールが尽きたことを言わず「pending allocation … (allocated by reconcile)」と出す（allocation の 10）。\n3. plan・status に `--claim` が無く、シャードごとに採番記録を分けた構成では他のシャードの要求も「割り当て待ち」と出す（allocation の 11）。\n4. Sync の List 不完全のメッセージが importer のものの流用で `refusing to import ...` と出る。止まった組がある周でも最後に `sync: nothing to commit` が出て見落としやすい（sync-import の 5）。\n5. デーモンの起動行が、使っていない fake provider の既定 `state=sakutei-fake-state.json` を出す。`mode=` は `--mode` の値で、intent の schedule を含めた mode ではない（sharding の 5、remediation-profile の 2）。使っていない state は出さない・`mode=` は「--mode の値」と分かる文にする。\n6. `PlannedChangeWithdrawn` だけが宣言を内部の鍵（`pool=web|update|…`）で出す。ほかと同じ `planned_change(scope=… kind=… window=…)` にそろえる（remediation-profile の 5）。\n7. one-shot reconcile の planned_change の Event が標準出力に接頭辞なしで出て、`BUDGET HALTED` などの行と出方が違う（planned-change の 4）。\n8. `sakutei workflow list` にゲートの期限と承認の数が出ない（workflow-gates の 4）。\n9. `sakutei status` の DRIFTED に、どのフィールドがどうずれているかが出ない（observe の 4）。\n10. `plan` で、今が直してよい時間帯の外か（次の reconcile が直すか）が分からない（remediation-profile の 4）。\n\n項目ごとに受け入れテストか単体テストを付ける。",
       "doneWhen": "1〜10 が直り、それぞれテストで示される。make check・make test-race が合格する",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/item-3）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T16:30:58.993Z",
-      "updatedAt": "2026-10-23T16:31:14.220Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-23T16:51:45.248Z",
+      "closedAt": "2026-10-23T16:51:45.248Z",
       "extra": {}
     }
   ]
