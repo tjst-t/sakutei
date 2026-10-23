@@ -169,6 +169,7 @@ v1 の機能のうち、それまで自動テストでしか確かめていな�
 | [remediation-profile/](remediation-profile/README.md) | 直してよい時間帯（remediation schedule）と運用プロファイル（cooling-off） |
 | [dr-mode/](dr-mode/README.md) | DR モード（DR plan・break-glass・事後合流） |
 | [observe/](observe/README.md) | tier 別の Observe 頻度・BulkObserve・status とデーモンの状態 |
+| [sqlmigrate/](sqlmigrate/README.md) | 単純 Task（strategy: task）を本物の provider で：SQLite のマイグレーション（1-outstanding・メンテ窓・失敗と rollback・cancel・デーモンを殺したとき・版を下げる） |
 
 ## 試した結果の残し方
 
