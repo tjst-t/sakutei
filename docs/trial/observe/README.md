@@ -164,7 +164,7 @@ sakutei: cycle 32: 3 resource(s) skipped (retry next cycle): [www.example.com./A
 Read と等しい・List に無いものをバルクが返さない）を実ファイルに当て、両方の観測を並べる。
 
 - 収束した作業ディレクトリのファイル：dnszone 3/3、nftables 1/1 が等しい。
-- `messy/`（手で書いた癖のあるファイル）：dnszone 8/8、nftables 3/3 が等しい。例：
+- `messy/`（手で書いた癖のあるファイル。作業ディレクトリに写してから読ませる。dnszone・nftables は読むときも隣に `<file>.lock` を作るため）：dnszone 8/8、nftables 3/3 が等しい。例：
 
   ```
     www.example.com./A

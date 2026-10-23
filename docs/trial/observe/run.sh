@@ -166,8 +166,9 @@ step "7. BulkObserve と Read は等しい（SDK の BulkEquivalenceTester を�
 (cd "$REPO" && go build -tags trial -o "$W/bulkeq" ./docs/trial/observe/bulkeq)
 echo "--- 収束した作業ディレクトリのファイル"
 check "収束した現実で BulkObserve ≡ Read" ./bulkeq --zone example.com.zone --ruleset firewall.rules
-echo "--- 手で書いた癖のあるファイル（messy/）"
-check "癖のあるゾーンと ruleset でも BulkObserve ≡ Read" ./bulkeq --zone "$HERE/messy/example.com.zone" --ruleset "$HERE/messy/firewall.rules"
+echo "--- 手で書いた癖のあるファイル（messy/。作業ディレクトリに写して読む：読むときも隣に <file>.lock ができる）"
+mkdir -p messy && cp "$HERE/messy/example.com.zone" "$HERE/messy/firewall.rules" messy/
+check "癖のあるゾーンと ruleset でも BulkObserve ≡ Read" ./bulkeq --zone messy/example.com.zone --ruleset messy/firewall.rules
 
 step "8. 再起動で間引きの記録は消える（S3）"
 L8=logs/restart.log
