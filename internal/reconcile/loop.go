@@ -417,6 +417,10 @@ func Run(ctx context.Context, cfg Config) error {
 	// #15: consecutive cycles skipped halt-safe because an external input was
 	// unreachable with no previous value (S3, memory only).
 	unreachableSkips := 0
+	// Consecutive cycles that ended in an error (intent load failure, fencing
+	// store unreachable, ...) and the last error, for the daemon status file:
+	// such a daemon also stops converging, and must not look healthy there.
+	errorCycles, lastCycleErr := 0, ""
 	drain := func() {
 		if d != nil {
 			d.Wait(gracefulShutdownWait)
@@ -685,11 +689,19 @@ func Run(ctx context.Context, cfg Config) error {
 				cycleNum, unreachableSkips)
 			unreachableSkips = 0
 		}
+		if cycleErr != nil {
+			errorCycles, lastCycleErr = errorCycles+1, cycleErr.Error()
+		} else {
+			errorCycles, lastCycleErr = 0, ""
+		}
 		if cfg.DaemonStatusPath != "" {
 			h := statusreport.DaemonHealth{
 				Cycle:                       cycleNum,
 				ConsecutiveUnreachableSkips: unreachableSkips,
 				UnreachableSkipLimit:        cfg.UnreachableSkipLimit,
+				ConsecutiveErrorCycles:      errorCycles,
+				LastError:                   lastCycleErr,
+				Interval:                    cfg.Interval.String(),
 				UpdatedAt:                   time.Now().UTC(),
 			}
 			if err := statusreport.WriteDaemonHealth(cfg.DaemonStatusPath, h); err != nil {
@@ -979,6 +991,14 @@ func taskHolder(cfg Config) string {
 	}
 	host, _ := os.Hostname()
 	return fmt.Sprintf("%s-%d", host, os.Getpid())
+}
+
+// observePathText describes the Observe path a CycleObserver takes (§5.7).
+func observePathText(co *sdk.CycleObserver) string {
+	if co.Bulk() {
+		return "Observe via BulkObserve (one call per cycle for the claim, §5.7)"
+	}
+	return "Observe via per-resource Read (no BulkObserve, §5.7)"
 }
 
 // cycleSummary is the per-cycle summary of the daemon log after "observed=N".
@@ -1698,6 +1718,12 @@ func runCycleAsync(
 		if !ok {
 			co = sdk.NewCycleObserver(pe.p, cfg.Claim)
 			cycleObs[pkey] = co
+			if !pe.observePathLogged {
+				// §5.7: say once which path this provider is observed by, so
+				// an operator can tell the bulk path is in use.
+				pe.observePathLogged = true
+				fmt.Fprintf(cfg.Out, "sakutei: provider %s: %s\n", res.ID.Provider, observePathText(co))
+			}
 		}
 
 		// ADR-0002: fresh observation per resource per cycle (from this

@@ -56,3 +56,43 @@ func TestDaemonHealth_RoundTripAndReport(t *testing.T) {
 		t.Errorf("no daemon section without --daemon-status:\n%s", out)
 	}
 }
+
+// #104: エラーで終わり続ける周と、更新が途絶えたファイルは健全に見せない。
+func TestDaemonHealth_ErrorCyclesAndStale(t *testing.T) {
+	at := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
+	h := DaemonHealth{Cycle: 9, UnreachableSkipLimit: 3, ConsecutiveErrorCycles: 4,
+		LastError: "load intent: broken", Interval: "1s", UpdatedAt: at}
+
+	b := NewBuilder("r1", "r1", nil)
+	b.SetDaemonHealth(h)
+	out := b.Build().String()
+	if !strings.Contains(out, "consecutive_error_cycles=4") || !strings.Contains(out, "load intent: broken") {
+		t.Errorf("error cycles not reported:\n%s", out)
+	}
+	if strings.Contains(out, "更新されていない") {
+		t.Errorf("stale warning without MarkDaemonStale:\n%s", out)
+	}
+
+	if h.Stale(at.Add(3 * time.Second)) {
+		t.Errorf("3 intervals old must not be stale yet")
+	}
+	if !h.Stale(at.Add(4 * time.Second)) {
+		t.Errorf("4 intervals old must be stale")
+	}
+	h.Interval = ""
+	if h.Stale(at.Add(time.Hour)) {
+		t.Errorf("unknown interval must never be stale")
+	}
+
+	h.ConsecutiveErrorCycles, h.LastError, h.Interval = 0, "", "1s"
+	b = NewBuilder("r1", "r1", nil)
+	b.SetDaemonHealth(h)
+	b.MarkDaemonStale()
+	out = b.Build().String()
+	if strings.Contains(out, "consecutive_error_cycles=") {
+		t.Errorf("no error-cycle warning at 0:\n%s", out)
+	}
+	if !strings.Contains(out, "周期（1s）の数倍のあいだ更新されていない") {
+		t.Errorf("stale warning missing:\n%s", out)
+	}
+}

@@ -389,9 +389,16 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 			fmt.Errorf("nftables: List: parse ruleset %s: %w", p.rulesetPath, err))
 	}
 
+	// 同じ座標の chain が 2 回書かれていても ID は 1 回だけ出す（List は集合）。
+	// Read・BulkObserve と同じく最初の出現で決め、それが base chain・opaque なら出さない。
 	scope := core.NewScope(nil)
 	ids := make([]core.ID, 0, len(chains))
+	seen := make(map[string]bool, len(chains))
 	for _, c := range chains {
+		if seen[c.localID()] {
+			continue
+		}
+		seen[c.localID()] = true
 		if c.unmanaged() {
 			// base chain・opaque な chain は管理対象外 → List にも出さない。
 			continue

@@ -1,0 +1,15 @@
+; 手で書いた癖のあるゾーン（手順 7：BulkObserve と Read の等価性）
+$ORIGIN example.com.
+$TTL 600
+@	300 IN SOA ns1 admin 2026102301 3600 900 604800 300
+@	300 IN NS ns1
+www	300 IN A 192.0.2.10
+www.example.com. 300 IN AAAA 2001:db8::10
+WWW	900 IN A 192.0.2.99   ; 大文字・2 行目（first-match）
+api	IN A 192.0.2.30
+mail	300 IN MX 10 mx
+mx	300 IN A 192.0.2.41
+alias	300 IN CNAME www
+txt	300 IN TXT "v=spf1 -all"
+$ORIGIN sub.example.com.
+deep	300 IN A 192.0.2.77

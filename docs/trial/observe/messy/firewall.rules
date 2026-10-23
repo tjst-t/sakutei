@@ -1,0 +1,21 @@
+# 手で書いた癖のある ruleset（手順 7）
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        jump sakutei_allow
+    }
+    chain sakutei_allow {
+        tcp dport 22 accept
+        tcp dport 443 accept
+    }
+    chain sakutei_allow {
+        tcp dport 8080 accept
+    }
+    chain empty {
+    }
+}
+table ip nat {
+    chain pre {
+        ip saddr 10.0.0.0/8 accept
+    }
+}

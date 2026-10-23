@@ -54,6 +54,10 @@ type providerEntry struct {
 	p      provider.Provider
 	engine *diff.Engine
 	prune  *prune.Engine // nil when p is not a Lister
+	// observePathLogged is set once the daemon has logged which Observe path
+	// (BulkObserve or per-resource Read, §5.7) this provider takes.  Touched
+	// only by the cycle goroutine.
+	observePathLogged bool
 }
 
 func newProviderEntry(name string, p provider.Provider) *providerEntry {

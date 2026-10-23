@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
@@ -350,6 +351,9 @@ func runStatus(args []string) {
 			builder.NoteDaemonHealthUnavailable(fmt.Sprintf("デーモン健全性: 読めない（%v）", err))
 		} else {
 			builder.SetDaemonHealth(h)
+			if h.Stale(time.Now()) {
+				builder.MarkDaemonStale()
+			}
 		}
 	}
 

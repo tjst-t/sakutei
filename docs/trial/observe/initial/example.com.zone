@@ -1,0 +1,6 @@
+$ORIGIN example.com.
+@	300 IN SOA ns1 admin 2026102301 3600 900 604800 300
+@	300 IN NS ns1
+www	300 IN A 192.0.2.10
+api	300 IN A 192.0.2.30
+mail	300 IN A 192.0.2.40

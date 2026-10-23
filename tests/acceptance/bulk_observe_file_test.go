@@ -142,6 +142,22 @@ func TestBulkObserve_NFTablesEquivalentToRead(t *testing.T) {
 	if v := web.State["rules"].Value; v != "tcp dport 80 accept"+nftables.RuleSep+"tcp dport 443 accept" {
 		t.Errorf("[#27-1] ip/filter/web rules = %q, want the first block's (as Read)", v)
 	}
+	// #104: List is a set — the twice-written chain web is listed once, so List
+	// and BulkObserve name the same resources.
+	lr, err := p.List(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, id := range lr.IDs {
+		if seen[id.Local] {
+			t.Errorf("[#104] List returned %s twice", id.Local)
+		}
+		seen[id.Local] = true
+	}
+	if len(lr.IDs) != len(b.Observations) {
+		t.Errorf("[#104] List has %d ids, BulkObserve %d entries; want the same resources", len(lr.IDs), len(b.Observations))
+	}
 }
 
 // bulkFileCase is one file-backed bulk provider and the ways to break its file.

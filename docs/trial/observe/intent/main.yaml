@@ -1,0 +1,40 @@
+# tier 別の Observe 頻度・BulkObserve・status を試す intent（docs/trial/observe/README.md）。
+# 最初の現実（initial/）とすべて一致している（起動した周から収束している）。
+version: "1"
+observe_tiers:
+  - name: stable          # 収束しているあいだ 4 周に 1 回だけ Observe する（§16.5）
+    observe_every: 4
+resources:
+  # www は tier なし：毎周 Observe する（§8 の既定）
+  - provider: dnszone
+    id: www.example.com./A
+    fields:
+      name: www.example.com.
+      type: A
+      value: 192.0.2.10
+      ttl: "300"
+  - provider: dnszone
+    id: api.example.com./A
+    observe_tier: stable
+    fields:
+      name: api.example.com.
+      type: A
+      value: 192.0.2.30
+      ttl: "300"
+  - provider: dnszone
+    id: mail.example.com./A
+    observe_tier: stable
+    fields:
+      name: mail.example.com.
+      type: A
+      value: 192.0.2.40
+      ttl: "300"
+  # nftables の唯一のリソースも stable。間引く周は nftables の Observe が 1 つも無い
+  - provider: nftables
+    id: inet/filter/sakutei_allow
+    observe_tier: stable
+    fields:
+      family: inet
+      table: filter
+      chain: sakutei_allow
+      rules: tcp dport 22 accept ; tcp dport 443 accept

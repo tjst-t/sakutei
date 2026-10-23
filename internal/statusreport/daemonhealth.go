@@ -36,6 +36,15 @@ type DaemonHealth struct {
 	ConsecutiveUnreachableSkips int `json:"consecutive_unreachable_skips"`
 	// UnreachableSkipLimit は通知（ExternalInputUnreachableProlonged）を上げる上限。
 	UnreachableSkipLimit int `json:"unreachable_skip_limit"`
+	// ConsecutiveErrorCycles は、エラーで終わった連続周期数（intent が読めない・
+	// fencing のストアに届かない等）。これも収束が止まっている状態なので、健全に
+	// 見せない。エラーなく終わる周が来れば 0 に戻る。
+	ConsecutiveErrorCycles int `json:"consecutive_error_cycles"`
+	// LastError は最後にエラーで終わった周のエラー（ConsecutiveErrorCycles が 0 なら空）。
+	LastError string `json:"last_error,omitempty"`
+	// Interval はデーモンの周期（time.Duration の文字列）。status はこれで
+	// ファイルが更新されなくなった（デーモンが止まった）ことを見分ける。
+	Interval string `json:"interval,omitempty"`
 	// UpdatedAt は書いた時刻（UTC）。
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -43,6 +52,20 @@ type DaemonHealth struct {
 // Prolonged は連続スキップが上限に達しているかを返す。
 func (h DaemonHealth) Prolonged() bool {
 	return h.UnreachableSkipLimit > 0 && h.ConsecutiveUnreachableSkips >= h.UnreachableSkipLimit
+}
+
+// staleIntervals は、更新が周期の何倍途絶えたら「止まっているかもしれない」と
+// みなすか。周期には 10% までの揺らぎと周の所要時間が乗るので、余裕を取る。
+const staleIntervals = 3
+
+// Stale は now の時点で、ファイルが周期の staleIntervals 倍より長く更新されて
+// いないかを返す。周期が分からない（古いデーモンが書いた）ときは false。
+func (h DaemonHealth) Stale(now time.Time) bool {
+	iv, err := time.ParseDuration(h.Interval)
+	if err != nil || iv <= 0 {
+		return false
+	}
+	return now.Sub(h.UpdatedAt) > staleIntervals*iv
 }
 
 // WriteDaemonHealth は h を path に書く。読み手が途中まで書かれたファイルを見ない

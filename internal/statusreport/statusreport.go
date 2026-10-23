@@ -134,6 +134,9 @@ type Report struct {
 	Daemon *DaemonHealth
 	// DaemonNote はデーモン健全性を読めなかったときの注記（読めないことを隠さない）。
 	DaemonNote string
+	// DaemonStale は、status を出した時点でデーモンの健全性ファイルが周期の数倍
+	// 更新されていないこと（デーモンが止まっているかもしれない）。
+	DaemonStale bool
 }
 
 // DriftSummaryProvider は last-seen リングの「前周は X だった」注記を提供する
@@ -160,6 +163,7 @@ type Builder struct {
 	workflowHeld     []WorkflowHeldItem
 	daemon           *DaemonHealth
 	daemonNote       string
+	daemonStale      bool
 }
 
 // NewBuilder は指定した版情報と last-seen リングでビルダを作る。
@@ -216,6 +220,9 @@ func (b *Builder) AddWorkflowHeld(id core.ID, workflow, stage string) {
 // SetDaemonHealth は常駐デーモンが書いた健全性（#15）をレポートに載せる。
 func (b *Builder) SetDaemonHealth(h DaemonHealth) { b.daemon = &h }
 
+// MarkDaemonStale は、デーモンの健全性ファイルが古い（DaemonHealth.Stale）ことを記録する。
+func (b *Builder) MarkDaemonStale() { b.daemonStale = true }
+
 // NoteDaemonHealthUnavailable はデーモン健全性を読めなかったことを注記する。
 func (b *Builder) NoteDaemonHealthUnavailable(note string) { b.daemonNote = note }
 
@@ -249,6 +256,7 @@ func (b *Builder) Build() Report {
 		UnmanagedNotes:    notes,
 		Daemon:            b.daemon,
 		DaemonNote:        b.daemonNote,
+		DaemonStale:       b.daemonStale,
 	}
 }
 
@@ -336,6 +344,14 @@ func (r Report) String() string {
 			r.Daemon.Cycle, r.Daemon.UpdatedAt.Format(time.RFC3339), r.Daemon.ConsecutiveUnreachableSkips, r.Daemon.UnreachableSkipLimit)
 		if r.Daemon.Prolonged() {
 			sb.WriteString("  警告: ExternalInputUnreachableProlonged — 外部の権威が長く届かず、収束が止まっている（§9.2）。\n")
+		}
+		if r.Daemon.ConsecutiveErrorCycles > 0 {
+			fmt.Fprintf(&sb, "  警告: 周がエラーで終わり続けている consecutive_error_cycles=%d — 収束が止まっている。最後のエラー: %s\n",
+				r.Daemon.ConsecutiveErrorCycles, r.Daemon.LastError)
+		}
+		if r.DaemonStale {
+			fmt.Fprintf(&sb, "  警告: このファイルは周期（%s）の数倍のあいだ更新されていない — デーモンが止まっているかもしれない。\n",
+				r.Daemon.Interval)
 		}
 	} else if r.DaemonNote != "" {
 		sb.WriteString("\n")
