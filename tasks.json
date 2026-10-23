@@ -1717,6 +1717,31 @@
       "extra": {}
     },
     {
+      "id": "v2-reimage-planned-change-reimage-os-wor",
+      "number": 88,
+      "kind": "task",
+      "title": "v2: 入れ直し（reimage）を宣言で起こす——planned_change の reimage と OS 導入の Workflow をつなぐ",
+      "status": "backlog",
+      "parent": "v2-task-ui",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v2",
+        "os-install",
+        "workflow"
+      ],
+      "body": "2026-10-22 の OS インストールの試用で見つけた穴 3/6。\n\n## 何が足りないか\n一度 done になった Workflow はもう走らない。入れ直すには `sakutei workflow cancel <名前>`（done の run を消すと次の周に新しい run が始まるはず）か、定義を変えるしかない。試用では cancel が通ることだけ確かめ、そのあともう一度走るかは確かめていない。「この台を入れ直したい」を宣言で表す口が無い。設計の planned_change（§13.3）の `kind: reimage` とつながっていない。\n\n## 要るもの\n- planned_change の reimage を宣言すると、対象の台で OS 導入の Workflow（または多相 Task）が 1 回走る。\n- 入れ直しは破壊的（ディスクを消す）なので、予算・承認ゲートの扱いを決める。\n- cancel のあとに再実行されることのテスト。\n\n## 関連\n#51・#52、§13.3 planned_change（reimage のペアリング判定は v1.5 で決定済み）。",
+      "doneWhen": "planned_change の reimage を宣言すると対象の台で OS 導入が 1 回走り、予算・承認を通ること、宣言を外すと走らないことを qemu-bmc の統合テストで示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T01:14:31.629Z",
+      "updatedAt": "2026-10-23T01:14:31.629Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "factory-2-sync-mode-prune",
       "number": 50,
       "kind": "task",
