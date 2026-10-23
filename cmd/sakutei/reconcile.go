@@ -832,6 +832,23 @@ func runReconcile(args []string) {
 		os.Exit(1)
 	}
 
+	// #110: count the resources whose Apply failed this cycle — they had ops,
+	// were attempted (neither unobservable nor skipped) and did not succeed.
+	// Their failure line is already on stderr (EmitApplyFailed); the summary
+	// below must not call the cycle converged.
+	skippedSet := make(map[string]bool, len(skipped))
+	for _, sk := range skipped {
+		skippedSet[sk] = true
+	}
+	applyFailed := 0
+	for _, res := range desired {
+		local := res.ID.Local
+		if len(filteredPlans[local].Ops) == 0 || appliedIDs[local] || skippedSet[local] || unobservable[local] {
+			continue
+		}
+		applyFailed++
+	}
+
 	// Report skipped resources (upstream failure or unobservable) to stderr.
 	for _, sk := range skipped {
 		fmt.Fprintf(logErr, "sakutei reconcile: skip %s (unobservable, upstream failure, or upstream not ready; not converged this cycle)\n", sk)
@@ -899,10 +916,22 @@ func runReconcile(args []string) {
 		runSummary(fmt.Sprintf("Reconcile: BUDGET HALTED (no changes applied): %s", budgetDecision.Reason))
 		os.Exit(1)
 	case appliedOps > 0:
+		failedText := ""
+		if applyFailed > 0 {
+			failedText = fmt.Sprintf("; %d resource(s) failed to apply", applyFailed)
+		}
 		if budgetHalted {
-			runSummary(fmt.Sprintf("Reconcile: %d change(s) applied (budget halted some ops)", appliedOps))
+			runSummary(fmt.Sprintf("Reconcile: %d change(s) applied (budget halted some ops)%s", appliedOps, failedText))
 		} else {
-			runSummary(fmt.Sprintf("Reconcile: %d change(s) applied", appliedOps))
+			runSummary(fmt.Sprintf("Reconcile: %d change(s) applied%s", appliedOps, failedText))
+		}
+	case applyFailed > 0:
+		// #110: an Apply failure is not convergence.  The exit code stays 0
+		// (AC-S94f1f9-2-2, level-triggered); only the summary says so.
+		if len(skipped) > 0 {
+			runSummary(fmt.Sprintf("Reconcile: not converged: %d resource(s) failed to apply, %d resource(s) skipped (no changes applied)", applyFailed, len(skipped)))
+		} else {
+			runSummary(fmt.Sprintf("Reconcile: not converged: %d resource(s) failed to apply (no changes applied)", applyFailed))
 		}
 	case len(skipped) > 0:
 		// Do not claim convergence: some resources were skipped this cycle

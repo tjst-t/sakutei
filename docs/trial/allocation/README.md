@@ -157,7 +157,7 @@ sakutei reconcile: render: declare pool "svc-ports": allocator: pool "svc-ports"
 
 ```
 sakutei: apply dnszone//app5.example.com./A: permanent: dnszone: writeRecord: refusing to write app5.example.com./A: value "8004" is not an IPv4 address
-Converged (no changes)
+Reconcile: not converged: 1 resource(s) failed to apply (no changes applied)
 （終了コード 0）
 → app5 の A は書かれていない（ゾーンはほかのレコードごと読み込める形のまま）
 ```
@@ -301,6 +301,9 @@ sakutei plan: load intent: loader: pools "site-a-ports" (8100-8199, claim map[si
    バックアップすることだけ。
 8. **Apply が Permanent で失敗しても、reconcile の要約が `Converged (no changes)`・終了コード 0**（手順 6）。失敗の行は出るが、要約は収束したと言う。
    Apply の失敗で終了コード 0 は既存の決まり（AC-S94f1f9-2-2）だが、要約の文言は誤解を招く。採番に限らない reconcile 全体の話。
+   → #110 で直した：要約は失敗した件数を言う（`Reconcile: not converged: 1 resource(s) failed to apply (no changes applied)`、
+   ほかに適用した変更があれば `Reconcile: N change(s) applied; 1 resource(s) failed to apply`）。終了コード 0 は変えていない。
+   `tests/acceptance/apply_failed_summary_test.go`（`[AC-110-1]`・`[AC-110-2]`）。
 9. **waiting-allocation のリソースが「unobservable this cycle (Observe error or Availability != Ok)」とも出る**（手順 5・7）。観測はできていて、
    理由は割当待ち。直後の行に waiting-allocation と出るので害は小さいが、文言が誤っている。
 10. **plan・status は、プールが尽きたことを言わない**（手順 5）。`Lookup` しかしないので「pending allocation … (allocated by reconcile)」と出るだけで、
