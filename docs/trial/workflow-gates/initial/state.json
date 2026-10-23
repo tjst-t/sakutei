@@ -1,0 +1,8 @@
+{
+  "provider_version": "trial-1",
+  "resources": {
+    "n1": { "fields": { "name": "n1", "version": "1", "active": "true" } },
+    "n2": { "fields": { "name": "n2", "version": "1", "active": "true" } },
+    "n3": { "fields": { "name": "n3", "version": "1", "active": "true" } }
+  }
+}

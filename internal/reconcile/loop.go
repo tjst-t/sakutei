@@ -2087,7 +2087,7 @@ func runCycleAsync(
 	}
 
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
-		ctx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, ready, cfg.ErrOut,
+		ctx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, wfHeld, ready, cfg.ErrOut,
 		dispatch, commit, launchTask)
 	backedOff = backedOffList
 	if waveErr != nil {
@@ -2376,6 +2376,10 @@ func executePruneOps(
 // an unconverged upstream — its downstream is skipped until a later cycle
 // observes it converged.
 //
+// #101: a Workflow target (wfHeld, also in unobservable) holds its downstream
+// the same way, but is neither reported nor counted as a skip: it is not
+// in-flight or unobservable, and the cycle reports it as WorkflowHeld.
+//
 // Returns:
 //   - applied:    number of Ops reported by synchronous (immediate) Applies.
 //     For async Applies this is 0 — the goroutine reports completion outside the
@@ -2392,6 +2396,7 @@ func applyWavesAsync(
 	desired []diff.DesiredResource,
 	plans map[string]core.Plan,
 	unobservable map[string]bool,
+	wfHeld map[string]string,
 	ready Readiness,
 	errOut io.Writer,
 	dispatchFn func(local string, ops []core.Op),
@@ -2427,8 +2432,10 @@ func applyWavesAsync(
 
 			// In-flight or unobservable: treat as failed for downstream propagation.
 			if unobservable[local] {
-				skipped = append(skipped, local)
-				fmt.Fprintf(errOut, "sakutei: skip %s: in-flight or unobservable this cycle\n", r.ID)
+				if _, ok := wfHeld[local]; !ok {
+					skipped = append(skipped, local)
+					fmt.Fprintf(errOut, "sakutei: skip %s: in-flight or unobservable this cycle\n", r.ID)
+				}
 				failed[local] = true
 				for _, m := range adj[idx] {
 					inDeg[m]--

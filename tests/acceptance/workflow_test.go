@@ -28,6 +28,7 @@
 //	AC-v1.5-workflow-7 — v1.5 で未対応の宣言（select・halt 以外の on_failure）と誤った requirements はロード時に拒否される
 //	AC-v1.5-workflow-8 — workflow store が無ければ Workflow は進まず、対象は Apply されない
 //	AC-v1.5-workflow-9 — plan・status は done でない Workflow の対象を「Workflow に任せる」と示し、普段の差分（UPDATE・DRIFTED）として出さない。--workflow-store があれば run の段階も出す（#89）
+//	AC-101-1 — 常駐ループは Workflow の対象を「in-flight or unobservable」の skip と言わず数えない（WorkflowHeld として出す）。その下流は従来どおり待つ（#101 の試用で見つけた）
 package acceptance
 
 import (
@@ -759,4 +760,28 @@ func TestWorkflowPlanStatusShowHeldTargets(t *testing.T) {
 		t.Fatalf("reject: exit %d\n%s", code, out)
 	}
 	check("halted", "halted (run ", store...)
+}
+
+// [AC-101-1] Workflow の対象は skip ではない: デーモンのログに「in-flight or
+// unobservable」と出さず、skipped にも数えない。depends_on で下流にある app は
+// 従来どおり upstream を待って skip される。
+func TestWorkflowHeldTargetsAreNotSkips(t *testing.T) {
+	r := newWFRig(t, rollingIntent)
+	r.runToFirstGate()
+	r.out = &syncBuf{}
+	r.d = r.newDaemon(true)
+	res := r.cycle()
+	if strings.Join(res.WorkflowHeld, ",") != "n1,n2,n3" {
+		t.Fatalf("WorkflowHeld = %v, want [n1 n2 n3]", res.WorkflowHeld)
+	}
+	if strings.Join(res.Skipped, ",") != "app" {
+		t.Fatalf("Skipped = %v, want only the downstream app", res.Skipped)
+	}
+	out := r.out.String()
+	if strings.Contains(out, "in-flight or unobservable") {
+		t.Fatalf("a Workflow target was reported as in-flight or unobservable:\n%s", out)
+	}
+	if !strings.Contains(out, `skip fake//app: upstream "n1"`) {
+		t.Fatalf("the downstream app is not reported as waiting for n1:\n%s", out)
+	}
 }

@@ -1,0 +1,65 @@
+# Workflow の承認ゲートの試用（docs/trial/workflow-gates/README.md）。
+# 3 台（n1〜n3）を 1 台ずつ drain → version 2 に上げる → undrain → 不変条件を確かめる。
+# 収束としての「あるべき姿」は version 2・active。Workflow が done になるまで、この 3 台は収束ループが触らない。
+resources:
+  - provider: fake
+    id: n1
+    fields:
+      name: n1
+      version: "2"
+      active: "true"
+  - provider: fake
+    id: n2
+    fields:
+      name: n2
+      version: "2"
+      active: "true"
+  - provider: fake
+    id: n3
+    fields:
+      name: n3
+      version: "2"
+      active: "true"
+
+workflows:
+  - workflow: rolling
+    applicant: alice                 # 申請者（PR の作者など）。s2 の separation が使う
+    target:
+      provider: fake
+    invariant:
+      min_active: 2                  # 3 台のうち常に 2 台は active
+    strategy:
+      order: one-at-a-time
+    stages:
+      - name: s1                     # 単一承認（requirements なし）
+        targets:
+          - n1
+        gate:
+          manual_approval: required
+          timeout: 24h
+      - name: s2                     # N-of-M・roles・separation（§14.4）
+        targets:
+          - n2
+        gate:
+          manual_approval:
+            requirements:
+              quorum:
+                n: 2
+                of: 3
+              roles:
+                - platform-admin
+              separation: applicant_ne_approver
+          timeout: 24h
+      - name: s3                     # ゲートなし
+        targets:
+          - n3
+    steps:
+      - apply:                       # drain
+          active: "false"
+      - apply:                       # 上げる
+          version: "2"
+      - apply:                       # undrain
+          active: "true"
+      - verify: invariant
+    on_failure:
+      policy: halt
