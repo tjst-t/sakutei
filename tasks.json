@@ -2515,6 +2515,31 @@
       "updatedAt": "2026-10-23T16:30:39.327Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "fencing-dr-fencing-fenced",
+      "number": 107,
+      "kind": "task",
+      "title": "fencing と DR の隙間：fencing ストアに届かない拠点は直さない・FENCED のシャードは解放後も取り戻さない・合流前に中央を読むシャードが緊急書込を巻き戻す",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "fencing",
+        "dr",
+        "needs-decision"
+      ],
+      "body": "2026-10-23 の試用（docs/trial/sharding の見つけたこと 4・6、dr-mode の直していないもの 1・2）で見つけた。\n\n1. **fencing ストアに届かない拠点はずれを直さない**：§15.2「確かめられないなら書かない」により、WAN 断で中央の fencing ストアにも届かない拠点は Observe も Apply もしない。原則 8・§17.4「WAN 断の拠点でも収束は回り続ける」とぶつかる。拠点の claim はその拠点しか持たない前提で、届かない間は手元の世代で維持を続ける（lease の考え方）か、今のまま止めるか。\n2. **FENCED のシャードは、新しい holder が claim を手放しても取り戻さない**：fencing のストアに「手放した」記録が無い。起こし直すと取り戻す（§17.6 の 4 と同じ）。DR の後に scope が宙に浮く。\n3. **合流前に中央を直接読むシャードが、緊急書込を中央の古い値で巻き戻す**：「ミラーは緊急書込を古い中央で巻き戻さない」は session を開いたミラーから読むシャードにしか効かない。運用で守る（合流まで被災拠点のデーモンを起こさない）か、中央側で守る（合流用ブランチがある間はその scope の claim を動かさない等）か。\n4. **FENCED は fence されている間毎周 2 行ずつ出続ける**：§22.3 で fencing は edge の Event。level にするか。\n\n## 決めること\n§15.2・§17.4・§17.6・§25.1 の判断。",
+      "doneWhen": "1〜4 の扱いが設計書に決まり、決めたとおりに動くことを試用手順で示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T16:30:43.312Z",
+      "updatedAt": "2026-10-23T16:30:43.312Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
