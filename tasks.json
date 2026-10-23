@@ -2347,7 +2347,7 @@
       "number": 99,
       "kind": "task",
       "title": "試用：静的シャーディング（claim の git 配布・S2-free シャード・ハンドオフ）と inventory 検証",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-docs-trial",
       "dependsOn": [],
       "milestone": null,
@@ -2359,7 +2359,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T15:13:21.447Z",
+      "updatedAt": "2026-10-23T15:25:03.452Z",
       "closedAt": null,
       "extra": {}
     },
