@@ -162,11 +162,17 @@ sakutei: cycle 8: observed=2 converged (no changes)
 
 CD（`node1/cd`）は cycle 1 に普段の収束で差され（初回の観測なので cause B の Drift として出る）、同じ周に Workflow が電源を入れた。試用では間に合ったが、順番は保証されない（下の「限界」）。
 
+### 手順書どおりにやり直した結果（2026-10-23）
+
+`make-iso.sh` で ISO を作り直し、上の「回し方」どおりに回した。インストールは約 20 秒（15:00:47Z → 15:01:07Z）、Workflow は cycle 1 で開始・cycle 7 で完了し、ディスクから起動した（`SAKUTEI-INSTALLED-OS: booted from disk`）。
+
+続けて、電源が On（入れた OS が動いている）のまま `sakutei workflow cancel` すると、次の周に新しい run が始まり手順 1 を施した（起動先が Continuous・Cd になった）が、電源は入れ直されず、インストーラは走らなかった（シリアルの `AUTOINSTALL: start` は 1 回のまま）。run は手順 2 で `waiting for map[power:Off]` のまま待ち続けた。下の「限界」の「入れ直し」。
+
 ## 限界（v1 の今）
 
 | 限界 | 何が起きるか | 先の話 |
 |---|---|---|
 | **完了は電源オフでしか判断できない** | Workflow が見るのは BMC から見た `power: Off` だけ。インストーラが失敗しても電源を切れば成功と見なして手順 3 へ進む（試用での成功は、シリアルを人が読んで確かめた）。電源を切らずに止まれば `timeout` で halt する | ゲスト OS を観測する手段（SSH・エージェント）で完了を確かめる：Backlog #86（v2） |
 | **CD を差す順番は保証されない** | CD は別の provider（`redfish-virtual-media`）なので Workflow の手順に入れられず、普段の宣言として収束させる。CD より先に電源が入ると、空のドライブから起動しようとして進まない（手順 2 の `timeout` で halt） | 手順ごとに対象の provider を書く・手順の前提条件（CD が差してあること）：Backlog #87（v2）。今は CD（`node1/cd`）の宣言だけを先に入れて 1 周回し、差さったのを見てから `node1` の宣言と Workflow を足すと確実（`node1` の最終形だけを先に入れると、電源が入ってディスクから起動しようとし、Workflow の手順 1 が Off から始まらない） |
-| **入れ直しは手で cancel** | done の Workflow は二度と走らない（定義を変えれば新しい run になる）。入れ直すには `sakutei workflow cancel --store wf.json os-install` で記録を消す（次の周に新しい run が始まる作り。試用では cancel が通ることだけ確かめ、再実行は確かめていない）。電源は Off にしておく（上の「読み方」） | planned_change の `kind: reimage` で入れ直しを宣言する：Backlog #88（v2） |
+| **入れ直しは手で cancel** | done の Workflow は二度と走らない（定義を変えれば新しい run になる）。入れ直すには `sakutei workflow cancel --store wf.json os-install` で記録を消す。次の周に新しい run が始まる（2026-10-23 に確かめた）。**ただし電源が On のまま cancel すると入れ直しにならない**：手順 1 の apply は起動先を CD に書き換えるだけで電源を入れ直さず（再起動は宣言できない）、インストーラは走らずに手順 2 で待ち続ける（`timeout` で halt）。先に台を止めて（電源 Off を確かめて）から cancel する | planned_change の `kind: reimage` で入れ直しを宣言する：Backlog #88（v2） |
 | **workflow store を失うと、もう一度走る** | 進み具合（done）は `--workflow-store` のファイルにしか無い。消える・別のファイルを指すと、次の周に手順 1 から走る（電源が入っていれば手順 2 で halt、切れていれば**ディスクを消して入れ直す**）。消えない場所に置く | #88 で入れ直しを宣言に寄せるときに合わせて考える |
