@@ -2389,7 +2389,7 @@
       "number": 101,
       "kind": "task",
       "title": "試用：Workflow の承認ゲート（単一・N-of-M・roles・separation・timeout、CLI と承認 API、不変条件）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-docs-trial",
       "dependsOn": [],
       "milestone": null,
@@ -2401,7 +2401,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T15:13:21.447Z",
+      "updatedAt": "2026-10-23T15:35:16.472Z",
       "closedAt": null,
       "extra": {}
     },
