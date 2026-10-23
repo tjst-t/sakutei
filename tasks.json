@@ -2259,7 +2259,7 @@
       "number": 95,
       "kind": "task",
       "title": "sqlmigrate で単純 Task を実物で試す（試用手順と結果）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "task-provider-sqlmigrate-sqlite",
       "dependsOn": [
         "sqlmigrate-provider-cli-sqlmigrate-confi"
@@ -2273,7 +2273,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:11:11.923Z",
-      "updatedAt": "2026-10-23T15:11:11.923Z",
+      "updatedAt": "2026-10-23T16:34:40.173Z",
       "closedAt": null,
       "extra": {}
     },
