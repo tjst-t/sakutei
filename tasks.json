@@ -2236,7 +2236,7 @@
       "number": 94,
       "kind": "task",
       "title": "sqlmigrate provider を CLI につなぐ（--sqlmigrate-config）と受け入れテスト",
-      "status": "in-progress",
+      "status": "done",
       "parent": "task-provider-sqlmigrate-sqlite",
       "dependsOn": [
         "sqlmigrate-provider-schema-migrations-ta"
@@ -2246,12 +2246,12 @@
       "labels": [],
       "body": "plan・reconcile・status・常駐の sakutei で sqlmigrate のリソースを intent に書けるようにする（redfish の --redfish-config と同じ登録のしかた、dnszone などと混ぜられる）。\n- 設定ファイル --sqlmigrate-config <file>：databases の下に名前ごとに path・migrations（相対パスは設定ファイルのあるディレクトリから）、全体に sqlite3（CLI のパス、省略可）。未知のキーはエラー。設定に無い名前を intent に書いたら計画の時点でエラー。\n- 一回性の reconcile は strategy: task のリソースを Apply しない（既存の決まり AC-v1.5-task-9）。plan の表示で Task を起動する差分であることが分かること。\n- docs/providers/sqlmigrate.md に設定・intent の例（update_policy の strategy: task・window・rollback_on_fail）・マイグレーションのファイル名の決まりを書く。README の provider の表に足す。\n- tests/acceptance に、本物の sqlite3 で常駐の sakutei（--task-store 付き）を回し Task が起動して宣言の版に収束する受け入れテストを足す（sqlite3 が無ければ Skip）。",
       "doneWhen": "--sqlmigrate-config で DB を指定し、本物の sqlite3 を相手に常駐の sakutei が Task を起動して宣言の版に収束する受け入れテストが通る。docs/providers/sqlmigrate.md がある。make check・make test-race が合格する",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/sqlmigrate-provider-cli-sqlmigrate-confi）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:11:11.923Z",
-      "updatedAt": "2026-10-23T16:11:30.964Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-23T16:34:32.122Z",
+      "closedAt": "2026-10-23T16:34:32.122Z",
       "extra": {}
     },
     {
