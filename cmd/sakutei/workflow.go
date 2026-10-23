@@ -22,7 +22,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -199,14 +198,4 @@ func workflowHeld(defs []workflow.Definition, storePath string) map[string]workf
 		}
 	}
 	return held
-}
-
-// sortedWorkflowHeld returns the held targets in Local ID order.
-func sortedWorkflowHeld(held map[string]workflowHeldTarget) []workflowHeldTarget {
-	out := make([]workflowHeldTarget, 0, len(held))
-	for _, h := range held {
-		out = append(out, h)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID.Local < out[j].ID.Local })
-	return out
 }
