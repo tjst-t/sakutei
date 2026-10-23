@@ -2185,6 +2185,30 @@
       "updatedAt": "2026-10-23T01:46:22.265Z",
       "closedAt": "2026-10-23T01:46:22.265Z",
       "extra": {}
+    },
+    {
+      "id": "task-provider-sqlmigrate-sqlite",
+      "number": 92,
+      "kind": "story",
+      "title": "単純 Task を動かす本物の provider：sqlmigrate（SQLite のマイグレーション）と実物での試験",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "provider",
+        "task"
+      ],
+      "body": "v1.5 の単純 Task（§6.2、strategy: task）は Task の中身を実行できる provider がテスト用の fake しか無く、実物で試せなかった（2026-10-23 人の依頼「適切な本物の Provider を実装して試験まで」）。決まりは設計書 v3.17 §29.1「単純 Task の実 provider：sqlmigrate」が正（CHANGELOG-v3.17）。\n\n## 要点\n- SQLite のデータベース（ファイル）に版つきのマイグレーションを流す。sqlite3 の CLI を exec（Go は標準ライブラリだけ）。このコンテナには sqlite3 3.45.1 を入れてある。\n- 宣言は version（整数）、観測は schema_migrations の最大の版（表が無ければ 0）。\n- strategy: task 専用。Task が NNNN_<名前>.up.sql を 1 本ずつトランザクションで流し、同じトランザクションで schema_migrations に版を書く。下げるときは down.sql を逆順。\n- 失敗は halt。rollback_on_fail で起動時の版まで down で戻す。\n\n## 分け方\nprovider と Task の実行体 → CLI につなぐ → 実物の試験（デーモンでの 1-outstanding・メンテ窓・失敗と rollback・cancel・途中で落ちたとき）。",
+      "doneWhen": "本物の sqlite3 を相手に、デーモンが strategy: task の sqlmigrate リソースで Task を起動して宣言の版に収束し、メンテ窓・失敗時の halt と rollback・cancel 後の再起動・デーモンが途中で落ちたときに再実行しないことを試用手順で示す。make check・make test-race が合格する",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T15:09:32.106Z",
+      "updatedAt": "2026-10-23T15:09:32.106Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
