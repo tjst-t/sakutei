@@ -53,13 +53,22 @@ func gitCommand(ctx context.Context, dir string, env []string, args ...string) (
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if i := strings.LastIndex(msg, "\n"); i >= 0 {
-			msg = msg[i+1:]
-		}
-		return "", fmt.Errorf("git %s: %w: %s", args[0], err, msg)
+		return "", fmt.Errorf("git %s: %w: %s", args[0], err, gitErrLine(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+// gitErrLine は git の標準エラーから原因の 1 行を選ぶ。最初の "fatal:"／"error:" の行、
+// 無ければ最後の行。最後の行だけだと、届かないミラーで "and the repository exists." のような
+// 説明の続きしか残らない（試用 docs/trial/sharding で見つけた）。
+func gitErrLine(stderr string) string {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	for _, l := range lines {
+		if l = strings.TrimSpace(l); strings.HasPrefix(l, "fatal:") || strings.HasPrefix(l, "error:") {
+			return l
+		}
+	}
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 // Checkout は 1 シャードの intent の手元写し。partial clone（blob は必要な分だけ）と
@@ -130,8 +139,14 @@ func (c *Checkout) clone(ctx context.Context, sparse []string) error {
 	if err := os.MkdirAll(filepath.Dir(c.Dir), 0o755); err != nil {
 		return fmt.Errorf("gitdist: %w", err)
 	}
+	// git は filepath.Dir(c.Dir) で走るので、clone 先は絶対パスで渡す（相対の --workdir だと
+	// <dir>/<dir>/repo に作ってしまい、残骸が以後の clone をすべて止める）。
+	dest, err := filepath.Abs(c.Dir)
+	if err != nil {
+		return fmt.Errorf("gitdist: %w", err)
+	}
 	if _, err := runGit(ctx, filepath.Dir(c.Dir), "clone", "--quiet", "--filter=blob:none", "--no-checkout",
-		"--branch", c.branch(), c.Remote, c.Dir); err != nil {
+		"--branch", c.branch(), c.Remote, dest); err != nil {
 		_ = os.RemoveAll(c.Dir)
 		return err
 	}

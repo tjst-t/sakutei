@@ -1,0 +1,17 @@
+{
+  "provider_version": "trial-1",
+  "pruneable_capability": true,
+  "resources": {
+    "a-vm":  {"fields": {"name": "a-vm",  "size": "1"}},
+    "a-old": {"fields": {"name": "a-old", "size": "1"}},
+    "b-vm":  {"fields": {"name": "b-vm",  "size": "1"}},
+    "b-old": {"fields": {"name": "b-old", "size": "1"}},
+    "stray": {"fields": {"name": "stray", "size": "1"}}
+  },
+  "scopes": {
+    "a-vm":  {"site": "a"},
+    "a-old": {"site": "a"},
+    "b-vm":  {"site": "b"},
+    "b-old": {"site": "b"}
+  }
+}

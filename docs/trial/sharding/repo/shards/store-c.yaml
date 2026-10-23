@@ -1,0 +1,2 @@
+# 店舗 c のデーモン（S2-free）。開店前は idle（claim が空）
+claim:

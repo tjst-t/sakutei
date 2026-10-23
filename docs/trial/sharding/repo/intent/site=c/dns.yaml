@@ -1,0 +1,12 @@
+# 開店前の店舗 c。中央のプロビジョニング claim（shards/central.yaml）が持つ
+version: "1"
+resources:
+  - provider: dnszone
+    id: c-www.example.com./A
+    scope:
+      site: c
+    fields:
+      name: c-www.example.com.
+      type: A
+      value: 192.0.2.31
+      ttl: "300"

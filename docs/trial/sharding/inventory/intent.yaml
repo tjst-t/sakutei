@@ -1,0 +1,11 @@
+# 手順 7（inventory）の intent。www だけを人が書き、残りは inventory（CMDB の代役のファイル）から合成する。
+version: "1"
+resources:
+  - provider: dnszone
+    id: www.example.com./A
+    deletion_policy: PruneWithinScope
+    fields:
+      name: www.example.com.
+      type: A
+      value: 192.0.2.10
+      ttl: "300"

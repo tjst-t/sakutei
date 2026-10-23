@@ -1,0 +1,12 @@
+# 拠点 b の DNS レコード（shards/store-b.yaml の claim site=b が持つ）
+version: "1"
+resources:
+  - provider: dnszone
+    id: b-www.example.com./A
+    scope:
+      site: b
+    fields:
+      name: b-www.example.com.
+      type: A
+      value: 192.0.2.21
+      ttl: "300"
