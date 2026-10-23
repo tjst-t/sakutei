@@ -1667,6 +1667,31 @@
       "extra": {}
     },
     {
+      "id": "v2-os-ssh-os",
+      "number": 86,
+      "kind": "task",
+      "title": "v2: ゲスト OS を観測する手段（SSH・エージェント）で、OS 導入などの完了を確かめる",
+      "status": "backlog",
+      "parent": "v2-task-ui",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v2",
+        "os-install",
+        "needs-decision"
+      ],
+      "body": "2026-10-22 の OS インストールの試用（qemu-bmc 0.9.0 + Alpine 3.24 の自動インストール ISO、Workflow の apply → wait power:Off → apply）で見つけた穴 1/6。\n\n## 何が足りないか\nWorkflow の完了の判断が「BMC から見て電源が切れた（power: Off）」だけ。インストーラが失敗して電源を切っても成功と見なして次へ進む。試用での成功は、人（AI）がシリアルコンソールを横から読んで確かめた。Sakutei はゲスト OS の中（起動したか・何が入ったか）を見る手段を持たない。\n\n## 要るもの\n- ゲスト OS を観測する provider（例：SSH で到達して OS の版や目印を読む、または導入後に起動するエージェントが報告する）。\n- それを Workflow の wait や多相 Task（#51）の「相ごとの入口 Observe」の完了条件に使えるようにする。\n- 何を正とするか（SSH の鍵の配り方・到達できない＝Unknown の扱い）を決める必要がある。\n\n## 関連\n#51（多相 Task の相ごとの入口 Observe）、#48（Redfish provider）。設計 §29.3 (c)（provisioner 実体は責務外。完了の確認は Sakutei の役目）。",
+      "doneWhen": "OS 導入の Workflow（または多相 Task）が、電源の状態ではなくゲスト OS の観測で完了を判断し、インストーラが失敗したときは先へ進まないことを、qemu-bmc の統合テストで示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T01:14:22.443Z",
+      "updatedAt": "2026-10-23T01:14:22.443Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "factory-2-sync-mode-prune",
       "number": 50,
       "kind": "task",
