@@ -20,29 +20,51 @@
 //	workflows:
 //	  - workflow: rolling-upgrade
 //	    applicant: alice                        # 申請者 ID（separation 用、PR の作者など）
-//	    target: { provider: fake }              # 対象の provider（と scope）
-//	    invariant: { min_active: 2, active_when: { active: "true" } }
-//	    strategy: { order: one-at-a-time }
-//	    stages:                                  # ステージは宣言順に 1 つずつ
+//	    target:                                 # 対象の provider（と scope）
+//	      provider: fake
+//	    invariant:
+//	      min_active: 2
+//	      active_when:
+//	        active: "true"
+//	    strategy:
+//	      order: one-at-a-time
+//	    stages:                                 # ステージは宣言順に 1 つずつ
 //	      - name: n1
-//	        targets: [n1]                        # ステージ内の対象も 1 つずつ
-//	        gate: { manual_approval: required, timeout: 24h }
+//	        targets:                            # ステージ内の対象も 1 つずつ
+//	          - n1
+//	        gate:
+//	          manual_approval: required
+//	          timeout: 24h
 //	      - name: n2
-//	        targets: [n2]
+//	        targets:
+//	          - n2
 //	        gate:
 //	          manual_approval:
-//	            requirements:                    # §14.4（無ければ単一承認）
-//	              quorum: { n: 2, of: 3 }
-//	              roles: [platform-admin]
+//	            requirements:                   # §14.4（無ければ単一承認）
+//	              quorum:
+//	                n: 2
+//	                of: 3
+//	              roles:
+//	                - platform-admin
 //	              separation: applicant_ne_approver
-//	      - ...
-//	    steps:                                   # 対象ごとに実行する手順
-//	      - apply: { active: "false" }           # drain（冪等な Apply）
-//	      - task: { version: "2" }               # 単純 Task（§6.2）を呼ぶ
-//	      - wait: { fields: { version: "2" }, timeout: 5m }
-//	      - apply: { active: "true" }            # undrain
+//	    steps:                                  # 対象ごとに実行する手順
+//	      - apply:                              # drain（冪等な Apply）
+//	          active: "false"
+//	      - task:                               # 単純 Task（§6.2）を呼ぶ
+//	          version: "2"
+//	      - wait:
+//	          fields:
+//	            version: "2"
+//	          timeout: 5m
+//	      - apply:                              # undrain
+//	          active: "true"
 //	      - verify: invariant
-//	    on_failure: { policy: halt }             # 既定 halt（v1.5 は halt のみ）
+//	    on_failure:                             # 既定 halt（v1.5 は halt のみ）
+//	      policy: halt
+//
+// intent の YAML はブロックスタイルだけを受け付ける（{ … } / [ … ] のフロー
+// スタイルは読み込めない）。この例はそのまま loader で読める（loader のテスト
+// TestWorkflowDocExampleLoads が確かめる）。
 //
 // 規則:
 //   - invariant は各ステップの前後で検証する。前（その手順を施した後の見込み）で
