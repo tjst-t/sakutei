@@ -1692,6 +1692,31 @@
       "extra": {}
     },
     {
+      "id": "v2-workflow-provider-cd",
+      "number": 87,
+      "kind": "task",
+      "title": "v2: Workflow で複数の provider を扱う・手順の前提条件（例：CD が差してあること）を書ける",
+      "status": "backlog",
+      "parent": "v2-task-ui",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v2",
+        "os-install",
+        "workflow"
+      ],
+      "body": "2026-10-22 の OS インストールの試用で見つけた穴 2/6。\n\n## 何が足りないか\n最小 Workflow（v1.5）の target は provider 1 種類だけ。OS 導入では「CD（redfish-virtual-media）にインストーラを差す」→「CD 起動にして電源オン（redfish-system）」の順が要るが、CD は別 provider なので手順に入れられない。試用では CD を普段の宣言として書き、同じ周に差されたので間に合ったが、順番は保証されない（CD より先に電源が入ると、空のドライブとディスクから起動しようとして止まる）。\n\n## 案（着手時に決める）\n- Workflow の手順ごとに対象の provider・ID を書けるようにする（例 `apply: { resource: node1/cd, fields: {...} }`）。\n- あるいは手順に前提条件（`require: { resource, fields }`。満たすまで待つ）を書けるようにする。\n\n## 関連\n#51・#52（多相 Task）。",
+      "doneWhen": "OS 導入の Workflow で「CD を差す → 差さったことを確かめる → CD 起動で電源オン」を 1 つの Workflow に書け、順番が守られることをテストで示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T01:14:27.432Z",
+      "updatedAt": "2026-10-23T01:14:27.432Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "factory-2-sync-mode-prune",
       "number": 50,
       "kind": "task",
