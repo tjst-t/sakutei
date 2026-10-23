@@ -143,19 +143,76 @@ func (e *Engine) diff(id core.ID) *diff.Engine {
 func (e *Engine) Held(ctx context.Context, defs []Definition) (map[string]string, error) {
 	held := map[string]string{}
 	var firstErr error
-	for _, def := range defs {
-		run, ok, err := e.Store.Get(ctx, def.Name)
-		if err != nil && firstErr == nil {
-			firstErr = err
+	for _, h := range Holds(ctx, e.Store, defs) {
+		if h.Err != nil && firstErr == nil {
+			firstErr = h.Err
 		}
-		if err == nil && ok && run.Phase == PhaseDone && run.DefHash == def.Hash() {
-			continue
-		}
-		for _, id := range def.Targets() {
-			held[id.Local] = def.Name
+		for _, id := range h.Targets {
+			held[id.Local] = h.Workflow
 		}
 	}
 	return held, firstErr
+}
+
+// Hold は done でない Workflow 1 つ（その対象は収束ループが触らない）と、その run。
+type Hold struct {
+	Workflow string
+	Targets  []core.ID
+	// Run は Store にある run。nil なら未起動（Store が無いときも nil）。
+	Run *Run
+	// Restart は前の run が done だが定義が変わった（次の周に新しい run が起動する）。
+	Restart bool
+	// Err は Store を読めなかったこと（そのときも対象は持つ、原則 3）。
+	Err error
+}
+
+// Holds は done でない Workflow を宣言順に返す（Engine.Held と plan・status が共有する
+// 判定、#89）。store が nil なら、どの Workflow も done と言えないので全部を返す。
+func Holds(ctx context.Context, store Store, defs []Definition) []Hold {
+	var out []Hold
+	for _, def := range defs {
+		h := Hold{Workflow: def.Name, Targets: def.Targets()}
+		if store != nil {
+			run, ok, err := store.Get(ctx, def.Name)
+			switch {
+			case err != nil:
+				h.Err = err
+			case ok && run.Phase == PhaseDone && run.DefHash == def.Hash():
+				continue
+			case ok && run.Phase == PhaseDone:
+				h.Restart = true
+			case ok:
+				h.Run = &run
+			}
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// Describe は Hold の段階を 1 行で返す（plan・status の表示）。storeKnown は Store を
+// 渡されたか（渡されなければ段階は分からない）。
+func (h Hold) Describe(storeKnown bool) string {
+	switch {
+	case !storeKnown:
+		return "stage unknown (no --workflow-store)"
+	case h.Err != nil:
+		return fmt.Sprintf("stage unknown (workflow store unreadable: %v)", h.Err)
+	case h.Restart:
+		return "not started (the definition changed since the last done run; a new run starts)"
+	case h.Run == nil:
+		return "not started"
+	}
+	r := h.Run
+	switch r.Phase {
+	case PhaseAwaitingApproval:
+		approvers, need := r.Tally()
+		return fmt.Sprintf("awaiting_approval (run %s, gate %s, %d of %d approval(s))", r.RunID, r.Gate, len(approvers), need)
+	case PhaseHalted:
+		return fmt.Sprintf("halted (run %s: %s)", r.RunID, r.Reason)
+	default:
+		return fmt.Sprintf("%s (run %s, stage %d target %d step %d)", r.Phase, r.RunID, r.Stage, r.Target, r.Step)
+	}
 }
 
 // Tick は宣言された Workflow をそれぞれ進められるところまで進め、出来事を返す。

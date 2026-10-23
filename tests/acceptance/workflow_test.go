@@ -27,6 +27,7 @@
 //	AC-v1.5-workflow-6 — 承認・却下・timeout が S4 監査に append-only で残る
 //	AC-v1.5-workflow-7 — v1.5 で未対応の宣言（select・halt 以外の on_failure）と誤った requirements はロード時に拒否される
 //	AC-v1.5-workflow-8 — workflow store が無ければ Workflow は進まず、対象は Apply されない
+//	AC-v1.5-workflow-9 — plan・status は done でない Workflow の対象を「Workflow に任せる」と示し、普段の差分（UPDATE・DRIFTED）として出さない。--workflow-store があれば run の段階も出す（#89）
 package acceptance
 
 import (
@@ -683,4 +684,79 @@ func TestWorkflowOneShotReconcileHoldsTargets(t *testing.T) {
 			t.Fatalf("one-shot reconcile applied the Workflow target %s", n)
 		}
 	}
+}
+
+// [AC-v1.5-workflow-9] plan・status は Workflow の対象を普段の差分として出さない（#89）。
+func TestWorkflowPlanStatusShowHeldTargets(t *testing.T) {
+	r := newWFRig(t, rollingIntent)
+	state := r.fp.StatePath()
+	targets := []string{"n1", "n2", "n3"}
+
+	// check は plan と status の出力を確かめる: 対象は「Workflow に任せる」で段階 stage、
+	// UPDATE・DRIFTED には出ない。Workflow の対象でない app は普段の差分のまま。
+	check := func(label, stage string, extra ...string) {
+		t.Helper()
+		out, stderr, code := runPlan(t, r.intentDir, state, extra...)
+		if code != 0 {
+			t.Fatalf("%s: plan exit %d:\n%s", label, code, stderr)
+		}
+		if !strings.Contains(out, "Workflow に任せる（収束ループは触らない）: 3 target(s)") ||
+			!strings.Contains(out, "~ UPDATE fake//app") {
+			t.Fatalf("%s: plan output:\n%s", label, out)
+		}
+		for _, n := range targets {
+			if strings.Contains(out, "UPDATE fake//"+n) || !strings.Contains(out, "= WORKFLOW fake//"+n) {
+				t.Fatalf("%s: plan must show %s as left to its Workflow, not as a diff:\n%s", label, n, out)
+			}
+		}
+		if strings.Count(out, "stage:    "+stage) != 3 {
+			t.Fatalf("%s: plan must show the stage %q for each target:\n%s", label, stage, out)
+		}
+
+		out, stderr, code = runStatusCmd(t, r.intentDir, state, extra...)
+		if code != 0 {
+			t.Fatalf("%s: status exit %d:\n%s", label, code, stderr)
+		}
+		if !strings.Contains(out, "Workflow に任せる（収束ループは触らない）: 3 リソース") ||
+			!strings.Contains(out, "DRIFTED fake//app") || !strings.Contains(out, "drifted=1 ") ||
+			!strings.Contains(out, " workflow=3") {
+			t.Fatalf("%s: status output:\n%s", label, out)
+		}
+		for _, n := range targets {
+			if strings.Contains(out, "DRIFTED fake//"+n) || !strings.Contains(out, "WORKFLOW fake//"+n) {
+				t.Fatalf("%s: status must show %s as left to its Workflow, not as drifted:\n%s", label, n, out)
+			}
+		}
+		if strings.Count(out, "段階: "+stage) != 3 {
+			t.Fatalf("%s: status must show the stage %q for each target:\n%s", label, stage, out)
+		}
+	}
+	store := []string{"--workflow-store", r.storePath}
+
+	// store を渡さなければ、Workflow の対象であることだけを出す。
+	check("no store", "stage unknown (no --workflow-store)")
+	// 未起動。plan・status は store を書かない。
+	check("not started", "not started", store...)
+	if _, err := os.Stat(r.storePath); !os.IsNotExist(err) {
+		t.Fatal("plan/status wrote the workflow store")
+	}
+	// 実行中。
+	r.cycle()
+	if run, ok := r.run(); !ok || run.Phase != workflow.PhaseRunning {
+		t.Fatalf("after one cycle run = %+v, want running", run)
+	}
+	check("running", "running (run ", store...)
+	// 承認待ち。
+	r.runToFirstGate()
+	check("awaiting", "awaiting_approval (run ", store...)
+	out, _, _ := runPlan(t, r.intentDir, state, store...)
+	if !strings.Contains(out, "gate s1, 0 of 1 approval(s)") {
+		t.Fatalf("plan must name the awaited gate:\n%s", out)
+	}
+	// halt。
+	if out, code := runSakutei(t, "reject", "--store", r.storePath, "--audit-log", r.auditPath,
+		"--approver", "bob", "--signature", "sig-b", "rolling", "s1"); code != 0 {
+		t.Fatalf("reject: exit %d\n%s", code, out)
+	}
+	check("halted", "halted (run ", store...)
 }

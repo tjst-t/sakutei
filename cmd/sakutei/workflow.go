@@ -22,11 +22,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/audit"
 	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/pkg/core"
 )
 
 // runApprove implements "sakutei approve" and "sakutei reject" (#42, §6.4):
@@ -169,4 +171,42 @@ func serveApprovalAPI(addr string, store workflow.Store, log *audit.Log) error {
 		}
 	}()
 	return nil
+}
+
+// workflowHeldTarget is a target that plan / status show as driven by its
+// Workflow instead of as a diff (#89): the daemon does not converge it until
+// the Workflow is done.
+type workflowHeldTarget struct {
+	ID       core.ID
+	Workflow string
+	Stage    string
+}
+
+// workflowHeld returns the targets of the Workflows that are not done, keyed by
+// Local ID, with their run's stage read from storePath (empty = no store: only
+// the fact that they are Workflow targets is known).  Like the daemon it never
+// writes the store.
+func workflowHeld(defs []workflow.Definition, storePath string) map[string]workflowHeldTarget {
+	var store workflow.Store
+	if storePath != "" {
+		store = workflow.NewFileStore(storePath)
+	}
+	held := map[string]workflowHeldTarget{}
+	for _, h := range workflow.Holds(context.Background(), store, defs) {
+		stage := h.Describe(store != nil)
+		for _, id := range h.Targets {
+			held[id.Local] = workflowHeldTarget{ID: id, Workflow: h.Workflow, Stage: stage}
+		}
+	}
+	return held
+}
+
+// sortedWorkflowHeld returns the held targets in Local ID order.
+func sortedWorkflowHeld(held map[string]workflowHeldTarget) []workflowHeldTarget {
+	out := make([]workflowHeldTarget, 0, len(held))
+	for _, h := range held {
+		out = append(out, h)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.Local < out[j].ID.Local })
+	return out
 }

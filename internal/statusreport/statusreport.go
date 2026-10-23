@@ -97,6 +97,14 @@ type DriftedItem struct {
 	Diagnostic string
 }
 
+// WorkflowHeldItem は Workflow に任せている対象 1 つ（#89）。
+type WorkflowHeldItem struct {
+	ID       core.ID
+	Workflow string
+	// Stage は run の段階（実行中・承認待ち・halt・未起動。workflow store が無ければ不明）。
+	Stage string
+}
+
 // Report は status の 1 回分の適合レポートである。
 type Report struct {
 	// IntentRevision / RenderedRevision はヘッダに出す版情報。
@@ -118,6 +126,10 @@ type Report struct {
 	// （List 非対応 / List エラー）。検出不能を「宣言外ゼロ」と混同しないための
 	// graceful degradation の可視化。
 	UnmanagedNotes []string
+	// WorkflowHeld は done でない Workflow に任せている対象（#89、§6.3）。収束ループは
+	// これを Observe も Apply もしないので、drifted にも converged にも数えない。
+	// Local ID 昇順で整列済み。
+	WorkflowHeld []WorkflowHeldItem
 	// Daemon は常駐デーモンの健全性（#15）。status に --daemon-status が無ければ nil。
 	Daemon *DaemonHealth
 	// DaemonNote はデーモン健全性を読めなかったときの注記（読めないことを隠さない）。
@@ -145,6 +157,7 @@ type Builder struct {
 	unobservable     int
 	unmanaged        []core.ID
 	unmanagedNotes   []string
+	workflowHeld     []WorkflowHeldItem
 	daemon           *DaemonHealth
 	daemonNote       string
 }
@@ -195,6 +208,11 @@ func (b *Builder) NoteUnmanagedUndetectable(note string) {
 	b.unmanagedNotes = append(b.unmanagedNotes, note)
 }
 
+// AddWorkflowHeld は Workflow に任せている対象を 1 つ記録する（#89）。
+func (b *Builder) AddWorkflowHeld(id core.ID, workflow, stage string) {
+	b.workflowHeld = append(b.workflowHeld, WorkflowHeldItem{ID: id, Workflow: workflow, Stage: stage})
+}
+
 // SetDaemonHealth は常駐デーモンが書いた健全性（#15）をレポートに載せる。
 func (b *Builder) SetDaemonHealth(h DaemonHealth) { b.daemon = &h }
 
@@ -217,7 +235,11 @@ func (b *Builder) Build() Report {
 	notes := make([]string, len(b.unmanagedNotes))
 	copy(notes, b.unmanagedNotes)
 	sort.Strings(notes)
+	held := make([]WorkflowHeldItem, len(b.workflowHeld))
+	copy(held, b.workflowHeld)
+	sort.Slice(held, func(i, j int) bool { return held[i].ID.Local < held[j].ID.Local })
 	return Report{
+		WorkflowHeld:      held,
 		IntentRevision:    b.intentRevision,
 		RenderedRevision:  b.renderedRevision,
 		Drifted:           sorted,
@@ -273,6 +295,18 @@ func (r Report) String() string {
 		}
 	}
 
+	// #89 (§6.3): Workflow に任せている対象。drifted としては出さない（収束ループは
+	// 触らない）。
+	if len(r.WorkflowHeld) > 0 {
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "Workflow に任せる（収束ループは触らない）: %d リソース\n", len(r.WorkflowHeld))
+		for _, it := range r.WorkflowHeld {
+			fmt.Fprintf(&sb, "  WORKFLOW %s\n", it.ID)
+			fmt.Fprintf(&sb, "    workflow: %s\n", it.Workflow)
+			fmt.Fprintf(&sb, "    段階: %s\n", it.Stage)
+		}
+	}
+
 	// FIX #2 (Sc7a647-3): unmanaged（宣言外・実在）セクション。現実に在るが intent に
 	// 無いリソースを列挙する。既定 DeletionPolicy（ExplicitAbsentOnly）では prune 対象外
 	// ＝ status では削除しない（read-only；「確信なき減算はしない」§12.2, ADR-0005）。
@@ -308,8 +342,12 @@ func (r Report) String() string {
 		fmt.Fprintf(&sb, "  %s\n", r.DaemonNote)
 	}
 
-	fmt.Fprintf(&sb, "\n要約: drifted=%d converged=%d unobservable=%d unmanaged=%d\n",
+	fmt.Fprintf(&sb, "\n要約: drifted=%d converged=%d unobservable=%d unmanaged=%d",
 		len(r.Drifted), r.ConvergedCount, r.UnobservableCount, len(r.Unmanaged))
+	if len(r.WorkflowHeld) > 0 {
+		fmt.Fprintf(&sb, " workflow=%d", len(r.WorkflowHeld))
+	}
+	sb.WriteString("\n")
 	return sb.String()
 }
 

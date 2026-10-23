@@ -100,6 +100,11 @@ func runPlan(args []string) {
 	devenv := fs.Bool("devenv", false,
 		"S33266e-3: devenv（坪庭）mode — render external inputs (inventory/allocation/secret) are substituted with fakes; no production pool/secret is touched (§26.2)")
 
+	// #89 (§6.3): the daemon's workflow store, read only to show the stage of
+	// each Workflow whose targets the loop leaves to it.
+	workflowStore := fs.String("workflow-store", "",
+		"OPTIONAL path to the daemon's workflow store (§6.3): shows the stage of each Workflow whose targets are left to it; plan only reads it")
+
 	logFormat := addLogFormatFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -335,7 +340,19 @@ func runPlan(args []string) {
 	// Track unobservable resources for the prune phase (unknown ≠ absent).
 	unobservable := make(map[string]bool)
 
+	// #89 (§6.3): the targets of a Workflow that is not done are driven by the
+	// Workflow; the daemon's loop neither Observes nor Applies them, so plan
+	// shows them as such instead of as a diff.
+	wfHeld := workflowHeld(in.Workflows, *workflowStore)
+	var heldShown []workflowHeldTarget
+
 	for _, res := range desired {
+		if h, ok := wfHeld[res.ID.Local]; ok {
+			h.ID = res.ID
+			heldShown = append(heldShown, h)
+			unobservable[res.ID.Local] = true
+			continue
+		}
 		// S62dbba-2: route Read and Diff to the provider for this resource.
 		fp, ok := providers[res.ID.Provider]
 		if !ok {
@@ -414,6 +431,11 @@ func runPlan(args []string) {
 	resourceStatus := make(map[string]core.ConvergenceStatus)
 	for _, res := range desired {
 		local := res.ID.Local
+		if _, ok := wfHeld[local]; ok {
+			// Driven by its Workflow: converging for the loop.
+			resourceStatus[local] = core.StatusConverging
+			continue
+		}
 		if unobservable[local] {
 			resourceStatus[local] = core.StatusUnknown
 			continue
@@ -436,6 +458,7 @@ func runPlan(args []string) {
 	compositeSummaries := render.AggregateCompositeStatuses(parentToChildren, resourceStatus)
 
 	// Print plan output.
+	printWorkflowHeld(heldShown)
 	if len(allOps) == 0 {
 		// Even if no ops, print composite status if there are composites.
 		if len(compositeSummaries) > 0 {
@@ -447,7 +470,11 @@ func runPlan(args []string) {
 				fmt.Fprintf(logOut, "  composite %s: %s\n", parentID, compositeSummaries[parentID].AggregatedStatus)
 			}
 		}
-		fmt.Fprintln(logOut, "Converged (no changes)")
+		if len(heldShown) > 0 {
+			fmt.Fprintf(logOut, "No changes by the convergence loop (%d Workflow target(s) left to their Workflow)\n", len(heldShown))
+		} else {
+			fmt.Fprintln(logOut, "Converged (no changes)")
+		}
 		os.Exit(0)
 	}
 
@@ -523,6 +550,20 @@ func planPruneOpsMulti(
 		allDeleteOps = append(allDeleteOps, result.DeleteOps...)
 	}
 	return allDeleteOps
+}
+
+// printWorkflowHeld prints the Workflow targets the loop leaves to their
+// Workflow (#89): never as a diff, since the loop does not Apply them.
+func printWorkflowHeld(held []workflowHeldTarget) {
+	if len(held) == 0 {
+		return
+	}
+	fmt.Fprintf(logOut, "Workflow に任せる（収束ループは触らない）: %d target(s)\n\n", len(held))
+	for _, h := range held {
+		fmt.Fprintf(logOut, "= WORKFLOW %s\n", h.ID)
+		fmt.Fprintf(logOut, "  workflow: %s\n", h.Workflow)
+		fmt.Fprintf(logOut, "  stage:    %s\n\n", h.Stage)
+	}
 }
 
 // printOp formats a single Op for human-readable plan output.

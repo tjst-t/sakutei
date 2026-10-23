@@ -104,6 +104,9 @@ func runStatus(args []string) {
 	daemonStatus := fs.String("daemon-status", "",
 		"OPTIONAL path to the daemon status file written by `sakutei --daemon-status` (#15): reports the consecutive cycles skipped because an external input was unreachable")
 
+	workflowStore := fs.String("workflow-store", "",
+		"OPTIONAL path to the daemon's workflow store (§6.3): shows the stage of each Workflow whose targets are left to it; status only reads it")
+
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
@@ -253,7 +256,15 @@ func runStatus(args []string) {
 
 	ctx := context.Background()
 
+	// #89 (§6.3): a target of a Workflow that is not done is driven by the
+	// Workflow, not by the loop — reported as such, never as drifted.
+	wfHeld := workflowHeld(in.Workflows, *workflowStore)
+
 	for _, res := range desired {
+		if h, ok := wfHeld[res.ID.Local]; ok {
+			builder.AddWorkflowHeld(res.ID, h.Workflow, h.Stage)
+			continue
+		}
 		fp := providers[res.ID.Provider]
 		engine := engines[res.ID.Provider]
 
