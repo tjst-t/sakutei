@@ -2140,7 +2140,7 @@
       "number": 90,
       "kind": "bug",
       "title": "Workflow の説明の例が、intent の YAML で受け付けない 1 行の書き方（{ … }）になっている",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -2155,7 +2155,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T01:14:39.433Z",
-      "updatedAt": "2026-10-23T01:14:39.433Z",
+      "updatedAt": "2026-10-23T01:24:45.151Z",
       "closedAt": null,
       "extra": {}
     },
