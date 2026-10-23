@@ -2116,7 +2116,7 @@
       "number": 89,
       "kind": "bug",
       "title": "plan・status が Workflow に任せている対象を示さず、普段の差分として出す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -2131,7 +2131,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T01:14:35.437Z",
-      "updatedAt": "2026-10-23T01:14:35.437Z",
+      "updatedAt": "2026-10-23T01:15:42.508Z",
       "closedAt": null,
       "extra": {}
     },
