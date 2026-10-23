@@ -2215,7 +2215,7 @@
       "number": 93,
       "kind": "task",
       "title": "sqlmigrate provider：観測（schema_migrations）と Task の実行体（up/down・トランザクション・rollback）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "task-provider-sqlmigrate-sqlite",
       "dependsOn": [],
       "milestone": null,
@@ -2227,7 +2227,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:11:11.923Z",
-      "updatedAt": "2026-10-23T15:11:11.923Z",
+      "updatedAt": "2026-10-23T15:13:34.599Z",
       "closedAt": null,
       "extra": {}
     },
