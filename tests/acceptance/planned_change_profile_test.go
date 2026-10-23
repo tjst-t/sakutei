@@ -24,6 +24,9 @@
 //	          経過前の reconcile は進まず、経過後の reconcile は進む。経過前に宣言を消せば止まる。
 //	[AC-44-4] 個別の宣言がプロファイルに優先する（enterprise でも宣言の 1-of-1 で通る、solo でも
 //	          宣言の N-of-M は cooling-off の後も効く）。
+//	[AC-102-1] cooling-off は宣言を初めて見たときから数える。alert-only（schedule の窓の外・
+//	          --mode alert-only・freeze）の回や周でも宣言は S4 に残り、時計は動く（Backlog #102 の
+//	          試用で見つけた。直す前は、窓が開いて auto になった回から数え始めていた）。
 package acceptance
 
 import (
@@ -320,5 +323,43 @@ func TestPlannedChangeProfile_DeclarationWinsOverProfile(t *testing.T) {
 	s.reconcile() // a new approval is the same declaration; its cooling-off already ran
 	if out := s.reconcile(); s.remaining() != 1 {
 		t.Fatalf("[AC-44-4] solo + explicit 2-of-3 with two approvers must open: %d remain; out:\n%s", s.remaining(), out)
+	}
+}
+
+// [AC-102-1] alert-only の回にも cooling-off の時計は動く: alert-only の reconcile で宣言を見てから
+// N が過ぎれば、最初の auto の reconcile でそのまま開く。常駐の alert-only の周も同じ。
+func TestPlannedChangeProfile_SoloCoolingOff_StartsWhileAlertOnly(t *testing.T) {
+	const coolingOff = 2 * time.Second
+	solo := map[string]any{"profile": "solo", "solo": map[string]any{"cooling_off": coolingOff.String()}}
+
+	// 1 回収束: --mode alert-only の回で宣言を見る。
+	r := newPCRig(t)
+	r.write(solo, map[string]any{})
+	out, _, code := runReconcileCombined(t, r.intentDir, r.statePath,
+		"--max-destructive-per-cycle=1", "--audit-log", r.auditPath, "--mode=alert-only")
+	if code != 0 || r.remaining() != 6 {
+		t.Fatalf("[AC-102-1] alert-only must not delete: code=%d remain=%d out:\n%s", code, r.remaining(), out)
+	}
+	if k := r.auditKinds(); k[audit.KindPlannedChangeDeclared] != 1 {
+		t.Fatalf("[AC-102-1] the alert-only run must record planned_change.declared: %v; out:\n%s", k, out)
+	}
+	time.Sleep(coolingOff + 200*time.Millisecond)
+	if out := r.reconcile(); r.remaining() != 1 || !strings.Contains(out, "PlannedChangeOpened") {
+		t.Fatalf("[AC-102-1] the first auto reconcile after the cooling-off (counted from the alert-only run) must open the lane: %d remain; out:\n%s", r.remaining(), out)
+	}
+
+	// 常駐: --freeze の周で宣言を見て、止めて、freeze を外して起こし直す。
+	d := newPCRig(t)
+	d.write(solo, map[string]any{})
+	stop := startPlannedChangeDaemon(t, d.intentDir, d.statePath, d.logPath,
+		"--max-destructive-per-cycle=1", "--audit-log", d.auditPath, "--freeze")
+	waitForMoreCycles(t, d.logPath, 2)
+	stop()
+	if k := d.auditKinds(); k[audit.KindPlannedChangeDeclared] != 1 || d.remaining() != 6 {
+		t.Fatalf("[AC-102-1] a frozen cycle must record planned_change.declared and delete nothing: %v remain=%d; log:\n%s", k, d.remaining(), readFileString(d.logPath))
+	}
+	time.Sleep(coolingOff + 200*time.Millisecond)
+	if out := d.reconcile(); d.remaining() != 1 || !strings.Contains(out, "PlannedChangeOpened") {
+		t.Fatalf("[AC-102-1] the cooling-off counted from the frozen cycle must have elapsed: %d remain; out:\n%s", d.remaining(), out)
 	}
 }

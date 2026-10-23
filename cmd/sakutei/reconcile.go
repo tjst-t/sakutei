@@ -694,6 +694,11 @@ func runReconcile(args []string) {
 		if in.Remediation != nil {
 			fmt.Fprintf(logOut, "Remediation mode: alert-only (%s)\n", decision.Reason)
 		}
+		// §14.5: the declarations were recorded in S4 (their cooling-off runs)
+		// though nothing is applied; report what that raised.
+		for _, ev := range budgetEngine.TakePlannedEvents() {
+			reconcile.EmitPlannedChange(logOut, ev, ev)
+		}
 		if held.DriftCount == 0 {
 			runSummary(fmt.Sprintf("Reconcile (%s): no drift detected", modeLabel))
 		} else {

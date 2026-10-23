@@ -57,13 +57,18 @@ func (m Mode) String() string {
 }
 
 // ParseMode parses a CLI string into a Mode.
-// Accepted values: "auto", "alert-only".
+// Accepted values: "auto", "alert-only".  An empty value is rejected rather
+// than taken as auto: `--mode=$MODE` with MODE unset must not silently open
+// remediation (§3, the conservative side).  Callers with an optional field
+// check for "" themselves.
 func ParseMode(s string) (Mode, error) {
 	switch s {
-	case "auto", "":
+	case "auto":
 		return ModeAuto, nil
 	case "alert-only":
 		return ModeAlertOnly, nil
+	case "":
+		return ModeAuto, fmt.Errorf("empty mode; use auto or alert-only")
 	default:
 		return ModeAuto, fmt.Errorf("unknown mode %q; use auto or alert-only", s)
 	}

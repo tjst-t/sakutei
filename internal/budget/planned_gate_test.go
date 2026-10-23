@@ -17,6 +17,7 @@ package budget
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +124,59 @@ func TestPlannedGate_RestoredFromAudit(t *testing.T) {
 	// max_count 6: the next run has 2 left.
 	if _, d := run(); d.LaneAdmitted() != 2 || !hasEvent(d, "PlannedChangeExhausted") {
 		t.Fatalf("max_count must hold across runs: lane=%d %v", d.LaneAdmitted(), d.Events)
+	}
+}
+
+// 宣言は intent を読んだとき（SetPlannedChanges）に「見た」ことになり、CheckCycle を通らない周
+// （remediation schedule の窓の外の alert-only・freeze）でも cooling-off の時計が動く（§14.5）。
+func TestPlannedGate_DeclaredWithoutCheckCycle(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	p := decl(PlannedDelete, decomScope, 10)
+	p.Gate = PlannedGate{Profile: "solo", CoolingOff: time.Hour}
+	clk := &fakeClock{t: t0.Add(time.Minute)}
+	newEngine := func() *Engine {
+		e := newEngineWithClock(Config{MaxDestructivePerCycle: 1}, clk)
+		if err := e.AttachAudit(audit.NewLog(logPath)); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+
+	// alert-only の周: 宣言を読むだけで、CheckCycle は呼ばない。
+	e := newEngine()
+	e.SetPlannedChanges([]PlannedChange{p})
+	if got := auditKinds(t, logPath)[audit.KindPlannedChangeDeclared]; got != 10 {
+		t.Fatalf("SetPlannedChanges must record planned_change.declared (count max_count 10): %d", got)
+	}
+	if !e.DeclaredAt(p).Equal(t0.Add(time.Minute)) {
+		t.Fatalf("the cooling-off clock must start when the declaration is read: %v", e.DeclaredAt(p))
+	}
+	if ev := e.TakePlannedEvents(); len(ev) != 0 {
+		t.Errorf("no notice for a declaration recorded fine: %v", ev)
+	}
+
+	// 1 時間後に窓が開いた最初の周（再起動の後でも）は、そのまま開く。
+	clk.advance(time.Hour)
+	e = newEngine()
+	e.SetPlannedChanges([]PlannedChange{p})
+	if d := e.CheckCycle(deletesIn(decomScope, "d", 3), InFlight{}, 0); d.LaneAdmitted() != 3 || !hasEvent(d, "PlannedChangeOpened") {
+		t.Fatalf("the cooling-off counted from the alert-only cycle must have elapsed: lane=%d events=%v", d.LaneAdmitted(), d.Events)
+	}
+	if got := auditKinds(t, logPath)[audit.KindPlannedChangeDeclared]; got != 10 {
+		t.Errorf("the declaration must be recorded once: %d", got)
+	}
+
+	// 取り下げの知らせは、CheckCycle を通らない周でも TakePlannedEvents で取り出せる。
+	e.SetPlannedChanges(nil)
+	q := decl(PlannedDelete, decomScope, 20)
+	q.Gate = PlannedGate{Profile: "solo", CoolingOff: time.Hour}
+	e.SetPlannedChanges([]PlannedChange{q})
+	e.SetPlannedChanges(nil)
+	if ev := e.TakePlannedEvents(); len(ev) != 1 || !strings.Contains(ev[0], "PlannedChangeWithdrawn") {
+		t.Errorf("want the withdrawal of the max_count 20 declaration: %v", ev)
+	}
+	if ev := e.TakePlannedEvents(); len(ev) != 0 {
+		t.Errorf("TakePlannedEvents must clear the notices: %v", ev)
 	}
 }
 

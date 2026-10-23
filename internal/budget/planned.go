@@ -202,11 +202,36 @@ func opKey(op core.Op) string {
 // SetPlannedChanges replaces the planned_change declarations (call it every
 // cycle with the freshly loaded intent).  The usage of a declaration is kept
 // across calls as long as its Key is unchanged.
+//
+// A declaration is "seen" here, when the intent is loaded, so its cooling-off
+// clock starts (planned_change.declared) even in a cycle that never reaches
+// CheckCycle — an alert-only cycle outside the remediation schedule's window
+// (§14.2) or under freeze.  Otherwise a solo cooling-off would only start when
+// the maintenance window opens and could outlast it (§14.5: counted from when
+// the declaration was first seen).
 func (e *Engine) SetPlannedChanges(pcs []PlannedChange) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.planned = append([]PlannedChange(nil), pcs...)
-	e.withdrawMissing(e.cfg.now())
+	now := e.cfg.now()
+	e.withdrawMissing(now)
+	for _, p := range e.planned {
+		if now.Before(p.End) {
+			e.noteDeclared(p, now, &e.pendingEvents)
+		}
+	}
+}
+
+// TakePlannedEvents returns (and clears) the planned_change notices raised
+// outside CheckCycle — withdrawals and S4 failures from SetPlannedChanges.
+// CheckCycle reports them itself; a cycle that skips CheckCycle (alert-only)
+// takes them with this.
+func (e *Engine) TakePlannedEvents() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := e.pendingEvents
+	e.pendingEvents = nil
+	return out
 }
 
 // ReserveLanes consumes lane capacity for the ops about to be dispatched.  Call

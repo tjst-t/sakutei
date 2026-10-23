@@ -1932,6 +1932,10 @@ func runCycleAsync(
 	if decision.IsAlertOnly() {
 		held := HoldAll(desired, plans, unobservable, pruneResult.DeleteOps)
 		return CycleResult{
+			// The planned_change declarations were still seen (their cooling-off
+			// clock runs, §14.5); report what SetPlannedChanges raised.
+			PlannedChangeEvents: budgetEngine.TakePlannedEvents(),
+
 			Observed:    observed,
 			InFlight:    inFlightThisCycle,
 			BackedOff:   backedOff,
