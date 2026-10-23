@@ -1,0 +1,50 @@
+# planned_change を試すための資源（docs/trial/planned-change/README.md の A）。
+# run.sh はこの後ろに planned_change: を足して intent/main.yaml にする。
+# dnszone の 3 件は scope zone=example、nftables の 2 本は scope fw=edge に置く。
+version: "1"
+resources:
+  - provider: dnszone
+    id: a1.example.com./A
+    scope:
+      zone: example
+    fields:
+      name: a1.example.com.
+      type: A
+      value: 198.51.100.1
+      ttl: "300"
+  - provider: dnszone
+    id: a2.example.com./A
+    scope:
+      zone: example
+    fields:
+      name: a2.example.com.
+      type: A
+      value: 198.51.100.2
+      ttl: "300"
+  - provider: dnszone
+    id: a3.example.com./A
+    scope:
+      zone: example
+    fields:
+      name: a3.example.com.
+      type: A
+      value: 198.51.100.3
+      ttl: "300"
+  - provider: nftables
+    id: inet/filter/sakutei_a
+    scope:
+      fw: edge
+    fields:
+      family: inet
+      table: filter
+      chain: sakutei_a
+      rules: tcp dport 22 accept ; tcp dport 443 accept
+  - provider: nftables
+    id: inet/filter/sakutei_b
+    scope:
+      fw: edge
+    fields:
+      family: inet
+      table: filter
+      chain: sakutei_b
+      rules: tcp dport 22 accept ; tcp dport 443 accept

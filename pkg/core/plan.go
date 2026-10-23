@@ -14,6 +14,8 @@
 
 package core
 
+import "fmt"
+
 // CauseTag classifies the root cause of a single diff (§4.4, §10).
 // Per-resource attribution is required: a single cycle-level tag would
 // mask A/E co-occurrence within the same cycle.
@@ -52,6 +54,21 @@ const (
 	// the desired state and is within a prune scope.
 	OpKindDelete
 )
+
+// String returns the operation as written in plan output and log lines
+// (CREATE / UPDATE / DELETE).
+func (k OpKind) String() string {
+	switch k {
+	case OpKindCreate:
+		return "CREATE"
+	case OpKindUpdate:
+		return "UPDATE"
+	case OpKindDelete:
+		return "DELETE"
+	default:
+		return fmt.Sprintf("OpKind(%d)", int(k))
+	}
+}
 
 // FieldDiff records which field changed and in what direction (used for
 // display in sakutei status / plan output).  The diff values are intentionally

@@ -1,0 +1,13 @@
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        jump sakutei_a
+        jump sakutei_b
+    }
+    chain sakutei_a {
+        tcp dport 22 accept
+    }
+    chain sakutei_b {
+        tcp dport 22 accept
+    }
+}
