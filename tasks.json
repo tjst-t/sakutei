@@ -2410,7 +2410,7 @@
       "number": 102,
       "kind": "task",
       "title": "試用：remediation schedule（直してよい時間帯）と運用プロファイル（cooling-off を含む）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-docs-trial",
       "dependsOn": [],
       "milestone": null,
@@ -2422,7 +2422,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T15:13:21.447Z",
+      "updatedAt": "2026-10-23T15:41:05.900Z",
       "closedAt": null,
       "extra": {}
     },
