@@ -2164,7 +2164,7 @@
       "number": 91,
       "kind": "task",
       "title": "手順書：Redfish と Workflow で OS を入れる（自動インストールの ISO は利用者が用意する）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -2182,7 +2182,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-23T01:14:43.611Z",
-      "updatedAt": "2026-10-23T01:14:53.322Z",
+      "updatedAt": "2026-10-23T01:32:08.825Z",
       "closedAt": null,
       "extra": {}
     }
