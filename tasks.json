@@ -2540,6 +2540,30 @@
       "updatedAt": "2026-10-23T16:30:43.312Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "ip-api",
+      "number": 108,
+      "kind": "task",
+      "title": "採番の使い勝手：IP アドレスのプールが無い・解放の手段が API だけ・採番記録を現実から作り直せない",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "allocation",
+        "needs-decision"
+      ],
+      "body": "2026-10-23 の試用（docs/trial/allocation の見つけたこと 4・5・7）で見つけた。\n\n1. **IP アドレスのプールが無い**：v1 のプールは整数だけ（§19.8）で、「払い出したアドレスを A レコードに入れる」ができない。IP のプール（CIDR の範囲）か、整数を値に埋め込むテンプレート（例 `192.0.2.{n}`）か。\n2. **解放の手段が API だけ**：Release の経路（§19.5「下流の削除を List で確かめてから」）が無く、宣言から外した値は解放されない（設計どおり）。手で解放できるのは `sakutei allocator` の `POST /v1/release` だけで、`--alloc-store` の運用では JSON を手で編集するしかない。解放されない値はプールを埋め、範囲の縮小も拒む。CLI（例 `sakutei allocator release --store … --pool … --owner …`）か Release の経路。\n3. **採番記録を失うと、使用中の値が付け替わる**：§19.7 の「現実から逆引きして再構築する手順」が v1 に無い。\n\n## 決めること\n1 の形（§19.8）、2 を CLI にするか Release の経路まで作るか、3 を作るか（バックアップの運用で足りるか）。",
+      "doneWhen": "決めた範囲が実装され、試用手順（docs/trial/allocation）で確かめられる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T16:30:47.304Z",
+      "updatedAt": "2026-10-23T16:30:47.304Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
