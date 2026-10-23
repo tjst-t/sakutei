@@ -151,10 +151,12 @@ func syncPass(intentDir string, opts syncmode.Options) bool {
 	opts.Intent = in
 	rep := syncmode.RunOnce(context.Background(), opts)
 	failed := false
+	stopped := 0
 	for _, o := range rep.Outcomes {
 		switch {
 		case o.Err != nil:
 			failed = true
+			stopped++
 			fmt.Fprintf(os.Stderr, "sync: scope %s provider %s: skipped, previous snapshot kept: %v\n", o.Scope, o.Provider, o.Err)
 		case o.Changed:
 			fmt.Fprintf(os.Stdout, "sync: scope %s provider %s: %d resource(s) → %s (updated)\n", o.Scope, o.Provider, o.Resources, o.Path)
@@ -170,8 +172,15 @@ func syncPass(intentDir string, opts syncmode.Options) bool {
 		fmt.Fprintf(os.Stderr, "sync: commit failed (snapshots stay in the work tree; the next pass commits them): %v\n", rep.CommitErr)
 	case rep.Commit != "":
 		fmt.Fprintf(os.Stdout, "sync: committed %s as %s <%s>\n", rep.Commit, opts.Committer.Name, opts.Committer.Email)
+	case stopped > 0:
+		fmt.Fprintln(os.Stdout, "sync: nothing to commit from the other scope(s)")
 	default:
 		fmt.Fprintln(os.Stdout, "sync: nothing to commit")
+	}
+	if stopped > 0 {
+		// #111: the last line says that this pass stopped somewhere, so the
+		// stopped scope is not lost behind "nothing to commit".
+		fmt.Fprintf(os.Stderr, "sync: %d of %d scope/provider pair(s) stopped this pass (previous snapshot kept; see above)\n", stopped, len(rep.Outcomes))
 	}
 	return failed
 }

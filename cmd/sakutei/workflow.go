@@ -121,9 +121,21 @@ func runWorkflow(args []string) {
 			fmt.Fprintln(os.Stdout, "no workflow run")
 			return
 		}
-		fmt.Fprintf(os.Stdout, "%-24s %-18s %-12s %-8s %s\n", "WORKFLOW", "PHASE", "GATE", "POS", "REASON")
+		// #111: a gate's approvals so far and its deadline, as in
+		// GET /workflows/{id} and status (APPROVALS is "got/need").
+		fmt.Fprintf(os.Stdout, "%-24s %-18s %-12s %-9s %-20s %-8s %s\n", "WORKFLOW", "PHASE", "GATE", "APPROVALS", "DEADLINE", "POS", "REASON")
 		for _, r := range runs {
-			fmt.Fprintf(os.Stdout, "%-24s %-18s %-12s %-8s %s\n", r.Workflow, r.Phase, r.Gate,
+			approvals, deadline := "-", "-"
+			if r.Phase == workflow.PhaseAwaitingApproval {
+				got, need := r.Tally()
+				approvals = fmt.Sprintf("%d/%d", len(got), need)
+				if !r.GateDeadline.IsZero() {
+					deadline = r.GateDeadline.UTC().Format(time.RFC3339)
+				} else {
+					deadline = "(none)"
+				}
+			}
+			fmt.Fprintf(os.Stdout, "%-24s %-18s %-12s %-9s %-20s %-8s %s\n", r.Workflow, r.Phase, r.Gate, approvals, deadline,
 				fmt.Sprintf("%d/%d/%d", r.Stage, r.Target, r.Step), r.Reason)
 		}
 	case "cancel":

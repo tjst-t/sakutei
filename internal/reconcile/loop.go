@@ -146,6 +146,11 @@ type Config struct {
 	// StatePath is the path to the provider state file (used only for logging;
 	// the caller constructs Provider from it).
 	StatePath string
+	// ProviderFiles is what the start line says about the providers' backing
+	// files, e.g. "zone=example.com.zone" (#111): only the files the operator
+	// pointed at, so an unused default (the fake provider's state file) is
+	// not shown.  Empty = "state=<StatePath>".
+	ProviderFiles string
 	// Provider is the target Provider the loop converges against.  It is injected
 	// by the caller (cmd layer) so the reconcile core depends only on the
 	// provider.Provider seam, never on a concrete provider type (F-1).
@@ -346,6 +351,25 @@ type SourceState struct {
 // DefaultInterval is the default convergence cycle period.
 const DefaultInterval = 10 * time.Second
 
+// providerFilesText is the start line's account of the providers' files.
+func (c Config) providerFilesText() string {
+	if c.ProviderFiles != "" {
+		return c.ProviderFiles
+	}
+	return "state=" + c.StatePath
+}
+
+// startModeText is the start line's account of the remediation mode (#111).
+// It is only what the flags say: the intent's remediation schedule (§14.2)
+// may make a cycle alert-only, which each cycle's "remediation mode=" line
+// reports.
+func startModeText(rc remediation.Config) string {
+	if rc.Freeze {
+		return "--freeze: alert-only [FROZEN]"
+	}
+	return fmt.Sprintf("--mode %s; the intent's schedule may narrow it per cycle, see each cycle's \"remediation mode=\"", rc.Mode)
+}
+
 // Run starts the convergence loop and blocks until ctx is cancelled or a
 // termination signal (SIGTERM/SIGINT) is received.
 //
@@ -379,14 +403,8 @@ func Run(ctx context.Context, cfg Config) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	effectiveMode := cfg.Remediation.EffectiveMode()
-	if cfg.Remediation.Freeze {
-		fmt.Fprintf(cfg.Out, "sakutei: convergence loop started (interval=%s, intent=%s, state=%s, mode=alert-only [FROZEN])\n",
-			cfg.Interval, cfg.IntentDir, cfg.StatePath)
-	} else {
-		fmt.Fprintf(cfg.Out, "sakutei: convergence loop started (interval=%s, intent=%s, state=%s, mode=%s)\n",
-			cfg.Interval, cfg.IntentDir, cfg.StatePath, effectiveMode)
-	}
+	fmt.Fprintf(cfg.Out, "sakutei: convergence loop started (interval=%s, intent=%s, %s, %s)\n",
+		cfg.Interval, cfg.IntentDir, cfg.providerFilesText(), startModeText(cfg.Remediation))
 
 	printClaim := func(c Config) {
 		claim := c.Claim.String()
@@ -1561,6 +1579,9 @@ func runCycleAsync(
 	// #25: waiting-allocation resources and the children they expand to.
 	waitingAlloc := allocRes.WaitingLocals(parentToChildren)
 	var waitingThisCycle []string
+	// waitingHeld gives their skip line its reason (#111): they are held for
+	// their allocation, not unobservable.
+	waitingHeld := map[string]string{}
 
 	// F-5 (Scb0ecd-2 daemon wiring): build the per-cycle CauseContext from this
 	// cycle's revision + provider_version and the previous cycle's values held in
@@ -1679,6 +1700,7 @@ func runCycleAsync(
 		if waitingAlloc[local] {
 			waitingThisCycle = append(waitingThisCycle, local)
 			unobservable[local] = true
+			waitingHeld[local] = WaitingAllocationSkipReason
 			continue
 		}
 
@@ -2117,7 +2139,7 @@ func runCycleAsync(
 	}
 
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
-		ctx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, wfHeld, ready, cfg.ErrOut,
+		ctx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, wfHeld, waitingHeld, ready, cfg.ErrOut,
 		dispatch, commit, launchTask)
 	backedOff = backedOffList
 	if waveErr != nil {
@@ -2427,6 +2449,7 @@ func applyWavesAsync(
 	plans map[string]core.Plan,
 	unobservable map[string]bool,
 	wfHeld map[string]string,
+	held map[string]string,
 	ready Readiness,
 	errOut io.Writer,
 	dispatchFn func(local string, ops []core.Op),
@@ -2464,7 +2487,11 @@ func applyWavesAsync(
 			if unobservable[local] {
 				if _, ok := wfHeld[local]; !ok {
 					skipped = append(skipped, local)
-					fmt.Fprintf(errOut, "sakutei: skip %s: in-flight or unobservable this cycle\n", r.ID)
+					if why := held[local]; why != "" {
+						fmt.Fprintf(errOut, "sakutei: skip %s: %s\n", r.ID, why)
+					} else {
+						fmt.Fprintf(errOut, "sakutei: skip %s: in-flight or unobservable this cycle\n", r.ID)
+					}
 				}
 				failed[local] = true
 				for _, m := range adj[idx] {

@@ -633,6 +633,12 @@ func TestWorkflowCLI(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "awaiting_approval") || !strings.Contains(out, "s1") {
 		t.Fatalf("workflow list: exit %d\n%s", code, out)
 	}
+	// [AC-111-8] list はゲートの承認の数（得た数/要る数）と期限を出す。
+	if run, _ := r.run(); run.GateDeadline.IsZero() ||
+		!strings.Contains(out, "APPROVALS") || !strings.Contains(out, "DEADLINE") ||
+		!strings.Contains(out, " 0/1 ") || !strings.Contains(out, run.GateDeadline.UTC().Format(time.RFC3339)) {
+		t.Fatalf("[AC-111-8] workflow list must show the gate's approvals and deadline (%s):\n%s", run.GateDeadline, out)
+	}
 	// 承認者 ID と署名は必須。
 	if out, code := runSakutei(t, "approve", "--store", r.storePath, "--audit-log", r.auditPath,
 		"--approver", "alice", "rolling", "s1"); code == 0 {

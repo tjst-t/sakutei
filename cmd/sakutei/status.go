@@ -109,10 +109,21 @@ func runStatus(args []string) {
 	workflowStore := fs.String("workflow-store", "",
 		"OPTIONAL path to the daemon's workflow store (§6.3): shows the stage of each Workflow whose targets are left to it; status only reads it")
 
+	// #111: --claim, the same scope-selector as reconcile (§17.1): a shard's
+	// status reports only its claim (other shards' resources, unmanaged reality
+	// and pending allocations are not its business, §19.8).
+	claim := fs.String("claim", "",
+		"scope-selector restricting the report to a claim, e.g. site=tokyo,cluster=prod (§17.1); empty=whole world")
+
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
 	soaSerial := checkZoneSOASerial("sakutei status", *zoneSOASerial)
+	claimSelector, claimErr := parseClaimSelector(*claim)
+	if claimErr != nil {
+		fmt.Fprintf(os.Stderr, "sakutei status: invalid --claim %q: %v\n", *claim, claimErr)
+		os.Exit(1)
+	}
 
 	if *intentDir == "" {
 		fmt.Fprintln(os.Stderr, "sakutei status: --intent <dir> is required")
@@ -135,7 +146,7 @@ func runStatus(args []string) {
 		fmt.Fprintf(os.Stderr, "sakutei status: %v\n", allocErr)
 		os.Exit(1)
 	}
-	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocLookupOnly, in, core.Scope{})
+	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocLookupOnly, in, claimSelector)
 	if allocErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei status: %v\n", allocErr)
 		os.Exit(1)
@@ -145,7 +156,7 @@ func runStatus(args []string) {
 		rev.RenderedRevision = revision.ComputeRenderedRevision(core.NewScope(nil), rev.IntentRevision, allocRes.Inputs)
 	}
 	for _, pa := range allocRes.Pending {
-		fmt.Fprintf(os.Stderr, "sakutei status: pending allocation: %s field %q from pool %q (allocated by reconcile)%s\n", pa.ID, pa.Field, pa.Pool, pendingReason(pa))
+		fmt.Fprintln(os.Stderr, pendingLine("status", pa))
 	}
 
 	// render フェーズ2（合成リソースの展開）を in-memory で実施。
@@ -159,9 +170,10 @@ func runStatus(args []string) {
 	}
 
 	// 非合成リソースのみが Diff 対象（合成親は子で代表される）。
+	// #111: with --claim, an out-of-claim resource is not reported (like reconcile).
 	desired := make([]diff.DesiredResource, 0, len(expanded))
 	for _, r := range expanded {
-		if !r.IsComposite {
+		if !r.IsComposite && r.DesiredResource.ID.Scope.Matches(claimSelector) {
 			desired = append(desired, r.DesiredResource)
 		}
 	}
@@ -316,7 +328,12 @@ func runStatus(args []string) {
 		if len(plan.Ops) > 0 {
 			op := plan.Ops[0]
 			tier := statusreport.TierFromCapabilities(fp.Capabilities())
-			builder.AddDrifted(res.ID, op.Cause, tier, op.Diagnostic, curFields)
+			// #111: ずれたフィールドは全 op のぶんを載せる（op は 1 つが普通）。
+			var fields []core.FieldDiff
+			for _, o := range plan.Ops {
+				fields = append(fields, o.Fields...)
+			}
+			builder.AddDrifted(res.ID, op.Cause, tier, op.Diagnostic, curFields, fields...)
 		} else {
 			// 適合（drift なし）。
 			builder.AddConverged()
@@ -346,8 +363,8 @@ func runStatus(args []string) {
 	//   - List が ListComplete でない（Partial/Unknown）→ 完全列挙を保証できないので
 	//     unmanaged 判定を控え、注記に留める（安全側）。
 	//
-	// v1a single-claim: status に --claim は無いので managed scope 全体を列挙する。
-	detectUnmanaged(ctx, providers, desired, builder)
+	// #111: --claim があれば claim の中の現実だけを宣言外の候補にする（prune と同じ境界）。
+	detectUnmanaged(ctx, providers, claimSelector, desired, builder)
 
 	// #15 (§9.2): デーモンの連続スキップ回数（デーモンが書いたファイルを READ するだけ）。
 	if *daemonStatus != "" {
@@ -385,6 +402,7 @@ func runStatus(args []string) {
 func detectUnmanaged(
 	ctx context.Context,
 	providers map[string]provider.Provider,
+	claim core.Scope,
 	desired []diff.DesiredResource,
 	builder *statusreport.Builder,
 ) {
@@ -409,7 +427,7 @@ func detectUnmanaged(
 				fmt.Sprintf("unmanaged 検出不可（List 非対応 provider: %s）", name))
 			continue
 		}
-		// v1a: whole managed scope (no --claim on status); empty scope = root.
+		// The whole world is listed; --claim narrows the candidates below (#111).
 		result, err := lister.List(ctx, core.NewScope(nil))
 		if err != nil {
 			// complete-or-error: a failed List must NOT read as "no unmanaged".
@@ -423,7 +441,7 @@ func detectUnmanaged(
 			continue
 		}
 		for _, realID := range result.IDs {
-			if !declared[realID.Key()] {
+			if !declared[realID.Key()] && realID.Scope.Matches(claim) {
 				builder.AddUnmanaged(realID)
 			}
 		}

@@ -196,7 +196,7 @@ func (e *Engine) withdrawMissing(now time.Time) {
 	sort.Strings(fps)
 	for _, fp := range fps {
 		key, max := strings.TrimSuffix(fp, fmt.Sprintf("|%d", e.declaredMax[fp])), e.declaredMax[fp]
-		msg := fmt.Sprintf("PlannedChangeWithdrawn: %s (max_count %d) was removed from intent before its lane opened; writing it back starts its cooling-off over (§14.5)", key, max)
+		msg := fmt.Sprintf("PlannedChangeWithdrawn: %s (max_count %d) was removed from intent before its lane opened; writing it back starts its cooling-off over (§14.5)", keyString(key), max)
 		if e.audit != nil {
 			if err := e.audit.Append(audit.Record{
 				Time: now, Kind: audit.KindPlannedChangeWithdrawn, PlannedChange: key, Count: max, Detail: msg,
@@ -211,6 +211,19 @@ func (e *Engine) withdrawMissing(now time.Time) {
 		delete(e.gateNoted, fp)
 		e.pendingEvents = append(e.pendingEvents, msg)
 	}
+}
+
+// keyString names a declaration known only by its Key (a withdrawn one is no
+// longer in intent) the way PlannedChange.String does, so every Event names
+// declarations alike (#111).  A key of another shape is returned as is.
+func keyString(key string) string {
+	parts := strings.Split(key, "|")
+	if len(parts) < 4 {
+		return key
+	}
+	n := len(parts)
+	return fmt.Sprintf("planned_change(scope=%s kind=%s window=%s..%s)",
+		strings.Join(parts[:n-3], "|"), parts[n-3], parts[n-2], parts[n-1])
 }
 
 // noteDeclared starts the declaration's cooling-off clock the first time it is

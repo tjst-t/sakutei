@@ -213,5 +213,6 @@ n1:active=true,version=2  n2:active=true,version=1  n3:active=true,version=1
 3. **拒否した承認（403）・期限後の承認は S4 に残らない。** 「全承認者を S4 に記録」は満たしているが、要件に合わない承認の試み（申請者本人の自己承認など）は
    監査の目で見たいことがありうる。残すかは設計の判断。
 4. **`sakutei workflow list` にゲートの期限と承認の数が出ない。** `GET /workflows/{id}` と `sakutei status --workflow-store`（`awaiting_approval (… 1 of 2 approval(s))`）には出る。
+   **（#111 で直した）** `APPROVALS`（得た数/要る数）と `DEADLINE` の列を足した。`[AC-111-8]`（`TestWorkflowCLI`）。
 5. **手では通していないもの。** 手順の後で不変条件が破れて halt する経路（同じ周の中で手順が続けて進むので、手で割り込めない。受け入れテスト
    `TestWorkflowInvariantBrokenAfterStepHalts` が確かめる）、`StageAwaitingApproval` の sink への通知（Event の sink は別の試用）、実行中の定義変更での halt。

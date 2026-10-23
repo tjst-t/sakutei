@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/allocator"
@@ -393,8 +394,9 @@ func runDaemon() {
 	}
 
 	cfg := reconcile.Config{
-		IntentDir: *intentDir,
-		StatePath: *statePath,
+		IntentDir:     *intentDir,
+		StatePath:     *statePath,
+		ProviderFiles: providerFilesText(fs, *statePath, *zonePath, *rulesetPath, *redfishConfig),
 		Providers: func(name string) (provider.Provider, error) {
 			return reg.Get(name, providerConfig)
 		},
@@ -498,4 +500,35 @@ func validateIntentProviders(reg *registry.ProviderRegistry, intentDir string, p
 			os.Exit(1)
 		}
 	}
+}
+
+// providerFilesText is what the daemon's start line says about the providers'
+// backing files (#111): only the ones given on the command line.  The fake
+// provider's default --state is shown only when nothing else is given (then
+// it is the file the providers fall back to); with only --zone, say, it is
+// left out, since it is not in use.
+func providerFilesText(fs *flag.FlagSet, statePath, zonePath, rulesetPath, redfishConfig string) string {
+	stateSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "state" {
+			stateSet = true
+		}
+	})
+	var parts []string
+	if stateSet {
+		parts = append(parts, "state="+statePath)
+	}
+	if zonePath != "" {
+		parts = append(parts, "zone="+zonePath)
+	}
+	if rulesetPath != "" {
+		parts = append(parts, "ruleset="+rulesetPath)
+	}
+	if redfishConfig != "" {
+		parts = append(parts, "redfish-config="+redfishConfig)
+	}
+	if len(parts) == 0 {
+		return "state=" + statePath + " (default)"
+	}
+	return strings.Join(parts, ", ")
 }

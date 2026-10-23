@@ -68,11 +68,23 @@ func syncScopeList(in loader.Intent) []core.Scope {
 	return out
 }
 
-// pendingReason explains a pending allocation that could not even be looked
-// up (allocator unavailable); empty otherwise.
-func pendingReason(pa render.PendingAllocation) string {
-	if pa.Err == nil {
-		return ""
+// pendingLine is the line plan / status print for a pending allocation: what
+// the next reconcile will do with it — allocate it, or leave it
+// waiting-allocation because the pool is exhausted (#111) — and, when it could
+// not even be looked up, why (allocator unavailable).
+func pendingLine(verb string, pa render.PendingAllocation) string {
+	what := "allocated by reconcile"
+	if pa.FreeKnown {
+		switch {
+		case pa.Free == 0:
+			what = "pool exhausted: reconcile cannot allocate it and leaves it waiting-allocation until a value is released or the range is widened, §19.9"
+		case pa.Free < pa.PendingInPool:
+			what = fmt.Sprintf("pool has %d free value(s) for %d pending request(s): reconcile allocates %d, the rest wait (pool exhausted, §19.9)", pa.Free, pa.PendingInPool, pa.Free)
+		}
 	}
-	return fmt.Sprintf(" — allocator unavailable: %v", pa.Err)
+	line := fmt.Sprintf("sakutei %s: pending allocation: %s field %q from pool %q (%s)", verb, pa.ID, pa.Field, pa.Pool, what)
+	if pa.Err != nil {
+		line += fmt.Sprintf(" — allocator unavailable: %v", pa.Err)
+	}
+	return line
 }

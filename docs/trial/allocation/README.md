@@ -306,9 +306,13 @@ sakutei plan: load intent: loader: pools "site-a-ports" (8100-8199, claim map[si
    `tests/acceptance/apply_failed_summary_test.go`（`[AC-110-1]`・`[AC-110-2]`）。
 9. **waiting-allocation のリソースが「unobservable this cycle (Observe error or Availability != Ok)」とも出る**（手順 5・7）。観測はできていて、
    理由は割当待ち。直後の行に waiting-allocation と出るので害は小さいが、文言が誤っている。
+   **（#111 で直した）** `skip … : waiting-allocation (not Observed or Applied until allocated, §19.9)` と出す（1 回収束・常駐とも）。`[AC-111-1]`。
 10. **plan・status は、プールが尽きたことを言わない**（手順 5）。`Lookup` しかしないので「pending allocation … (allocated by reconcile)」と出るだけで、
     reconcile しても払い出されないことは reconcile の出力でしか分からない。
+    **（#111 で直した）** ファイル版の採番記録では、plan・status が intent の範囲の空きを数え、尽きていれば `(pool exhausted: reconcile cannot allocate it …)`、
+    空きが要求より少なければ `(pool has N free value(s) for M pending request(s) …)` と出す。`sakutei allocator`（`--alloc-url`）では空きを数えられないので、今までどおり。`[AC-111-2]`。
 11. **plan・status に `--claim` が無い**（手順 10）。シャードごとに採番記録を分けた構成では、plan はほかのシャードの要求も「割り当て待ち」と出す。
+    **（#111 で直した）** plan・status に reconcile と同じ `--claim` を足した。claim の外のリソースは観測も prune の候補も採番の照会もしない。`[AC-111-3]`。
 
 ### 気づいたこと（不具合ではない）
 

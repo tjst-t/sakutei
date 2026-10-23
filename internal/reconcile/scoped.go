@@ -459,7 +459,7 @@ func ScopedReconcile(
 	// 影響サブ DAG のみに対して通常の wave/skip セマンティクス（ApplyWaves）を再利用。
 	// A/E の plans だけが渡るので B/C/D は適用されない（安全柵 1）。
 	applied, appliedIDs, skipped, applyErr := applyWaves(
-		ctx, fp, exec, desired, plans, unobservable, ready, errOut)
+		ctx, fp, exec, desired, plans, unobservable, nil, ready, errOut)
 	if applyErr != nil {
 		fmt.Fprintf(errOut, "sakutei: scoped: wave error: %v\n", applyErr)
 	}

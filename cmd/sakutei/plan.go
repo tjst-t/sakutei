@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tjst-t/sakutei/internal/cause"
 	"github.com/tjst-t/sakutei/internal/diff"
@@ -29,6 +30,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/reconcile"
+	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
 	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
@@ -106,6 +108,12 @@ func runPlan(args []string) {
 	workflowStore := fs.String("workflow-store", "",
 		"OPTIONAL path to the daemon's workflow store (§6.3): shows the stage of each Workflow whose targets are left to it; plan only reads it")
 
+	// #111: --claim, the same scope-selector as reconcile (§17.1).  A shard's
+	// plan shows only its claim: the other shards' resources are not observed,
+	// not pruned, and their allocations are not reported as pending (§19.8).
+	claim := fs.String("claim", "",
+		"scope-selector restricting the plan to a claim, e.g. site=tokyo,cluster=prod (§17.1); empty=whole world")
+
 	logFormat := addLogFormatFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -113,6 +121,11 @@ func runPlan(args []string) {
 		os.Exit(1)
 	}
 	setLogFormat("sakutei plan", *logFormat)
+	claimSelector, claimErr := parseClaimSelector(*claim)
+	if claimErr != nil {
+		fmt.Fprintf(logErr, "sakutei plan: invalid --claim %q: %v\n", *claim, claimErr)
+		os.Exit(1)
+	}
 	soaSerial := checkZoneSOASerial("sakutei plan", *zoneSOASerial)
 
 	if *intentDir == "" {
@@ -201,7 +214,7 @@ func runPlan(args []string) {
 		fmt.Fprintf(logErr, "sakutei plan: %v\n", allocErr)
 		os.Exit(1)
 	}
-	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocLookupOnly, in, core.Scope{})
+	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocLookupOnly, in, claimSelector)
 	if allocErr != nil {
 		fmt.Fprintf(logErr, "sakutei plan: %v\n", allocErr)
 		os.Exit(1)
@@ -212,7 +225,7 @@ func runPlan(args []string) {
 		recomputeRendered = true
 	}
 	for _, pa := range allocRes.Pending {
-		fmt.Fprintf(logErr, "sakutei plan: pending allocation: %s field %q from pool %q (allocated by reconcile)%s\n", pa.ID, pa.Field, pa.Pool, pendingReason(pa))
+		fmt.Fprintln(logErr, pendingLine("plan", pa))
 	}
 	if recomputeRendered {
 		rootScope := core.NewScope(nil)
@@ -245,17 +258,34 @@ func runPlan(args []string) {
 
 	// Build the desired slice: only non-composite resources enter Diff/Apply.
 	// Composite parents are excluded (children represent them in the DAG).
+	// #111: with --claim, an out-of-claim resource is excluded like reconcile.
 	desired := make([]diff.DesiredResource, 0, len(expanded))
+	excludedByClaim := 0
 	for _, r := range expanded {
-		if !r.IsComposite {
-			desired = append(desired, r.DesiredResource)
+		if r.IsComposite {
+			continue
 		}
+		if !r.DesiredResource.ID.Scope.Matches(claimSelector) {
+			excludedByClaim++
+			continue
+		}
+		desired = append(desired, r.DesiredResource)
+	}
+	if len(claimSelector.Labels) > 0 {
+		fmt.Fprintf(logErr,
+			"sakutei plan: --claim %s: %d resource(s) in claim, %d excluded (out of scope)\n",
+			claimSelector.String(), len(desired), excludedByClaim)
 	}
 
 	// Scb0ecd-1: print revision header so the caller can observe revision values.
 	// In v1a rendered_revision = intent_revision (no external inputs yet; seam
 	// for S072a14 where external inputs enter the rendered hash).
 	fmt.Fprintf(logOut, "intent_revision=%s rendered_revision=%s\n", rev.IntentRevision, rev.RenderedRevision)
+	// #111 (§14.2): with a remediation schedule in intent, say whether a
+	// reconcile run now would fix the diffs below or only report them.
+	if in.Remediation != nil {
+		fmt.Fprintln(logOut, remediationNowLine(in.Remediation, time.Now()))
+	}
 	// §22.3: the Events of this run carry its revision.
 	logOut = eventlog.Stamp(logOut, 0, rev)
 	logErr = eventlog.Stamp(logErr, 0, rev)
@@ -437,7 +467,7 @@ func runPlan(args []string) {
 	// plan does NOT call Apply; it only computes and displays the Delete ops.
 	// S62dbba-2: prune is computed per provider so each provider's Lister is
 	// used for the resources it manages.
-	allOps = append(allOps, planPruneOpsMulti(ctx, providers, desired, unobservable, syncScopeList(in))...)
+	allOps = append(allOps, planPruneOpsMulti(ctx, providers, claimSelector, desired, unobservable, syncScopeList(in))...)
 
 	// S072a14-3: compute composite status aggregation (§9.7) for reporting.
 	// Build per-resource ConvergenceStatus from diff results and unobservable set.
@@ -551,6 +581,7 @@ func sortedCompositeParentIDs(summaries map[string]render.CompositeStatusSummary
 func planPruneOpsMulti(
 	ctx context.Context,
 	providers map[string]provider.Provider,
+	claim core.Scope,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 	syncScopes []core.Scope,
@@ -572,10 +603,9 @@ func planPruneOpsMulti(
 		engine := prune.New()
 		engine.SetExcludedScopes(syncScopes) // #23: sync scopes are never pruned (§24.5)
 		provDesired := byProvider[name]
-		// FIX #6: plan does not (yet) accept --claim, so the claim selector is
-		// empty here — an empty selector matches every scope, keeping plan's
-		// whole-world prune preview behaviour unchanged.
-		result, err := engine.ComputePrune(ctx, lister, fp, scope, core.NewScope(nil), provDesired, unobservable, logErr)
+		// FIX #6 / #111: the --claim selector scopes the prune preview to the
+		// claim (empty = whole world), as in reconcile.
+		result, err := engine.ComputePrune(ctx, lister, fp, scope, claim, provDesired, unobservable, logErr)
 		if err != nil || result.Halted {
 			continue
 		}
@@ -676,4 +706,17 @@ func joinedProviderVersions(providers map[string]provider.Provider) string {
 		parts = append(parts, n+":"+providers[n].Capabilities().ProviderVersion)
 	}
 	return strings.Join(parts, ",")
+}
+
+// remediationNowLine is plan's account of the intent's remediation schedule at
+// now (#111): whether the next reconcile / daemon cycle would remediate.  plan
+// takes no --mode or --freeze, so only the schedule is evaluated; either flag
+// on the reconcile run makes it alert-only as well (most-restrictive-wins,
+// §14.3).
+func remediationNowLine(s *remediation.Schedule, now time.Time) string {
+	m, why := s.ModeAt(now)
+	if m == remediation.ModeAlertOnly {
+		return fmt.Sprintf("Remediation mode now: alert-only (%s) — outside the remediation window: a reconcile now reports these changes but does not apply them (§14.2)", why)
+	}
+	return fmt.Sprintf("Remediation mode now: auto (%s) — a reconcile now applies these changes (unless run with --mode alert-only or --freeze, §14.3)", why)
 }

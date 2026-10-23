@@ -95,6 +95,9 @@ type DriftedItem struct {
 	LastSeen string
 	// Diagnostic は diff エンジンが付した人間可読の理由（任意）。
 	Diagnostic string
+	// Fields はずれているフィールドと、その現実の値（From）・宣言の値（To）（#111）。
+	// diff エンジンの FieldDiff をそのまま採録する（secret は参照の形に正規化済み、§20.2）。
+	Fields []core.FieldDiff
 }
 
 // WorkflowHeldItem は Workflow に任せている対象 1 つ（#89）。
@@ -179,7 +182,7 @@ func NewBuilder(intentRevision, renderedRevision string, ring DriftSummaryProvid
 // AddDrifted は 1 つの drifted リソースを記録する。curFields は当該リソースの
 // 「今周」観測フィールド（last-seen リングとの比較に使う）。cause は diff エンジンが
 // 付した Op.Cause。
-func (b *Builder) AddDrifted(id core.ID, cause core.CauseTag, tier Tier, diagnostic string, curFields map[string]string) {
+func (b *Builder) AddDrifted(id core.ID, cause core.CauseTag, tier Tier, diagnostic string, curFields map[string]string, fields ...core.FieldDiff) {
 	lastSeen := "前周スナップショットなし（初回または再起動後・S3 非永続）"
 	if b.ring != nil {
 		lastSeen = b.ring.DriftSummary(id.Local, curFields)
@@ -190,6 +193,7 @@ func (b *Builder) AddDrifted(id core.ID, cause core.CauseTag, tier Tier, diagnos
 		Tier:       tier,
 		LastSeen:   lastSeen,
 		Diagnostic: diagnostic,
+		Fields:     fields,
 	})
 }
 
@@ -298,6 +302,20 @@ func (r Report) String() string {
 			fmt.Fprintf(&sb, "    前周: %s\n", it.LastSeen)
 			if it.Diagnostic != "" {
 				fmt.Fprintf(&sb, "    理由: %s\n", it.Diagnostic)
+			}
+			if len(it.Fields) > 0 {
+				// #111: どのフィールドがどうずれているか（plan と同じ「現実 → 宣言」の向き）。
+				sb.WriteString("    ずれ（現実 → 宣言）:\n")
+				for _, fd := range it.Fields {
+					switch {
+					case fd.From == "":
+						fmt.Fprintf(&sb, "      + %s: (無い) → %q\n", fd.Field, fd.To)
+					case fd.To == "":
+						fmt.Fprintf(&sb, "      - %s: %q → (無い)\n", fd.Field, fd.From)
+					default:
+						fmt.Fprintf(&sb, "      ~ %s: %q → %q\n", fd.Field, fd.From, fd.To)
+					}
+				}
 			}
 			sb.WriteString("\n")
 		}

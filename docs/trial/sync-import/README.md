@@ -238,3 +238,5 @@ $ tail -1 generated/dns/sync-dnszone.yaml
    secret の値だけが変わってもコミットしない・SecretRef は参照の形で記録する）が確かめる。
 5. **（小さい・直していない）** Sync の List 不完全のメッセージが importer のものを流用していて `refusing to import ...` と出る（sync でも import と読める）。
    一つの組が止まった周でも最後に `sync: nothing to commit` が出るので、止まった行を見落としやすい（終了コードは 1 になる）。
+   **（#111 で直した）** Sync では `not recording an incomplete view of reality (§24.5)` と出し、止まった組がある周は最後の行に
+   `sync: N of M scope/provider pair(s) stopped this pass (previous snapshot kept; see above)` を出す。`[AC-111-4]`。

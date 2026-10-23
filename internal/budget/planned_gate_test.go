@@ -265,3 +265,24 @@ func TestPlannedGate_WithdrawnRedeclareRestartsCoolingOff(t *testing.T) {
 		t.Fatalf("after the new cooling-off the lane opens: %v", d.Events)
 	}
 }
+
+// #111: 取り下げの知らせも、ほかの知らせと同じ planned_change(scope=… kind=… window=…) で宣言を名指す（内部の鍵を出さない）。
+func TestPlannedGate_WithdrawnNamesDeclarationLikeOthers(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	clk := &fakeClock{t: t0.Add(time.Minute)}
+	e := newEngineWithClock(Config{}, clk)
+	if err := e.AttachAudit(audit.NewLog(logPath)); err != nil {
+		t.Fatal(err)
+	}
+	p := decl(PlannedDelete, decomScope, 10)
+	p.Gate = PlannedGate{Profile: "solo", CoolingOff: time.Hour}
+	e.SetPlannedChanges([]PlannedChange{p})
+	e.SetPlannedChanges(nil)
+	ev := e.TakePlannedEvents()
+	if len(ev) != 1 || !strings.Contains(ev[0], "PlannedChangeWithdrawn: "+p.String()+" (max_count 10)") {
+		t.Fatalf("want the withdrawal named %s: %v", p.String(), ev)
+	}
+	if strings.Contains(ev[0], p.Key()) {
+		t.Errorf("the withdrawal must not show the internal key %q: %s", p.Key(), ev[0])
+	}
+}

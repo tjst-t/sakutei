@@ -253,6 +253,7 @@ inventory の `h1` が入り、status の連続スキップ回数は 0 に戻る
 4. **（直していない・小さい）`sakutei status` の DRIFTED に、ずれている値が出ない。** 「1 field(s) out of sync」とだけ出て、
    どのフィールドが何になっているかは `sakutei plan` で見るしかない。§26.4 は drifted の一覧だけを求めているので設計の範囲内だが、
    人が見る適合レポートとしては足りない。
+   **（#111 で直した）** DRIFTED に `ずれ（現実 → 宣言）:` と、フィールドごとに `~ value: "198.51.100.30" → "192.0.2.30"` の形で出す（secret は参照の形）。`[AC-111-9]`。
 5. **（直していない・小さい）`sakutei status` は 1 つのリソースの観測エラーで終了コード 1 になり、他の provider の適合も出さない。**
    ゾーンファイルが壊れると、nftables が適合していることも見えない。Availability が unknown のときは unobservable に数えて
    続けているので、エラーも同じく unobservable に数えて最後まで出すか（unknown ≠ absent）、今のまま止めるか。

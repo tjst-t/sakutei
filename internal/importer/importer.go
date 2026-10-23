@@ -61,6 +61,18 @@ type Options struct {
 	Sleep func(time.Duration)
 }
 
+// IncompleteListError is returned when a provider's List is not complete:
+// import refuses an incomplete view of reality (§24.1).  Callers that reuse
+// the importer (Sync Mode) word it for their own verb (#111).
+type IncompleteListError struct {
+	Provider string
+	Status   core.ListStatus
+}
+
+func (e *IncompleteListError) Error() string {
+	return fmt.Sprintf("provider %q: List is not complete (status %v); refusing to import an incomplete view of reality (§24.1)", e.Provider, e.Status)
+}
+
 // Resource is one imported resource.
 type Resource struct {
 	// Provider is the registry name the resource was imported from; it is
@@ -143,7 +155,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 				return Result{}, fmt.Errorf("provider %q: List: %w", name, err)
 			}
 			if lr.Status != core.ListComplete {
-				return Result{}, fmt.Errorf("provider %q: List is not complete (status %v); refusing to import an incomplete view of reality (§24.1)", name, lr.Status)
+				return Result{}, &IncompleteListError{Provider: name, Status: lr.Status}
 			}
 			for _, id := range lr.IDs {
 				if !id.Scope.Matches(opts.Selector) {

@@ -184,6 +184,7 @@ sakutei: cycle 2: RESOLVED Drift dnszone/site=b/b-www.example.com./A: resolved a
    後に再起動し忘れると、ログがこの行で埋まる。level にする（始まりと解消に 1 回ずつ）かは設計の判断。
 5. **（直していない・小さい）デーモンの起動行が `state=sakutei-fake-state.json` と出る。** `--zone` だけで動かしていても、
    使っていない fake provider の `--state` の既定値が出る。紛らわしいが動作には関わらない。
+   **（#111 で直した）** 起動行はコマンドラインで渡したファイル（`zone=…` など）だけを出す。何も渡さないときだけ `state=sakutei-fake-state.json (default)`。`[AC-111-5]`。
 6. **（直していない・設計の判断が要る）fencing を付けた拠点は、fencing のストアに届かない間ずれを直さない。**
    `--fencing-store` は全シャードで同じものを見るので、実際の多拠点では拠点ホストの外（中央）に置くことになる。
    §15.2 の決まり「ストアに届かない周は飛ばす（世代を確かめられないまま書かない）」により、WAN 断で fencing ストアにも

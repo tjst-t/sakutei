@@ -56,6 +56,14 @@ type PendingAllocation struct {
 	Field string
 	Pool  string
 	Err   error
+	// FreeKnown is set by a LookupOnly RenderAllocations when the authority
+	// can count its free values (FreeCounter, #111).  Free is then the number
+	// of values the pool can still hand out and PendingInPool the number of
+	// pending requests from the same pool: Free == 0 means reconcile cannot
+	// allocate it (pool exhausted); Free < PendingInPool means some wait.
+	FreeKnown     bool
+	Free          int
+	PendingInPool int
 }
 
 // AllocationResult is the outcome of ResolveAllocations.
@@ -205,6 +213,14 @@ type PoolEnsurer interface {
 	EnsurePool(name string, lo, hi int) error
 }
 
+// FreeCounter is implemented by authorities that can say, without writing,
+// how many values of a pool's range they could still hand out (the file
+// authority).  plan / status use it to tell a pending request that reconcile
+// will allocate from one that will wait for an exhausted pool (#111).
+type FreeCounter interface {
+	FreeCount(ctx context.Context, pool string, lo, hi int) (int, error)
+}
+
 // RenderAllocations is the allocation step of render phase 1 for a loaded
 // intent.  In AllocAllocate mode it first declares the intent's pools to the
 // authority (when it is a PoolEnsurer), then resolves every request.  In
@@ -252,7 +268,47 @@ func RenderAllocations(ctx context.Context, auth allocation.AllocationAuthority,
 	}
 	res.Resources = append(res.Resources, outside...)
 	res.Warnings = warnings
+	if mode == AllocLookupOnly {
+		countFree(ctx, auth, in.Pools, res.Pending)
+	}
 	return res, nil
+}
+
+// countFree fills the Free fields of the pending requests from the pools the
+// authority can count (FreeCounter).  A pool it cannot count (an error, or
+// one not declared in intent) leaves its requests as they were.
+func countFree(ctx context.Context, auth allocation.AllocationAuthority, pools []loader.Pool, pending []PendingAllocation) {
+	fc, ok := auth.(FreeCounter)
+	if !ok || len(pending) == 0 {
+		return
+	}
+	byName := make(map[string]loader.Pool, len(pools))
+	for _, p := range pools {
+		byName[p.Name] = p
+	}
+	perPool := map[string]int{}
+	for _, pa := range pending {
+		perPool[pa.Pool]++
+	}
+	free := map[string]int{}
+	for name := range perPool {
+		p, ok := byName[name]
+		if !ok {
+			continue
+		}
+		n, err := fc.FreeCount(ctx, name, p.Lo, p.Hi)
+		if err != nil {
+			continue
+		}
+		free[name] = n
+	}
+	for i := range pending {
+		if n, ok := free[pending[i].Pool]; ok {
+			pending[i].FreeKnown = true
+			pending[i].Free = n
+			pending[i].PendingInPool = perPool[pending[i].Pool]
+		}
+	}
 }
 
 // PoolInClaim reports whether pool p belongs to the shard with the claim

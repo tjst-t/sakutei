@@ -46,6 +46,11 @@ import (
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
+// WaitingAllocationSkipReason is the skip line's reason for a resource in
+// waiting-allocation (§19.9): it is held for its allocation — not Observed or
+// Applied until the allocator allocates — rather than unobservable (#111).
+const WaitingAllocationSkipReason = "waiting-allocation (not Observed or Applied until allocated, §19.9)"
+
 // ApplyWaves is the exported entry point for the Kahn-wave apply phase.
 // It is used by both the periodic loop (loop.go) and the one-shot
 // "sakutei reconcile" command so that wave ordering is consistent between
@@ -59,6 +64,11 @@ import (
 // ready is this cycle's observed ready conditions (§8.3, §11.2).  A resource
 // whose depends_on names a ready_condition that is not satisfied in ready is
 // skipped like an upstream failure, together with its transitive downstream.
+//
+// held optionally gives, per Local ID in unobservable, why the resource is held
+// although it is not unobservable (waiting-allocation, an alert-only scope, a
+// Task or Workflow).  Its skip line says that reason instead of "unobservable"
+// (#111).  nil means every entry of unobservable is really unobservable.
 //
 // Returns:
 //   - applied: total number of Ops applied.
@@ -74,10 +84,11 @@ func ApplyWaves(
 	desired []diff.DesiredResource,
 	plans map[string]core.Plan,
 	unobservable map[string]bool,
+	held map[string]string,
 	ready Readiness,
 	errOut io.Writer,
 ) (applied int, appliedIDs map[string]bool, skipped []string, err error) {
-	return applyWaves(ctx, fp, exec, desired, plans, unobservable, ready, errOut)
+	return applyWaves(ctx, fp, exec, desired, plans, unobservable, held, ready, errOut)
 }
 
 // applyWaves runs the DAG/Kahn-wave apply phase for a single convergence cycle.
@@ -109,6 +120,7 @@ func applyWaves(
 	desired []diff.DesiredResource,
 	plans map[string]core.Plan,
 	unobservable map[string]bool,
+	held map[string]string,
 	ready Readiness,
 	errOut io.Writer,
 ) (applied int, appliedIDs map[string]bool, skipped []string, err error) {
@@ -155,7 +167,11 @@ func applyWaves(
 			// skipped so callers can surface it (unknown ≠ absent; halt-default).
 			if unobservable[local] {
 				skipped = append(skipped, local)
-				fmt.Fprintf(errOut, "sakutei: skip %s: unobservable this cycle (Observe error or Availability != Ok)\n", r.ID)
+				if why := held[local]; why != "" {
+					fmt.Fprintf(errOut, "sakutei: skip %s: %s\n", r.ID, why)
+				} else {
+					fmt.Fprintf(errOut, "sakutei: skip %s: unobservable this cycle (Observe error or Availability != Ok)\n", r.ID)
+				}
 				failed[local] = true
 				for _, m := range adj[idx] {
 					inDeg[m]--

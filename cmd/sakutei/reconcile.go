@@ -701,7 +701,7 @@ func runReconcile(args []string) {
 		// §14.5: the declarations were recorded in S4 (their cooling-off runs)
 		// though nothing is applied; report what that raised.
 		for _, ev := range budgetEngine.TakePlannedEvents() {
-			reconcile.EmitPlannedChange(logOut, ev, ev)
+			reconcile.EmitPlannedChange(logErr, ev, "sakutei reconcile: "+ev)
 		}
 		if held.DriftCount == 0 {
 			runSummary(fmt.Sprintf("Reconcile (%s): no drift detected", modeLabel))
@@ -746,8 +746,10 @@ func runReconcile(args []string) {
 	// Evaluate rate-limit and cumulative time-window budget.  For the one-shot
 	// reconcile, in-flight is always 0 (synchronous Apply, no prior goroutines).
 	budgetDecision := budgetEngine.CheckCycle(allPlannedOps, budget.InFlight{}, len(desired))
+	// #111: lane notices go with the other gate lines (BUDGET HALTED, budget:
+	// blocked …): on stderr, with the verb's prefix.
 	for _, ev := range budgetDecision.Events {
-		reconcile.EmitPlannedChange(logOut, ev, ev)
+		reconcile.EmitPlannedChange(logErr, ev, "sakutei reconcile: "+ev)
 	}
 	budgetHalted := budgetDecision.HaltAll || budgetDecision.HaltDestructive
 	if budgetHalted {
@@ -826,7 +828,22 @@ func runReconcile(args []string) {
 	// internal/reconcile.  The adapter routes each Apply call to the correct
 	// per-resource provider based on the Op's target provider.
 	applyProvider := newMultiProviderApply(providers, desired)
-	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, ready, logErr)
+	// #111: a held resource (each already said why above) is skipped with its
+	// reason, not as "unobservable".
+	heldReason := map[string]string{}
+	for local := range unobservable {
+		switch {
+		case waitingAlloc[local]:
+			heldReason[local] = reconcile.WaitingAllocationSkipReason
+		case scopeHeld.Locals[local]:
+			heldReason[local] = "held by an alert-only scope (§14.3)"
+		case taskHeld[local]:
+			heldReason[local] = "strategy: task — awaits its Task (launched by the daemon, §6.5)"
+		case workflowHeld[local]:
+			heldReason[local] = "target of a Workflow (driven by the daemon, §6.3)"
+		}
+	}
+	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, heldReason, ready, logErr)
 	if waveErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: wave apply: %v\n", waveErr)
 		os.Exit(1)
@@ -850,7 +867,11 @@ func runReconcile(args []string) {
 	}
 
 	// Report skipped resources (upstream failure or unobservable) to stderr.
+	// #111: a held one already said why it was skipped.
 	for _, sk := range skipped {
+		if heldReason[sk] != "" {
+			continue
+		}
 		fmt.Fprintf(logErr, "sakutei reconcile: skip %s (unobservable, upstream failure, or upstream not ready; not converged this cycle)\n", sk)
 	}
 

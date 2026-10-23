@@ -147,6 +147,11 @@ func RunOnce(ctx context.Context, opts Options) Report {
 				Sleep:     opts.Sleep,
 			})
 			if err != nil {
+				var incomplete *importer.IncompleteListError
+				if errors.As(err, &incomplete) {
+					// #111: the importer's wording says "import"; this is Sync.
+					err = fmt.Errorf("provider %q: List is not complete (status %v); not recording an incomplete view of reality (§24.5)", incomplete.Provider, incomplete.Status)
+				}
 				o.Err = err
 				rep.Outcomes = append(rep.Outcomes, o)
 				continue

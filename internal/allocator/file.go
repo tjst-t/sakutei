@@ -310,6 +310,38 @@ func (a *FileAuthority) Lookup(_ context.Context, poolName, owner string) (strin
 	return strconv.Itoa(e.Value), true, nil
 }
 
+// FreeCount reports how many values of the range lo-hi pool could still hand
+// out: neither allocated, reserved nor cooling down.  The range is the one the
+// intent declares (EnsurePool sets it before the next Allocate), so a pool not
+// created yet has the whole range free.  It never writes (plan / status, #111).
+func (a *FileAuthority) FreeCount(_ context.Context, poolName string, lo, hi int) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	unlock, err := lockFile(a.path + ".lock")
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	s, err := a.load()
+	if err != nil {
+		return 0, err
+	}
+	p, ok := s.Pools[poolName]
+	if !ok {
+		return hi - lo + 1, nil
+	}
+	now := a.now()
+	p.expire(now)
+	used := p.used(now)
+	n := 0
+	for v := lo; v <= hi; v++ {
+		if !used[v] {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // update runs fn on the store under the exclusive lock and writes the result.
 // A fenced instance (stale generation) writes nothing.
 func (a *FileAuthority) update(fn func(*store) error) error {
@@ -415,6 +447,17 @@ func (p *pool) expire(now time.Time) {
 // free returns the lowest value in range that is neither allocated, reserved
 // nor cooling down.  Lowest-first keeps allocation deterministic.
 func (p *pool) free(now time.Time) (int, error) {
+	used := p.used(now)
+	for v := p.Lo; v <= p.Hi; v++ {
+		if !used[v] {
+			return v, nil
+		}
+	}
+	return 0, allocation.ErrPoolExhausted
+}
+
+// used is the set of values allocated, reserved or cooling down at now.
+func (p *pool) used(now time.Time) map[int]bool {
 	used := make(map[int]bool, len(p.Allocations)+len(p.Cooldown))
 	for _, e := range p.Allocations {
 		used[e.Value] = true
@@ -426,12 +469,7 @@ func (p *pool) free(now time.Time) (int, error) {
 			}
 		}
 	}
-	for v := p.Lo; v <= p.Hi; v++ {
-		if !used[v] {
-			return v, nil
-		}
-	}
-	return 0, allocation.ErrPoolExhausted
+	return used
 }
 
 // Owners returns pool's owners sorted, for diagnostics and tests.
