@@ -2326,7 +2326,7 @@
       "number": 98,
       "kind": "task",
       "title": "試用：採番（ファイル版 AllocationAuthority・pools・HA 最小形）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-docs-trial",
       "dependsOn": [],
       "milestone": null,
@@ -2338,7 +2338,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T15:13:21.447Z",
+      "updatedAt": "2026-10-23T15:13:37.276Z",
       "closedAt": null,
       "extra": {}
     },
