@@ -74,6 +74,7 @@ func runPlan(args []string) {
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
+	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
@@ -276,6 +277,9 @@ func runPlan(args []string) {
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
 	}
+	if *sqlmigrateConfig != "" {
+		providerConfig["sqlmigrate_config"] = *sqlmigrateConfig
+	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei plan")
 	if resolveErr != nil {
 		fmt.Fprintln(logErr, resolveErr)
@@ -345,6 +349,15 @@ func runPlan(args []string) {
 	// shows them as such instead of as a diff.
 	wfHeld := workflowHeld(in.Workflows, *workflowStore)
 	var heldShown []workflowHeldTarget
+
+	// #94 (§6.2): a diff of a strategy: task resource is never Applied; the
+	// daemon launches its Task instead, so plan says so next to the op.
+	taskPolicies := map[string]core.UpdatePolicy{}
+	for _, res := range desired {
+		if res.UpdatePolicy.IsTask() {
+			taskPolicies[res.ID.String()] = res.UpdatePolicy
+		}
+	}
 
 	for _, res := range desired {
 		if h, ok := wfHeld[res.ID.Local]; ok {
@@ -480,7 +493,11 @@ func runPlan(args []string) {
 
 	fmt.Fprintf(logOut, "Plan: %d change(s)\n\n", len(allOps))
 	for _, op := range allOps {
-		printOp(op)
+		printOpLines(op)
+		if pol, ok := taskPolicies[op.Target.String()]; ok && op.Kind != core.OpKindDelete {
+			printTaskNote(pol)
+		}
+		fmt.Fprintln(logOut)
 	}
 
 	// S072a14-3: print composite status aggregation (§9.7).
@@ -494,6 +511,21 @@ func runPlan(args []string) {
 		}
 	}
 	os.Exit(0)
+}
+
+// printTaskNote follows the op of a strategy: task resource (§6.2, #94): the
+// change is made by a Task the daemon launches (1-outstanding, inside the
+// window), never by Apply — a one-shot reconcile leaves it alone.
+func printTaskNote(pol core.UpdatePolicy) {
+	window := "any time"
+	if pol.Window != "" {
+		window = pol.Window
+	}
+	rollback := ""
+	if pol.RollbackOnFail {
+		rollback = ", rollback_on_fail"
+	}
+	fmt.Fprintf(logOut, "  task:   launches a Task (update_policy.strategy: task; window: %s%s) — run by the daemon, not Applied\n", window, rollback)
 }
 
 // sortedCompositeParentIDs returns the parent Local IDs of the given composite
@@ -568,6 +600,12 @@ func printWorkflowHeld(held []workflowHeldTarget) {
 
 // printOp formats a single Op for human-readable plan output.
 func printOp(op core.Op) {
+	printOpLines(op)
+	fmt.Fprintln(logOut)
+}
+
+// printOpLines prints one op without the blank line that separates ops.
+func printOpLines(op core.Op) {
 	var kindStr string
 	var marker string
 	switch op.Kind {
@@ -606,7 +644,6 @@ func printOp(op core.Op) {
 			fmt.Fprintf(logOut, "  ~ %-20s  %q → %q\n", fd.Field, fd.From, fd.To)
 		}
 	}
-	fmt.Fprintln(logOut)
 }
 
 // joinedProviderVersions returns a combined provider version string for all

@@ -119,3 +119,11 @@ func redfishConfigFlag(fs *flag.FlagSet) *string {
 	return fs.String("redfish-config", "",
 		"redfish: BMC list (JSON / YAML): per node address, system / manager path, username, password (a SecretRef resolved from secret_store), ca_file, insecure_skip_verify, timeout")
 }
+
+// sqlmigrateConfigFlag registers --sqlmigrate-config, the database list of the
+// sqlmigrate provider (§29.1, #94): per database name the SQLite file and its
+// migrations directory.
+func sqlmigrateConfigFlag(fs *flag.FlagSet) *string {
+	return fs.String("sqlmigrate-config", "",
+		"sqlmigrate: database list (JSON / YAML): databases.<name>.path, databases.<name>.migrations (relative to the config file), sqlite3 (CLI path, optional), busy_timeout (optional)")
+}

@@ -118,6 +118,7 @@ func main() {
 //	--zone   <file>      path to the dnszone provider zone file (default: falls back to --state)
 //	--ruleset <file>     path to the nftables provider ruleset file (default: falls back to --state)
 //	--redfish-config <file>  BMC list of the Redfish providers (address, username, password SecretRef, §29.1)
+//	--sqlmigrate-config <file>  database list of the sqlmigrate provider (path, migrations, sqlite3, §29.1)
 //	--interval <dur>     convergence cycle period (default: 10s; use short values in tests)
 //	--claim <selector>   converge only the matching scopes (§17.1)
 //	--fencing-store <f>  fencing generation store shared by all shards (§15.2)
@@ -151,6 +152,7 @@ func runDaemon() {
 		"path to the dnszone provider zone file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
+	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	intervalStr := fs.String("interval", "",
@@ -329,6 +331,9 @@ func runDaemon() {
 	providerConfig["soa_serial"] = soaSerial
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
+	}
+	if *sqlmigrateConfig != "" {
+		providerConfig["sqlmigrate_config"] = *sqlmigrateConfig
 	}
 
 	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).

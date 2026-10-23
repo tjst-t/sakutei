@@ -130,6 +130,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 | `nftables` | 実 | nftables ルールセットファイルを管理。**ordered ルール**（並べ替え＝変更）を実証 |
 | `redfish-system` | 実 | BMC（Redfish）越しにサーバの電源（On / Off）と起動先の上書き（Continuous / Disabled）を管理。UUID・MAC・CPU・メモリは観測だけ。停止は既定で正常停止のみ、`power_off: graceful_then_force` のときだけ強制停止（予算に数える）。v1.1.0 で追加、[docs/providers/redfish.md](docs/providers/redfish.md) |
 | `redfish-virtual-media` | 実 | BMC の仮想メディア（CD）の挿入・取り出しを `image` の宣言で管理。v1.1.0 で追加 |
+| `sqlmigrate` | 実 | SQLite のデータベースに版つきのマイグレーション（`NNNN_<名前>.up.sql` / `.down.sql`）を流す。宣言は `version`、観測は `schema_migrations` の最大の版。`strategy: task` 専用で、常駐の sakutei（`--task-store`）が起動する Task だけが変える（一回性の reconcile は Apply しない）。`sqlite3` の CLI を呼ぶ。設定は `--sqlmigrate-config`、[docs/providers/sqlmigrate.md](docs/providers/sqlmigrate.md) |
 | `fake` | テスト | fault-injection 可能な検証用 provider（chaos テストの主戦場） |
 
 ---

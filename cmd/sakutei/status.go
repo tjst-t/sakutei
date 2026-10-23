@@ -86,6 +86,7 @@ func runStatus(args []string) {
 		"path to the dnszone provider zone file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
+	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	// last-seen リングは S3・非永続（in-memory）。単一の status 呼び出しでは通常
 	// 「前周」は存在しない（初回扱い）。前周比較の機構は statusreport の report-builder
 	// 層で単体テストする。--cause-state と同様、リングの永続化は行わない。
@@ -174,6 +175,9 @@ func runStatus(args []string) {
 	providerConfig["soa_serial"] = soaSerial
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
+	}
+	if *sqlmigrateConfig != "" {
+		providerConfig["sqlmigrate_config"] = *sqlmigrateConfig
 	}
 	if *rulesetPath != "" {
 		providerConfig["ruleset"] = *rulesetPath
