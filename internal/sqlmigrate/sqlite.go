@@ -26,11 +26,14 @@ import (
 // sqlite は sqlite3 を 1 回起動し、script を標準入力に流して標準出力を返す。
 // シェルは通さない（引数はパスだけ、SQL は標準入力）。-bail で最初のエラーで
 // 止まり、0 以外で終わる（開いていたトランザクションは接続が閉じて巻き戻る）。
+// busy_timeout は -cmd で渡す（標準入力に行を足すと、エラーの「near line N」が
+// マイグレーションのファイルの行とずれるため）。
 func (p *Provider) sqlite(ctx context.Context, path, script string) (string, error) {
+	args := []string{"-batch", "-bail", "-noheader", "-list"}
 	if ms := p.opts.BusyTimeout.Milliseconds(); ms > 0 {
-		script = fmt.Sprintf(".timeout %d\n", ms) + script
+		args = append(args, "-cmd", fmt.Sprintf(".timeout %d", ms))
 	}
-	cmd := exec.CommandContext(ctx, p.opts.SQLite3, "-batch", "-bail", "-noheader", "-list", dbArg(path))
+	cmd := exec.CommandContext(ctx, p.opts.SQLite3, append(args, dbArg(path))...)
 	cmd.Stdin = strings.NewReader(script)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

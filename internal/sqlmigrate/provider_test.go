@@ -228,6 +228,25 @@ func TestRunTask_FailedMigrationLeavesNoTrace(t *testing.T) {
 	}
 }
 
+// sqlite3 のエラーの「near line N」はマイグレーションのファイルの行（トランザクションで
+// 包む行や busy_timeout の行でずれない。#95 の試用で、ファイルの 4 行目が line 7 と出ていた）。
+func TestRunTask_ErrorLineIsTheFileLine(t *testing.T) {
+	needSQLite(t)
+	files := copyFiles(defaultMigrations)
+	files["0002_email.up.sql"] = "-- 3 行目で失敗する\nCREATE TABLE half_done (x);\nINSERT INTO no_such_table VALUES (1);\n"
+	for _, timeout := range []time.Duration{0, time.Second} {
+		f := newFixture(t, files)
+		f.p = New(map[string]Database{"app": f.db}, Options{BusyTimeout: timeout})
+		err := f.p.RunTask(context.Background(), req("t1", "3"))
+		if err == nil || !strings.Contains(err.Error(), "near line 3:") {
+			t.Errorf("busy_timeout %s: error = %v, want it to point at line 3 of the file", timeout, err)
+		}
+		if v := f.version(t); v != "1" {
+			t.Errorf("busy_timeout %s: version = %s, want 1", timeout, v)
+		}
+	}
+}
+
 func TestRunTask_DownWithoutDownFileFailsBeforeRunning(t *testing.T) {
 	needSQLite(t)
 	files := copyFiles(defaultMigrations)

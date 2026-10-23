@@ -149,6 +149,12 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 BMC（qemu-bmc 0.9.0）越しに、利用者が用意した自動インストールの ISO で OS を入れる手順と、2026-10-22 の試用の結果は
 [redfish-os-install/README.md](redfish-os-install/README.md)。
 
+## sqlmigrate で単純 Task を試す
+
+単純 Task（§6.2、`strategy: task`）を、実 provider の sqlmigrate（SQLite のマイグレーション）と本物の `sqlite3`・常駐の sakutei
+（`--task-store`）で回す手順（1-outstanding・メンテ窓・失敗と rollback・cancel・実行中に SIGKILL・版を下げる）と、2026-10-23 の試用の結果は
+[sqlmigrate/README.md](sqlmigrate/README.md)（Backlog #95）。
+
 ## 機能ごとの試用（2026-10-23）
 
 v1 の機能のうち、それまで自動テストでしか確かめていなかったものを、このコンテナで実際の CLI とデーモンを回して確かめた（Backlog #96）。それぞれの手順・結果・見つけたことは各ディレクトリの README にある。

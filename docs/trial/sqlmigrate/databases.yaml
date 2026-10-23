@@ -1,0 +1,7 @@
+# --sqlmigrate-config に渡すデータベースの一覧（docs/providers/sqlmigrate.md）。
+# 相対パスはこのファイルのある場所から。run.sh は作業ディレクトリにこのファイルと migrations/ を写して使う。
+busy_timeout: 5s
+databases:
+  app:
+    path: data/app.db
+    migrations: migrations/app

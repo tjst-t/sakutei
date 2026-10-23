@@ -109,3 +109,5 @@ $ sakutei task list --store tasks.json
 ```
 
 本物の `sqlite3` を相手に plan → reconcile（Apply しない）→ 常駐の sakutei が Task を起動して宣言の版に収束するまでを通す受け入れテストは `tests/acceptance/sqlmigrate_cli_test.go`（`[AC-94-*]`。`sqlite3` が無ければ Skip）。provider と Task の実行体の単体テストは `internal/sqlmigrate/`。
+
+常駐の sakutei で 1-outstanding・メンテ窓・失敗と rollback・cancel・実行中に SIGKILL・版を下げる、を実際に回す試用の手順と結果は [docs/trial/sqlmigrate/](../trial/sqlmigrate/README.md)。

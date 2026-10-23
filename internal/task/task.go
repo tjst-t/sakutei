@@ -241,7 +241,10 @@ func (m *Manager) outstandingReason(rec Record) string {
 	switch rec.Phase {
 	case PhaseRunning:
 		if rec.Holder != m.holder {
-			return fmt.Sprintf("task %s is running on %q", rec.TaskID, rec.Holder)
+			// 既定の holder は <ホスト名>-<pid> で、起こし直したデーモンは別の holder になる。
+			// 別のデーモンで走っているのか、落ちたデーモンの中断なのかはここでは分からない。
+			return fmt.Sprintf("task %s was launched by %q at %s and is still recorded as running — running there, or interrupted if that daemon is gone; not re-running — check reality and cancel it if needed",
+				rec.TaskID, rec.Holder, rec.StartedAt.UTC().Format(time.RFC3339))
 		}
 		return fmt.Sprintf("task %s was interrupted (daemon restarted while running); not re-running — check reality and cancel it if needed", rec.TaskID)
 	case PhaseSucceeded:

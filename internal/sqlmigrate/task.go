@@ -174,19 +174,21 @@ func (p *Provider) migrate(ctx context.Context, name string, db Database, cur, t
 	return nil
 }
 
-const createTable = "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT);\n"
+const createTable = "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT);"
 
 // upScript は 1 本の up をトランザクションで包み、同じトランザクションで完了印を書く。
 // SQL の後ろの ";" は、最後の文に ";" が無いファイルでも次の文とつながらないため。
+// SQL の 1 行目は BEGIN と同じ行に続ける（sqlite3 のエラーの「near line N」が
+// ファイルの行と一致するように）。
 func upScript(v int64, sql string) string {
-	return "BEGIN IMMEDIATE;\n" + createTable + sql + "\n;\n" +
+	return "BEGIN IMMEDIATE; " + createTable + " " + sql + "\n;\n" +
 		"INSERT INTO schema_migrations (version, applied_at) VALUES (" + strconv.FormatInt(v, 10) +
 		", strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));\nCOMMIT;\n"
 }
 
 // downScript は 1 本の down をトランザクションで包み、同じトランザクションで完了印を消す。
 func downScript(v int64, sql string) string {
-	return "BEGIN IMMEDIATE;\n" + sql + "\n;\n" +
+	return "BEGIN IMMEDIATE; " + sql + "\n;\n" +
 		"DELETE FROM schema_migrations WHERE version = " + strconv.FormatInt(v, 10) + ";\nCOMMIT;\n"
 }
 
