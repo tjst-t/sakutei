@@ -2633,6 +2633,31 @@
       "updatedAt": "2026-10-23T16:51:45.248Z",
       "closedAt": "2026-10-23T16:51:45.248Z",
       "extra": {}
+    },
+    {
+      "id": "task-5-stuck-critical-requirestaskevent",
+      "number": 112,
+      "kind": "task",
+      "title": "Task の実行中に、同じリソースのずれが 5 周で stuck（critical）に上がる・RequiresTaskEvent が毎周出る",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "task",
+        "event",
+        "needs-decision"
+      ],
+      "body": "2026-10-23 の sqlmigrate の試用（docs/trial/sqlmigrate/README.md の見つけたこと 3・4）。\n\n1. **Task が実行中なだけで critical になる**：自分が起動した Task が走っている間も、同じリソースの DriftEvent が毎周数えられ、`--stuck-after`（既定 5 周）で `firing stuck`（severity critical）に上がる。試用では 0002 が 5 秒かかるだけで critical になった。周期 30 秒なら 2 分半で、長いマイグレーションでは毎回 critical の知らせが飛ぶ。\n2. **RequiresTaskEvent が毎周出る**：窓の外で待つ間・halt の間ずっと `no Task launched (outside-window / outstanding)` が毎周出る。§22.3 は RequiresTask を edge の Event に数えている。\n\n## 決めること（§22.3）\n- 1：自分が起動した Task の実行中（`awaiting their Task`）の周は stuck の数に入れない、または別の class（例 `in-progress`）にする。Task 自体が長すぎるときの知らせ（Task の timeout）を別に持つか。\n- 2：RequiresTask の「起動しない理由」（窓の外・outstanding・halt）を level（firing／resolved）にするか。",
+      "doneWhen": "決めたとおりに、Task の実行中は stuck に上がらず、起動しない理由の知らせが毎周撒かれないことを受け入れテストと docs/trial/sqlmigrate で示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T16:57:58.858Z",
+      "updatedAt": "2026-10-23T16:57:58.858Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
