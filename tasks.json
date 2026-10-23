@@ -2305,7 +2305,7 @@
       "number": 97,
       "kind": "task",
       "title": "試用：Sync Mode（現実を generated/ に書き git にコミット）と import",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-docs-trial",
       "dependsOn": [],
       "milestone": null,
@@ -2317,7 +2317,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T15:13:21.447Z",
+      "updatedAt": "2026-10-23T15:13:35.941Z",
       "closedAt": null,
       "extra": {}
     },
