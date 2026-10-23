@@ -2452,7 +2452,7 @@
       "number": 104,
       "kind": "task",
       "title": "試用：tier 別の Observe 頻度・BulkObserve・status のデーモンの状態（--daemon-status）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-docs-trial",
       "dependsOn": [],
       "milestone": null,
@@ -2464,7 +2464,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T15:13:21.447Z",
+      "updatedAt": "2026-10-23T15:48:20.905Z",
       "closedAt": null,
       "extra": {}
     }
