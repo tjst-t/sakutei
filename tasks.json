@@ -2368,7 +2368,7 @@
       "number": 100,
       "kind": "task",
       "title": "試用：planned_change（専用の予算レーン・kind の整合・reimage の対・承認情報の要件）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-docs-trial",
       "dependsOn": [],
       "milestone": null,
@@ -2380,7 +2380,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T15:13:21.447Z",
+      "updatedAt": "2026-10-23T15:34:54.681Z",
       "closedAt": null,
       "extra": {}
     },
