@@ -2431,7 +2431,7 @@
       "number": 103,
       "kind": "task",
       "title": "試用：DR モード（DR plan・break-glass の緊急書込と署名・到達不能の判定・事後合流）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v1-docs-trial",
       "dependsOn": [],
       "milestone": null,
@@ -2443,7 +2443,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T15:13:21.447Z",
+      "updatedAt": "2026-10-23T15:47:16.739Z",
       "closedAt": null,
       "extra": {}
     },
