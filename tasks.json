@@ -2639,24 +2639,23 @@
       "number": 112,
       "kind": "task",
       "title": "Task の実行中に、同じリソースのずれが 5 周で stuck（critical）に上がる・RequiresTaskEvent が毎周出る",
-      "status": "backlog",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
       "priority": "high",
       "labels": [
         "task",
-        "event",
-        "needs-decision"
+        "event"
       ],
-      "body": "2026-10-23 の sqlmigrate の試用（docs/trial/sqlmigrate/README.md の見つけたこと 3・4）。\n\n1. **Task が実行中なだけで critical になる**：自分が起動した Task が走っている間も、同じリソースの DriftEvent が毎周数えられ、`--stuck-after`（既定 5 周）で `firing stuck`（severity critical）に上がる。試用では 0002 が 5 秒かかるだけで critical になった。周期 30 秒なら 2 分半で、長いマイグレーションでは毎回 critical の知らせが飛ぶ。\n2. **RequiresTaskEvent が毎周出る**：窓の外で待つ間・halt の間ずっと `no Task launched (outside-window / outstanding)` が毎周出る。§22.3 は RequiresTask を edge の Event に数えている。\n\n## 決めること（§22.3）\n- 1：自分が起動した Task の実行中（`awaiting their Task`）の周は stuck の数に入れない、または別の class（例 `in-progress`）にする。Task 自体が長すぎるときの知らせ（Task の timeout）を別に持つか。\n- 2：RequiresTask の「起動しない理由」（窓の外・outstanding・halt）を level（firing／resolved）にするか。",
+      "body": "2026-10-23 の sqlmigrate の試用（docs/trial/sqlmigrate/README.md の見つけたこと 3・4）。\n\n1. **Task が実行中なだけで critical になる**：自分が起動した Task が走っている間も、同じリソースの DriftEvent が毎周数えられ、`--stuck-after`（既定 5 周）で `firing stuck`（severity critical）に上がる。試用では 0002 が 5 秒かかるだけで critical になった。周期 30 秒なら 2 分半で、長いマイグレーションでは毎回 critical の知らせが飛ぶ。\n2. **RequiresTaskEvent が毎周出る**：窓の外で待つ間・halt の間ずっと `no Task launched (outside-window / outstanding)` が毎周出る。§22.3 は RequiresTask を edge の Event に数えている。\n\n## 決定（2026-10-24 人が決定、推奨どおり）\n1. Task の実行中は Drift を数えない：自分がこのデーモンで起動した Task が走っている周（`task.Manager.IsRunning`）は、その周の DriftEvent を出さない。続いた周数を増やさず firing のまま（resolved にもしない）。Task 自体の timeout の知らせは v1 では持たない。\n2. RequiresTaskEvent を level 化：`core.EventKind.IsLevel()` に加え、message の経過時間・待ち時間の文言は fingerprint 比較から外した（`volatileMessage`）。理由が続く間は最初の周だけ出て、理由が変わった周だけ更新、差分が消えた周に resolved。\n\n## 実装\n- pkg/core/event.go: `IsLevel()` に `EventRequiresTask` を追加。\n- internal/eventlog/level.go: `volatileMessage` に `EventRequiresTask` を追加。\n- internal/task/task.go: `Manager.IsRunning(id core.ID) bool` を追加（既存の private `isRunning` を公開）。\n- internal/reconcile/loop.go: `runCycleAsync` の per-resource EmitDrift で `tasks.IsRunning(res.ID)` のときは Drift を出さない。\n- 設計書 v3.18（§22.3 に decision を追記）、docs/architecture/CHANGELOG-v3.18.md、README.md／CLAUDE.md のバージョン表記を更新。\n- docs/trial/sqlmigrate/README.md の見つけたこと 3・4 を「直した」に更新。\n\n## 受け入れテスト\n- `TestTaskStrategy_RunningDoesNotEscalateDriftToStuck`（AC-112-1）: Task を 7 周（stuck-after=5 を超えて）持たせても errOut に \"stuck\" が出ないことを確認。\n- `TestTaskStrategy_RequiresTaskNoLaunchReasonIsLevel`（AC-112-2）: 窓の外を 4 周続けても `no Task launched (outside-window)` が 1 回しか出ないことを確認。\n- 既存の 9 件の TaskStrategy テストは無回帰。`make check`／`make test-race` 通過。",
       "doneWhen": "決めたとおりに、Task の実行中は stuck に上がらず、起動しない理由の知らせが毎周撒かれないことを受け入れテストと docs/trial/sqlmigrate で示す",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T16:57:58.858Z",
-      "updatedAt": "2026-10-23T16:57:58.858Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T00:52:42.460Z",
+      "closedAt": "2026-10-24T00:52:42.460Z",
       "extra": {}
     },
     {
