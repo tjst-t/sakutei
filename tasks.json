@@ -2473,23 +2473,22 @@
       "number": 105,
       "kind": "bug",
       "title": "採番：手で解放した値を、動いているデーモンの Lookup キャッシュが使い続け、cooldown 明けに衝突しうる",
-      "status": "backlog",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
       "priority": "high",
       "labels": [
-        "allocation",
-        "needs-decision"
+        "allocation"
       ],
-      "body": "2026-10-23 の試用（docs/trial/allocation/README.md の手順 8g、見つけたこと 6）で見つけた。\n\n`sakutei allocator` の `POST /v1/release` で手で解放した owner を、同じデーモンの下で宣言し直すと、デーモンの Lookup キャッシュに残った古い値（例 9002）がそのまま使われ、採番記録には載らない。cooldown（24h）が明けると allocator は 9002 を別の owner に払い出しうる＝**同じ値が 2 つのリソースに付く（衝突）**。キャッシュを捨てるのは「自分の Release のときだけ」（§19.6）なので起きる。\n\n今の回避策：手で解放したらデーモンを起こし直す。\n\n## 決めること（§19.6 の決まりを変える）\n- 案A：desired から消えた owner のキャッシュを捨てる（宣言し直したら 1 回 Allocate し直す）。\n- 案B：キャッシュを使うたびに世代（記録の版）を確かめる。\n- 案C：手での解放を「デーモンを止めてから」に限る運用にし、文書で縛る。",
+      "body": "2026-10-23 の試用（docs/trial/allocation/README.md の手順 8g、見つけたこと 6）で見つけた。\n\n`sakutei allocator` の `POST /v1/release` で手で解放した owner を、同じデーモンの下で宣言し直すと、デーモンの Lookup キャッシュに残った古い値（例 9002）がそのまま使われ、採番記録には載らない。cooldown（24h）が明けると allocator は 9002 を別の owner に払い出しうる＝**同じ値が 2 つのリソースに付く（衝突）**。キャッシュを捨てるのは「自分の Release のときだけ」（§19.6）なので起きる。\n\n## 決定（2026-10-24 人が決定。案B＝キャッシュに TTL を入れて定期的に裏で確かめ直す、の折衷）\n\nLookup キャッシュ（`internal/allocator.Cache`）のエントリに確かめた時刻を持たせ、**TTL（既定 `DefaultLookupTTL` = 15 分、cooldown の既定 24h より十分短い）を超えたエントリは、使う前に `Lookup` で 1 回だけ確かめる**。authority にまだ同じ owner の記録があればその値を使い続け（値が動いていれば更新）、無くなっていれば（他所で解放された）キャッシュを捨てて新たに `Allocate` する。authority に届かないときは確定した無効化の証拠が無いので古い値を使い続ける（§19.9 の waiting-allocation は新規の採番だけに掛かる・変更なし）。仮予約（`Reserve`）は元から未キャッシュのまま。\n\n設計書 v3.19（§19.6、docs/architecture/spec/part6-satellites.md・part8-implementation.md §29.1、CHANGELOG-v3.19.md）に決定を書き足し、main 49d205a で実装・テストをコミット・push 済み（受け入れテストは tests/acceptance/allocator_ha_test.go の TTL 再検証テスト）。make check / make test-race 済み。",
       "doneWhen": "手で解放した owner を宣言し直しても、採番記録に載った値が使われ、cooldown 明けに同じ値が別の owner に付かないことを受け入れテストで示す",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T16:30:35.394Z",
-      "updatedAt": "2026-10-23T16:30:35.394Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T02:15:18.953Z",
+      "closedAt": "2026-10-24T02:15:18.953Z",
       "extra": {}
     },
     {
