@@ -2496,23 +2496,22 @@
       "number": 106,
       "kind": "task",
       "title": "ファイル系 provider（dnszone・nftables）のリソースに scope を持たせる——Sync Mode・PruneWithinScope・planned_change の削除が使えない",
-      "status": "backlog",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
       "priority": "high",
       "labels": [
-        "scope",
-        "needs-decision"
+        "scope"
       ],
-      "body": "2026-10-23 の 3 つの試用で同じ根に当たった（docs/trial/sync-import の見つけたこと 1、sharding の 3、planned-change の 1）。\n\ndnszone・nftables（と Redfish）の List・BulkObserve は現実を root scope（ラベル無し）で返す（dnszone.go の「provisional — v1a uses root scope」）。そのため：\n- **Sync Mode**：sync の scope は空を拒否するので、どの scope にもこれらのリソースは入らず、`0 resource(s)` の空のスナップショットが警告なく書かれてコミットされる。import --scope も何も残らない。v1 で Sync Mode を使えるのは fake だけ。\n- **PruneWithinScope**：scope 付きの intent からレコードを外しても、現実側にその scope のものが無いので消す計画が黙って出ない（安全側だが、宣言した prune が効いていないことに気づけない）。claim でシャーディングする構成ではファイル系の prune が実質使えない。\n- **planned_change の削除・reimage・急減判定からの差し引き**：planned_change の scope は空を許さないので、root scope の DELETE はどの宣言にも入らない（kind: update は使える）。\n\n## 決めること（§17 の scope・§5.7 のキーの照合・intent の書き方に響く）\n- 案A：provider の設定でファイルごとに scope を付ける（例 `--zone-scope zone=example`、List・BulkObserve がそのラベルを付ける）。\n- 案B：root scope の現実を持つ provider には desired の scope を写す。\n- 当面の手当て：「List は N 件返したが scope に入るものが 0 件」・「scope 付きの PruneWithinScope に root scope しか返さない provider」を警告する。",
+      "body": "2026-10-23 の 3 つの試用で同じ根に当たった（docs/trial/sync-import の見つけたこと 1、sharding の 3、planned-change の 1）。\n\ndnszone・nftables（と Redfish）の List・BulkObserve は現実を root scope（ラベル無し）で返す（dnszone.go の「provisional — v1a uses root scope」）。そのため Sync Mode の空スナップショット・PruneWithinScope が黙って効かない・planned_change の削除が scope に入らない、という3つの不具合が同じ根から出ていた。\n\n## 決定（2026-10-24 人が決定。案A＝provider の設定でファイルごとに scope を付ける）\n\nprovider インスタンスごとに固定の scope を 1 つ設定できるようにした（`dnszone.WithScope(scope)` / `nftables.WithScope(scope)`、CLI は `--zone-scope` / `--ruleset-scope`、`--claim` と同じ `key=value,...` 書式、`pkg/core.ParseScope` を共有）。設定されていれば `List` / `BulkObserve` が返す全 ID をその scope で返す（呼び出し側が渡す scope 引数は無視——1 インスタンス 1 scope に固定、動的な切替は持たない）。未設定の既定は従来どおり root。\n\nこれにより非 root scope の `PruneWithinScope` と Sync Mode は、provider 側の scope 設定を宣言と正しく合わせれば動く（合わせ忘れれば従来どおり orphan が残る／0 件になるので運用規律は利用者の責任）。planned_change の削除は #106 の範囲では直接は扱っていない（root scope の DELETE が宣言に入らない問題は、scope 付き provider を使えばその scope の DELETE が宣言に入るようになる形で緩和されるが、専用の確認はしていない）。\n\n設計書 v3.19（docs/architecture/spec/part8-implementation.md §29.1、CHANGELOG-v3.19.md）に決定を書き足し、main 49d205a で実装・テストをコミット・push 済み。受け入れテストは tests/acceptance/scope_provider_test.go（AC-106-1〜AC-106-5：provider が設定 scope を List/BulkObserve に反映すること、dnszone の PruneWithinScope の CLI 往復、nftables は Pruneable:false なので internal/prune.Engine.ComputePrune を直接呼ぶ単体テストで境界検出を確認、Sync Mode の CLI 往復、不正な flag の起動時拒否）。make check / make test-race 済み。",
       "doneWhen": "dnszone・nftables のリソースで、Sync Mode が scope ごとに記録し、PruneWithinScope と planned_change の削除が scope 付きで効くことを試用手順で示す",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T16:30:39.327Z",
-      "updatedAt": "2026-10-23T16:30:39.327Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T02:15:23.106Z",
+      "closedAt": "2026-10-24T02:15:23.106Z",
       "extra": {}
     },
     {
