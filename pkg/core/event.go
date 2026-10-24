@@ -79,7 +79,13 @@ func (k EventKind) IsLevel() bool {
 	switch k {
 	case EventDrift, EventDriftWouldApply, EventApplyFailed,
 		EventBudgetHalted, EventCapacityHalted, EventPruneHalted, EventInventoryHalted,
-		EventCycleSkipped, EventExternalInputUnreachableProlonged, EventProviderUpgradeDiff:
+		EventCycleSkipped, EventExternalInputUnreachableProlonged, EventProviderUpgradeDiff,
+		// v3.18 (Backlog #112): a strategy: task resource's "no Task launched"
+		// reason (outside the window, outstanding, no task runner, fenced) and
+		// its "task launched" notice are a continuing condition about the same
+		// resource; level-reporting them stops the edge spam of one warning
+		// per cycle while waiting.
+		EventRequiresTask:
 		return true
 	}
 	return false

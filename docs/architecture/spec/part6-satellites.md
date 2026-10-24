@@ -478,6 +478,11 @@ vm:
 - **状態は S3（メモリ）**：デーモンを起こし直すと空から始まり、続いているものは改めて firing になる（取りこぼさない側）。claim のハンドオフも同じ。周の要約（`cycle N: …` の行）は Event ではなく、毎周出る。
 - **一回性の `reconcile`・`plan`** は周をまたがないので level にせず、従来どおり出す。
 
+**v3.18 の決まり（Backlog #112、2026-10-24 人が決定）**：strategy: task のリソースで、自分が起動した Task 絡みの報告を level 化する。
+
+- **Task の実行中は Drift を数えない**：自分がこのデーモンで起動した Task が走っている周（`task.Running`）は、その周の `DriftEvent` を出さない——続いた周数（stuck への昇格の数え）を増やさず、firing のままにする（resolved にもしない。差分はまだ残っているので「消えた」とは言えない）。Task が長くかかっても、走っている間は stuck（critical）に上がらない。Task の実行時間そのものへの別の上限・timeout の知らせは v1 では持たない。
+- **`RequiresTask` も level にする**：`EventRequiresTask` を level の kind に加える。Task を起動できない理由（窓の外・outstanding・no task runner・fencing）が続く間は、初めて出た周に firing、理由が変わった周（severity・分類が変わったとき）だけ更新を出し、差分が消えた周（Task が完了して Observe で差分が無くなった、または desired から外れた）に resolved を出して忘れる。起動した知らせ（`task launched`）も同じ level 系列に入り、Task が終わって差分が消えた周に resolved になる。message は毎周変わりうる（経過時間・待ち時間の文言）ので、fingerprint の比較には使わない（Drift と同じ扱い）。
+
 Break Glass の使用（`BreakGlassUsed`・§20.6）や監査アンカーの push（§26）も、この単一 Event → sink に流れる。発生源と sink を分けることで、通知系の交換が収束コアに波及しない。
 
 ### §22.4 衛星停止影響表（何を止め、何を止めないか）

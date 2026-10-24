@@ -145,6 +145,18 @@ func (m *Manager) isRunning(key string) bool {
 	return m.running[key]
 }
 
+// IsRunning は、このデーモン（このプロセス）が id の Task を自分で起動し、まだ
+// 走っているかを返す（S3。v3.18、Backlog #112）。収束ループは、自分が起動した
+// Task の実行中は DriftEvent の level の数え（stuck への昇格）を止めるために
+// これを使う——他プロセス・他シャードが起動した Task は分からない（running の
+// 記録はあっても isRunning は false。それは Outstanding として別に報告する）。
+func (m *Manager) IsRunning(id core.ID) bool {
+	if m == nil {
+		return false
+	}
+	return m.isRunning(id.String())
+}
+
 // Settle は strategy: task のリソースを Observe して差分が無かった（完了印が見えた）
 // ときに呼ぶ。未完了の記録があれば消して返す。このプロセスで Task が走っている間は
 // 消さない（結果の書込と競合させない）。

@@ -64,6 +64,10 @@ var volatileMessage = map[core.EventKind]bool{
 	core.EventDrift:                             true,
 	core.EventCycleSkipped:                      true,
 	core.EventExternalInputUnreachableProlonged: true,
+	// v3.18 (Backlog #112): a RequiresTask Message carries elapsed/waiting
+	// time or a launched Task's ID, which changes every cycle even when the
+	// reason (and its Severity) has not; comparing it would defeat leveling.
+	core.EventRequiresTask: true,
 }
 
 // Level は level の Event の状態（S3）。

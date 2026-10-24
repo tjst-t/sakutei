@@ -26,6 +26,8 @@
 //	AC-v1.5-task-7 — task store が無ければ Task も Apply もしない／下流は Task の完了を待つ
 //	AC-v1.5-task-8 — update_policy の宣言の誤りはロード時に拒否される
 //	AC-v1.5-task-9 — 1 回収束（sakutei reconcile）も strategy: task のリソースを Apply しない
+//	AC-112-1 — 自分が起動した Task が走っている間は、周を重ねても DriftEvent が stuck（critical）に上がらない（§22.3、v3.18）
+//	AC-112-2 — RequiresTask の起動しない理由（窓の外）が続く間、同じ理由は最初の周だけ出て毎周は出ない（level、§22.3、v3.18）
 package acceptance
 
 import (
@@ -266,6 +268,45 @@ func TestTaskStrategy_OneOutstandingWhileDiffPersists(t *testing.T) {
 	}
 	release()
 	r.d.Wait(5 * time.Second)
+}
+
+// [AC-112-1] Backlog #112, v3.18, §22.3: 自分が起動した Task が走っている間は、
+// stuck-after（既定 5）を超えて周を重ねても DriftEvent が stuck（critical）に上がらない。
+func TestTaskStrategy_RunningDoesNotEscalateDriftToStuck(t *testing.T) {
+	r := newTaskRig(t, taskIntent("42", taskPolicy))
+	release := r.fp.HoldTask("db") // 長い migration: 実行中は差分が残り続ける
+	defer release()
+
+	// 既定の stuck-after（5）を超えて回す。Task は持ったままなので、
+	// 毎周 DriftEvent を出していたらここで stuck へ昇格してしまう。
+	for c := 1; c <= 7; c++ {
+		r.cycleOn(r.d)
+	}
+	r.waitRuns(1)
+	if strings.Contains(r.errOut.String(), "stuck") {
+		t.Fatalf("[AC-112-1] Task 実行中に DriftEvent が stuck へ上がった（7 周実行後）:\n%s", r.errOut)
+	}
+	release()
+	r.d.Wait(5 * time.Second)
+}
+
+// [AC-112-2] Backlog #112, v3.18, §22.3: RequiresTask の起動しない理由（窓の外）が
+// 連続していても、同じ理由は最初の周だけ出て毎周は出ない（level）。
+func TestTaskStrategy_RequiresTaskNoLaunchReasonIsLevel(t *testing.T) {
+	r := newTaskRig(t, taskIntent("42", `{ "strategy": "task", "window": "Sat 02:00-04:00 UTC" }`))
+	r.clock.Set(time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)) // 水曜 12:00、窓の外
+
+	// stuck-after（既定 5）より少ない回数だけ回す（stuck への昇格とは別の話）。
+	for c := 1; c <= 4; c++ {
+		res := r.cycle()
+		if len(res.TasksLaunched) != 0 || !contains(res.TasksHeld, "db") {
+			t.Fatalf("[AC-112-2] cycle %d outside the window: launched=%v held=%v", c, res.TasksLaunched, res.TasksHeld)
+		}
+	}
+	const reason = "no Task launched (outside-window)"
+	if got := strings.Count(r.errOut.String(), reason); got != 1 {
+		t.Fatalf("[AC-112-2] 同じ理由が %d 回出た（edge、毎周）、want 1（level、最初の周だけ）:\n%s", got, r.errOut)
+	}
 }
 
 // [AC-v1.5-task-2]

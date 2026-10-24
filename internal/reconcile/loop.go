@@ -1818,6 +1818,14 @@ func runCycleAsync(
 		// the current snapshot so we are comparing current against last cycle.
 		for _, op := range plan.Ops {
 			if op.Cause == core.CauseTagB {
+				// v3.18 (Backlog #112): while a Task we launched for this
+				// resource is still running, this cycle's drift is the task
+				// being awaited, not a new or persisting failure to converge
+				// — do not raise DriftEvent, so the level count (stuck after
+				// --stuck-after cycles) does not advance while it runs.
+				if tasks != nil && tasks.IsRunning(res.ID) {
+					continue
+				}
 				summary := lsRing.DriftSummary(local, curFields)
 				EmitDrift(cfg.ErrOut, "sakutei: ", res.ID, op, summary, curFields)
 			}
