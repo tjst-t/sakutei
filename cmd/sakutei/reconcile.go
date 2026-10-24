@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/audit"
@@ -100,6 +99,8 @@ func runReconcile(args []string) {
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
+	zoneScope := zoneScopeFlag(fs)
+	rulesetScope := rulesetScopeFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
@@ -170,6 +171,8 @@ func runReconcile(args []string) {
 	setLogFormat("sakutei reconcile", *logFormat)
 	routeEventLog("sakutei reconcile", *eventLog)
 	soaSerial := checkZoneSOASerial("sakutei reconcile", *zoneSOASerial)
+	zScope := checkScope("sakutei reconcile", "zone-scope", *zoneScope)
+	rScope := checkScope("sakutei reconcile", "ruleset-scope", *rulesetScope)
 
 	if *intentDir == "" {
 		fmt.Fprintln(logErr, "sakutei reconcile: --intent <dir> is required")
@@ -398,6 +401,8 @@ func runReconcile(args []string) {
 		providerConfig["ruleset"] = *rulesetPath
 	}
 	providerConfig["soa_serial"] = soaSerial
+	providerConfig["zone_scope"] = zScope
+	providerConfig["ruleset_scope"] = rScope
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
 	}
@@ -1020,26 +1025,16 @@ func runReconcile(args []string) {
 // This is the seam parser: it turns the CLI flag into the same Scope vocabulary
 // the loader assigns to each resource, so Scope.Matches can decide in/out of
 // claim.  The real selector SOURCE (sparse checkout of intent/<scope>/) is v1b.
+//
+// This is the same syntax as core.ParseScope (shared by a provider's static
+// scope config, Backlog #106); parseClaimSelector is a thin wrapper that
+// keeps the --claim flag name in its error.
 func parseClaimSelector(s string) (core.Scope, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return core.NewScope(nil), nil
+	scope, err := core.ParseScope(s)
+	if err != nil {
+		return core.Scope{}, fmt.Errorf("--claim: %w", err)
 	}
-	labels := map[string]string{}
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		k, v, ok := strings.Cut(part, "=")
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		if !ok || k == "" {
-			return core.Scope{}, fmt.Errorf("selector term %q is not a key=value pair", part)
-		}
-		labels[k] = v
-	}
-	return core.NewScope(labels), nil
+	return scope, nil
 }
 
 // computePruneForProvider runs the prune engine computation (§12, ADR-0005) for

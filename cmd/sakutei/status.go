@@ -85,6 +85,7 @@ func runStatus(args []string) {
 	zonePath := fs.String("zone", "",
 		"path to the dnszone provider zone file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
+	zoneScope := zoneScopeFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	// last-seen リングは S3・非永続（in-memory）。単一の status 呼び出しでは通常
@@ -92,6 +93,7 @@ func runStatus(args []string) {
 	// 層で単体テストする。--cause-state と同様、リングの永続化は行わない。
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
+	rulesetScope := rulesetScopeFlag(fs)
 	// Fix Sc7a647 cause-consistency: status may READ an optional cause-state file
 	// to learn the previous cycle's revisions, so its cause tags AGREE with
 	// plan/reconcile (which read the same file).  status MUST stay READ-ONLY: it
@@ -119,6 +121,8 @@ func runStatus(args []string) {
 		os.Exit(1)
 	}
 	soaSerial := checkZoneSOASerial("sakutei status", *zoneSOASerial)
+	zScope := checkScope("sakutei status", "zone-scope", *zoneScope)
+	rScope := checkScope("sakutei status", "ruleset-scope", *rulesetScope)
 	claimSelector, claimErr := parseClaimSelector(*claim)
 	if claimErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei status: invalid --claim %q: %v\n", *claim, claimErr)
@@ -185,6 +189,7 @@ func runStatus(args []string) {
 		providerConfig["zone"] = *zonePath
 	}
 	providerConfig["soa_serial"] = soaSerial
+	providerConfig["zone_scope"] = zScope
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
 	}
@@ -194,6 +199,7 @@ func runStatus(args []string) {
 	if *rulesetPath != "" {
 		providerConfig["ruleset"] = *rulesetPath
 	}
+	providerConfig["ruleset_scope"] = rScope
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei status")
 	if resolveErr != nil {
 		fmt.Fprintln(os.Stderr, resolveErr)

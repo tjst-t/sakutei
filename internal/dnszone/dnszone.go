@@ -213,6 +213,9 @@ type Provider struct {
 	soaSerial SOASerialMode
 	// now is the clock the new serial's date is taken from.
 	now func() time.Time
+	// scope is the static scope List and BulkObserve tag every record with
+	// (WithScope, Backlog #106, Option A).  Empty (root scope) by default.
+	scope core.Scope
 }
 
 // SOASerialMode says what a changing Apply does to the SOA serial
@@ -249,6 +252,24 @@ func WithSOASerial(m SOASerialMode) Option {
 // (tests).
 func WithClock(now func() time.Time) Option {
 	return func(p *Provider) { p.now = now }
+}
+
+// WithScope sets the static scope this provider instance's List and
+// BulkObserve tag every record with (config "zone_scope", CLI --zone-scope;
+// Backlog #106, Option A, §27.5).
+//
+// v1a's List/BulkObserve always used the root scope, which is wrong whenever
+// the daemon's own claim (§17) is not root: Sync Mode and PruneWithinScope
+// then compare a root-scope reality against a non-root-scope desired and see
+// no overlap at all (every record looks like a foreign orphan, and a
+// sync-mode snapshot comes out empty).  One dnszone Provider instance
+// manages one zone file, i.e. one claim's worth of records in this
+// architecture (§17), so a single static scope per instance — configured
+// once, not inferred per record — is the natural fit: it needs no change to
+// Schema or the zone-file format, and it makes every record in the file
+// belong to the scope the operator says this zone is.
+func WithScope(scope core.Scope) Option {
+	return func(p *Provider) { p.scope = scope }
 }
 
 // New creates a new dnszone Provider backed by the zone file at zonePath.
@@ -504,10 +525,10 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 			fmt.Errorf("dnszone: List: parse zone %s: %w", p.zonePath, err))
 	}
 
-	// Use empty scope (provisional — v1a uses root scope).
-	// Two lines may resolve to the same id ("www" and "www.example.com.");
-	// the id is listed once.
-	scope := core.NewScope(nil)
+	// This provider instance's static scope (WithScope, Backlog #106);
+	// empty (root) unless configured.  Two lines may resolve to the same id
+	// ("www" and "www.example.com."); the id is listed once.
+	scope := p.scope
 	ids := make([]core.ID, 0, len(records))
 	seen := make(map[string]bool, len(records))
 	for _, r := range records {
@@ -546,7 +567,8 @@ func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkOb
 	}
 
 	now := time.Now()
-	scope := core.NewScope(nil)
+	// This provider instance's static scope (WithScope, Backlog #106).
+	scope := p.scope
 	obs := make(map[core.IDKey]core.Observation, len(records))
 	for _, r := range records {
 		k := core.NewID(ProviderName, scope, r.localID()).Key()

@@ -164,12 +164,40 @@ func (c chainRes) rulesEncoded() string {
 type Provider struct {
 	// rulesetPath は ruleset ファイルのパス。
 	rulesetPath string
+	// scope は List・BulkObserve が返す ID に付ける固定の scope
+	// (WithScope, Backlog #106, Option A)。空（root scope）が既定。
+	scope core.Scope
+}
+
+// Option configures optional Provider behavior at construction time.
+type Option func(*Provider)
+
+// WithScope sets the fixed scope that List and BulkObserve tag every
+// returned ID with（既定は root scope = core.NewScope(nil)）。
+//
+// 設計判断（Backlog #106, Option A, §27.5）: 1 つの Provider インスタンス
+// = 1 つの ruleset ファイル = Sakutei の静的 claim シャーディング（§17）で
+// いう 1 つの claim 分のリソース、という既存アーキテクチャにそのまま乗る
+// 形で、scope は provider 設定（CLI の --ruleset-scope）で固定する。
+// これにより:
+//   - Sync Mode（generated/ への書き出し）が non-root scope の静的 scope
+//     設定下でも空にならず、正しく scope 付きの snapshot を書ける。
+//   - PruneWithinScope が non-root scope の orphan を取り落とさず見える。
+//   - planned_change の削除数が、宣言と同じ scope の DELETE op に対して
+//     正しく数えられる（root scope 固定だった旧挙動は scope がズレて
+//     数え落としていた）。
+func WithScope(scope core.Scope) Option {
+	return func(p *Provider) { p.scope = scope }
 }
 
 // New creates a new nftables Provider backed by the ruleset file at path.
 // ファイルはまだ存在しなくてよい（Apply が作成する）。
-func New(rulesetPath string) *Provider {
-	return &Provider{rulesetPath: rulesetPath}
+func New(rulesetPath string, opts ...Option) *Provider {
+	p := &Provider{rulesetPath: rulesetPath}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // Schema returns the field declarations for a firewall chain.
@@ -391,7 +419,8 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 
 	// 同じ座標の chain が 2 回書かれていても ID は 1 回だけ出す（List は集合）。
 	// Read・BulkObserve と同じく最初の出現で決め、それが base chain・opaque なら出さない。
-	scope := core.NewScope(nil)
+	// scope は provider 設定の固定値（既定 root, WithScope で変えられる、Backlog #106）。
+	scope := p.scope
 	ids := make([]core.ID, 0, len(chains))
 	seen := make(map[string]bool, len(chains))
 	for _, c := range chains {
@@ -410,7 +439,7 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 
 // BulkObserve observes every managed chain in the ruleset file with ONE read of
 // the file (§5.7)。各エントリは、その chain の local id に Read が返すものと同じ
-// で、キーは List と同じ（root scope, "<family>/<table>/<chain>"）。
+// で、キーは List と同じ（provider 設定の固定 scope、"<family>/<table>/<chain>"）。
 //
 // Read は座標の一致する最初の chain を返すので、各エントリも最初の出現から作る。
 // 最初の出現が base chain・opaque な chain の座標は返さない（Read はそこで PermanentError を返す
@@ -432,7 +461,7 @@ func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkOb
 	}
 
 	now := time.Now()
-	scope := core.NewScope(nil)
+	scope := p.scope
 	seen := make(map[string]bool, len(chains))
 	obs := make(map[core.IDKey]core.Observation, len(chains))
 	for _, c := range chains {

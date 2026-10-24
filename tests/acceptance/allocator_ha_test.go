@@ -37,6 +37,11 @@
 //           only its own pools
 //   [#25-7] one-shot reconcile with the allocator down: the rest converges,
 //           the new request waits, exit 0
+//   [#105]  Backlog #105: a stale (past-TTL) cache hit is revalidated with
+//           one Lookup; if the authority no longer has the owner (released
+//           through the v1 manual /v1/release escape hatch, outside this
+//           shard's own Release), the cache self-heals via a fresh Allocate
+//           instead of going on handing out a value another owner now holds
 
 package acceptance
 
@@ -172,6 +177,152 @@ func TestAllocatorHA_LookupCache(t *testing.T) {
 	}
 	if _, ok, _ := c.Lookup(ctx, "p", "net-1"); ok {
 		t.Fatalf("[#25-1] the own Release must invalidate the cached fact")
+	}
+}
+
+func TestAllocatorHA_LookupCacheTTLRevalidation(t *testing.T) {
+	// [#105] The v1 manual escape hatch (`POST /v1/release`, the only way to
+	// release in v1 — docs/trial/allocation/run.sh step 8f) changes the
+	// allocation fact from outside the shard's own Release.  Backlog #105:
+	// an unbounded cache would keep answering the stale value forever; the
+	// TTL revalidation must notice within Cache.TTL and self-heal via a
+	// fresh Allocate, never going on claiming a value the authority has
+	// since given to someone else.
+	ctx := context.Background()
+	fa, _ := newAuthority(t, 100, 101) // a 2-value pool
+	now := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+	fa.Now = func() time.Time { return now }
+	fa.Cooldown = time.Minute
+
+	c := allocator.NewCache(fa)
+	c.Now = func() time.Time { return now }
+	c.TTL = time.Minute
+
+	v, err := c.Allocate(ctx, "p", "A")
+	if err != nil || v != "100" {
+		t.Fatalf("[#105] first Allocate for A: %q %v", v, err)
+	}
+
+	// Manual release bypasses the cache entirely.
+	if err := fa.Release(ctx, "p", "A"); err != nil {
+		t.Fatalf("[#105] manual Release: %v", err)
+	}
+
+	// Still within TTL: this is the bounded exposure window the TTL
+	// accepts (it must be short next to the 24h cooldown so a revalidation
+	// always lands before a collision could happen).
+	if got, _ := c.Allocate(ctx, "p", "A"); got != v {
+		t.Fatalf("[#105] within TTL the cache must still answer the unrevalidated value; got %q", got)
+	}
+
+	// Past the cooldown, "100" is free again and another owner B gets it
+	// straight from the authority (as if another shard, unaware of A's
+	// stale cache, allocated it).
+	now = now.Add(2 * time.Minute)
+	vb, err := fa.Allocate(ctx, "p", "B")
+	if err != nil || vb != v {
+		t.Fatalf("[#105] B must receive the released value %q once cooldown clears; got %q %v", v, vb, err)
+	}
+
+	// A's cache entry is now stale too (TTL elapsed). The next Allocate for
+	// A must revalidate, discover the authority no longer has A, and
+	// self-heal with a fresh Allocate — not go on believing it still owns
+	// "100", which would collide with B.
+	got, err := c.Allocate(ctx, "p", "A")
+	if err != nil {
+		t.Fatalf("[#105] self-heal Allocate for A: %v", err)
+	}
+	if got == vb {
+		t.Fatalf("[#105] A must not collide with B's value %q after revalidation; got %q too", vb, got)
+	}
+	if got != "101" {
+		t.Fatalf("[#105] A must receive the only remaining free value 101; got %q", got)
+	}
+
+	// From here it is a normal fresh fact again: stable within TTL.
+	again, _ := c.Allocate(ctx, "p", "A")
+	if again != got {
+		t.Fatalf("[#105] the healed value must now be stable: %q then %q", got, again)
+	}
+
+	if _, err := c.Allocate(ctx, "p", "C"); err == nil {
+		t.Fatalf("[#105] setup: pool must be exhausted after A and B hold both values")
+	}
+
+	// Lookup must self-heal the same way as Allocate. Cache B too (an
+	// idempotent Allocate on an owner that already has a value just adopts
+	// it into the cache), release it manually, and let TTL elapse: a stale
+	// Lookup for B must now report found=false (a clean miss) instead of
+	// going on with the stale value.
+	if cb, err := c.Allocate(ctx, "p", "B"); err != nil || cb != vb {
+		t.Fatalf("[#105] caching B: %q %v (want %q)", cb, err, vb)
+	}
+	if err := fa.Release(ctx, "p", "B"); err != nil {
+		t.Fatalf("[#105] manual Release of B: %v", err)
+	}
+	now = now.Add(2 * time.Minute) // past TTL again, cooldown too
+	if _, ok, err := c.Lookup(ctx, "p", "B"); ok || err != nil {
+		t.Fatalf("[#105] a stale Lookup must self-heal to found=false once the authority no longer has the owner; got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAllocatorHA_Daemon_LookupCacheTTLRevalidation(t *testing.T) {
+	// [#105] End-to-end through the real daemon process: --alloc-lookup-ttl
+	// bounds how long the daemon's in-process Lookup cache trusts an
+	// allocation before revalidating it, so a value released from outside
+	// the daemon (the v1 manual escape hatch, e.g. a direct edit of the
+	// store or an admin API call against a separate allocator process)
+	// cannot be used forever once a collision risk exists.
+	root := t.TempDir()
+	intentDir := filepath.Join(root, "intent")
+	if err := os.MkdirAll(intentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStateJSON(t, filepath.Join(intentDir, "net.yaml"), `pools:
+  - name: p
+    range: "100-101"
+resources:
+  - provider: fake
+    id: net-1
+    fields:
+      name: net-1
+      vlan:
+        from_pool: p
+`)
+	state := filepath.Join(root, "state.json")
+	writeStateJSON(t, state, `{"resources": {}, "provider_version": "v-test"}`)
+	store := filepath.Join(root, "alloc.json")
+
+	cmd, stdout, stderr := startDaemonWithArgs(t, intentDir, state, "50ms", "--alloc-store", store, "--alloc-lookup-ttl", "100ms")
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	fp := fakeprovider.New(state)
+	field := func() string {
+		obs, err := fp.Read(context.Background(), "net-1")
+		if err != nil || obs.State == nil {
+			return ""
+		}
+		return fmt.Sprint(obs.State["vlan"].Value)
+	}
+	dump := func() string {
+		return fmt.Sprintf("stdout:\n%s\nstderr:\n%s\nstore:\n%s", stdout.String(), stderr.String(), readFile(t, store))
+	}
+	if !waitForCondition(10*time.Second, func() bool { return field() == "100" }) {
+		t.Fatalf("[#105] initial allocation failed\n%s", dump())
+	}
+
+	// Manual release, outside the daemon — a direct edit of the store, the
+	// same effect an admin's `/v1/release` call against a separate
+	// allocator process has (docs/trial/allocation/run.sh step 8f).  "100"
+	// then sits in its (real, 24h) cooldown, so the only way the daemon can
+	// recover net-1 is a genuine self-heal to the pool's other free value
+	// (101) — never by going on reporting "100", which a since-arrived
+	// owner elsewhere could by then hold.
+	if err := allocator.New(store).Release(context.Background(), "p", render.AllocationOwner(core.NewID("fake", core.NewScope(nil), "net-1"), "vlan")); err != nil {
+		t.Fatalf("[#105] manual Release: %v", err)
+	}
+
+	if !waitForCondition(10*time.Second, func() bool { return field() == "101" }) {
+		t.Fatalf("[#105] the daemon must notice the external release within --alloc-lookup-ttl and self-heal to a fresh value (101, since 100 is in cooldown)\n%s", dump())
 	}
 }
 

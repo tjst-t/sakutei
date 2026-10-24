@@ -152,10 +152,12 @@ func runDaemon() {
 	zonePath := fs.String("zone", "",
 		"path to the dnszone provider zone file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
+	zoneScope := zoneScopeFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
+	rulesetScope := rulesetScopeFlag(fs)
 	intervalStr := fs.String("interval", "",
 		"convergence cycle interval, e.g. 200ms or 30s (default: 10s)")
 	// S072a14-3: render pipeline flags for the daemon.
@@ -166,6 +168,8 @@ func runDaemon() {
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	allocURL := fs.String("alloc-url", "", allocURLUsage)
+	allocLookupTTL := fs.String("alloc-lookup-ttl", "",
+		"#105: how long the shard-local Lookup cache (§19.6) trusts a cached allocation before revalidating it with one Lookup, e.g. 5m or 1h (default: 15m, allocator.DefaultLookupTTL; must stay well under the 24h cooldown)")
 	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
 		"S072a14-3: simulate an unreachable ExternalInputResolver (triggers last-value-on-unreachable path §9.2)")
 	inventoryFile := fs.String("inventory-file", "",
@@ -241,6 +245,8 @@ func runDaemon() {
 	setLogFormat("sakutei", *logFormat)
 	eventSinks := openEventLog("sakutei", *eventLog)
 	soaSerial := checkZoneSOASerial("sakutei", *zoneSOASerial)
+	zScope := checkScope("sakutei", "zone-scope", *zoneScope)
+	rScope := checkScope("sakutei", "ruleset-scope", *rulesetScope)
 
 	src := setupGitDist(gd, *intentDir, *claim, *allocStore)
 	if src == nil && *intentDir == "" {
@@ -330,6 +336,8 @@ func runDaemon() {
 		providerConfig["ruleset"] = *rulesetPath
 	}
 	providerConfig["soa_serial"] = soaSerial
+	providerConfig["zone_scope"] = zScope
+	providerConfig["ruleset_scope"] = rScope
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
 	}
@@ -390,7 +398,16 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 		os.Exit(1)
 	} else if a != nil {
-		allocAuth = allocator.NewCache(a)
+		cache := allocator.NewCache(a)
+		if *allocLookupTTL != "" {
+			d, err := time.ParseDuration(*allocLookupTTL)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "sakutei: invalid --alloc-lookup-ttl %q: %v\n", *allocLookupTTL, err)
+				os.Exit(1)
+			}
+			cache.TTL = d
+		}
+		allocAuth = cache
 	}
 
 	cfg := reconcile.Config{

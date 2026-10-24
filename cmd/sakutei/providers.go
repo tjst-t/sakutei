@@ -35,6 +35,7 @@ import (
 
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/dnszone"
+	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
@@ -110,6 +111,35 @@ func checkZoneSOASerial(commandName, v string) string {
 		os.Exit(1)
 	}
 	return string(m)
+}
+
+// zoneScopeFlag registers --zone-scope, the dnszone provider's static scope
+// setting (Backlog #106, Option A, §27.5): List/BulkObserve tag every
+// returned id with this fixed scope instead of always the root scope.
+// Format is "key=value,key=value" (same syntax as --claim).
+func zoneScopeFlag(fs *flag.FlagSet) *string {
+	return fs.String("zone-scope", "",
+		"dnszone: fixed scope to tag every id this provider instance's List/BulkObserve return with (key=value,... ; default: root scope)")
+}
+
+// rulesetScopeFlag registers --ruleset-scope, the nftables provider's static
+// scope setting (Backlog #106, Option A, §27.5): same idea as --zone-scope,
+// for the nftables provider.
+func rulesetScopeFlag(fs *flag.FlagSet) *string {
+	return fs.String("ruleset-scope", "",
+		"nftables: fixed scope to tag every id this provider instance's List/BulkObserve return with (key=value,... ; default: root scope)")
+}
+
+// checkScope validates a --zone-scope/--ruleset-scope value at startup and
+// exits 1 on a bad value.  It returns the value unchanged for the provider
+// config (the registry re-parses it there with core.ParseScope; this call is
+// just the fail-fast check so a typo is reported before any provider runs).
+func checkScope(commandName, flagName, v string) string {
+	if _, err := core.ParseScope(v); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: --%s: %v\n", commandName, flagName, err)
+		os.Exit(1)
+	}
+	return v
 }
 
 // redfishConfigFlag registers --redfish-config, the BMC list of the Redfish

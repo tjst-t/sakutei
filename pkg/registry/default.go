@@ -24,6 +24,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/redfish/bmcconfig"
 	"github.com/tjst-t/sakutei/internal/redfish/system"
 	"github.com/tjst-t/sakutei/internal/sqlmigrate"
+	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
 
@@ -76,7 +77,13 @@ func DefaultRegistry() *ProviderRegistry {
 		if err != nil {
 			return nil, err
 		}
-		return dnszone.New(zonePath, dnszone.WithSOASerial(mode)), nil
+		// Backlog #106, Option A: a fixed scope for this provider instance
+		// (default: root scope), set via config["zone_scope"] (CLI --zone-scope).
+		scope, err := core.ParseScope(config["zone_scope"])
+		if err != nil {
+			return nil, err
+		}
+		return dnszone.New(zonePath, dnszone.WithSOASerial(mode), dnszone.WithScope(scope)), nil
 	})
 
 	// "nftables" — nftables ruleset-file provider (Sc7a647-1).
@@ -95,7 +102,13 @@ func DefaultRegistry() *ProviderRegistry {
 		if rulesetPath == "" {
 			rulesetPath = "sakutei-nftables.rules"
 		}
-		return nftables.New(rulesetPath), nil
+		// Backlog #106, Option A: a fixed scope for this provider instance
+		// (default: root scope), set via config["ruleset_scope"] (CLI --ruleset-scope).
+		scope, err := core.ParseScope(config["ruleset_scope"])
+		if err != nil {
+			return nil, err
+		}
+		return nftables.New(rulesetPath, nftables.WithScope(scope)), nil
 	})
 
 	// "redfish-system" / "redfish-virtual-media" — Redfish の BMC provider

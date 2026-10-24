@@ -44,7 +44,9 @@ func runImport(args []string) {
 	statePath := fs.String("state", "sakutei-fake-state.json", "path to the fake provider state file")
 	zonePath := fs.String("zone", "", "path to the dnszone provider zone file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
+	zoneScope := zoneScopeFlag(fs)
 	rulesetPath := fs.String("ruleset", "", "path to the nftables provider ruleset file (default: falls back to --state)")
+	rulesetScope := rulesetScopeFlag(fs)
 	scopeFlag := fs.String("scope", "", "import only resources whose scope matches these labels, e.g. site=tokyo,rack=r1 (default: everything)")
 	outDir := fs.String("out", "", "directory to write imported intent files into (required)")
 	samples := fs.Int("samples", 3, "how many times to observe reality; fields that change between observations become managed candidates")
@@ -55,6 +57,8 @@ func runImport(args []string) {
 		os.Exit(1)
 	}
 	soaSerial := checkZoneSOASerial("sakutei import", *zoneSOASerial)
+	zScope := checkScope("sakutei import", "zone-scope", *zoneScope)
+	rScope := checkScope("sakutei import", "ruleset-scope", *rulesetScope)
 	if *providersFlag == "" || *outDir == "" {
 		fmt.Fprintln(os.Stderr, "sakutei import: --provider and --out are required")
 		fs.Usage()
@@ -81,9 +85,11 @@ func runImport(args []string) {
 		cfg["zone"] = *zonePath
 	}
 	cfg["soa_serial"] = soaSerial
+	cfg["zone_scope"] = zScope
 	if *rulesetPath != "" {
 		cfg["ruleset"] = *rulesetPath
 	}
+	cfg["ruleset_scope"] = rScope
 	providers := map[string]provider.Provider{}
 	var names []string
 	for _, name := range strings.Split(*providersFlag, ",") {

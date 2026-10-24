@@ -108,6 +108,33 @@ func (s Scope) Matches(selector Scope) bool {
 	return true
 }
 
+// ParseScope parses the shared CLI/config scope syntax: comma-separated
+// "key=value" pairs, e.g. "site=tokyo,cluster=prod" (used by --claim, §17,
+// and by a provider's static scope config, Backlog #106, §27.5).  An empty
+// string yields an empty Scope (the root scope: no labels).  Whitespace
+// around keys/values is trimmed.
+func ParseScope(s string) (Scope, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return NewScope(nil), nil
+	}
+	labels := map[string]string{}
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(part, "=")
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if !ok || k == "" {
+			return Scope{}, fmt.Errorf("scope term %q is not a key=value pair", part)
+		}
+		labels[k] = v
+	}
+	return NewScope(labels), nil
+}
+
 // Equal reports whether two Scopes have identical label sets.
 func (s Scope) Equal(other Scope) bool {
 	if len(s.Labels) != len(other.Labels) {

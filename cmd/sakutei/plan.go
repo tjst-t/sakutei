@@ -75,6 +75,8 @@ func runPlan(args []string) {
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
+	zoneScope := zoneScopeFlag(fs)
+	rulesetScope := rulesetScopeFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
@@ -127,6 +129,8 @@ func runPlan(args []string) {
 		os.Exit(1)
 	}
 	soaSerial := checkZoneSOASerial("sakutei plan", *zoneSOASerial)
+	zScope := checkScope("sakutei plan", "zone-scope", *zoneScope)
+	rScope := checkScope("sakutei plan", "ruleset-scope", *rulesetScope)
 
 	if *intentDir == "" {
 		fmt.Fprintln(logErr, "sakutei plan: --intent <dir> is required")
@@ -304,6 +308,8 @@ func runPlan(args []string) {
 		providerConfig["ruleset"] = *rulesetPath
 	}
 	providerConfig["soa_serial"] = soaSerial
+	providerConfig["zone_scope"] = zScope
+	providerConfig["ruleset_scope"] = rScope
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
 	}
