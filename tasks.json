@@ -2980,7 +2980,7 @@
       "number": 127,
       "kind": "task",
       "title": "Ansible provider（最小の階級：モジュールを check mode で観測し、通常実行で適用）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "postgresql-provider-sqlmigrate-postgresq",
       "dependsOn": [],
       "milestone": null,
@@ -2992,7 +2992,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T10:43:04.303Z",
-      "updatedAt": "2026-10-27T10:43:04.303Z",
+      "updatedAt": "2026-10-27T10:43:18.722Z",
       "closedAt": null,
       "extra": {}
     }
