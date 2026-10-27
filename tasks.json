@@ -3063,11 +3063,11 @@
       "labels": [],
       "body": "## なぜ\n今の nftables（live）と dnszone は、デーモンが動く機械の nft とファイルだけを扱う。複数のホストの FW・DNS を扱うには、ホストごとにデーモンを置くしかない。agent を配る・上げること自体が手間で、秘密もホストの数だけ要る。1 台のデーモンから、完全の階級（prune・順序つき diff・原因タグ）のまま離れたホストを扱えるようにする。\n\n## やること\n- **実行の層**（例 internal/remote）：外部コマンドを「手元」か「ssh 越し」で流す interface。ssh は OpenSSH の `ssh` CLI を os/exec で呼ぶ（Go の依存を増やさない）。\n  - 引数は各要素を正しく shell-quote して渡す（リモートのシェルが解釈するため。注入の試験を付ける）。中身（ファイル・nft のスクリプト）は標準入力で渡す。\n  - `BatchMode=yes`。ホスト鍵は設定の known_hosts で確かめ、知らない鍵は拒む（初回だけ信じるのは明示したときだけ）。`ConnectTimeout`。接続の使い回し（ControlMaster / ControlPersist）で周ごとの接続を減らす。\n  - 秘密鍵は SecretRef（file SecretBackend）から、使う間だけ 0600 の一時ファイルに出して渡し、終わったら消す（または ssh-agent）。鍵・パスワードを引数・ログ・エラーに出さない（§20）。\n  - root が要るコマンドのために `sudo -n` を設定で付けられる。\n  - 届かない・認証の失敗・ホスト鍵の不一致は、上の provider で観測できない（unknown。absent にしない、§3・§5.4）。ホスト鍵の不一致は永続エラーとして知らせる。\n- **対象の一覧**：名前付きのホスト（address・port・user・秘密鍵の SecretRef・known_hosts・sudo・タイムアウト）を `--provider-config` で渡す。\n- **nftables（live）と dnszone をこの層に乗せる**：\n  - nftables：nft の呼び出し（`nft -j list`・`nft -c -f -`・`nft -f -`）を対象のホストで流す。\n  - dnszone：ゾーンファイルの読み出しと、原子的な書き換え（一時ファイル → rename、リモートでも flock で排他）を対象のホストで行う。書き換えたあとの**再読み込みのコマンド**（例 `knotc zone-reload <zone>`、`rndc reload <zone>`。既定は無し）を設定できるようにする（手元でも使える）。再読み込みの失敗は Apply の失敗として知らせる。\n  - **複数のホストを 1 つのデーモンで扱えること**：例えば 2 台の FW に同じ table/chain があってもぶつからない。ID に対象の名前を含めるか、provider のインスタンスを対象ごとに分け scope（#106 の固定 scope）で分けるかを実装で決め、§29.1 に書く。対象を設定しない今の使い方（手元のファイル・nft）は、ID も動きも変えない。\n- 契約テスト・BulkObserve 等価性テストを、偽の実行の層でも通す。\n- **統合テスト**：build tag `integration_remote`、`make integration-remote`。docker で sshd の入った使い捨てのコンテナを 2 台立て（イメージは tag と digest で固定。nft を使う方は NET_ADMIN）、手元の sakutei から ssh 越しに：空から収束→適合／コンテナの中で手で変える→drift→戻る（2 台とも）／再読み込みのコマンドが走る／何周でも drift が出ない／sshd を止める・鍵を外す・ホスト鍵を変えると観測できないで何もしない、を確かめる。必ず片づける。check・CI には入れない。実際に回して結果を docs に書く。\n- 文書：docs/remote.md（設定・鍵とホスト鍵の扱い・権限・再読み込み）、docs/providers/nftables.md・dnszone の説明、設計書 §29.1。特定の環境の話は書かない。版の行と CHANGELOG のファイルは触らない。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "1 台のデーモンから ssh 越しに 2 台のホストの nftables（live）と dnszone を収束させ、届かないときは unknown で無操作になることを make integration-remote で示す。既存の手元の使い方のテストがそのまま通る。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/remote-ssh-exec）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T11:27:28.338Z",
-      "updatedAt": "2026-10-27T12:55:56.665Z",
+      "updatedAt": "2026-10-27T12:56:30.292Z",
       "closedAt": "2026-10-27T12:55:56.665Z",
       "extra": {}
     },
