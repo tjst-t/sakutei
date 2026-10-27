@@ -117,7 +117,8 @@ var ErrNoAllocationAuthority = errors.New("render: the intent requests allocatio
 
 // ResolveAllocations is the allocation step of render phase 1 (§9.1): for
 // every `field: { from_pool: P }` request it obtains the value from auth and
-// writes it into the resource's Fields, so phase 2 (Expand) and Diff see a
+// writes it into the resource's Fields — through the request's template
+// when it has one ("192.0.2.{n}", #145) — so phase 2 (Expand) and Diff see a
 // plain value.  Idempotent by construction: the authority returns the same
 // value for the same owner until Release (§19.3).
 //
@@ -175,7 +176,7 @@ func ResolveAllocations(ctx context.Context, auth allocation.AllocationAuthority
 					continue
 				}
 			}
-			fields[field] = value
+			fields[field] = loader.ExpandAllocationTemplate(r.AllocationTemplates[field].Template, value)
 			res.Inputs = append(res.Inputs, "alloc:"+owner+"="+value)
 		}
 		r.Fields = fields

@@ -16,6 +16,7 @@ package loader
 
 import (
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -33,7 +34,8 @@ import (
 // from it (pool split by claim, §19.8).  Space names the numbering space
 // ("vlan", "asn"; default: one common space) within which pools of different
 // claims must be disjoint — 1 value, 1 authority (§19.7).  v1b uses integer
-// pools only (VLAN IDs and the like).
+// pools only (VLAN IDs and the like); a request writes the integer into a
+// string through its template ("192.0.2.{n}", #145).
 type Pool struct {
 	Name  string
 	Range string
@@ -121,7 +123,97 @@ func validatePools(pools []Pool, resources []diff.DesiredResource) error {
 			if !r.ID.Scope.Matches(core.NewScope(p.Claim)) {
 				return fmt.Errorf("resource %s: field %q requests pool %q of claim %v from outside that claim (pools split by claim, §19.8)", r.ID, field, pool, p.Claim)
 			}
+			if t, ok := r.AllocationTemplates[field]; ok {
+				if err := checkTemplateKind(t, p); err != nil {
+					return fmt.Errorf("resource %s: field %q: %w", r.ID, field, err)
+				}
+			}
 		}
 	}
 	return nil
+}
+
+// templateVar is the one variable an allocation template knows: the
+// allocated integer, written in decimal (#145).
+const templateVar = "{n}"
+
+// parseAllocationTemplate reads template / kind of an allocation request
+// (`{ from_pool: vm-ip, template: "192.0.2.{n}", kind: ipv4 }`, #145).  The
+// template must hold {n} (it may appear more than once) and no other brace:
+// other forms ({n+10}, octet arithmetic) are kept out on purpose — choose the
+// pool's range so the integer is the part written, and let a later change
+// add a form only when a real intent needs it.  kind needs a template: an
+// integer alone is never an address.
+func parseAllocationTemplate(req map[string]any) (diff.AllocationTemplate, error) {
+	var t diff.AllocationTemplate
+	if raw, ok := req["template"]; ok {
+		s, isStr := raw.(string)
+		if !isStr || !strings.Contains(s, templateVar) {
+			return t, fmt.Errorf("template must be a string holding %s (e.g. \"192.0.2.{n}\")", templateVar)
+		}
+		if rest := strings.ReplaceAll(s, templateVar, ""); strings.ContainsAny(rest, "{}") {
+			return t, fmt.Errorf("template %q: only %s is replaced; no other { } may appear", s, templateVar)
+		}
+		t.Template = s
+	}
+	if raw, ok := req["kind"]; ok {
+		k, _ := raw.(string)
+		switch k {
+		case "ipv4", "ipv6":
+		default:
+			return t, fmt.Errorf("kind must be ipv4 or ipv6, got %v", raw)
+		}
+		if t.Template == "" {
+			return t, fmt.Errorf("kind %s needs a template (an integer alone is not an address)", k)
+		}
+		t.Kind = k
+	}
+	return t, nil
+}
+
+// ExpandAllocationTemplate writes the allocated value into the template.
+// An empty template returns the value as it is.
+func ExpandAllocationTemplate(template, value string) string {
+	if template == "" {
+		return value
+	}
+	return strings.ReplaceAll(template, templateVar, value)
+}
+
+// checkTemplateKind checks that every value of pool p's range renders through
+// t to an address of t.Kind, so a pool that would hand out "192.0.2.256" is
+// refused when the intent is loaded instead of when the value reaches the
+// device (#145).  It stops at the first value that does not: the values that
+// do are few (an IPv4 octet holds up to 255, an IPv6 group up to 4 digits),
+// so the walk is short either way.
+func checkTemplateKind(t diff.AllocationTemplate, p Pool) error {
+	if t.Kind == "" {
+		return nil
+	}
+	for n := p.Lo; n <= p.Hi; n++ {
+		s := ExpandAllocationTemplate(t.Template, strconv.Itoa(n))
+		if err := checkAddressKind(t.Kind, s); err != nil {
+			return fmt.Errorf("template %q with pool %q (range %s) gives %q for %d, which is not an %s address (kind: %s)",
+				t.Template, p.Name, p.Range, s, n, kindName(t.Kind), t.Kind)
+		}
+	}
+	return nil
+}
+
+func checkAddressKind(kind, s string) error {
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return err
+	}
+	if a.Zone() != "" || (kind == "ipv4") != a.Is4() {
+		return fmt.Errorf("not %s", kind)
+	}
+	return nil
+}
+
+func kindName(kind string) string {
+	if kind == "ipv6" {
+		return "IPv6"
+	}
+	return "IPv4"
 }

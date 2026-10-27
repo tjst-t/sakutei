@@ -102,11 +102,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 			}
 			r.UpdatePolicy = pol
 		}
-		fields, allocs, err := splitFields(m["fields"])
+		fields, allocs, tmpls, err := splitFields(m["fields"])
 		if err != nil {
 			return intentFile{}, fmt.Errorf("resource[%d] (%v): %w", i, m["id"], err)
 		}
-		r.Fields, r.Allocations = fields, allocs
+		r.Fields, r.Allocations, r.AllocationTemplates = fields, allocs, tmpls
 		if depRaw, ok := m["depends_on"].([]any); ok {
 			for _, d := range depRaw {
 				switch dep := d.(type) {
@@ -168,12 +168,14 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 
 // splitFields separates plain field values from allocation requests.  A field
 // whose value is the map { from_pool: <pool> } is an allocation request
-// (§19.1: "VLAN が1つ必要" without naming the ID); any other map value is
-// rejected rather than silently stringified.
-func splitFields(v any) (fields, allocs map[string]string, err error) {
+// (§19.1: "VLAN が1つ必要" without naming the ID); the request may also carry
+// template (the string the integer is written into, "192.0.2.{n}") and kind
+// (ipv4 / ipv6, checked against the pool's range at load time), #145.  Any
+// other map value is rejected rather than silently stringified.
+func splitFields(v any) (fields, allocs map[string]string, tmpls map[string]diff.AllocationTemplate, err error) {
 	m, ok := v.(map[string]any)
 	if !ok || len(m) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	for k, val := range m {
 		sub, isMap := val.(map[string]any)
@@ -185,15 +187,30 @@ func splitFields(v any) (fields, allocs map[string]string, err error) {
 			continue
 		}
 		pool, _ := sub["from_pool"].(string)
-		if len(sub) != 1 || strings.TrimSpace(pool) == "" {
-			return nil, nil, fmt.Errorf("field %q: a map value must be exactly { from_pool: <pool> } (allocation request, §19.1)", k)
+		if strings.TrimSpace(pool) == "" {
+			return nil, nil, nil, fmt.Errorf("field %q: a map value must be { from_pool: <pool> } (allocation request, §19.1), optionally with template / kind", k)
+		}
+		for key := range sub {
+			if key != "from_pool" && key != "template" && key != "kind" {
+				return nil, nil, nil, fmt.Errorf("field %q: unknown key %q in the allocation request (from_pool / template / kind, §19.1・§19.8)", k, key)
+			}
+		}
+		tmpl, err := parseAllocationTemplate(sub)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("field %q: %w", k, err)
 		}
 		if allocs == nil {
 			allocs = map[string]string{}
 		}
 		allocs[k] = strings.TrimSpace(pool)
+		if tmpl.Template != "" {
+			if tmpls == nil {
+				tmpls = map[string]diff.AllocationTemplate{}
+			}
+			tmpls[k] = tmpl
+		}
 	}
-	return fields, allocs, nil
+	return fields, allocs, tmpls, nil
 }
 
 // stringifyStringMap は map[string]any の各スカラー値を文字列へ寄せる。
@@ -280,6 +297,9 @@ type intentResource struct {
 	// Allocations maps a field to the pool it is allocated from — the
 	// `field: { from_pool: <pool> }` request form (§19.1).
 	Allocations map[string]string `json:"-"`
+	// AllocationTemplates maps an allocated field to its template / kind
+	// (#145).
+	AllocationTemplates map[string]diff.AllocationTemplate `json:"-"`
 
 	// UpdatePolicy is the update_policy (§6.2): strategy / window /
 	// rollback_on_fail.
@@ -635,14 +655,15 @@ func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 		}
 
 		resources = append(resources, diff.DesiredResource{
-			ID:              id,
-			Fields:          fields,
-			DependsOn:       dependsOn,
-			ReadyConditions: r.ReadyConditions,
-			DeletionPolicy:  parseDeletionPolicy(r.DeletionPolicy),
-			Allocations:     r.Allocations,
-			ObserveTier:     strings.TrimSpace(r.ObserveTier),
-			UpdatePolicy:    r.UpdatePolicy,
+			ID:                  id,
+			Fields:              fields,
+			DependsOn:           dependsOn,
+			ReadyConditions:     r.ReadyConditions,
+			DeletionPolicy:      parseDeletionPolicy(r.DeletionPolicy),
+			Allocations:         r.Allocations,
+			AllocationTemplates: r.AllocationTemplates,
+			ObserveTier:         strings.TrimSpace(r.ObserveTier),
+			UpdatePolicy:        r.UpdatePolicy,
 		})
 	}
 	return resources, intent, nil

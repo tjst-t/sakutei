@@ -74,6 +74,12 @@ type DesiredResource struct {
 	// AllocationAuthority for the value and writes it into Fields; until then
 	// the field is absent from Fields.  Nil when the resource requests nothing.
 	Allocations map[string]string
+	// AllocationTemplates maps an allocated field to the template its value is
+	// written through (intent: `field: { from_pool: <pool>, template:
+	// "192.0.2.{n}" }`, §19.8, #145).  Render phase 1 puts the template with
+	// {n} replaced by the allocated integer into Fields.  Nil when no request
+	// has a template.
+	AllocationTemplates map[string]AllocationTemplate
 	// ObserveTier names the Observe-frequency tier the resource belongs to
 	// (intent: `observe_tier: <name>`, declared under top-level
 	// `observe_tiers:`, §16.5).  Not the §8 DAG priority band (`tier:`).  Empty means
@@ -83,6 +89,15 @@ type DesiredResource struct {
 	// a diff never reaches Apply: the daemon launches a Task instead (§6.5).
 	// The zero value is the default Apply strategy.
 	UpdatePolicy core.UpdatePolicy
+}
+
+// AllocationTemplate is how an allocated integer is written into its field
+// (#145).  Template holds {n} at least once; Kind ("ipv4" / "ipv6", optional)
+// is the address family every value of the pool's range must render to,
+// checked at load time.
+type AllocationTemplate struct {
+	Template string
+	Kind     string
 }
 
 // Engine holds the provider schema used to drive the diff.
