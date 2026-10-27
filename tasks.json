@@ -3076,7 +3076,7 @@
       "number": 131,
       "kind": "task",
       "title": "通知の口：Event を webhook と Alertmanager に送る sink",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "1-sakutei-ssh-metrics-os",
       "dependsOn": [
         "remote-ssh-exec"
@@ -3090,7 +3090,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T11:27:28.338Z",
-      "updatedAt": "2026-10-27T11:27:28.338Z",
+      "updatedAt": "2026-10-27T12:56:14.374Z",
       "closedAt": null,
       "extra": {}
     },
