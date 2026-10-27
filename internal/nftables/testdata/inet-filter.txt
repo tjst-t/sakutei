@@ -1,0 +1,20 @@
+table inet filter { # handle 1
+	set allowed { # handle 4
+		type ipv4_addr
+		elements = { 10.0.0.1, 10.0.0.2 }
+	}
+
+	chain input { # handle 1
+		type filter hook input priority filter; policy drop;
+		jump web # handle 5
+	}
+
+	chain web { # handle 2
+		tcp dport { 80, 443 } ct state established,new counter accept comment "web # handle 99" # handle 7
+		ip saddr @allowed tcp dport 22 accept # handle 8
+		quota 10 mbytes accept # handle 9
+	}
+
+	chain empty { # handle 3
+	}
+}

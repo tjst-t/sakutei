@@ -23,6 +23,7 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 | --- | --- |
 | [providers/redfish.md](providers/redfish.md) | Redfish の BMC provider（`redfish-system`・`redfish-virtual-media`）。BMC の一覧（`--redfish-config`、パスワードは SecretRef）と intent の例。qemu-bmc + containerlab の統合テスト（`make integration-redfish`）の回し方と結果。 |
 | [providers/sqlmigrate.md](providers/sqlmigrate.md) | SQLite のマイグレーション provider（`sqlmigrate`、単純 Task 専用）。データベースの一覧（`--sqlmigrate-config`）、マイグレーションのファイル名の決まり、intent の例（`strategy: task`・`window`・`rollback_on_fail`）、plan・reconcile・常駐での動き方。 |
+| [providers/nftables.md](providers/nftables.md) | nftables provider（`nftables`）。対象 `file`（管理された ruleset ファイル）と `live`（カーネルの実際の ruleset を `nft` で読み・流す）の違い、設定（`--ruleset-target`・`--ruleset-tables`・`--ruleset-nft`・`--provider-config`）、権限（CAP_NET_ADMIN）、ルールの正規形。使い捨ての network namespace での統合テスト（`make integration-nftables`）の回し方と結果。 |
 | [../examples/external-provider/README.md](../examples/external-provider/README.md) | 外の provider を足す（§28.9）。Sakutei を Go のライブラリとして使い、`pkg/cli` の入口に自前の provider を登録した自前のバイナリを作る例と、provider ごとの設定ファイル（`--provider-config`）。 |
 | [status-json.md](status-json.md) | `sakutei status --json` の出力の形（schema_version 1）。要約・リソースごとの状態・宣言外の検出ができなかった provider。 |
 | [trial/redfish-os-install/README.md](trial/redfish-os-install/README.md) | Redfish と Workflow で OS を入れる手順（自動インストールの ISO は利用者が用意する）。intent と Workflow の例、試用の結果、限界。 |

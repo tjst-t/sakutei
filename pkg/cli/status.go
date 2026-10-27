@@ -108,6 +108,7 @@ Exit codes:
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	rulesetScope := rulesetScopeFlag(fs)
+	rulesetTarget := rulesetTargetFlag(fs)
 	// Fix Sc7a647 cause-consistency: status may READ an optional cause-state file
 	// to learn the previous cycle's revisions, so its cause tags AGREE with
 	// plan/reconcile (which read the same file).  status MUST stay READ-ONLY: it
@@ -145,6 +146,7 @@ Exit codes:
 	soaSerial := checkZoneSOASerial("sakutei status", *zoneSOASerial)
 	zScope := checkScope("sakutei status", "zone-scope", *zoneScope)
 	rScope := checkScope("sakutei status", "ruleset-scope", *rulesetScope)
+	rulesetTarget.check("sakutei status")
 	claimSelector, claimErr := parseClaimSelector(*claim)
 	if claimErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei status: invalid --claim %q: %v\n", *claim, claimErr)
@@ -228,6 +230,7 @@ Exit codes:
 		providerConfig["ruleset"] = *rulesetPath
 	}
 	providerConfig["ruleset_scope"] = rScope
+	rulesetTarget.put(providerConfig)
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei status")
 	if resolveErr != nil {
 		fmt.Fprintln(os.Stderr, resolveErr)

@@ -101,6 +101,7 @@ func runReconcile(args []string) {
 	zoneSOASerial := zoneSOASerialFlag(fs)
 	zoneScope := zoneScopeFlag(fs)
 	rulesetScope := rulesetScopeFlag(fs)
+	rulesetTarget := rulesetTargetFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
@@ -176,6 +177,7 @@ func runReconcile(args []string) {
 	soaSerial := checkZoneSOASerial("sakutei reconcile", *zoneSOASerial)
 	zScope := checkScope("sakutei reconcile", "zone-scope", *zoneScope)
 	rScope := checkScope("sakutei reconcile", "ruleset-scope", *rulesetScope)
+	rulesetTarget.check("sakutei reconcile")
 
 	if *intentDir == "" {
 		fmt.Fprintln(logErr, "sakutei reconcile: --intent <dir> is required")
@@ -411,6 +413,7 @@ func runReconcile(args []string) {
 	providerConfig["soa_serial"] = soaSerial
 	providerConfig["zone_scope"] = zScope
 	providerConfig["ruleset_scope"] = rScope
+	rulesetTarget.put(providerConfig)
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
 	}

@@ -24,7 +24,9 @@
 //   - stdlib only: strings による nftables サブセットの
 //     parse。`nft` バイナリは呼び出さない（offline/CI 検証可）。宣言する
 //     現実は「管理された ruleset ファイルそのもの」であり、Read は parse・
-//     Apply は atomic write を行う。
+//     Apply は atomic write を行う。カーネルの実際の ruleset を扱うのは
+//     live 版（LiveProvider、live.go、Backlog #121）で、Schema・identity・
+//     local id は共通。
 //   - resource = 1 つの chain。identity は {table, chain}。ルール列（rules）
 //     は `Ordered:true` の list フィールドで、順序そのものが意味を持つ。
 //     firewall の chain はルールの順序評価（先頭マッチ勝ち）なので、同じ
@@ -169,8 +171,14 @@ type Provider struct {
 	scope core.Scope
 }
 
-// Option configures optional Provider behavior at construction time.
-type Option func(*Provider)
+// Option configures optional Provider / LiveProvider behavior at construction
+// time.
+type Option func(*settings)
+
+// settings は Option が設定する値（file 版と live 版で共通）。
+type settings struct {
+	scope core.Scope
+}
 
 // WithScope sets the fixed scope that List and BulkObserve tag every
 // returned ID with（既定は root scope = core.NewScope(nil)）。
@@ -187,17 +195,17 @@ type Option func(*Provider)
 //     正しく数えられる（root scope 固定だった旧挙動は scope がズレて
 //     数え落としていた）。
 func WithScope(scope core.Scope) Option {
-	return func(p *Provider) { p.scope = scope }
+	return func(s *settings) { s.scope = scope }
 }
 
 // New creates a new nftables Provider backed by the ruleset file at path.
 // ファイルはまだ存在しなくてよい（Apply が作成する）。
 func New(rulesetPath string, opts ...Option) *Provider {
-	p := &Provider{rulesetPath: rulesetPath}
+	var s settings
 	for _, opt := range opts {
-		opt(p)
+		opt(&s)
 	}
-	return p
+	return &Provider{rulesetPath: rulesetPath, scope: s.scope}
 }
 
 // Schema returns the field declarations for a firewall chain.

@@ -16,6 +16,7 @@ package registry
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
@@ -47,6 +48,10 @@ import (
 //     defaults to "sakutei-nftables.rules".  Manages regular chains whose
 //     `rules` field is an ORDERED list (reordering is a diff); base chains
 //     (type/hook/policy) are excluded (management boundary, §27 FW〈順序付き〉).
+//     config["ruleset_target"] is "file" (default: the ruleset file above) or
+//     "live" (the kernel's ruleset through nft, nftables.NewLive, Backlog #121):
+//     then config["ruleset_tables"] ("<family>/<name>,...", required) names the
+//     tables to manage and config["ruleset_nft"] the nft binary (default "nft").
 func DefaultRegistry() *ProviderRegistry {
 	r := New()
 
@@ -107,6 +112,22 @@ func DefaultRegistry() *ProviderRegistry {
 		scope, err := core.ParseScope(config["ruleset_scope"])
 		if err != nil {
 			return nil, err
+		}
+		switch config["ruleset_target"] {
+		case "", nftables.TargetFile:
+		case nftables.TargetLive:
+			// Backlog #121: the kernel's ruleset.  --ruleset / --state are not
+			// used; the tables to manage are never guessed.
+			if config["ruleset_tables"] == "" {
+				return nil, errors.New("nftables: ruleset_target live needs the tables to manage: pass --ruleset-tables <family>/<name>,... (or ruleset_tables in --provider-config)")
+			}
+			tables, err := nftables.ParseTables(config["ruleset_tables"])
+			if err != nil {
+				return nil, fmt.Errorf("nftables: ruleset_tables: %w", err)
+			}
+			return nftables.NewLive(nftables.LiveConfig{NFT: config["ruleset_nft"], Tables: tables}, nftables.WithScope(scope))
+		default:
+			return nil, fmt.Errorf("nftables: ruleset_target %q: want file or live", config["ruleset_target"])
 		}
 		return nftables.New(rulesetPath, nftables.WithScope(scope)), nil
 	})

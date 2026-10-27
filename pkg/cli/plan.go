@@ -77,6 +77,7 @@ func runPlan(args []string) {
 	zoneSOASerial := zoneSOASerialFlag(fs)
 	zoneScope := zoneScopeFlag(fs)
 	rulesetScope := rulesetScopeFlag(fs)
+	rulesetTarget := rulesetTargetFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
@@ -134,6 +135,7 @@ func runPlan(args []string) {
 	soaSerial := checkZoneSOASerial("sakutei plan", *zoneSOASerial)
 	zScope := checkScope("sakutei plan", "zone-scope", *zoneScope)
 	rScope := checkScope("sakutei plan", "ruleset-scope", *rulesetScope)
+	rulesetTarget.check("sakutei plan")
 
 	if *intentDir == "" {
 		fmt.Fprintln(logErr, "sakutei plan: --intent <dir> is required")
@@ -318,6 +320,7 @@ func runPlan(args []string) {
 	providerConfig["soa_serial"] = soaSerial
 	providerConfig["zone_scope"] = zScope
 	providerConfig["ruleset_scope"] = rScope
+	rulesetTarget.put(providerConfig)
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
 	}

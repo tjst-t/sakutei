@@ -133,6 +133,9 @@ func Main(opts ...Option) {
 //	--state  <file>      path to the fake provider state file (default: sakutei-fake-state.json)
 //	--zone   <file>      path to the dnszone provider zone file (default: falls back to --state)
 //	--ruleset <file>     path to the nftables provider ruleset file (default: falls back to --state)
+//	--ruleset-target file|live  nftables: the ruleset file, or the kernel's ruleset through nft (Backlog #121)
+//	--ruleset-tables <list>  nftables (live): tables to manage, <family>/<name>,... (required for live)
+//	--ruleset-nft <path>   nftables (live): nft binary (default: nft)
 //	--redfish-config <file>  BMC list of the Redfish providers (address, username, password SecretRef, §29.1)
 //	--sqlmigrate-config <file>  database list of the sqlmigrate provider (path, migrations, sqlite3, §29.1)
 //	--interval <dur>     convergence cycle period (default: 10s; use short values in tests)
@@ -174,6 +177,7 @@ func runDaemon() {
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	rulesetScope := rulesetScopeFlag(fs)
+	rulesetTarget := rulesetTargetFlag(fs)
 	intervalStr := fs.String("interval", "",
 		"convergence cycle interval, e.g. 200ms or 30s (default: 10s)")
 	// S072a14-3: render pipeline flags for the daemon.
@@ -258,6 +262,7 @@ func runDaemon() {
 	soaSerial := checkZoneSOASerial("sakutei", *zoneSOASerial)
 	zScope := checkScope("sakutei", "zone-scope", *zoneScope)
 	rScope := checkScope("sakutei", "ruleset-scope", *rulesetScope)
+	rulesetTarget.check("sakutei")
 
 	src := setupGitDist(gd, *intentDir, *claim, *allocStore)
 	if src == nil && *intentDir == "" {
@@ -349,6 +354,7 @@ func runDaemon() {
 	providerConfig["soa_serial"] = soaSerial
 	providerConfig["zone_scope"] = zScope
 	providerConfig["ruleset_scope"] = rScope
+	rulesetTarget.put(providerConfig)
 	if *redfishConfig != "" {
 		providerConfig["redfish_config"] = *redfishConfig
 	}

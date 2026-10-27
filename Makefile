@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check demo clean integration-redfish
+.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -34,6 +34,16 @@ integration-redfish:
 	  sudo -n containerlab destroy --name sakutei-rf84 --cleanup || status=1; \
 	fi; \
 	exit $$status
+
+# nftables の live 版の統合テスト（#121）。本物の nft を `sudo -n unshare -n` の
+# 使い捨ての network namespace の中で回す（ホストの FW には触れない。namespace は
+# テストが終われば消える）。nft・unshare・nsenter と sudo（パスワードなし）が要る
+# ので、check・test・CI には入れない。手順と結果は docs/providers/nftables.md の
+# 「統合テスト」。
+NFTABLES_IT := ./tests/integration/nftables/
+integration-nftables:
+	go vet -tags integration_nftables $(NFTABLES_IT)
+	go test -tags integration_nftables -count=1 -v -timeout 10m $(NFTABLES_IT)
 
 clean:
 	rm -rf $(BIN) $(DEMODIR)

@@ -35,6 +35,7 @@ import (
 
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/dnszone"
+	"github.com/tjst-t/sakutei/internal/nftables"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 	"github.com/tjst-t/sakutei/pkg/sdk"
@@ -127,6 +128,52 @@ func zoneScopeFlag(fs *flag.FlagSet) *string {
 func rulesetScopeFlag(fs *flag.FlagSet) *string {
 	return fs.String("ruleset-scope", "",
 		"nftables: fixed scope to tag every id this provider instance's List/BulkObserve return with (key=value,... ; default: root scope)")
+}
+
+// rulesetTargetFlags are the nftables provider's target settings (Backlog
+// #121): --ruleset-target file|live, and for live --ruleset-tables (the tables
+// to manage) and --ruleset-nft (the nft binary).  The same keys can be given in
+// --provider-config (ruleset_target, ruleset_tables, ruleset_nft).
+type rulesetTargetFlags struct {
+	target, tables, nft *string
+}
+
+func rulesetTargetFlag(fs *flag.FlagSet) rulesetTargetFlags {
+	return rulesetTargetFlags{
+		target: fs.String("ruleset-target", nftables.TargetFile,
+			"nftables: what the provider converges: file (the --ruleset file) | live (the kernel's ruleset through nft; needs CAP_NET_ADMIN)"),
+		tables: fs.String("ruleset-tables", "",
+			"nftables (live): the tables to manage, <family>/<name>,... (required for live; other tables are never touched)"),
+		nft: fs.String("ruleset-nft", "",
+			"nftables (live): path to the nft binary (default: nft)"),
+	}
+}
+
+// check validates the flags at startup and exits 1 on a bad value.
+func (f rulesetTargetFlags) check(commandName string) {
+	switch *f.target {
+	case nftables.TargetFile, nftables.TargetLive:
+	default:
+		fmt.Fprintf(os.Stderr, "%s: --ruleset-target: %q: want file or live\n", commandName, *f.target)
+		os.Exit(1)
+	}
+	if *f.tables != "" {
+		if _, err := nftables.ParseTables(*f.tables); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: --ruleset-tables: %v\n", commandName, err)
+			os.Exit(1)
+		}
+	}
+}
+
+// put adds the flags to the provider config.
+func (f rulesetTargetFlags) put(cfg map[string]string) {
+	cfg["ruleset_target"] = *f.target
+	if *f.tables != "" {
+		cfg["ruleset_tables"] = *f.tables
+	}
+	if *f.nft != "" {
+		cfg["ruleset_nft"] = *f.nft
+	}
 }
 
 // checkScope validates a --zone-scope/--ruleset-scope value at startup and
