@@ -2890,7 +2890,7 @@
       "number": 123,
       "kind": "task",
       "title": "s3-bucket の統合試験：SeaweedFS を必須、MinIO は取れなければ飛ばす任意、イメージを tag と digest で固定",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "w2-fw-nftables-s3",
       "dependsOn": [
         "w2-s3-bucket"
@@ -2904,7 +2904,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T10:00:32.646Z",
-      "updatedAt": "2026-10-27T10:00:32.646Z",
+      "updatedAt": "2026-10-27T10:10:26.900Z",
       "closedAt": null,
       "extra": {}
     }
