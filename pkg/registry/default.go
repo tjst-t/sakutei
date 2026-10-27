@@ -28,6 +28,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/netconf"
 	"github.com/tjst-t/sakutei/v2/internal/nftables"
 	"github.com/tjst-t/sakutei/v2/internal/postgresql"
+	"github.com/tjst-t/sakutei/v2/internal/proxmox"
 	"github.com/tjst-t/sakutei/v2/internal/redfish"
 	"github.com/tjst-t/sakutei/v2/internal/redfish/bmcconfig"
 	"github.com/tjst-t/sakutei/v2/internal/redfish/system"
@@ -93,6 +94,11 @@ import (
 //     answer files of an automated OS install (Backlog #139).  Minimal tier:
 //     observed by comparing the file with the template rendered from the
 //     desired.
+//
+//   - "proxmox-vm": the VMs of Proxmox VE clusters through the REST API
+//     (Backlog #143).  config["proxmox_config"] is the cluster list
+//     (proxmox.LoadConfig: endpoint, API token id and its secret as a
+//     SecretRef, default node, scope, the VMs never to touch).
 func DefaultRegistry() *ProviderRegistry {
 	r := New()
 
@@ -340,6 +346,17 @@ func DefaultRegistry() *ProviderRegistry {
 	// config["template_dir"] は雛形の置き場、config["output_dir"] は書き出す先。
 	r.Register(templatefile.Name, func(config map[string]string) (provider.Provider, error) {
 		return templatefile.New(config["template_dir"], config["output_dir"])
+	})
+
+	// "proxmox-vm" — Proxmox VE の VM（§29.1、#143）。config["proxmox_config"] は
+	// クラスタの一覧（--provider-config の proxmox-vm の proxmox_config）。--state
+	// は代わりにならない（endpoint と資格は推測しない）。
+	r.Register(proxmox.Name, func(config map[string]string) (provider.Provider, error) {
+		path := config["proxmox_config"]
+		if path == "" {
+			return nil, errors.New("proxmox-vm: the cluster list is not set: proxmox_config in --provider-config")
+		}
+		return proxmox.NewFromConfig(path)
 	})
 
 	return r

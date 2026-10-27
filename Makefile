@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -196,6 +196,20 @@ integration-ldap:
 	  sudo -n docker network rm sakutei-ldapit-net >/dev/null || status=1; \
 	fi; \
 	exit $$status
+
+# proxmox-vm provider の統合テスト（#143）。本物の Proxmox VE 9.2（ISO は版と
+# sha256 で固定）を proxmox-auto-install-assistant（docker の debian:trixie-slim、
+# digest で固定）で自動導入の ISO にし、qemu（入れ子の KVM）で入れて動かす。
+# sakutei の CLI からテンプレートの複製・手の変更の書き戻し・pending・触らない
+# VM・届かないときの unknown・削除を確かめ、終われば（落ちても）qemu を止める。
+# KVM・qemu・docker・curl と sudo（パスワードなし）、初回は ISO を取るネット
+# ワークが要る（ISO・自動導入の ISO・導入済みのディスクは SAKUTEI_IT_CACHE、既定
+# ~/.cache/sakutei-it/proxmox に残して使い回す）。check・test・CI には入れない。
+# 手順と結果は docs/providers/proxmox-vm.md の「統合テスト」。
+PROXMOX_IT := ./tests/integration/proxmox/
+integration-proxmox:
+	go vet -tags integration_proxmox $(PROXMOX_IT)
+	go test -tags integration_proxmox -count=1 -v -timeout 60m $(PROXMOX_IT)
 
 clean:
 	rm -rf $(BIN) $(DEMODIR)
