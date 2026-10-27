@@ -1,45 +1,64 @@
 # Redfish と Workflow で OS を入れる（自動インストールの ISO は利用者が用意する）
 
 Redfish の BMC provider（[docs/providers/redfish.md](../../providers/redfish.md)）と最小 Workflow（§6.3、`internal/workflow`）を組み合わせて、
-「CD に ISO を差す → 差さったことを確かめる → CD から起動 → インストーラが電源を切るのを待つ → ディスクから起動 → 入れた OS が目印つきで起動したのを確かめる」を 1 台に回す手順。2026-10-22 に qemu-bmc 0.9.0 で試した。
-最後の確かめ（ゲスト OS の観測、[guest-os provider](../../providers/guest-os.md)）は Backlog #86 で足した。同じ形を `make integration-guestos`（qemu-bmc 0.10.0 を 3 台、成功・失敗する ISO）で確かめている。
+「CD に ISO を差す → 差さったことを確かめる → **次の 1 回だけ** CD から起動 → 再起動 → インストーラが電源を切るのを待つ → 電源を入れる（ディスクから起動）→ 入れた OS が目印つきで起動したのを確かめる → CD を抜く」を 1 台に回す手順。2026-10-22 に qemu-bmc 0.9.0 で試した。
+最後の確かめ（ゲスト OS の観測、[guest-os provider](../../providers/guest-os.md)）は Backlog #86 で、一度きりの操作（1 回だけ CD から起動・再起動、Workflow の `action` 手順）と
+**自動導入の応答ファイルを宣言から作る**（[template-file provider](../../providers/template-file.md)）は Backlog #139 で足した。同じ形を `make integration-guestos`（qemu-bmc 0.10.0 を 3 台、成功・失敗する導入）で確かめている。
 
 ## 線引き：何を Sakutei がして、何を利用者が用意するか
 
-インストーラそのもの（自動インストールの ISO・PXE・kickstart / autoinstall / preseed の設定）は **Sakutei の責務の外**（設計 §29.3 (c)：provisioner 実体は持たない）。
-Sakutei は BMC の「あるべき姿」と、その順番だけを扱う。
+インストーラそのもの（自動インストールの ISO・PXE・kickstart / autoinstall / preseed の仕組み）は **Sakutei の責務の外**（設計 §29.3 (c)：provisioner 実体は持たない）。
+Sakutei は BMC の「あるべき姿」と、その順番と、台ごとの応答ファイルの中身だけを扱う。
 
 | Sakutei がする | 利用者が用意する |
 |---|---|
-| CD に ISO を差しておく（`redfish-virtual-media`） | **人の手を介さずに入れて、終わったら電源を切る ISO**（BMC から見えるパスか URL に置く） |
-| CD 起動にして電源を入れ、電源が切れるのを待ち、起動先の上書きを外して電源を入れる（Workflow + `redfish-system`） | BMC の一覧（`--redfish-config`）とパスワードの file SecretBackend |
-| 入れた OS が目印つきで起動したかを ssh で観測し、確かめるまで先へ進まない（`guest-os`） | 入れた OS に sshd・Sakutei の鍵・**導入の目印**（ファイル）を置くこと（ISO の仕事） |
-| 終わったあとの姿（電源オン・上書きなし）を毎周保つ | |
+| CD に ISO を差しておく（`redfish-virtual-media`） | **人の手を介さずに入れて、終わったら電源を切る ISO**（BMC から見えるパスか URL に置く）。応答ファイルを取りに行く口を持つもの |
+| 次の 1 回だけ CD から起動し、再起動し、電源が切れるのを待って電源を入れる（Workflow の `action`・`apply`・`wait` + `redfish-system`） | BMC の一覧（`--redfish-config`）とパスワードの file SecretBackend |
+| 台ごとの**応答ファイル**（ホスト名・アドレス・Sakutei の ssh の公開鍵・導入の目印）を、利用者の雛形から宣言どおりに書き出し、保つ（`template-file`） | 応答ファイルの**雛形**（OS の種類ごと。text/template）と、書き出した置き場をインストーラに届ける手段（HTTP で配る・ISO に入れる） |
+| 入れた OS が目印つきで起動したかを ssh で観測し、確かめるまで先へ進まない（`guest-os`） | 入れた OS に sshd・Sakutei の鍵・**導入の目印**（ファイル）を置くこと（インストーラの仕事。値は応答ファイルから） |
+| 終わったあとの姿（電源オン・上書きなし・CD は空）を毎周保つ | |
 
-ISO が満たすべき約束は 2 つ：**入れ終わったら電源を切る**（再起動しない）と、**入れた OS に目印を置き、ssh で読めるようにする**。Workflow は電源オフを「インストーラが終わった」の合図にし、目印の観測を「導入が済んだ」の合図にする（インストーラが失敗しても電源を切る ISO を、電源オフだけで成功と見なさない）。
+ISO が満たすべき約束は 3 つ：**応答ファイルを取って、その値で入れる**、**入れ終わったら電源を切る**（下の「なぜ電源を切るのか」）、**入れた OS に目印を置き、ssh で読めるようにする**。
+Workflow は電源オフを「インストーラが終わった」の合図にし、目印の観測を「導入が済んだ」の合図にする（インストーラが失敗しても電源を切る ISO を、電源オフだけで成功と見なさない）。
+
+**なぜ電源を切るのか**：起動先の上書き Once は BMC が「次の 1 回の起動」で使い切る。実機ではインストーラが再起動すればそのままディスクから起動するので、手順の 5・6（電源オフを待つ・電源を入れる）は要らない。
+ただし qemu-bmc は Once を QEMU を立ち上げるとき（電源 On）に使い切り、ゲストの中からの再起動では QEMU の起動順が変わらない（もう一度 CD から起動する）。試用と統合テストでは、インストーラが電源を切り、手順 6 で電源を入れ直す形にしている。
 
 ## 置いてあるもの（docs/trial/redfish-os-install/）
 
 | ファイル | 中身 |
 |---|---|
-| `intent/os.yaml` | 最終形の宣言と Workflow `os-install`（下の「intent」）。loader で読めることを `internal/loader` のテスト `TestRedfishOSInstallTrialIntentLoads` が確かめる |
-| `topology.clab.yml` | qemu-bmc 0.9.0 を 1 台（`VM_DISK_SIZE` 2G・`VM_MEMORY` 512）。BMC は `172.31.85.11`、入れた OS の ssh は QEMU の user ネットの hostfwd で `172.31.85.11:2222` |
+| `intent/os.yaml` | 最終形の宣言・応答ファイルの宣言と Workflow `os-install`（下の「intent」）。loader で読めることを `internal/loader` のテスト `TestRedfishOSInstallTrialIntentLoads` が確かめる |
+| `templates/alpine-answers.sh.tmpl` | Alpine の自動導入の**応答ファイルの雛形**（text/template。`autoinstall.start` が sh で読む形）。`template-file` が値を入れて `answers/<UUID>` に書き出す。単体・受け入れ・統合のテストもこの雛形を使う |
+| `topology.clab.yml` | qemu-bmc 0.10.0 を 1 台（`VM_DISK_SIZE` 2G・`VM_MEMORY` 512、`SYSTEM_UUID` は応答ファイルの ID）。BMC は `172.31.85.11`、入れた OS の ssh は QEMU の user ネットの hostfwd で `172.31.85.11:2222` |
 | `bmcs.yaml` | BMC の一覧（`insecure_skip_verify: true`、パスワードは SecretRef `file/bmc/node1`） |
-| `hosts.yaml` / `providers.yaml` | 入れた OS を観測する `guest-os` の対象の一覧（鍵は SecretRef `file/ssh/node1`、known_hosts）と `--provider-config` |
+| `hosts.yaml` / `providers.yaml` | 入れた OS を観測する `guest-os` の対象の一覧（鍵は SecretRef `file/ssh/node1`、known_hosts）と `--provider-config`（`guest-os` の目印・`template-file` の雛形と書き出す先） |
 | `make-iso.sh` / `autoinstall.start` | Alpine 3.24 の virt ISO を自動インストールの ISO に作り直すスクリプト（試用で使ったもの。下の「ISO を作る」） |
 
 **`make-iso.sh` と `autoinstall.start` は試用のための補助で、Sakutei の一部ではない。** リポジトリの「Go の標準ライブラリだけ（外部依存なし）」の決まりは Go のコードの話で、
 この docs の下のシェルはその外にある（curl・xorriso・docker を使い、ネットワークから ISO とパッケージを取る）。`make check`・`make test`・CI からは呼ばない。
 
+## 応答ファイル（template-file、#139）
+
+台ごとに違う値（ホスト名・アドレス・Sakutei の ssh の公開鍵・導入の目印）は ISO に焼かず、宣言から**応答ファイル**を作ってインストーラに取りに来させる。ISO は何台にも使える 1 つでよい。
+
+- 宣言は `template-file` のリソース（下の intent の 3 つ目）。ID は書き出す先（`output_dir`）からの相対パスで、ここでは台の UUID（インストーラが DMI の UUID で引けるように）。
+- 雛形は `templates/alpine-answers.sh.tmpl`。`.Hostname`・`.Address`・`.SSHAuthorizedKeys`・`.InstallMark`・`.Vars.<名前>`（宣言の `var.<名前>`）を使い、`shquote` で sh の値にする。
+  ほかの OS なら、その OS の応答ファイル（kickstart・cloud-init の user-data・preseed など）の雛形を書けばよい。
+- **秘密は書き出さない**：値に SecretRef や秘密鍵を書くと読み込みの時点で断る。書くのは公開鍵だけ。入れる OS のホスト鍵（秘密鍵）は応答ファイルでなく ISO に入れている（`SSH_HOST_KEY`）。
+- 書き出したファイルは収束ループが毎周確かめ、手で直されたり雛形が変わったりすれば書き直す。インストーラに届けるのは利用者の側で、試用では `answers/` を HTTP で配る（下の「回し方」）。
+- `autoinstall.start` は `ANSWER_URL`（`{uuid}` は DMI の UUID に置き換わる）から応答ファイルを取り、`HOSTNAME`（入れた OS の `/etc/hostname`）・`ADDRESS` と `GATEWAY`（eth0 の静的なアドレス）・
+  `SSH_AUTHORIZED_KEYS`（root の鍵、sshd を動かす）・`MARK`（目印）で入れる。取れなければ（2 分）電源を切らずに止まる（Workflow は手順 5 の `timeout` で halt）。
+
 ## ISO を作る（試用の例：Alpine 3.24）
 
-実機や別のディストリビューションでは、それぞれの自動インストールの仕組み（kickstart・autoinstall・preseed など）で「入れて電源を切る」ISO を用意すればよい。
+実機や別のディストリビューションでは、それぞれの自動インストールの仕組み（kickstart・autoinstall・preseed など）で「応答ファイルを取って入れ、電源を切る」ISO を用意すればよい。
 試用では Alpine 3.24.3 の virt ISO（`alpine-virt-3.24.3-x86_64.iso`）を次のように作り直した。
 
 1. **apkovl**（`localhost.apkovl.tar.gz` を ISO のルートに置くと、live 環境の `/etc` に重なる）に `/etc/local.d/autoinstall.start` を入れ、
-   `default` の runlevel で `local` を動かす。スクリプトは `setup-alpine -e -f <回答>` のあと `ERASE_DISKS=/dev/vda setup-disk -m sys -s 0 /dev/vda` で入れ、
-   入れた OS に目印（`/etc/sakutei-installed`、中身は `INSTALL_MARK`）と起動時にシリアルへ出す `hello.start` を置いて `poweroff` する。失敗したときは電源を切らずに止まる。
-   `SSH_AUTHORIZED_KEYS` を渡すと、入れた OS に openssh を入れて sshd を動かし（eth0 は DHCP）、root にその鍵で入れるようにする。`SSH_HOST_KEY` を渡すとそれをホスト鍵にする（known_hosts を前もって書ける）。
+   `default` の runlevel で `local` を動かす。スクリプトは `ANSWER_URL` があれば eth0 を DHCP で上げて応答ファイルを取り、`setup-alpine -e -f <回答>` のあと `ERASE_DISKS=/dev/vda setup-disk -m sys -s 0 /dev/vda` で入れ、
+   入れた OS に目印（`/etc/sakutei-installed`、中身は応答ファイルの `MARK`）と起動時にシリアルへ出す `hello.start` を置いて `poweroff` する。失敗したときは電源を切らずに止まる。
+   公開鍵（応答ファイルの `SSH_AUTHORIZED_KEYS`、または `make-iso.sh` の `SSH_AUTHORIZED_KEYS`）があれば、入れた OS に openssh を入れて sshd を動かし、root にその鍵で入れるようにする。`SSH_HOST_KEY` を渡すとそれをホスト鍵にする（known_hosts を前もって書ける）。
 2. **apkovl を使うときは runlevel を自分で全部書く**。既定の runlevel が入らないので、`sysinit` に `modloop` を入れる（devfs・dmesg・mdev・hwdrivers・modloop）。
    入れ忘れるとカーネルのモジュールが使えず、インストールが通らない。
 3. **Alpine の virt ISO にはカーネルのパッケージが無い**。`setup-disk -m sys` はディスクに `linux-virt` を入れるので、`linux-virt`・`syslinux`・`mkinitfs`・`e2fsprogs`・`sfdisk` などと
@@ -51,17 +70,19 @@ ISO が満たすべき約束は 2 つ：**入れ終わったら電源を切る**
 ```sh
 # curl・xorriso・GNU tar・docker（alpine:3.24 で apk fetch）が要る。sudo が要るなら DOCKER="sudo docker"
 W=/tmp/sakutei-os; mkdir -p $W/iso
-ssh-keygen -q -t ed25519 -N '' -f $W/node1-key        # Sakutei が入る鍵
-ssh-keygen -q -t ed25519 -N '' -f $W/node1-hostkey    # 入れる OS のホスト鍵
-INSTALL_MARK=sakutei-trial-1 SSH_AUTHORIZED_KEYS=$W/node1-key.pub SSH_HOST_KEY=$W/node1-hostkey \
+ssh-keygen -q -t ed25519 -N '' -f $W/node1-key        # Sakutei が入る鍵（公開鍵は応答ファイルへ）
+ssh-keygen -q -t ed25519 -N '' -f $W/node1-hostkey    # 入れる OS のホスト鍵（秘密なので ISO に入れる）
+ANSWER_URL='http://172.31.85.1:8080/{uuid}' SSH_HOST_KEY=$W/node1-hostkey \
   docs/trial/redfish-os-install/make-iso.sh $W/iso/sakutei-autoinstall.iso
 # 手元の ISO を使うなら ALPINE_ISO=/path/to/alpine-virt-3.24.3-x86_64.iso、取ったものを残すなら CACHE_DIR=<dir> を足す
 ```
 
-`INSTALL_MARK` は intent の手順 6 の `marker.installed` と同じ値にする。**導入ごとに変える**（入れ直すときは ISO を作り直して intent の値も変える）と、前の導入で入った OS を取り違えない。
-`AUTOINSTALL_FAIL=disk`（何も入れずに電源を切る）・`AUTOINSTALL_FAIL=marker`（入れるが目印を置かない）は失敗の試し用（`make integration-guestos` が使う）。
+`ANSWER_URL` の `172.31.85.1` は lab のネットワーク（`topology.clab.yml` の `172.31.85.0/24`）のゲートウェイ＝ホスト。インストーラは QEMU の user ネットから外へ出て、ホストの HTTP に届く。
+応答ファイルの `install_mark`（目印）は intent の手順 7 の `marker.installed` と同じ値にする。**導入ごとに変える**（入れ直すときは intent の両方の値を変える。ISO は作り直さなくてよい）と、前の導入で入った OS を取り違えない。
+応答ファイルの `var.fail: disk`（何も入れずに電源を切る）・`var.fail: marker`（入れるが目印を置かない）は失敗の試し用（`make integration-guestos` が使う）。`ANSWER_URL` を渡さなければ、
+前のとおり `INSTALL_MARK`・`SSH_AUTHORIZED_KEYS`・`AUTOINSTALL_FAIL` で値を ISO に焼ける（台ごとに ISO を作る）。
 
-BMC を通さずに ISO だけを確かめるなら、qemu で直に回せる（2026-10-23、インストールして電源が切れるまで約 40 秒、そのあとディスクから起動して目印が出た）。
+BMC を通さずに ISO だけを確かめるなら、qemu で直に回せる（2026-10-23、インストールして電源が切れるまで約 40 秒、そのあとディスクから起動して目印が出た。`ANSWER_URL` なしで作った ISO で）。
 
 ```sh
 qemu-img create -f qcow2 d.qcow2 2G
@@ -73,7 +94,7 @@ qemu-system-x86_64 -accel kvm -m 512 -drive file=d.qcow2,if=virtio -boot c \
 
 ## intent
 
-`intent/os.yaml`（YAML はブロックスタイルで書く。`{ … }` / `[ … ]` のフロースタイルは loader が読まない）。
+`intent/os.yaml`（YAML はブロックスタイルで書く。`{ … }` / `[ … ]` のフロースタイルは loader が読まない）。`ssh_authorized_keys` は `$W/node1-key.pub` の中身に置き換える。
 
 ```yaml
 resources:
@@ -88,6 +109,18 @@ resources:
     id: node1/cd
     fields:
       image: ""
+  # 自動導入の応答ファイル（#139）。雛形 templates/alpine-answers.sh.tmpl に値を入れて
+  # answers/<UUID> に書き出す（UUID は topology.clab.yml の SYSTEM_UUID。インストーラが
+  # DMI の UUID で引く）。公開の値だけを書く（秘密鍵は書けない）
+  - provider: template-file
+    id: 6f1b7c52-0e1a-4d2b-9c11-000000008501
+    fields:
+      template: alpine-answers.sh.tmpl
+      hostname: node1
+      address: 10.0.2.15/24
+      var.gateway: 10.0.2.2
+      ssh_authorized_keys: ssh-ed25519 REPLACE-WITH-node1-key.pub sakutei
+      install_mark: sakutei-trial-1
 
 workflows:
   - workflow: os-install
@@ -112,56 +145,68 @@ workflows:
           fields:
             image: /iso/sakutei-autoinstall.iso
           timeout: 5m
-      # 3. CD から起動する（インストーラが走る）
-      - apply:
-          boot_enabled: Continuous
-          boot_target: Cd
-          power: "On"
-      # 4. インストーラが終わって電源を切るのを待つ
+      # 3. 次の 1 回だけ CD から起動する（#139。起動先の上書き Once。BMC が次の起動で戻す）
+      - action:
+          op: boot_once
+          args:
+            target: Cd
+      # 4. 再起動する（既定 GracefulRestart。電源が切れていれば電源 On）。インストーラが走る
+      - action:
+          op: reset
+      # 5. インストーラが終わって電源を切るのを待つ
       - wait:
           fields:
             power: "Off"
           timeout: 15m
-      # 5. ディスクから起動する
+      # 6. 電源を入れる（上書きは使い切ったので、ディスクから起動する）
       - apply:
-          boot_enabled: Disabled
           power: "On"
-      # 6. 入れた OS が目印つきで起動したのを待つ（#86。電源が切れただけでは成功と見なさない）。
-      #    guest-os provider が ssh で /etc/os-release と目印（/etc/sakutei-installed）を読む。
-      #    目印の値は make-iso.sh の INSTALL_MARK（導入ごとに変える）。届かない・目印が違うまま
-      #    10 分過ぎたら halt（インストーラの失敗）
-      - wait:
+      # 7. 入れた OS が目印つきで起動したのを確かめる（#86。電源が切れただけでは成功と
+      #    見なさない）。guest-os provider が ssh で /etc/os-release と目印を読む。目印の値は
+      #    応答ファイルの install_mark（導入ごとに変える）、hostname は応答ファイルのホスト名。
+      #    届かない・目印が違うまま 10 分過ぎたら halt（インストーラの失敗）
+      - require:
           resource: guest-os/{target}
           fields:
             os_id: alpine
             marker.installed: sakutei-trial-1
+            marker.hostname: node1
           timeout: 10m
+      # 8. CD を抜く
+      - apply:
+          resource: redfish-virtual-media/{target}/cd
+          fields:
+            image: ""
 ```
 
 読み方：
 
-- `resources` は**終わったあとの姿**。Workflow が走っている間（done になるまで）、対象の `node1` と手順が触る CD（`node1/cd`）は収束ループが Apply しない（Workflow に任せる、§6.3）。
-  done になると収束に戻り、`node1` は最終形と同じなので何もせず、CD は宣言どおり抜く。以後、手で電源を切られても次の周に On に戻す。
+- `resources` の 1・2 つ目は**終わったあとの姿**。Workflow が走っている間（done になるまで）、対象の `node1` と手順が触る CD（`node1/cd`）は収束ループが Apply しない（Workflow に任せる、§6.3）。
+  done になると収束に戻り、`node1` は最終形と同じなので何もしない（起動先の上書きは Once を BMC が使い切っているので、`boot_enabled: Disabled` の宣言はもう満たされている）。以後、手で電源を切られても次の周に On に戻す。
+- 3 つ目の `template-file` は応答ファイル。Workflow の対象ではないので、収束ループが最初の周に書き出す（インストーラが取りに来るのは CD から起動したあと）。
 - 手順 1・2 は別の provider（`redfish-virtual-media`）の CD を触る（`resource: <provider>/<id>`、`{target}` は今の対象のノード名、Backlog #87）。
-  手順 2 の `require` は前提条件で、CD が差さったと観測できるまで手順 3（電源オン）に進まない。BMC が ISO を取りに行けないなどで `timeout`（5m）を過ぎると halt。
-- 手順 3 は電源が **Off から**始まる前提（qemu-bmc は `POWER_ON_AT_START` の既定で Off）。電源が入ったままの台に回すと、起動先を変えるだけで再起動はしない
-  （再起動は宣言できない、§29.1）ので、手順 4 の待ちが `timeout` で切れて halt する。
-- `wait` の `timeout`（15m）を過ぎると on_failure の halt。インストーラが失敗して電源を切らないとき（`autoinstall.start` は失敗すると切らずに止まる）もこれで止まる。
-- 手順 6 は入れた OS を ssh で観測する（`guest-os/{target}`、`providers.yaml` の `guest_hosts` の名前がノード名と同じ）。電源が切れただけでは先へ進まず、`os_id: alpine` と今回の目印が見えるまで待つ。
-  起動しない（ディスクに何も入っていない）・sshd が上がらない間は観測できない（unknown）まま待ち、目印が違う・無い間も待ち、どちらも `timeout`（10m）で halt。
-  「まだ起動していない」と「壊れた」は観測からは見分けられないので、timeout は入れた OS が起動して sshd が答えるまでの時間より十分長くする。
-- `boot_target: Cd` は BMC の `@Redfish.AllowableValues` にある値でなければならない（計画の時点で確かめる）。
+  手順 2 の `require` は前提条件で、CD が差さったと観測できるまで手順 3 に進まない。BMC が ISO を取りに行けないなどで `timeout`（5m）を過ぎると halt。
+- 手順 3・4 は**一度きりの操作**（`action`、#139）。`boot_once` は起動先の上書きを Once・Cd にする（再起動はしない。BMC が次の 1 回の起動で Disabled に戻すので、上書きは残らない）。
+  `reset` は再起動する（既定 GracefulRestart。電源が切れていれば電源 On を送る）。どちらも収束の宣言にはできない（Once は 1 回で消え、再起動は「状態」でない、§29.1）ので、手順としてその位置で 1 回だけ施す。
+  送りかけたまま止まった（デーモンが落ちた）ら二度送らずに halt する。`args: { type: ForceRestart }` は破壊的として予算（§13）に数える。
+- 手順 5 の `wait` の `timeout`（15m）を過ぎると on_failure の halt。インストーラが失敗して電源を切らないとき（`autoinstall.start` は失敗すると切らずに止まる）もこれで止まる。
+- 手順 6 は電源を入れるだけ（上書きはもう無いので、ディスクから起動する）。
+- 手順 7 は入れた OS を ssh で観測する（`guest-os/{target}`、`providers.yaml` の `guest_hosts` の名前がノード名と同じ）。電源が切れただけでは先へ進まず、`os_id: alpine` と今回の目印と、
+  応答ファイルのホスト名（目印 `hostname` は `/etc/hostname`）が見えるまで待つ。起動しない（ディスクに何も入っていない）・sshd が上がらない間は観測できない（unknown）まま待ち、
+  目印が違う・無い間も待ち、どちらも `timeout`（10m）で halt（手順 8 の CD を抜くは施さない）。「まだ起動していない」と「壊れた」は観測からは見分けられないので、timeout は入れた OS が起動して sshd が答えるまでの時間より十分長くする。
+- `boot_once` の `target: Cd` は BMC の `@Redfish.AllowableValues` にある値でなければならない（送る前に確かめ、無ければ halt）。
 
 ## 回し方
 
 Workflow を進めるのは**常駐の sakutei だけ**（`plan`・`reconcile` は Workflow の対象を Apply せず「Workflow に任せている」と出す）。進み具合は `--workflow-store`（S2）に残るので、必ず指定する。
 
 ```sh
-W=/tmp/sakutei-os; mkdir -p $W/iso
-docs/trial/redfish-os-install/make-iso.sh $W/iso/sakutei-autoinstall.iso
+W=/tmp/sakutei-os
 # ISO と鍵は上の「ISO を作る」で $W に作っておく
-cp -r docs/trial/redfish-os-install/intent docs/trial/redfish-os-install/bmcs.yaml docs/trial/redfish-os-install/hosts.yaml \
-  docs/trial/redfish-os-install/providers.yaml docs/trial/redfish-os-install/topology.clab.yml $W/
+cp -r docs/trial/redfish-os-install/intent docs/trial/redfish-os-install/templates docs/trial/redfish-os-install/bmcs.yaml \
+  docs/trial/redfish-os-install/hosts.yaml docs/trial/redfish-os-install/providers.yaml docs/trial/redfish-os-install/topology.clab.yml $W/
+# 応答ファイルの宣言に Sakutei の公開鍵を書く（公開鍵だけ。秘密鍵は書けない）
+sed -i "s|ssh-ed25519 REPLACE-WITH-node1-key.pub sakutei|$(cat $W/node1-key.pub)|" $W/intent/os.yaml
 # 秘密は file SecretBackend にだけ置く（鍵のファイルは消してよい）
 python3 -c 'import json,sys; print(json.dumps({"secrets": {"bmc/node1": {"gen": 1, "value": "password"},
   "ssh/node1": {"gen": 1, "value": open(sys.argv[1]).read()}}}))' $W/node1-key > $W/secrets.json
@@ -170,11 +215,13 @@ echo "[172.31.85.11]:2222 $(cat $W/node1-hostkey.pub)" > $W/known_hosts
 go build -o $W/sakutei ./cmd/sakutei
 cd $W
 sudo containerlab deploy -t topology.clab.yml
+# 応答ファイルの置き場（answers/、template-file が書く）を lab のゲートウェイで配る（ANSWER_URL と同じ）
+mkdir -p answers && python3 -m http.server --bind 172.31.85.1 --directory answers 8080 &
 ./sakutei --intent intent --redfish-config bmcs.yaml --provider-config providers.yaml --workflow-store wf.json --interval 5s
 # 別の端末で: Workflow の状態
 ./sakutei workflow list --store wf.json
 # 終わったら（必ず消す）
-sudo containerlab destroy -t topology.clab.yml --cleanup
+kill %1; sudo containerlab destroy -t topology.clab.yml --cleanup
 ```
 
 インストーラの進み具合（シリアル）は、qemu-bmc のコンテナの中の TCP `localhost:9002`（qemu-bmc の `SERIAL_ADDR` の既定）に出る。画面なら Redfish と同じポートの noVNC
@@ -217,6 +264,8 @@ CD（`node1/cd`）は cycle 1 に普段の収束で差され（初回の観測�
 
 | 限界 | 何が起きるか | 先の話 |
 |---|---|---|
-| ~~完了は電源オフでしか判断できない~~（#86 で解消） | 2026-10-22 の試用では Workflow が見るのは BMC から見た `power: Off` だけで、インストーラが失敗しても電源を切れば成功と見なして先へ進んだ。今は手順 6 で入れた OS を ssh で観測し（`guest-os`）、目印が見えるまで進まない | 入れた OS に sshd と鍵を置けない（ssh で届かない）OS では使えない。agent を置く観測は持たない |
-| **入れ直しは手で cancel** | done の Workflow は二度と走らない（定義を変えれば新しい run になる）。入れ直すには `sakutei workflow cancel --store wf.json os-install` で記録を消す。次の周に新しい run が始まる（2026-10-23 に確かめた）。**ただし電源が On のまま cancel すると入れ直しにならない**：手順 3 の apply は起動先を CD に書き換えるだけで電源を入れ直さず（再起動は宣言できない）、インストーラは走らずに手順 4 で待ち続ける（`timeout` で halt）。先に台を止めて（電源 Off を確かめて）から cancel する | planned_change の `kind: reimage` で入れ直しを宣言する：Backlog #88（v2） |
-| **workflow store を失うと、もう一度走る** | 進み具合（done）は `--workflow-store` のファイルにしか無い。消える・別のファイルを指すと、次の周に手順 1 から走る（電源が入っていれば手順 4 で halt、切れていれば**ディスクを消して入れ直す**）。消えない場所に置く | #88 で入れ直しを宣言に寄せるときに合わせて考える |
+| ~~完了は電源オフでしか判断できない~~（#86 で解消） | 2026-10-22 の試用では Workflow が見るのは BMC から見た `power: Off` だけで、インストーラが失敗しても電源を切れば成功と見なして先へ進んだ。今は手順 7 で入れた OS を ssh で観測し（`guest-os`）、目印が見えるまで進まない | 入れた OS に sshd と鍵を置けない（ssh で届かない）OS では使えない。agent を置く観測は持たない |
+| ~~起動先の上書きを戻す手順を書く~~（#139 で解消） | 当時は Continuous の上書きしか書けず、導入のあとに Disabled に戻す手順が要った。今は `action: boot_once` で 1 回だけ CD から起動し、BMC が使い切る | Once を使い切る時を BMC がどう決めるかは BMC 次第（qemu-bmc は電源 On のとき。上の「なぜ電源を切るのか」） |
+| **入れ直しは手で cancel** | done の Workflow は二度と走らない（定義を変えれば新しい run になる）。入れ直すには `sakutei workflow cancel --store wf.json os-install` で記録を消す。次の周に新しい run が始まる（2026-10-23 に確かめた）。#139 で手順 4 が再起動（`reset`）になったので、電源が On のままでも入れ直しになる（**ディスクを消して入れ直す**。目印の値を変えておかないと、前の導入の OS を見て進んでしまう） | planned_change の `kind: reimage` で入れ直しを宣言する：Backlog #88（v2） |
+| **workflow store を失うと、もう一度走る** | 進み具合（done）は `--workflow-store` のファイルにしか無い。消える・別のファイルを指すと、次の周に手順 1 から走り、**ディスクを消して入れ直す**。消えない場所に置く | #88 で入れ直しを宣言に寄せるときに合わせて考える |
+| **応答ファイルを届けるのは利用者** | `template-file` はファイルを書くだけ。HTTP で配る・ISO に入れるのは利用者の側（試用は `python3 -m http.server`）。Workflow は応答ファイルが書かれたことを確かめずに進む（収束ループが最初の周に書く。インストーラは取れるまで 2 分待つ） | |

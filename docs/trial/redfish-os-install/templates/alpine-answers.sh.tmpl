@@ -1,0 +1,11 @@
+# Sakutei の template-file が宣言から書き出した、Alpine の自動導入の回答（Backlog #139）。
+# 雛形: docs/trial/redfish-os-install/templates/alpine-answers.sh.tmpl（text/template）。
+# autoinstall.start が ANSWER_URL から取り、sh で読む（. <このファイル>）。値はどれも
+# 公開のもの（秘密は書かない）。手で直しても、次の周に宣言どおりに書き直される。
+# resource: {{.ID}}
+HOSTNAME={{shquote .Hostname}}
+ADDRESS={{shquote .Address}}
+GATEWAY={{shquote (index .Vars "gateway")}}
+MARK={{shquote .InstallMark}}
+SSH_AUTHORIZED_KEYS={{shquote .SSHAuthorizedKeys}}
+FAIL={{shquote (index .Vars "fail")}}

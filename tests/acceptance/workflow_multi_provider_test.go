@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/audit"
+	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/loader"
@@ -85,11 +86,18 @@ type wfRF struct {
 	*rfRig
 	storePath string
 	auditPath string
+	// budget は変更予算（§13）。#139 の action の試験が使う。
+	budget budget.Config
 }
 
 func newWFRF(t *testing.T, nodes []string, resources, workflows string) *wfRF {
 	t.Helper()
-	r := &wfRF{rfRig: newRFRig(t, nodes, redfishtest.Options{PowerState: "Off"}, "", reconcile.Config{})}
+	return newWFRFWith(t, nodes, redfishtest.Options{PowerState: "Off"}, budget.Config{}, resources, workflows)
+}
+
+func newWFRFWith(t *testing.T, nodes []string, opts redfishtest.Options, bc budget.Config, resources, workflows string) *wfRF {
+	t.Helper()
+	r := &wfRF{rfRig: newRFRig(t, nodes, opts, "", reconcile.Config{}), budget: bc}
 	root := filepath.Dir(r.dir)
 	r.storePath = filepath.Join(root, "workflows.json")
 	r.auditPath = filepath.Join(root, "audit.jsonl")
@@ -124,6 +132,7 @@ func (r *wfRF) restart() {
 		Now:           r.clk.Now,
 		WorkflowStore: workflow.NewFileStore(r.storePath),
 		Audit:         audit.NewLog(r.auditPath),
+		BudgetConfig:  r.budget,
 	})
 }
 

@@ -1,6 +1,7 @@
 # Redfish と Workflow で OS を入れる（docs/trial/redfish-os-install/README.md）。
-# 2026-10-22 の試用で回した intent に、#86 のゲスト OS の待ち（手順 6）を足したもの。
-# ISO（/iso/sakutei-autoinstall.iso）は利用者が用意する。
+# 2026-10-22 の試用で回した intent に、#86 のゲスト OS の確かめと、#139 の一度きりの操作
+# （1 回だけ CD から起動・再起動）と応答ファイル（template-file）を足したもの。
+# ISO（/iso/sakutei-autoinstall.iso）は利用者が用意する（make-iso.sh の ANSWER_URL つき）。
 resources:
   # インストールが済んだあとの「あるべき姿」: 電源オン・起動先の上書きなし（ディスクから起動）
   - provider: redfish-system
@@ -13,6 +14,18 @@ resources:
     id: node1/cd
     fields:
       image: ""
+  # 自動導入の応答ファイル（#139）。雛形 templates/alpine-answers.sh.tmpl に値を入れて
+  # answers/<UUID> に書き出す（UUID は topology.clab.yml の SYSTEM_UUID。インストーラが
+  # DMI の UUID で引く）。公開の値だけを書く（秘密鍵は書けない）
+  - provider: template-file
+    id: 6f1b7c52-0e1a-4d2b-9c11-000000008501
+    fields:
+      template: alpine-answers.sh.tmpl
+      hostname: node1
+      address: 10.0.2.15/24
+      var.gateway: 10.0.2.2
+      ssh_authorized_keys: ssh-ed25519 REPLACE-WITH-node1-key.pub sakutei
+      install_mark: sakutei-trial-1
 
 workflows:
   - workflow: os-install
@@ -37,27 +50,35 @@ workflows:
           fields:
             image: /iso/sakutei-autoinstall.iso
           timeout: 5m
-      # 3. CD から起動する（インストーラが走る）
-      - apply:
-          boot_enabled: Continuous
-          boot_target: Cd
-          power: "On"
-      # 4. インストーラが終わって電源を切るのを待つ
+      # 3. 次の 1 回だけ CD から起動する（#139。起動先の上書き Once。BMC が次の起動で戻す）
+      - action:
+          op: boot_once
+          args:
+            target: Cd
+      # 4. 再起動する（既定 GracefulRestart。電源が切れていれば電源 On）。インストーラが走る
+      - action:
+          op: reset
+      # 5. インストーラが終わって電源を切るのを待つ
       - wait:
           fields:
             power: "Off"
           timeout: 15m
-      # 5. ディスクから起動する
+      # 6. 電源を入れる（上書きは使い切ったので、ディスクから起動する）
       - apply:
-          boot_enabled: Disabled
           power: "On"
-      # 6. 入れた OS が目印つきで起動したのを待つ（#86。電源が切れただけでは成功と見なさない）。
-      #    guest-os provider が ssh で /etc/os-release と目印（/etc/sakutei-installed）を読む。
-      #    目印の値は make-iso.sh の INSTALL_MARK（導入ごとに変える）。届かない・目印が違うまま
-      #    10 分過ぎたら halt（インストーラの失敗）
-      - wait:
+      # 7. 入れた OS が目印つきで起動したのを確かめる（#86。電源が切れただけでは成功と
+      #    見なさない）。guest-os provider が ssh で /etc/os-release と目印を読む。目印の値は
+      #    応答ファイルの install_mark（導入ごとに変える）、hostname は応答ファイルのホスト名。
+      #    届かない・目印が違うまま 10 分過ぎたら halt（インストーラの失敗）
+      - require:
           resource: guest-os/{target}
           fields:
             os_id: alpine
             marker.installed: sakutei-trial-1
+            marker.hostname: node1
           timeout: 10m
+      # 8. CD を抜く
+      - apply:
+          resource: redfish-virtual-media/{target}/cd
+          fields:
+            image: ""

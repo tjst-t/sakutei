@@ -18,6 +18,10 @@
 #   SSH_HOST_KEY=<file>         入れた OS のホスト鍵（ed25519 の秘密鍵。<file>.pub も要る）。
 #                               known_hosts を前もって書ける（無ければ sshd が初回に作る）
 #   AUTOINSTALL_FAIL=disk|marker  試験用にわざと失敗する ISO にする（autoinstall.start を見る）
+#   ANSWER_URL=<URL>            インストーラが応答ファイル（template-file が宣言から書き出したもの、
+#                               #139）を取る URL。{uuid} は機械の DMI の UUID に置き換わる。渡すと
+#                               ホスト名・アドレス・公開鍵・目印は応答ファイルの値になり、1 つの ISO
+#                               を何台にも使える（例 http://172.31.85.1:8080/{uuid}）
 set -eu
 
 VER=${ALPINE_VERSION:-3.24.3}
@@ -31,6 +35,8 @@ MARK=${INSTALL_MARK:-sakutei-trial}
 FAIL=${AUTOINSTALL_FAIL:-}
 case "$MARK" in *[!A-Za-z0-9._:-]*|'') echo "INSTALL_MARK: only letters, digits and . _ : - ($MARK)" >&2; exit 1;; esac
 case "$FAIL" in ''|disk|marker) ;; *) echo "AUTOINSTALL_FAIL: want disk or marker ($FAIL)" >&2; exit 1;; esac
+ANSWER=${ANSWER_URL:-}
+case "$ANSWER" in *[!A-Za-z0-9._:/{}-]*) echo "ANSWER_URL: only letters, digits and . _ : / { } - ($ANSWER)" >&2; exit 1;; esac
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 CACHE=${CACHE_DIR:-$W/cache}
@@ -70,10 +76,12 @@ chmod 755 "$O/local.d/autoinstall.start"
 echo sakutei-installer > "$O/hostname"
 echo alpine-base > "$O/apk/world"
 echo /media/cdrom/apks > "$O/apk/repositories"
-printf 'MARK=%s\nFAIL=%s\n' "$MARK" "$FAIL" > "$O/sakutei-autoinstall.conf"
-if [ -n "${SSH_AUTHORIZED_KEYS:-}" ]; then
+printf 'MARK=%s\nFAIL=%s\nANSWER_URL=%s\n' "$MARK" "$FAIL" "$ANSWER" > "$O/sakutei-autoinstall.conf"
+# 公開鍵は ISO に焼くか（SSH_AUTHORIZED_KEYS）、応答ファイルから取る（ANSWER_URL）。ホスト鍵は秘密
+# なので応答ファイルには書かず、ここで ISO に入れる
+if [ -n "${SSH_AUTHORIZED_KEYS:-}" ] || [ -n "${SSH_HOST_KEY:-}" ]; then
   mkdir -p "$O/sakutei-ssh"
-  cp "$SSH_AUTHORIZED_KEYS" "$O/sakutei-ssh/authorized_keys"
+  [ -n "${SSH_AUTHORIZED_KEYS:-}" ] && cp "$SSH_AUTHORIZED_KEYS" "$O/sakutei-ssh/authorized_keys"
   if [ -n "${SSH_HOST_KEY:-}" ]; then
     cp "$SSH_HOST_KEY" "$O/sakutei-ssh/ssh_host_ed25519_key"
     cp "$SSH_HOST_KEY.pub" "$O/sakutei-ssh/ssh_host_ed25519_key.pub"

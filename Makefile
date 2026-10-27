@@ -131,7 +131,8 @@ integration-remote:
 # ゲスト OS の観測で OS 導入の完了を確かめる統合テスト（#86）。qemu-bmc 0.10.0 を
 # containerlab で 3 台立て、Alpine の自動インストールの ISO（docs/trial/
 # redfish-os-install/make-iso.sh で作る）で本当に OS を入れ、終わったら（失敗しても）
-# lab を消す。KVM・docker・containerlab・sudo（パスワードなし）・ssh・xorriso・curl と、
+# lab を消す。#139 で、1 回だけ CD から起動する手順（action boot_once・reset）と、
+# 宣言から書き出す応答ファイル（template-file、テストが HTTP で配る）の形にした。KVM・docker・containerlab・sudo（パスワードなし）・ssh・xorriso・curl と、
 # 初回は Alpine の ISO とパッケージを取るネットワークが要る（取ったものは
 # SAKUTEI_IT_CACHE、既定 ~/.cache/sakutei-it/alpine に残す）。check・test・CI には
 # 入れない。手順と結果は docs/providers/guest-os.md の「統合テスト」。

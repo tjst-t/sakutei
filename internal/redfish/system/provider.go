@@ -27,7 +27,8 @@
 //     GracefulShutdown。PoweringOn / PoweringOff のあいだは Converging（操作を
 //     重ねない）。BMC に届かなければ Unknown（何も操作しない）。
 //   - boot_enabled: Continuous / Disabled。Once は計画の時点でエラー（1 回起動
-//     すると BMC が Disabled に戻すので収束の対象にならない。将来 Task 側）。
+//     すると BMC が Disabled に戻すので収束の対象にならない。Workflow の手順の
+//     action boot_once で施す、下の「一度きりの操作」）。
 //   - boot_target: boot_enabled が Continuous のときだけ比べる。BMC の
 //     @Redfish.AllowableValues に無ければ計画の時点でエラー。起動先は PATCH
 //     だけで、再起動はしない。
@@ -47,7 +48,20 @@
 // 時点の検査に使う boot_target_allowable・reset_type_allowable。
 //
 // 再起動（ForceRestart・GracefulRestart）は「あるべき状態」ではなく一度きりの
-// 操作なので宣言できない（Task の領分）。
+// 操作なので宣言できない。
+//
+// 一度きりの操作（provider.Actioner、Workflow の action 手順、#139）:
+//
+//   - boot_once（args: target。必須）: 起動先の上書きを Once・target にする
+//     （PATCH だけで再起動しない）。target は BMC の AllowableValues にあるもの。
+//     BMC は次の 1 回の起動で上書きを Disabled に戻すので、上書きは残らない。
+//     PATCH のあと読み直して Once・target になっていなければエラー。
+//   - reset（args: type。既定 GracefulRestart、ほかに ForceRestart）: 電源が
+//     On なら type で再起動し、Off なら On を送る（切れた台の再起動は電源
+//     オン）。ForceRestart は破壊的（ActionPlan.Destructive、予算 §13 に数える）。
+//     電源の切り替えの途中なら送らない（ErrActionNotSent、次の周に送り直す）。
+//
+// BMC に届かない・読めないときも送っていない（ErrActionNotSent）。
 //
 // GracefulShutdown を送った時刻はノードごとにインメモリ（S3）に持つ。Off を
 // 観測したら消し、失えば（再起動）数え直す（強制停止が遅れる側＝安全側）。
@@ -122,6 +136,15 @@ var (
 	_ provider.Provider        = (*Provider)(nil)
 	_ provider.IntentValidator = (*Provider)(nil)
 	_ provider.PlanRefiner     = (*Provider)(nil)
+	_ provider.Actioner        = (*Provider)(nil)
+)
+
+// 一度きりの操作（provider.Actioner）の名前と引数。
+const (
+	ActionBootOnce = "boot_once"
+	ActionReset    = "reset"
+	ArgTarget      = "target"
+	ArgType        = "type"
 )
 
 // New は clients（ノード名 → そのノードの BMC の Client）を使う Provider を返す。
@@ -254,7 +277,7 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 		switch v {
 		case redfish.PowerOn, redfish.PowerOff:
 		case redfish.ResetForceRestart, redfish.ResetGracefulRestart, "Restart", "Reboot":
-			return fmt.Errorf("%s %q: power %q cannot be declared: a restart is a one-time operation, not a state to converge to (it belongs to a Task); declare On or Off", Name, localID, v)
+			return fmt.Errorf("%s %q: power %q cannot be declared: a restart is a one-time operation, not a state to converge to (restart with a Workflow step, action: { op: %s }); declare On or Off", Name, localID, v, ActionReset)
 		default:
 			return fmt.Errorf("%s %q: power %q: want On or Off", Name, localID, v)
 		}
@@ -265,7 +288,7 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 		switch enabled {
 		case redfish.BootContinuous, redfish.BootDisabled:
 		case redfish.BootOnce:
-			return fmt.Errorf("%s %q: boot_enabled \"Once\" cannot be declared: the BMC resets a one-time boot override to Disabled after one boot, so it never converges (§29.1); a one-time boot will be handled as a Task in the future. Declare Continuous or Disabled", Name, localID)
+			return fmt.Errorf("%s %q: boot_enabled \"Once\" cannot be declared: the BMC resets a one-time boot override to Disabled after one boot, so it never converges (§29.1); boot once with a Workflow step (action: { op: %s, args: { target: Cd } }). Declare Continuous or Disabled", Name, localID, ActionBootOnce)
 		default:
 			return fmt.Errorf("%s %q: boot_enabled %q: want Continuous or Disabled", Name, localID, enabled)
 		}
@@ -496,6 +519,112 @@ func (p *Provider) applyOp(ctx context.Context, op core.Op) error {
 		return provider.NewPermanentError(fail("power %q cannot be applied (want On or Off)", power))
 	}
 	return nil
+}
+
+// ---- 一度きりの操作（provider.Actioner、#139） ----
+
+// PlanAction は op と args を現実を見ずに検査する。
+func (p *Provider) PlanAction(localID, op string, args map[string]string) (provider.ActionPlan, error) {
+	if _, ok := p.clients[localID]; !ok {
+		return provider.ActionPlan{}, fmt.Errorf("%s %q: no BMC is configured for this node", Name, localID)
+	}
+	allow := func(keys ...string) error {
+		for k := range args {
+			if !contains(keys, k) {
+				return fmt.Errorf("%s %q: action %s: unknown argument %q (want %s)", Name, localID, op, k, strings.Join(keys, ", "))
+			}
+		}
+		return nil
+	}
+	switch op {
+	case ActionBootOnce:
+		if err := allow(ArgTarget); err != nil {
+			return provider.ActionPlan{}, err
+		}
+		if strings.TrimSpace(args[ArgTarget]) == "" {
+			return provider.ActionPlan{}, fmt.Errorf("%s %q: action %s needs args.target (e.g. Cd)", Name, localID, op)
+		}
+		return provider.ActionPlan{Description: fmt.Sprintf("%s %s (boot override Once)", op, args[ArgTarget])}, nil
+	case ActionReset:
+		if err := allow(ArgType); err != nil {
+			return provider.ActionPlan{}, err
+		}
+		switch resetType(args) {
+		case redfish.ResetGracefulRestart:
+			return provider.ActionPlan{Description: op + " " + redfish.ResetGracefulRestart + " (On if powered off)"}, nil
+		case redfish.ResetForceRestart:
+			return provider.ActionPlan{Destructive: true, Description: op + " " + redfish.ResetForceRestart + " (On if powered off; destructive)"}, nil
+		default:
+			return provider.ActionPlan{}, fmt.Errorf("%s %q: action %s: type %q: want %s (default) or %s",
+				Name, localID, op, args[ArgType], redfish.ResetGracefulRestart, redfish.ResetForceRestart)
+		}
+	default:
+		return provider.ActionPlan{}, fmt.Errorf("%s %q: unknown action %q (want %s or %s)", Name, localID, op, ActionBootOnce, ActionReset)
+	}
+}
+
+func resetType(args map[string]string) string {
+	if t := args[ArgType]; t != "" {
+		return t
+	}
+	return redfish.ResetGracefulRestart
+}
+
+// Action は op を 1 回だけ施す。送る前に BMC を読み、送れないと分かれば
+// ErrActionNotSent を返す（送っていないので次の周に送り直せる）。
+func (p *Provider) Action(ctx context.Context, localID, op string, args map[string]string) error {
+	if _, err := p.PlanAction(localID, op, args); err != nil {
+		return provider.NewPermanentError(err)
+	}
+	c := p.clients[localID]
+	fail := func(format string, a ...any) error {
+		return fmt.Errorf("%s: action %s on %q: "+format, append([]any{Name, op, localID}, a...)...)
+	}
+	notSent := func(format string, a ...any) error {
+		return fmt.Errorf("%w: "+format, append([]any{provider.ErrActionNotSent}, a...)...)
+	}
+	sys, err := c.GetSystem(ctx)
+	if err != nil {
+		return notSent("%s: action %s on %q: %v", Name, op, localID, err)
+	}
+	switch op {
+	case ActionBootOnce:
+		target := args[ArgTarget]
+		if len(sys.Boot.AllowableTargets) > 0 && !contains(sys.Boot.AllowableTargets, target) {
+			return provider.NewPermanentError(fail("boot target %q is not offered by the BMC (allowable: %s)", target, strings.Join(sys.Boot.AllowableTargets, ", ")))
+		}
+		if err := c.PatchBoot(ctx, redfish.BootOnce, target); err != nil {
+			return classify(fail("PATCH Boot: %w", err))
+		}
+		after, err := c.GetSystem(ctx)
+		if err != nil {
+			return classify(fail("reading the boot override back: %w", err))
+		}
+		if after.Boot.Enabled != redfish.BootOnce || after.Boot.Target != target {
+			return provider.NewPermanentError(fail("the BMC reports boot override %s %s after the PATCH, want %s %s",
+				after.Boot.Enabled, after.Boot.Target, redfish.BootOnce, target))
+		}
+		return nil
+	case ActionReset:
+		t := resetType(args)
+		switch sys.PowerState {
+		case redfish.PowerOff:
+			// 切れた台の再起動は電源オン。
+			t = redfish.ResetOn
+		case redfish.PowerOn:
+		default:
+			return notSent("%s: action %s on %q: the power is %s (another power operation is in progress)", Name, op, localID, sys.PowerState)
+		}
+		if len(sys.ResetTypes) > 0 && !contains(sys.ResetTypes, t) {
+			return provider.NewPermanentError(fail("the BMC does not offer ResetType %s (allowable: %s)", t, strings.Join(sys.ResetTypes, ", ")))
+		}
+		p.forget(localID)
+		if err := c.Reset(ctx, t); err != nil {
+			return classify(fail("Reset %s: %w", t, err))
+		}
+		return nil
+	}
+	return provider.NewPermanentError(fail("unknown action"))
 }
 
 // ---- 下回り ----

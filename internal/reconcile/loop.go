@@ -1050,7 +1050,18 @@ func NewDaemon(cfg Config) *Daemon {
 			ProviderFor: func(id core.ID) provider.Provider {
 				return providers.provider(diff.DesiredResource{ID: id})
 			},
-			Exec:     func(ctx context.Context, plan core.Plan) error { return exec.Execute(ctx, fp, plan) },
+			Exec: func(ctx context.Context, plan core.Plan) error { return exec.Execute(ctx, fp, plan) },
+			// #139: a destructive one-time operation (a forced restart) goes
+			// through the same change budget as a destructive Op (§13): the
+			// per-cycle limit and the cumulative window.
+			Admit: func(op core.Op) (bool, string) {
+				d := budgetEngine.CheckCycle([]core.Op{op}, budget.InFlight{}, 0)
+				if d.IsHalted(op) {
+					return false, d.Reason
+				}
+				return true, ""
+			},
+			Commit:   func(op core.Op) { budgetEngine.CommitOps([]core.Op{op}) },
 			Tasks:    tasks,
 			TasksOff: tasksOff,
 			Holder:   taskHolder(cfg),

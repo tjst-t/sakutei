@@ -41,6 +41,11 @@ func TestRedfishOSInstallTrialIntentLoads(t *testing.T) {
 	if cd, ok := fields["redfish-virtual-media/node1/cd"]; !ok || cd["image"] != "" {
 		t.Errorf("redfish-virtual-media node1/cd = %v (want declared, ejected after the install)", cd)
 	}
+	// #139: 応答ファイル（template-file）は宣言から作る。秘密は書かない。
+	if a := fields["template-file/6f1b7c52-0e1a-4d2b-9c11-000000008501"]; a["template"] != "alpine-answers.sh.tmpl" ||
+		a["hostname"] != "node1" || a["install_mark"] == "" || a["ssh_authorized_keys"] == "" {
+		t.Errorf("template-file answer = %v", a)
+	}
 	if len(in.Workflows) != 1 {
 		t.Fatalf("workflows = %+v", in.Workflows)
 	}
@@ -48,9 +53,11 @@ func TestRedfishOSInstallTrialIntentLoads(t *testing.T) {
 	if def.Name != "os-install" || len(def.Targets()) != 1 || def.Targets()[0].Provider != "redfish-system" || def.Targets()[0].Local != "node1" {
 		t.Errorf("workflow = %s, targets = %+v", def.Name, def.Targets())
 	}
-	// #87: CD を差す → 差さったことを確かめる → CD 起動で電源オン → 電源オフを待つ → ディスクから起動
-	// → #86: 入れた OS が目印つきで起動したのを待つ。
-	kinds := []workflow.StepKind{workflow.StepApply, workflow.StepRequire, workflow.StepApply, workflow.StepWait, workflow.StepApply, workflow.StepWait}
+	// #87: CD を差す → 差さったことを確かめる → #139: 1 回だけ CD から起動 → 再起動 →
+	// 電源オフを待つ → 電源 On（ディスクから）→ #86: 入れた OS が目印つきで起動したのを
+	// 確かめる → CD を抜く。
+	kinds := []workflow.StepKind{workflow.StepApply, workflow.StepRequire, workflow.StepAction, workflow.StepAction,
+		workflow.StepWait, workflow.StepApply, workflow.StepRequire, workflow.StepApply}
 	if len(def.Steps) != len(kinds) {
 		t.Fatalf("steps = %+v", def.Steps)
 	}
@@ -59,31 +66,36 @@ func TestRedfishOSInstallTrialIntentLoads(t *testing.T) {
 			t.Errorf("steps[%d].kind = %q, want %q", i, def.Steps[i].Kind, k)
 		}
 	}
+	if err := def.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
 	const iso = "/iso/sakutei-autoinstall.iso"
 	node1 := def.Targets()[0]
-	for _, i := range []int{0, 1} {
+	for i, image := range map[int]string{0: iso, 1: iso, 7: ""} {
 		id := def.Steps[i].ResourceFor(node1)
-		if id.Provider != "redfish-virtual-media" || id.Local != "node1/cd" || def.Steps[i].Fields["image"] != iso {
+		if id.Provider != "redfish-virtual-media" || id.Local != "node1/cd" || def.Steps[i].Fields["image"] != image {
 			t.Errorf("steps[%d] = %+v (resource %+v)", i, def.Steps[i], id)
 		}
 	}
 	if def.Steps[1].Timeout != 5*time.Minute {
 		t.Errorf("steps[1].timeout = %s", def.Steps[1].Timeout)
 	}
-	s3, s4, s5 := def.Steps[2], def.Steps[3], def.Steps[4]
-	if s3.Resource != "" || s3.Fields["boot_enabled"] != "Continuous" || s3.Fields["boot_target"] != "Cd" || s3.Fields["power"] != "On" {
-		t.Errorf("steps[2] = %+v", s3)
+	if s := def.Steps[2]; s.Resource != "" || s.Op != "boot_once" || s.Args["target"] != "Cd" {
+		t.Errorf("steps[2] = %+v", s)
 	}
-	if s4.Fields["power"] != "Off" || s4.Timeout != 15*time.Minute {
-		t.Errorf("steps[3] = %+v", s4)
+	if s := def.Steps[3]; s.Resource != "" || s.Op != "reset" || len(s.Args) != 0 {
+		t.Errorf("steps[3] = %+v", s)
 	}
-	if s5.Fields["boot_enabled"] != "Disabled" || s5.Fields["power"] != "On" {
-		t.Errorf("steps[4] = %+v", s5)
+	if s := def.Steps[4]; s.Fields["power"] != "Off" || s.Timeout != 15*time.Minute {
+		t.Errorf("steps[4] = %+v", s)
 	}
-	// #86: 入れた OS（guest-os/node1）が目印つきで起動したのを待つ。
-	if s6 := def.Steps[5]; s6.ResourceFor(node1).Provider != "guest-os" || s6.ResourceFor(node1).Local != "node1" ||
-		s6.Fields["os_id"] != "alpine" || s6.Fields["marker.installed"] == "" || s6.Timeout != 10*time.Minute {
-		t.Errorf("steps[5] = %+v", s6)
+	if s := def.Steps[5]; len(s.Fields) != 1 || s.Fields["power"] != "On" {
+		t.Errorf("steps[5] = %+v", s)
+	}
+	// #86: 入れた OS（guest-os/node1）が目印つきで起動したのを確かめる。
+	if s := def.Steps[6]; s.ResourceFor(node1).Provider != "guest-os" || s.ResourceFor(node1).Local != "node1" ||
+		s.Fields["os_id"] != "alpine" || s.Fields["marker.installed"] == "" || s.Fields["marker.hostname"] != "node1" || s.Timeout != 10*time.Minute {
+		t.Errorf("steps[6] = %+v", s)
 	}
 	// Workflow が触るのは node1 と node1/cd と guest-os の node1（done まで収束ループが触らない）。
 	if res := def.Resources(); len(res) != 3 || res[1].Local != "node1/cd" || res[2].Provider != "guest-os" {

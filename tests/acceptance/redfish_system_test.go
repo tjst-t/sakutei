@@ -264,8 +264,8 @@ func TestRedfishSystem_OnceIsAPlanError(t *testing.T) {
 	r := newRFRig(t, []string{"node1"}, redfishtest.Options{},
 		rfResource("node1", `"boot_enabled": "Once", "boot_target": "Pxe"`), reconcile.Config{})
 	_, err := r.cycle()
-	if err == nil || !strings.Contains(err.Error(), `boot_enabled "Once" cannot be declared`) || !strings.Contains(err.Error(), "Task") {
-		t.Fatalf("[AC-81-5] RunCycle err = %v, want the Once error that says why and points to Task", err)
+	if err == nil || !strings.Contains(err.Error(), `boot_enabled "Once" cannot be declared`) || !strings.Contains(err.Error(), "op: boot_once") {
+		t.Fatalf("[AC-81-5] RunCycle err = %v, want the Once error that says why and points to the Workflow action boot_once (#139)", err)
 	}
 	if q := r.bmcs["node1"].Requests(); len(q) != 0 {
 		t.Fatalf("[AC-81-5] the BMC got %d request(s); the plan should stop before Observe", len(q))

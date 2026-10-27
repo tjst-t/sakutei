@@ -9,15 +9,46 @@
 #   MARK=<目印の値>      入れた OS の /etc/sakutei-installed に書く（既定 sakutei-trial）
 #   FAIL=disk|marker     試験用にわざと失敗する。disk: 何も入れずに電源を切る（インストーラが
 #                        失敗しても電源を切る ISO の真似）。marker: 入れるが目印を置かない
-# apkovl に /etc/sakutei-ssh/authorized_keys があれば、入れた OS で sshd を動かし（eth0 は DHCP）、
-# root にその鍵で入れるようにする。/etc/sakutei-ssh/ssh_host_ed25519_key があればホスト鍵にする。
+#   ANSWER_URL=<URL>     応答ファイル（Sakutei の template-file が宣言から書き出したもの、#139）を
+#                        ここから取って sh で読む。{uuid} はこの機械の DMI の UUID（小文字）に
+#                        置き換わる。取れなければ（2 分）電源を切らずに止まる。応答ファイルの
+#                        HOSTNAME・ADDRESS・GATEWAY・MARK・SSH_AUTHORIZED_KEYS・FAIL が上の値に勝つ
+# apkovl に /etc/sakutei-ssh/authorized_keys があるか応答ファイルに SSH_AUTHORIZED_KEYS があれば、
+# 入れた OS で sshd を動かし、root にその鍵で入れるようにする。/etc/sakutei-ssh/ssh_host_ed25519_key
+# があればホスト鍵にする。eth0 は ADDRESS（と GATEWAY）があれば静的に、無ければ DHCP。HOSTNAME が
+# あれば入れた OS の /etc/hostname に書く。
 exec >/dev/ttyS0 2>&1
 [ "$(awk '$2=="/"{print $3}' /proc/mounts)" = "tmpfs" ] || exit 0
 MARK=sakutei-trial
 FAIL=
+ANSWER_URL=
+HOSTNAME=
+ADDRESS=
+GATEWAY=
+SSH_AUTHORIZED_KEYS=
 [ -r /etc/sakutei-autoinstall.conf ] && . /etc/sakutei-autoinstall.conf
 SSHCONF=/etc/sakutei-ssh
 echo "SAKUTEI-AUTOINSTALL: start $(date -u +%FT%TZ)"
+if [ -n "$ANSWER_URL" ]; then
+  # 応答ファイルを取る（live の環境で eth0 を DHCP で上げる）
+  modprobe virtio_net 2>/dev/null
+  ip link set eth0 up
+  udhcpc -i eth0 -n -q -t 10 -T 3 >/dev/null 2>&1 || { echo "SAKUTEI-AUTOINSTALL: DHCP failed; cannot fetch the answer file"; exit 1; }
+  uuid=$(tr 'A-Z' 'a-z' < /sys/class/dmi/id/product_uuid 2>/dev/null)
+  url=$(printf '%s' "$ANSWER_URL" | sed "s/{uuid}/$uuid/")
+  i=0
+  until wget -q -O /tmp/answer "$url"; do
+    i=$((i+1))
+    [ $i -ge 60 ] && { echo "SAKUTEI-AUTOINSTALL: cannot fetch the answer file $url"; exit 1; }
+    sleep 2
+  done
+  . /tmp/answer || { echo "SAKUTEI-AUTOINSTALL: cannot read the answer file $url"; exit 1; }
+  echo "SAKUTEI-AUTOINSTALL: answer file $url (hostname ${HOSTNAME:-none}, mark $MARK)"
+  if [ -n "$SSH_AUTHORIZED_KEYS" ]; then
+    mkdir -p "$SSHCONF"
+    printf '%s\n' "$SSH_AUTHORIZED_KEYS" > "$SSHCONF/authorized_keys"
+  fi
+fi
 if [ "$FAIL" = disk ]; then
   echo "SAKUTEI-AUTOINSTALL: failing on purpose (FAIL=disk); powering off without installing"
   sync; sleep 2; poweroff; exit 0
@@ -59,7 +90,12 @@ for p in /dev/vda3 /dev/vda2; do
     rm -rf /mnt/t$SSHCONF
     if [ -r "$SSHCONF/authorized_keys" ]; then
       [ -x /mnt/t/usr/sbin/sshd ] || { echo "SAKUTEI-AUTOINSTALL: sshd is not in the installed OS"; umount /mnt/t; exit 1; }
-      printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet dhcp\n' > /mnt/t/etc/network/interfaces
+      if [ -n "$ADDRESS" ]; then
+        printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n\taddress %s\n' "$ADDRESS" > /mnt/t/etc/network/interfaces
+        [ -n "$GATEWAY" ] && printf '\tgateway %s\n' "$GATEWAY" >> /mnt/t/etc/network/interfaces
+      else
+        printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet dhcp\n' > /mnt/t/etc/network/interfaces
+      fi
       mkdir -p /mnt/t/root/.ssh /mnt/t/etc/ssh
       chmod 700 /mnt/t/root/.ssh
       cp "$SSHCONF/authorized_keys" /mnt/t/root/.ssh/authorized_keys
@@ -71,6 +107,10 @@ for p in /dev/vda3 /dev/vda2; do
       ln -sf /etc/init.d/networking /mnt/t/etc/runlevels/boot/networking
       ln -sf /etc/init.d/sshd /mnt/t/etc/runlevels/default/sshd
       echo "SAKUTEI-AUTOINSTALL: sshd enabled on $p"
+    fi
+    if [ -n "$HOSTNAME" ]; then
+      echo "$HOSTNAME" > /mnt/t/etc/hostname
+      echo "SAKUTEI-AUTOINSTALL: hostname $HOSTNAME"
     fi
     if [ "$FAIL" = marker ]; then
       echo "SAKUTEI-AUTOINSTALL: not placing the marker on purpose (FAIL=marker)"

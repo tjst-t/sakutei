@@ -444,6 +444,23 @@ steps:
 
 手順が触るリソースは target と同じに扱う：done でない Workflow の target と手順の resource（target ごとに展開したもの）は収束ループが Apply せず、plan・status は「Workflow に任せる」と示す。2 つの Workflow が同じリソースを触る宣言と、`strategy: task` のリソースを手順で触る宣言はロード時に拒否する。承認ゲート・1 台ずつ（target ごとに全手順）・不変条件（`min_active` は target だけで数える。target でないリソースへの手順は active の見込みを変えない）・S2 の進行位置・起こし直しからの再開は変わらない。claim は Workflow が触るリソースがすべて claim の内にあるシャードだけが進める。
 
+**一度きりの操作 `action`（Backlog #139、v3.24）。** 収束の宣言にできない操作がある。Redfish の「次の 1 回だけ CD から起動」（起動先の上書き Once）は BMC が 1 回の起動で使い切るので、宣言しても観測が宣言に戻らず収束しない（§29.1 で宣言を断る決まりは変えない）。再起動は終われば何も残らないので「状態」でない。これらは「どう変えるか」の手順（原則 2）として Workflow の手順に書く。
+
+- **形**：`action: { resource, op, args }`。`resource` は省けば今の target（書くなら `<provider>/<id>`、`{target}` の置き換えは他の手順と同じ）、`op` は操作の名前、`args` は文字列の引数。意味は provider が決める（`provider.Actioner`：現実を見ない検査 `PlanAction` と、1 回だけ施す `Action`）。`redfish-system` は `boot_once`（`args.target` 必須）と `reset`（`args.type`：既定 GracefulRestart、ForceRestart。電源が切れていれば On）を持つ。
+- **1 回だけ**：その位置で 1 回施して次へ進む。効いたかは観測で確かめない（後の `wait` / `require` で確かめる）。二度送らないため、送る直前に「送りかけ」を S2（Run）に書き、送れて次の手順へ進むときに消す。書いたまま読み直したら（送ったか分からないまま止まった）、送らずに halt して人へ。provider が「送っていない」と言う失敗（届かない・別の電源操作の途中など、`ErrActionNotSent`）は印を消して待ち、次の周に送り直す。それ以外の失敗は halt。
+- **予算**：provider が破壊的と言う操作（`reset` の ForceRestart）は破壊的な Op として変更予算（§13：周ごとの上限と累積の窓）に通し、止められれば送らずに待つ。施したら累積に数える。
+- **不変条件**：`action` は active の見込みを変えないものとして扱う（再起動で止まる間の様子は後の `wait` で確かめる）。
+
+```yaml
+steps:
+  - action:                                  # 次の 1 回だけ CD から起動（BMC が使い切るので上書きは残らない）
+      op: boot_once
+      args:
+        target: Cd
+  - action:                                  # 再起動（切れていれば電源 On）
+      op: reset
+```
+
 ### §6.4 承認ゲート
 
 段階適用の承認ゲートは既存 Workflow（wave + invariant + Event/sink + フェーズ永続化）の組み合わせで表現でき、新プリミティブは不要である。ゲートは health_check（自動）と manual_approval（人）を持てる。

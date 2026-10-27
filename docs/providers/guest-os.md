@@ -70,23 +70,23 @@ ID はホストの名前（`node1`）。
 
 ## OS 導入の Workflow
 
-[docs/trial/redfish-os-install](../trial/redfish-os-install/README.md) の Workflow の、電源オフを待ってディスクから起動したあとに、ゲスト OS の待ちを足す。
+[docs/trial/redfish-os-install](../trial/redfish-os-install/README.md) の Workflow の、電源オフを待ってディスクから起動したあとに、ゲスト OS の確かめを足す。
 
 ```yaml
 steps:
-  # …CD を差す → 確かめる → CD 起動で電源オン
+  # …CD を差す → 確かめる → 次の 1 回だけ CD から起動（action boot_once）→ 再起動（action reset）
   - wait:                              # インストーラが電源を切るのを待つ
       fields:
         power: "Off"
       timeout: 15m
-  - apply:                             # ディスクから起動する
-      boot_enabled: Disabled
+  - apply:                             # 電源を入れる（上書きは使い切ったのでディスクから起動する）
       power: "On"
-  - wait:                              # ゲスト OS が目印つきで起動したのを待つ
+  - require:                           # ゲスト OS が目印つきで起動したのを確かめる
       resource: guest-os/{target}
       fields:
         os_id: alpine
         marker.installed: install-2026-10-27
+        marker.hostname: node1         # guest_markers の hostname=/etc/hostname（応答ファイルのホスト名）
       timeout: 10m
   - apply:                             # ここから先は導入が済んだときだけ
       resource: redfish-virtual-media/{target}/cd
@@ -94,6 +94,7 @@ steps:
         image: ""
 ```
 
+`wait` でも `require` でも判定は同じ（`require` は timeout を省けない）。
 - インストーラが失敗しても電源を切る ISO では、`power: "Off"` の待ちは通ってしまう。ゲスト OS の待ちがあれば、ゲスト OS に届かない（unknown）・目印が無いまま `timeout` で halt し、その先の手順に進まない。
 - 目印の値は**導入ごとに変える**（日付・導入の番号など）。前の導入で入った OS が同じファイルを持っていても取り違えない。
 - 待っている間（届かない間）は `waiting for map[…] (unobservable: <なぜ観測できないか>; unknown ≠ absent)`（例 `remote node1: unreachable: …`）、届いたが目印が違う・無い間は `waiting for map[…]` と出る。
@@ -101,7 +102,7 @@ steps:
 
 ## 統合テスト
 
-qemu-bmc 0.10.0 を containerlab で 3 台立て、本当に Alpine を入れる統合テスト（Backlog #86）。build tag `integration_guestos` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
+qemu-bmc 0.10.0 を containerlab で 3 台立て、本当に Alpine を入れる統合テスト（Backlog #86、#139 で広げた）。build tag `integration_guestos` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
 
 ```console
 $ make integration-guestos
@@ -109,23 +110,72 @@ $ make integration-guestos
 
 要るもの: KVM（`/dev/kvm`）、docker と containerlab（パスワードなしの `sudo -n`）、`ssh`・`ssh-keygen`・`xorriso`・`curl`。初回は Alpine 3.24 の virt ISO とパッケージを取りに行く（`SAKUTEI_IT_CACHE`、既定 `~/.cache/sakutei-it/alpine` に残し、次からは使い回す）。
 
-- ISO は [make-iso.sh](../trial/redfish-os-install/make-iso.sh) で 3 つ作る。どれも入れた OS で sshd を動かし（eth0 は DHCP）、テストの鍵で root に入れるようにし、ホスト鍵はテストが作ったもの（known_hosts を前もって書く）。目印 `/etc/sakutei-installed` の値は回ごとに変える（`it86-<時刻>`）。
-  - `ok.iso`（node1）: 入れて、sshd と目印を置いて電源を切る。
-  - `fail-disk.iso`（node2、`AUTOINSTALL_FAIL=disk`）: 何も入れずに電源を切る（インストーラが失敗しても電源を切る ISO の真似）。
-  - `fail-marker.iso`（node3、`AUTOINSTALL_FAIL=marker`）: OS は入れるが目印を置かない（導入の仕上げが済んでいない）。
+- ISO は [make-iso.sh](../trial/redfish-os-install/make-iso.sh) で **3 台に共通の 1 つ**（`auto.iso`）を作る。台ごとの値（ホスト名・静的なアドレス・テストの公開鍵・目印・失敗のさせ方）は ISO に焼かず、
+  sakutei が宣言から書き出す**応答ファイル**（[template-file](template-file.md)、雛形は [alpine-answers.sh.tmpl](../trial/redfish-os-install/templates/alpine-answers.sh.tmpl)、ID は台の UUID）から取る。
+  テストは書き出す先を HTTP で配り（`0.0.0.0` の空いたポート）、インストーラは lab のゲートウェイ（`172.31.86.1`）越しに DMI の UUID で取りに来る。ホスト鍵（秘密）はテストが作って ISO に入れる（known_hosts を前もって書く）。目印の値は回ごとに変える（`it86-<時刻>`）。
+  - node1: 入れて、sshd と目印を置いて電源を切る。
+  - node2（`var.fail: disk`）: 何も入れずに電源を切る（インストーラが失敗しても電源を切る ISO の真似）。
+  - node3（`var.fail: marker`）: OS は入れるが目印を置かない（導入の仕上げが済んでいない）。
 - VM の NIC は QEMU の user ネット（slirp）で、ゲストの 22 番をコンテナの 2222 番に出す（`QEMU_EXTRA_ARGS` の `hostfwd`）。ホストの sakutei は BMC と同じアドレスの 2222 番に ssh でつなぐ。
-- 常駐の sakutei（`--interval 5s`）がノードごとの Workflow `os-install-<ノード>` を回す: CD を差す → `require` で確かめる → CD 起動で電源オン → 電源オフを待つ → ディスクから起動 → `guest-os/{target}` の `os_id: alpine` と `marker.installed: <今回の値>` を待つ（timeout 3m）→ CD を抜く。
+- 常駐の sakutei（`--interval 5s`）がノードごとの Workflow `os-install-<ノード>` を回す: CD を差す → `require` で確かめる → `action: boot_once Cd` → `action: reset`（切れているので電源 On）→ 電源オフを待つ →
+  電源 On（上書きは使い切ったのでディスクから）→ `guest-os/{target}` の `os_id: alpine`・`marker.installed: <今回の値>`・`marker.hostname: <ノード名>` を `require`（timeout 3m）→ CD を抜く。
+  終わったあとの姿の宣言は電源オンと CD は空だけで、**起動先の上書きは宣言しない**（上書きが残らないのは Workflow と BMC のおかげだと見るため）。
 - 終われば（落ちても）lab を消し、ssh の master を止める。Makefile も残った lab を消す。
 
 確かめること:
 
 | | 内容 |
 | --- | --- |
-| [AC-86-5] node1 | 電源オフのあとディスクから起動し、ゲスト OS の目印と `os_id` を観測して先へ進み（CD を抜く）、done。手で ssh して目印が今回の値であることも見る |
+| [AC-86-5] node1 | 電源オフのあとディスクから起動し、ゲスト OS の目印・ホスト名と `os_id` を観測して先へ進み（CD を抜く）、done。手で ssh して目印が今回の値であることも見る |
 | [AC-86-6] node2 | インストーラが電源を切ったので `power: Off` の待ちは通るが、ゲスト OS に届かない（unobservable）まま待ち、timeout で halt。CD は差さったまま（先へ進まない） |
 | [AC-86-7] node3 | ゲスト OS に届く（unobservable でなく目印を待つ）が目印が無いので待ち、timeout で halt。CD は差さったまま。手で ssh して os-release があり目印が無いことも見る |
+| [AC-139-7] 3 台 | 応答ファイルが宣言から書き出され（秘密鍵を含まない）、インストーラが取りに来た。boot_once・reset を送ったと出る。Continuous の上書きは一度も無く、終わったあと 3 台とも上書きは Disabled。node1 を手で ssh すると、ホスト名とアドレスが応答ファイルの値 |
 
-### 結果
+### 結果（2026-10-27、#139）
+
+KVM の使える開発機（docker 29.1.3・containerlab 0.81.1・OpenSSH 9.6p1）で、qemu-bmc 0.10.0 × 3・Alpine 3.24.3 で回した結果（PASS）:
+
+```
+    guestos_integration_test.go:603: all workflows finished in 3m40s
+--- PASS: TestGuestOSInstall (232.63s)
+PASS
+```
+
+デーモンの出力（node1、抜粋）:
+
+```
+cycle 1: WorkflowStepDone: … target node1, step 1 (apply redfish-virtual-media/node1/cd): applied map[image:/iso/auto.iso]
+cycle 1: WorkflowStepDone: … target node1, step 2 (require redfish-virtual-media/node1/cd): observed map[image:/iso/auto.iso]
+cycle 1: WorkflowStepDone: … target node1, step 3 (action): sent boot_once Cd (boot override Once)
+cycle 1: WorkflowStepDone: … target node1, step 4 (action): sent reset GracefulRestart (On if powered off)
+cycle 5: WorkflowStepDone: … target node1, step 5 (wait): observed map[power:Off]
+cycle 5: WorkflowStepDone: … target node1, step 6 (apply): applied map[power:On]
+cycle 6: WorkflowStepDone: … target node1, step 7 (require guest-os/node1): observed map[marker.hostname:node1 marker.installed:it86-1793115913 os_id:alpine]
+cycle 6: WorkflowStepDone: … target node1, step 8 (apply redfish-virtual-media/node1/cd): applied map[image:]
+cycle 6: WorkflowCompleted: workflow os-install-node1: run … completed; targets return to convergence
+cycle 35: WorkflowHalted: workflow os-install-node2: … step 7 (require guest-os/node2): require map[…] timed out after 3m0s (on_failure: halt; …)
+cycle 39: WorkflowHalted: workflow os-install-node3: … step 7 (require guest-os/node3): require map[…] timed out after 3m0s (on_failure: halt; …)
+```
+
+node1 のシリアル（インストーラが応答ファイルを取り、その値で入れた）:
+
+```
+SAKUTEI-AUTOINSTALL: answer file http://172.31.86.1:41595/6f1b7c52-0e1a-4d2b-9c11-000000008601 (hostname node1, mark it86-1793115913)
+SAKUTEI-AUTOINSTALL: sshd enabled on /dev/vda2
+SAKUTEI-AUTOINSTALL: hostname node1
+SAKUTEI-AUTOINSTALL: marked /dev/vda2
+SAKUTEI-AUTOINSTALL: done, powering off
+SAKUTEI-INSTALLED-OS: booted from disk: it86-1793115913
+```
+
+- 応答ファイルは収束ループが cycle 1 に書き、インストーラは CD から起動して約 10 秒で取りに来た（取れるまで 2 分待つが、待たずに取れた）。
+- **起動先の上書き**：BMC は boot_once の Once を電源 On（reset）で使い切り、インストーラが電源を切ったあとの電源 On はディスクから起動した。終わったあと 3 台とも Disabled。
+- node2 は前と同じく、ディスクに何も無いので差さったままの CD に落ちてインストーラがもう一度走り（応答ファイルも 2 回取った）、また何も入れずに電源を切った。ゲスト OS に届かないまま halt。
+- 最初に回したとき、`make-iso.sh` が `SSH_AUTHORIZED_KEYS` を渡したときしかホスト鍵を ISO に入れず（公開鍵を応答ファイルから取る形では渡さない）、入れた OS がホスト鍵を自分で作ったので known_hosts と合わず、ゲスト OS が観測できなかった（unknown のまま timeout で halt）。ホスト鍵を別に入れるよう直した。
+
+### 結果（2026-10-27、#86 のとき）
+
+当時は台ごとに ISO を作り（値は ISO に焼く）、起動先は Continuous で CD にしてディスクから起動するときに Disabled に戻す手順だった（手順の番号も当時のもの）。
 
 2026-10-27、KVM の使える開発機（docker 29.1.3・containerlab 0.81.1・OpenSSH 9.6p1）で、qemu-bmc 0.10.0 × 3・Alpine 3.24.3 で回した結果（PASS）:
 

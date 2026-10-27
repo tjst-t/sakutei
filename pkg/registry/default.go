@@ -32,6 +32,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/remote"
 	"github.com/tjst-t/sakutei/internal/s3bucket"
 	"github.com/tjst-t/sakutei/internal/sqlmigrate"
+	"github.com/tjst-t/sakutei/internal/templatefile"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -73,6 +74,12 @@ import (
 //     /etc/os-release and the markers config["guest_markers"]
 //     ("installed=/etc/sakutei-installed,...").  Observe only (Backlog #86):
 //     a Workflow's wait / require uses it (resource: guest-os/{target}).
+//
+//   - "template-file": writes files rendered from the user's text/template
+//     templates (config["template_dir"]) into config["output_dir"], e.g. the
+//     answer files of an automated OS install (Backlog #139).  Minimal tier:
+//     observed by comparing the file with the template rendered from the
+//     desired.
 func DefaultRegistry() *ProviderRegistry {
 	r := New()
 
@@ -269,6 +276,13 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, fmt.Errorf("guest-os: %w", err)
 		}
 		return guestos.New(execs, markers)
+	})
+
+	// "template-file" — 雛形（text/template）に対象ごとの値を入れたファイルを
+	// 書き出す（§29.1、#139。OS の自動導入の応答ファイルなど）。
+	// config["template_dir"] は雛形の置き場、config["output_dir"] は書き出す先。
+	r.Register(templatefile.Name, func(config map[string]string) (provider.Provider, error) {
+		return templatefile.New(config["template_dir"], config["output_dir"])
 	})
 
 	return r

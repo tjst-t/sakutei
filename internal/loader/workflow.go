@@ -213,11 +213,12 @@ func parseRequirements(v any) (*workflow.Requirements, error) {
 // "false" }) or, to name the resource it touches (#87), { resource:
 // <provider>/<id>, fields: {...} } — recognized by a `fields` key holding an
 // object.  wait and require take { resource, fields, timeout } (resource
-// optional; require's timeout is mandatory).
+// optional; require's timeout is mandatory).  action takes { resource, op,
+// args } (#139; resource optional, args an object of strings).
 func parseStep(v any) (workflow.Step, error) {
 	m, ok := v.(map[string]any)
 	if !ok || len(m) != 1 {
-		return workflow.Step{}, fmt.Errorf("a step is an object with exactly one of apply / task / wait / require / verify")
+		return workflow.Step{}, fmt.Errorf("a step is an object with exactly one of apply / task / wait / require / action / verify")
 	}
 	for k, val := range m {
 		step := workflow.Step{Kind: workflow.StepKind(k)}
@@ -258,6 +259,30 @@ func parseStep(v any) (workflow.Step, error) {
 				}
 				step.Timeout = d
 			}
+		case workflow.StepAction:
+			am, ok := val.(map[string]any)
+			if !ok {
+				return workflow.Step{}, fmt.Errorf("action must be { op: <operation>, args: {...} } (e.g. op: boot_once)")
+			}
+			for key := range am {
+				if key != "resource" && key != "op" && key != "args" {
+					return workflow.Step{}, fmt.Errorf("action.%s is not supported (resource | op | args)", key)
+				}
+			}
+			if err := parseStepResource(&step, am); err != nil {
+				return workflow.Step{}, err
+			}
+			op, isString := am["op"].(string)
+			if !isString {
+				return workflow.Step{}, fmt.Errorf("action.op must be a string (e.g. boot_once)")
+			}
+			step.Op = strings.TrimSpace(op)
+			if raw, ok := am["args"]; ok {
+				if _, isMap := raw.(map[string]any); !isMap {
+					return workflow.Step{}, fmt.Errorf("action.args must be an object")
+				}
+				step.Args = stringifyStringMap(raw)
+			}
 		case workflow.StepVerify:
 			// verify: invariant  /  verify: { invariant: min_active }
 			ok := false
@@ -272,7 +297,7 @@ func parseStep(v any) (workflow.Step, error) {
 				return workflow.Step{}, fmt.Errorf("verify must be \"invariant\" or { invariant: min_active }")
 			}
 		default:
-			return workflow.Step{}, fmt.Errorf("unknown step %q (apply | task | wait | require | verify)", k)
+			return workflow.Step{}, fmt.Errorf("unknown step %q (apply | task | wait | require | action | verify)", k)
 		}
 		return step, nil
 	}

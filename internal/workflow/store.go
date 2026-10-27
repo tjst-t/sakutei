@@ -74,6 +74,10 @@ type Run struct {
 	Step   int `json:"step"`
 	// StepStartedAt は今のステップに入った時刻（wait の timeout の起点）。
 	StepStartedAt time.Time `json:"step_started_at"`
+	// ActionSending は今の手順（action、#139）の一度きりの操作を送りかけた印。
+	// 送る直前に立てて S2 に書き、送れて次の手順へ進むときに消す。立ったまま
+	// 読み直したら、送ったかどうか分からないので二度送らない（halt）。
+	ActionSending bool `json:"action_sending,omitempty"`
 	// Gate は待っているゲート（= ステージ名）。PhaseAwaitingApproval のときだけ。
 	Gate         string    `json:"gate,omitempty"`
 	GateOpenedAt time.Time `json:"gate_opened_at,omitempty"`

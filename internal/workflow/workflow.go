@@ -90,9 +90,22 @@
 //     前提条件で、観測で満たすまで待ち、timeout（必須）で halt する。手順が触る
 //     リソースも対象と同じく、done まで収束ループが Apply しない（Resources）。
 //     invariant（min_active）は対象だけで数える。
+//   - action は provider の一度きりの操作（#139、provider.Actioner）: { resource,
+//     op, args }（resource は省けば対象）。収束の宣言にできない操作（Redfish の
+//     「次の 1 回だけ CD から起動」〈op boot_once〉・再起動〈op reset〉）を、その
+//     位置で 1 回だけ施して次へ進む。効いたかは後の wait / require で確かめる。
+//     送る直前に「送りかけ」を S2 に書き、送れたら消して進む。書いたまま残って
+//     いれば（送ったか分からないまま止まった）、二度送らずに halt する。provider
+//     が「送っていない」と言う失敗（届かない・別の操作の途中）は待って送り直し、
+//     それ以外の失敗は halt。破壊的な操作（ForceRestart）は予算（§13）を通し、
+//     止められれば待つ。invariant は action では見込みを変えない（止まる間の
+//     active は後の手順で確かめる）。
 //
-// 別の provider を触る手順の例（OS の導入: CD を差す → 差さったことを確かめる →
-// CD 起動で電源オン。全体は docs/trial/redfish-os-install/intent/os.yaml）:
+// 別の provider を触る手順と一度きりの操作の例（OS の導入: CD を差す → 差さった
+// ことを確かめる → 次の 1 回だけ CD から起動 → 再起動〈切れていれば電源 On〉→
+// インストーラが電源を切るのを待つ → 電源 On〈上書きは使い切ったのでディスク
+// から〉→ ゲスト OS の目印を確かめる → CD を抜く。全体は
+// docs/trial/redfish-os-install/intent/os.yaml）:
 //
 //	steps:
 //	  - apply:
@@ -104,10 +117,27 @@
 //	      fields:
 //	        image: /iso/installer.iso
 //	      timeout: 5m
+//	  - action:
+//	      op: boot_once
+//	      args:
+//	        target: Cd
+//	  - action:
+//	      op: reset
+//	  - wait:
+//	      fields:
+//	        power: "Off"
+//	      timeout: 15m
 //	  - apply:
-//	      boot_enabled: Continuous
-//	      boot_target: Cd
 //	      power: "On"
+//	  - require:
+//	      resource: guest-os/{target}
+//	      fields:
+//	        marker.installed: install-1
+//	      timeout: 10m
+//	  - apply:
+//	      resource: redfish-virtual-media/{target}/cd
+//	      fields:
+//	        image: ""
 package workflow
 
 import (
@@ -147,6 +177,10 @@ const (
 	// （必須）を過ぎたら失敗。wait と同じく観測で判定するが、満たされないまま
 	// 永遠に待たないよう timeout を省けない。
 	StepRequire StepKind = "require"
+	// StepAction は provider の一度きりの操作（#139、provider.Actioner）を 1 回だけ
+	// 施す（Redfish の boot_once・reset など）。収束の宣言ではなく手順なので、
+	// 観測で済んだかを確かめない（後の wait / require で確かめる）。
+	StepAction StepKind = "action"
 )
 
 // TargetPlaceholder は Step.Resource の中で今の対象の Local ID に置き換わる文字列。
@@ -158,12 +192,16 @@ type Step struct {
 	// Resource は手順が触る（観測する）リソース "<provider>/<id>"（#87）。空なら
 	// 今の対象。id の中の {target} は今の対象の Local ID に置き換わる（例
 	// "redfish-virtual-media/{target}/cd"）。scope は Workflow の target.scope。
-	// apply / wait / require が持てる（task は対象だけ。多相 Task は v2）。
+	// apply / wait / require / action が持てる（task は対象だけ。多相 Task は v2）。
 	Resource string `json:"resource,omitempty"`
 	// Fields は apply / task が現実に施す値、wait / require が待つ値。
 	Fields map[string]string `json:"fields,omitempty"`
 	// Timeout は wait / require の上限（wait は 0 なら無期限、require は必須）。
 	Timeout time.Duration `json:"timeout,omitempty"`
+	// Op と Args は action の操作の名前と引数（#139、例 op boot_once・args
+	// { target: Cd }）。意味は provider が決める（provider.Actioner）。
+	Op   string            `json:"op,omitempty"`
+	Args map[string]string `json:"args,omitempty"`
 }
 
 // ResourceFor は対象 target のときに手順が触るリソースの ID を返す。
@@ -181,8 +219,8 @@ func (s Step) validateResource() error {
 	if s.Resource == "" {
 		return nil
 	}
-	if s.Kind != StepApply && s.Kind != StepWait && s.Kind != StepRequire {
-		return fmt.Errorf("resource is only for apply / wait / require (a task runs on the target; polymorphic Task is v2)")
+	if s.Kind != StepApply && s.Kind != StepWait && s.Kind != StepRequire && s.Kind != StepAction {
+		return fmt.Errorf("resource is only for apply / wait / require / action (a task runs on the target; polymorphic Task is v2)")
 	}
 	prov, local, ok := strings.Cut(s.Resource, "/")
 	if !ok || strings.TrimSpace(prov) == "" || strings.TrimSpace(local) == "" {
@@ -461,9 +499,19 @@ func (d Definition) Validate() error {
 			if s.Timeout <= 0 {
 				return fmt.Errorf("workflow %s: steps[%d] (require): timeout is required (a precondition that never holds halts instead of waiting forever)", d.Name, i)
 			}
+		case StepAction:
+			if strings.TrimSpace(s.Op) == "" {
+				return fmt.Errorf("workflow %s: steps[%d] (action): op is required (e.g. boot_once, reset)", d.Name, i)
+			}
+			if len(s.Fields) > 0 || s.Timeout != 0 {
+				return fmt.Errorf("workflow %s: steps[%d] (action): an action takes op and args only (confirm its effect with a following wait / require)", d.Name, i)
+			}
 		case StepVerify:
 		default:
-			return fmt.Errorf("workflow %s: steps[%d]: unknown step kind %q (apply | task | wait | require | verify)", d.Name, i, s.Kind)
+			return fmt.Errorf("workflow %s: steps[%d]: unknown step kind %q (apply | task | wait | require | action | verify)", d.Name, i, s.Kind)
+		}
+		if s.Kind != StepAction && (s.Op != "" || len(s.Args) > 0) {
+			return fmt.Errorf("workflow %s: steps[%d] (%s): op and args are only for action", d.Name, i, s.Kind)
 		}
 		if s.Timeout < 0 {
 			return fmt.Errorf("workflow %s: steps[%d]: timeout must not be negative", d.Name, i)

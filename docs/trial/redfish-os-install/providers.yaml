@@ -1,6 +1,11 @@
 # provider ごとの設定（--provider-config）。guest-os は入れた OS を観測するだけ（#86）。
+# template-file は応答ファイルを templates/ の雛形から answers/ に書き出す（#139）。
+# answers/ を HTTP で配るのは利用者の側（README の「回し方」）。
 providers:
   guest-os:
     remote_config: hosts.yaml
     guest_hosts: node1
-    guest_markers: installed=/etc/sakutei-installed
+    guest_markers: installed=/etc/sakutei-installed,hostname=/etc/hostname
+  template-file:
+    template_dir: templates
+    output_dir: answers

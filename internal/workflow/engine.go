@@ -88,6 +88,11 @@ type Engine struct {
 	// Exec は apply ステップの Plan を実行する（常駐ループの Executor = fencing 込み）。
 	// nil なら Provider.Apply。
 	Exec func(ctx context.Context, plan core.Plan) error
+	// Admit は action の一度きりの操作（#139）を予算（§13）に通す。op は操作を
+	// Op に写したもの（破壊的なら Destructive）。false なら reason を添えて待つ。
+	// Commit は施した操作を予算の累積に数える。どちらも nil なら予算を見ない。
+	Admit  func(op core.Op) (ok bool, reason string)
+	Commit func(op core.Op)
 	// Tasks は task ステップの単純 Task を起動する（1-outstanding、§6.2）。nil なら
 	// task ステップは進めず、TasksOff を理由として待つ。
 	Tasks    *task.Manager
@@ -372,6 +377,8 @@ const (
 	stepDone stepStatus = iota
 	stepPending
 	stepFailed
+	// stepStopped は S2 に書けなかったので、この周はここで止める（save が出来事を出した）。
+	stepStopped
 )
 
 // advance は running の Workflow を進められるところまで進める。
@@ -413,6 +420,8 @@ func (s *stepper) advance(ctx context.Context) {
 		case stepFailed:
 			s.halt("%s: %s", where, msg)
 			return
+		case stepStopped:
+			return
 		}
 
 		// 不変条件（後）: 破れていれば失敗。
@@ -428,6 +437,7 @@ func (s *stepper) advance(ctx context.Context) {
 		s.run.Step++
 		s.run.StepStartedAt = s.now.UTC()
 		s.run.Reason = ""
+		s.run.ActionSending = false
 		if s.run.Step < len(s.def.Steps) {
 			if !s.save() {
 				return
@@ -499,6 +509,8 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 			return stepPending, fmt.Sprintf("waiting for %v (unobservable; unknown ≠ absent)", step.Fields)
 		}
 		return stepPending, fmt.Sprintf("waiting for %v", step.Fields)
+	case StepAction:
+		return s.action(ctx, step, target)
 	}
 
 	// apply / task: 対象が観測できなければ待つ（unknown ≠ absent）。無ければ失敗。
@@ -554,6 +566,56 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 		}
 	}
 	return stepPending, dec.Reason
+}
+
+// action は一度きりの操作を 1 回だけ施す（#139）。観測で済んだかを見ないので、
+// 送る前に「送りかけ」を S2 に書き、立ったまま戻ってきたら二度送らない。
+func (s *stepper) action(ctx context.Context, step Step, target core.ID) (stepStatus, string) {
+	if s.run.ActionSending {
+		return stepFailed, fmt.Sprintf("%s was being sent when the run stopped and it is unknown whether it reached the target; not sending it twice (check the machine, then `sakutei workflow cancel %s` to start over)",
+			step.Op, s.def.Name)
+	}
+	p := s.e.providerOf(target)
+	if p == nil {
+		return stepPending, fmt.Sprintf("provider %s is unavailable; waiting", target.Provider)
+	}
+	a, ok := p.(provider.Actioner)
+	if !ok {
+		return stepFailed, fmt.Sprintf("provider %s has no one-time operations (action %s)", target.Provider, step.Op)
+	}
+	plan, err := a.PlanAction(target.Local, step.Op, step.Args)
+	if err != nil {
+		return stepFailed, fmt.Sprintf("action %s: %v", step.Op, err)
+	}
+	desc := plan.Description
+	if desc == "" {
+		desc = step.Op
+	}
+	op := core.Op{Kind: core.OpKindUpdate, Target: target, Destructive: plan.Destructive,
+		Diagnostic: fmt.Sprintf("workflow %s: one-time operation %s on %s", s.def.Name, desc, target)}
+	if s.e.Admit != nil {
+		if ok, why := s.e.Admit(op); !ok {
+			return stepPending, fmt.Sprintf("action %s is held by the change budget: %s", desc, why)
+		}
+	}
+	s.run.ActionSending = true
+	if !s.save() {
+		return stepStopped, ""
+	}
+	if err := a.Action(ctx, target.Local, step.Op, step.Args); err != nil {
+		if errors.Is(err, provider.ErrActionNotSent) {
+			s.run.ActionSending = false
+			if !s.save() {
+				return stepStopped, ""
+			}
+			return stepPending, fmt.Sprintf("action %s not sent: %s; trying again next cycle", desc, shortReason(err))
+		}
+		return stepFailed, fmt.Sprintf("action %s: %v", desc, err)
+	}
+	if plan.Destructive && s.e.Commit != nil {
+		s.e.Commit(op)
+	}
+	return stepDone, fmt.Sprintf("sent %s", desc)
 }
 
 func (e *Engine) execute(ctx context.Context, plan core.Plan) error {

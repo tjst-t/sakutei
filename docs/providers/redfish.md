@@ -4,7 +4,7 @@
 
 | provider 名 | ID | 扱うもの |
 | --- | --- | --- |
-| `redfish-system` | ノード名（例 `node1`） | 電源（On / Off）・起動先の上書き（Continuous / Disabled） |
+| `redfish-system` | ノード名（例 `node1`） | 電源（On / Off）・起動先の上書き（Continuous / Disabled）。Workflow の手順から一度きりの操作（1 回だけの起動先・再起動、#139） |
 | `redfish-virtual-media` | `<ノード名>/cd`（例 `node1/cd`） | 仮想メディアの CD（Insert / Eject） |
 
 どちらも標準階級（List・BulkObserve を持たない）で、prune の対象にしない（サーバは Sakutei が作ったり消したりしない）。
@@ -91,10 +91,10 @@ YAML の `On` / `Off` は文字列のまま読まれる（bool になるのは `
 
 | フィールド | 値 | 意味 |
 | --- | --- | --- |
-| `power` | `On` / `Off` | Off→On は Reset On、On→Off は GracefulShutdown。PoweringOn / PoweringOff の間は操作を重ねない。再起動は宣言できない（Task の領分）。 |
+| `power` | `On` / `Off` | Off→On は Reset On、On→Off は GracefulShutdown。PoweringOn / PoweringOff の間は操作を重ねない。再起動は宣言できない（Workflow の手順の `action: { op: reset }`、下の「一度きりの操作」）。 |
 | `power_off` | `graceful`（既定）/ `graceful_then_force` | graceful は ForceOff に進まず、止まらなければずれが続いて stuck で知らせる。graceful_then_force は最初の GracefulShutdown から `force_after` を過ぎたら ForceOff（予算で破壊的に数える）。 |
 | `force_after` | 時間（例 `5m`） | graceful_then_force のときだけ書け、そのときは必須。 |
-| `boot_enabled` | `Continuous` / `Disabled` | `Once` は計画の時点でエラー（1 回起動で BMC が Disabled に戻すので収束しない）。 |
+| `boot_enabled` | `Continuous` / `Disabled` | `Once` は計画の時点でエラー（1 回起動で BMC が Disabled に戻すので収束しない。Workflow の手順の `action: { op: boot_once }` を使う）。 |
 | `boot_target` | 例 `Pxe` / `Hdd` / `Cd` | `boot_enabled: Continuous` のときだけ比べる。PATCH だけで再起動はしない。 |
 
 観測だけの値（宣言できない）: `uuid`・`macs`・`cpu_count`・`memory_gib`・`boot_mode`・`power_state`。
@@ -107,12 +107,41 @@ YAML の `On` / `Off` は文字列のまま読まれる（bool になるのは `
 
 観測だけの値: `inserted`・`media_image`。
 
+## 一度きりの操作（Workflow の action 手順、#139）
+
+「次の 1 回だけ CD から起動」と「再起動」は、あるべき状態ではない（Once は BMC が 1 回の起動で使い切り、再起動は終われば何も残らない）ので宣言できない。
+Workflow の手順（§6.3）の `action` として、その位置で 1 回だけ施す（`resource` は省けば Workflow の対象、書くなら `redfish-system/{target}`）。
+
+```yaml
+steps:
+  - action:
+      op: boot_once          # 起動先の上書きを Once・target にする（PATCH だけ。再起動しない）
+      args:
+        target: Cd           # BMC の AllowableValues にある値
+  - action:
+      op: reset              # 再起動。電源が切れていれば On を送る
+      args:
+        type: ForceRestart   # 省けば GracefulRestart
+```
+
+| op | args | 意味 |
+| --- | --- | --- |
+| `boot_once` | `target`（必須） | 起動先の上書きを `Once`・`target` にする。送ったあと読み直して Once・target になっていなければ halt。BMC が次の起動で Disabled に戻すので、上書きは残らない。 |
+| `reset` | `type`: `GracefulRestart`（既定）/ `ForceRestart` | 電源が On なら `type` で再起動、Off なら Reset On。`ForceRestart` は**破壊的**として変更予算（§13）に数え、上限なら送らずに待つ。 |
+
+- 送る前に BMC を読む。届かない・読めない・電源の切り替えの途中なら送らずに待ち、次の周に送り直す。
+- 送る直前に「送りかけ」を Workflow の S2 に書く。書いたままデーモンが止まって起き直したら、送ったかどうか分からないので**二度送らずに halt** する（台を確かめて `sakutei workflow cancel`）。
+- 効いたかは後の手順（`wait` / `require`）で確かめる。
+- 知らない `op`・誤った `args`・設定に無いノードは、その手順で halt（何も送らない）。
+
 ## OS を入れる（Workflow と組み合わせる）
 
-「CD に ISO を差す → 差さったことを確かめる → CD から起動 → インストーラが電源を切るのを待つ → ディスクから起動」は、1 つの Workflow（§6.3）の手順として書ける。
+「CD に ISO を差す → 差さったことを確かめる → 次の 1 回だけ CD から起動 → 再起動 → インストーラが電源を切るのを待つ → 電源 On（ディスクから）→ 入れた OS を確かめる → CD を抜く」は、1 つの Workflow（§6.3）の手順として書ける。
 CD は別の provider（`redfish-virtual-media`）なので、その手順には `resource: redfish-virtual-media/{target}/cd` を書き、電源を入れる前に `require` で差さったことを確かめる（Backlog #87）。
-自動インストールの ISO は利用者が用意する（Sakutei の責務の外、§29.3 (c)）。intent と Workflow の例・試用の結果（qemu-bmc 0.9.0 + Alpine 3.24）・限界は
-[docs/trial/redfish-os-install/README.md](../trial/redfish-os-install/README.md)。
+起動先は `action: boot_once` で 1 回だけ CD にする（#139）ので、終わったあとの起動先の宣言は `Disabled` のままでよく、戻す手順も要らない。
+自動インストールの ISO は利用者が用意する（Sakutei の責務の外、§29.3 (c)）。台ごとの応答ファイル（ホスト名・アドレス・公開鍵・目印）は宣言から作れる（[template-file](template-file.md)）。
+intent と Workflow の例・試用の結果（qemu-bmc + Alpine 3.24）・限界は [docs/trial/redfish-os-install/README.md](../trial/redfish-os-install/README.md)。
+偽 BMC を相手にした受け入れテストは `tests/acceptance/workflow_action_test.go`（`[AC-139-*]`）、本物の OS を入れる統合テストは `make integration-guestos`（[guest-os](guest-os.md) の「統合テスト」）。
 
 ## 実行例
 

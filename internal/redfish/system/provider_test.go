@@ -16,6 +16,7 @@ package system
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -186,7 +187,7 @@ func TestValidateIntent(t *testing.T) {
 		fields map[string]string
 		want   string
 	}{
-		{map[string]string{"boot_enabled": "Once", "boot_target": "Pxe"}, "Task"},
+		{map[string]string{"boot_enabled": "Once", "boot_target": "Pxe"}, "op: boot_once"},
 		{map[string]string{"power": "ForceRestart"}, "one-time operation"},
 		{map[string]string{"power": "GracefulRestart"}, "one-time operation"},
 		{map[string]string{"power": "Paused"}, "want On or Off"},
@@ -315,3 +316,116 @@ func TestGracefulThenForce_LostClockRecounts(t *testing.T) {
 }
 
 var _ provider.PlanRefiner = (*Provider)(nil)
+
+// #139: 一度きりの操作。boot_once は Once・target にし（再起動しない）、次の起動で
+// BMC が Disabled に戻す。reset は電源が Off なら On を送る。
+func TestAction_BootOnceThenReset(t *testing.T) {
+	srv, c := newBMC(t, redfishtest.Options{PowerState: "Off"})
+	p := New(map[string]redfish.Client{"node1": c}, Options{})
+	ctx := context.Background()
+
+	plan, err := p.PlanAction("node1", ActionBootOnce, map[string]string{ArgTarget: "Cd"})
+	if err != nil || plan.Destructive {
+		t.Fatalf("PlanAction boot_once = %+v, %v; want not destructive", plan, err)
+	}
+	if err := p.Action(ctx, "node1", ActionBootOnce, map[string]string{ArgTarget: "Cd"}); err != nil {
+		t.Fatalf("boot_once: %v", err)
+	}
+	if e, tg := srv.Boot(); e != "Once" || tg != "Cd" {
+		t.Fatalf("boot override = %s %s, want Once Cd", e, tg)
+	}
+	if srv.PowerState() != "Off" || srv.Boots() != 0 {
+		t.Fatalf("boot_once powered the node on (power %s, boots %d)", srv.PowerState(), srv.Boots())
+	}
+	if err := p.Action(ctx, "node1", ActionReset, nil); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if srv.Boots() != 1 {
+		t.Fatalf("boots = %d, want 1 (reset of an Off node powers it on)", srv.Boots())
+	}
+	if e, _ := srv.Boot(); e != "Disabled" {
+		t.Errorf("boot override after the boot = %s, want Disabled (Once is used up)", e)
+	}
+	var sent []string
+	for _, r := range srv.Requests() {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.Path, "ComputerSystem.Reset") {
+			sent = append(sent, r.Body)
+		}
+	}
+	if len(sent) != 1 || !strings.Contains(sent[0], `"On"`) {
+		t.Errorf("resets sent = %v, want one On", sent)
+	}
+}
+
+func TestAction_ResetTypes(t *testing.T) {
+	clk := newClock()
+	srv, c := newBMC(t, redfishtest.Options{PowerState: "On", Now: clk.Now, GracefulDelay: time.Minute})
+	p := New(map[string]redfish.Client{"node1": c}, Options{})
+	ctx := context.Background()
+
+	if plan, err := p.PlanAction("node1", ActionReset, nil); err != nil || plan.Destructive {
+		t.Errorf("reset (default GracefulRestart) = %+v, %v; want not destructive", plan, err)
+	}
+	if plan, err := p.PlanAction("node1", ActionReset, map[string]string{ArgType: "ForceRestart"}); err != nil || !plan.Destructive {
+		t.Errorf("reset ForceRestart = %+v, %v; want destructive (counted by the budget)", plan, err)
+	}
+	for _, bad := range []struct {
+		op   string
+		args map[string]string
+	}{
+		{ActionReset, map[string]string{ArgType: "ForceOff"}},
+		{ActionReset, map[string]string{"target": "Cd"}},
+		{ActionBootOnce, nil},
+		{"power_cycle", nil},
+	} {
+		if _, err := p.PlanAction("node1", bad.op, bad.args); err == nil {
+			t.Errorf("PlanAction(%s, %v) = nil, want an error", bad.op, bad.args)
+		}
+	}
+	if _, err := p.PlanAction("node9", ActionReset, nil); err == nil {
+		t.Errorf("PlanAction on a node without a BMC = nil, want an error")
+	}
+
+	if err := p.Action(ctx, "node1", ActionReset, map[string]string{ArgType: "ForceRestart"}); err != nil {
+		t.Fatalf("ForceRestart: %v", err)
+	}
+	if srv.Boots() != 1 {
+		t.Errorf("boots = %d, want 1", srv.Boots())
+	}
+	if err := p.Action(ctx, "node1", ActionReset, nil); err != nil {
+		t.Fatalf("GracefulRestart: %v", err)
+	}
+	// 切り替えの途中は送らない（送っていないので送り直せる）。
+	if srv.PowerState() != "PoweringOff" {
+		t.Fatalf("power = %s, want PoweringOff during GracefulRestart", srv.PowerState())
+	}
+	err := p.Action(ctx, "node1", ActionReset, nil)
+	if !errors.Is(err, provider.ErrActionNotSent) {
+		t.Errorf("reset during a power transition = %v, want ErrActionNotSent", err)
+	}
+
+	// BMC に届かなければ送っていない。
+	srv.SetUnreachable(true)
+	if err := p.Action(ctx, "node1", ActionBootOnce, map[string]string{ArgTarget: "Cd"}); !errors.Is(err, provider.ErrActionNotSent) {
+		t.Errorf("boot_once while unreachable = %v, want ErrActionNotSent", err)
+	}
+}
+
+func TestAction_BootOnceTargetNotOffered(t *testing.T) {
+	_, c := newBMC(t, redfishtest.Options{PowerState: "Off"})
+	p := New(map[string]redfish.Client{"node1": c}, Options{})
+	err := p.Action(context.Background(), "node1", ActionBootOnce, map[string]string{ArgTarget: "Floppy"})
+	if err == nil || errors.Is(err, provider.ErrActionNotSent) || !strings.Contains(err.Error(), "not offered") {
+		t.Errorf("boot_once Floppy = %v, want a permanent \"not offered\" error", err)
+	}
+}
+
+// Once は宣言できない決まりは変わらない（手順の action を案内する）。
+func TestValidateIntent_OncePointsToAction(t *testing.T) {
+	_, c := newBMC(t, redfishtest.Options{})
+	p := New(map[string]redfish.Client{"node1": c}, Options{})
+	err := p.ValidateIntent("node1", map[string]string{FieldBootEnabled: "Once", FieldBootTarget: "Cd"})
+	if err == nil || !strings.Contains(err.Error(), "op: boot_once") {
+		t.Errorf("ValidateIntent(Once) = %v, want an error pointing to the boot_once action", err)
+	}
+}
