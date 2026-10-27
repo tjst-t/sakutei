@@ -1464,11 +1464,11 @@
       ],
       "body": "設計 §26.6。`sakutei reconcile --expect-revision <rev>` は v1a の設計にある verb のフラグだが、実装されていない（2026-10-20、設計書 v3.4 の改訂で見つかった。§26.6 と §29.6 に「未実装」と注記済み）。\n\nplan で確認した rendered_revision を渡し、reconcile 時の rendered_revision がずれていれば Apply せずに中断する。承認ゲートの「意図を承認し、実行時の rendered_revision で同一性を確かめる」思想（§14）と対になる。",
       "doneWhen": "plan の rendered_revision を渡した reconcile は収束し、その間に intent・採番・inventory が変わって rendered_revision がずれたときは何も Apply せずに 0 以外で終わることをテストで示す。設計書の「未実装」の注記を外す",
-      "resolution": "Factory が取り込みました（factory/reconcile-expect-revision-plan-reconcile）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:48:41.808Z",
-      "updatedAt": "2026-10-20T20:16:27.276Z",
+      "updatedAt": "2026-10-27T09:35:58.812Z",
       "closedAt": "2026-10-20T20:16:27.276Z",
       "extra": {}
     },
