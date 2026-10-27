@@ -2729,7 +2729,7 @@
       "number": 116,
       "kind": "task",
       "title": "採番の解放の薄い CLI：sakutei allocator release / list（#108 の 2）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "w1-provider-cli",
       "dependsOn": [],
       "milestone": null,
@@ -2741,7 +2741,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T07:46:45.249Z",
-      "updatedAt": "2026-10-27T07:46:57.291Z",
+      "updatedAt": "2026-10-27T07:47:22.843Z",
       "closedAt": null,
       "extra": {}
     },
