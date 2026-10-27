@@ -2460,11 +2460,11 @@
       "labels": [],
       "body": "親 #96 の共通の決まりに従う。docs/trial/observe/。設計 §5.7・§16（observe_tiers）・§26.4 を読む。dnszone・nftables を相手に常駐の sakutei で：observe_tiers で間引いたリソースが周ごとに観測されないことと、その間に手で変えたずれが何周後に拾われるか、BulkObserve の経路が使われていること（ログなどで見分ける）と結果が Read と等しいこと、`sakutei status` の出力と --daemon-status で常駐の状態（飛ばした周の数 #15 など）が見えること。",
       "doneWhen": "docs/trial/observe/ に手順と実際に回した結果がある。見つけた不具合は直すか列挙されている。make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/tier-observe-bulkobserve-status-daemon-s）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T16:13:51.711Z",
+      "updatedAt": "2026-10-27T09:40:18.367Z",
       "closedAt": "2026-10-23T16:13:51.711Z",
       "extra": {}
     },
