@@ -2866,7 +2866,7 @@
       "number": 122,
       "kind": "task",
       "title": "S3 互換 API のバケット provider（s3-bucket）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "w2-fw-nftables-s3",
       "dependsOn": [
         "w2-nftables-live"
@@ -2880,7 +2880,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T09:27:59.710Z",
-      "updatedAt": "2026-10-27T09:27:59.710Z",
+      "updatedAt": "2026-10-27T09:29:50.133Z",
       "closedAt": null,
       "extra": {}
     }
