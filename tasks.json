@@ -948,11 +948,11 @@
       "labels": [],
       "body": "設計 §25.1 / §25.4 / §29.1。DR intent を平時に PR 承認済みで保持し、enabled: true への切替え（または claim 切替）だけで発動する。claim ハンドオフ（#29）と最小 Workflow の組み合わせ。緊急ローカル書込（書込 break-glass）：署名付きのローカルコミットを許し、必ず Event / S4 で検出され、復旧後に事後合流の PR を起票する。「git 到達不能」の判定基準と合流の競合手順は §29.1 で実装中に決める事項。決めた基準をコミットの説明と設計書に書く。",
       "doneWhen": "プリステージした DR intent を enabled: true にするだけで DR 側が収束すること、git に届かないときのローカル書込が署名と S4 記録つきでだけ許され、復旧後に合流用のブランチ（または PR の下書き）が作られることをテストで示す",
-      "resolution": "Factory が取り込みました（factory/v1-5-dr-dr-intent-break-glass）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T15:21:07.710Z",
+      "updatedAt": "2026-10-27T09:35:22.707Z",
       "closedAt": "2026-10-20T15:21:07.710Z",
       "extra": {}
     },
