@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package cli
 
-// providers.go — multi-provider resolution helpers for cmd/sakutei.
+// providers.go — multi-provider resolution helpers for the CLI.
 //
 // resolveProviders collects the unique set of provider names declared in
 // the loaded intent resources, looks each up in the ProviderRegistry, and
@@ -37,22 +37,22 @@ import (
 	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
 // resolveProviders builds a name→provider.Provider map for all provider names
 // referenced in the given desired resources.
 //
-// reg is the registry to look up factories in.
-// baseConfig is the per-invocation configuration passed to every factory
-// (e.g. {"state": "/tmp/state.json"} for the fake provider).
+// reg is the provider set to look up factories in.
+// baseConfig is the per-invocation configuration built from the flags (e.g.
+// {"state": "/tmp/state.json"} for the fake provider); reg lays each
+// provider's --provider-config values over it (#119).
 //
 // Returns an error if any provider name is not registered or if a factory call
 // fails.  Also runs sdk.ValidateProvider on every resolved provider (fail-closed,
 // §10.4, ADR-0008) and exits 1 via exitOnValidationFail when validation fails.
 func resolveProviders(
-	reg *registry.ProviderRegistry,
+	reg *providerSet,
 	resources []diff.DesiredResource,
 	baseConfig map[string]string,
 	commandName string,
@@ -65,9 +65,8 @@ func resolveProviders(
 
 	result := make(map[string]provider.Provider, len(names))
 	for name := range names {
-		// Build a per-provider config: start from baseConfig and override with
-		// provider-specific keys if needed.  For now all providers share the
-		// same baseConfig (the factory picks what it needs from it).
+		// Per-provider config: baseConfig overlaid with the provider's
+		// --provider-config values (the factory picks what it needs from it).
 		p, err := reg.Get(name, baseConfig)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", commandName, err)

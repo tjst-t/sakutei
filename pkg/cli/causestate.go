@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package cli
 
 // causeState holds the "previous cycle" values needed to classify cause tags
 // A/B/C for each resource diff (§10.2, ADR-0008, Scb0ecd-2).

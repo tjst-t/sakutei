@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package cli
 
 import (
 	"context"
@@ -38,7 +38,6 @@ import (
 	"github.com/tjst-t/sakutei/internal/revision"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
@@ -88,6 +87,7 @@ func runReconcile(args []string) {
 	fs.SetOutput(os.Stderr)
 
 	intentDir := fs.String("intent", "", "directory containing intent JSON files (required)")
+	providerConfigFile := providerConfigFlag(fs)
 	statePath := fs.String("state", "sakutei-fake-state.json",
 		"path to the fake provider state file (default: sakutei-fake-state.json)")
 	// S62dbba verify: distinct file for the dnszone provider so a mixed
@@ -400,7 +400,7 @@ func runReconcile(args []string) {
 	// --zone / --ruleset (when set) are passed as "zone" / "ruleset" for the
 	// dnszone / nftables providers so a mixed intent can keep each provider's
 	// backing file separate.
-	reg := registry.DefaultRegistry()
+	reg := openProviderSet("sakutei reconcile", *providerConfigFile)
 	providerConfig := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		providerConfig["zone"] = *zonePath

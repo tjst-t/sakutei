@@ -37,6 +37,7 @@ package registry
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -90,6 +91,16 @@ func (r *ProviderRegistry) Register(name string, factory ProviderFactory) {
 func (r *ProviderRegistry) Lookup(name string) (ProviderFactory, bool) {
 	f, ok := r.factories[name]
 	return f, ok
+}
+
+// Names returns the registered provider names, sorted.
+func (r *ProviderRegistry) Names() []string {
+	names := make([]string, 0, len(r.factories))
+	for name := range r.factories {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Get resolves the named provider by calling its factory with the given config.

@@ -23,7 +23,7 @@
 //	[AC-S62dbba-2-M] machine-executable scenario tests (exit code + output).
 //
 //	AC-S62dbba-2-1 — intent provider="fake" resolves via registry; plan works
-//	AC-S62dbba-2-2 — cmd/sakutei/{plan,reconcile,main}.go do NOT import fakeprovider directly
+//	AC-S62dbba-2-2 — pkg/cli/{plan,reconcile,main}.go (the CLI; cmd/sakutei until #119) do NOT import fakeprovider directly
 //	AC-S62dbba-2-3 — unknown provider name causes plan to exit 1 with "unknown provider" error
 //	AC-S62dbba-2-4 — existing acceptance tests still pass (regression guard)
 package acceptance
@@ -130,14 +130,14 @@ func TestRegistry_FakeProviderReconcileViaRegistry(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AC-S62dbba-2-2: cmd/ does NOT directly import fakeprovider
+// AC-S62dbba-2-2: the CLI does NOT directly import fakeprovider
 // ---------------------------------------------------------------------------
 
-// TestRegistry_NoCmdFakeproviderImport verifies that cmd/sakutei source files
+// TestRegistry_NoCmdFakeproviderImport verifies that the CLI source files (pkg/cli)
 // do not contain a direct import of internal/fakeprovider.
 //
 // The registry/DI layer (pkg/registry) is the only place allowed to import
-// fakeprovider (in pkg/registry/default.go).  cmd/ must go through the
+// fakeprovider (in pkg/registry/default.go).  the CLI must go through the
 // registry seam.
 //
 // [AC-S62dbba-2-M] [AC-S62dbba-2-2]
@@ -151,10 +151,10 @@ func TestRegistry_NoCmdFakeproviderImport(t *testing.T) {
 
 	// Files that must NOT contain the fakeprovider import.
 	cmdFiles := []string{
-		filepath.Join(root, "cmd", "sakutei", "plan.go"),
-		filepath.Join(root, "cmd", "sakutei", "reconcile.go"),
-		filepath.Join(root, "cmd", "sakutei", "main.go"),
-		filepath.Join(root, "cmd", "sakutei", "providers.go"),
+		filepath.Join(root, "pkg", "cli", "plan.go"),
+		filepath.Join(root, "pkg", "cli", "reconcile.go"),
+		filepath.Join(root, "pkg", "cli", "main.go"),
+		filepath.Join(root, "pkg", "cli", "providers.go"),
 	}
 
 	for _, f := range cmdFiles {

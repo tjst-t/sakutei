@@ -26,7 +26,7 @@
 //
 // Subcommand implementations beyond the skeleton are added in subsequent
 // Stories.  See CLAUDE.md for the full CLI specification.
-package main
+package cli
 
 import (
 	"fmt"

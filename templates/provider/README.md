@@ -24,3 +24,7 @@ $ go test ./internal/mywidget/
 3. **Schema を書く** — 最難関（§28.4）。identity は運用上の変更頻度で選び、secret / managed / computed を正直に宣言する。`toState` と `recordFromFields` を合わせて直す。
 4. **契約テストを合わせる** — `provider_test.go` の `Examples` に、対象が値を検査するフィールドの例を書く。テストは `fakeClient`（インメモリの対象の代役）の上で回す。`Client` を実機用にしても fake は残す。
 5. **`ProviderVersion` を上げる** — `toState` や正規化を変えたら上げる。上げ忘れると ghost diff（cause C）がドリフト（B）に化ける（§10.4）。
+
+## 本体の外で書いた provider を組み込む
+
+本体のリポジトリの外（自分のモジュール）で書いた provider は、fork せずに `pkg/cli` の入口から登録して自前のバイナリを作る（`cli.Main(cli.WithProviders(...))`）。provider ごとの設定は `--provider-config <file>` で渡す。組み込みと同じ名前の登録は起動時のエラー。書き方は設計書 §28.9、動く例は `examples/external-provider/`。外の provider は `pkg/`（`provider`・`core`・`sdk`・`registry`）だけで書ける（`internal/` は外から import できない）。

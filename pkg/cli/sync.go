@@ -26,7 +26,7 @@
 //
 // Subcommand implementations beyond the skeleton are added in subsequent
 // Stories.  See CLAUDE.md for the full CLI specification.
-package main
+package cli
 
 import (
 	"context"
@@ -40,7 +40,6 @@ import (
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/syncmode"
 	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
@@ -54,6 +53,7 @@ func runSync(args []string) {
 
 	intentDir := fs.String("intent", "", "directory containing intent files (required); sync scopes are read from its scopes:")
 	providersFlag := fs.String("provider", "", "provider(s) to record, comma-separated (required)")
+	providerConfigFile := providerConfigFlag(fs)
 	statePath := fs.String("state", "sakutei-fake-state.json", "path to the fake provider state file")
 	zonePath := fs.String("zone", "", "path to the dnszone provider zone file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
@@ -95,7 +95,7 @@ func runSync(args []string) {
 		os.Exit(1)
 	}
 
-	reg := registry.DefaultRegistry()
+	reg := openProviderSet("sakutei sync", *providerConfigFile)
 	cfg := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		cfg["zone"] = *zonePath

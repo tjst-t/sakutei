@@ -243,6 +243,23 @@ Ansible provider では横断保証の多くが落ちる。**check mode は「�
 - **段階導入**。全面導入せず、`compute` のような抽象化しやすい少数の capability から始め、実装差の大きい領域は具体型のまま残す。役割能力は操作能力（`Capabilities`・§5）とは別の `Provides()` として宣言し、抽象と具体の適合は interface 型チェックで検証する。
 - **解禁トリガ＝2つ目の同種プロバイダ実装が実際に必要になったとき**。1つしかない間は抽象化しても検証できず、早すぎる抽象化は最大公約数を誤る（§29.2 の再検討トリガ表に登録する）。
 
+### §28.9 外部 provider の組み込み方
+
+provider は本体のバイナリに組み込む（プラグインのプロセス境界や動的ロードは持たない。§3 原則 4・5：境界は Go の interface で今切り、プロセス分割は後）。本体のリポジトリの外で provider を書く人は、fork せずに **Sakutei を Go のライブラリとして使い、自前の provider を登録した自前のバイナリを作る**。
+
+- **入口は `pkg/cli`**。`cmd/sakutei` は `cli.Main()` を呼ぶだけで、外のモジュールも同じ入口を使う。`cli.WithProviders(func(*registry.ProviderRegistry))`（または組み立て済みの registry を渡す `cli.WithRegistry`）で足した provider は、組み込みの provider（`registry.DefaultRegistry`）に加わる。verb・フラグ・終了コードは本体と同じで、足した provider は常駐・`plan`・`reconcile`・`status`・`import`・`sync` のすべてで名前（intent の `provider`）から解決される。
+- **名前の衝突は起動時のエラー**。組み込みと同じ名前、または二つの登録で同じ名前を使うと、どの verb でも起動時に終了コード 1 で止まる。上書きはしない（黙って別の実装に差し替わると、Schema と ProviderVersion の前提が崩れる。§10.4）。
+- **provider の設定はファイルで渡す**（`--provider-config <file>`、JSON または YAML）：
+
+  ```json
+  {"providers": {"<name>": {"<key>": "<value>", "...": "..."}}}
+  ```
+
+  provider ごとの値は、共通のフラグ（`--state` 等）から作る設定に**重ねて**その provider の factory に渡る。同じキーはファイルの値が勝つ。値はスカラーに限り、文字列として渡る（パスの解釈は factory の責任）。登録されていない provider の名前はエラー（打ち間違いを黙って無視しない）。既存のフラグはそのまま使える。
+- **外の provider は `pkg/` だけで書ける**。`pkg/provider`（interface・Schema・Capabilities・エラー分類）、`pkg/core`（正準型）、`pkg/sdk`（`ValidateProvider`・契約テスト・BulkObserve 等価性テスト）、`pkg/registry`（factory の登録）。secret のフィールドは Apply に SecretRef の参照形で届くので、`core.ParseSecretRef` で読み、`sdk.NewFileSecretResolver`（file SecretBackend、§20.5）を渡して `SecretRef.Resolve` で Apply の直前にだけ値にし、使い終えたら `Zero()` する（§20.2）。`internal/` には頼れない（Go の規則で外から import できない）。
+- **起動時の検査は組み込みと同じ**。足した provider も `sdk.ValidateProvider`（ProviderVersion・Schema lint、§10.4）を通らなければ使われない（fail-closed）。雛形は `templates/provider/`（§28.6）を使い、契約テストを自分のモジュールで回す。
+- **動く例**は `examples/external-provider/`（別の `go.mod` を持ち、`replace` で本体を指す小さなモジュール。ファイルに書くだけの provider を一つ登録した `main`）。受け入れテストがこの例をネットワークに出ずにビルドし、plan・reconcile・status・import・常駐で動くことを毎回確かめている。
+
 ---
 
 ## §29 残る課題と既知の限界

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package cli
 
 import (
 	"context"
@@ -26,7 +26,6 @@ import (
 
 	"github.com/tjst-t/sakutei/internal/importer"
 	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
 	"github.com/tjst-t/sakutei/pkg/sdk"
 )
 
@@ -41,6 +40,7 @@ func runImport(args []string) {
 	fs.SetOutput(os.Stderr)
 
 	providersFlag := fs.String("provider", "", "provider(s) to import, comma-separated, e.g. dnszone,nftables (required)")
+	providerConfigFile := providerConfigFlag(fs)
 	statePath := fs.String("state", "sakutei-fake-state.json", "path to the fake provider state file")
 	zonePath := fs.String("zone", "", "path to the dnszone provider zone file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
@@ -79,7 +79,7 @@ func runImport(args []string) {
 		os.Exit(1)
 	}
 
-	reg := registry.DefaultRegistry()
+	reg := openProviderSet("sakutei import", *providerConfigFile)
 	cfg := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		cfg["zone"] = *zonePath

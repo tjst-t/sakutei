@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package cli
 
 import (
 	"context"
@@ -31,7 +31,6 @@ import (
 	"github.com/tjst-t/sakutei/internal/statusreport"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
 )
 
 // runStatus implements "sakutei status" (Story Sc7a647-3, §26.4).
@@ -94,6 +93,7 @@ Exit codes:
 	}
 
 	intentDir := fs.String("intent", "", "directory containing intent JSON files (required)")
+	providerConfigFile := providerConfigFlag(fs)
 	statePath := fs.String("state", "sakutei-fake-state.json",
 		"path to the fake provider state file (default: sakutei-fake-state.json)")
 	zonePath := fs.String("zone", "",
@@ -211,7 +211,7 @@ Exit codes:
 	}
 
 	// provider を registry 経由で解決（plan と同一の resolveProviders 配管）。
-	reg := registry.DefaultRegistry()
+	reg := openProviderSet("sakutei status", *providerConfigFile)
 	providerConfig := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		providerConfig["zone"] = *zonePath

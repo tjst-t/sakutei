@@ -37,8 +37,10 @@ Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflo
 ├── CLAUDE.md                                  # このファイル
 ├── README.md
 ├── Makefile
-├── cmd/sakutei/                               # CLI（常駐ループ・plan・reconcile・status）
-├── pkg/                                       # 公開 API: core（正準型）/ provider / registry / sdk
+├── cmd/sakutei/                               # main（cli.Main() を呼ぶだけ）
+├── pkg/                                       # 公開 API: cli（CLI の入口。常駐ループ・plan・reconcile・status、§28.9）/
+│                                              #   core（正準型）/ provider / registry / sdk
+├── examples/external-provider/                # 外の provider を足した自前のバイナリの例（別の go.mod）
 ├── internal/                                  # reconcile・diff・budget・prune・cause・render・loader・
 │                                              #   remediation・statusreport・fakeprovider・dnszone・nftables 等
 ├── tests/acceptance/                          # 受け入れテスト・chaos テスト（AC タグ付き）
