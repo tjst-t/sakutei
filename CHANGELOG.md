@@ -2,6 +2,21 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## v1.3.0（2026-10-27）
+
+PostgreSQL と Ansible の provider、sqlmigrate の PostgreSQL 版、Workflow で複数の provider を扱う口。設計書は v3.21 → v3.22（`docs/architecture/CHANGELOG-v3.22.md`）。
+
+### 追加
+
+- **PostgreSQL provider `postgresql`**（#125、設計書 v3.22 §29.1）：ロール・データベース・データベースの権限（CONNECT・CREATE・TEMPORARY）・拡張を宣言で合わせる。`psql` を exec で呼び、Go の依存は増やさない。パスワードは SecretRef で渡し、SCRAM-SHA-256 の検証値にしてから送る（平文はサーバのログにも出ない）。利用者の表があるデータベースは消さない。`make integration-postgresql`。使い方は `docs/providers/postgresql.md`。
+- **sqlmigrate の PostgreSQL 版**（#126）：データベースごとに `engine: postgresql` を選べる。1 本ずつトランザクションで流し、流す間は `pg_advisory_lock` で他のデーモンと排他する。
+- **Ansible provider `ansible`**（#127、§28.7 のロングテール層）：1 つのホストへの 1 つのモジュールの呼び出しを、`--check --diff` で観測し、通常実行で適用する。最小の階級（State を返さない）なので、原因タグ・prune などの保証は落ちる（`docs/providers/ansible.md` に正直に書いた）。`make integration-ansible`。
+- **Workflow の手順ごとの対象と前提条件**（#87、設計書 §6.3）：手順に `resource: <provider>/<id>` を書くと、Workflow の target と別の provider のリソースを触れる。`require`（観測で満たすまで待ち、timeout で halt）で順番を保証できる。OS の導入の「CD を差す → 差さったことを確かめる → CD 起動で電源オン」を 1 つの Workflow に書ける（`make integration-redfish` に追加）。
+
+### 変更
+
+- Redfish の統合テストの qemu-bmc を 0.10.0（tag と digest）に上げた。
+
 ## v1.2.0（2026-10-27）
 
 外の provider を足す口、実際の FW を扱う nftables、S3 互換のバケット provider、SQLite のマイグレーションを流す単純 Task の provider（sqlmigrate）と、v1 を手で試して見つかった不具合の修正。設計書は v3.16 → v3.21（各 `docs/architecture/CHANGELOG-v3.*.md`）。
