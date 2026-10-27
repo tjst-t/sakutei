@@ -2995,6 +2995,30 @@
       "updatedAt": "2026-10-27T10:43:18.722Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "redfish-bmc-5xx",
+      "number": 128,
+      "kind": "task",
+      "title": "Redfish の統合試験に、BMC の故障の注入（応答の遅延・5xx・応答なし）を使った試験を足す",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "redfish",
+        "test"
+      ],
+      "body": "qemu-bmc 0.10.0 から、BMC の故障を注入する機能が入った。今の `make integration-redfish` は、BMC のコンテナを止める（docker pause）ことでしか、届かない BMC を作っていない。故障の注入を使って、次の場合の provider の振る舞いを確かめる試験を足す。\n\n- 応答が遅れる（タイムアウトより短い／長い）\n- 5xx を返す\n- 応答しない\n\n確かめたいのは、どの場合も観測できない（unknown）として何も操作せず、故障が消えたら収束し直すこと（§3 unknown≠absent・§5.4）。操作の途中で故障したときに、操作を重ねないことも確かめる。\n\n使う qemu-bmc の版と注入の口は、着手するときに qemu-bmc の文書で確かめる。",
+      "doneWhen": "make integration-redfish に、遅延・5xx・応答なしの故障を注入する項目があり、どれも unknown で無操作、故障が消えたら収束し直すことを示して通る。make check・make test-race が通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T11:05:55.859Z",
+      "updatedAt": "2026-10-27T11:05:55.859Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
