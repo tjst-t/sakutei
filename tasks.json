@@ -3378,7 +3378,7 @@
       "number": 144,
       "kind": "task",
       "title": "LDAP provider（項目と属性を宣言で合わせる、39 Directory Server で確かめる）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "vm-proxmox-vm-ldap-ip",
       "dependsOn": [],
       "milestone": null,
@@ -3390,7 +3390,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T17:18:39.397Z",
-      "updatedAt": "2026-10-27T17:18:39.397Z",
+      "updatedAt": "2026-10-27T17:18:49.948Z",
       "closedAt": null,
       "extra": {}
     },
