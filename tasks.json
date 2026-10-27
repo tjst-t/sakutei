@@ -1700,7 +1700,7 @@
       "number": 87,
       "kind": "task",
       "title": "v2: Workflow で複数の provider を扱う・手順の前提条件（例：CD が差してあること）を書ける",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v2-task-ui",
       "dependsOn": [],
       "milestone": null,
@@ -1715,7 +1715,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T01:14:27.432Z",
-      "updatedAt": "2026-10-27T11:19:22.255Z",
+      "updatedAt": "2026-10-27T11:32:32.680Z",
       "closedAt": null,
       "extra": {}
     },
