@@ -3142,6 +3142,30 @@
       "updatedAt": "2026-10-27T13:29:39.601Z",
       "closedAt": "2026-10-27T13:29:28.421Z",
       "extra": {}
+    },
+    {
+      "id": "sakutei",
+      "number": 134,
+      "kind": "story",
+      "title": "外の道具が Sakutei の状態を読むための読み取り専用の口",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "api",
+        "observability"
+      ],
+      "body": "外の道具（可視化・ダッシュボード）が、Sakutei が何をしているかを読めるようにする。Sakutei 本体には画面を持たせず、読み取り専用の口だけを汎用に足す（設計書 §2 の catalog の原則：UI は独自のデータを持たない薄いフロントエンド。履歴は外の道具が貯める。§22.1・§27.6）。\n\n決定：2026-10-27。",
+      "doneWhen": "子タスクがすべて done、make check・make test-race が通り、設計書と CHANGELOG に反映して main に push 済み",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T14:30:48.544Z",
+      "updatedAt": "2026-10-27T14:30:48.544Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
