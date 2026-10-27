@@ -100,7 +100,7 @@ sqlite3 data/app.db 'select * from schema_migrations'
 
 ```
 RESOURCE                                 PHASE      TASK                           STARTED              ERROR
-sqlmigrate//app                          running    banto-…-3166884-1792773812977545000-1 2026-10-23T16:43:32Z
+sqlmigrate//app                          running    shard-a-…-3166884-1792773812977545000-1 2026-10-23T16:43:32Z
 ```
 
 デーモンの出力：
@@ -166,7 +166,7 @@ sakutei: cycle 6: 1 strategy: task resource(s) awaiting their Task (not applied)
 ```
 $ sakutei task list --store tasks.json
 RESOURCE                                 PHASE      TASK                           STARTED              ERROR
-sqlmigrate//app                          failed     banto-…-3167804-1792773827920271571-1 2026-10-23T16:43:47Z sqlmigrate "app": 0003_create_orders.up.sql failed (rolled back; the database stays at version 2): sqlite3: exit status 1: Parse error near line 4: no such table: user_list
+sqlmigrate//app                          failed     shard-a-…-3167804-1792773827920271571-1 2026-10-23T16:43:47Z sqlmigrate "app": 0003_create_orders.up.sql failed (rolled back; the database stays at version 2): sqlite3: exit status 1: Parse error near line 4: no such table: user_list
 $ sqlite3 data/app.db 'select * from schema_migrations'
 1|2026-10-23T16:43:47Z
 2|2026-10-23T16:43:52Z
@@ -249,7 +249,7 @@ $ sqlite3 data/app.db 'select * from schema_migrations'
 
 ```
 sakutei: DriftEvent: sqlmigrate//app [cause: B] no previous snapshot (first cycle or post-restart)
-sakutei: RequiresTaskEvent: sqlmigrate//app: no Task launched (outstanding): task …-1792773854490935626-1 was launched by "banto-…-3175290" at 2026-10-23T16:44:14Z and is still recorded as running — running there, or interrupted if that daemon is gone; not re-running — check reality and cancel it if needed
+sakutei: RequiresTaskEvent: sqlmigrate//app: no Task launched (outstanding): task …-1792773854490935626-1 was launched by "shard-a-…-3175290" at 2026-10-23T16:44:14Z and is still recorded as running — running there, or interrupted if that daemon is gone; not re-running — check reality and cancel it if needed
 sakutei: cycle 1: 1 strategy: task resource(s) awaiting their Task (not applied): [app]
 …（cycle 6 まで毎周同じ）
 ```

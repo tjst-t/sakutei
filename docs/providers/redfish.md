@@ -172,9 +172,9 @@ $ sudo containerlab destroy -t topology.clab.yml --cleanup && rm -rf iso
 | (5) `[AC-84-5]` | BMC を止めると Unknown で何も操作しない | node2 を手で ForceOff・node1 の起動先を手で外してから、node2 のコンテナを `docker pause`。plan は node2 の観測が unreachable でエラー。常駐は node2 を毎周「unobservable」として飛ばし（3 周以上）、node1 は収束を続ける（起動先が戻る）。node2 には Apply を出さない。unpause して 5 秒待っても node2 は Off のまま（止まっている間に送った要求が受信待ちに溜まっていれば、ここで実行されてしまう）。reconcile で On に戻る。 |
 | (6) `[AC-84-6]` | Once は計画の時点でエラー | node2 を `boot_enabled: Once` にすると、plan も reconcile も `boot_enabled "Once" cannot be declared` で失敗し、node2 は変わらない。 |
 
-### 結果（2026-10-22、このリポジトリの作業コンテナ）
+### 結果（2026-10-22、開発用のコンテナ）
 
-baremetal 上の Incus のコンテナ（72 コア・メモリ 243 GiB、`/dev/kvm` あり、docker 29.1.3・containerlab 0.81.1）で `make integration-redfish` が合格した。lab の deploy から destroy まで約 80 秒。
+KVM が使える開発用のコンテナ（`/dev/kvm` あり、docker 29.1.3・containerlab 0.81.1）で `make integration-redfish` が合格した。lab の deploy から destroy まで約 80 秒。
 
 ```
 --- PASS: TestRedfishIntegration (75.80s)

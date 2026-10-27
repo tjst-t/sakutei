@@ -140,7 +140,7 @@ sudo containerlab destroy -t topology.clab.yml --cleanup
 
 ## 結果（2026-10-22）
 
-baremetal 上の Incus のコンテナ（`/dev/kvm` あり、docker 29.1.3・containerlab 0.81.1）で、qemu-bmc 0.9.0 を 1 台（`VM_DISK_SIZE` 2G・`VM_MEMORY` 512）、`--interval 5s` で回した。
+KVM が使える開発用のコンテナ（`/dev/kvm` あり、docker 29.1.3・containerlab 0.81.1）で、qemu-bmc 0.9.0 を 1 台（`VM_DISK_SIZE` 2G・`VM_MEMORY` 512）、`--interval 5s` で回した。
 
 - **インストールは約 20 秒**（シリアルの `SAKUTEI-AUTOINSTALL: start` 12:36:00Z → `done, powering off`）、**Workflow 全体は約 35 秒**（cycle 1 で開始 → cycle 7 で完了）。
 - 完了のあと、シリアルに `SAKUTEI-INSTALLED-OS: booted from disk: installed by sakutei trial 2026-10-22T12:36:20Z` が出た——**ディスクから起動した**。

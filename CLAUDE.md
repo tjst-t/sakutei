@@ -12,7 +12,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 
 ## 仕事の管理（Backlog）
 
-- 仕事の一覧・優先順・状態は **Banto の Backlog**（git の `backlog` ブランチ）が唯一の正。旧 `docs/ROADMAP.json` は廃止した（v1a のスプリント 1〜9 は Backlog に done のストーリー `v1a-1`〜`v1a-9` として移行済み。受け入れ条件の全文は git 履歴のコミット 9d7cf32 の `docs/ROADMAP.json` にある）。
+- 仕事の一覧・優先順・状態は **Backlog**（git の `backlog` ブランチの `tasks.json`）が唯一の正。旧 `docs/ROADMAP.json` は廃止した（v1a のスプリント 1〜9 は Backlog に done のストーリー `v1a-1`〜`v1a-9` として移行済み。受け入れ条件の全文は git 履歴のコミット 9d7cf32 の `docs/ROADMAP.json` にある）。
 - 受け入れテストには `[AC-<スプリントID>-<ストーリー>-<番号>]`（例 `[AC-Sc7a647-2-1]`）のタグが付いている。旧スプリント ID と Backlog の対応は各ストーリーの本文に書いてある。
 - 新しい作業はストーリー → タスクに分けて Backlog に置き、完了条件は計測できる形で書く。
 
