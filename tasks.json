@@ -1007,7 +1007,7 @@
       "number": 52,
       "kind": "task",
       "title": "v2: 多相 Task の Applying 中の停止を人手ゲートにする",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v2-task-ui",
       "dependsOn": [
         "v2-task-s2-observe"
@@ -1023,7 +1023,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-27T14:55:51.962Z",
+      "updatedAt": "2026-10-27T14:56:17.937Z",
       "closedAt": null,
       "extra": {}
     },
