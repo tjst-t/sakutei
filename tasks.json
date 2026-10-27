@@ -1585,11 +1585,11 @@
       "labels": [],
       "body": "設計書 v3.15 §29.1 の（6）。リソース「仮想メディア」（ID はノード名。システムと同じ provider に別の型として足す）。\n- 宣言：image（URL か BMC から見えるパス。空文字なら取り出した状態）。\n- 観測：Inserted・Image。Inserted が false なら image は空として比べる。\n- 違う image が入っていれば同じ Apply の中で Eject → Insert。空を宣言して入っていれば Eject。\n- BMC の取得失敗で Inserted が false に戻れば次の周に入れ直す（ずれとして）。\n- 破壊的に数えない。到達不能は Unknown で無操作。List は持たない。\n- 契約テストを偽 BMC の上で回す。",
       "doneWhen": "偽 BMC を相手に、image の宣言どおりに Insert・Eject・差し替えで収束し、取得失敗で外れたら次の周に入れ直し、到達不能では何もしないことをテストで示す。契約テスト・make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/redfish-provider-cd-insert-eject）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T03:31:46.414Z",
-      "updatedAt": "2026-10-22T04:19:18.049Z",
+      "updatedAt": "2026-10-27T09:36:32.125Z",
       "closedAt": "2026-10-22T04:19:18.049Z",
       "extra": {}
     },
