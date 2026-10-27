@@ -43,6 +43,13 @@ type Cycle struct {
 	// Err is true when the cycle ended in an error.
 	Err bool
 
+	// ObserveRan is true when the cycle reached the Observe phase.  A cycle
+	// that did not (skipped, inventory halt, intent unreadable, fencing store
+	// unreachable, ...) established nothing about reality: its resource
+	// counts and ObserveDuration are not exported, the last observing
+	// cycle's stay (unknown ≠ absent, §3).
+	ObserveRan bool
+
 	// Resources of the cycle's desired (after the claim and fencing):
 	// Observed with a diff (drifted), not observable (unknown ≠ absent),
 	// and converging (in-flight Apply, or the target says it converges).
@@ -73,6 +80,8 @@ type Exporter struct {
 	cycles int
 	errors int
 	last   *Cycle
+	// lastObserve is the last cycle that reached the Observe phase.
+	lastObserve *Cycle
 }
 
 // NewExporter returns an Exporter for a daemon with the given budget limits.
@@ -89,6 +98,9 @@ func (e *Exporter) Record(c Cycle) {
 		e.errors++
 	}
 	e.last = &c
+	if c.ObserveRan {
+		e.lastObserve = &c
+	}
 }
 
 // Families returns the metric families of the current state.  Before the
@@ -135,18 +147,6 @@ func (e *Exporter) Families() []Family {
 			Samples: one(float64(c.End.UnixNano()) / 1e9)},
 		Family{Name: "sakutei_cycle_duration_seconds", Type: Gauge, Help: "Duration of the last convergence cycle.",
 			Samples: one(c.Duration.Seconds())},
-		Family{Name: "sakutei_observe_duration_seconds", Type: Gauge,
-			Help:    "Duration of the Observe phase (Observe and Diff of the due resources) of the last cycle; the early-warning line of the single daemon (§16).",
-			Samples: one(c.ObserveDuration.Seconds())},
-		Family{Name: "sakutei_resources", Type: Gauge,
-			Help: "Resources of the last cycle by state: desired (after the claim), observed, drifted (diff against desired), unknown (not observable, unknown is not absent), converging.",
-			Samples: []Sample{
-				{Labels: []Label{{"state", "desired"}}, Value: float64(c.Desired)},
-				{Labels: []Label{{"state", "observed"}}, Value: float64(c.Observed)},
-				{Labels: []Label{{"state", "drifted"}}, Value: float64(c.Drifted)},
-				{Labels: []Label{{"state", "unknown"}}, Value: float64(c.Unknown)},
-				{Labels: []Label{{"state", "converging"}}, Value: float64(c.Converging)},
-			}},
 		Family{Name: "sakutei_halted", Type: Gauge,
 			Help: "1 when the gate halted the last cycle: budget (§13.1), capacity (§13.4), prune (§12.4), inventory (§9.2), external_input (skipped, unreachable with no previous value, §9.2).",
 			Samples: []Sample{
@@ -167,6 +167,30 @@ func (e *Exporter) Families() []Family {
 		Family{Name: "sakutei_budget_destructive_window_used", Type: Gauge,
 			Help: "Destructive ops counted in the rolling window (§13.2).", Samples: one(float64(c.BudgetWindowUsed))},
 	)
+	if o := e.lastObserve; o != nil {
+		// The last cycle that observed: a cycle that ended before Observe
+		// does not turn them into zeros ("no drift") — unknown ≠ absent.
+		fams = append(fams,
+			Family{Name: "sakutei_last_observe_cycle", Type: Gauge,
+				Help:    "Number of the last cycle that reached the Observe phase; sakutei_resources and sakutei_observe_duration_seconds are of that cycle.",
+				Samples: one(float64(o.Number))},
+			Family{Name: "sakutei_last_observe_end_timestamp_seconds", Type: Gauge,
+				Help:    "Unix time the last cycle that reached the Observe phase ended.",
+				Samples: one(float64(o.End.UnixNano()) / 1e9)},
+			Family{Name: "sakutei_observe_duration_seconds", Type: Gauge,
+				Help:    "Duration of the Observe phase (Observe and Diff of the due resources) of the last cycle that observed; the early-warning line of the single daemon (§16).",
+				Samples: one(o.ObserveDuration.Seconds())},
+			Family{Name: "sakutei_resources", Type: Gauge,
+				Help: "Resources of the last cycle that observed, by state: desired (after the claim), observed, drifted (diff against desired), unknown (not observable, unknown is not absent), converging.",
+				Samples: []Sample{
+					{Labels: []Label{{"state", "desired"}}, Value: float64(o.Desired)},
+					{Labels: []Label{{"state", "observed"}}, Value: float64(o.Observed)},
+					{Labels: []Label{{"state", "drifted"}}, Value: float64(o.Drifted)},
+					{Labels: []Label{{"state", "unknown"}}, Value: float64(o.Unknown)},
+					{Labels: []Label{{"state", "converging"}}, Value: float64(o.Converging)},
+				}},
+		)
+	}
 	if lim.DestructivePerWindow > 0 {
 		rem := lim.DestructivePerWindow - c.BudgetWindowUsed
 		if rem < 0 {

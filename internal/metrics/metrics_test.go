@@ -115,7 +115,8 @@ func TestExporter_Cycle(t *testing.T) {
 	e := NewExporter(BudgetLimits{DestructivePerWindow: 3, DestructivePerCycle: 2, Window: 24 * time.Hour})
 	e.Record(Cycle{Number: 1, Err: true, End: time.Unix(100, 0)})
 	e.Record(Cycle{
-		Number: 2, End: time.Unix(200, 500_000_000), Duration: 1500 * time.Millisecond, ObserveDuration: 250 * time.Millisecond,
+		Number: 2, End: time.Unix(200, 500_000_000), Duration: 1500 * time.Millisecond,
+		ObserveRan: true, ObserveDuration: 250 * time.Millisecond,
 		Desired: 10, Observed: 8, Drifted: 3, Unknown: 2, Converging: 1, Held: 4,
 		BudgetHalted: true, BudgetWindowUsed: 5, ConsecutiveUnreachableSkips: 0,
 	})
@@ -156,6 +157,42 @@ func TestExporter_Cycle(t *testing.T) {
 	}
 	if _, ok := v["sakutei_budget_changes_cycle_limit"]; ok {
 		t.Error("an unlimited budget exports a limit")
+	}
+}
+
+// A cycle that ended before Observe does not export its zero counts: the last
+// observing cycle's values stay, with its number (unknown ≠ absent).
+func TestExporter_CycleWithoutObserveKeepsLastObservation(t *testing.T) {
+	e := NewExporter(BudgetLimits{})
+	render := func() map[string]float64 {
+		var b bytes.Buffer
+		if err := Write(&b, e.Families()); err != nil {
+			t.Fatal(err)
+		}
+		return values(t, b.String())
+	}
+	e.Record(Cycle{Number: 1, Err: true})
+	v := render()
+	for _, k := range []string{`sakutei_resources{state="drifted"}`, "sakutei_observe_duration_seconds", "sakutei_last_observe_cycle"} {
+		if _, ok := v[k]; ok {
+			t.Errorf("%s exported though no cycle observed", k)
+		}
+	}
+	e.Record(Cycle{Number: 2, ObserveRan: true, ObserveDuration: time.Second, Desired: 4, Drifted: 2, Unknown: 1})
+	e.Record(Cycle{Number: 3, ExternalInputSkipped: true})
+	v = render()
+	for k, w := range map[string]float64{
+		`sakutei_resources{state="desired"}`:    4,
+		`sakutei_resources{state="drifted"}`:    2,
+		`sakutei_resources{state="unknown"}`:    1,
+		"sakutei_observe_duration_seconds":      1,
+		"sakutei_last_observe_cycle":            2,
+		"sakutei_last_cycle":                    3,
+		`sakutei_halted{gate="external_input"}`: 1,
+	} {
+		if got, ok := v[k]; !ok || got != w {
+			t.Errorf("%s = %v (present %v), want %v", k, got, ok, w)
+		}
 	}
 }
 

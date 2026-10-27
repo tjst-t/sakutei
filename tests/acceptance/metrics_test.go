@@ -18,6 +18,9 @@
 //	          Prometheus の text format（形式のテストを通る）で drifted・unknown の
 //	          件数、予算の残り、halt の有無、cycle と Observe の所要時間を返す
 //	[AC-54-2] 予算の gate が周を止めると sakutei_halted{gate="budget"} が 1 になる
+//	[AC-54-3] Observe まで届かない周（外部入力に届かず飛ばす・intent が読めない）は
+//	          sakutei_resources を 0 にしない：一度も観測していなければ出さず、観測した
+//	          周があればその値を残す（unknown ≠ absent、§3）
 package acceptance
 
 import (
@@ -36,6 +39,8 @@ import (
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/metrics"
 	"github.com/tjst-t/sakutei/internal/reconcile"
+	"github.com/tjst-t/sakutei/internal/remediation"
+	"github.com/tjst-t/sakutei/internal/render"
 )
 
 func fakeRes(id, size string) map[string]any {
@@ -202,5 +207,141 @@ func TestMetrics_BudgetHalt(t *testing.T) {
 	}
 	if v["sakutei_budget_changes_cycle_limit"] != 1 {
 		t.Errorf("[AC-54-2] changes limit %v", v["sakutei_budget_changes_cycle_limit"])
+	}
+}
+
+// exported writes e's families, checks the format and returns the values.
+func exported(t *testing.T, e *metrics.Exporter) map[string]float64 {
+	t.Helper()
+	var b strings.Builder
+	if err := metrics.Write(&b, e.Families()); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := metrics.Parse(strings.NewReader(b.String()))
+	if err != nil {
+		t.Fatalf("not in the text format: %v\n%s", err, b.String())
+	}
+	v := map[string]float64{}
+	for _, p := range ps {
+		v[p.Key()] = p.Value
+	}
+	return v
+}
+
+// runWithMetrics runs the loop with cfg and an Exporter until stop is closed.
+func runWithMetrics(t *testing.T, cfg reconcile.Config) (*metrics.Exporter, func()) {
+	t.Helper()
+	e := metrics.NewExporter(metrics.BudgetLimits{})
+	cfg.Metrics = e
+	cfg.Interval = 20 * time.Millisecond
+	var out syncBuffer
+	cfg.Out, cfg.ErrOut = &out, &out
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- reconcile.Run(ctx, cfg) }()
+	return e, func() { cancel(); <-done }
+}
+
+// waitMetrics polls e until cond holds (10s).
+func waitMetrics(t *testing.T, e *metrics.Exporter, what string, cond func(map[string]float64) bool) map[string]float64 {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		v := exported(t, e)
+		if cond(v) {
+			return v
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s: %v", what, v)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// [AC-54-3] 一度も Observe に届かない：観測の値は出さない（0 と出さない）。
+func TestMetrics_NoObserveCycleExportsNoResourceCounts(t *testing.T) {
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+	seedState(t, statePath, map[string]map[string]any{"a": {"name": "a", "size": "999"}})
+	writeIntentFile(t, intentDir, map[string]any{"resources": []any{fakeRes("a", "1")}})
+
+	e, stop := runWithMetrics(t, reconcile.Config{
+		IntentDir:    intentDir,
+		GeneratedDir: filepath.Join(tmp, "generated"),
+		Provider:     fakeprovider.New(statePath),
+		// Unreachable from the first call: every cycle is skipped before Observe.
+		ExternalInputResolver: render.NewResolverCache(&render.FakeInventoryResolver{Fail: true}, render.DefaultTTL),
+	})
+	defer stop()
+	v := waitMetrics(t, e, "2 skipped cycles", func(v map[string]float64) bool { return v["sakutei_cycles_total"] >= 2 })
+	if v[`sakutei_halted{gate="external_input"}`] != 1 {
+		t.Errorf("[AC-54-3] halted{gate=external_input} = %v, want 1", v[`sakutei_halted{gate="external_input"}`])
+	}
+	for _, k := range []string{
+		`sakutei_resources{state="desired"}`, `sakutei_resources{state="drifted"}`, `sakutei_resources{state="unknown"}`,
+		"sakutei_observe_duration_seconds", "sakutei_last_observe_cycle",
+	} {
+		if got, ok := v[k]; ok {
+			t.Errorf("[AC-54-3] %s = %v exported though no cycle reached Observe", k, got)
+		}
+	}
+}
+
+// [AC-54-3] 観測した後で Observe に届かない周が来る：観測した周の値が残る。
+func TestMetrics_CycleWithoutObserveKeepsLastObservation(t *testing.T) {
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	if err := os.MkdirAll(intentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(tmp, "state.json")
+	writeIntentFile(t, intentDir, map[string]any{"resources": []any{
+		fakeRes("in-sync", "1"), fakeRes("drifted", "2"), fakeRes("absent", "3"), fakeRes("unreachable", "4"),
+	}})
+	seedState(t, statePath, map[string]map[string]any{
+		"in-sync":     {"name": "in-sync", "size": "1"},
+		"drifted":     {"name": "drifted", "size": "999"},
+		"unreachable": {"name": "unreachable", "size": "4"},
+	})
+	seedStateObserveUnknown(t, statePath, "unreachable")
+
+	e, stop := runWithMetrics(t, reconcile.Config{
+		IntentDir:    intentDir,
+		GeneratedDir: filepath.Join(tmp, "generated"),
+		Provider:     fakeprovider.New(statePath),
+		// alert-only: the drift stays in reality.
+		Remediation: remediation.Config{Mode: remediation.ModeAlertOnly},
+	})
+	defer stop()
+	before := waitMetrics(t, e, "an observing cycle", func(v map[string]float64) bool { return v["sakutei_last_observe_cycle"] >= 1 })
+	if before[`sakutei_resources{state="drifted"}`] != 2 || before[`sakutei_resources{state="unknown"}`] != 1 {
+		t.Fatalf("[AC-54-3] observing cycle: drifted=%v unknown=%v, want 2 and 1",
+			before[`sakutei_resources{state="drifted"}`], before[`sakutei_resources{state="unknown"}`])
+	}
+
+	// The intent becomes unreadable: every cycle ends (load intent) before Observe.
+	if err := os.WriteFile(filepath.Join(intentDir, "resources.json"), []byte("{ broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v := waitMetrics(t, e, "2 error cycles", func(v map[string]float64) bool { return v["sakutei_cycle_errors_total"] >= 2 })
+	for k, w := range map[string]float64{
+		`sakutei_resources{state="desired"}`: 4,
+		`sakutei_resources{state="drifted"}`: 2,
+		`sakutei_resources{state="unknown"}`: 1,
+		"sakutei_last_cycle_error":           1,
+	} {
+		if got, ok := v[k]; !ok || got != w {
+			t.Errorf("[AC-54-3] after cycles that did not observe: %s = %v (present %v), want %v", k, got, ok, w)
+		}
+	}
+	if v["sakutei_last_observe_cycle"] >= v["sakutei_last_cycle"] {
+		t.Errorf("[AC-54-3] last_observe_cycle %v, want older than last_cycle %v", v["sakutei_last_observe_cycle"], v["sakutei_last_cycle"])
+	}
+	if _, ok := v["sakutei_observe_duration_seconds"]; !ok {
+		t.Error("[AC-54-3] observe duration of the last observing cycle is gone")
 	}
 }

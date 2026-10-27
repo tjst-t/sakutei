@@ -738,6 +738,7 @@ func Run(ctx context.Context, cfg Config) error {
 				Number:                      cycleNum,
 				End:                         time.Now(),
 				Duration:                    cycleDuration,
+				ObserveRan:                  res.Observe.Ran,
 				ObserveDuration:             res.Observe.Duration,
 				Err:                         cycleErr != nil,
 				Desired:                     res.Observe.Desired,
@@ -1225,8 +1226,12 @@ type CycleResult struct {
 }
 
 // ObserveStats is what a cycle's Observe phase found (#54, the metrics of
-// §27.5).  Zero when the cycle ended before Observe.
+// §27.5).  Zero (Ran false) when the cycle ended before Observe: such a cycle
+// established nothing about reality, so its zeros are not "no drift"
+// (unknown ≠ absent, §3).
 type ObserveStats struct {
+	// Ran is true when the cycle reached the Observe phase.
+	Ran bool
 	// Desired is the resources of the cycle's desired (after the claim and
 	// fencing).  Drifted were Observed with a diff against desired; Unknown
 	// could not be observed (read error, availability unknown, provider
@@ -1748,7 +1753,7 @@ func runCycleAsync(
 	cycleObs := make(map[string]*sdk.CycleObserver, len(cycleProviders))
 
 	// #54: what the Observe phase found, for the metrics.
-	obsStats := ObserveStats{Desired: len(desired)}
+	obsStats := ObserveStats{Ran: true, Desired: len(desired)}
 	observeStart := time.Now()
 	for _, res := range desired {
 		local := res.ID.Local
