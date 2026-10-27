@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible
+.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -109,6 +109,24 @@ integration-ansible:
 	fi
 	SAKUTEI_IT_ANSIBLE=$${SAKUTEI_IT_ANSIBLE:-$(ANSIBLE_IT_VENV)/bin/ansible} \
 	  go test -tags integration_ansible -count=1 -v -timeout 15m $(ANSIBLE_IT)
+
+# ssh 越しの実行の層の統合テスト（#130）。docker で sshd・nft・sudo の入った
+# 使い捨てのコンテナを 2 台立て（ベースのイメージは tag と digest で固定。
+# nft のために NET_ADMIN）、手元の sakutei から ssh 越しに 2 台の nftables（live）と
+# dnszone を収束させ、終わったら（失敗しても）コンテナを消す。docker・ssh・
+# ssh-keygen と sudo（パスワードなし）が要るので、check・test・CI には入れない。
+# 手順と結果は docs/remote.md の「統合テスト」。
+REMOTE_IT := ./tests/integration/remote/
+integration-remote:
+	go vet -tags integration_remote $(REMOTE_IT)
+	@status=0; \
+	go test -tags integration_remote -count=1 -v -timeout 20m $(REMOTE_IT) || status=$$?; \
+	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-rmit-'); \
+	if [ -n "$$left" ]; then \
+	  echo "integration-remote: containers were left behind; removing: $$left"; \
+	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	exit $$status
 
 clean:
 	rm -rf $(BIN) $(DEMODIR)

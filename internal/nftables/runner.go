@@ -22,6 +22,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/tjst-t/sakutei/internal/remote"
 )
 
 // Runner は nft を 1 回走らせる seam（Backlog #121）。live の Provider は nft を
@@ -85,4 +87,29 @@ func (r ExecRunner) Run(ctx context.Context, args []string, stdin []byte) ([]byt
 		return nil, fmt.Errorf("run %s: %w", path, err)
 	}
 	return stdout.Bytes(), nil
+}
+
+// RemoteRunner は nft を実行の層（internal/remote）の Executor 越しに走らせる
+// Runner（Backlog #130）: 手元なら remote.Local、離れたホストなら remote.SSH。
+// コマンドが 0 以外で終われば *ExitError、ホストに届かない・認証の失敗・
+// ホスト鍵の不一致は *remote.ConnError をそのまま返す。
+type RemoteRunner struct {
+	Exec remote.Executor
+	// NFT はそのホストの nft のパス（既定 "nft"）。
+	NFT string
+}
+
+// Run implements Runner.
+func (r RemoteRunner) Run(ctx context.Context, args []string, stdin []byte) ([]byte, error) {
+	nft := r.NFT
+	if nft == "" {
+		nft = "nft"
+	}
+	// The deadline is the Executor's (the host's timeout).
+	out, err := r.Exec.Run(ctx, append([]string{nft}, args...), stdin)
+	var ee *remote.ExitError
+	if errors.As(err, &ee) {
+		return out, &ExitError{Code: ee.Code, Stderr: ee.Stderr}
+	}
+	return out, err
 }

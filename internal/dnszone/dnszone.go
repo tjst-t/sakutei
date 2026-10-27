@@ -100,22 +100,38 @@
 // it, the next cycle Create it again).  The "name" field is the same FQDN as
 // the id.  Only the id is lower-cased: a line in the zone file keeps its owner
 // as written, case included, when it is rewritten.
+//
+// Remote hosts and reload (Backlog #130, §29.1): WithHosts gives the provider
+// named hosts reached through the execution layer (internal/remote, ssh); it
+// then manages the same zone file path on each of them, and every local id
+// starts with the host's name: "<host>/<FQDN>/<TYPE>" (e.g.
+// "ns1/www.example.com./A"), so two hosts with the same records do not
+// collide.  Without hosts the zone file is on this machine and the ids are as
+// above.  The file on a host is read and written there (store.go): the same
+// shared / exclusive flock on "<zone>.lock", an atomic temp + rename.  A host
+// that cannot be reached, refuses the key or whose host key does not match
+// is unobservable (unknown, never absent); a host key mismatch is a
+// PermanentError.  BulkObserve leaves out a host it cannot read (Read then
+// reports its records unknown); List is complete only when every host was
+// read.  WithReload sets a command run on the zone's host (or here) after an
+// Apply changed the file (e.g. "knotc zone-reload example.com."); its failure
+// is the Apply's failure, and it is run again by the next Apply of that zone.
 package dnszone
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/filelock"
+	"github.com/tjst-t/sakutei/internal/remote"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -216,6 +232,26 @@ type Provider struct {
 	// scope is the static scope List and BulkObserve tag every record with
 	// (WithScope, Backlog #106, Option A).  Empty (root scope) by default.
 	scope core.Scope
+	// hosts / hostOrder are the remote hosts (WithHosts, Backlog #130).
+	hosts     map[string]remote.Executor
+	hostOrder []string
+	// reload is the command run after an Apply changed the file (WithReload).
+	reload []string
+	// zones is the zone file per host (one, named "", without hosts); multi
+	// says the local ids carry the host.
+	zones []*zone
+	multi bool
+}
+
+// zone is the zone file on one host ("" = this machine).
+type zone struct {
+	host  string
+	where string // the file, for messages
+	store zoneStore
+	exec  remote.Executor // runs the reload command
+
+	mu            sync.Mutex
+	reloadPending bool
 }
 
 // SOASerialMode says what a changing Apply does to the SOA serial
@@ -272,6 +308,24 @@ func WithScope(scope core.Scope) Option {
 	return func(p *Provider) { p.scope = scope }
 }
 
+// WithHosts makes the provider manage the zone file at the same path on each
+// of the named hosts (Backlog #130): order is the hosts' order, execs runs
+// commands on each.  Every local id then starts with "<host>/".  The zone
+// path must be absolute.
+func WithHosts(order []string, execs map[string]remote.Executor) Option {
+	return func(p *Provider) {
+		p.hostOrder = append([]string(nil), order...)
+		p.hosts = execs
+	}
+}
+
+// WithReload sets the command (argv, run without a shell) run on the zone's
+// host after an Apply changed the zone file (Backlog #130), e.g.
+// {"knotc", "zone-reload", "example.com."}.  Default: none.
+func WithReload(argv []string) Option {
+	return func(p *Provider) { p.reload = append([]string(nil), argv...) }
+}
+
 // New creates a new dnszone Provider backed by the zone file at zonePath.
 // The zone file need not exist yet; Apply will create it.  By default a
 // changing Apply raises the SOA serial (SOASerialBump).
@@ -280,7 +334,41 @@ func New(zonePath string, opts ...Option) *Provider {
 	for _, o := range opts {
 		o(p)
 	}
+	if len(p.hostOrder) == 0 {
+		p.zones = []*zone{{where: zonePath, store: localStore{path: zonePath}, exec: remote.Local{}}}
+		return p
+	}
+	p.multi = true
+	for _, h := range p.hostOrder {
+		ex := p.hosts[h]
+		p.zones = append(p.zones, &zone{host: h, where: h + ":" + zonePath, store: execStore{ex: ex, path: zonePath}, exec: ex})
+	}
 	return p
+}
+
+// zoneFor returns the zone a local id is in and the id without the host.
+func (p *Provider) zoneFor(localID string) (*zone, string, error) {
+	if !p.multi {
+		return p.zones[0], localID, nil
+	}
+	host, rest, ok := strings.Cut(localID, "/")
+	if !ok {
+		return nil, "", fmt.Errorf("expected '<host>/<name>/<type>' format")
+	}
+	for _, z := range p.zones {
+		if z.host == host {
+			return z, rest, nil
+		}
+	}
+	return nil, "", fmt.Errorf("host %q is not one of this provider's hosts", host)
+}
+
+// localID is the id of a record of z.
+func (z *zone) localID(r record) string {
+	if z.host == "" {
+		return r.localID()
+	}
+	return z.host + "/" + r.localID()
 }
 
 // Schema returns the field declarations for DNS records.
@@ -346,9 +434,15 @@ func (p *Provider) Capabilities() provider.Capabilities {
 //   - If the zone file does not exist, the record is absent (Ok, nil State).
 //   - If the zone file cannot be parsed, returns AvailabilityUnknown (transient).
 //   - SOA/NS records are never returned (management boundary).
-func (p *Provider) Read(_ context.Context, localID string) (core.Observation, error) {
-	defer filelock.RLock(p.zonePath)()
-	name, rrtype, err := splitLocalID(localID)
+func (p *Provider) Read(ctx context.Context, localID string) (core.Observation, error) {
+	z, rest, err := p.zoneFor(localID)
+	if err != nil {
+		return core.Observation{
+			Availability: core.AvailabilityUnknown,
+			ObservedAt:   time.Now(),
+		}, provider.NewPermanentError(fmt.Errorf("dnszone: Read: invalid local id %q: %w", localID, err))
+	}
+	name, rrtype, err := splitLocalID(rest)
 	if err != nil {
 		return core.Observation{
 			Availability: core.AvailabilityUnknown,
@@ -372,7 +466,7 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 		}, provider.NewPermanentError(fmt.Errorf("dnszone: Read: local id %q: %w", localID, err))
 	}
 
-	records, err := p.parseZone()
+	records, err := p.parseZone(ctx, z, true)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// Zone file does not exist → record is absent.
@@ -382,11 +476,12 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 				ObservedAt:   time.Now(),
 			}, nil
 		}
-		// Parse or read error → unknown (transient: file may be locked or mid-write).
+		// Parse or read error → unknown (transient: file may be locked or
+		// mid-write; permanent for a host key mismatch).
 		return core.Observation{
 			Availability: core.AvailabilityUnknown,
 			ObservedAt:   time.Now(),
-		}, provider.NewTransientError(fmt.Errorf("dnszone: Read: parse zone %s: %w", p.zonePath, err))
+		}, remote.ProviderError(fmt.Errorf("dnszone: Read: parse zone %s: %w", z.where, err))
 	}
 
 	// Find the matching record by {name, type}.
@@ -425,37 +520,100 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 // For Delete: lines matching {name, type} are removed.
 //
 // MUST be idempotent: Apply(same plan) twice yields the same file content.
-func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
-	// Every op reads, changes and writes the file inside one critical section
-	// (Backlog #72): no other Apply, in this process or another, writes in
-	// between.
-	unlock, err := lockZone(p.zonePath)
-	if err != nil {
-		return provider.NewTransientError(fmt.Errorf("dnszone: Apply: %w", err))
-	}
-	defer unlock()
+func (p *Provider) Apply(ctx context.Context, plan core.Plan) error {
+	// The ops of each zone (host) in the order the zones first appear.
+	var order []*zone
+	byZone := map[*zone][]core.Op{}
 	for _, op := range plan.Ops {
-		if err := p.applyOp(op); err != nil {
+		z, _, err := p.zoneFor(op.Target.Local)
+		if err != nil {
+			return provider.NewPermanentError(fmt.Errorf("dnszone: Apply: invalid local id %q: %w", op.Target.Local, err))
+		}
+		if _, ok := byZone[z]; !ok {
+			order = append(order, z)
+		}
+		byZone[z] = append(byZone[z], op)
+	}
+	for _, z := range order {
+		if err := p.applyZone(ctx, z, byZone[z]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// applyOp applies a single Op to the zone file.
-func (p *Provider) applyOp(op core.Op) error {
-	localID := op.Target.Local
-	name, rrtype, err := splitLocalID(localID)
+// applyZone applies the ops of one zone file and, when the file changed (or
+// an earlier reload failed), runs the reload command.
+func (p *Provider) applyZone(ctx context.Context, z *zone, ops []core.Op) error {
+	// Every op reads, changes and writes the file inside one critical section
+	// (Backlog #72): no other Apply, in this process or another, writes in
+	// between.
+	unlock, err := z.store.lock(ctx)
 	if err != nil {
-		return provider.NewPermanentError(fmt.Errorf("dnszone: Apply: invalid local id %q: %w", localID, err))
+		return remote.ProviderError(fmt.Errorf("dnszone: Apply: %w", err))
+	}
+	defer unlock()
+	wrote := false
+	for _, op := range ops {
+		w, err := p.applyOp(ctx, z, op)
+		wrote = wrote || w
+		if err != nil {
+			if wrote {
+				z.markReload()
+			}
+			return err
+		}
+	}
+	if wrote {
+		z.markReload()
+	}
+	return p.runReload(ctx, z)
+}
+
+func (z *zone) markReload() {
+	z.mu.Lock()
+	z.reloadPending = true
+	z.mu.Unlock()
+}
+
+// runReload runs the reload command when the zone has a write it has not been
+// reloaded after.  On failure the reload stays pending for the next Apply.
+func (p *Provider) runReload(ctx context.Context, z *zone) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if !z.reloadPending {
+		return nil
+	}
+	if len(p.reload) == 0 {
+		z.reloadPending = false
+		return nil
+	}
+	if _, err := z.exec.Run(ctx, p.reload, nil); err != nil {
+		return remote.ProviderError(fmt.Errorf("dnszone: Apply: %s was written but the reload command (%s) failed: %w", z.where, p.reload[0], err))
+	}
+	z.reloadPending = false
+	return nil
+}
+
+// applyOp applies a single Op to the zone file.  It reports whether it
+// wrote the file.
+func (p *Provider) applyOp(ctx context.Context, z *zone, op core.Op) (bool, error) {
+	localID := op.Target.Local
+	_, rest, err := p.zoneFor(localID)
+	if err != nil {
+		return false, provider.NewPermanentError(fmt.Errorf("dnszone: Apply: invalid local id %q: %w", localID, err))
+	}
+	name, rrtype, err := splitLocalID(rest)
+	if err != nil {
+		return false, provider.NewPermanentError(fmt.Errorf("dnszone: Apply: invalid local id %q: %w", localID, err))
 	}
 
 	// Guard: never touch SOA/NS.
 	if managedSkipTypes[strings.ToUpper(rrtype)] {
-		return provider.NewPermanentError(fmt.Errorf("dnszone: Apply: refusing to manage SOA/NS record %q (management boundary)", localID))
+		return false, provider.NewPermanentError(fmt.Errorf("dnszone: Apply: refusing to manage SOA/NS record %q (management boundary)", localID))
 	}
 	if err := checkFQDN(name); err != nil {
-		return provider.NewPermanentError(fmt.Errorf("dnszone: Apply: local id %q: %w", localID, err))
+		return false, provider.NewPermanentError(fmt.Errorf("dnszone: Apply: local id %q: %w", localID, err))
 	}
 
 	// Extract desired field values from FieldDiffs.
@@ -481,7 +639,7 @@ func (p *Provider) applyOp(op core.Op) error {
 		// For Update, some fields may not appear in FieldDiffs (only changed fields).
 		// Re-read to get the current values for unchanged fields.
 		if op.Kind == core.OpKindUpdate {
-			if cur, rerr := p.readRecord(name, rrtype); rerr == nil && cur != nil {
+			if cur, rerr := p.readRecord(ctx, z, name, rrtype); rerr == nil && cur != nil {
 				if _, ok := desired["value"]; !ok {
 					recValue = cur.value
 				}
@@ -496,13 +654,13 @@ func (p *Provider) applyOp(op core.Op) error {
 			rrtype: recType,
 			value:  recValue,
 		}
-		return p.writeRecord(newRec)
+		return p.writeRecord(ctx, z, newRec)
 
 	case core.OpKindDelete:
-		return p.deleteRecord(name, rrtype)
+		return p.deleteRecord(ctx, z, name, rrtype)
 
 	default:
-		return provider.NewPermanentError(fmt.Errorf("dnszone: Apply: unknown op kind %v for %s", op.Kind, localID))
+		return false, provider.NewPermanentError(fmt.Errorf("dnszone: Apply: unknown op kind %v for %s", op.Kind, localID))
 	}
 }
 
@@ -512,31 +670,32 @@ func (p *Provider) applyOp(op core.Op) error {
 // except SOA and NS.  If the zone file does not exist, returns ListComplete
 // with an empty list (reality is empty).  If parsing fails, returns an error
 // (never returns a truncated ListComplete — complete-or-error, §5.4).
-func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error) {
-	defer filelock.RLock(p.zonePath)()
-	records, err := p.parseZone()
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			// Zone file absent → empty list (ListComplete, no records to prune).
-			return core.ListResult{IDs: nil, Status: core.ListComplete}, nil
+func (p *Provider) List(ctx context.Context, _ core.Scope) (core.ListResult, error) {
+	var ids []core.ID
+	for _, z := range p.zones {
+		records, err := p.parseZone(ctx, z, true)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// Zone file absent → no records (nothing to prune).
+				continue
+			}
+			// Parse error → fail with error (never return truncated ListComplete).
+			return core.ListResult{}, remote.ProviderError(
+				fmt.Errorf("dnszone: List: parse zone %s: %w", z.where, err))
 		}
-		// Parse error → fail with error (never return truncated ListComplete).
-		return core.ListResult{}, provider.NewTransientError(
-			fmt.Errorf("dnszone: List: parse zone %s: %w", p.zonePath, err))
-	}
 
-	// This provider instance's static scope (WithScope, Backlog #106);
-	// empty (root) unless configured.  Two lines may resolve to the same id
-	// ("www" and "www.example.com."); the id is listed once.
-	scope := p.scope
-	ids := make([]core.ID, 0, len(records))
-	seen := make(map[string]bool, len(records))
-	for _, r := range records {
-		if seen[r.localID()] {
-			continue
+		// This provider instance's static scope (WithScope, Backlog #106);
+		// empty (root) unless configured.  Two lines may resolve to the same id
+		// ("www" and "www.example.com."); the id is listed once.
+		seen := make(map[string]bool, len(records))
+		for _, r := range records {
+			id := z.localID(r)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			ids = append(ids, core.NewID(ProviderName, p.scope, id))
 		}
-		seen[r.localID()] = true
-		ids = append(ids, core.NewID(ProviderName, scope, r.localID()))
 	}
 	return core.ListResult{IDs: ids, Status: core.ListComplete}, nil
 }
@@ -555,31 +714,43 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 // reality: no entries, no error — each resource then falls back to Read, which
 // reports it absent.  The result says nothing about what does not exist and is
 // never a prune input (it is not a core.ListResult, ADR-0011).
-func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkObservation, error) {
-	defer filelock.RLock(p.zonePath)()
-	records, err := p.parseZone()
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return provider.BulkObservation{Observations: map[core.IDKey]core.Observation{}}, nil
-		}
-		return provider.BulkObservation{}, provider.NewTransientError(
-			fmt.Errorf("dnszone: BulkObserve: parse zone %s: %w", p.zonePath, err))
-	}
-
+//
+// With several hosts (WithHosts) the call is complete-or-error per host: a
+// host that cannot be read contributes no entries (its records fall back to
+// Read, which reports them unknown), and only when no host can be read is the
+// whole call an error.
+func (p *Provider) BulkObserve(ctx context.Context, _ core.Scope) (provider.BulkObservation, error) {
 	now := time.Now()
-	// This provider instance's static scope (WithScope, Backlog #106).
-	scope := p.scope
-	obs := make(map[core.IDKey]core.Observation, len(records))
-	for _, r := range records {
-		k := core.NewID(ProviderName, scope, r.localID()).Key()
-		if _, ok := obs[k]; ok {
+	obs := make(map[core.IDKey]core.Observation)
+	var firstErr error
+	failed := 0
+	for _, z := range p.zones {
+		records, err := p.parseZone(ctx, z, true)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			failed++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("dnszone: BulkObserve: parse zone %s: %w", z.where, err)
+			}
 			continue
 		}
-		obs[k] = core.Observation{
-			Availability: core.AvailabilityOk,
-			State:        r.observedState(),
-			ObservedAt:   now,
+		for _, r := range records {
+			// This provider instance's static scope (WithScope, Backlog #106).
+			k := core.NewID(ProviderName, p.scope, z.localID(r)).Key()
+			if _, ok := obs[k]; ok {
+				continue
+			}
+			obs[k] = core.Observation{
+				Availability: core.AvailabilityOk,
+				State:        r.observedState(),
+				ObservedAt:   now,
+			}
 		}
+	}
+	if failed == len(p.zones) {
+		return provider.BulkObservation{}, remote.ProviderError(firstErr)
 	}
 	return provider.BulkObservation{Observations: obs}, nil
 }
@@ -602,14 +773,18 @@ var (
 // core compares, and folding it in one place would leave it different in
 // another.  The "name" and "type" fields, when given, must be the id's.
 func (p *Provider) ValidateIntent(localID string, fields map[string]string) error {
-	name, rrtype, err := splitLocalID(localID)
+	z, rest, err := p.zoneFor(localID)
+	if err != nil {
+		return fmt.Errorf("dnszone: invalid id %q: %w", localID, err)
+	}
+	name, rrtype, err := splitLocalID(rest)
 	if err != nil {
 		return fmt.Errorf("dnszone: invalid id %q: %w", localID, err)
 	}
 	if err := checkFQDN(name); err != nil {
 		return fmt.Errorf("dnszone: id %q: %w", localID, err)
 	}
-	if canon := normaliseName(name) + "/" + strings.ToUpper(rrtype); canon != localID {
+	if canon := z.localID(record{name: name, rrtype: strings.ToUpper(rrtype)}); canon != localID {
 		return fmt.Errorf("dnszone: id %q: write the name in lower case and the type in upper case, as List reports it: %q", localID, canon)
 	}
 	if f, ok := fields["name"]; ok {
@@ -699,8 +874,8 @@ func absName(name, origin string) (string, error) {
 
 // readRecord reads a single record from the zone file by {name, type}.
 // Returns nil if not found or if the zone file does not exist.
-func (p *Provider) readRecord(name, rrtype string) (*record, error) {
-	records, err := p.parseZone()
+func (p *Provider) readRecord(ctx context.Context, z *zone, name, rrtype string) (*record, error) {
+	records, err := p.parseZone(ctx, z, false)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -724,15 +899,15 @@ func (p *Provider) readRecord(name, rrtype string) (*record, error) {
 // removed.  With no existing line, the record is appended with its FQDN as
 // owner, which reads the same under any $ORIGIN.  Atomic write via temp file +
 // rename.
-func (p *Provider) writeRecord(rec record) error {
-	lines, err := p.readLines()
+func (p *Provider) writeRecord(ctx context.Context, z *zone, rec record) (bool, error) {
+	lines, err := p.readLines(ctx, z, false)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return provider.NewTransientError(fmt.Errorf("dnszone: writeRecord: read zone: %w", err))
+		return false, remote.ProviderError(fmt.Errorf("dnszone: writeRecord: read zone: %w", err))
 	}
 	scanned, err := scanLines(lines)
 	if err != nil {
 		// Refuse to rewrite a zone we cannot fully read (unknown ≠ absent).
-		return provider.NewTransientError(fmt.Errorf("dnszone: writeRecord: %s: %w", p.zonePath, err))
+		return false, provider.NewTransientError(fmt.Errorf("dnszone: writeRecord: %s: %w", z.where, err))
 	}
 
 	normName := normaliseName(rec.name)
@@ -754,7 +929,7 @@ func (p *Provider) writeRecord(rec record) error {
 		in.owner = zl.rec.owner
 		newLine, err := checkedLine(in, zl.origin)
 		if err != nil {
-			return err
+			return false, err
 		}
 		filtered = append(filtered, newLine)
 		replaced = true
@@ -764,12 +939,12 @@ func (p *Provider) writeRecord(rec record) error {
 		in.owner = rec.name
 		newLine, err := checkedLine(in, "")
 		if err != nil {
-			return err
+			return false, err
 		}
 		filtered = append(filtered, newLine)
 	}
 
-	return p.commitLines(lines, filtered)
+	return p.commitLines(ctx, z, lines, filtered)
 }
 
 // checkedLine formats rec as a zone-file line and refuses (Permanent) a line
@@ -827,18 +1002,18 @@ func checkAddress(rrtype, value string) error {
 // deleteRecord removes all lines for {name, type} (name = FQDN) from the zone
 // file, however each line writes the owner.  Atomic write via temp file +
 // rename.
-func (p *Provider) deleteRecord(name, rrtype string) error {
-	lines, err := p.readLines()
+func (p *Provider) deleteRecord(ctx context.Context, z *zone, name, rrtype string) (bool, error) {
+	lines, err := p.readLines(ctx, z, false)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// Zone file does not exist; deletion is a no-op (idempotent).
-			return nil
+			return false, nil
 		}
-		return provider.NewTransientError(fmt.Errorf("dnszone: deleteRecord: read zone: %w", err))
+		return false, remote.ProviderError(fmt.Errorf("dnszone: deleteRecord: read zone: %w", err))
 	}
 	scanned, err := scanLines(lines)
 	if err != nil {
-		return provider.NewTransientError(fmt.Errorf("dnszone: deleteRecord: %s: %w", p.zonePath, err))
+		return false, provider.NewTransientError(fmt.Errorf("dnszone: deleteRecord: %s: %w", z.where, err))
 	}
 
 	normName := normaliseName(name)
@@ -853,7 +1028,7 @@ func (p *Provider) deleteRecord(name, rrtype string) error {
 		filtered = append(filtered, zl.text)
 	}
 
-	return p.commitLines(lines, filtered)
+	return p.commitLines(ctx, z, lines, filtered)
 }
 
 // parseZone reads the zone file and returns all managed records, names
@@ -861,8 +1036,10 @@ func (p *Provider) deleteRecord(name, rrtype string) error {
 // Returns os.ErrNotExist if the zone file does not exist.
 // Returns an error naming the line number if any line cannot be read
 // (never a partial record set — unknown ≠ absent).
-func (p *Provider) parseZone() ([]record, error) {
-	lines, err := p.readLines()
+// shared says to read under the shared lock (Read, List, BulkObserve); an
+// Apply reads inside its exclusive lock.
+func (p *Provider) parseZone(ctx context.Context, z *zone, shared bool) ([]record, error) {
+	lines, err := p.readLines(ctx, z, shared)
 	if err != nil {
 		return nil, err
 	}
@@ -1091,18 +1268,21 @@ func bumpSOASerial(lines []string, now time.Time) ([]string, error) {
 // commitLines writes updated over the zone file when it differs from old
 // (the file as read), raising the SOA serial in the same write unless the
 // provider keeps it.  When nothing changes the file is not written.
-func (p *Provider) commitLines(old, updated []string) error {
+func (p *Provider) commitLines(ctx context.Context, z *zone, old, updated []string) (bool, error) {
 	if slices.Equal(old, updated) {
-		return nil
+		return false, nil
 	}
 	if p.soaSerial != SOASerialKeep {
 		bumped, err := bumpSOASerial(updated, p.now())
 		if err != nil {
-			return provider.NewPermanentError(fmt.Errorf("dnszone: Apply: %s: %w", p.zonePath, err))
+			return false, provider.NewPermanentError(fmt.Errorf("dnszone: Apply: %s: %w", z.where, err))
 		}
 		updated = bumped
 	}
-	return p.writeLines(updated)
+	if err := z.store.write(ctx, joinLines(updated)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // originDirective reports whether line is a $ORIGIN directive and, if so,
@@ -1123,61 +1303,20 @@ func originDirective(line, origin string) (string, bool, error) {
 	return o, true, nil
 }
 
-// readLines reads the zone file and returns its lines (without trailing newline).
-// Returns (nil, os.ErrNotExist) if the file does not exist.
-func (p *Provider) readLines() ([]string, error) {
-	f, err := os.Open(p.zonePath)
+// readLines reads the zone file of z and returns its lines (without trailing
+// newline).  Returns (nil, os.ErrNotExist) if the file does not exist.
+func (p *Provider) readLines(ctx context.Context, z *zone, shared bool) ([]string, error) {
+	var data []byte
+	var err error
+	if shared {
+		data, err = z.store.readShared(ctx)
+	} else {
+		data, err = z.store.read(ctx)
+	}
 	if err != nil {
 		return nil, err // os.ErrNotExist is preserved via errors.Is
 	}
-	defer f.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan zone file: %w", err)
-	}
-	return lines, nil
-}
-
-// writeLines writes lines to the zone file atomically (temp + rename).
-// Each line is written with a newline terminator.
-func (p *Provider) writeLines(lines []string) error {
-	beforeWrite()
-	dir := filepath.Dir(p.zonePath)
-	tmp, err := os.CreateTemp(dir, "sakutei-dnszone-*.tmp")
-	if err != nil {
-		return provider.NewTransientError(fmt.Errorf("dnszone: writeLines: create temp: %w", err))
-	}
-	tmpPath := tmp.Name()
-
-	w := bufio.NewWriter(tmp)
-	for _, line := range lines {
-		if _, werr := fmt.Fprintln(w, line); werr != nil {
-			tmp.Close()
-			os.Remove(tmpPath)
-			return provider.NewTransientError(fmt.Errorf("dnszone: writeLines: write: %w", werr))
-		}
-	}
-	if err := w.Flush(); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return provider.NewTransientError(fmt.Errorf("dnszone: writeLines: flush: %w", err))
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return provider.NewTransientError(fmt.Errorf("dnszone: writeLines: close temp: %w", err))
-	}
-
-	// Atomic rename over the target path.
-	if err := os.Rename(tmpPath, p.zonePath); err != nil {
-		os.Remove(tmpPath)
-		return provider.NewTransientError(fmt.Errorf("dnszone: writeLines: rename: %w", err))
-	}
-	return nil
+	return splitLines(data)
 }
 
 // parseLine parses a single zone-file line into a record whose owner is set

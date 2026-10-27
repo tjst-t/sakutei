@@ -77,7 +77,7 @@ func applyConcurrently(t *testing.T, n int) (missing []string, serial string) {
 		}
 	}
 
-	records, err := p.parseZone()
+	records, err := p.parseZone(ctx, p.zones[0], false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func applyConcurrently(t *testing.T, n int) (missing []string, serial string) {
 			missing = append(missing, name)
 		}
 	}
-	lines, err := p.readLines()
+	lines, err := p.readLines(ctx, p.zones[0], false)
 	if err != nil {
 		t.Fatal(err)
 	}

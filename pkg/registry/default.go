@@ -17,6 +17,8 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/tjst-t/sakutei/internal/ansible"
 	"github.com/tjst-t/sakutei/internal/dnszone"
@@ -26,6 +28,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/redfish"
 	"github.com/tjst-t/sakutei/internal/redfish/bmcconfig"
 	"github.com/tjst-t/sakutei/internal/redfish/system"
+	"github.com/tjst-t/sakutei/internal/remote"
 	"github.com/tjst-t/sakutei/internal/s3bucket"
 	"github.com/tjst-t/sakutei/internal/sqlmigrate"
 	"github.com/tjst-t/sakutei/pkg/core"
@@ -55,6 +58,14 @@ import (
 //     "live" (the kernel's ruleset through nft, nftables.NewLive, Backlog #121):
 //     then config["ruleset_tables"] ("<family>/<name>,...", required) names the
 //     tables to manage and config["ruleset_nft"] the nft binary (default "nft").
+//
+//   - Remote hosts (Backlog #130): config["remote_config"] is the host list
+//     (remote.LoadConfig: address, user, private_key SecretRef, known_hosts,
+//     sudo, timeouts).  nftables live with config["ruleset_hosts"]
+//     ("fw1,fw2") runs nft on those hosts over ssh; dnszone with
+//     config["zone_hosts"] manages config["zone"] (absolute) on those hosts.
+//     The local ids then start with "<host>/".  config["zone_reload"] is the
+//     command run after an Apply changed the zone (here, or on the host).
 func DefaultRegistry() *ProviderRegistry {
 	r := New()
 
@@ -91,7 +102,24 @@ func DefaultRegistry() *ProviderRegistry {
 		if err != nil {
 			return nil, err
 		}
-		return dnszone.New(zonePath, dnszone.WithSOASerial(mode), dnszone.WithScope(scope)), nil
+		opts := []dnszone.Option{dnszone.WithSOASerial(mode), dnszone.WithScope(scope)}
+		// Backlog #130: the reload command (zone_reload, words split on
+		// spaces, no shell) and the remote hosts (zone_hosts + remote_config).
+		if r := strings.Fields(config["zone_reload"]); len(r) > 0 {
+			opts = append(opts, dnszone.WithReload(r))
+		}
+		if config["zone_hosts"] != "" {
+			if config["zone"] == "" || !path.IsAbs(config["zone"]) {
+				return nil, errors.New("dnszone: zone_hosts needs zone: the absolute path of the zone file on the hosts")
+			}
+			execs, order, err := remoteHosts(config, "zone_hosts")
+			if err != nil {
+				return nil, fmt.Errorf("dnszone: %w", err)
+			}
+			opts = append(opts, dnszone.WithHosts(order, execs))
+			zonePath = config["zone"]
+		}
+		return dnszone.New(zonePath, opts...), nil
 	})
 
 	// "nftables" — nftables ruleset-file provider (Sc7a647-1).
@@ -128,9 +156,26 @@ func DefaultRegistry() *ProviderRegistry {
 			if err != nil {
 				return nil, fmt.Errorf("nftables: ruleset_tables: %w", err)
 			}
-			return nftables.NewLive(nftables.LiveConfig{NFT: config["ruleset_nft"], Tables: tables}, nftables.WithScope(scope))
+			cfg := nftables.LiveConfig{NFT: config["ruleset_nft"], Tables: tables}
+			// Backlog #130: the remote hosts (ruleset_hosts + remote_config).
+			if config["ruleset_hosts"] != "" {
+				execs, order, err := remoteHosts(config, "ruleset_hosts")
+				if err != nil {
+					return nil, fmt.Errorf("nftables: %w", err)
+				}
+				for _, name := range order {
+					cfg.Hosts = append(cfg.Hosts, nftables.LiveHost{
+						Name:   name,
+						Runner: nftables.RemoteRunner{Exec: execs[name], NFT: config["ruleset_nft"]},
+					})
+				}
+			}
+			return nftables.NewLive(cfg, nftables.WithScope(scope))
 		default:
 			return nil, fmt.Errorf("nftables: ruleset_target %q: want file or live", config["ruleset_target"])
+		}
+		if config["ruleset_hosts"] != "" {
+			return nil, errors.New("nftables: ruleset_hosts needs ruleset_target live")
 		}
 		return nftables.New(rulesetPath, nftables.WithScope(scope)), nil
 	})
@@ -202,6 +247,24 @@ func DefaultRegistry() *ProviderRegistry {
 	})
 
 	return r
+}
+
+// remoteHosts は config[key]（"a,b,..."）の対象の Executor を
+// config["remote_config"]（対象の一覧、Backlog #130）から作る。
+func remoteHosts(config map[string]string, key string) (map[string]remote.Executor, []string, error) {
+	path := config["remote_config"]
+	if path == "" {
+		return nil, nil, fmt.Errorf("%s needs remote_config: the host list (address, user, private_key, known_hosts, ...)", key)
+	}
+	cfg, err := remote.LoadConfig(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	execs, order, err := cfg.Executors(config[key])
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", key, err)
+	}
+	return execs, order, nil
 }
 
 // redfishClients は config["redfish_config"] の BMC の一覧からノードごとの

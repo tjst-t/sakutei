@@ -73,6 +73,29 @@ $ sudo sakutei status --intent intent/ --ruleset-target live --ruleset-tables in
 
 base chain から管理する chain へ飛ばす（`jump web`）のは、base chain を管理の外に置いたまま人が書く。Sakutei は base chain の hook・priority・policy・中身を変えない。
 
+## 離れたホスト（live）
+
+live は、手元の nft の代わりに離れたホストの nft を ssh 越しに呼べる（Backlog #130）。1 つのデーモンが複数のホストの FW を扱う。設定・鍵とホスト鍵の扱い・権限は [../remote.md](../remote.md)。
+
+| `--provider-config` のキー | 意味 |
+| --- | --- |
+| `ruleset_hosts` | 扱うホストの名前（`fw1,fw2`）。live のときだけ |
+| `remote_config` | 対象の一覧のファイル（address・user・秘密鍵の SecretRef・known_hosts・sudo・タイムアウト） |
+
+```yaml
+providers:
+  nftables:
+    ruleset_target: live
+    ruleset_tables: inet/filter
+    ruleset_hosts: fw1,fw2
+    remote_config: hosts.yaml
+```
+
+- ID の先頭にホストの名前が付く（`fw1/inet/filter/web`）。2 台に同じ table・chain があってもぶつからない。フィールドは変わらない。
+- nft の呼び出し（`nft -j list`・`nft -a -s list`・`nft -c -f -`・`nft -f -`）をそのホストで走らせる。スクリプトは標準入力で渡す。Apply はホストごとに 1 つのトランザクション。`ruleset_nft` はホストの上の nft のパスになる。
+- ホストに届かない・認証の失敗は観測できない（unknown）、ホスト鍵の不一致は PermanentError。BulkObserve は読めないホストの分だけを返さず（そのホストの chain は Read が unknown と答える）、ほかのホストは収束を続ける。List は全部のホストを読めたときだけ complete。
+- `ruleset_hosts` を書かなければ今までどおり手元の nft（ID も同じ）。
+
 ## live の動き方
 
 - **観測**: 管理する table ごとに、`nft -j list table <family> <name>` の JSON で chain の並び・base chain かどうか・ルールの handle の並びを、`nft -a -s list table <family> <name>` のテキストで handle ごとのルール文を読み、handle で突き合わせる。2 回の読みの間に ruleset が変わって合わなければ、その周は観測できない（次の周に読み直す）。

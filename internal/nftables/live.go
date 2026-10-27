@@ -44,6 +44,15 @@ package nftables
 //   - ルール文は nft のスクリプトにそのまま埋め込むので、引用符の外の ';'・
 //     '#'・改行（コマンドの区切りとコメント）は受けない（管理しない table を
 //     書き換えるコマンドを注入させない）。
+//   - 離れたホスト（Backlog #130）: LiveConfig.Hosts に名前付きの Runner（ssh
+//     越しの実行の層、internal/remote）を渡すと、1 つの Provider が複数の
+//     ホストの ruleset を扱う。そのときの local id は "<ホスト>/<family>/<table>/
+//     <chain>"（2 台に同じ table・chain があってもぶつからない）。Hosts が空
+//     なら今までどおり手元の nft で、id も "<family>/<table>/<chain>" のまま。
+//     ホストに届かない・認証の失敗は unknown（TransientError）、ホスト鍵の
+//     不一致は PermanentError。BulkObserve は観測できないホストの分を返さない
+//     （その chain は Read が unknown と答える）。List は全ホストを読めたとき
+//     だけ complete。
 
 import (
 	"context"
@@ -56,6 +65,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/remote"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -72,8 +82,14 @@ const (
 	TargetLive = "live"
 )
 
-// liveApplyMu は同じホスト（= このプロセス）の live の Apply を直列化する。
-var liveApplyMu sync.Mutex
+// liveApplyMu は同じホストの live の Apply をプロセスの中で直列化する
+// （ホストの名前ごと。手元は ""）。
+var liveApplyMu sync.Map // string → *sync.Mutex
+
+func liveApplyLock(host string) *sync.Mutex {
+	mu, _ := liveApplyMu.LoadOrStore(host, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
 
 // families は nft の table family。
 var families = map[string]bool{"ip": true, "ip6": true, "inet": true, "arp": true, "bridge": true, "netdev": true}
@@ -125,13 +141,32 @@ type LiveConfig struct {
 	Runner Runner
 	// Tables は管理する table（必須）。
 	Tables []TableRef
+	// Hosts は扱う離れたホスト（Backlog #130）。空なら手元（Runner / NFT）。
+	// 空でなければ Runner と NFT は使わず、id の先頭にホストの名前が付く。
+	Hosts []LiveHost
+}
+
+// LiveHost は live が扱う 1 つのホスト。
+type LiveHost struct {
+	// Name はホストの名前（id の先頭。"/" を含まない）。
+	Name string
+	// Runner はそのホストで nft を走らせる（例 RemoteRunner）。
+	Runner Runner
+}
+
+// liveHost は Provider の中の 1 つのホスト（手元なら name ""）。
+type liveHost struct {
+	name   string
+	runner Runner
 }
 
 // LiveProvider manages the regular chains of the named tables in the kernel's
 // nftables ruleset.  provider.Provider・Lister・BulkObserver・IntentValidator・
 // PlanRefiner を実装する。
 type LiveProvider struct {
-	runner Runner
+	hosts []liveHost
+	// multi は id がホストの名前を含むかどうか（Hosts を設定したとき）。
+	multi  bool
 	tables []TableRef
 	scope  core.Scope
 }
@@ -145,12 +180,29 @@ func NewLive(cfg LiveConfig, opts ...Option) (*LiveProvider, error) {
 	for _, opt := range opts {
 		opt(&s)
 	}
-	r := cfg.Runner
-	if r == nil {
-		r = ExecRunner{Path: cfg.NFT}
-	}
 	tables := append([]TableRef(nil), cfg.Tables...)
-	return &LiveProvider{runner: r, tables: tables, scope: s.scope}, nil
+	p := &LiveProvider{tables: tables, scope: s.scope}
+	if len(cfg.Hosts) == 0 {
+		r := cfg.Runner
+		if r == nil {
+			r = ExecRunner{Path: cfg.NFT}
+		}
+		p.hosts = []liveHost{{runner: r}}
+		return p, nil
+	}
+	p.multi = true
+	seen := map[string]bool{}
+	for _, h := range cfg.Hosts {
+		if h.Name == "" || strings.ContainsAny(h.Name, "/ \t\n") || h.Runner == nil {
+			return nil, fmt.Errorf("nftables: live: host %q: want a name without '/' and a runner", h.Name)
+		}
+		if seen[h.Name] {
+			return nil, fmt.Errorf("nftables: live: host %q is listed twice", h.Name)
+		}
+		seen[h.Name] = true
+		p.hosts = append(p.hosts, liveHost{name: h.Name, runner: h.Runner})
+	}
+	return p, nil
 }
 
 // Schema は file 版と同じ（intent を対象によらず使えるように）。
@@ -181,19 +233,19 @@ var (
 // 走らない・出力が読めないのは unknown（TransientError）、base chain・
 // 管理しない table・読み分けられないルールを持つ chain は PermanentError。
 func (p *LiveProvider) Read(ctx context.Context, localID string) (core.Observation, error) {
-	ref, chain, err := p.coords(localID)
+	h, ref, chain, err := p.coords(localID)
 	if err != nil {
 		return unknownObs(), provider.NewPermanentError(fmt.Errorf("nftables: Read: %w", err))
 	}
-	tbl, err := p.observeTable(ctx, ref)
+	tbl, err := h.observeTable(ctx, ref)
 	if err != nil {
-		return unknownObs(), provider.NewTransientError(fmt.Errorf("nftables: Read: %w", err))
+		return unknownObs(), observeErr(fmt.Errorf("nftables: Read: %w", err))
 	}
 	c := tbl.find(chain)
 	if c == nil {
 		return core.Observation{Availability: core.AvailabilityOk, ObservedAt: time.Now()}, nil
 	}
-	if err := c.refuse(ref); err != nil {
+	if err := c.refuse(ref, h.name); err != nil {
 		return unknownObs(), provider.NewPermanentError(fmt.Errorf("nftables: Read: %w", err))
 	}
 	return core.Observation{Availability: core.AvailabilityOk, State: c.state(ref), ObservedAt: time.Now()}, nil
@@ -203,14 +255,16 @@ func (p *LiveProvider) Read(ctx context.Context, localID string) (core.Observati
 // だけ ListComplete で、1 つでも読めなければ error（complete-or-error、§5.4）。
 func (p *LiveProvider) List(ctx context.Context, _ core.Scope) (core.ListResult, error) {
 	var ids []core.ID
-	for _, ref := range p.tables {
-		tbl, err := p.observeTable(ctx, ref)
-		if err != nil {
-			return core.ListResult{}, provider.NewTransientError(fmt.Errorf("nftables: List: %w", err))
-		}
-		for _, c := range tbl.chains {
-			if c.refuse(ref) == nil {
-				ids = append(ids, core.NewID(ProviderName, p.scope, chainLocalID(ref, c.name)))
+	for _, h := range p.hosts {
+		for _, ref := range p.tables {
+			tbl, err := h.observeTable(ctx, ref)
+			if err != nil {
+				return core.ListResult{}, observeErr(fmt.Errorf("nftables: List: %w", err))
+			}
+			for _, c := range tbl.chains {
+				if c.refuse(ref, h.name) == nil {
+					ids = append(ids, core.NewID(ProviderName, p.scope, hostLocalID(h.name, ref, c.name)))
+				}
 			}
 		}
 	}
@@ -218,33 +272,65 @@ func (p *LiveProvider) List(ctx context.Context, _ core.Scope) (core.ListResult,
 }
 
 // BulkObserve は管理する table ごとに nft を 2 回だけ呼んで全 chain を観測する
-// （§5.7）。各エントリは Read が返すものと同じ。complete-or-error。
+// （§5.7）。各エントリは Read が返すものと同じ。ホストごとに complete-or-error:
+// ホストが 1 つだけ（手元を含む）ならその失敗は全体の error、複数なら読めない
+// ホストの分は返さない（その chain は Read が決める＝unknown）。全部読めなければ
+// error。
 func (p *LiveProvider) BulkObserve(ctx context.Context, _ core.Scope) (provider.BulkObservation, error) {
 	obs := map[core.IDKey]core.Observation{}
 	now := time.Now()
-	for _, ref := range p.tables {
-		tbl, err := p.observeTable(ctx, ref)
+	var firstErr error
+	failed := 0
+	for _, h := range p.hosts {
+		got, err := h.bulk(ctx, p, now)
 		if err != nil {
-			return provider.BulkObservation{}, provider.NewTransientError(fmt.Errorf("nftables: BulkObserve: %w", err))
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for k, o := range got {
+			obs[k] = o
+		}
+	}
+	if failed == len(p.hosts) {
+		return provider.BulkObservation{}, observeErr(fmt.Errorf("nftables: BulkObserve: %w", firstErr))
+	}
+	return provider.BulkObservation{Observations: obs}, nil
+}
+
+// bulk は 1 つのホストの管理する chain を全部観測する（1 つの table でも
+// 読めなければ error）。
+func (h liveHost) bulk(ctx context.Context, p *LiveProvider, now time.Time) (map[core.IDKey]core.Observation, error) {
+	obs := map[core.IDKey]core.Observation{}
+	for _, ref := range p.tables {
+		tbl, err := h.observeTable(ctx, ref)
+		if err != nil {
+			return nil, err
 		}
 		for _, c := range tbl.chains {
-			if c.refuse(ref) != nil {
+			if c.refuse(ref, h.name) != nil {
 				continue
 			}
-			obs[core.NewID(ProviderName, p.scope, chainLocalID(ref, c.name)).Key()] = core.Observation{
+			obs[core.NewID(ProviderName, p.scope, hostLocalID(h.name, ref, c.name)).Key()] = core.Observation{
 				Availability: core.AvailabilityOk,
 				State:        c.state(ref),
 				ObservedAt:   now,
 			}
 		}
 	}
-	return provider.BulkObservation{Observations: obs}, nil
+	return obs, nil
 }
+
+// observeErr は観測の失敗を provider の error にする: ホスト鍵の不一致は
+// PermanentError、それ以外は TransientError（どちらも unknown）。
+func observeErr(err error) error { return remote.ProviderError(err) }
 
 // ValidateIntent は読み込みの時点で、管理しない table の chain・識別子として
 // 受けない名前・nft のスクリプトに埋め込めないルール文を断る（§28.4）。
 func (p *LiveProvider) ValidateIntent(localID string, fields map[string]string) error {
-	ref, chain, err := p.coords(localID)
+	_, ref, chain, err := p.coords(localID)
 	if err != nil {
 		return err
 	}
@@ -284,6 +370,7 @@ func (p *LiveProvider) RefinePlan(_ string, _ core.State, _ map[string]string, o
 
 // chainCheck は Apply の後に読み戻して確かめる 1 つの chain。
 type chainCheck struct {
+	host    liveHost
 	ref     TableRef
 	chain   string
 	rules   []string // 宣言のルール（正規形）
@@ -294,27 +381,53 @@ type chainCheck struct {
 // から `nft -f -` で 1 つのトランザクションとして流す。流した後に読み戻し、
 // 宣言の正規形と違えば PermanentError。
 func (p *LiveProvider) Apply(ctx context.Context, plan core.Plan) error {
-	liveApplyMu.Lock()
-	defer liveApplyMu.Unlock()
+	// One transaction per host, in the order the hosts first appear.
+	var order []string
+	byHost := map[string][]core.Op{}
+	hosts := map[string]liveHost{}
+	for _, op := range plan.Ops {
+		h, _, _, err := p.coords(op.Target.Local)
+		if err != nil {
+			return provider.NewPermanentError(fmt.Errorf("nftables: Apply: %w", err))
+		}
+		if _, ok := byHost[h.name]; !ok {
+			order = append(order, h.name)
+			hosts[h.name] = h
+		}
+		byHost[h.name] = append(byHost[h.name], op)
+	}
+	for _, name := range order {
+		if err := p.applyHost(ctx, hosts[name], byHost[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyHost は 1 つのホストの op を 1 つの nft スクリプトにして流す。
+func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op) error {
+	mu := liveApplyLock(h.name)
+	mu.Lock()
+	defer mu.Unlock()
 
 	tables := map[TableRef]*liveTable{}
 	var script strings.Builder
 	var checks []chainCheck
-	for _, op := range plan.Ops {
-		ref, chain, err := p.coords(op.Target.Local)
+	for _, op := range ops {
+		_, ref, chain, err := p.coords(op.Target.Local)
 		if err != nil {
 			return provider.NewPermanentError(fmt.Errorf("nftables: Apply: %w", err))
 		}
 		tbl, ok := tables[ref]
 		if !ok {
-			if tbl, err = p.observeTable(ctx, ref); err != nil {
-				return provider.NewTransientError(fmt.Errorf("nftables: Apply: %w", err))
+			if tbl, err = h.observeTable(ctx, ref); err != nil {
+				return observeErr(fmt.Errorf("nftables: Apply: %w", err))
 			}
 			tables[ref] = tbl
 		}
 		cur := tbl.find(chain)
 		if cur != nil {
-			if err := cur.refuse(ref); err != nil {
+			if err := cur.refuse(ref, h.name); err != nil {
 				return provider.NewPermanentError(fmt.Errorf("nftables: Apply: %w", err))
 			}
 		}
@@ -350,14 +463,14 @@ func (p *LiveProvider) Apply(ctx context.Context, plan core.Plan) error {
 				fmt.Fprintf(&script, "add rule %s %s\n", target, r)
 				canon = append(canon, canonRule(r))
 			}
-			checks = append(checks, chainCheck{ref: ref, chain: chain, rules: canon})
+			checks = append(checks, chainCheck{host: h, ref: ref, chain: chain, rules: canon})
 
 		case core.OpKindDelete:
 			if cur == nil {
 				continue // 既に無い（idempotent）
 			}
 			fmt.Fprintf(&script, "flush chain %s\ndelete chain %s\n", target, target)
-			checks = append(checks, chainCheck{ref: ref, chain: chain, deleted: true})
+			checks = append(checks, chainCheck{host: h, ref: ref, chain: chain, deleted: true})
 
 		default:
 			return provider.NewPermanentError(fmt.Errorf("nftables: Apply: unknown op kind %v for %s", op.Kind, op.Target.Local))
@@ -368,11 +481,11 @@ func (p *LiveProvider) Apply(ctx context.Context, plan core.Plan) error {
 	}
 
 	body := []byte(script.String())
-	if _, err := p.runner.Run(ctx, []string{"-c", "-f", "-"}, body); err != nil {
-		return classifyApplyErr("nft -c (check)", err, true)
+	if _, err := h.runner.Run(ctx, []string{"-c", "-f", "-"}, body); err != nil {
+		return classifyApplyErr(h.what("nft -c (check)"), err, true)
 	}
-	if _, err := p.runner.Run(ctx, []string{"-f", "-"}, body); err != nil {
-		return classifyApplyErr("nft -f", err, false)
+	if _, err := h.runner.Run(ctx, []string{"-f", "-"}, body); err != nil {
+		return classifyApplyErr(h.what("nft -f"), err, false)
 	}
 	return p.verify(ctx, checks)
 }
@@ -384,12 +497,12 @@ func (p *LiveProvider) verify(ctx context.Context, checks []chainCheck) error {
 		tbl, ok := tables[ck.ref]
 		if !ok {
 			var err error
-			if tbl, err = p.observeTable(ctx, ck.ref); err != nil {
-				return provider.NewTransientError(fmt.Errorf("nftables: Apply: read back: %w", err))
+			if tbl, err = ck.host.observeTable(ctx, ck.ref); err != nil {
+				return observeErr(fmt.Errorf("nftables: Apply: read back: %w", err))
 			}
 			tables[ck.ref] = tbl
 		}
-		id := chainLocalID(ck.ref, ck.chain)
+		id := hostLocalID(ck.host.name, ck.ref, ck.chain)
 		c := tbl.find(ck.chain)
 		if ck.deleted {
 			if c != nil {
@@ -425,7 +538,7 @@ func classifyApplyErr(stage string, err error, check bool) error {
 	err = fmt.Errorf("nftables: Apply: %s: %w", stage, err)
 	var ee *ExitError
 	if !errors.As(err, &ee) || !check {
-		return provider.NewTransientError(err)
+		return remote.ProviderError(err)
 	}
 	for _, s := range []string{"Operation not permitted", "Permission denied", "Device or resource busy", "Resource temporarily unavailable"} {
 		if strings.Contains(ee.Stderr, s) {
@@ -466,8 +579,8 @@ func (t *liveTable) find(chain string) *liveChain {
 }
 
 // refuse は chain が管理境界の外なら理由を返す。
-func (c *liveChain) refuse(ref TableRef) error {
-	id := chainLocalID(ref, c.name)
+func (c *liveChain) refuse(ref TableRef, host string) error {
+	id := hostLocalID(host, ref, c.name)
 	switch {
 	case c.base:
 		return fmt.Errorf("refusing to manage base chain %q (has type/hook/policy; management boundary)", id)
@@ -513,8 +626,8 @@ type nftRule struct {
 // observeTable は 1 つの table を読む。table が無ければ exists=false で error
 // なし。それ以外の失敗（nft が走らない・権限が無い・出力が読めない・2 回の
 // 読みが合わない）は error。
-func (p *LiveProvider) observeTable(ctx context.Context, ref TableRef) (*liveTable, error) {
-	out, err := p.runner.Run(ctx, []string{"-j", "list", "table", ref.Family, ref.Name}, nil)
+func (h liveHost) observeTable(ctx context.Context, ref TableRef) (*liveTable, error) {
+	out, err := h.runner.Run(ctx, []string{"-j", "list", "table", ref.Family, ref.Name}, nil)
 	if err != nil {
 		if noSuchTable(err) {
 			return &liveTable{}, nil
@@ -525,7 +638,7 @@ func (p *LiveProvider) observeTable(ctx context.Context, ref TableRef) (*liveTab
 	if err != nil {
 		return nil, fmt.Errorf("list table %s: %w", ref, err)
 	}
-	txt, err := p.runner.Run(ctx, []string{"-a", "-s", "list", "table", ref.Family, ref.Name}, nil)
+	txt, err := h.runner.Run(ctx, []string{"-a", "-s", "list", "table", ref.Family, ref.Name}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list table %s (text): %w", ref, err)
 	}
@@ -778,10 +891,34 @@ func checkRuleText(r string) error {
 	return nil
 }
 
-// coords は local id を管理する table と chain に分ける。形が違う・管理しない
-// table・識別子として受けない名前は error。
-func (p *LiveProvider) coords(localID string) (TableRef, string, error) {
-	family, table, chain, err := splitLocalID(localID)
+// coords は local id をホスト・管理する table・chain に分ける。形が違う・
+// 知らないホスト・管理しない table・識別子として受けない名前は error。
+func (p *LiveProvider) coords(localID string) (liveHost, TableRef, string, error) {
+	h := p.hosts[0]
+	rest := localID
+	if p.multi {
+		name, after, ok := strings.Cut(localID, "/")
+		if !ok {
+			return liveHost{}, TableRef{}, "", fmt.Errorf("invalid local id %q: want <host>/<family>/<table>/<chain>", localID)
+		}
+		found := false
+		for _, c := range p.hosts {
+			if c.name == name {
+				h, found = c, true
+			}
+		}
+		if !found {
+			return liveHost{}, TableRef{}, "", fmt.Errorf("invalid local id %q: host %q is not one of this provider's hosts", localID, name)
+		}
+		rest = after
+	}
+	ref, chain, err := p.tableChain(localID, rest)
+	return h, ref, chain, err
+}
+
+// tableChain は "<family>/<table>/<chain>" を管理する table と chain に分ける。
+func (p *LiveProvider) tableChain(localID, rest string) (TableRef, string, error) {
+	family, table, chain, err := splitLocalID(rest)
 	if err != nil {
 		return TableRef{}, "", fmt.Errorf("invalid local id %q: %w", localID, err)
 	}
@@ -803,6 +940,22 @@ func (p *LiveProvider) coords(localID string) (TableRef, string, error) {
 
 func chainLocalID(ref TableRef, chain string) string {
 	return ref.Family + "/" + ref.Name + "/" + chain
+}
+
+// hostLocalID は id（ホストがあれば "<ホスト>/" を前に付ける）。
+func hostLocalID(host string, ref TableRef, chain string) string {
+	if host == "" {
+		return chainLocalID(ref, chain)
+	}
+	return host + "/" + chainLocalID(ref, chain)
+}
+
+// what は文言にホストを添える。
+func (h liveHost) what(s string) string {
+	if h.name == "" {
+		return s
+	}
+	return s + " on " + h.name
 }
 
 func unknownObs() core.Observation {
