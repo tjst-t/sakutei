@@ -3287,7 +3287,7 @@
       "number": 140,
       "kind": "task",
       "title": "Redfish provider：BIOS の設定（Bios・Bios/Settings）を宣言で合わせる",
-      "status": "in-progress",
+      "status": "done",
       "parent": "os-bios",
       "dependsOn": [
         "os-install-task"
@@ -3297,12 +3297,12 @@
       "labels": [],
       "body": "## やること\n- 新しい種類 `redfish-bios`（ID はノード名）。宣言した属性（`attributes`：名前と値の一覧）だけを管理し、書かない属性は触らない。\n- 観測：`Systems/<id>/Bios` の Attributes。保留中の変更（`Bios/Settings`、次の再起動で効く）も読み、「保留中」として区別する（保留中で宣言どおりなら、同じ変更を重ねて出さない。converging として扱う）。\n- Apply：`Bios/Settings` に PATCH。再起動はしない（反映には再起動が要ることを docs に書き、再起動は Workflow の手順で行う）。AttributeRegistry があれば属性名と値の型を確かめて計画の時点で断る。\n- BMC が Bios を持たなければ、宣言したときだけ分かるエラー。届かないのは unknown。\n- 偽 BMC（redfishtest）に Bios・Bios/Settings を足して契約テスト。qemu-bmc 0.10.0 の Bios で統合テスト（make integration-redfish に項目を足す）。qemu-bmc の振る舞いは着手時に確かめ、合わなければ分かったことを docs に書く。\n- 文書：docs/providers/redfish.md、設計書 §29.1。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "redfish-bios が宣言した属性だけを Bios/Settings で合わせ、保留中を二重に出さないことを偽 BMC の契約テストと make integration-redfish で示す。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/redfish-bios）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T15:24:44.791Z",
-      "updatedAt": "2026-10-27T16:42:50.965Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-27T17:06:19.391Z",
+      "closedAt": "2026-10-27T17:06:19.391Z",
       "extra": {}
     },
     {
