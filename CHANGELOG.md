@@ -2,6 +2,24 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## v2.0.0（2026-10-27）
+
+設計で v2 に置いていた核の 1 つ、**多相 Task**（相を持ち、リブートをまたぐ手続き）が入った版。あわせて、空の物理サーバに宣言だけで OS を入れて完了を確かめる部品、入れ直し、BIOS の設定、NETCONF 対応の機器の観測、外の道具が状態を読む読み取り専用の口。設計書は v3.23 → v3.25（`docs/architecture/CHANGELOG-v3.24.md`・`v3.25.md`、と §29.1）。
+
+### 追加
+
+- **多相 Task**（#51、設計書 §6.2）：相（Staging・Verifying・Applying・Rebooting・Confirming など）を持つ Task。進行中の相だけを S2 に残し、各相の入口で「もう済んでいるか」を観測で確かめて二重に実行しない。リブート中に見えなくなった対象を absent と取り違えず、時間を区切って待つ。FW の更新のような手続きの土台。
+- **書き込み中に止まった多相 Task は人の承認に回す**（#52）：Applying の途中で止まった Task は、観測で完了を確かめられない限り自動で再開せず、承認ゲートで止まる。
+- **Workflow の一度きりの操作と自動導入の応答ファイル**（#139）：手順に「次の 1 回だけ CD から起動」「再起動」を書ける（収束の宣言で Once を断る決まりは変えない）。自動導入の応答ファイルを、利用者の雛形と宣言から書き出す（公開鍵だけで、秘密は書き出さない）。
+- **宣言で入れ直す**（#88）：planned_change の `kind: reimage` を宣言すると、対象の台で OS の導入の Workflow が 1 回走る（予算・承認を通る）。
+- **Redfish の BIOS 設定 `redfish-bios`**（#140）：宣言した属性だけを `Bios/Settings` で合わせ、再起動待ちの変更を二重に出さない。
+- **NETCONF provider `netconf`（観測だけ）**（#141）：NETCONF 対応の機器の設定の部分木を観測し、ずれを知らせる。変更は型で止める（後で commit confirmed を使う 2 段の変更を入れる）。`make integration-netconf`。
+- **`plan --json`**（#135）と、**デーモンの読み取り専用の HTTP**（#136）：`--read-listen` で `GET /status`・`/plan`・`/events`（Server-Sent Events）・`/graph`。`sakutei graph --json`。status に担当（claim）・fencing の世代・ミラーの状態。
+
+### 修正
+
+- postgresql：管理用の接続の秘密が読めないときの Apply を、ほかの provider と同じく一時的な失敗（安全に止まる側）にした。権限の空と、宣言から外したときの扱いを文書に明記した（#137）。
+
 ## v1.4.0（2026-10-27）
 
 1 台のデーモンから、agent を置かずに離れたホストを扱えるようにした。ゲスト OS を観測して OS の導入の完了を確かめる provider、デーモンの /metrics、s3-bucket の S3 互換実装への対応。設計書は v3.22 → v3.23（`docs/architecture/CHANGELOG-v3.23.md`）。
