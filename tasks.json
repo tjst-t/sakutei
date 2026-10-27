@@ -3203,11 +3203,11 @@
       "labels": [],
       "body": "## やること\n- `--read-listen <addr>`：明示したときだけ待ち受ける読み取り専用の HTTP。既定の例は 127.0.0.1。承認の書き込みの口（`--approval-listen`）とは別の待ち受けにする。書き込みの要求は受けない（405）。\n  - `GET /status`：直前の周の観測から作った status の JSON（`status --json` と同じ形。周の番号と時刻を足す）。\n  - `GET /plan`：直前の周の計画（`plan --json` と同じ形）。止めた操作と理由、保留を含む。\n  - `GET /events`：Event の流し出し（Server-Sent Events。Event の JSON をそのまま 1 件ずつ。接続した時点で firing 中の level の Event を先に送る）。遅い読み手で収束を止めない（送れない分は落として数える）。\n  - `GET /graph`：依存の DAG（リソースと depends_on・ready_condition、今の ready かどうか）の JSON。一回性の CLI にも `sakutei graph --json` を足す。\n  - 既にある `/metrics`（#54）と `GET /workflows` はそのまま。\n- `status`（JSON と文）に、claim（このデーモンの担当）・fencing の世代・git のミラーの状態（最後に取れた revision と時刻、中央に届いているか）を足す（あるときだけ）。\n- 認証は持たない（手元で待ち受ける前提）。外に出すときは前段に置く道具で守ることを docs に書く。\n- 文書：docs（status-json.md・plan-json.md と並べて API の説明）と設計書 §26.4・§22.3。\n- **#135 のレビューの小さな指摘も直す**：docs/plan-json.md の終了コードの項は「フラグの誤りのときは JSON を出さない」としているが、実際には予算のフラグの誤り（--window-duration・--on-exceed）・--claim の誤り・--intent の指定漏れは fail() を通り、--json なら error 入りの JSON を出す。JSON を出さないのは fs.Parse のエラーと、checkScope などが直接終了する場合だけ。文書を実際の動きに合わせる（外の道具は「JSON が出るか」を文書で判断するため）。\n\n## 確かめ方\n受け入れテスト：デーモンを回し、/status・/plan が CLI の --json と同じ形、/events にずれの firing と resolved が流れる、/graph が依存の順を返す、書き込みの要求が断られる、待ち受けを指定しなければ口が開かない。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "デーモンの /status・/plan・/events・/graph が読み取り専用で動き、status に claim とミラーの状態が出ることを受け入れテストで示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/daemon-read-api）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T14:31:10.032Z",
-      "updatedAt": "2026-10-27T15:22:53.878Z",
+      "updatedAt": "2026-10-27T15:23:09.235Z",
       "closedAt": "2026-10-27T15:22:53.878Z",
       "extra": {}
     },
