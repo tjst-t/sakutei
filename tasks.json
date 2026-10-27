@@ -3135,11 +3135,11 @@
       ],
       "body": "## なぜ（いつまでも直らないずれが 2 つある）\n1. **PUBLIC への権限を扱えない**：データベースの権限（`<server>/database/<db>/grant/<role>`）は、ロールが直に持つ権限だけを見ている。対象に PUBLIC を書くと `\"public\" is not a role` で断る。新しいデータベースには既定で PUBLIC に CONNECT と TEMPORARY が付くが、宣言で外す道が無い。手で `GRANT CREATE ON DATABASE … TO PUBLIC` されても、Converged のまま見えない。\n2. **ロールの bypassrls・replication を扱えない**：手で `ALTER ROLE … BYPASSRLS` されても見えず、直らない。行単位のセキュリティ（RLS）で守る使い方では穴になる。\n\n## やること\n- **PUBLIC**：データベースの権限の対象に、PUBLIC を書けるようにする（ID の形は実装で決め、通常のロール名と取り違えないこと。例 `<server>/database/<db>/grant/PUBLIC` を予約し、`public` という名前のロールは PostgreSQL が作らせないことを根拠にする、など。決めたことを §29.1 と docs に書く）。\n  - 観測：データベースの ACL（`datacl`）の PUBLIC の分（grantee が 0 の行。datacl が NULL のときは既定の CONNECT・TEMPORARY が PUBLIC にある）を読む。\n  - `privileges` を宣言すれば、その一覧ちょうどにする（足りない分は `GRANT … TO PUBLIC`、余分は `REVOKE … FROM PUBLIC`）。**PUBLIC に限り、空の一覧（全部外す）を宣言できる**ようにする（通常のロールの「空にできない」は変えない）。\n  - 明示の absent・prune では `REVOKE ALL ON DATABASE … FROM PUBLIC`。PUBLIC の権限は List に出さない（宣言していない PUBLIC の権限を prune で外さない。管理境界）。\n  - 今の provider の権限の対象はデータベースだけ（スキーマ・表は範囲の外、docs の「持たないもの」）。PUBLIC もデータベースの権限で扱う。\n- **ロールの属性**：`bypassrls` と `replication`（`true` / `false`）を足す。宣言しなければ触らない、宣言すれば観測して直す（今の `login` などと同じ）。\n- 文書：docs/providers/postgresql.md（フィールドの表・例・PUBLIC の扱い）と設計書 §29.1。\n\n## 確かめ方\n- 単体・契約テスト（偽の psql）。\n- 統合テスト（`make integration-postgresql`）に足す：(1) PUBLIC から CONNECT・TEMPORARY・CREATE を外す宣言が収束する（新しいデータベースの既定の分も外れる）、(2) 手で PUBLIC に GRANT すると戻る、(3) 手で BYPASSRLS を付けると戻る。何周回しても drift が出ないこと。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "PUBLIC の権限を宣言（空を含む）で合わせられ、手での GRANT が戻る。bypassrls・replication を宣言で合わせられ、手での変更が戻る。make integration-postgresql の追加項目と make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/postgresql-provider-public-bypassrls-rep）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T13:14:16.399Z",
-      "updatedAt": "2026-10-27T13:29:28.421Z",
+      "updatedAt": "2026-10-27T13:29:39.601Z",
       "closedAt": "2026-10-27T13:29:28.421Z",
       "extra": {}
     }
