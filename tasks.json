@@ -3210,6 +3210,30 @@
       "updatedAt": "2026-10-27T14:31:10.032Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "postgresql-apply-docs",
+      "number": 137,
+      "kind": "task",
+      "title": "postgresql：管理用の接続の秘密が読めないときの Apply を「安全に止まる」側にそろえる・権限の空と外したときの扱いを docs に明記",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "provider",
+        "postgresql"
+      ],
+      "body": "## 1. 秘密が読めないときの扱い\nprovider が管理用の接続に使うパスワードの秘密（SecretRef）が解決できないとき、Apply が Permanent（一回性の reconcile の終了コード 1）になる見込み（未確認）。ほかの provider では、秘密が読めないとそのリソースと下流を飛ばして止まる（Transient・unknown 側）。\n- まず実際に、plan・reconcile・常駐で、どの終了コード・どの扱いになるかを試す。\n- Permanent なら、Read と同じく「観測できない／一時的な失敗」側（一回性の reconcile の終了コード 2 など、ほかの provider と同じ扱い）にそろえる。秘密が戻れば次の周で続くこと。\n- 受け入れテストで示す。\n\n## 2. docs の確かめ\ndocs/providers/postgresql.md に、次の 2 つが明記されているかを確かめ、無ければ書き足す。\n- 通常のロールの権限を空にする宣言はできない（PUBLIC だけは空にできる、#133）。\n- 宣言から外した権限は、それだけでは REVOKE しない（prune か明示の absent でだけ外す）。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
+      "doneWhen": "管理用の接続の秘密が読めないとき、ほかの provider と同じく安全に止まる側の扱いになることを受け入れテストで示す。docs に権限の空と外したときの扱いが明記されている。make check・make test-race が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T14:32:16.046Z",
+      "updatedAt": "2026-10-27T14:32:16.046Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
