@@ -230,7 +230,8 @@ func r(id string, fields map[string]string) resource {
 func declared(hstore string) []resource {
 	return []resource{
 		r("role/app", map[string]string{"login": "true", "createdb": "false", "connection_limit": "10",
-			"password": "secretref:file/pg/app#gen1", "member_of": "pg_read_all_data"}),
+			"password": "secretref:file/pg/app#gen1", "member_of": "pg_read_all_data",
+			"bypassrls": "false", "replication": "false"}),
 		r("role/reader", map[string]string{"login": "false", "member_of": "app"}),
 		r("role/"+weirdRole, map[string]string{"login": "false", "inherit": "true"}),
 		r("database/appdb", map[string]string{"owner": "app", "encoding": "UTF8", "lc_collate": "C", "lc_ctype": "C",
@@ -239,6 +240,8 @@ func declared(hstore string) []resource {
 		r("database/appdb/grant/reader", map[string]string{"privileges": "CONNECT,TEMP"}),
 		r("database/appdb/extension/hstore", map[string]string{"version": hstore}),
 		r("database/appdb/extension/citext", map[string]string{}),
+		// PUBLIC から全部外す（新しいデータベースの既定の CONNECT・TEMPORARY も）。
+		r("database/appdb/grant/PUBLIC", map[string]string{"privileges": ""}),
 	}
 }
 
@@ -355,6 +358,16 @@ func drifted(s statusDoc) []string {
 	return out
 }
 
+// publicPrivileges は PUBLIC が db に持つ権限（"," 区切り、名前の順。datacl が
+// NULL なら既定の分）。
+func publicPrivileges(t *testing.T, db string) string {
+	t.Helper()
+	lit := "E'" + strings.NewReplacer(`'`, `''`, `\`, `\\`).Replace(db) + "'"
+	return admin(t, "postgres", `SELECT coalesce(string_agg(DISTINCT a.privilege_type, ',' ORDER BY a.privilege_type), '')
+  FROM pg_database d, aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a
+ WHERE d.datname = `+lit+` AND a.grantee = 0;`)
+}
+
 func TestPostgreSQLIntegration(t *testing.T) {
 	n := len(declared("1.7"))
 
@@ -382,6 +395,15 @@ func TestPostgreSQLIntegration(t *testing.T) {
 		}
 		if got := admin(t, "postgres", `SELECT pg_get_userbyid(datdba) = E'sk it "o''q\\' FROM pg_database WHERE datname = E'sk-db ''x"; --';`); got != "t" {
 			t.Errorf("the database with quotes in its name: %q", got)
+		}
+		if got := publicPrivileges(t, "appdb"); got != "" {
+			t.Errorf("PUBLIC on appdb = %q; want nothing", got)
+		}
+		if got := publicPrivileges(t, weirdDB); got != "CONNECT,TEMPORARY" {
+			t.Errorf("PUBLIC on the undeclared database = %q; want the default CONNECT,TEMPORARY untouched", got)
+		}
+		if got := admin(t, "postgres", `SELECT rolbypassrls, rolreplication FROM pg_roles WHERE rolname = 'app';`); got != "f|f" {
+			t.Errorf("app bypassrls|replication = %q", got)
 		}
 		// app は宣言のパスワードでつなげる（SCRAM の検証値が本物と合う）。
 		if out, err := psqlAs("app", appPW, "appdb", "SELECT current_user;"); err != nil || strings.TrimSpace(out) != "app" {
@@ -411,6 +433,30 @@ ALTER DATABASE appdb CONNECTION LIMIT 5;`)
 		if got := admin(t, "postgres", `SELECT pg_has_role('reader', 'app', 'MEMBER');`); got != "t" {
 			t.Errorf("reader is not a member of app again: %q", got)
 		}
+	})
+
+	t.Run("PUBLIC and BYPASSRLS changed by hand come back", func(t *testing.T) {
+		admin(t, "postgres", `GRANT CREATE, CONNECT ON DATABASE appdb TO PUBLIC;
+ALTER ROLE app BYPASSRLS;
+ALTER ROLE reader REPLICATION;`)
+		s, code, _ := status(t)
+		// reader の replication は宣言していないので drift にならない。
+		want := []string{"main/database/appdb/grant/PUBLIC=drift", "main/role/app=drift"}
+		if got := drifted(s); strings.Join(got, " ") != strings.Join(want, " ") || code != 0 {
+			t.Errorf("status (exit %d) drifted = %v; want %v", code, got, want)
+		}
+		out := converge(t, n)
+		t.Logf("reconcile:\n%s", out)
+		if got := publicPrivileges(t, "appdb"); got != "" {
+			t.Errorf("PUBLIC on appdb = %q; want nothing", got)
+		}
+		if got := admin(t, "postgres", `SELECT rolbypassrls FROM pg_roles WHERE rolname = 'app';`); got != "f" {
+			t.Errorf("app bypassrls = %q; want f", got)
+		}
+		if got := admin(t, "postgres", `SELECT rolreplication FROM pg_roles WHERE rolname = 'reader';`); got != "t" {
+			t.Errorf("reader replication = %q; want t (not declared, so untouched)", got)
+		}
+		admin(t, "postgres", `ALTER ROLE reader NOREPLICATION;`)
 	})
 
 	t.Run("a new generation of the password and an extension update", func(t *testing.T) {

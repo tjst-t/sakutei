@@ -53,6 +53,8 @@ type Role struct {
 	CreateRole  bool     `json:"createrole"`
 	CreateDB    bool     `json:"createdb"`
 	Login       bool     `json:"login"`
+	BypassRLS   bool     `json:"bypassrls"`
+	Replication bool     `json:"replication"`
 	ConnLimit   int      `json:"conn_limit"`
 	MemberOf    []string `json:"member_of"`
 	Comment     *string  `json:"comment"`
@@ -68,7 +70,8 @@ type Database struct {
 	Ctype     string `json:"ctype"`
 	ConnLimit int    `json:"conn_limit"`
 	AllowConn bool   `json:"allow_conn"`
-	// ACL は nil なら既定（所有者がすべて）。nil でなければロール → 権限。
+	// ACL は nil なら既定（所有者がすべて、PUBLIC に CONNECT・TEMPORARY）。nil で
+	// なければロール → 権限で、PUBLIC はキー ""（aclitem の grantee 0）。
 	ACL        map[string][]string `json:"acl"`
 	Extensions map[string]string   `json:"extensions"` // 名前 → 版
 	// Depended は、ほかのオブジェクトが頼っている拡張（DROP EXTENSION が断る）。
@@ -644,6 +647,14 @@ func (x *execCtx) roleOptions(p *parser, r *Role) error {
 			r.Inherit = true
 		case p.kw("noinherit"):
 			r.Inherit = false
+		case p.kw("bypassrls"):
+			r.BypassRLS = true
+		case p.kw("nobypassrls"):
+			r.BypassRLS = false
+		case p.kw("replication"):
+			r.Replication = true
+		case p.kw("noreplication"):
+			r.Replication = false
 		case p.kw("connection", "limit"):
 			n, err := p.num()
 			if err != nil {
@@ -679,7 +690,7 @@ func (x *execCtx) createRole(p *parser) error {
 	if _, ok := x.st.Roles[name]; ok {
 		return fail("42710", "role %q already exists", name)
 	}
-	if strings.HasPrefix(name, "pg_") {
+	if strings.HasPrefix(name, "pg_") || name == "public" || name == "none" {
 		return fail("42939", "role name %q is reserved", name)
 	}
 	r := &Role{Inherit: true, ConnLimit: -1}
@@ -834,9 +845,12 @@ func (x *execCtx) grant(p *parser, revoke bool) error {
 	if !(revoke && p.kw("from")) && !(!revoke && p.kw("to")) {
 		return p.syntax()
 	}
-	roleName, err := p.name()
-	if err != nil {
-		return err
+	// PUBLIC は引用符の無いキーワード（"public" と quote すれば名前）。ACL では "" に置く。
+	roleName, public := "", p.kw("public")
+	if !public {
+		if roleName, err = p.name(); err != nil {
+			return err
+		}
 	}
 	if err := p.end(); err != nil {
 		return err
@@ -845,11 +859,13 @@ func (x *execCtx) grant(p *parser, revoke bool) error {
 	if err != nil {
 		return err
 	}
-	if _, err := x.role(roleName); err != nil {
-		return err
+	if !public {
+		if _, err := x.role(roleName); err != nil {
+			return err
+		}
 	}
 	if d.ACL == nil {
-		d.ACL = map[string][]string{d.Owner: {"CONNECT", "CREATE", "TEMPORARY"}}
+		d.ACL = DefaultACL(d.Owner)
 	}
 	cur := d.ACL[roleName]
 	for _, pv := range privs {
@@ -1159,8 +1175,9 @@ func (x *execCtx) snapshot() map[string]any {
 		sort.Strings(members)
 		roles = append(roles, map[string]any{
 			"name": n, "superuser": r.Super, "inherit": r.Inherit, "createrole": r.CreateRole,
-			"createdb": r.CreateDB, "login": r.Login, "connection_limit": r.ConnLimit,
-			"member_of": members, "comment": r.Comment,
+			"createdb": r.CreateDB, "login": r.Login, "bypassrls": r.BypassRLS, "replication": r.Replication,
+			"connection_limit": r.ConnLimit,
+			"member_of":        members, "comment": r.Comment,
 		})
 	}
 	dbs := []map[string]any{}
@@ -1168,20 +1185,32 @@ func (x *execCtx) snapshot() map[string]any {
 		d := x.st.Databases[n]
 		acl := d.ACL
 		if acl == nil {
-			acl = map[string][]string{d.Owner: {"CONNECT", "CREATE", "TEMPORARY"}}
+			acl = DefaultACL(d.Owner)
 		}
 		grants := []map[string]string{}
+		public := []string{}
 		for _, r := range sortedKeys(acl) {
 			for _, pv := range acl[r] {
+				if r == "" {
+					public = append(public, pv)
+					continue
+				}
 				grants = append(grants, map[string]string{"role": r, "privilege": pv})
 			}
 		}
 		dbs = append(dbs, map[string]any{
 			"name": n, "owner": d.Owner, "encoding": d.Encoding, "lc_collate": d.Collate, "lc_ctype": d.Ctype,
 			"connection_limit": d.ConnLimit, "allow_connections": d.AllowConn, "grants": grants,
+			"public_privileges": public,
 		})
 	}
 	return map[string]any{"current_user": x.user, "roles": roles, "databases": dbs}
+}
+
+// DefaultACL は datacl が NULL のときの権限（acldefault('d', 所有者)）：所有者が
+// すべて、PUBLIC（キー ""）に CONNECT・TEMPORARY。
+func DefaultACL(owner string) map[string][]string {
+	return map[string][]string{owner: {"CONNECT", "CREATE", "TEMPORARY"}, "": {"CONNECT", "TEMPORARY"}}
 }
 
 func sortedKeys[V any](m map[string]V) []string {

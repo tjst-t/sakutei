@@ -111,6 +111,15 @@ func TestCanon(t *testing.T) {
 	if v, err := canonPrivileges("temp, connect,CONNECT"); err != nil || v != "CONNECT,TEMPORARY" {
 		t.Errorf("canonPrivileges = %q, %v", v, err)
 	}
+	if _, err := canonPrivileges(""); err == nil {
+		t.Error("canonPrivileges: an empty list is an error")
+	}
+	if v, err := canonPrivilegeSet(" "); err != nil || v != "" {
+		t.Errorf("canonPrivilegeSet(empty) = %q, %v; want the empty list (PUBLIC)", v, err)
+	}
+	if !sameValue(FieldPrivileges, "", "") || sameValue(FieldPrivileges, "", "CONNECT") {
+		t.Error("sameValue of privileges with an empty list")
+	}
 	if _, err := canonPrivileges("SELECT"); err == nil {
 		t.Error("SELECT is not a database privilege")
 	}

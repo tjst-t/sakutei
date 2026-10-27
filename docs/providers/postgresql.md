@@ -7,11 +7,12 @@ PostgreSQL のロール・データベース・データベースの権限・拡
 | `postgresql` | `<server>/role/<name>` | ロール（属性・所属・パスワード） |
 | | `<server>/database/<name>` | データベース（所有者・符号化・照合順序・接続数の上限） |
 | | `<server>/database/<db>/grant/<role>` | あるロールがあるデータベースに直に持つ権限（CONNECT・CREATE・TEMPORARY） |
+| | `<server>/database/<db>/grant/PUBLIC` | PUBLIC（全員）があるデータベースに持つ権限（後述「PUBLIC の権限」） |
 | | `<server>/database/<db>/extension/<name>` | あるデータベースの拡張と版 |
 
 - 完全階級（Read・Apply・List・BulkObserve）。prune できる（`pruneable: true`）が、**利用者の表があるデータベースは消さない**（後述）。
 - `<server>` は設定ファイルのサーバの名前。名前（ロール・データベース・拡張）は 1〜63 バイトで、`/`・NUL・制御文字を含まない（データベースの名前は `=` も含まない。libpq が接続文字列と読むため）。それ以外は SQL では**常に quote する**ので、大文字・空白・引用符を含んでもよい。
-- 持たないもの：スキーマ・表・列の権限、default privileges（`ALTER DEFAULT PRIVILEGES`）、ロールの設定（`ALTER ROLE ... SET`）、データベースの設定、表領域。要れば別の provider か Task（sqlmigrate の PostgreSQL 版）で足す。
+- 持たないもの：スキーマ・表・列の権限（PUBLIC の分も）、default privileges（`ALTER DEFAULT PRIVILEGES`）、ロールの設定（`ALTER ROLE ... SET`）、データベースの設定、表領域。要れば別の provider か Task（sqlmigrate の PostgreSQL 版）で足す。
 
 ## サーバの一覧（--postgresql-config）
 
@@ -59,7 +60,7 @@ $ sakutei status --intent intent/ --postgresql-config pg.yaml --json
 {
   "resources": [
     {"provider": "postgresql", "id": "main/role/app",
-     "fields": {"login": "true", "createdb": "false", "connection_limit": "20",
+     "fields": {"login": "true", "createdb": "false", "connection_limit": "20", "bypassrls": "false",
                 "member_of": "pg_read_all_data", "password": "secretref:file/pg/app#gen1"}},
     {"provider": "postgresql", "id": "main/role/reader",
      "fields": {"login": "true", "member_of": "app"}},
@@ -69,6 +70,8 @@ $ sakutei status --intent intent/ --postgresql-config pg.yaml --json
      "deletion_policy": "PruneWithinScope"},
     {"provider": "postgresql", "id": "main/database/appdb/grant/reader",
      "fields": {"privileges": "CONNECT,TEMPORARY"}},
+    {"provider": "postgresql", "id": "main/database/appdb/grant/PUBLIC",
+     "fields": {"privileges": ""}},
     {"provider": "postgresql", "id": "main/database/appdb/extension/hstore",
      "fields": {"version": "1.8"}}
   ]
@@ -81,7 +84,7 @@ $ sakutei status --intent intent/ --postgresql-config pg.yaml --json
 
 | 種類 | フィールド | 値 | 比べ方・決まり |
 | --- | --- | --- | --- |
-| ロール | `login`・`superuser`・`createdb`・`createrole`・`inherit` | `true` / `false` | そのまま |
+| ロール | `login`・`superuser`・`createdb`・`createrole`・`inherit`・`bypassrls`・`replication` | `true` / `false` | そのまま（`bypassrls`・`replication` を付けるには管理用のロールが超ユーザであること） |
 | ロール・データベース | `connection_limit` | 整数（`-1` は上限なし） | そのまま |
 | ロール | `member_of` | 所属するロールの一覧（`,` 区切り） | 集合として（順は問わない）。宣言すれば**一覧ちょうど**にする（無いものは GRANT、余分なものは REVOKE） |
 | ロール | `password` | SecretRef | 下の「パスワード」 |
@@ -89,12 +92,23 @@ $ sakutei status --intent intent/ --postgresql-config pg.yaml --json
 | データベース | `encoding` | `UTF8` など | 英数字だけを小文字にして比べる（`UTF-8` と `utf8` は同じ）。**作るときだけ**：後で違う値を宣言すると計画のエラー |
 | データベース | `lc_collate`・`lc_ctype` | `C.UTF-8` など | codeset の部分を同じく正規化（`en_US.UTF-8` と `en_US.utf8` は同じ）。**作るときだけ** |
 | データベース | `template` | データベースの名前 | **作るときだけ**。観測できないので作った後は比べない。`encoding`・照合順序を template1 と違う値にするなら `template0` を書く |
-| 権限 | `privileges` | `CONNECT`・`CREATE`・`TEMPORARY`（`TEMP`）の一覧 | 大文字小文字・`TEMP`・順を問わない。**必須・空にできない**（全部外すなら宣言から外し、prune か明示の absent で消す＝`REVOKE ALL`） |
+| 権限 | `privileges` | `CONNECT`・`CREATE`・`TEMPORARY`（`TEMP`）の一覧 | 大文字小文字・`TEMP`・順を問わない。**必須・空にできない**（全部外すなら宣言から外し、prune か明示の absent で消す＝`REVOKE ALL`）。**PUBLIC に限り空（`""`）を書ける**＝全部外す |
 | 拡張 | `version` | 版 | 宣言したときだけ比べ、違えば `ALTER EXTENSION ... UPDATE TO` |
 | すべて | `server`・`role`・`database`・`extension` | ID と同じ値（省略可） | identity |
 
 - 権限は「そのロールがそのデータベースに**直に**持つ権限」。PUBLIC の権限・ロールの所属から継ぐ権限は数えない。Apply は 1 つのトランザクションで `REVOKE ALL` と `GRANT` を流して宣言ちょうどにする。
 - データベースの所有者は暗に全部の権限を持つので、所有者の権限は List に出さない（宣言はできる）。
+
+### PUBLIC の権限
+
+PostgreSQL は新しいデータベースの PUBLIC（全員）に既定で `CONNECT` と `TEMPORARY` を与える。これを宣言で外す・手での `GRANT ... TO PUBLIC` を戻すために、PUBLIC をデータベースの権限の対象として書ける。
+
+- ID は `<server>/database/<db>/grant/PUBLIC`（**大文字ちょうど**の `PUBLIC` を予約）。PostgreSQL は `public` という名前のロールを作らせないので、ロールと取り違えない。`public`・`Public` など大文字小文字だけが違う書き方はエラー（`role/` の ID でも grant の ID でも）。引用符で作った `"PUBLIC"` のようなロールは管理の境界の外。SQL では引用符の無いキーワード `PUBLIC` で流す。
+- 観測：データベースの ACL（`datacl`）の PUBLIC の分（`aclexplode` の grantee が 0 の行。`datacl` が NULL なら既定の `CONNECT`・`TEMPORARY`）。データベースが在れば、権限が 1 つも無くても**在る**（`privileges` が空）。データベースが無ければ absent。
+- `privileges` を宣言すれば**その一覧ちょうど**にする（足りない分を `GRANT ... TO PUBLIC`、余分を `REVOKE ... FROM PUBLIC`、1 つのトランザクション）。**空の一覧（`"privileges": ""`）で全部外せる**のは PUBLIC だけ。
+- 明示の absent は `REVOKE ALL ON DATABASE ... FROM PUBLIC`。
+- **PUBLIC の権限は List に出さない**ので、宣言していない PUBLIC の権限を prune で外すことはない（宣言したデータベースだけが対象）。
+- データベースの PUBLIC の権限だけを扱う。スキーマ（`public` スキーマの `CREATE` など）・表の PUBLIC の権限は持たない。
 
 ### パスワード
 
@@ -111,7 +125,7 @@ PostgreSQL からパスワードは読めない（`pg_authid` は超ユーザだ
 - **Delete**：prune（PruneWithinScope）か明示の absent からだけ来て、**破壊的**として予算に数える（§12・§13）。`CASCADE`・`REASSIGN OWNED`・`DROP OWNED` は使わない。
   - データベース：**利用者の表**（普通の表・パーティションの表・マテリアライズドビュー・外部表。`pg_catalog`・`information_schema`・`pg_toast`・一時スキーマのものと、拡張が持つ表は数えない）が 1 つでもあれば消さず、「the database has N user table(s), so it is not dropped」の PermanentError。表を数えてから `DROP DATABASE` までの間に作られた表は防げない。接続を許さないデータベース（`datallowconn = false`）は表を数えられないので消さない。ほかに接続がある間は Transient（55006）。
   - ロール：オブジェクトを持つ・権限を持つロールは PostgreSQL が断る（2BP01）ので、それを PermanentError で知らせる。同じ周に所有するデータベースが prune で消えれば、次の周に消える。
-  - 権限：`REVOKE ALL`。別のロールが与えた権限が残れば PermanentError。
+  - 権限：`REVOKE ALL`（PUBLIC は `REVOKE ALL ... FROM PUBLIC`）。別のロールが与えた権限が残れば PermanentError。
   - 拡張：`DROP EXTENSION`。ほかのオブジェクトが頼っていれば PostgreSQL が断る（2BP01、PermanentError）。
 - **観測できないもの**：届かない・時間切れ・認証の失敗・接続を許されない・psql が無い・管理用のパスワードを解決できない・出力が読めないは Unknown（absent にしない。作りも消しもしない）。
 - **List**：全サーバの snapshot と、全データベース（境界の内）の拡張が読めたときだけ complete。1 つでも失敗すれば error で、prune はその周止まる。接続を許さないデータベースがあると拡張が読めないので List は失敗する。
@@ -123,7 +137,7 @@ List は次を返さない（prune で消えない）。これらに向けた宣
 
 - `pg_` で始まるロール、管理用のロール（`user`）、接続しているロール。`member_of` に `pg_*` のロールを書くのはよい。
 - `template0`・`template1`・`postgres`、管理用の DB（`dbname`）。これらの中の権限・拡張も。
-- データベースの所有者の権限、`plpgsql`（どのデータベースにも template1 から入る。宣言はできる）。
+- データベースの所有者の権限、PUBLIC の権限、`plpgsql`（どのデータベースにも template1 から入る。宣言はできる）。
 
 それ以外は PruneWithinScope の「閉じた世界」に入る。例えば公式の docker イメージが `POSTGRES_USER` の名前で作るデータベースも、宣言しなければ（空なら）prune で消える。残したいものは宣言するか、PruneWithinScope を使わない。
 
@@ -146,12 +160,13 @@ $ make integration-postgresql
 
 | 段 | 内容 |
 | --- | --- |
-| create from empty | ロール 3・データベース 2・権限 1・拡張 2 を宣言。status が missing 8 → reconcile（1 周）→ 適合 8。属性・所有者・符号化・照合順序・拡張の版・引用符を含む名前が宣言どおり。`app` が宣言のパスワードで実際につながる（SCRAM-SHA-256 の検証値が本物と合う） |
+| create from empty | ロール 3・データベース 2・権限 1・拡張 2・PUBLIC の権限（空）を宣言。status が missing 9 → reconcile → 適合 9。属性・所有者・符号化・照合順序・拡張の版・引用符を含む名前が宣言どおり。appdb の PUBLIC から既定の CONNECT・TEMPORARY が外れ、宣言していない DB の PUBLIC は既定のまま。`app` の bypassrls・replication が false。`app` が宣言のパスワードで実際につながる（SCRAM-SHA-256 の検証値が本物と合う） |
 | changed by hand | 手で `ALTER ROLE app CREATEDB CONNECTION LIMIT 3`・パスワードを変える・`REVOKE app FROM reader`・`REVOKE CONNECT ... FROM reader`・`ALTER DATABASE appdb CONNECTION LIMIT 5` → status が drift 4 → reconcile で戻る（パスワードでまたつながる） |
+| PUBLIC and BYPASSRLS changed by hand come back | 手で `GRANT CREATE, CONNECT ON DATABASE appdb TO PUBLIC`・`ALTER ROLE app BYPASSRLS`・`ALTER ROLE reader REPLICATION` → status が drift 2（PUBLIC の権限と app。宣言していない reader の replication は drift にしない）→ reconcile で戻る（reader の REPLICATION は触らない） |
 | a new generation of the password and an extension update | secret store の値と intent の `#gen` を上げる → 新しいパスワードでつながり、古いのではつながらない。hstore を 1.7 → 1.8。`encoding` を変える宣言は計画のエラーで、status は観測できない 1（終了コード 3） |
 | no drift however many cycles | reconcile と status を 5 周 → drift 0、計画が出ない、`pg_authid` の検証値が書き直されない |
 | a database with user tables is not pruned | 表のある orphan DB・空の orphan DB（拡張あり）・orphan ロールを手で作り、PruneWithinScope で reconcile → 空の DB と orphan ロールは消える（`[DESTRUCTIVE]`）、表のある DB は「user table(s), so it is not dropped」の PermanentError で残り、表の行も残る。`postgres`・`template0`・`template1`・`pg_monitor`・管理用のロールは残る |
-| a stopped server | `docker stop` → status は 8 つとも観測できない（終了コード 3）、reconcile は何もせず（`prune halted`・`8 resource(s) skipped`）。`docker start` の後は適合 8 |
+| a stopped server | `docker stop` → status は 9 つとも観測できない（終了コード 3）、reconcile は何もせず（`prune halted`・`9 resource(s) skipped`）。`docker start` の後は適合 9 |
 | clean up through prune | 宣言を `app` だけにして PruneWithinScope → データベース・権限・拡張は 1 周目、それらを持っていたロールは 2 周目に消える。残るのは `postgres`・`template0`・`template1` と `app`・管理用のロール |
 
 ### 結果
@@ -159,20 +174,22 @@ $ make integration-postgresql
 既定のイメージ（PostgreSQL 17.11）で回した結果（全段 PASS、2026-10-27）:
 
 ```
---- PASS: TestPostgreSQLIntegration (90.11s)
-    --- PASS: TestPostgreSQLIntegration/create_from_empty (13.47s)
-    --- PASS: TestPostgreSQLIntegration/changed_by_hand_is_drift_and_comes_back (9.94s)
-    --- PASS: TestPostgreSQLIntegration/a_new_generation_of_the_password_and_an_extension_update (9.14s)
-    --- PASS: TestPostgreSQLIntegration/no_drift_however_many_cycles (21.40s)
-    --- PASS: TestPostgreSQLIntegration/a_database_with_user_tables_is_not_pruned (23.42s)
-    --- PASS: TestPostgreSQLIntegration/a_stopped_server_is_unobservable_and_nothing_is_done (5.07s)
-    --- PASS: TestPostgreSQLIntegration/clean_up_through_prune (7.67s)
+--- PASS: TestPostgreSQLIntegration (101.86s)
+    --- PASS: TestPostgreSQLIntegration/create_from_empty (15.16s)
+    --- PASS: TestPostgreSQLIntegration/changed_by_hand_is_drift_and_comes_back (10.44s)
+    --- PASS: TestPostgreSQLIntegration/PUBLIC_and_BYPASSRLS_changed_by_hand_come_back (9.56s)
+    --- PASS: TestPostgreSQLIntegration/a_new_generation_of_the_password_and_an_extension_update (9.72s)
+    --- PASS: TestPostgreSQLIntegration/no_drift_however_many_cycles (23.70s)
+    --- PASS: TestPostgreSQLIntegration/a_database_with_user_tables_is_not_pruned (18.47s)
+    --- PASS: TestPostgreSQLIntegration/a_stopped_server_is_unobservable_and_nothing_is_done (6.73s)
+    --- PASS: TestPostgreSQLIntegration/clean_up_through_prune (8.08s)
 PASS
 ```
 
 分かったこと:
 
-- 空から 1 周で 8 つすべてができる（データベースの後に権限・拡張が流れる順になった。順が逆でも、まだ無いデータベース・ロールは Transient で次の周に回る）。
+- PUBLIC の権限（#133）：空から作る周では、データベースがまだ無いので PUBLIC の権限は absent（`+ CREATE .../grant/PUBLIC`）で、データベースを作った後に既定の CONNECT・TEMPORARY を REVOKE する。手で `GRANT ... TO PUBLIC` すると `~ UPDATE .../grant/PUBLIC`（1 field out of sync）として見え、1 周で戻る。
+- 空から 1 周で 9 つすべてができる（データベースの後に権限・拡張が流れる順になった。順が逆でも、まだ無いデータベース・ロールは Transient で次の周に回る）。
 - 手で変えたパスワードは `verify_passwords` で drift として見える（`~ password "***" → "secretref:file/pg/app#gen1"`。観測の側は空なので `***` と出る）。
 - 公式のイメージは `POSTGRES_USER`（ここでは管理用のロールと同じ `sakutei`）の名前のデータベースを作る。管理の境界の外ではないので status は宣言外（unmanaged）と出し、PruneWithinScope では空なので消える（`- DELETE postgresql//main/database/sakutei [DESTRUCTIVE]`）。
 - 表のある orphan：`prune apply postgresql//main/database/sk_orphan_full: ... permanent: the database has 1 user table(s), so it is not dropped (Sakutei never drops data; ...)`。prune は毎周その Delete を試みて同じ文で断られる（表を消すか、宣言し直すまで）。拡張（hstore）だけがある空の DB は消える。

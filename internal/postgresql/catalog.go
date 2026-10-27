@@ -20,7 +20,7 @@ package postgresql
 // ように。偽の psql もこれで見分ける）。
 //
 //   - snapshot：管理用の DB で 1 回。全ロール（属性・所属・コメント）と全
-//     データベース（所有者・符号化・照合順序・接続数の上限・権限）。
+//     データベース（所有者・符号化・照合順序・接続数の上限・権限・PUBLIC の権限）。
 //   - extensions：データベースごとに 1 回（拡張はデータベースごとのカタログ）。
 //   - passwords：verify_passwords のときだけ。pg_authid（超ユーザだけが読める）。
 //   - user-tables：データベースを消す前に 1 回（利用者の表の数）。
@@ -42,6 +42,8 @@ const (
       'createrole', r.rolcreaterole,
       'createdb', r.rolcreatedb,
       'login', r.rolcanlogin,
+      'bypassrls', r.rolbypassrls,
+      'replication', r.rolreplication,
       'connection_limit', r.rolconnlimit,
       'member_of', (SELECT coalesce(json_agg(DISTINCT b.rolname), '[]'::json)
                       FROM pg_auth_members m JOIN pg_roles b ON b.oid = m.roleid
@@ -59,7 +61,10 @@ const (
       'grants', (SELECT coalesce(json_agg(json_build_object(
                     'role', pg_get_userbyid(a.grantee), 'privilege', a.privilege_type)), '[]'::json)
                    FROM aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a
-                  WHERE a.grantee <> 0)
+                  WHERE a.grantee <> 0),
+      'public_privileges', (SELECT coalesce(json_agg(DISTINCT a.privilege_type), '[]'::json)
+                   FROM aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a
+                  WHERE a.grantee = 0)
     ) ORDER BY d.datname), '[]'::json) FROM pg_database d)
 );
 `
@@ -89,6 +94,8 @@ type RoleInfo struct {
 	CreateRole      bool     `json:"createrole"`
 	CreateDB        bool     `json:"createdb"`
 	Login           bool     `json:"login"`
+	BypassRLS       bool     `json:"bypassrls"`
+	Replication     bool     `json:"replication"`
 	ConnectionLimit int      `json:"connection_limit"`
 	MemberOf        []string `json:"member_of"`
 	Comment         *string  `json:"comment"`
@@ -110,6 +117,9 @@ type DatabaseInfo struct {
 	ConnectionLimit  int         `json:"connection_limit"`
 	AllowConnections bool        `json:"allow_connections"`
 	Grants           []GrantInfo `json:"grants"`
+	// PublicPrivileges は PUBLIC（aclitem の grantee 0）の権限。datacl が NULL なら
+	// 既定（CONNECT・TEMPORARY）。
+	PublicPrivileges []string `json:"public_privileges"`
 }
 
 // ExtensionInfo は 1 つの拡張。
@@ -151,6 +161,11 @@ func (d *DatabaseInfo) privilegesOf(role string) []string {
 			have[g.Privilege] = true
 		}
 	}
+	return inPrivilegeOrder(have)
+}
+
+// inPrivilegeOrder は have の権限を正規の順に並べる。
+func inPrivilegeOrder(have map[string]bool) []string {
 	var out []string
 	for _, p := range privilegeOrder {
 		if have[p] {
@@ -158,6 +173,15 @@ func (d *DatabaseInfo) privilegesOf(role string) []string {
 		}
 	}
 	return out
+}
+
+// publicPrivileges は PUBLIC がデータベースに持つ権限（正規の順）。
+func (d *DatabaseInfo) publicPrivileges() []string {
+	have := map[string]bool{}
+	for _, p := range d.PublicPrivileges {
+		have[p] = true
+	}
+	return inPrivilegeOrder(have)
 }
 
 // grantees は権限を直に持つロール（名前の順。同じロールは 1 度）。

@@ -136,6 +136,7 @@ func TestContract(t *testing.T) {
 	}{
 		{"role", "main/role/sk_contract", map[string]string{
 			postgresql.FieldLogin: "true", postgresql.FieldCreateDB: "false", postgresql.FieldConnectionLimit: "5",
+			postgresql.FieldBypassRLS: "false", postgresql.FieldReplication: "true",
 			postgresql.FieldMemberOf: "pg_monitor", postgresql.FieldPassword: "secretref:file/pg/app#gen1",
 		}, nil},
 		{"database", "main/database/sk_contract", map[string]string{
@@ -390,6 +391,102 @@ func TestGrant(t *testing.T) {
 	}
 }
 
+func TestGrant_Public(t *testing.T) {
+	e := newEnv(t, nil)
+	e.converge(t, "main/database/appdb", map[string]string{})
+	const gid = "main/database/appdb/grant/PUBLIC"
+	// 新しいデータベースの PUBLIC には既定の CONNECT・TEMPORARY がある。
+	obs, err := e.p.Read(context.Background(), gid)
+	if err != nil || obs.State == nil || obs.State[postgresql.FieldPrivileges].Value != "CONNECT,TEMPORARY" {
+		t.Fatalf("Read PUBLIC of a new database = %+v, %v; want CONNECT,TEMPORARY", obs, err)
+	}
+	// 空の一覧で全部外す。
+	e.converge(t, gid, map[string]string{postgresql.FieldPrivileges: ""})
+	if got := e.state().Databases["appdb"].ACL[""]; len(got) != 0 {
+		t.Errorf("PUBLIC acl = %v; want nothing", got)
+	}
+	obs, err = e.p.Read(context.Background(), gid)
+	if err != nil || obs.State == nil || obs.State[postgresql.FieldPrivileges].Value != "" {
+		t.Errorf("Read PUBLIC with nothing = %+v, %v; want present with no privileges", obs, err)
+	}
+	// 手での GRANT ... TO PUBLIC は drift で、戻る（余分だけを REVOKE）。
+	e.srv.Do(func(st *pgtest.State) { st.Databases["appdb"].ACL[""] = []string{"CREATE"} })
+	pl, err := e.plan(t, gid, map[string]string{postgresql.FieldPrivileges: ""})
+	if err != nil || len(pl.Ops) != 1 {
+		t.Fatalf("plan after a GRANT to PUBLIC by hand = %+v, %v; want one op", pl.Ops, err)
+	}
+	e.converge(t, gid, map[string]string{postgresql.FieldPrivileges: "connect"})
+	if got := fmt.Sprint(e.state().Databases["appdb"].ACL[""]); got != "[CONNECT]" {
+		t.Errorf("PUBLIC acl = %s; want exactly CONNECT", got)
+	}
+	last := e.srv.Calls()
+	var sql string
+	for _, c := range last {
+		if strings.Contains(c.Stdin, "PUBLIC") {
+			sql = c.Stdin
+		}
+	}
+	if !strings.Contains(sql, "REVOKE CREATE ON DATABASE \"appdb\" FROM PUBLIC") || !strings.Contains(sql, "GRANT CONNECT ON DATABASE \"appdb\" TO PUBLIC") {
+		t.Errorf("SQL = %q; want REVOKE CREATE and GRANT CONNECT for PUBLIC (unquoted)", sql)
+	}
+	// 所有者の権限には触らない。
+	if got := fmt.Sprint(e.state().Databases["appdb"].ACL["sakutei"]); got != "[CONNECT CREATE TEMPORARY]" {
+		t.Errorf("owner acl = %s; want untouched", got)
+	}
+	// PUBLIC の権限は List に出ない（prune で外さない）。
+	res, err := e.p.List(context.Background(), core.NewScope(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range res.IDs {
+		if strings.HasSuffix(i.Local, "/grant/PUBLIC") {
+			t.Errorf("List has %s", i.Local)
+		}
+	}
+	// 明示の absent（Delete）は REVOKE ALL ... FROM PUBLIC。
+	if err := del(t, e, gid); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.state().Databases["appdb"].ACL[""]; len(got) != 0 {
+		t.Errorf("after Delete PUBLIC acl = %v; want nothing", got)
+	}
+	// "public" と quote したロールの名前としては流さない（ロールが無ければエラー）。
+	for _, c := range e.srv.Calls() {
+		if strings.Contains(c.Stdin, `"PUBLIC"`) || strings.Contains(c.Stdin, `"public"`) {
+			t.Errorf("PUBLIC was quoted as a role name: %q", c.Stdin)
+		}
+	}
+	// データベースが無ければ absent。
+	if obs, err := e.p.Read(context.Background(), "main/database/nodb/grant/PUBLIC"); err != nil || obs.State != nil {
+		t.Errorf("Read PUBLIC of a missing database = %+v, %v; want absent", obs, err)
+	}
+}
+
+func TestRole_BypassRLSAndReplication(t *testing.T) {
+	e := newEnv(t, nil)
+	const rid = "main/role/app"
+	e.converge(t, rid, map[string]string{postgresql.FieldBypassRLS: "false", postgresql.FieldReplication: "true"})
+	if r := e.state().Roles["app"]; r.BypassRLS || !r.Replication {
+		t.Errorf("role = %+v; want NOBYPASSRLS REPLICATION", r)
+	}
+	// 手で BYPASSRLS を付けると drift で、戻る。
+	e.srv.Do(func(st *pgtest.State) { st.Roles["app"].BypassRLS = true })
+	pl, err := e.plan(t, rid, map[string]string{postgresql.FieldBypassRLS: "false", postgresql.FieldReplication: "true"})
+	if err != nil || len(pl.Ops) != 1 {
+		t.Fatalf("plan after BYPASSRLS by hand = %+v, %v; want one op", pl.Ops, err)
+	}
+	e.converge(t, rid, map[string]string{postgresql.FieldBypassRLS: "false", postgresql.FieldReplication: "true"})
+	if e.state().Roles["app"].BypassRLS {
+		t.Error("BYPASSRLS was not taken back")
+	}
+	// 宣言しなければ触らない。
+	e.srv.Do(func(st *pgtest.State) { st.Roles["app"].BypassRLS = true })
+	e.converge(t, rid, map[string]string{postgresql.FieldLogin: "true"})
+	if r := e.state().Roles["app"]; !r.BypassRLS || !r.Replication {
+		t.Errorf("undeclared attributes were touched: %+v", r)
+	}
+}
+
 func TestExtension_Version(t *testing.T) {
 	e := newEnv(t, nil)
 	e.converge(t, "main/database/appdb", map[string]string{})
@@ -530,6 +627,8 @@ func TestValidateIntent(t *testing.T) {
 		"main/database/appdb/grant/app":         {postgresql.FieldPrivileges: "CONNECT,temp"},
 		"main/database/appdb/extension/plpgsql": {postgresql.FieldVersion: "1.0"},
 		"main/role/With Space \"and quote'":     {},
+		"main/database/appdb/grant/PUBLIC":      {postgresql.FieldPrivileges: ""},
+		"main/role/rls":                         {postgresql.FieldBypassRLS: "false", postgresql.FieldReplication: "true"},
 	}
 	for local, f := range ok {
 		if err := p.ValidateIntent(local, f); err != nil {
@@ -559,6 +658,12 @@ func TestValidateIntent(t *testing.T) {
 		"bad privilege":     {"main/database/appdb/grant/app", map[string]string{postgresql.FieldPrivileges: "SELECT"}, "CONNECT"},
 		"identity mismatch": {"main/role/app", map[string]string{postgresql.FieldRole: "other"}, "must equal"},
 		"grant to pg role":  {"main/database/appdb/grant/pg_monitor", map[string]string{postgresql.FieldPrivileges: "CONNECT"}, "system role"},
+		"empty privileges":  {"main/database/appdb/grant/app", map[string]string{postgresql.FieldPrivileges: ""}, "empty"},
+		"public lowercase":  {"main/database/appdb/grant/public", map[string]string{postgresql.FieldPrivileges: ""}, "write PUBLIC"},
+		"role PUBLIC":       {"main/role/PUBLIC", nil, "not a role"},
+		"public no privs":   {"main/database/appdb/grant/PUBLIC", nil, "privileges is required"},
+		"public bad priv":   {"main/database/appdb/grant/PUBLIC", map[string]string{postgresql.FieldPrivileges: "SELECT"}, "CONNECT"},
+		"bypassrls bool":    {"main/role/app", map[string]string{postgresql.FieldBypassRLS: "1"}, "true or false"},
 	}
 	for name, c := range bad {
 		err := p.ValidateIntent(c.id, c.fields)

@@ -268,8 +268,11 @@ func (p *Provider) convergeDatabase(ctx context.Context, t target, want map[stri
 // ---- 権限 ----
 
 // convergeGrant は role の db への権限を宣言の一覧ちょうどにする（1 つの
-// トランザクションで REVOKE ALL と GRANT）。
+// トランザクションで REVOKE ALL と GRANT）。PUBLIC は convergePublicGrant。
 func (p *Provider) convergeGrant(ctx context.Context, t target, want map[string]string) error {
+	if t.public() {
+		return p.convergePublicGrant(ctx, t, want)
+	}
 	privs, err := canonPrivileges(want[FieldPrivileges])
 	if err != nil {
 		return provider.NewPermanentError(fmt.Errorf("privileges: %w", err))
@@ -288,6 +291,52 @@ func (p *Provider) convergeGrant(ctx context.Context, t target, want map[string]
 	b.raw("BEGIN;\n")
 	b.raw("REVOKE ALL ON DATABASE ").ident(t.database).raw(" FROM ").ident(t.role).end()
 	b.raw("GRANT ", strings.ReplaceAll(privs, ListSep, ", "), " ON DATABASE ").ident(t.database).raw(" TO ").ident(t.role).end()
+	b.raw("COMMIT;\n")
+	return p.exec(ctx, admin(t), &b)
+}
+
+// convergePublicGrant は PUBLIC の db への権限を宣言の一覧（空でもよい）
+// ちょうどにする。足りない分を GRANT、余分を REVOKE（1 つのトランザクション）。
+func (p *Provider) convergePublicGrant(ctx context.Context, t target, want map[string]string) error {
+	privs, err := canonPrivilegeSet(want[FieldPrivileges])
+	if err != nil {
+		return provider.NewPermanentError(fmt.Errorf("privileges: %w", err))
+	}
+	snap, err := p.snapshot(ctx, t.server)
+	if err != nil {
+		return err
+	}
+	d := snap.database(t.database)
+	if d == nil {
+		return provider.NewTransientError(fmt.Errorf("database %q does not exist (yet)", t.database))
+	}
+	wantSet, have := map[string]bool{}, map[string]bool{}
+	for _, pv := range splitList(privs) {
+		wantSet[pv] = true
+	}
+	for _, pv := range d.publicPrivileges() {
+		have[pv] = true
+	}
+	var grant, revoke []string
+	for _, pv := range privilegeOrder {
+		switch {
+		case wantSet[pv] && !have[pv]:
+			grant = append(grant, pv)
+		case !wantSet[pv] && have[pv]:
+			revoke = append(revoke, pv)
+		}
+	}
+	if len(grant) == 0 && len(revoke) == 0 {
+		return nil
+	}
+	var b sqlBuilder
+	b.raw("BEGIN;\n")
+	if len(revoke) > 0 {
+		b.raw("REVOKE ", strings.Join(revoke, ", "), " ON DATABASE ").ident(t.database).raw(" FROM PUBLIC").end()
+	}
+	if len(grant) > 0 {
+		b.raw("GRANT ", strings.Join(grant, ", "), " ON DATABASE ").ident(t.database).raw(" TO PUBLIC").end()
+	}
 	b.raw("COMMIT;\n")
 	return p.exec(ctx, admin(t), &b)
 }
@@ -366,10 +415,16 @@ func (p *Provider) drop(ctx context.Context, t target) error {
 		b.raw("DROP DATABASE IF EXISTS ").ident(t.database).end()
 		return p.exec(ctx, admin(t), &b)
 	case KindGrant:
-		if snap.database(t.database) == nil || snap.role(t.role) == nil {
+		if snap.database(t.database) == nil || !t.public() && snap.role(t.role) == nil {
 			return nil
 		}
-		b.raw("REVOKE ALL ON DATABASE ").ident(t.database).raw(" FROM ").ident(t.role).end()
+		// PUBLIC は引用符の無いキーワード（"PUBLIC" と quote すればロールの名前）。
+		b.raw("REVOKE ALL ON DATABASE ").ident(t.database).raw(" FROM ")
+		if t.public() {
+			b.raw("PUBLIC").end()
+		} else {
+			b.ident(t.role).end()
+		}
 		if err := p.exec(ctx, admin(t), &b); err != nil {
 			return err
 		}
@@ -378,7 +433,11 @@ func (p *Provider) drop(ctx context.Context, t target) error {
 			return err
 		}
 		if d := snap.database(t.database); d != nil {
-			if left := d.privilegesOf(t.role); len(left) > 0 {
+			left := d.privilegesOf(t.role)
+			if t.public() {
+				left = d.publicPrivileges()
+			}
+			if len(left) > 0 {
 				return provider.NewPermanentError(fmt.Errorf("%s is still granted after REVOKE ALL (granted by another role); revoke it as that role", strings.Join(left, ", ")))
 			}
 		}

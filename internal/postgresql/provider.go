@@ -25,7 +25,13 @@
 //	<server>/role/<name>                         ロール
 //	<server>/database/<name>                     データベース
 //	<server>/database/<db>/grant/<role>          role が db に直に持つ権限
+//	<server>/database/<db>/grant/PUBLIC          PUBLIC（全員）が db に持つ権限
 //	<server>/database/<db>/extension/<name>      db の拡張
+//
+// grant の後ろの PUBLIC（大文字ちょうど）は予約で、ロールではなく PUBLIC を指す
+// （PublicGrantee）。PostgreSQL は public という名前のロールを作らせないので、
+// public と大文字小文字だけが違う名前は、どのロールの ID としても断る（引用符で
+// 作った "PUBLIC" のようなロールは管理の境界の外）。
 //
 // 名前は 1〜63 バイトで、"/"・NUL・制御文字を含まない（データベースの名前は
 // "=" も含まない。libpq が接続文字列と読むため）。それ以外は SQL では常に
@@ -33,7 +39,8 @@
 //
 // 宣言するフィールド（宣言したものだけを管理し、書かないものは触らない）:
 //
-//   - ロール：login・superuser・createdb・createrole・inherit（true / false）、
+//   - ロール：login・superuser・createdb・createrole・inherit・bypassrls・
+//     replication（true / false）、
 //     connection_limit（-1 は上限なし）、member_of（所属するロールの一覧。宣言
 //     すれば一覧どおりにする）、password（SecretRef。下の「パスワード」）。
 //   - データベース：owner・connection_limit、encoding・lc_collate・lc_ctype・
@@ -41,6 +48,12 @@
 //     計画の時点でエラー。template は観測できないので作った後は比べない）。
 //   - 権限：privileges（CONNECT・CREATE・TEMPORARY の一覧。空にはできない。
 //     全部を外すなら宣言から外して prune か明示の absent で消す＝REVOKE ALL）。
+//     PUBLIC に限り空の一覧（全部外す）を宣言できる。
+//
+// PUBLIC の権限：データベースが在れば、権限が 1 つも無くても在る（privileges が
+// 空）。datacl が NULL なら既定の CONNECT・TEMPORARY。宣言すれば一覧ちょうどに
+// し（足りない分を GRANT、余分を REVOKE）、明示の absent は REVOKE ALL。List には
+// 出さない（宣言していない PUBLIC の権限を prune で外さない）。
 //   - 拡張：version（宣言したときだけ ALTER EXTENSION ... UPDATE TO）。
 //   - server・role・database・extension：識別子（ID と同じ値。省略できる）。
 //
@@ -107,6 +120,8 @@ const (
 	FieldCreateDB        = "createdb"
 	FieldCreateRole      = "createrole"
 	FieldInherit         = "inherit"
+	FieldBypassRLS       = "bypassrls"
+	FieldReplication     = "replication"
 	FieldConnectionLimit = "connection_limit"
 	FieldMemberOf        = "member_of"
 	FieldPassword        = "password"
@@ -128,6 +143,9 @@ const ListSep = ","
 // SecretRef の参照（値ではない）が続く。
 const PasswordMarker = "sakutei:password="
 
+// PublicGrantee は grant の ID で PUBLIC を指す名前（予約）。
+const PublicGrantee = "PUBLIC"
+
 // privilegeOrder はデータベースの権限（正規の順）。
 var privilegeOrder = []string{"CONNECT", "CREATE", "TEMPORARY"}
 
@@ -141,12 +159,14 @@ var roleAttrFields = []struct{ field, on, off string }{
 	{FieldCreateDB, "CREATEDB", "NOCREATEDB"},
 	{FieldCreateRole, "CREATEROLE", "NOCREATEROLE"},
 	{FieldInherit, "INHERIT", "NOINHERIT"},
+	{FieldBypassRLS, "BYPASSRLS", "NOBYPASSRLS"},
+	{FieldReplication, "REPLICATION", "NOREPLICATION"},
 }
 
 // kindFields は種類ごとに宣言できるフィールド。
 var kindFields = map[string]map[string]bool{
 	KindRole: {FieldServer: true, FieldRole: true, FieldLogin: true, FieldSuperuser: true, FieldCreateDB: true,
-		FieldCreateRole: true, FieldInherit: true, FieldConnectionLimit: true, FieldMemberOf: true, FieldPassword: true},
+		FieldCreateRole: true, FieldInherit: true, FieldBypassRLS: true, FieldReplication: true, FieldConnectionLimit: true, FieldMemberOf: true, FieldPassword: true},
 	KindDatabase: {FieldServer: true, FieldDatabase: true, FieldOwner: true, FieldEncoding: true, FieldLcCollate: true,
 		FieldLcCtype: true, FieldTemplate: true, FieldConnectionLimit: true},
 	KindGrant:     {FieldServer: true, FieldDatabase: true, FieldRole: true, FieldPrivileges: true},
@@ -209,6 +229,8 @@ func (p *Provider) Schema() provider.Schema {
 		FieldCreateDB:        boolean,
 		FieldCreateRole:      boolean,
 		FieldInherit:         boolean,
+		FieldBypassRLS:       boolean,
+		FieldReplication:     boolean,
 		FieldConnectionLimit: {Kind: core.FieldKindInt},
 		FieldMemberOf:        set,
 		FieldPassword:        {Kind: core.FieldKindSecretRef, Secret: true},
@@ -254,6 +276,8 @@ type target struct {
 // RoleID・DatabaseID・GrantID・ExtensionID は ID を作る。
 func RoleID(server, role string) string   { return server + "/role/" + role }
 func DatabaseID(server, db string) string { return server + "/database/" + db }
+
+// GrantID の role に PublicGrantee を渡せば PUBLIC の権限の ID。
 func GrantID(server, db, role string) string {
 	return server + "/database/" + db + "/grant/" + role
 }
@@ -288,7 +312,7 @@ func (s *Server) outsideRole(role string) string {
 	case role == s.User:
 		return fmt.Sprintf("role %q is the role Sakutei connects as", role)
 	case strings.EqualFold(role, "public"):
-		return `"public" is not a role`
+		return fmt.Sprintf(`%q is not a role (for the privileges of PUBLIC, write %s in a grant id)`, role, PublicGrantee)
 	}
 	return ""
 }
@@ -332,7 +356,7 @@ func (p *Provider) parseID(localID string) (target, error) {
 		if why := validName("role", t.role); why != "" {
 			return bad("%s", why)
 		}
-		if why := srv.outsideRole(t.role); why != "" {
+		if why := srv.outsideRole(t.role); why != "" && !t.public() {
 			return bad("%s; it is outside what this provider manages (§7)", why)
 		}
 	}
@@ -351,6 +375,9 @@ func (p *Provider) parseID(localID string) (target, error) {
 	}
 	return t, nil
 }
+
+// public は t が PUBLIC の権限か。
+func (t target) public() bool { return t.kind == KindGrant && t.role == PublicGrantee }
 
 func (p *Provider) serverNames() []string {
 	names := make([]string, 0, len(p.servers))
@@ -478,7 +505,8 @@ func (o *observer) state(ctx context.Context, t target) (core.State, error) {
 		for _, f := range []struct {
 			field string
 			v     bool
-		}{{FieldLogin, r.Login}, {FieldSuperuser, r.Superuser}, {FieldCreateDB, r.CreateDB}, {FieldCreateRole, r.CreateRole}, {FieldInherit, r.Inherit}} {
+		}{{FieldLogin, r.Login}, {FieldSuperuser, r.Superuser}, {FieldCreateDB, r.CreateDB}, {FieldCreateRole, r.CreateRole},
+			{FieldInherit, r.Inherit}, {FieldBypassRLS, r.BypassRLS}, {FieldReplication, r.Replication}} {
 			base[f.field] = core.TypedValue{Kind: core.FieldKindBool, Value: f.v}
 		}
 		base[FieldConnectionLimit] = core.TypedValue{Kind: core.FieldKindInt, Value: r.ConnectionLimit}
@@ -499,12 +527,19 @@ func (o *observer) state(ctx context.Context, t target) (core.State, error) {
 		return base, nil
 	case KindGrant:
 		d := o.snap.database(t.database)
-		if d == nil || o.snap.role(t.role) == nil {
+		var privs []string
+		switch {
+		case d == nil:
 			return nil, nil
-		}
-		privs := d.privilegesOf(t.role)
-		if len(privs) == 0 {
+		case t.public():
+			// PUBLIC はデータベースが在れば在る（権限が空でも）。
+			privs = d.publicPrivileges()
+		case o.snap.role(t.role) == nil:
 			return nil, nil
+		default:
+			if privs = d.privilegesOf(t.role); len(privs) == 0 {
+				return nil, nil
+			}
 		}
 		base[FieldDatabase] = sv(d.Name)
 		base[FieldRole] = sv(t.role)
@@ -733,9 +768,16 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	if t.kind == KindGrant {
 		v, ok := fields[FieldPrivileges]
 		if !ok {
+			if t.public() {
+				return fail("privileges is required (CONNECT, CREATE, TEMPORARY; an empty list revokes all from PUBLIC)")
+			}
 			return fail("privileges is required (CONNECT, CREATE, TEMPORARY; to revoke all, remove the grant from the intent)")
 		}
-		if _, err := canonPrivileges(v); err != nil {
+		if t.public() {
+			if _, err := canonPrivilegeSet(v); err != nil {
+				return fail("privileges: %v", err)
+			}
+		} else if _, err := canonPrivileges(v); err != nil {
 			return fail("privileges: %v", err)
 		}
 	}
@@ -755,6 +797,15 @@ func splitList(v string) []string {
 // canonPrivileges は権限の一覧を正規形（大文字・TEMP は TEMPORARY・重複なし・
 // 正規の順）にする。空や知らない権限はエラー。
 func canonPrivileges(v string) (string, error) {
+	out, err := canonPrivilegeSet(v)
+	if err == nil && out == "" {
+		return "", fmt.Errorf("the list is empty")
+	}
+	return out, err
+}
+
+// canonPrivilegeSet は canonPrivileges と同じで、空の一覧を許す（PUBLIC 用）。
+func canonPrivilegeSet(v string) (string, error) {
 	have := map[string]bool{}
 	for _, s := range splitList(v) {
 		u := strings.ToUpper(s)
@@ -767,9 +818,6 @@ func canonPrivileges(v string) (string, error) {
 		default:
 			return "", fmt.Errorf("%q: want CONNECT, CREATE or TEMPORARY", s)
 		}
-	}
-	if len(have) == 0 {
-		return "", fmt.Errorf("the list is empty")
 	}
 	var out []string
 	for _, p := range privilegeOrder {
@@ -814,8 +862,8 @@ func sameValue(field, declared, observed string) bool {
 	case FieldLcCollate, FieldLcCtype:
 		return canonLocale(declared) == canonLocale(observed)
 	case FieldPrivileges:
-		a, err1 := canonPrivileges(declared)
-		b, err2 := canonPrivileges(observed)
+		a, err1 := canonPrivilegeSet(declared)
+		b, err2 := canonPrivilegeSet(observed)
 		return err1 == nil && err2 == nil && a == b
 	case FieldMemberOf:
 		a, b := splitList(declared), splitList(observed)
