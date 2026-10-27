@@ -2853,11 +2853,11 @@
       "labels": [],
       "body": "## なぜ\ninternal/nftables は「宣言する現実は管理された ruleset ファイルそのもの」で、`nft` を呼ばない。ファイルを書いてもカーネルの FW に反映されず、`nft delete rule` などで FW を直に変えても drift として見えない。実際に FW を収束させるには、カーネルの実際の ruleset を観測・適用する版が要る。\n\n## やること\n- provider に「対象」の設定を足す：`file`（今のまま。既定）と `live`（実の ruleset）。CLI は `--ruleset-target file|live`、`--provider-config`（#119）では nftables の config のキーで渡せる。live では nft のパス（既定 `nft`）と、管理する table の一覧（family と名前。必須）を設定で受ける。\n- **Read / List / BulkObserve（live）**：`nft -j list table <family> <name>` の JSON を読み、管理する table の regular chain ごとのルール列を、ファイル版と同じ Schema・同じ identity {table, chain}・同じ Ordered の rules で返す。ルールを比べるための正規形（nft が書き換える表記、例：空白・カウンタ・handle）を決め、宣言と観測の両方をその形にそろえて比べる（宣言を nft に一度流して読み戻した形と一致させるなど、永久に drift が出続けないことを試験で保証する）。table が無いのは「空」。nft が走らない・権限が無いなどは「観測できない」（unknown。absent にしない、§3・§5.4）。List は全 table を読めたときだけ complete。\n- **Apply（live）**：対象の chain の中身を入れ替える nft のスクリプト（`flush chain` と `add rule` の列、Create は `add chain`、Delete は `delete chain`）を作り、`nft -f -` で**1つのトランザクションとして**流す（途中で失敗したら何も変わらない）。流す前に `nft -c -f -`（検査だけ）を通す。base chain・set・map・管理しない table は触らない（管理境界、§7・Backlog #68 と同じ考え）。同じホストの Apply はプロセス内で直列化する。\n- nft を呼ぶ所は seam（interface）に切り、通常のテストは偽の nft（記録した JSON を返す）で回す。契約テスト（sdk.ContractTester）と BulkObserve 等価性テストを live でも通す。\n- **統合テスト**：build tag `integration_nftables`、`make integration-nftables`。実際の nft を `sudo -n unshare -n`（使い捨ての network namespace）の中で回し、ホストの FW には触れない。確かめること：空から Create → 適合／`nft delete rule` で直に消す → drift として見え、reconcile で戻る／ルールの並べ替えが drift になる／管理外の table と base chain が変わらない／変なルールで nft -c が落ちたら何も変わらない／宣言どおりなら何周回しても drift が出ない。check・test・CI には入れない（root が要るため。redfish と同じ扱い）。実際に回して結果を docs に書く。\n- 文書：docs/providers/nftables.md（無ければ作る。file と live の違い・設定・権限（CAP_NET_ADMIN）・正規形・統合テストの手順）、設計書 §29.1 に決まりを書き足す。特定の環境の話は書かない。版の行と CHANGELOG のファイルは触らない。\n\n## 決まり\nstdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "live で実の ruleset を観測・適用でき、偽の nft での契約・等価性テストと make check・make test-race、make integration-nftables が通る",
-      "resolution": "Factory が取り込みました（factory/w2-nftables-live）",
+      "resolution": "main 48ba2b2 で push 済み。make integration-nftables（使い捨ての network namespace で実際の nft）・make check・make test-race を main で通過。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T09:02:05.503Z",
-      "updatedAt": "2026-10-27T09:26:38.858Z",
+      "updatedAt": "2026-10-27T09:30:11.828Z",
       "closedAt": "2026-10-27T09:26:38.858Z",
       "extra": {}
     },
