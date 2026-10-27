@@ -61,13 +61,18 @@ func runTask(args []string) {
 			return
 		}
 		// #113: ROLLBACK says whether rollback_on_fail rolled the failed Task back.
-		fmt.Fprintf(os.Stdout, "%-40s %-10s %-11s %-30s %-20s %s\n", "RESOURCE", "PHASE", "ROLLBACK", "TASK", "STARTED", "ERROR")
+		fmt.Fprintf(os.Stdout, "%-40s %-21s %-11s %-30s %-20s %s\n", "RESOURCE", "PHASE", "ROLLBACK", "TASK", "STARTED", "ERROR")
 		for _, r := range recs {
 			rb := "-"
 			if r.RolledBack {
 				rb = "rolled-back"
 			}
-			fmt.Fprintf(os.Stdout, "%-40s %-10s %-11s %-30s %-20s %s\n", r.Resource, r.Phase, rb, r.TaskID, r.StartedAt.Format(time.RFC3339), r.Error)
+			// #51: a phased Task shows the step it is in (running:rebooting).
+			phase := string(r.Phase)
+			if r.Step != "" {
+				phase += ":" + r.Step
+			}
+			fmt.Fprintf(os.Stdout, "%-40s %-21s %-11s %-30s %-20s %s\n", r.Resource, phase, rb, r.TaskID, r.StartedAt.Format(time.RFC3339), r.Error)
 		}
 	case "cancel":
 		if fs.NArg() != 1 {

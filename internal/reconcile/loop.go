@@ -281,6 +281,13 @@ type Config struct {
 	// TaskRunner runs the Tasks.  Nil means the Provider, if it implements
 	// task.Runner.
 	TaskRunner task.Runner
+	// TaskPollInterval is how often a phased Task (§6.2 多相型) re-Observes
+	// its target while it waits (a reboot).  Zero means task.DefaultPollInterval.
+	TaskPollInterval time.Duration
+	// TaskLeaseTTL is the lease of a phased Task's record: a daemon takes over
+	// a Task whose holder has not renewed it for this long (crashed).  Zero
+	// means task.DefaultLeaseTTL.
+	TaskLeaseTTL time.Duration
 	// Now is the clock the maintenance window (update_policy.window) is
 	// checked against.  Nil means time.Now.
 	Now func() time.Time
@@ -446,7 +453,7 @@ func Run(ctx context.Context, cfg Config) error {
 	errorCycles, lastCycleErr := 0, ""
 	drain := func() {
 		if d != nil {
-			d.Wait(gracefulShutdownWait)
+			d.Shutdown(gracefulShutdownWait)
 		}
 	}
 	sleep := func() bool {
@@ -962,6 +969,7 @@ func NewDaemon(cfg Config) *Daemon {
 		tasksOff = "the provider has no task runner"
 	default:
 		tasks = task.NewManager(cfg.TaskStore, runner, taskHolder(cfg), cfg.Now)
+		tasks.PollInterval, tasks.LeaseTTL = cfg.TaskPollInterval, cfg.TaskLeaseTTL
 	}
 
 	// #42 (§6.3): the Workflow engine.  Its apply steps go through the same
@@ -1030,6 +1038,23 @@ func (d *Daemon) Wait(timeout time.Duration) {
 	d.ifl.Wait(timeout)
 	if d.tasks != nil {
 		d.tasks.Wait(time.Until(deadline))
+	}
+}
+
+// Shutdown stops the phased Tasks at their next safe point (releasing their
+// records for the next daemon, #51) and waits like Wait.  A simple Task and a
+// step in progress are never cut off.
+func (d *Daemon) Shutdown(timeout time.Duration) {
+	d.StopTasks()
+	d.Wait(timeout)
+}
+
+// StopTasks is the first half of Shutdown: it asks the phased Tasks to stop at
+// their next safe point and returns without waiting.  The daemon launches and
+// resumes no Task afterwards.
+func (d *Daemon) StopTasks() {
+	if d.tasks != nil {
+		d.tasks.Stop()
 	}
 }
 
@@ -1206,6 +1231,9 @@ type CycleResult struct {
 	// TasksCompleted lists the resources whose outstanding Task record was
 	// cleared because this cycle's Observe showed no diff (completion mark).
 	TasksCompleted []string
+	// TasksResumed lists the resources whose phased Task (§6.2 多相型, #51)
+	// this daemon took over at the step a previous daemon stopped in.
+	TasksResumed []string
 
 	// Workflow fields (§6.3, §6.4):
 
@@ -1745,6 +1773,25 @@ func runCycleAsync(
 	ghostByProvider := map[string]int{}
 	// #41: strategy: task resources whose completion mark was observed.
 	var tasksCompleted []string
+	// #51 (§6.2 多相型): phased Tasks taken over from a previous daemon.
+	var tasksResumed []string
+	// resumeUnseen is called for a strategy: task resource that could not be
+	// Observed this cycle.  unknown ≠ absent: a device rebooting in the middle
+	// of a phased Task is not seen, and the Task that waits for it must go on —
+	// also when the daemon that launched it is gone.
+	resumeUnseen := func(res diff.DesiredResource) {
+		if !res.UpdatePolicy.IsTask() || tasks == nil {
+			return
+		}
+		dec, ok, err := tasks.Resume(ctx, res.ID, res.Fields, res.UpdatePolicy)
+		switch {
+		case err != nil:
+			fmt.Fprintf(cfg.ErrOut, "sakutei: task store: %s: %v\n", res.ID, err)
+		case ok && dec.Outcome == task.Resumed:
+			tasksResumed = append(tasksResumed, res.ID.Local)
+			fmt.Fprintf(cfg.Out, "sakutei: %s: %s (target not observed this cycle; waiting for it)\n", res.ID, dec.Reason)
+		}
+	}
 
 	// #27 (§5.7): a provider that declares BulkObserve is observed with one
 	// bulk call for the whole claim, made at the first Observe of this cycle and
@@ -1822,6 +1869,7 @@ func runCycleAsync(
 			unobservable[local] = true
 			obsStats.Unknown++
 			sched.Observed(res, false)
+			resumeUnseen(res)
 			continue
 		}
 		observed++
@@ -1835,6 +1883,7 @@ func runCycleAsync(
 				obsStats.Unknown++
 			}
 			sched.Observed(res, false)
+			resumeUnseen(res)
 			continue
 		}
 		ready.Record(local, obs)
@@ -2221,6 +2270,11 @@ func runCycleAsync(
 			EmitRequiresTask(cfg.Out, "sakutei: ", core.SeverityInfo, r.ID, fmt.Sprintf("task %s launched (strategy: task; not applying)", dec.Record.TaskID))
 		case task.Running:
 			tasksHeld = append(tasksHeld, local)
+		case task.Resumed:
+			// #51: a phased Task taken over at its step; still not applying.
+			tasksHeld = append(tasksHeld, local)
+			tasksResumed = append(tasksResumed, local)
+			EmitRequiresTask(cfg.Out, "sakutei: ", core.SeverityInfo, r.ID, dec.Reason+" (strategy: task; not applying)")
 		default:
 			tasksHeld = append(tasksHeld, local)
 			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("no Task launched (%s): %s", dec.Outcome, dec.Reason))
@@ -2281,6 +2335,7 @@ func runCycleAsync(
 		TasksLaunched:  tasksLaunched,
 		TasksHeld:      tasksHeld,
 		TasksCompleted: tasksCompleted,
+		TasksResumed:   tasksResumed,
 
 		WorkflowEvents: wfEvents,
 		WorkflowHeld:   wfHeldThisCycle,

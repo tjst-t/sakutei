@@ -56,6 +56,21 @@ type Record struct {
 	Error      string    `json:"error,omitempty"`
 	StartedAt  time.Time `json:"started_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+
+	// 多相 Task（§6.2 多相型、phased.go）だけが使う。単純 Task では空。
+	//
+	// Step は進行中の相（staging・applying・rebooting など）。S2 に置くのは
+	// 「どの相に入ったか」だけで、相が済んだかは相の入口で現実を Observe して問う。
+	Step string `json:"step,omitempty"`
+	// StepStartedAt は Step に入った時刻。相のタイムアウトはここから数えるので、
+	// デーモンを起こし直しても待ちが延びない。
+	StepStartedAt time.Time `json:"step_started_at,omitempty"`
+	// HeartbeatAt は Holder が生きている印（lease）。LeaseTTL より古ければ
+	// Holder は落ちたものとして、別のデーモンが続きを引き継ぐ。
+	HeartbeatAt time.Time `json:"heartbeat_at,omitempty"`
+	// Released は Holder が安全な区切り（相の間・待ちの間）で手放した。
+	// 次のデーモンは lease を待たずに続きを引き継いでよい。
+	Released bool `json:"released,omitempty"`
 }
 
 // Store は Task の進行フェーズの S2 ストア。
@@ -72,6 +87,9 @@ type Store interface {
 	Delete(ctx context.Context, resource, taskID string) (Record, bool, error)
 	// List は全記録をリソース順に返す。
 	List(ctx context.Context) ([]Record, error)
+	// Update は taskID の記録に fn を当て、fn が true を返したら書く（比較と書込は
+	// 1つのロックの中）。返す bool は記録が taskID のもので、fn が true を返したか。
+	Update(ctx context.Context, resource, taskID string, fn func(rec *Record) bool) (Record, bool, error)
 }
 
 // FileStore は1つの JSON ファイルに記録を置く Store（fencing.FileStore と同じ形）。
@@ -264,4 +282,28 @@ func (s *FileStore) List(ctx context.Context) ([]Record, error) {
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Resource < out[j].Resource })
 	return out, err
+}
+
+// Update implements Store.
+func (s *FileStore) Update(ctx context.Context, resource, taskID string, fn func(rec *Record) bool) (Record, bool, error) {
+	var out Record
+	applied := false
+	err := s.update(ctx, func(sf *storeFile) bool {
+		rec, ok := sf.Tasks[resource]
+		if !ok || rec.TaskID != taskID {
+			return false
+		}
+		out = rec
+		if !fn(&rec) {
+			return false
+		}
+		rec.UpdatedAt = time.Now().UTC()
+		sf.Tasks[resource] = rec
+		out, applied = rec, true
+		return true
+	})
+	if err != nil {
+		return Record{}, false, err
+	}
+	return out, applied, nil
 }

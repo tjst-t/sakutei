@@ -131,6 +131,11 @@ type stateFile struct {
 	TaskRollbackCount map[string]int    `json:"task_rollback_count,omitempty"`
 	TaskFailInject    map[string]string `json:"task_fail_inject,omitempty"`
 	TaskSkipMark      map[string]bool   `json:"task_skip_mark,omitempty"`
+	// Phased Task fields (test-only, #51, §6.2 多相型): see phased.go.
+	TaskKind      map[string]string         `json:"task_kind,omitempty"`
+	Firmware      map[string]*Firmware      `json:"firmware,omitempty"`
+	TaskStepCount map[string]map[string]int `json:"task_step_count,omitempty"`
+	TaskStepFail  map[string]string         `json:"task_step_fail,omitempty"`
 }
 
 // Provider is the fake implementation.  It satisfies both provider.Provider
@@ -163,6 +168,9 @@ type Provider struct {
 	// until a test releases them (test-only, #41; see HoldTask).
 	holdMu    sync.Mutex
 	taskHolds map[string]chan struct{}
+	// stepHolds keep RunStep blocked after its effect (test-only, #51; see
+	// HoldStep).  Guarded by holdMu.
+	stepHolds map[string]*stepHold
 }
 
 // New creates a new fake Provider backed by the JSON file at statePath.
@@ -274,6 +282,14 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 				ObservedAt:   time.Now(),
 			}, nil
 		}
+	}
+
+	// #51: a device rebooting into new firmware is not seen (unknown ≠ absent).
+	if fw := sf.Firmware[key]; fw != nil && fw.Rebooting {
+		return core.Observation{
+			Availability: core.AvailabilityUnknown,
+			ObservedAt:   time.Now(),
+		}, nil
 	}
 
 	res, ok := sf.Resources[key]

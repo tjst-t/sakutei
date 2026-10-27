@@ -87,8 +87,10 @@ type taskRig struct {
 	storePath string
 	fp        *fakeprovider.Provider
 	clock     *taskClock
-	d         *reconcile.Daemon
-	errOut    *syncBuf
+	// poll / lease は多相 Task の待ちの間隔と lease（#51）。0 なら既定。
+	poll, lease time.Duration
+	d           *reconcile.Daemon
+	errOut      *syncBuf
 }
 
 // syncBuf は複数 goroutine から書かれる ErrOut。
@@ -143,6 +145,9 @@ func (r *taskRig) newDaemon(store bool) *reconcile.Daemon {
 		Out:          r.errOut,
 		ErrOut:       r.errOut,
 		Now:          r.clock.Now,
+
+		TaskPollInterval: r.poll,
+		TaskLeaseTTL:     r.lease,
 	}
 	if store {
 		cfg.TaskStore = task.NewFileStore(r.storePath)

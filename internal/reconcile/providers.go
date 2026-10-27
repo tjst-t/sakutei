@@ -287,3 +287,47 @@ func resolveCycleProviders(providers *providerSet, desired []diff.DesiredResourc
 	}
 	return out, unresolved
 }
+
+// TaskSteps implements task.PhasedRunner: the steps the resource's provider
+// declares, none when that provider runs simple Tasks only.
+func (r routedTaskRunner) TaskSteps(ctx context.Context, req task.Request) ([]task.StepSpec, error) {
+	tr, err := r.runner(req.Resource)
+	if err != nil {
+		return nil, err
+	}
+	pr, ok := tr.(task.PhasedRunner)
+	if !ok {
+		return nil, nil
+	}
+	return pr.TaskSteps(ctx, req)
+}
+
+func (r routedTaskRunner) phased(id core.ID) (task.PhasedRunner, error) {
+	tr, err := r.runner(id)
+	if err != nil {
+		return nil, err
+	}
+	pr, ok := tr.(task.PhasedRunner)
+	if !ok {
+		return nil, fmt.Errorf("provider %q runs no phased tasks", id.Provider)
+	}
+	return pr, nil
+}
+
+// CheckStep implements task.PhasedRunner.
+func (r routedTaskRunner) CheckStep(ctx context.Context, req task.Request, step string) (task.StepState, error) {
+	pr, err := r.phased(req.Resource)
+	if err != nil {
+		return task.StepUnknown, err
+	}
+	return pr.CheckStep(ctx, req, step)
+}
+
+// RunStep implements task.PhasedRunner.
+func (r routedTaskRunner) RunStep(ctx context.Context, req task.Request, step string) error {
+	pr, err := r.phased(req.Resource)
+	if err != nil {
+		return err
+	}
+	return pr.RunStep(ctx, req, step)
+}

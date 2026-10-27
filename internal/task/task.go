@@ -31,6 +31,11 @@
 //     failed を記録し、人が cancel するまで再起動しない。非冪等な操作を周期ごとに
 //     自動再試行しない（原則 3）。
 //   - 窓: update_policy.window の外では起動しない。
+//
+// 実行体が PhasedRunner で、Task の相を宣言したものは多相 Task として相ごとに
+// 走らせる（§6.2 多相型、phased.go）。上の規則はそのまま乗るが、多相 Task は
+// 相を S2 に置くので、再起動の後は止まった相から続きを引き継ぐ（相の入口で
+// 現実を Observe して済んだ相は飛ばす）。
 package task
 
 import (
@@ -55,7 +60,11 @@ type Request struct {
 	// 完了印を現実側に残す（例: schema_migrations に版を書く）。
 	Desired map[string]string
 	// Plan は起動を決めた差分。実行体の参考情報で、Apply にはかけない。
+	// 多相 Task を引き継いだ（Resume）ときは空のことがある。
 	Plan core.Plan
+	// Step は多相 Task の RollbackTask に渡す、失敗した相（phased.go）。
+	// 単純 Task では空。
+	Step string
 }
 
 // Runner は Task の実行体。
@@ -92,6 +101,8 @@ func (o Outcome) String() string {
 		return "outstanding"
 	case OutsideWindow:
 		return "outside-window"
+	case Resumed:
+		return "resumed"
 	}
 	return "unknown"
 }
@@ -111,6 +122,14 @@ type Manager struct {
 	holder string
 	now    func() time.Time
 
+	// PollInterval は多相 Task が CheckStep で待つ間隔。0 なら DefaultPollInterval。
+	PollInterval time.Duration
+	// LeaseTTL は多相 Task の記録の lease。0 なら DefaultLeaseTTL。
+	LeaseTTL time.Duration
+
+	stop     chan struct{}
+	stopOnce sync.Once
+
 	mu      sync.Mutex
 	running map[string]bool // このプロセスで走っている Task（S3）
 	wg      sync.WaitGroup
@@ -122,7 +141,7 @@ func NewManager(store Store, runner Runner, holder string, now func() time.Time)
 	if now == nil {
 		now = time.Now
 	}
-	return &Manager{store: store, runner: runner, holder: holder, now: now, running: map[string]bool{}}
+	return &Manager{store: store, runner: runner, holder: holder, now: now, running: map[string]bool{}, stop: make(chan struct{})}
 }
 
 // DesiredHash は desired fields のハッシュ（記録した起動と今の desired が同じかを見る）。
@@ -182,6 +201,11 @@ func (m *Manager) Trigger(ctx context.Context, id core.ID, desired map[string]st
 		return Decision{}, err
 	}
 	if ok {
+		if rec.Step != "" && rec.Phase == PhaseRunning {
+			// 多相 Task の途中: 手放されたか lease が切れていれば続きを引き継ぐ。
+			dec, _, err := m.resume(ctx, id, desired, plan, pol, rec)
+			return dec, err
+		}
 		if rec.Phase == PhaseSucceeded && rec.DesiredHash != hash {
 			// 前の desired の Task は成功済みで、desired がその後で変わった。
 			// 前の起動は完了しているので、今の desired について改めて起動してよい。
@@ -203,14 +227,27 @@ func (m *Manager) Trigger(ctx context.Context, id core.ID, desired map[string]st
 			Reason: fmt.Sprintf("outside maintenance window %s (now %s)", win, now.Format("Mon 15:04 MST"))}, nil
 	}
 
+	if m.stopped() {
+		return Decision{Outcome: Outstanding, Reason: "task manager is stopping"}, nil
+	}
+	taskID := fmt.Sprintf("%s-%d-%d", m.holder, now.UnixNano(), m.seq.Add(1))
+	req := Request{TaskID: taskID, Resource: id, Desired: copyFields(desired), Plan: plan}
+	pr, steps, err := m.phasedSteps(ctx, req)
+	if err != nil {
+		return Decision{}, err
+	}
+
 	rec = Record{
 		Resource:    key,
-		TaskID:      fmt.Sprintf("%s-%d-%d", m.holder, now.UnixNano(), m.seq.Add(1)),
+		TaskID:      taskID,
 		Phase:       PhaseRunning,
 		Holder:      m.holder,
 		DesiredHash: hash,
 		StartedAt:   now.UTC(),
 		UpdatedAt:   now.UTC(),
+	}
+	if pr != nil {
+		rec.Step, rec.StepStartedAt, rec.HeartbeatAt = steps[0].Name, now.UTC(), now.UTC()
 	}
 	cur, started, err := m.store.Begin(ctx, rec)
 	if err != nil {
@@ -221,20 +258,13 @@ func (m *Manager) Trigger(ctx context.Context, id core.ID, desired map[string]st
 		return Decision{Outcome: Outstanding, Record: cur, Reason: m.outstandingReason(cur)}, nil
 	}
 
-	m.mu.Lock()
-	m.running[key] = true
-	m.mu.Unlock()
-	m.wg.Add(1)
-	req := Request{TaskID: rec.TaskID, Resource: id, Desired: copyFields(desired), Plan: plan}
 	// 非冪等な手順を途中で切らない: デーモンの停止シグナルで Task を中断しない。
 	runCtx := context.WithoutCancel(ctx)
-	go func() {
-		defer m.wg.Done()
-		defer func() {
-			m.mu.Lock()
-			delete(m.running, key)
-			m.mu.Unlock()
-		}()
+	if pr != nil {
+		m.start(key, func() { m.runPhased(runCtx, pr, req, steps, 0, rec, pol) })
+		return Decision{Outcome: Launched, Record: rec, Reason: "phased task launched"}, nil
+	}
+	m.start(key, func() {
 		phase, rolledBack, msg := PhaseSucceeded, false, ""
 		if runErr := m.runner.RunTask(runCtx, req); runErr != nil {
 			phase, msg = PhaseFailed, runErr.Error()
@@ -252,13 +282,17 @@ func (m *Manager) Trigger(ctx context.Context, id core.ID, desired map[string]st
 		}
 		// 書けなければ running のまま残る（=中断扱い。安全側）。
 		_ = m.store.Finish(runCtx, key, req.TaskID, phase, rolledBack, msg)
-	}()
+	})
 	return Decision{Outcome: Launched, Record: rec, Reason: "task launched"}, nil
 }
 
 func (m *Manager) outstandingReason(rec Record) string {
 	switch rec.Phase {
 	case PhaseRunning:
+		if rec.Step != "" {
+			return fmt.Sprintf("task %s is in step %s, held by %q (heartbeat %s)",
+				rec.TaskID, rec.Step, rec.Holder, rec.HeartbeatAt.UTC().Format(time.RFC3339))
+		}
 		if rec.Holder != m.holder {
 			// 既定の holder は <ホスト名>-<pid> で、起こし直したデーモンは別の holder になる。
 			// 別のデーモンで走っているのか、落ちたデーモンの中断なのかはここでは分からない。
