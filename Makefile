@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -173,6 +173,29 @@ integration-netconf:
 check-module:
 	@test -n "$(VERSION)" || { echo 'usage: make check-module VERSION=<tag-or-commit>'; exit 2; }
 	./scripts/check-module-consumable.sh $(VERSION)
+
+# ldap provider の統合テスト（#144）。docker で 389 Directory Server の公式の
+# イメージ（tag と digest で固定）のサーバと、ldapsearch・ldapmodify を動かす
+# クライアントを立て（ホストに OpenLDAP のクライアントは要らない）、sakutei の
+# CLI から StartTLS・LDAPS で項目を収束させ（空から作る・手で変えると戻る・何周
+# しても drift が出ない・子のある項目は prune されない・止めると unknown）、終わったら
+# （失敗しても）コンテナとネットワークを消す。docker と sudo（パスワードなし）が
+# 要るので、check・test・CI には入れない。イメージは SAKUTEI_IT_389DS_IMAGE で
+# 差し替えられる。手順と結果は docs/providers/ldap.md の「統合テスト」。
+LDAP_IT := ./tests/integration/ldap/
+integration-ldap:
+	go vet -tags integration_ldap $(LDAP_IT)
+	@status=0; \
+	go test -tags integration_ldap -count=1 -v -timeout 15m $(LDAP_IT) || status=$$?; \
+	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-ldapit-'); \
+	if [ -n "$$left" ]; then \
+	  echo "integration-ldap: containers were left behind; removing: $$left"; \
+	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	if sudo -n docker network ls --format '{{.Name}}' 2>/dev/null | grep -q '^sakutei-ldapit-net$$'; then \
+	  sudo -n docker network rm sakutei-ldapit-net >/dev/null || status=1; \
+	fi; \
+	exit $$status
 
 clean:
 	rm -rf $(BIN) $(DEMODIR)

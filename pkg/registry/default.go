@@ -24,6 +24,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/dnszone"
 	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/v2/internal/guestos"
+	"github.com/tjst-t/sakutei/v2/internal/ldap"
 	"github.com/tjst-t/sakutei/v2/internal/netconf"
 	"github.com/tjst-t/sakutei/v2/internal/nftables"
 	"github.com/tjst-t/sakutei/v2/internal/postgresql"
@@ -81,6 +82,11 @@ import (
 //     config["remote_config"]) over the ssh "netconf" subsystem, the subtrees
 //     named in config["netconf_subtrees"] (name → subtree filter).  Observe
 //     only (Capabilities.ObserveOnly, §23.4): drift is reported, never applied.
+//
+//   - "ldap": entries of LDAP directories (Backlog #144), only the declared
+//     attributes, through the OpenLDAP clients ldapsearch / ldapmodify.
+//     config["ldap_config"] is the server list (ldap.LoadConfig: uri, StartTLS,
+//     CA, bind DN and its SecretRef, base DN, filter).
 //
 //   - "template-file": writes files rendered from the user's text/template
 //     templates (config["template_dir"]) into config["output_dir"], e.g. the
@@ -316,6 +322,17 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, err
 		}
 		return netconf.New(dialers, subtrees)
+	})
+
+	// "ldap" — LDAP のディレクトリの項目（§29.1、#144）。config["ldap_config"] は
+	// サーバの一覧（--provider-config の ldap の ldap_config）。--state は代わりに
+	// ならない（接続先と資格は推測しない）。
+	r.Register(ldap.Name, func(config map[string]string) (provider.Provider, error) {
+		path := config["ldap_config"]
+		if path == "" {
+			return nil, errors.New("ldap: the server list is not set: ldap_config in --provider-config")
+		}
+		return ldap.NewFromConfig(path)
 	})
 
 	// "template-file" — 雛形（text/template）に対象ごとの値を入れたファイルを
