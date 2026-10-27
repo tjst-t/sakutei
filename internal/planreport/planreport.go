@@ -50,7 +50,17 @@ const (
 	BlockedByBudget         = "budget"           // 変更予算（§13.1・§13.2）
 	BlockedByCapacity       = "capacity"         // 容量ゲート（§13.4）
 	BlockedByAlertOnlyScope = "alert_only_scope" // remediation: alert-only の scope（§14.3）
+	// BlockedByAlertOnly は全体の remediation mode が alert-only（--mode・--freeze・
+	// remediation schedule の窓の外、§14.1〜§14.3）で止めた操作。デーモンの
+	// GET /plan だけが使う（#136。一回性の plan は remediation で示す）。
+	BlockedByAlertOnly = "alert_only"
+	// BlockedByPruneHalt は prune の安全装置（§12.4）が止めた宣言外の削除。
+	// デーモンの GET /plan だけが使う（#136）。
+	BlockedByPruneHalt = "prune_halt"
 )
+
+// AlertOnlyScopeReason は remediation: alert-only の scope（§14.3）で止めた操作の理由。
+const AlertOnlyScopeReason = "scope declared remediation: alert-only — reported, not remediated (§14.3)"
 
 // Report は "sakutei plan" 1 回分の結果である。
 type Report struct {
@@ -201,6 +211,18 @@ type Gate struct {
 	// Halt は止める範囲："all"（すべての変更）/ "destructive"（破壊的な変更だけ）。
 	Halt   string `json:"halt,omitempty"`
 	Reason string `json:"reason,omitempty"`
+}
+
+// GateOf はゲートの判定を Report の形にする。
+func GateOf(haltAll, haltDestructive bool, reason string) Gate {
+	g := Gate{Reason: reason}
+	switch {
+	case haltAll:
+		g.Halted, g.Halt = true, "all"
+	case haltDestructive:
+		g.Halted, g.Halt = true, "destructive"
+	}
+	return g
 }
 
 // PruneHalt は prune の安全装置が止めた provider（§12.4）。その provider の

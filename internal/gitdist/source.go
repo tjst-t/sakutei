@@ -18,12 +18,14 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/reconcile"
+	"github.com/tjst-t/sakutei/internal/statusreport"
 	"github.com/tjst-t/sakutei/pkg/core"
 )
 
@@ -58,9 +60,32 @@ type Source struct {
 	nextFetch time.Time
 	ready     bool
 	state     reconcile.SourceState
+
+	// 取得の状態（#136。表示だけ）。
+	fetched   bool
+	fetchedAt time.Time
+	fetchRev  string
+	fetchErr  error
 }
 
-var _ reconcile.Source = (*Source)(nil)
+var (
+	_ reconcile.Source         = (*Source)(nil)
+	_ reconcile.MirrorReporter = (*Source)(nil)
+)
+
+// MirrorHealth は取得の状態を返す（#136）：取りに行く先、最後に取れた revision と
+// 時刻、直近の取得が届いたか。
+func (s *Source) MirrorHealth() *statusreport.MirrorHealth {
+	m := &statusreport.MirrorHealth{Remote: redactRemote(s.Checkout.Remote), Revision: s.fetchRev, Reachable: s.fetched && s.fetchErr == nil}
+	if s.fetched {
+		t := s.fetchedAt.UTC()
+		m.FetchedAt = &t
+	}
+	if s.fetchErr != nil {
+		m.Error = s.fetchErr.Error()
+	}
+	return m
+}
 
 // IntentDir は常駐ループが読む intent の木（手元写しの intent/）を返す。
 func (s *Source) IntentDir() string {
@@ -83,10 +108,17 @@ func (s *Source) Refresh(ctx context.Context) (reconcile.SourceState, error) {
 	}
 	var stale error
 	if err := s.Checkout.Sync(ctx, sparse); err != nil {
+		s.fetchErr = err
+		if s.Checkout.Cloned() {
+			s.fetchRev = s.Checkout.Head(ctx)
+		}
 		if !s.Checkout.Cloned() || s.Checkout.Head(ctx) == "" {
 			return s.fail(fmt.Errorf("first pull from %s failed: %w", s.Checkout.Remote, err))
 		}
 		stale = err
+	} else {
+		s.fetched, s.fetchedAt, s.fetchErr = true, now, nil
+		s.fetchRev = s.Checkout.Head(ctx)
 	}
 
 	st, err := s.resolve(ctx)
@@ -100,6 +132,17 @@ func (s *Source) Refresh(ctx context.Context) (reconcile.SourceState, error) {
 	s.state, s.ready = st, true
 	st.Stale = stale
 	return st, nil
+}
+
+// redactRemote は URL に埋め込まれた資格（user:password@）を伏せる。status と
+// 読み取り専用の口に出すため（§20.2：値は出さない）。
+func redactRemote(remote string) string {
+	u, err := url.Parse(remote)
+	if err != nil || u.User == nil || u.Scheme == "" {
+		return remote
+	}
+	u.User = url.User("REDACTED")
+	return u.String()
 }
 
 // fail はこの周を飛ばさせる。次の周にもう一度取りに行く。

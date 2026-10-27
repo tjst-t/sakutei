@@ -424,6 +424,23 @@ func (g *Guard) Fenced() []string {
 	return out
 }
 
+// Held は手元で持っている世代（scope のキー順）と、fence された scope のストアの
+// 現在の世代（同じくキー順）を返す。表示用（status・読み取り専用の口、#136）で、
+// 正しさには関与しない。
+func (g *Guard) Held() (held []Token, fenced []*FencedError) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, t := range g.held {
+		held = append(held, t)
+	}
+	for _, fe := range g.lost {
+		fenced = append(fenced, fe)
+	}
+	sort.Slice(held, func(i, j int) bool { return held[i].Scope < held[j].Scope })
+	sort.Slice(fenced, func(i, j int) bool { return fenced[i].Scope < fenced[j].Scope })
+	return held, fenced
+}
+
 // ── Executor ─────────────────────────────────────────────────────────────────
 
 // Executor は Apply の直前に、plan の全 op の対象 scope について token を検証する

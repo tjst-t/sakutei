@@ -24,6 +24,7 @@ import (
 
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/metrics"
+	"github.com/tjst-t/sakutei/internal/readapi"
 )
 
 // serveMetrics serves the daemon's metrics on addr/metrics in the background
@@ -39,6 +40,25 @@ func serveMetrics(addr string, e *metrics.Exporter) error {
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintf(os.Stderr, "sakutei: metrics: %v\n", err)
+		}
+	}()
+	return nil
+}
+
+// serveReadAPI serves the read-only API (#136) on addr in the background.  It
+// is a listener of its own, apart from the approval API (--approval-listen),
+// and takes no writes.  No authorization: bind it to a trusted address and put
+// a proxy in front to expose it (docs/read-api.md).
+func serveReadAPI(addr string, s *readapi.Server) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("read api: %w", err)
+	}
+	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	fmt.Fprintf(os.Stdout, "sakutei: read-only API listening on http://%s (GET /status /plan /events /graph; no authorization)\n", ln.Addr())
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "sakutei: read api: %v\n", err)
 		}
 	}()
 	return nil

@@ -15,7 +15,9 @@
 package statusreport
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +35,7 @@ func TestDaemonHealth_RoundTripAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("round trip: got %+v want %+v", got, want)
 	}
 
@@ -94,5 +96,45 @@ func TestDaemonHealth_ErrorCyclesAndStale(t *testing.T) {
 	}
 	if !strings.Contains(out, "周期（1s）の数倍のあいだ更新されていない") {
 		t.Errorf("stale warning missing:\n%s", out)
+	}
+}
+
+// #136: the claim, the fencing generations and the intent source's fetch.
+func TestDaemonHealth_Placement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon-status.json")
+	fetched := time.Date(2026, 10, 27, 1, 2, 3, 0, time.UTC)
+	want := DaemonHealth{Cycle: 3, UpdatedAt: fetched, Claim: "site=a", Shard: "shard-1",
+		Fencing: []FencingGeneration{{Scope: "site=a", Generation: 2, Holder: "shard-1"},
+			{Scope: "site=b", Generation: 5, Holder: "shard-2", Fenced: true}},
+		Mirror: &MirrorHealth{Remote: "file:///m.git", Revision: "abc", FetchedAt: &fetched, Error: "unreachable"}}
+	if err := WriteDaemonHealth(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadDaemonHealth(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip: got %+v want %+v", got, want)
+	}
+	b := NewBuilder("r1", "r1", nil)
+	b.SetDaemonHealth(got)
+	out := b.Build().String()
+	for _, line := range []string{"claim: site=a", "shard: shard-1", "fencing: site=a generation=2 holder=shard-1",
+		"fencing: site=b generation=5 holder=shard-2 — fence されている", "mirror: file:///m.git revision=abc 最後に取れた時刻=2026-10-27T01:02:03Z",
+		"intent の取得先に届いていない"} {
+		if !strings.Contains(out, line) {
+			t.Errorf("report lacks %q:\n%s", line, out)
+		}
+	}
+	// Absent fields stay out of the file.
+	if err := WriteDaemonHealth(path, DaemonHealth{Cycle: 1}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	for _, k := range []string{"claim", "shard", "fencing", "mirror", "idle"} {
+		if strings.Contains(string(raw), `"`+k+`"`) {
+			t.Errorf("%q written without a value:\n%s", k, raw)
+		}
 	}
 }

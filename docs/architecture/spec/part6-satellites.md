@@ -506,6 +506,12 @@ vm:
 - **送れないとき**：Emit は送り待ちに積むだけで戻り、送るのは sink ごとの goroutine（収束の周は待たない）。送れなければ待ちを 1 秒から倍々に挙げて（webhook は最大 1 分、Alertmanager は最大 resend_interval）送り直し、そのたびにログに 1 行出す（`sakutei: warn: event sink: …`）。送り待ちは 1000 件まで（溢れたら古いものから捨て、ログに出す）。408・429 を除く 4xx は送り直しても通らないので、ログに出して捨てる。一回性の `reconcile` は終わる前に最長 10 秒、送り待ちを送り切ろうとする。
 - **資格と TLS**（`--event-notify-config <file>`）：認証のヘッダは SecretRef でしか書けず（生の値はエラー）、送るたびに file SecretBackend から解決する（JIT、§20.2）。値は Event にもログにも出さない（Event はもとから secret の値を載せない）。TLS は `ca_file`、検証の省略は `insecure_skip_verify: true` を明示したときだけ。URL に資格（userinfo）は書けない。
 
+**読み取り専用の口の SSE（Backlog #136）**：デーモンの `GET /events`（`--read-listen`、§26.4）も、この単一 Event の sink の 1 つである。外の道具（可視化・ダッシュボード）が Event を流しで受けるための口で、通知の口とは別に持つ。
+
+- 流すのは知らせ（周の要約とログ行を除く Event）を、`--event-log` の 1 行と同じ JSON で 1 件ずつ（SSE の `data:` の行）。level の Event は firing / resolved のまま流れる。
+- **接続した時点で firing 中の level の Event を先に送る**。周の終わりに収束ループが持つ firing の集合（level の状態、S3）で置き換え、周の途中は流れてくる firing / resolved で更新する。デーモンを起こし直す・claim をハンドオフすると空から始まるのは level の決まりと同じ。
+- **遅い読み手で収束を止めない**：読み手ごとに決まった数（256 件）だけためて、溢れた分は落として数える（読み手には `event: dropped` で累計を知らせる）。落とした分は再送しない。読み手は `GET /status`・`/plan` を読み直して今の状態に合わせる（level-triggered：今の状態はいつでも読み直せるので、取りこぼしは致命にならない）。履歴は持たない（貯めるのは外の道具、§22.1）。
+
 Break Glass の使用（`BreakGlassUsed`・§20.6）や監査アンカーの push（§26）も、この単一 Event → sink に流れる。発生源と sink を分けることで、通知系の交換が収束コアに波及しない。
 
 ### §22.4 衛星停止影響表（何を止め、何を止めないか）

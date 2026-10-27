@@ -301,3 +301,23 @@ func (l *Level) Active() int {
 	defer l.mu.Unlock()
 	return len(l.active)
 }
+
+// Firing は続いている level の Event を、最後に上がった形に firing の state・
+// since・count・class を付けて返す（キー順）。読み取り専用の口（#136）が、接続した
+// 読み手に今 firing 中のものを先に送るのに使う。
+func (l *Level) Firing() []core.Event {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	keys := make([]string, 0, len(l.active))
+	for k := range l.active {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]core.Event, 0, len(keys))
+	for _, k := range keys {
+		e := l.active[k]
+		ev := e.stamp(e.last, false)
+		out = append(out, ev)
+	}
+	return out
+}

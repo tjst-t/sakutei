@@ -30,7 +30,7 @@ import (
 
 // alertOnlyScopeReason is the block reason of an op in a scope declared
 // remediation: alert-only (§14.3).
-const alertOnlyScopeReason = "scope declared remediation: alert-only — reported, not remediated (§14.3)"
+const alertOnlyScopeReason = planreport.AlertOnlyScopeReason
 
 // gatePlanInput is what gatePlanOps evaluates.  report.Operations holds one
 // Operation per op of ops, in the same order.
@@ -114,14 +114,7 @@ func gatePlanOps(ctx context.Context, in gatePlanInput, fail func(string, ...any
 
 // gateOf is the report form of a gate decision.
 func gateOf(d budget.CycleDecision) planreport.Gate {
-	g := planreport.Gate{Reason: d.Reason}
-	switch {
-	case d.HaltAll:
-		g.Halted, g.Halt = true, "all"
-	case d.HaltDestructive:
-		g.Halted, g.Halt = true, "destructive"
-	}
-	return g
+	return planreport.GateOf(d.HaltAll, d.HaltDestructive, d.Reason)
 }
 
 func scopeIn(s core.Scope, scopes []core.Scope) bool {

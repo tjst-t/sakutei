@@ -123,6 +123,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/lastseen"
 	"github.com/tjst-t/sakutei/internal/loader"
 	"github.com/tjst-t/sakutei/internal/metrics"
+	"github.com/tjst-t/sakutei/internal/planreport"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
@@ -328,6 +329,10 @@ type Config struct {
 	// daemon serves it on /metrics.  Nil means no metrics.
 	Metrics *metrics.Exporter
 
+	// View, when set, receives every cycle's status, plan and dependency
+	// graph (#136): the daemon serves them read-only on --read-listen.
+	View ViewSink
+
 	// cycleBase is the number of cycles run by earlier daemons of this Run
 	// (claim handoffs), so Events carry the cycle number Run prints.
 	cycleBase int
@@ -362,6 +367,12 @@ type SourceState struct {
 	// BreakGlass lists the break-glass commits (§25.1 (b)) that arrived with
 	// this refresh.  Each one raises a BreakGlassWriteUsed Event.
 	BreakGlass []string
+}
+
+// MirrorReporter is implemented by a Source that can say how its fetch
+// stands even when Refresh fails (#136).
+type MirrorReporter interface {
+	MirrorHealth() *statusreport.MirrorHealth
 }
 
 // DefaultInterval is the default convergence cycle period.
@@ -455,6 +466,49 @@ func Run(ctx context.Context, cfg Config) error {
 	// store unreachable, ...) and the last error, for the daemon status file:
 	// such a daemon also stops converging, and must not look healthy there.
 	errorCycles, lastCycleErr := 0, ""
+	// health is the daemon status of the cycle just run (#15), with the
+	// claim, the fencing generations and the intent source's fetch (#136).
+	health := func() statusreport.DaemonHealth {
+		h := statusreport.DaemonHealth{
+			Cycle:                       cycleNum,
+			ConsecutiveUnreachableSkips: unreachableSkips,
+			UnreachableSkipLimit:        cfg.UnreachableSkipLimit,
+			ConsecutiveErrorCycles:      errorCycles,
+			LastError:                   lastCycleErr,
+			Interval:                    cfg.Interval.String(),
+			UpdatedAt:                   time.Now().UTC(),
+			Idle:                        idle,
+		}
+		if d != nil && !idle {
+			h.Claim = d.cfg.Claim.String()
+		}
+		if cfg.Fencing != nil {
+			h.Shard = cfg.Fencing.Holder()
+			held, fenced := cfg.Fencing.Held()
+			for _, t := range held {
+				h.Fencing = append(h.Fencing, statusreport.FencingGeneration{Scope: t.Scope, Generation: t.Generation, Holder: t.Holder})
+			}
+			for _, fe := range fenced {
+				h.Fencing = append(h.Fencing, statusreport.FencingGeneration{Scope: fe.Scope, Generation: fe.Current.Generation, Holder: fe.Current.Holder, Fenced: true})
+			}
+		}
+		if mr, ok := cfg.Source.(MirrorReporter); ok {
+			h.Mirror = mr.MirrorHealth()
+		}
+		return h
+	}
+	// publish hands a cycle that did not reach Observe (or no cycle: the
+	// intent source failed, the shard is idle) to the read-only API (#136).
+	publish := func() {
+		if cfg.View == nil {
+			return
+		}
+		v := CycleView{Cycle: cycleNum, End: time.Now(), Health: health(), Firing: []core.Event{}}
+		if d != nil {
+			v.Firing = d.level.Firing()
+		}
+		cfg.View.RecordCycle(v)
+	}
 	drain := func() {
 		if d != nil {
 			d.Shutdown(gracefulShutdownWait)
@@ -496,6 +550,7 @@ func Run(ctx context.Context, cfg Config) error {
 			case srcErr != nil:
 				// No usable intent at all: never converge an empty desired.
 				fmt.Fprintf(cfg.ErrOut, "sakutei: intent source unavailable; cycle skipped (no Observe/Apply/prune): %v\n", srcErr)
+				publish()
 				if !sleep() {
 					return nil
 				}
@@ -539,6 +594,7 @@ func Run(ctx context.Context, cfg Config) error {
 					fmt.Fprintf(cfg.Out, "sakutei: shard claims nothing at revision %s; idle\n", shortRev(st.Revision))
 				}
 				idle = true
+				publish()
 				if !sleep() {
 					return nil
 				}
@@ -730,17 +786,9 @@ func Run(ctx context.Context, cfg Config) error {
 		} else {
 			errorCycles, lastCycleErr = 0, ""
 		}
+		cycleHealth := health()
 		if cfg.DaemonStatusPath != "" {
-			h := statusreport.DaemonHealth{
-				Cycle:                       cycleNum,
-				ConsecutiveUnreachableSkips: unreachableSkips,
-				UnreachableSkipLimit:        cfg.UnreachableSkipLimit,
-				ConsecutiveErrorCycles:      errorCycles,
-				LastError:                   lastCycleErr,
-				Interval:                    cfg.Interval.String(),
-				UpdatedAt:                   time.Now().UTC(),
-			}
-			if err := statusreport.WriteDaemonHealth(cfg.DaemonStatusPath, h); err != nil {
+			if err := statusreport.WriteDaemonHealth(cfg.DaemonStatusPath, cycleHealth); err != nil {
 				fmt.Fprintf(errOut, "sakutei: cycle %d: write daemon status: %v\n", cycleNum, err)
 			}
 		}
@@ -802,6 +850,14 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		// §22.3: what was firing and is now gone is resolved, once.
 		d.EndCycle(res, cycleErr)
+		if cfg.View != nil {
+			v := CycleView{Cycle: cycleNum, End: time.Now(), Health: cycleHealth, Firing: d.level.Firing()}
+			if res.view != nil && res.view.status != nil {
+				v.Observed = true
+				v.Status, v.Plan, v.Graph = res.view.status, res.view.plan, res.view.graph
+			}
+			cfg.View.RecordCycle(v)
+		}
 
 		if !sleep() {
 			return nil
@@ -849,6 +905,9 @@ type Daemon struct {
 	// cfg.ErrOut pass every Event through it.  A new Daemon (restart, claim
 	// handoff) starts empty, so what still holds fires afresh.
 	level *eventlog.Level
+	// view is the display-only state of the read-only API (#136, S3); nil
+	// when Config.View is not set.
+	view *viewState
 }
 
 // routeEvents defaults cfg.Out / cfg.ErrOut and routes the Events emitted
@@ -999,7 +1058,12 @@ func NewDaemon(cfg Config) *Daemon {
 		}
 	}
 
+	var view *viewState
+	if cfg.View != nil {
+		view = &viewState{}
+	}
 	return &Daemon{
+		view:         view,
 		level:        level,
 		workflows:    workflows,
 		tasks:        tasks,
@@ -1021,7 +1085,7 @@ func NewDaemon(cfg Config) *Daemon {
 func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 	d.cycle++
 	return runCycleAsync(ctx, d.providers, d.budgetEngine, d.exec, d.ifl, d.lsRing,
-		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows)
+		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows, d.view)
 }
 
 // EndCycle closes the level report of the cycle that returned res and
@@ -1260,6 +1324,10 @@ type CycleResult struct {
 	// level report can tell a level Event that is gone from one that was
 	// merely not looked at (§22.3).
 	level levelCoverage
+
+	// view is this cycle's status, plan and graph for the read-only API
+	// (#136); nil without Config.View or when the cycle ended before Observe.
+	view *viewBuilder
 }
 
 // ObserveStats is what a cycle's Observe phase found (#54, the metrics of
@@ -1382,7 +1450,11 @@ func runCycleAsync(
 	tasks *task.Manager,
 	tasksOff string,
 	workflows *workflow.Engine,
+	vs *viewState,
 ) (CycleResult, error) {
+	// #136: what this cycle sees, for the read-only API (nil without one).
+	view := newViewBuilder(cfg, vs)
+
 	// S072a14-3: resolve generated/ directory.
 	genDir := cfg.GeneratedDir
 	if genDir == "" {
@@ -1826,14 +1898,16 @@ func runCycleAsync(
 			waitingThisCycle = append(waitingThisCycle, local)
 			unobservable[local] = true
 			waitingHeld[local] = WaitingAllocationSkipReason
+			view.unobservable(res.ID, core.AvailabilityUnknown.String(), WaitingAllocationSkipReason)
 			continue
 		}
 
 		// #42 (§6.3): a Workflow target is driven by its Workflow until the
 		// Workflow is done — converging for the loop, downstream waits.
-		if _, ok := wfHeld[local]; ok {
+		if wf, ok := wfHeld[local]; ok {
 			wfHeldThisCycle = append(wfHeldThisCycle, local)
 			unobservable[local] = true
+			view.workflowHeld(res.ID, wf)
 			continue
 		}
 
@@ -1842,6 +1916,7 @@ func runCycleAsync(
 			inFlightThisCycle = append(inFlightThisCycle, local)
 			unobservable[local] = true // propagate skip to downstream
 			obsStats.Converging++
+			view.unobservable(res.ID, core.AvailabilityConverging.String(), "availability=converging (an Apply of this daemon is in flight)")
 			continue
 		}
 
@@ -1850,6 +1925,7 @@ func runCycleAsync(
 		// no plan this cycle, and its downstream is not held back.
 		if !sched.Due(res) {
 			notDue = append(notDue, local)
+			view.notDue(res.ID)
 			continue
 		}
 
@@ -1858,6 +1934,7 @@ func runCycleAsync(
 		if unresolved[res.ID.Provider] {
 			unobservable[local] = true
 			obsStats.Unknown++
+			view.unobservable(res.ID, core.AvailabilityUnknown.String(), fmt.Sprintf("provider %q could not be resolved", res.ID.Provider))
 			sched.Observed(res, false)
 			continue
 		}
@@ -1882,6 +1959,7 @@ func runCycleAsync(
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
 			unobservable[local] = true
 			obsStats.Unknown++
+			view.unobservable(res.ID, core.AvailabilityUnknown.String(), fmt.Sprintf("observe error: %v", readErr))
 			sched.Observed(res, false)
 			resumeUnseen(res)
 			continue
@@ -1891,6 +1969,7 @@ func runCycleAsync(
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: availability=%v (not Ok); treating as unobservable this cycle\n",
 				res.ID, obs.Availability)
 			unobservable[local] = true
+			view.unobservable(res.ID, obs.Availability.String(), fmt.Sprintf("availability=%v", obs.Availability))
 			if obs.Availability == core.AvailabilityConverging {
 				obsStats.Converging++
 			} else {
@@ -1929,6 +2008,7 @@ func runCycleAsync(
 			fmt.Fprintf(cfg.ErrOut, "sakutei: %v\n", err)
 			unobservable[local] = true
 			obsStats.Unknown++
+			view.unobservable(res.ID, core.AvailabilityUnknown.String(), fmt.Sprintf("invalid desired: %v", err))
 			sched.Observed(res, false)
 			continue
 		}
@@ -1942,6 +2022,7 @@ func runCycleAsync(
 			fmt.Fprintf(cfg.ErrOut, "sakutei: plan: %v\n", planErr)
 			unobservable[local] = true
 			obsStats.Unknown++
+			view.unobservable(res.ID, core.AvailabilityUnknown.String(), fmt.Sprintf("plan: %v", planErr))
 			sched.Observed(res, false)
 			continue
 		}
@@ -1964,6 +2045,29 @@ func runCycleAsync(
 					summary = checkDriftSummary(obs.Check)
 				}
 				EmitDrift(cfg.ErrOut, "sakutei: ", res.ID, op, summary, curFields)
+			}
+		}
+
+		// #136: the resource's status for the read-only API, with the
+		// last-seen note read before this cycle's snapshot is recorded.
+		if view != nil {
+			if len(plan.Ops) == 0 {
+				view.conformant(res.ID)
+			} else {
+				item := statusreport.DriftedItem{
+					ID: res.ID, Cause: plan.Ops[0].Cause, Diagnostic: plan.Ops[0].Diagnostic,
+					Tier:     statusreport.TierFromCapabilities(pe.p.Capabilities()),
+					LastSeen: "前周スナップショットなし（初回または再起動後・S3 非永続）",
+					Missing:  obs.State == nil,
+				}
+				if lsRing != nil {
+					item.LastSeen = lsRing.DriftSummary(local, curFields)
+				}
+				for _, op := range plan.Ops {
+					item.Fields = append(item.Fields, op.Fields...)
+				}
+				view.drifted(item)
+				view.planned(local, plan.Ops)
 			}
 		}
 
@@ -2081,7 +2185,7 @@ func runCycleAsync(
 	//
 	// #67: each Lister provider prunes its own reality against its own
 	// resources, with its own count baseline.
-	pruneResult := computeDaemonPruneAll(ctx, providers, cycleProviders, pruneExcluded, cfg.Claim, desired, unobservable, cfg.ErrOut)
+	pruneResult, pruneHalts := computeDaemonPruneAll(ctx, providers, cycleProviders, pruneExcluded, cfg.Claim, desired, unobservable, cfg.ErrOut)
 	cov.pruneRan, cov.pruneHalted = true, pruneResult.Halted
 	cov.orphans = make(map[string]bool, len(pruneResult.DeleteOps)+len(pruneResult.Deferred))
 	for _, op := range pruneResult.DeleteOps {
@@ -2102,12 +2206,19 @@ func runCycleAsync(
 	// alert-only / freeze: do NOT Apply or prune.  Report drift Events and
 	// return immediately.  The budget gate (Phase 2c) is skipped entirely —
 	// there is nothing to count because no op will execute.
+	view.finish(ctx, viewInput{
+		cfg: cfg, in: in, rev: rev, desired: desired, excludedByClaim: excludedByClaim,
+		parentToChild: parentToChildren, waiting: allocRes.Waiting, wfHeld: wfHeld,
+		ready: ready, prune: pruneResult, pruneHalts: pruneHalts, decision: decision,
+	})
 	if decision.IsAlertOnly() {
 		held := HoldAll(desired, plans, unobservable, pruneResult.DeleteOps)
+		// The planned_change declarations were still seen (their cooling-off
+		// clock runs, §14.5); report what SetPlannedChanges raised.
+		plannedEvents := budgetEngine.TakePlannedEvents()
+		view.holdAll(decision, plannedEvents)
 		return CycleResult{
-			// The planned_change declarations were still seen (their cooling-off
-			// clock runs, §14.5); report what SetPlannedChanges raised.
-			PlannedChangeEvents: budgetEngine.TakePlannedEvents(),
+			PlannedChangeEvents: plannedEvents,
 
 			Observed:    observed,
 			InFlight:    inFlightThisCycle,
@@ -2125,6 +2236,7 @@ func runCycleAsync(
 
 			Observe: obsStats,
 			level:   cov,
+			view:    view,
 		}, nil
 	}
 
@@ -2195,6 +2307,7 @@ func runCycleAsync(
 		EmitCapacityHalted(cfg.ErrOut, capacityDecision.Reason,
 			fmt.Sprintf("sakutei: %s: %s", capacity.EventName, capacityDecision.Reason))
 	}
+	view.gates(in.AlertOnlyScopes(), in.PlannedChanges, budgetDecision, capacityDecision)
 	budgetDecision = budget.Merge(budgetDecision, capacityDecision)
 	// E (Scf7762-2): do NOT log BUDGET HALTED here.  This helper has no cycle
 	// number; the single, cycle-numbered "cycle N: BUDGET HALTED" line is emitted
@@ -2363,6 +2476,7 @@ func runCycleAsync(
 
 		Observe: obsStats,
 		level:   cov,
+		view:    view,
 	}, nil
 }
 
@@ -2447,6 +2561,7 @@ func computeDaemonPrune(
 // computeDaemonPruneAll runs computeDaemonPrune for every Lister provider of
 // the cycle (#67): each provider's List is set-differenced against that
 // provider's own resources, with that provider's long-lived prune engine.
+// It also returns the providers whose prune a safety guard halted (#136).
 // The results are merged; a safety-guard halt of any provider halts the
 // whole prune phase this cycle (unsure → do not subtract, §3 principle 3).
 func computeDaemonPruneAll(
@@ -2458,9 +2573,10 @@ func computeDaemonPruneAll(
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 	errOut io.Writer,
-) prune.PruneResult {
+) (prune.PruneResult, []planreport.PruneHalt) {
 	var merged prune.PruneResult
 	var reasons []string
+	var halts []planreport.PruneHalt
 	for _, e := range entries {
 		if e.prune == nil {
 			continue
@@ -2484,10 +2600,12 @@ func computeDaemonPruneAll(
 		if r.Halted {
 			merged.Halted = true
 			reasons = append(reasons, r.HaltReason)
+			halts = append(halts, planreport.PruneHalt{Provider: e.name, Reason: r.HaltReason,
+				CountDrop: r.CountDrop, HeldOrphans: r.HeldOrphans})
 		}
 	}
 	merged.HaltReason = strings.Join(reasons, "; ")
-	return merged
+	return merged, halts
 }
 
 // executePruneOps applies the subset of prune Delete ops that survived both the

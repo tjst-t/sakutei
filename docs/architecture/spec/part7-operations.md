@@ -443,6 +443,22 @@ sakutei status       # drifted 一覧（適合レポート）
 
 **機械で読む出力**（#118）。`sakutei status --json` は同じレポートを標準出力に JSON を 1 つとして出す。中身は版（`schema_version: 1`）・時刻・要約（適合・drift・観測できない・管理外・Workflow・合計の件数）・リソースごとの配列（provider・scope・local id・状態・drift のフィールドの一覧・原因タグ・観測エラーの文）・管理外の検出ができなかった provider とその理由で、文の出力が持つ情報をすべて含む。状態の語（`conformant` / `drift` / `unobservable` / `unmanaged` / `workflow`）は文の出力の分類と同じで、文の出力と同じレポートから作るので両者は食い違わない。終了コードは文の出力と同じ。形の詳細は [`docs/status-json.md`](../../status-json.md)。
 
+**デーモンの担当と配布の状態**（#136）。status（文と JSON）のデーモンの項（`--daemon-status`）に、あるときだけ次を足す：claim（このデーモンの担当、§17.1。git の配布では `shards/` から決まったもの）、fencing の世代（scope ごとの世代と holder、fence されているか、§15.2）、git の取得の状態（最後に取れた revision と時刻、中央・ミラーに届いているか、§17.4）。シャード化・拠点配布の運用で「このデーモンは何を担当し、どの intent で収束しているか」が status だけで分かるようにする。表示だけで、正しさには関与しない。
+
+**読み取り専用の口**（#136）。外の道具（可視化・ダッシュボード）がデーモンの状態を読むために、デーモンは `--read-listen <addr>` を明示したときだけ読み取り専用の HTTP を待ち受ける。Sakutei 本体は画面を持たず、汎用の口だけを出す（§2 の catalog の原則：UI は独自のデータを持たない薄いフロントエンド。履歴は外の道具が貯める、§22.1・§27.6）。
+
+| 口 | 中身 |
+| --- | --- |
+| `GET /status` | 直前に観測した周の適合レポート（`status --json` と同じ形 + 周の番号と時刻） |
+| `GET /plan` | 直前に観測した周の計画（`plan --json` と同じ形 + 周の番号と時刻）。その周に収束ループが実際に下した判定で、止めた操作とその仕組み・理由、保留（Workflow・採番待ち・観測できないもの）を含む |
+| `GET /events` | Event の流し出し（Server-Sent Events、§22.3） |
+| `GET /graph` | 依存の DAG（リソースと depends_on・ready_condition、今の ready かどうか、Apply の wave）。一回性の `sakutei graph --json` も同じ形 |
+
+- **読み取り専用**：`GET`・`HEAD` 以外は 405。承認の書き込みの口（`--approval-listen`、§6.4）とは別の待ち受けにし、書き込みと読み取りの口を混ぜない。`/metrics`（§27.5）もそのまま別。
+- **観測 state レスを保つ**：中身は収束ループが周の終わりに作った見え方を返すだけで、口のために観測し直さず、収束の判断にも使わない。観測まで進まなかった周（飛ばした・エラー）は中身を「ずれなし」に置き換えず、最後に観測した周のものを出す（周の番号で分かる、unknown ≠ absent）。tier で間引いた（§16.5）リソースは最後に観測した周の項目を表示だけ持ち越す。宣言外（unmanaged）の検出は口のための List を増やさないため一回性の status に任せる。
+- **認証は持たない**：手元（127.0.0.1）で待ち受ける前提。外に出すときは前段に置く道具（ssh のポート転送・TLS と認証を受け持つリバースプロキシ）で守る。中身は status・plan と同じく秘密の値を含まない（§20.2）。
+- 形の詳細は [`docs/read-api.md`](../../read-api.md)。
+
 ### §26.5 合成検証（canary）
 
 3つの「チェック」を混同しない——**conformance**（宣言どおり在るか・収束ループが判定・§26.4）、**health**（在るものが動いているか・監視システムに委譲・§22.2）、そして**合成検証（canary）**（その操作が**今も動くか**）の三つである。canary は前二者とは別の**能動的検証**であり、受動監視では絶対に得られない情報を取る。特に狙うのは**削除経路の健全性**——「作成は動くが削除が権限不足で失敗」は現場で頻発し、conformance も health も「差分ゼロ」なので捕まえられない。
@@ -477,6 +493,7 @@ sakutei plan                     # 何が変わるか（= Diff で止める。dr
 sakutei reconcile                # 一回だけ収束させる（手動キック）
 sakutei reconcile --expect-revision <rev>   # 期待する rendered_revision を指定し、ズレていれば中断
 sakutei status                   # drifted 一覧（適合レポート・§26.4）
+sakutei graph --json             # 依存の DAG（ready_condition・今の ready・Apply の wave。§26.4）
 sakutei import --provider <名前> --out intent/  # 既存の現実を intent として書き出す（§24.4）
 sakutei --claim <scope-selector> # 自分が収束を担当する scope を宣言して常駐（静的シャーディング・§17）
 sakutei sync --intent <dir> --provider <名前>   # mode: sync の scope の現実を generated/ に記録（§24.5）

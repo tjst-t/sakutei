@@ -311,6 +311,10 @@ func (b *Builder) AddWorkflowHeld(id core.ID, workflow, stage string) {
 	b.workflowHeld = append(b.workflowHeld, WorkflowHeldItem{ID: id, Workflow: workflow, Stage: stage})
 }
 
+// AddDriftedItem は組み立て済みの drifted の項目をそのまま記録する（デーモンの
+// 読み取り専用の口が、前の周の項目を持ち越すのに使う、#136）。
+func (b *Builder) AddDriftedItem(it DriftedItem) { b.drifted = append(b.drifted, it) }
+
 // SetDaemonHealth は常駐デーモンが書いた健全性（#15）をレポートに載せる。
 func (b *Builder) SetDaemonHealth(h DaemonHealth) { b.daemon = &h }
 
@@ -487,6 +491,7 @@ func (r Report) String() string {
 			fmt.Fprintf(&sb, "  警告: このファイルは周期（%s）の数倍のあいだ更新されていない — デーモンが止まっているかもしれない。\n",
 				r.Daemon.Interval)
 		}
+		writeDaemonPlacement(&sb, *r.Daemon)
 	} else if r.DaemonNote != "" {
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "  %s\n", r.DaemonNote)
@@ -499,6 +504,41 @@ func (r Report) String() string {
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// writeDaemonPlacement はデーモンの担当（claim）・fencing の世代・git の配布の
+// 状態を書く（#136。あるときだけ）。
+func writeDaemonPlacement(sb *strings.Builder, h DaemonHealth) {
+	switch {
+	case h.Idle:
+		sb.WriteString("  claim: なし（このシャードは今何も担当していない、§17.7）\n")
+	case h.Claim != "":
+		fmt.Fprintf(sb, "  claim: %s\n", h.Claim)
+	}
+	if h.Shard != "" {
+		fmt.Fprintf(sb, "  shard: %s\n", h.Shard)
+	}
+	for _, f := range h.Fencing {
+		if f.Fenced {
+			fmt.Fprintf(sb, "  fencing: %s generation=%d holder=%s — fence されている（別のシャードが新しい世代を持つ。書かない）\n", f.Scope, f.Generation, f.Holder)
+		} else {
+			fmt.Fprintf(sb, "  fencing: %s generation=%d holder=%s\n", f.Scope, f.Generation, f.Holder)
+		}
+	}
+	if m := h.Mirror; m != nil {
+		fetched := "まだ取れていない"
+		if m.FetchedAt != nil {
+			fetched = m.FetchedAt.UTC().Format(time.RFC3339)
+		}
+		rev := m.Revision
+		if rev == "" {
+			rev = "(なし)"
+		}
+		fmt.Fprintf(sb, "  mirror: %s revision=%s 最後に取れた時刻=%s\n", m.Remote, rev, fetched)
+		if !m.Reachable {
+			fmt.Fprintf(sb, "  警告: intent の取得先に届いていない — 手元の写しで収束を続けている（§17.4）: %s\n", m.Error)
+		}
+	}
 }
 
 // Incomplete は、報告はできたが観測できないもの（観測不能なリソース、または List

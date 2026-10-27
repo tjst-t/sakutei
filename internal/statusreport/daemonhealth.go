@@ -47,6 +47,47 @@ type DaemonHealth struct {
 	Interval string `json:"interval,omitempty"`
 	// UpdatedAt は書いた時刻（UTC）。
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// 以下は #136：デーモンの担当と配布の状態。あるときだけ出る。
+
+	// Claim はこのデーモンの担当（scope-selector、§17.1）。--claim も git の
+	// shards/ も無い（全体を収束する）ときは空。
+	Claim string `json:"claim,omitempty"`
+	// Idle は git の shards/ で担当が無い（何も収束しない）こと（§17.7）。
+	Idle bool `json:"idle,omitempty"`
+	// Shard は fencing の holder（--shard-id）。--fencing-store が無ければ空。
+	Shard string `json:"shard,omitempty"`
+	// Fencing は scope ごとの fencing の世代（§15.2）。--fencing-store があるときだけ。
+	Fencing []FencingGeneration `json:"fencing,omitempty"`
+	// Mirror は git の配布（--intent-repo）の取得の状態（§17.4）。git 配布のときだけ。
+	Mirror *MirrorHealth `json:"mirror,omitempty"`
+}
+
+// FencingGeneration は 1 つの scope の fencing の世代（§15.2）。
+type FencingGeneration struct {
+	// Scope は scope のキー（ラベルなしは "_root"）。
+	Scope string `json:"scope"`
+	// Generation と Holder は、手元で持つ世代（Fenced が false）か、fence されたとき
+	// はストアの現在の世代（別のシャードが持つ）。
+	Generation int64  `json:"generation"`
+	Holder     string `json:"holder"`
+	// Fenced はこのデーモンがこの scope を fence されている（書かない）こと。
+	Fenced bool `json:"fenced"`
+}
+
+// MirrorHealth は git の配布の取得の状態（§17.4・§25.2）。
+type MirrorHealth struct {
+	// Remote は取りに行く先（中央の intent リポジトリ、または拠点のミラー）。
+	Remote string `json:"remote"`
+	// Revision は最後に取れた（手元写しにある）コミット。
+	Revision string `json:"revision,omitempty"`
+	// FetchedAt は最後に取得が成功した時刻（UTC）。まだ一度も無ければ出ない。
+	FetchedAt *time.Time `json:"fetched_at,omitempty"`
+	// Reachable は直近の取得が成功したこと（中央に届いている）。false のとき
+	// デーモンは手元写しで収束を続ける（§17.4）か、手元写しも無ければ周を飛ばす。
+	Reachable bool `json:"reachable"`
+	// Error は直近の取得の失敗（Reachable が true なら空）。
+	Error string `json:"error,omitempty"`
 }
 
 // Prolonged は連続スキップが上限に達しているかを返す。

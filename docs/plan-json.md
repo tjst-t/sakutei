@@ -3,7 +3,9 @@
 `sakutei plan --json` は、計画（Diff で止めた dry-run、§26）を標準出力に **JSON を 1 つ**出す（#135）。外の道具（可視化・ダッシュボード）が「いま reconcile したら何が起きるか」を機械で読むための形である。中身は文の出力と同じ `internal/planreport.Report` から作るので、操作の件数・並び・各操作の中身は文の出力と一致する。
 
 - 標準エラーへの出力（採番待ち・planned_change の知らせ・prune の停止・観測できないリソースなど）は文の出力と同じ。`--json` のときは標準出力の文の行を出さず、JSON だけを出す。
-- **終了コードは文の出力と同じ**（0 = 計画ができた。変更の有無や、予算で止まる見込みの有無によらない。1 = 計画ができなかった）。終了コード 1 でも、intent を読み始めたあとのエラーなら JSON を出し、`error` に理由を入れる（フラグの誤り・provider の設定の誤りのように、計画を始める前に止まるときは出さない）。
+- **終了コードは文の出力と同じ**（0 = 計画ができた。変更の有無や、予算で止まる見込みの有無によらない。1 = 計画ができなかった）。終了コード 1 のときに JSON が出るかどうかは次のとおり（外の道具は「標準出力に JSON が出るか」をこれで判断する）。
+  - **JSON を出す**（`error` に理由が入る）：予算のフラグの誤り（`--window-duration`・`--on-exceed`）、`--claim` の誤り、`--intent` の指定漏れ、intent を読めない、render（外部入力・採番・合成の展開・`generated/` の書き出し）の失敗、provider を解決できない・intent の id や `update_policy` を provider が受け付けない、観測（Read）のエラー、secret のフィールドの平文、差分の計算のエラー。
+  - **JSON を出さない**（標準エラーに 1 行だけ）：フラグの読み取りのエラー（知らないフラグ・値の型の誤り。`flag` パッケージが使い方を出す）と、起動の確かめで直接終わるもの——`--log-format`・`--zone-soa-serial`・`--zone-scope`・`--ruleset-scope`・`--ruleset-target`・`--ruleset-tables` の誤り、`--provider-config` を読めない、`--inventory-file` の誤り（`--inventory-min-ratio` の範囲外・読めない・不完全）、provider の検証（`provider_version` など、§10.4）に通らない。
 - **秘密の値は出さない。** secret のフィールドは diff の段階で SecretRef の参照の形（`secretref:<backend>/<path>#genN`）にそろえられており、`fields` には参照だけが入る（§20.2）。plan は秘密の値を解決しない。
 - plan は読むだけである。state・S4（`--audit-log`）・採番の記録・Workflow の記録を書かない（`--cause-state` と `generated/` は文の出力と同じく書く）。
 - `schema_version` はフィールドを足すだけなら上げない。意味を変える・消すときに上げる。読む側は知らないフィールドを無視する。
@@ -101,7 +103,7 @@ plan は reconcile と同じ判定を、何も消費せずに評価する。reco
 | `lane` | 常に | 使う予算のレーン：`normal`（通常予算）/ `planned_change`（§13.3） |
 | `planned_change` | `lane` が `planned_change` | どの宣言のレーンか（`planned_change(scope=… kind=… window=…)`） |
 | `blocked` | 常に | reconcile なら止まるか |
-| `blocked_by` | `blocked` | 止める仕組み：`budget`（変更予算）/ `capacity`（容量ゲート）/ `alert_only_scope`（`remediation: alert-only` を宣言した scope、§14.3） |
+| `blocked_by` | `blocked` | 止める仕組み：`budget`（変更予算）/ `capacity`（容量ゲート）/ `alert_only_scope`（`remediation: alert-only` を宣言した scope、§14.3）。デーモンの `GET /plan`（[read-api.md](read-api.md)）では、ほかに `alert_only`（全体の remediation mode が alert-only：`--mode alert-only`・`--freeze`・schedule の窓の外、§14.1〜§14.3）と `prune_halt`（prune の安全装置が止めた宣言外の削除、§12.4）も出る |
 | `block_reason` | `blocked` | 止める理由の文（文の出力の `blocked:` の行） |
 | `task` | `strategy: task` のリソースの CREATE・UPDATE | `{"window", "rollback_on_fail"}`（§6.2）。Apply されず、デーモンが窓の中で Task を起こす |
 

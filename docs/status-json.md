@@ -87,3 +87,13 @@
 | --- | --- |
 | `prolonged` | 連続スキップが上限に達している（ExternalInputUnreachableProlonged、§9.2） |
 | `stale` | ファイルが周期の数倍更新されていない（デーモンが止まっているかもしれない） |
+
+デーモンの担当と配布の状態（#136）。あるときだけ出る。文の出力ではデーモンの行の下に `claim:`・`shard:`・`fencing:`・`mirror:` の行で出る。デーモンの `GET /status`（[read-api.md](read-api.md)）の `daemon` も同じ形（`stale` は常に `false`）。
+
+| フィールド | 出るとき | 意味 |
+| --- | --- | --- |
+| `claim` | 担当を絞っているとき | このデーモンの担当（scope-selector、§17.1）。`--claim`、または git の配布の `shards/<名前>.yaml`（DR plan で移ったときはその claim、§25.1） |
+| `idle` | git の配布で担当が無いとき | `true`：このシャードは今何も担当していない（何も収束しない、§17.7） |
+| `shard` | `--fencing-store` のとき | fencing の holder（`--shard-id`） |
+| `fencing` | `--fencing-store` のとき | scope ごとの世代 `{"scope", "generation", "holder", "fenced"}`（scope の順）。`fenced: true` は別のシャードが新しい世代を持っていて、このデーモンはその scope に書かない（§15.2）。そのときの `generation`・`holder` はストアの現在の世代 |
+| `mirror` | git の配布（`--intent-repo`）のとき | intent の取得の状態 `{"remote", "revision", "fetched_at", "reachable", "error"}`。`revision` は最後に取れた（手元の写しにある）コミット、`fetched_at` は最後に取得が成功した時刻（まだ無ければ出ない）、`reachable` は直近の取得が届いたか（中央・ミラーに届いているか）。`false` のあいだは手元の写しで収束を続ける（§17.4）。`remote` の URL に埋め込まれた資格は伏せる |
