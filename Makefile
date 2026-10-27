@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -167,6 +167,12 @@ integration-netconf:
 	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
 	fi; \
 	exit $$status
+
+# 外のモジュールから Sakutei を go get で取り込めるかを確かめる（ネットワークが要る。
+# check・test には入れない。CI とリリースの前の点検で回す）。VERSION はタグか commit。
+check-module:
+	@test -n "$(VERSION)" || { echo 'usage: make check-module VERSION=<tag-or-commit>'; exit 2; }
+	./scripts/check-module-consumable.sh $(VERSION)
 
 clean:
 	rm -rf $(BIN) $(DEMODIR)

@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -40,3 +41,20 @@ jobs:
       # ubuntu-latest には gcc が入っているので cgo（-race に必要）がそのまま使える
       - name: make test-race
         run: make test-race
+
+  module:
+    # 外のモジュールから go get で取り込め、examples/external-provider が build できるか
+    # （v2.0.0 で module のパスに /v2 を付け忘れた再発防止）。タグではその版、main では
+    # その commit（擬似版）を取りに行く。PR はまだ公開されていないので回さない。
+    name: consumable as a Go module
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: go get github.com/tjst-t/sakutei/v2@<this version> and build the example
+        run: |
+          if [ "${{ github.ref_type }}" = tag ]; then v="${{ github.ref_name }}"; else v="${{ github.sha }}"; fi
+          make check-module VERSION="$v"
