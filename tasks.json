@@ -1562,11 +1562,11 @@
       "labels": [],
       "body": "設計書 v3.15 §29.1 の（2）〜（5）を実装する。templates/provider/full から作り、標準階級（List・BulkObserve を持たない。サーバは作らない・消さないので prune の対象外）にする。templates/provider/README.md の手順に従う。\n\n## リソース「システム」（ID はノード名。BMC のアドレスはクライアント側の設定）\n- 宣言するフィールド：power（On/Off）、boot_enabled（Continuous/Disabled。Once は計画の時点でエラー＝検証エラーで、原因が分かる文にする。将来 Task 側で扱う旨）、boot_target（Disabled のときは比べない。AllowableValues に無ければエラー）、power_off（graceful 既定 / graceful_then_force）、force_after（時間。graceful_then_force のとき必須、それ以外で書いたらエラー）。\n- 観測だけ（Computed、Diff しない・識別子にしない）：uuid・macs・cpu_count・memory_gib・boot_mode・power_state（生の値）。\n- 電源：宣言 On・観測 Off → Reset On。宣言 Off・観測 On → GracefulShutdown（送った時刻をインメモリ S3 にノードごとに持つ）。PoweringOff/PoweringOn は AvailabilityConverging（操作を重ねない）。BMC に届かない・5xx・タイムアウトは Unknown（何も操作しない）。\n- 既定 graceful：止まらなければ GracefulShutdown を送り直す。ForceOff には進まない。ずれの level（§22.3）が続いて既定 5 周で stuck に上がることを、デーモンの経路（偽 BMC を応えない設定）で確かめるテストを書く。\n- graceful_then_force：最初に GracefulShutdown を送ってから force_after を過ぎても Off でなければ ForceOff を送る。**ForceOff の Op は Destructive=true**（予算 --max-destructive-per-cycle で止まることをテストで確かめる）。GracefulShutdown・On・起動先の PATCH は破壊的に数えない。Off を観測したら記録した時刻を消す。時刻を失ったら数え直す（安全側）。\n- 起動先：PATCH だけで再起動しない。電源の操作と同じ周で両方ずれていれば両方直す（順序は起動先が先）。\n- 再起動（ForceRestart・GracefulRestart）は宣言できない。\n- ProviderVersion を付け、契約テスト（#32、MakeUnreachable を含む）を偽 BMC の上で回す。\n\n## 確かめ方\n単体・契約テストと、偽 BMC を相手に reconcile ループを回すテスト（収束、手で変えた電源を次の周で戻す、PoweringOff の間は操作しない、到達不能で Unknown・無操作、Once のエラー、既定で ForceOff しない、graceful_then_force で force_after 後に ForceOff・予算で止まる）。make check・make test-race が通る。",
       "doneWhen": "偽 BMC を相手に、電源と起動先の宣言に収束し、Once は計画の時点でエラー、PoweringOff の間は操作せず、到達不能は Unknown で無操作、既定では ForceOff せず level が stuck に上がり、graceful_then_force では force_after 後に破壊的な ForceOff を出して予算で止められることをテストで示す。契約テスト・make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/redfish-provider）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T03:31:46.414Z",
-      "updatedAt": "2026-10-22T04:02:14.444Z",
+      "updatedAt": "2026-10-27T09:36:24.433Z",
       "closedAt": "2026-10-22T04:02:14.444Z",
       "extra": {}
     },
