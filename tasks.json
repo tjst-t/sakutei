@@ -597,11 +597,11 @@
       "labels": [],
       "body": "設計 §28.6。もとの #21 を分けた 3 つ目。Schema → Read → Apply（→ List → BulkObserve）の骨格を持つ雛形を用意する。最小階級用はさらに短くする。雛形には契約テスト（と bulk なら等価性テスト）が最初から付いている。",
       "doneWhen": "雛形をコピーして名前を変えただけの provider がビルドでき、付属の契約テストが合格することをテストで示す",
-      "resolution": "Factory が取り込みました（factory/v1b-provider-golden-path）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T10:50:16.109Z",
-      "updatedAt": "2026-10-20T12:42:12.317Z",
+      "updatedAt": "2026-10-27T09:33:55.152Z",
       "closedAt": "2026-10-20T12:42:12.317Z",
       "extra": {}
     },
