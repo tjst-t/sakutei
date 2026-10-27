@@ -3218,7 +3218,7 @@
       "number": 137,
       "kind": "task",
       "title": "postgresql：管理用の接続の秘密が読めないときの Apply を「安全に止まる」側にそろえる・権限の空と外したときの扱いを docs に明記",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -3233,7 +3233,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T14:32:16.046Z",
-      "updatedAt": "2026-10-27T14:32:16.046Z",
+      "updatedAt": "2026-10-27T15:25:19.435Z",
       "closedAt": null,
       "extra": {}
     },
