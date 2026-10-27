@@ -2269,11 +2269,11 @@
       "labels": [],
       "body": "docs/trial/sqlmigrate/ に試用手順（intent・設定・マイグレーションの例・回すスクリプト）を作り、このコンテナの本物の sqlite3 と常駐の sakutei（--task-store）で実際に回して、結果（デーモンの出力・`sakutei task list`・`sqlite3 … 'select * from schema_migrations'` の抜粋）を書く。確かめること：\n1. 版 0 → 3 を宣言すると Task が 1 回だけ起動し（1-outstanding。遅いマイグレーションで実行中に周を跨ぐようにし、二重に起動しないこと）、完了印を観測して記録が片づき、収束する。\n2. メンテ窓（window）の外では起動しない。窓に入ると起動する（時刻をいじれなければ、今の時刻を含む窓と含まない窓で確かめる）。\n3. 壊れたマイグレーションで失敗 → halt（再起動しない、レベルの知らせが出る）。rollback_on_fail のときは起動時の版に戻る。\n4. `sakutei task cancel` のあと、差分が残っていれば改めて起動する（マイグレーションを直してから）。\n5. 実行中にデーモンを殺す（SIGKILL）と、起こし直したデーモンは自動で再実行しない（中断扱い、人が cancel するまで）。DB の中身（途中までの版）を記録する。\n6. 版を下げる宣言（3 → 1）で down が流れる。\n見つけた不具合は直せるものは直し、大きいものは手順書に書いて報告する。docs/trial/README.md からリンクする。",
       "doneWhen": "docs/trial/sqlmigrate/ に手順と、このコンテナで実際に回した (1)〜(6) の結果がある。make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/sqlmigrate-task）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:11:11.923Z",
-      "updatedAt": "2026-10-23T16:57:31.217Z",
+      "updatedAt": "2026-10-27T09:39:19.682Z",
       "closedAt": "2026-10-23T16:57:31.217Z",
       "extra": {}
     },
