@@ -2936,7 +2936,7 @@
       "number": 125,
       "kind": "task",
       "title": "PostgreSQL provider（ロール・データベース・データベースの権限・拡張）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "postgresql-provider-sqlmigrate-postgresq",
       "dependsOn": [],
       "milestone": null,
@@ -2948,7 +2948,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T10:43:04.303Z",
-      "updatedAt": "2026-10-27T10:43:04.303Z",
+      "updatedAt": "2026-10-27T10:43:14.523Z",
       "closedAt": null,
       "extra": {}
     },
