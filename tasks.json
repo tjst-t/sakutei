@@ -2418,11 +2418,11 @@
       "labels": [],
       "body": "親 #96 の共通の決まりに従う。docs/trial/remediation-profile/。設計 §14.5・§14.7 と v1.5 の remediation schedule・運用プロファイルの決まりを読む。常駐の sakutei で：時間帯の外ではずれを知らせるだけで直さず、時間帯に入ると直す（今の時刻を含む帯・含まない帯で確かめる）、--mode の各値、運用プロファイルの既定値の効き方と上書き、cooling-off（時計は S4）がデーモンの起こし直しを跨いで守られる。",
       "doneWhen": "docs/trial/remediation-profile/ に手順と実際に回した結果がある。見つけた不具合は直すか列挙されている。make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/remediation-schedule-cooling-off）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T16:17:38.562Z",
+      "updatedAt": "2026-10-27T09:40:03.722Z",
       "closedAt": "2026-10-23T16:17:38.562Z",
       "extra": {}
     },
