@@ -519,8 +519,11 @@ func transientState(s string) bool {
 }
 
 // classify は psql のエラーを provider のエラー型にする。届かない・一時的な
-// SQLSTATE は TransientError、psql が無い・認証の失敗・パスワードを解決できない・
-// そのほかの SQL のエラーは設定か宣言を直すまで治らないので PermanentError。
+// SQLSTATE・管理用のパスワードを secret store から読めない（#137。ほかの
+// provider と同じく、秘密が戻れば次の周で続ける。PermanentError にすると常駐は
+// そのリソースを長く止めてしまう）は TransientError、psql が無い・認証の失敗・
+// secret store が設定されていない・そのほかの SQL のエラーは設定か宣言を直す
+// まで治らないので PermanentError。
 func classify(err error) error {
 	if err == nil {
 		return nil
@@ -528,6 +531,11 @@ func classify(err error) error {
 	switch KindOf(err) {
 	case KindUnreachable:
 		return provider.NewTransientError(err)
+	case KindSecret:
+		var e *Error
+		if errors.As(err, &e) && e.Err != nil {
+			return provider.NewTransientError(err)
+		}
 	case KindSQL:
 		if transientState(SQLStateOf(err)) {
 			return provider.NewTransientError(err)

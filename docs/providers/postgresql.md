@@ -52,7 +52,7 @@ $ sakutei status --intent intent/ --postgresql-config pg.yaml --json
 - 接続の設定は子プロセスの環境変数（`PGHOST`・`PGPORT`・`PGDATABASE`・`PGUSER`・`PGSSLMODE`・`PGSSLROOTCERT`・`PGCONNECT_TIMEOUT`）で渡す。親の `PG*` の環境変数は引き継がない（`PGSERVICE`・`PGOPTIONS`・`PGPASSWORD` などで黙って別の所へつながないように）。
 - 管理用のパスワードは psql を起動する直前に secret store から解決し（JIT、§20.2）、0600 の一時的な passfile に書いて `PGPASSFILE` で渡し、終われば消す。**引数・環境変数の値・ログ・エラーには出ない**。`password` を書かなければ passfile を渡さない（`~/.pgpass`・証明書・peer の認証などに任せる）。
 - 名前は識別子として常に `"..."` で囲み（中の `"` は `""`）、値は `E'...'` で囲む（中の `'` は `''`、`\` は `\\`）。NUL を含む名前・値はエラー。
-- エラーは SQLSTATE で分ける。届かない（終了コード 2）・時間切れ・一時的な SQLSTATE（class 08・40・53・55・57、まだ無いデータベース 3D000・ロールなど 42704）は Transient、psql が無い・認証の失敗・そのほかの SQL のエラーは Permanent。エラーの文から SCRAM・md5 の検証値は消す。
+- エラーは SQLSTATE で分ける。届かない（終了コード 2）・時間切れ・一時的な SQLSTATE（class 08・40・53・55・57、まだ無いデータベース 3D000・ロールなど 42704）は Transient、psql が無い・認証の失敗・そのほかの SQL のエラーは Permanent。管理用のパスワードを secret store から読めない（store から消えた・読めない）ときは、ほかの provider と同じく安全に止まる側（#137）：Read は unknown（観測できない。そのリソースと下流は飛ばす）、Apply は Transient で、秘密が戻れば次の周で続く（Permanent にすると常駐はそのリソースを stuck として長く止めてしまう）。起動の時点で store にその path が無ければ、設定のエラーとして何もせずに止まる（一回性の plan・reconcile は終了コード 1）。エラーの文から SCRAM・md5 の検証値は消す。
 
 ## intent の例
 
@@ -98,6 +98,8 @@ $ sakutei status --intent intent/ --postgresql-config pg.yaml --json
 
 - 権限は「そのロールがそのデータベースに**直に**持つ権限」。PUBLIC の権限・ロールの所属から継ぐ権限は数えない。Apply は 1 つのトランザクションで `REVOKE ALL` と `GRANT` を流して宣言ちょうどにする。
 - データベースの所有者は暗に全部の権限を持つので、所有者の権限は List に出さない（宣言はできる）。
+- **通常のロールの権限を空にする宣言はできない**（`"privileges": ""` はエラー）。空にできるのは PUBLIC だけ（#133、下の「PUBLIC の権限」）。あるロールの権限を全部外すには、次のとおり宣言から外して prune か明示の absent を使う。
+- **宣言から外した権限は、それだけでは REVOKE しない**。権限のリソース（`.../grant/<role>`）を intent から消しても、その権限はサーバに残る（原則 3：確信が持てないときは減らさない）。外れるのは、PruneWithinScope の prune がそれを宣言の外の権限として消すとき、か明示の absent を宣言したとき（どちらも `REVOKE ALL`）だけ。宣言を残したまま `privileges` の一覧から 1 つ除いたときは、上のとおり一覧ちょうどにする（除いた分は REVOKE される）。
 
 ### PUBLIC の権限
 
@@ -204,3 +206,4 @@ PASS
 - SCRAM-SHA-256：RFC 7677 の例と同じ検証値になる。md5 の形も確かめられる。
 - 契約テスト（`sdk.ContractTester`、ロール・データベース・権限・拡張の 4 種類で、届かないのを absent にしないことを含む）・BulkObserve 等価性テスト・管理の境界・パスワード（平文が引数・環境変数・SQL・plan に出ない、passfile が残らない、世代を上げれば設定し直す、`verify_passwords` で手の変更が見える）・作るときだけのフィールド・権限と所属の集合・拡張の版・Delete（表のある DB・オブジェクトを持つロール・頼られている拡張は消さない）・観測できないもの（届かない・パスワード違い・secret が無い・psql が無い）・読み戻しの不一致・本物の exec の経路（テストのバイナリを偽の psql として起動）・設定ファイルの検査（`internal/postgresql/*_test.go`）。
 - 受け入れテスト（`tests/acceptance/postgresql_test.go`、`[AC-125-*]`）：偽の psql を実行ファイルにして、DefaultRegistry から作って契約テスト、PruneWithinScope で表のある DB が残ること、届かないと prune が止まり何もしないこと、`sakutei reconcile`・`status --json` で空から適合になりパスワードが出力に出ないこと。
+- 受け入れテスト（`tests/acceptance/postgresql_secret_test.go`、`[AC-137-*]`）：常駐のように provider を作った後で管理用の秘密が store から消えると、Read は unknown・Apply は Transient（Permanent ではない）で何も変えず、秘密が戻れば同じ Apply が通ること。起動の時点で秘密が無ければ `plan`・`reconcile` が何もせずに 0 でない終了コードで止まり、戻せば収束すること。
