@@ -2717,11 +2717,11 @@
       "labels": [],
       "body": "## なぜ\nデーモン（cmd/sakutei/main.go の runDaemon）は `--inventory-file`（#31、render phase 1 の inventory 合成、§9.1・§9.2）で desired を合成するが、一回性の `status`・`plan`・`reconcile` には同じフラグが無い。そのため inventory 由来のリソースが status で UNMANAGED に見え、plan・reconcile もデーモンと違う desired で動く。\n\n## やること\n- `status`・`plan`・`reconcile` に `--inventory-file`・`--inventory-min-ratio`・`--inventory-expected-min` を足し、デーモンと同じ合成（render.NewInventoryGuard と FileInventorySource、同じ既定値）で desired を作る。合成の手順はデーモンと共通の関数に寄せて、二重に書かない。\n- 一回性のコマンドは前の周の件数を持たないので、急減判定（§9.2）は `--inventory-expected-min` だけが効く（ratio は前回が無いので効かない）。この振る舞いを help とテストで明示する。inventory が読めない・不完全なら終了コード 1 で止まる（incomplete≠empty）。\n- 設計書 §26.6（CLI の表）と §9.2 付近に、一回性コマンドでも同じ合成をすることを書き足す。設計書の版の行（spec/README.md の版・改訂履歴）と CHANGELOG のファイルは触らない（あとでまとめる）。\n\n## 確かめ方\n受け入れテスト `[AC-114-1-*]` を tests/acceptance に足す：inventory 由来のリソースが status で管理下として出る・plan に出る・reconcile で収束する／expected-min を下回ると終了コード 1。\n\n## 決まり\nstdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "3コマンドに --inventory-file があり、AC-114-1 の受け入れテストと make check・make test-race が通る",
-      "resolution": "Factory が取り込みました（factory/w1-inventory-file-oneshot）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T07:46:45.249Z",
-      "updatedAt": "2026-10-27T08:00:18.499Z",
+      "updatedAt": "2026-10-27T09:40:49.178Z",
       "closedAt": "2026-10-27T08:00:18.499Z",
       "extra": {}
     },
