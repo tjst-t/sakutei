@@ -2,12 +2,13 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
-## 未リリース
+## v1.2.0（2026-10-27）
 
-設計書は v3.17 → v3.21（各 `docs/architecture/CHANGELOG-v3.*.md`）。
+外の provider を足す口、実際の FW を扱う nftables、S3 互換のバケット provider、SQLite のマイグレーションを流す単純 Task の provider（sqlmigrate）と、v1 を手で試して見つかった不具合の修正。設計書は v3.16 → v3.21（各 `docs/architecture/CHANGELOG-v3.*.md`）。
 
 ### 追加
 
+- **sqlmigrate provider**（#92〜#95、設計書 v3.17 §29.1）：SQLite のマイグレーションを単純 Task（`strategy: task`）として流す。`sqlite3` の CLI を呼び、`schema_migrations` の最大の版を観測し、up / down を 1 本ずつトランザクションで流す。`--sqlmigrate-config`。使い方は `docs/providers/sqlmigrate.md`、試用の結果は `docs/trial/sqlmigrate/`。
 - **外の provider を足す口**（#119、設計書 v3.20 §28.9）：CLI の入口を `pkg/cli` に出した。外のモジュールが `cli.Main(cli.WithProviders(...))` で自前の provider を登録した自前のバイナリを作れる。provider ごとの設定は `--provider-config <file>`。例は `examples/external-provider/`。
 - **`sakutei status --json`**（#118）：結果を JSON で出す。形は `docs/status-json.md`。
 - **`status`・`plan`・`reconcile` の `--inventory-file`**（#115）：デーモンと同じ inventory の合成をする。
@@ -15,9 +16,20 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 - **nftables の実の ruleset 版**（#121、設計書 v3.21 §29.1）：`--ruleset-target live` で、カーネルの実際の ruleset を `nft -j list` で観測し、`nft -c -f` で検査してから `nft -f` で一括して適用する。管理する table は `--ruleset-tables` で必ず指定する。管理外の table・base chain・set には触らない。`make integration-nftables`（使い捨ての network namespace）。使い方は `docs/providers/nftables.md`。
 - **S3 互換のバケット provider `s3-bucket`**（#122・#123、設計書 v3.21 §29.1）：versioning・policy・lifecycle・tags を宣言で合わせる。署名（SigV4）は標準ライブラリだけで実装。中身のあるバケットは消さない。`make integration-s3`（SeaweedFS が必須の相手、ほかは取れなければ飛ばす。イメージは tag と digest で固定）。使い方は `docs/providers/s3-bucket.md`。
 
+- 機能ごとの試用の手順と結果（#97〜#104、`docs/trial/`）と、Redfish と Workflow で OS を入れる手順書（#91）。
+
 ### 変更
 
-- `sakutei status` は観測エラーで止まらず、そのリソースを観測できないものとして数えて最後まで報告する。観測できないものがあれば終了コード 3（#117）。
+- `sakutei status` は観測エラーで止まらず、そのリソースを観測できないものとして数えて最後まで報告する。観測できないものがあれば**終了コード 3**（#117）。今までは 1 だった。
+- CLI の中身を `pkg/cli` に移した（#119）。`sakutei` コマンドの verb・フラグ・終了コードは（上の status を除き）変わらない。
+- `strategy: task` の知らせ：自分が起動した Task が走っている周はずれを数えず stuck に上げない。起動しない理由（窓の外など）は周をまたいで 1 回だけ出す（#112、設計書 v3.18）。
+
+### 修正
+
+- 採番の Lookup キャッシュに有効期限（既定 15 分）を入れ、期限を過ぎたものは使う前に確かめ直す。手で解放された値を知らずに使い続けて、cooldown 明けに別の持ち主と衝突しうる穴を塞いだ（#105、設計書 v3.19）。
+- dnszone・nftables の List が常に root の scope で ID を返していたため、root 以外の scope で `PruneWithinScope` と Sync Mode が効かなかった。provider ごとに固定の scope を設定できるようにした（`--zone-scope`・`--ruleset-scope`、#106、設計書 v3.19）。
+- plan・status が Workflow に任せている対象を普段の差分として出していた（#89）。Workflow の説明の例が intent の YAML で読めない書き方だった（#90）。
+- Apply が失敗した reconcile の要約が「Converged」と言っていた（#110）。試用で見つけた表示の細かな不具合（#111）。task list に rollback の有無と戻した版を出し、周の要約に Task の起動数を出す（#113）。
 
 ## v1.1.0（2026-10-22）
 
