@@ -3414,6 +3414,35 @@
       "updatedAt": "2026-10-27T17:18:39.397Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "go-ci-v2-0-0-v2",
+      "number": 146,
+      "kind": "task",
+      "title": "Go のモジュールとして取り込めることを CI とリリース前の点検で確かめる（v2.0.0 の /v2 付け忘れの再発防止）",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "ci",
+        "release"
+      ],
+      "body": "v2.0.0 は go.mod の module のパスに `/v2` が無く、`go get` で取り込めなかった（v2.0.1 で直した）。外のモジュールから取り込めることを、毎回機械で確かめる。\n\n- `scripts/check-module-consumable.sh <版>`（`make check-module VERSION=<版>`）：examples/external-provider を一時ディレクトリに写して replace を外し、`go get github.com/tjst-t/sakutei/v2@<版>` で本体を取り、build する。ネットワークが要るので check・test には入れない。\n- CI の job `module`：push のとき、タグならその版、main ならその commit（擬似版）で回す。CI はタグの push でも走るようにする。\n- リリースの前の点検に入れる（タグを打った直後にその版で確かめる。CI でも走る）。",
+      "doneWhen": "CI の module job が main と タグの push で緑になり、v2.0.0 では落ちることを手元で確かめてある",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "842b31fe-c4b4-4859-a4f2-ebe5f6966616",
+          "threadId": "76c48956-1ba3-4dbd-be03-1414830fe679"
+        }
+      ],
+      "createdAt": "2026-10-27T17:32:17.292Z",
+      "updatedAt": "2026-10-27T17:32:17.292Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
