@@ -2,6 +2,21 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## 未リリース
+
+設計書は v3.17 → v3.20（各 `docs/architecture/CHANGELOG-v3.*.md`）。
+
+### 追加
+
+- **外の provider を足す口**（#119、設計書 v3.20 §28.9）：CLI の入口を `pkg/cli` に出した。外のモジュールが `cli.Main(cli.WithProviders(...))` で自前の provider を登録した自前のバイナリを作れる。provider ごとの設定は `--provider-config <file>`。例は `examples/external-provider/`。
+- **`sakutei status --json`**（#118）：結果を JSON で出す。形は `docs/status-json.md`。
+- **`status`・`plan`・`reconcile` の `--inventory-file`**（#115）：デーモンと同じ inventory の合成をする。
+- **`sakutei allocator release`・`list`**（#116）：採番を人が CLI で解放する・一覧を見る。
+
+### 変更
+
+- `sakutei status` は観測エラーで止まらず、そのリソースを観測できないものとして数えて最後まで報告する。観測できないものがあれば終了コード 3（#117）。
+
 ## v1.1.0（2026-10-22）
 
 v1.0.0 を手で試して見つかった不具合の修正と、知らせ（Event）の作り直し、Redfish の BMC provider の追加。設計書は v3.11 → v3.16。
