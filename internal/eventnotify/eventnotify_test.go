@@ -428,9 +428,11 @@ func TestAlertmanager_DownThenUp(t *testing.T) {
 	_ = a.Emit(context.Background(), res)
 	waitFor(t, "failures logged", func() bool { return strings.Count(errOut.String(), "not delivered") >= 2 })
 	rv.down.Store(false)
-	waitFor(t, "delivery", func() bool { return rv.count() >= 1 })
+	// 受け手に届いたあと、送り手が待ち行列から外すまでの間がある（CI で揺れた）ので、
+	// 両方がそろうまで待つ。
+	waitFor(t, "delivery", func() bool { return rv.count() >= 1 && a.Pending() == 0 })
 	b := rv.alertBatches(t)[0]
-	if len(b) != 1 || !b[0].EndsAt.Equal(res.Time) || a.Pending() != 0 {
+	if len(b) != 1 || !b[0].EndsAt.Equal(res.Time) {
 		t.Errorf("after recovery = %+v, want the resolved alert", b)
 	}
 }
