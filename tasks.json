@@ -2439,11 +2439,11 @@
       "labels": [],
       "body": "親 #96 の共通の決まりに従う。docs/trial/dr-mode/。設計 §25（§25.1）・§29.1 を読む。ローカルの bare リポジトリを中央 git、そのミラーを用意して：DR plan の効き方、中央に届かないときだけ break-glass が使える（ls-remote 10s×3 回の判定。届くときは拒否）、署名、復旧後に breakglass/<session> として push し PR の下書き（ローカルでは代わりの出力）、中央が進んでいれば両側で変わったパスを並べる、中央が break-glass を含むまでミラーが中央を追わない。中央に届かない状態は bare リポジトリを動かす・届かない URL にするなどで作る。",
       "doneWhen": "docs/trial/dr-mode/ に手順と実際に回した結果がある。見つけた不具合は直すか列挙されている。make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/dr-dr-plan-break-glass）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T16:26:44.228Z",
+      "updatedAt": "2026-10-27T09:40:11.229Z",
       "closedAt": "2026-10-23T16:26:44.228Z",
       "extra": {}
     },
