@@ -129,7 +129,7 @@ List は次を返さない（prune で消えない）。これらに向けた宣
 
 ## 統合テスト（docker、`make integration-postgresql`）
 
-本物の PostgreSQL を相手にした統合テスト（Backlog #125）。build tag `integration_postgresql` の付いたファイル（`tests/integration/postgresql/`）にあり、`make check`・`make test`・CI には入らない。
+本物の PostgreSQL を相手にした統合テスト（Backlog #125）。build tag `integration_postgresql` の付いたファイル（`tests/integration/postgresql/`）にあり、`make check`・`make test`・CI には入らない。同じコンテナで、sqlmigrate の PostgreSQL 版（`engine: postgresql`、#126）の統合テストも回る（段と結果は [sqlmigrate.md](sqlmigrate.md#統合テスト)）。
 
 ```console
 $ make integration-postgresql

@@ -153,7 +153,7 @@ func DefaultRegistry() *ProviderRegistry {
 		return system.NewMedia(clients), nil
 	})
 
-	// "sqlmigrate" — SQLite のマイグレーション（§29.1、#92・#94）。
+	// "sqlmigrate" — SQLite・PostgreSQL のマイグレーション（§29.1、#92・#94・#126）。
 	// config["sqlmigrate_config"] はデータベースの一覧（--sqlmigrate-config）。
 	// --state は代わりにならない（DB のファイルとマイグレーションの置き場所は
 	// 推測しない）。strategy: task 専用：変更は Task の実行体だけが行う。

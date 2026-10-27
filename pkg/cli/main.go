@@ -137,7 +137,7 @@ func Main(opts ...Option) {
 //	--ruleset-tables <list>  nftables (live): tables to manage, <family>/<name>,... (required for live)
 //	--ruleset-nft <path>   nftables (live): nft binary (default: nft)
 //	--redfish-config <file>  BMC list of the Redfish providers (address, username, password SecretRef, §29.1)
-//	--sqlmigrate-config <file>  database list of the sqlmigrate provider (path, migrations, sqlite3, §29.1)
+//	--sqlmigrate-config <file>  database list of the sqlmigrate provider (path, migrations, sqlite3, engine: postgresql, §29.1)
 //	--interval <dur>     convergence cycle period (default: 10s; use short values in tests)
 //	--claim <selector>   converge only the matching scopes (§17.1)
 //	--fencing-store <f>  fencing generation store shared by all shards (§15.2)

@@ -166,10 +166,9 @@ type Options struct {
 // Provider は provider.Provider・Lister・BulkObserver・IntentValidator・
 // PlanRefiner を実装する。
 type Provider struct {
-	servers  map[string]*Server
-	psqlPath string
-	runner   Runner
-	secrets  core.SecretResolver
+	servers map[string]*Server
+	psql    *Client
+	secrets core.SecretResolver
 }
 
 var (
@@ -182,19 +181,13 @@ var (
 
 // New は servers（名前 → Server）を扱う Provider を返す。
 func New(servers map[string]Server, opts Options) *Provider {
-	p := &Provider{servers: map[string]*Server{}, psqlPath: opts.Psql, runner: opts.Runner, secrets: opts.Secrets}
+	p := &Provider{servers: map[string]*Server{}, psql: NewClient(opts), secrets: opts.Secrets}
 	for k, v := range servers {
 		s := v
 		if s.DBName == "" {
 			s.DBName = "postgres"
 		}
 		p.servers[k] = &s
-	}
-	if p.psqlPath == "" {
-		p.psqlPath = "psql"
-	}
-	if p.runner == nil {
-		p.runner = ExecRunner
 	}
 	return p
 }

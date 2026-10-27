@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Package sqlmigrate は単純 Task（§6.2、strategy: task）を動かす本物の provider：
-// SQLite のデータベース（ファイル）に版つきのマイグレーションを流す。設計書
+// SQLite のデータベース（ファイル）か PostgreSQL のデータベース（engine:
+// postgresql、#126、postgres.go）に版つきのマイグレーションを流す。設計書
 // v3.17 §29.1「単純 Task の実 provider：sqlmigrate」、Backlog #92。
 // templates/provider/full から作った標準階級の provider で、List と BulkObserve
 // を持たない（データベースは Sakutei が作ったり消したりしないので prune の
@@ -23,8 +24,9 @@
 // os/exec で呼ぶ（Options.SQLite3、既定は PATH の sqlite3）。SQL もパスも
 // シェルを通さない——パスは引数で、SQL は標準入力で渡す。
 //
-// ID はデータベースの名前。ファイルのパスとマイグレーションのディレクトリは
-// provider に渡す設定（Database）の側に置き、intent には書かない。
+// ID はデータベースの名前。ファイルのパス（PostgreSQL ならサーバとデータベース）と
+// マイグレーションのディレクトリは provider に渡す設定（Database）の側に置き、
+// intent には書かない。
 //
 // 宣言するフィールドは version（非負の整数、マイグレーションの版）だけ（identity の
 // name は書くなら ID と同じ）。
@@ -61,6 +63,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/postgresql"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -81,12 +84,23 @@ const (
 
 	// DefaultSQLite3 は Options.SQLite3 が空のときに PATH から探す CLI の名前。
 	DefaultSQLite3 = "sqlite3"
+
+	// EngineSQLite は SQLite のファイル（既定）。
+	EngineSQLite = "sqlite"
+	// EnginePostgreSQL は PostgreSQL のデータベース（psql で流す、postgres.go）。
+	EnginePostgreSQL = "postgresql"
 )
 
 // Database は 1 つのデータベースの設定。
 type Database struct {
-	// Path は DB のファイル。
+	// Engine は EngineSQLite（空も同じ）か EnginePostgreSQL。
+	Engine string
+	// Path は DB のファイル（sqlite）。
 	Path string
+	// Server は Options.PostgreSQLServers のサーバの名前（postgresql）。
+	Server string
+	// DBName はつなぐ PostgreSQL のデータベース（postgresql）。
+	DBName string
 	// Migrations はマイグレーションのディレクトリ。
 	Migrations string
 }
@@ -98,6 +112,11 @@ type Options struct {
 	// BusyTimeout は DB がロック中のときに待つ時間（sqlite3 の .timeout）。
 	// 0 なら待たない（ロック中の Read は Unknown、Task は失敗）。
 	BusyTimeout time.Duration
+	// PostgreSQLServers は engine: postgresql のデータベースがつなぐサーバ
+	// （postgresql provider のサーバの一覧と同じもの）。
+	PostgreSQLServers map[string]postgresql.Server
+	// PostgreSQL は psql の呼び方（パス・Runner・SecretRef の解決）。
+	PostgreSQL postgresql.Options
 }
 
 // Provider は provider.Provider・IntentValidator・UpdatePolicyValidator と
@@ -105,6 +124,7 @@ type Options struct {
 type Provider struct {
 	dbs  map[string]Database
 	opts Options
+	psql *postgresql.Client
 
 	mu      sync.Mutex
 	locks   map[string]*sync.Mutex // DB のファイルごとの排他（プロセス内）
@@ -126,7 +146,7 @@ func New(dbs map[string]Database, opts Options) *Provider {
 	if opts.SQLite3 == "" {
 		opts.SQLite3 = DefaultSQLite3
 	}
-	return &Provider{dbs: cp, opts: opts, locks: map[string]*sync.Mutex{}, started: map[string]int64{}}
+	return &Provider{dbs: cp, opts: opts, psql: postgresql.NewClient(opts.PostgreSQL), locks: map[string]*sync.Mutex{}, started: map[string]int64{}}
 }
 
 // Schema は version だけを宣言させる。identity は name（データベースの名前＝ID）。
@@ -150,6 +170,18 @@ func (p *Provider) database(name string) (Database, error) {
 	db, ok := p.dbs[name]
 	if !ok {
 		return Database{}, fmt.Errorf("%s: database %q is not configured", Name, name)
+	}
+	if db.Engine == "" {
+		db.Engine = EngineSQLite
+	}
+	switch db.Engine {
+	case EngineSQLite:
+	case EnginePostgreSQL:
+		if _, ok := p.opts.PostgreSQLServers[db.Server]; !ok {
+			return Database{}, fmt.Errorf("%s: database %q: postgresql server %q is not configured", Name, name, db.Server)
+		}
+	default:
+		return Database{}, fmt.Errorf("%s: database %q: unknown engine %q", Name, name, db.Engine)
 	}
 	return db, nil
 }
@@ -186,6 +218,9 @@ func toState(name string, cur int64, migs []migration) core.State {
 
 // currentVersion は今の版を返す。読めなければエラー（呼び手は Unknown にする）。
 func (p *Provider) currentVersion(ctx context.Context, db Database) (int64, error) {
+	if db.Engine == EnginePostgreSQL {
+		return p.pgCurrentVersion(ctx, db)
+	}
 	fi, err := os.Stat(db.Path)
 	switch {
 	case err == nil:

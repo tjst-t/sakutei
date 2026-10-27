@@ -19,13 +19,21 @@ package sqlmigrate
 //
 //	sqlite3: /usr/bin/sqlite3        # 省略可（既定は PATH の sqlite3）
 //	busy_timeout: 5s                 # 省略可（DB がロック中のときに待つ時間）
+//	postgresql_config: pg.yaml       # engine: postgresql を使うなら必須（postgresql provider のサーバの一覧）
 //	databases:
 //	  app:
-//	    path: data/app.db            # DB のファイル
+//	    path: data/app.db            # DB のファイル（engine: sqlite、既定）
 //	    migrations: migrations/app   # NNNN_<名前>.up.sql / .down.sql のディレクトリ
+//	  orders:
+//	    engine: postgresql           # psql で流す（#126）
+//	    server: main                 # postgresql_config のサーバの名前
+//	    database: orders             # つなぐデータベース
+//	    migrations: migrations/orders
 //
-// 相対パス（path・migrations、"/" を含む sqlite3）は設定ファイルのある
-// ディレクトリから。"/" を含まない sqlite3 は PATH から探す。
+// 相対パス（path・migrations・postgresql_config、"/" を含む sqlite3）は設定
+// ファイルのあるディレクトリから。"/" を含まない sqlite3 は PATH から探す。
+// postgresql の接続の設定（host・user・password の SecretRef・psql など）は
+// postgresql provider と同じファイルの書式で、ここには書かない（二重に持たない）。
 // 未知のキーはエラー（書き間違いを黙って無視しない）。
 
 import (
@@ -37,6 +45,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/internal/postgresql"
 )
 
 // Config は設定ファイルの中身。
@@ -46,8 +55,8 @@ type Config struct {
 }
 
 var (
-	configTopKeys = map[string]bool{"sqlite3": true, "busy_timeout": true, "databases": true}
-	configDBKeys  = map[string]bool{"path": true, "migrations": true}
+	configTopKeys = map[string]bool{"sqlite3": true, "busy_timeout": true, "postgresql_config": true, "databases": true}
+	configDBKeys  = map[string]bool{"engine": true, "path": true, "server": true, "database": true, "migrations": true}
 )
 
 // LoadConfig は path の設定を読み、検査する。
@@ -93,9 +102,23 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 		}
 		cfg.Options.BusyTimeout = d
 	}
+	pgConfig, err := str(tree, "postgresql_config", "")
+	if err != nil {
+		return Config{}, err
+	}
+	var pg *postgresql.Config
+	if pgConfig != "" {
+		c, err := postgresql.LoadConfig(rel(dir, pgConfig))
+		if err != nil {
+			return Config{}, fmt.Errorf("postgresql_config: %w", err)
+		}
+		pg = &c
+		cfg.Options.PostgreSQLServers = c.Servers
+		cfg.Options.PostgreSQL = c.Options()
+	}
 	raw, ok := tree["databases"].(map[string]any)
 	if !ok {
-		return Config{}, errors.New(`"databases" must be a map of database name → {path, migrations}`)
+		return Config{}, errors.New(`"databases" must be a map of database name → {path, migrations} (or {engine: postgresql, server, database, migrations})`)
 	}
 	names := make([]string, 0, len(raw))
 	for n := range raw {
@@ -112,19 +135,51 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 			return Config{}, err
 		}
 		var db Database
-		if db.Path, err = str(m, "path", p+"."); err != nil {
-			return Config{}, err
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{
+			{"engine", &db.Engine}, {"path", &db.Path}, {"server", &db.Server}, {"database", &db.DBName}, {"migrations", &db.Migrations},
+		} {
+			if *f.dst, err = str(m, f.key, p+"."); err != nil {
+				return Config{}, err
+			}
 		}
-		if db.Migrations, err = str(m, "migrations", p+"."); err != nil {
-			return Config{}, err
+		if db.Engine == "" {
+			db.Engine = EngineSQLite
 		}
-		if db.Path == "" {
-			return Config{}, fmt.Errorf("%s.path is required", p)
+		switch db.Engine {
+		case EngineSQLite:
+			if db.Path == "" {
+				return Config{}, fmt.Errorf("%s.path is required", p)
+			}
+			if db.Server != "" || db.DBName != "" {
+				return Config{}, fmt.Errorf("%s: server and database are for engine: postgresql (engine sqlite uses path)", p)
+			}
+			db.Path = rel(dir, db.Path)
+		case EnginePostgreSQL:
+			if db.Path != "" {
+				return Config{}, fmt.Errorf("%s: path is for engine: sqlite (engine postgresql uses server and database)", p)
+			}
+			if db.Server == "" {
+				return Config{}, fmt.Errorf("%s.server is required (a server name in postgresql_config)", p)
+			}
+			if db.DBName == "" {
+				return Config{}, fmt.Errorf("%s.database is required (the PostgreSQL database to migrate)", p)
+			}
+			if pg == nil {
+				return Config{}, fmt.Errorf("%s: \"postgresql_config\" (the postgresql server list) is required for engine: postgresql", p)
+			}
+			if _, ok := pg.Servers[db.Server]; !ok {
+				return Config{}, fmt.Errorf("%s.server: %q is not in %s", p, db.Server, rel(dir, pgConfig))
+			}
+		default:
+			return Config{}, fmt.Errorf("%s.engine %q: want sqlite or postgresql", p, db.Engine)
 		}
 		if db.Migrations == "" {
 			return Config{}, fmt.Errorf("%s.migrations is required", p)
 		}
-		db.Path, db.Migrations = rel(dir, db.Path), rel(dir, db.Migrations)
+		db.Migrations = rel(dir, db.Migrations)
 		cfg.Databases[name] = db
 	}
 	if len(cfg.Databases) == 0 {

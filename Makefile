@@ -63,12 +63,13 @@ integration-s3:
 	fi; \
 	exit $$status
 
-# postgresql provider の統合テスト（#125）。docker の公式の postgres イメージ
+# postgresql provider の統合テスト（#125）と sqlmigrate の engine: postgresql の
+# 統合テスト（#126、常駐の sakutei で Task を回す）。docker の公式の postgres イメージ
 # （tag と digest で固定）でサーバと psql を動かすクライアントを立て（ホストに
 # psql は要らない）、終わったら（失敗しても）コンテナとネットワークを消す。
 # docker と sudo（パスワードなし）が要るので、check・test・CI には入れない。
 # イメージは SAKUTEI_IT_POSTGRES_IMAGE で差し替えられる。手順と結果は
-# docs/providers/postgresql.md の「統合テスト」。
+# docs/providers/postgresql.md と docs/providers/sqlmigrate.md の「統合テスト」。
 POSTGRESQL_IT := ./tests/integration/postgresql/
 integration-postgresql:
 	go vet -tags integration_postgresql $(POSTGRESQL_IT)

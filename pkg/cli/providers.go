@@ -203,11 +203,11 @@ func redfishConfigFlag(fs *flag.FlagSet) *string {
 }
 
 // sqlmigrateConfigFlag registers --sqlmigrate-config, the database list of the
-// sqlmigrate provider (§29.1, #94): per database name the SQLite file and its
-// migrations directory.
+// sqlmigrate provider (§29.1, #94): per database name the SQLite file (or the
+// PostgreSQL server and database, #126) and its migrations directory.
 func sqlmigrateConfigFlag(fs *flag.FlagSet) *string {
 	return fs.String("sqlmigrate-config", "",
-		"sqlmigrate: database list (JSON / YAML): databases.<name>.path, databases.<name>.migrations (relative to the config file), sqlite3 (CLI path, optional), busy_timeout (optional)")
+		"sqlmigrate: database list (JSON / YAML): databases.<name>.path, databases.<name>.migrations (relative to the config file), sqlite3 (CLI path, optional), busy_timeout (optional); for PostgreSQL databases.<name>.engine: postgresql, server, database and postgresql_config (the postgresql server list)")
 }
 
 // s3ConfigFlag registers --s3-config, the endpoint list of the s3-bucket

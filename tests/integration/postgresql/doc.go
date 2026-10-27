@@ -14,7 +14,8 @@
 
 // Package postgresql は postgresql provider（Backlog #125）の統合テスト。docker の
 // 公式の postgres イメージ（tag と digest で固定）でサーバを立て、sakutei の CLI
-// （reconcile・status）をそこへ向ける。ホストに psql が無くてもよいように、psql は
+// （reconcile・status）をそこへ向ける。同じサーバに向けて、sqlmigrate の engine:
+// postgresql（Backlog #126）を常駐の sakutei（--task-store）で回す。ホストに psql が無くてもよいように、psql は
 // 同じイメージのクライアントのコンテナの中で動かす（ラッパーのスクリプト。
 // passfile は docker cp で渡し、引数に秘密を出さない）。コンテナとネットワークは
 // 終われば（落ちても）消す。
@@ -22,5 +23,5 @@
 // テストは build tag integration_postgresql の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-postgresql
 // （docker と sudo（パスワードなし）が要る）。手順と結果は
-// docs/providers/postgresql.md の「統合テスト」。
+// docs/providers/postgresql.md・docs/providers/sqlmigrate.md の「統合テスト」。
 package postgresql

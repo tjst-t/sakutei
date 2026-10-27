@@ -26,12 +26,13 @@ import (
 
 // Provider は Task の実行体でもある（§6.2、§29.1）。RunTask は今の版の次から
 // 宣言の版まで up を 1 本ずつ（下げるときは down を逆順に）流す。1 本は
-// 1 回の sqlite3 の呼び出しで BEGIN … その SQL … schema_migrations の更新
+// 1 回の sqlite3（psql）の呼び出しで BEGIN … その SQL … schema_migrations の更新
 // （完了印）… COMMIT として流し、失敗したらその 1 本だけが巻き戻る（それより
 // 前に通した版は残り、Task は失敗＝halt）。
 //
 // 1-outstanding は Task の仕組み（task.Manager）が守るが、念のため DB の
-// ファイルごとにプロセス内の排他を持つ。
+// ファイルごとにプロセス内の排他を持つ（PostgreSQL ではさらに、デーモンを
+// またいで pg_advisory_xact_lock を取る、postgres.go）。
 var _ task.Runner = (*Provider)(nil)
 
 // RunTask implements task.Runner.
@@ -139,11 +140,11 @@ func (p *Provider) migrate(ctx context.Context, name string, db Database, cur, t
 	case target > cur:
 		for v := cur + 1; v <= target; v++ {
 			m := migs[v-1]
-			sql, err := readSQL(m.up)
+			sql, err := readFor(db, m.up)
 			if err != nil {
 				return fmt.Errorf("%s %q: %w", Name, name, err)
 			}
-			steps = append(steps, step{version: v, file: filepath.Base(m.up), script: upScript(v, sql), after: v})
+			steps = append(steps, step{version: v, file: filepath.Base(m.up), script: scriptFor(db, true, v, sql), after: v})
 		}
 	case target < cur:
 		for v := cur; v > target; v-- {
@@ -151,15 +152,15 @@ func (p *Provider) migrate(ctx context.Context, name string, db Database, cur, t
 				return fmt.Errorf("%s %q: cannot go down from version %d: no .down.sql for version %d", Name, name, cur, v)
 			}
 			m := migs[v-1]
-			sql, err := readSQL(m.down)
+			sql, err := readFor(db, m.down)
 			if err != nil {
 				return fmt.Errorf("%s %q: %w", Name, name, err)
 			}
-			steps = append(steps, step{version: v, file: filepath.Base(m.down), script: downScript(v, sql), after: v - 1})
+			steps = append(steps, step{version: v, file: filepath.Base(m.down), script: scriptFor(db, false, v, sql), after: v - 1})
 		}
 	}
 	for _, s := range steps {
-		if _, err := p.sqlite(ctx, db.Path, s.script); err != nil {
+		if _, err := p.exec(ctx, db, s.script); err != nil {
 			return fmt.Errorf("%s %q: %s failed (its transaction was rolled back; the database was left at version %d): %w", Name, name, s.file, cur, err)
 		}
 		got, err := p.currentVersion(ctx, db)
@@ -172,6 +173,35 @@ func (p *Provider) migrate(ctx context.Context, name string, db Database, cur, t
 		cur = got
 	}
 	return nil
+}
+
+// readFor は engine に合わせて 1 本の SQL を読む（流せない書き方を断る）。
+func readFor(db Database, path string) (string, error) {
+	if db.Engine == EnginePostgreSQL {
+		return readPgSQL(path)
+	}
+	return readSQL(path)
+}
+
+// scriptFor は engine に合わせて 1 本の up（up が false なら down）の台本を作る。
+func scriptFor(db Database, up bool, v int64, sql string) string {
+	switch {
+	case db.Engine == EnginePostgreSQL && up:
+		return pgUpScript(v, sql)
+	case db.Engine == EnginePostgreSQL:
+		return pgDownScript(v, sql)
+	case up:
+		return upScript(v, sql)
+	}
+	return downScript(v, sql)
+}
+
+// exec は engine に合わせて台本を 1 回で流す。
+func (p *Provider) exec(ctx context.Context, db Database, script string) (string, error) {
+	if db.Engine == EnginePostgreSQL {
+		return p.pg(ctx, db, script)
+	}
+	return p.sqlite(ctx, db.Path, script)
 }
 
 const createTable = "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT);"
@@ -192,10 +222,13 @@ func downScript(v int64, sql string) string {
 		"DELETE FROM schema_migrations WHERE version = " + strconv.FormatInt(v, 10) + ";\nCOMMIT;\n"
 }
 
-// lock は DB のファイルごとの排他を取り、外す関数を返す。
+// lock は DB のファイル（PostgreSQL ならサーバとデータベース）ごとの排他を取り、
+// 外す関数を返す。
 func (p *Provider) lock(db Database) func() {
 	key := db.Path
-	if abs, err := filepath.Abs(db.Path); err == nil {
+	if db.Engine == EnginePostgreSQL {
+		key = "postgresql:" + db.Server + "/" + db.DBName
+	} else if abs, err := filepath.Abs(db.Path); err == nil {
 		key = abs
 	}
 	p.mu.Lock()

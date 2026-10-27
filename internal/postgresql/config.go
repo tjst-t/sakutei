@@ -331,11 +331,17 @@ func NewFromConfig(path string) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	return New(cfg.Servers, cfg.Options()), nil
+}
+
+// Options は設定の psql と secret_store から、psql の呼び方（Client・Provider の
+// Options）を作る。sqlmigrate の engine: postgresql も同じサーバの一覧から使う。
+func (cfg Config) Options() Options {
 	opts := Options{Psql: cfg.Psql}
 	if cfg.SecretStore != "" {
 		opts.Secrets = fileSecrets{render.NewFileSecretBackend(cfg.SecretStore)}
 	}
-	return New(cfg.Servers, opts), nil
+	return opts
 }
 
 func unknownKeys(prefix string, m map[string]any, allowed map[string]bool) error {

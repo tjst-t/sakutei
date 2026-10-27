@@ -43,6 +43,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tjst-t/sakutei/pkg/core"
 )
 
 // Invocation は psql の 1 回の起動。
@@ -203,9 +205,38 @@ type connParams struct {
 
 // run は psql を 1 回起動して script を流し、標準出力を返す。
 func (p *Provider) run(ctx context.Context, cp connParams, script string) (string, error) {
-	srv := cp.srv
+	return p.psql.Run(ctx, cp.server, *cp.srv, cp.database, script)
+}
+
+// Client は psql を呼ぶ口（接続の設定の渡し方・パスワードの解決と passfile・
+// エラーの分け方）。postgresql provider と sqlmigrate（engine: postgresql）が
+// 共有する。
+type Client struct {
+	psqlPath string
+	runner   Runner
+	secrets  core.SecretResolver
+}
+
+// NewClient は opts（Psql・Runner・Secrets）で psql を呼ぶ Client を返す。
+func NewClient(opts Options) *Client {
+	c := &Client{psqlPath: opts.Psql, runner: opts.Runner, secrets: opts.Secrets}
+	if c.psqlPath == "" {
+		c.psqlPath = "psql"
+	}
+	if c.runner == nil {
+		c.runner = ExecRunner
+	}
+	return c
+}
+
+// Run は srv（名前は server）の database につなぐ psql を 1 回起動して script を
+// 流し、標準出力を返す。失敗は *Error。
+func (c *Client) Run(ctx context.Context, server string, srv Server, database, script string) (string, error) {
 	mk := func(kind ErrorKind, state, msg string, err error) error {
-		return &Error{Kind: kind, Server: cp.server, Database: cp.database, SQLState: state, Message: msg, Err: err}
+		return &Error{Kind: kind, Server: server, Database: database, SQLState: state, Message: msg, Err: err}
+	}
+	if database == "" {
+		database = srv.DBName
 	}
 	env := childEnv(os.Environ())
 	add := func(k, v string) {
@@ -217,7 +248,7 @@ func (p *Provider) run(ctx context.Context, cp connParams, script string) (strin
 	if srv.Port != 0 {
 		add("PGPORT", strconv.Itoa(srv.Port))
 	}
-	add("PGDATABASE", cp.database)
+	add("PGDATABASE", database)
 	add("PGUSER", srv.User)
 	add("PGSSLMODE", srv.SSLMode)
 	add("PGSSLROOTCERT", srv.SSLRootCert)
@@ -230,10 +261,10 @@ func (p *Provider) run(ctx context.Context, cp connParams, script string) (strin
 	add("LC_MESSAGES", "C")
 	if srv.HasPassword {
 		ref := srv.Password
-		if p.secrets == nil {
+		if c.secrets == nil {
 			return "", mk(KindSecret, "", fmt.Sprintf("%s: no secret store is configured", ref), nil)
 		}
-		pw, err := p.secrets.ResolveValue(ctx, ref.Backend(), ref.Path(), ref.Generation())
+		pw, err := c.secrets.ResolveValue(ctx, ref.Backend(), ref.Path(), ref.Generation())
 		if err != nil {
 			return "", mk(KindSecret, "", ref.String(), err)
 		}
@@ -246,9 +277,9 @@ func (p *Provider) run(ctx context.Context, cp connParams, script string) (strin
 		add("PGPASSFILE", file)
 	}
 
-	res, err := p.runner(ctx, Invocation{Path: p.psqlPath, Args: append([]string(nil), psqlArgs...), Env: env, Stdin: script})
+	res, err := c.runner(ctx, Invocation{Path: c.psqlPath, Args: append([]string(nil), psqlArgs...), Env: env, Stdin: script})
 	if err != nil {
-		return "", mk(KindNoPsql, "", fmt.Sprintf("%s (set psql in the server list to its path)", p.psqlPath), err)
+		return "", mk(KindNoPsql, "", fmt.Sprintf("%s (set psql in the server list to its path)", c.psqlPath), err)
 	}
 	stderr := redact(res.Stderr)
 	switch res.ExitCode {
