@@ -3099,7 +3099,7 @@
       "number": 132,
       "kind": "task",
       "title": "s3-bucket：S3 互換実装の差異への対応（読まない設定の指定と、StorageClass の名前の読み替え）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -3114,7 +3114,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T12:19:20.486Z",
-      "updatedAt": "2026-10-27T12:19:20.486Z",
+      "updatedAt": "2026-10-27T12:20:13.057Z",
       "closedAt": null,
       "extra": {}
     }
