@@ -1673,7 +1673,7 @@
       "number": 86,
       "kind": "task",
       "title": "v2: ゲスト OS を観測する手段（SSH・エージェント）で、OS 導入などの完了を確かめる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v2-task-ui",
       "dependsOn": [
         "remote-ssh-exec",
@@ -1691,7 +1691,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T01:14:22.443Z",
-      "updatedAt": "2026-10-27T11:28:03.972Z",
+      "updatedAt": "2026-10-27T12:56:19.433Z",
       "closedAt": null,
       "extra": {}
     },
