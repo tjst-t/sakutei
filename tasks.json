@@ -3287,7 +3287,7 @@
       "number": 140,
       "kind": "task",
       "title": "Redfish provider：BIOS の設定（Bios・Bios/Settings）を宣言で合わせる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "os-bios",
       "dependsOn": [
         "os-install-task"
@@ -3301,7 +3301,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T15:24:44.791Z",
-      "updatedAt": "2026-10-27T15:25:09.060Z",
+      "updatedAt": "2026-10-27T16:42:50.965Z",
       "closedAt": null,
       "extra": {}
     },
