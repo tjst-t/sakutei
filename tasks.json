@@ -1724,9 +1724,11 @@
       "number": 88,
       "kind": "task",
       "title": "v2: 入れ直し（reimage）を宣言で起こす——planned_change の reimage と OS 導入の Workflow をつなぐ",
-      "status": "backlog",
+      "status": "ready",
       "parent": "v2-task-ui",
-      "dependsOn": [],
+      "dependsOn": [
+        "os-install-task"
+      ],
       "milestone": null,
       "priority": "normal",
       "labels": [
@@ -1740,7 +1742,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T01:14:31.629Z",
-      "updatedAt": "2026-10-23T15:04:26.313Z",
+      "updatedAt": "2026-10-27T15:24:52.109Z",
       "closedAt": null,
       "extra": {}
     },
