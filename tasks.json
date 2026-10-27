@@ -2151,11 +2151,11 @@
       ],
       "body": "2026-10-22 の OS インストールの試用で見つけた穴 5/6。\n\ninternal/workflow/workflow.go のパッケージの説明（と、同じ書き方の文書があればそれも）の例が `target: { provider: fake }`・`apply: { active: \"false\" }` のようなフロースタイルで書かれている。intent の YAML サブセットはフロースタイルを受け付けず、そのまま写すと `yaml: 16 行目: フロースタイル（{}/[]）は非対応です` で読み込めない。\n\n## 直し方\n例をブロックスタイルに直す（設計書・docs・コードのコメントで Workflow の例を探して全部）。読み込めることを確かめるテストがあればよい（例をそのまま loader に通す）。フロースタイルを受け付けるようにするかは別の話（今回はしない）。",
       "doneWhen": "Workflow の例がブロックスタイルになり、例をそのまま loader で読み込めることをテストで示す。make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/workflow-intent-yaml-1）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T01:14:39.433Z",
-      "updatedAt": "2026-10-23T01:32:00.450Z",
+      "updatedAt": "2026-10-27T09:38:50.684Z",
       "closedAt": "2026-10-23T01:32:00.450Z",
       "extra": {}
     },
