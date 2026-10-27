@@ -1687,11 +1687,11 @@
       ],
       "body": "2026-10-22 の OS インストールの試用（qemu-bmc 0.9.0 + Alpine 3.24 の自動インストール ISO、Workflow の apply → wait power:Off → apply）で見つけた穴 1/6。\n\n## 何が足りないか\nWorkflow の完了の判断が「BMC から見て電源が切れた（power: Off）」だけ。インストーラが失敗して電源を切っても成功と見なして次へ進む。Sakutei はゲスト OS の中（起動したか・何が入ったか）を見る手段を持たない。\n\n## やること\n- ゲスト OS を観測する provider（観測だけ）を、ssh 越しの実行の層（#130）の上に作る。到達できるか・OS の識別（/etc/os-release など）・導入の目印（利用者が決めるファイルや値）を読む。宛先と鍵は #130 の対象の一覧と同じ形で渡す。\n- 届かないのは unknown（absent にしない）。「まだ起動していない」と「壊れた」を取り違えないよう、Workflow の待ちの timeout で halt させる。\n- Workflow の前提条件・待ち（#87）でこの観測を使えるようにし、OS 導入の完了を「電源が切れた」ではなく「ゲスト OS が目印つきで起動した」で判断できるようにする。多相 Task（#51）の相ごとの入口 Observe にも使える形にする。\n- 統合テスト：qemu-bmc の統合テスト（make integration-redfish）か別のターゲットで、導入が成功したときは先へ進み、インストーラが失敗したときは先へ進まないことを示す。\n- 文書と設計書 §29.1。\n\n## 関連\n#51（多相 Task の相ごとの入口 Observe）、#48（Redfish provider）、#87・#130。設計 §29.3 (c)（provisioner 実体は責務外。完了の確認は Sakutei の役目）。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "OS 導入の Workflow（または多相 Task）が、電源の状態ではなくゲスト OS の観測で完了を判断し、インストーラが失敗したときは先へ進まないことを、qemu-bmc の統合テストで示す",
-      "resolution": "Factory が取り込みました（factory/v2-os-ssh-os）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T01:14:22.443Z",
-      "updatedAt": "2026-10-27T14:02:15.414Z",
+      "updatedAt": "2026-10-27T14:02:45.758Z",
       "closedAt": "2026-10-27T14:02:15.414Z",
       "extra": {}
     },
