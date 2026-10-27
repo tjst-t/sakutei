@@ -3386,11 +3386,11 @@
       "labels": [],
       "body": "## やること\n- provider 名 `ldap`、internal/ldap。Go の依存を増やさないため、OpenLDAP のクライアント（`ldapsearch`・`ldapmodify`、LDIF）を os/exec で呼ぶ。bind のパスワードは SecretRef で、引数ではなく一時ファイル（`-y`）で渡す。LDAPS・StartTLS。\n- リソース：1 つの項目（entry。ID は `<サーバ>/<DN>`）。宣言した属性だけ管理（属性ごとに値の集合をその一覧ちょうどに。objectClass を含む）。userPassword は SecretRef で書き込みだけ（postgresql の password と同じ考えで、永久 drift を出さない）。属性名の大文字小文字、DN の書き方の正規化。\n- List：設定した base DN の下の、設定したフィルタに合う項目だけ（管理境界。管理用の項目・スキーマ・設定の項目は出さない）。子のある項目は消さない。削除は破壊的。\n- 届かない・bind の失敗は unknown。\n- 偽の ldap コマンド（seam）で契約テスト。\n- **統合テスト**：`make integration-ldap`。389 Directory Server の公式コンテナ（tag と digest で固定）を相手に：空から作る→適合／手で属性を変える→戻る／何周でも drift が出ない／子のある項目は prune されない／止めると unknown。必ず片づける。\n- 文書：docs/providers/ldap.md（「389 Directory Server で確かめた」と書く。他の実装でも標準の LDAP なら動くはずだが未確認）、設計書 §29.1。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "ldap provider が偽のコマンドでの契約テストと make check・make test-race、389 Directory Server を相手にした make integration-ldap を通る",
-      "resolution": "Factory が取り込みました（factory/ldap-provider）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T17:18:39.397Z",
-      "updatedAt": "2026-10-27T18:04:32.019Z",
+      "updatedAt": "2026-10-27T18:48:14.817Z",
       "closedAt": "2026-10-27T18:04:32.019Z",
       "extra": {}
     },
