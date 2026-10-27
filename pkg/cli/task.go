@@ -21,6 +21,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/tjst-t/sakutei/internal/audit"
 	"github.com/tjst-t/sakutei/internal/task"
 )
 
@@ -34,14 +35,32 @@ import (
 // human's "I checked reality" step: the daemon never re-runs a non-idempotent
 // Task on its own, and launches a new one only after the record is gone and the
 // diff still remains (inside the window).
+//
+//	sakutei task approve --store <file> --audit-log <file> --approver <id> [--role <role>]... [--signature <sig>] <resource>
+//	sakutei task reject  --store <file> --audit-log <file> --approver <id> [--role <role>]... [--signature <sig>] <resource>
+//
+// approve / reject decide the approval gate of a phased Task that stopped inside
+// its critical section (#52, §29.1; phase awaiting_approval): approve hands it
+// back to the daemon at the start of that step, reject halts it.  Recorded in
+// the S4 audit log first; no authorization of its own (§7).
 func runTask(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: sakutei task list|cancel --store <file> [resource]")
+		fmt.Fprintln(os.Stderr, "usage: sakutei task list|cancel|approve|reject --store <file> [resource]")
 		os.Exit(1)
 	}
 	verb := args[0]
 	fs := flag.NewFlagSet("sakutei task "+verb, flag.ExitOnError)
 	store := fs.String("store", "", "task store file (required; same as the daemon's --task-store)")
+	// #52: approve / reject the approval gate of a phased Task stopped inside
+	// its critical section (§29.1).  Recorded in S4 first, like `sakutei approve`.
+	var auditLog, approver, signature *string
+	var roles stringList
+	if verb == "approve" || verb == "reject" {
+		auditLog = fs.String("audit-log", "", "S4 audit log file (required; same as the daemon's --audit-log)")
+		approver = fs.String("approver", "", "approver ID (required)")
+		signature = fs.String("signature", "", "signature of the approver (recorded, not checked: §7)")
+		fs.Var(&roles, "role", "role the approver holds (repeatable or comma-separated; recorded)")
+	}
 	_ = fs.Parse(args[1:])
 	if *store == "" {
 		fmt.Fprintf(os.Stderr, "sakutei task %s: --store <file> is required\n", verb)
@@ -89,8 +108,24 @@ func runTask(args []string) {
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stdout, "cancelled task %s for %s (was %s)\n", rec.TaskID, rec.Resource, rec.Phase)
+	case "approve", "reject":
+		if *auditLog == "" || *approver == "" || fs.NArg() != 1 {
+			fmt.Fprintf(os.Stderr, "usage: sakutei task %s --store <file> --audit-log <file> --approver <id> [--role <role>]... [--signature <sig>] <resource>\n", verb)
+			os.Exit(1)
+		}
+		rec, err := task.Decide(ctx, st, audit.NewLog(*auditLog), fs.Arg(0),
+			task.Approval{Approver: *approver, Roles: roles, Signature: *signature, Reject: verb == "reject"}, time.Now())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei task %s: %v\n", verb, err)
+			os.Exit(1)
+		}
+		if verb == "reject" {
+			fmt.Fprintf(os.Stdout, "rejected task %s for %s; halted until cancelled (sakutei task cancel)\n", rec.TaskID, rec.Resource)
+			return
+		}
+		fmt.Fprintf(os.Stdout, "approved task %s for %s; the daemon resumes it at step %s on its next cycle\n", rec.TaskID, rec.Resource, rec.Step)
 	default:
-		fmt.Fprintf(os.Stderr, "sakutei task: unknown verb %q (list|cancel)\n", verb)
+		fmt.Fprintf(os.Stderr, "sakutei task: unknown verb %q (list|cancel|approve|reject)\n", verb)
 		os.Exit(1)
 	}
 }

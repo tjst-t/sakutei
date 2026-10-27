@@ -38,6 +38,11 @@ const (
 	// PhaseFailed は実行体が失敗した（rollback_on_fail なら rollback も済んだ後）。
 	// halt 扱い: 人が cancel するまで再起動しない。
 	PhaseFailed Phase = "failed"
+	// PhaseAwaitingApproval は多相 Task が危険区間（Record.Critical）の中で止まり、
+	// 引き継いだデーモンが Observe で相の完了を確かめられなかった（#52）。人が
+	// 承認（sakutei task approve）するまで再開しない。却下とゲートのタイムアウトは
+	// PhaseFailed（halt）。
+	PhaseAwaitingApproval Phase = "awaiting_approval"
 )
 
 // Record は1リソースの未完了 Task（1-outstanding の「1」）。
@@ -71,6 +76,17 @@ type Record struct {
 	// Released は Holder が安全な区切り（相の間・待ちの間）で手放した。
 	// 次のデーモンは lease を待たずに続きを引き継いでよい。
 	Released bool `json:"released,omitempty"`
+	// Critical は危険区間（StepSpec.Critical の相の RunStep。firmware の書込）の
+	// 中にいる印（#52）。RunStep の前に立て、返った後に下ろす。立ったまま持ち主が
+	// 消えた記録は、引き継ぐデーモンが Observe で相の完了を確かめられない限り
+	// 自動で再開せず、人手ゲート（PhaseAwaitingApproval）にする。
+	Critical bool `json:"critical,omitempty"`
+	// GateOpenedAt・GateDeadline は人手ゲートを開いた時刻と、承認を待つ上限（#52）。
+	// 上限を記録に置くので、デーモンを起こし直しても待ちが延びない。
+	GateOpenedAt time.Time `json:"gate_opened_at,omitempty"`
+	GateDeadline time.Time `json:"gate_deadline,omitempty"`
+	// ApprovedBy は人手ゲートを承認した人（#52。承認の事実は S4 監査に残る）。
+	ApprovedBy string `json:"approved_by,omitempty"`
 }
 
 // Store は Task の進行フェーズの S2 ストア。

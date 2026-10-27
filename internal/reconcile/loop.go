@@ -288,6 +288,10 @@ type Config struct {
 	// a Task whose holder has not renewed it for this long (crashed).  Zero
 	// means task.DefaultLeaseTTL.
 	TaskLeaseTTL time.Duration
+	// TaskGateTimeout is how long a phased Task stopped inside its critical
+	// section (#52, §29.1) waits at the approval gate before it halts.  Zero
+	// means task.DefaultGateTimeout (24h).
+	TaskGateTimeout time.Duration
 	// Now is the clock the maintenance window (update_policy.window) is
 	// checked against.  Nil means time.Now.
 	Now func() time.Time
@@ -970,6 +974,7 @@ func NewDaemon(cfg Config) *Daemon {
 	default:
 		tasks = task.NewManager(cfg.TaskStore, runner, taskHolder(cfg), cfg.Now)
 		tasks.PollInterval, tasks.LeaseTTL = cfg.TaskPollInterval, cfg.TaskLeaseTTL
+		tasks.GateTimeout = cfg.TaskGateTimeout
 	}
 
 	// #42 (§6.3): the Workflow engine.  Its apply steps go through the same
@@ -1234,6 +1239,10 @@ type CycleResult struct {
 	// TasksResumed lists the resources whose phased Task (§6.2 多相型, #51)
 	// this daemon took over at the step a previous daemon stopped in.
 	TasksResumed []string
+	// TasksAwaitingApproval lists the resources whose phased Task stopped
+	// inside its critical section (#52, §29.1) and waits at the approval gate
+	// (sakutei task approve).  They are also in TasksHeld when they had a diff.
+	TasksAwaitingApproval []string
 
 	// Workflow fields (§6.3, §6.4):
 
@@ -1775,6 +1784,8 @@ func runCycleAsync(
 	var tasksCompleted []string
 	// #51 (§6.2 多相型): phased Tasks taken over from a previous daemon.
 	var tasksResumed []string
+	// #52 (§29.1): phased Tasks waiting at the approval gate.
+	var tasksAwaiting []string
 	// resumeUnseen is called for a strategy: task resource that could not be
 	// Observed this cycle.  unknown ≠ absent: a device rebooting in the middle
 	// of a phased Task is not seen, and the Task that waits for it must go on —
@@ -1790,6 +1801,9 @@ func runCycleAsync(
 		case ok && dec.Outcome == task.Resumed:
 			tasksResumed = append(tasksResumed, res.ID.Local)
 			fmt.Fprintf(cfg.Out, "sakutei: %s: %s (target not observed this cycle; waiting for it)\n", res.ID, dec.Reason)
+		case dec.Outcome == task.AwaitingApproval:
+			tasksAwaiting = append(tasksAwaiting, res.ID.Local)
+			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, res.ID, "awaiting approval: "+dec.Reason)
 		}
 	}
 
@@ -2275,6 +2289,11 @@ func runCycleAsync(
 			tasksHeld = append(tasksHeld, local)
 			tasksResumed = append(tasksResumed, local)
 			EmitRequiresTask(cfg.Out, "sakutei: ", core.SeverityInfo, r.ID, dec.Reason+" (strategy: task; not applying)")
+		case task.AwaitingApproval:
+			// #52: stopped inside the critical section; a person decides.
+			tasksHeld = append(tasksHeld, local)
+			tasksAwaiting = append(tasksAwaiting, local)
+			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, "awaiting approval: "+dec.Reason)
 		default:
 			tasksHeld = append(tasksHeld, local)
 			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("no Task launched (%s): %s", dec.Outcome, dec.Reason))
@@ -2336,6 +2355,8 @@ func runCycleAsync(
 		TasksHeld:      tasksHeld,
 		TasksCompleted: tasksCompleted,
 		TasksResumed:   tasksResumed,
+
+		TasksAwaitingApproval: tasksAwaiting,
 
 		WorkflowEvents: wfEvents,
 		WorkflowHeld:   wfHeldThisCycle,

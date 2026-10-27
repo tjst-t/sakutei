@@ -45,6 +45,12 @@ const (
 	// KindWorkflowCancelled は人による Workflow の実行の取り消し（sakutei workflow cancel）。
 	KindWorkflowCancelled Kind = "workflow.cancelled"
 
+	// KindTaskGateApproved は危険区間の中で止まった多相 Task の人手ゲートの承認
+	// （sakutei task approve、#52）。Resource・RunID（Task の ID）・Gate（相）を書く。
+	KindTaskGateApproved Kind = "task.gate.approved"
+	// KindTaskGateRejected はその却下（= halt）。
+	KindTaskGateRejected Kind = "task.gate.rejected"
+
 	// KindBreakGlassWrite は書込 break-glass の使用（§25.1 (b)）: git の正に届かない間に
 	// ローカルミラーへ書いた署名付きコミット。コミットより先に記録する。
 	KindBreakGlassWrite Kind = "breakglass.write"
@@ -85,6 +91,8 @@ type Record struct {
 	Workflow string    `json:"workflow,omitempty"`
 	RunID    string    `json:"run_id,omitempty"`
 	Gate     string    `json:"gate,omitempty"`
+	// Resource は多相 Task の人手ゲート（#52）の対象リソース。
+	Resource string `json:"resource,omitempty"`
 	// Actor は承認者 ID。コアは認可を持たないので、記録するのは名乗られた ID と
 	// その署名である（誰が叩けるかの判定は上位 IdP、§7）。
 	Actor string `json:"actor,omitempty"`

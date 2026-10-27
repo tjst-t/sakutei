@@ -103,6 +103,8 @@ func (o Outcome) String() string {
 		return "outside-window"
 	case Resumed:
 		return "resumed"
+	case AwaitingApproval:
+		return "awaiting-approval"
 	}
 	return "unknown"
 }
@@ -126,6 +128,9 @@ type Manager struct {
 	PollInterval time.Duration
 	// LeaseTTL は多相 Task の記録の lease。0 なら DefaultLeaseTTL。
 	LeaseTTL time.Duration
+	// GateTimeout は危険区間の中で止まった多相 Task の人手ゲートの上限（#52）。
+	// 0 なら DefaultGateTimeout。
+	GateTimeout time.Duration
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -204,6 +209,11 @@ func (m *Manager) Trigger(ctx context.Context, id core.ID, desired map[string]st
 		if rec.Step != "" && rec.Phase == PhaseRunning {
 			// 多相 Task の途中: 手放されたか lease が切れていれば続きを引き継ぐ。
 			dec, _, err := m.resume(ctx, id, desired, plan, pol, rec)
+			return dec, err
+		}
+		if rec.Phase == PhaseAwaitingApproval {
+			// 危険区間の中で止まった多相 Task: 人の承認を待つ（#52）。
+			dec, _, err := m.gated(ctx, id, desired, plan, pol, rec)
 			return dec, err
 		}
 		if rec.Phase == PhaseSucceeded && rec.DesiredHash != hash {
@@ -302,6 +312,9 @@ func (m *Manager) outstandingReason(rec Record) string {
 		return fmt.Sprintf("task %s was interrupted (daemon restarted while running); not re-running — check reality and cancel it if needed", rec.TaskID)
 	case PhaseSucceeded:
 		return fmt.Sprintf("task %s reported success but its completion mark is not observed yet; not re-running — check reality and cancel it if needed", rec.TaskID)
+	case PhaseAwaitingApproval:
+		return fmt.Sprintf("task %s stopped inside the critical section of step %s and reality does not show the step done; awaiting approval until %s — check the device, then sakutei task approve (resume at step %s) or reject (halt)",
+			rec.TaskID, rec.Step, rec.GateDeadline.UTC().Format(time.RFC3339), rec.Step)
 	case PhaseFailed:
 		rb := ""
 		if rec.RolledBack {

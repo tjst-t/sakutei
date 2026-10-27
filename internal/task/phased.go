@@ -50,9 +50,12 @@ import (
 //     Update の比較と書込で1つに決まる。desired が起動時から変わっていれば
 //     引き継がない（人が確かめて cancel する）。
 //
-// 既知の限界: RunStep の途中で落ちた相は、入口の CheckStep が「済んでいない」と
-// 言えばもう一度 RunStep を呼ぶ。書込の途中で切れた Applying をそのまま書き直して
-// よいかは人が決めること（Backlog #52 で人手ゲートにする）。
+//   - 危険区間（Backlog #52、gate.go）: StepSpec.Critical の相（Applying）は
+//     RunStep の前に記録へ印（Record.Critical）を立て、返った後に下ろす。印が
+//     立ったまま持ち主が消えた（落ちた）記録は、相の入口の Observe で Done と
+//     確かめられない限り自動で再開せず、人手ゲート（PhaseAwaitingApproval）に
+//     する。Critical でない相は、RunStep の途中で落ちても入口の CheckStep が
+//     「済んでいない」と言えばもう一度 RunStep を呼ぶ（べき等な相に限って使う）。
 
 // StepState は CheckStep が見た、相の現実。
 type StepState int
@@ -102,6 +105,10 @@ type StepSpec struct {
 	// Timeout は相の入口から、対象の再出現（と Await の完了）を待つ上限。
 	// 0 なら DefaultStepTimeout。
 	Timeout time.Duration
+	// Critical は RunStep の途中で止まると「書込の途中」と「済んだ」を区別できない
+	// 相（Applying、#52）。RunStep の間は S2 に印を立て、その中で落ちた Task は
+	// 人手ゲートにする（gate.go）。
+	Critical bool
 }
 
 func (s StepSpec) timeout() time.Duration {
@@ -117,7 +124,7 @@ func FirmwareSteps(reboot time.Duration) []StepSpec {
 	return []StepSpec{
 		{Name: StepStaging, Action: true},
 		{Name: StepVerifying, Action: true},
-		{Name: StepApplying, Action: true},
+		{Name: StepApplying, Action: true, Critical: true},
 		{Name: StepRebooting, Action: true, Await: true, Timeout: reboot},
 		{Name: StepConfirming, Timeout: reboot},
 	}
@@ -213,11 +220,16 @@ func (m *Manager) Resume(ctx context.Context, id core.ID, desired map[string]str
 		return Decision{Outcome: Running, Reason: "task is running"}, true, nil
 	}
 	rec, ok, err := m.store.Get(ctx, key)
-	if err != nil || !ok || rec.Step == "" || rec.Phase != PhaseRunning {
+	if err != nil || !ok || rec.Step == "" {
 		return Decision{}, false, err
 	}
-	dec, resumed, err := m.resume(ctx, id, desired, core.Plan{}, pol, rec)
-	return dec, resumed, err
+	switch rec.Phase {
+	case PhaseRunning:
+		return m.resume(ctx, id, desired, core.Plan{}, pol, rec)
+	case PhaseAwaitingApproval:
+		return m.gated(ctx, id, desired, core.Plan{}, pol, rec)
+	}
+	return Decision{}, false, nil
 }
 
 // resume は多相 Task の running の記録 rec を引き継げるなら引き継ぐ。
@@ -249,12 +261,23 @@ func (m *Manager) resume(ctx context.Context, id core.ID, desired map[string]str
 			rec.TaskID, rec.Step))
 	}
 	prev := rec
+	sameAsPrev := func(r *Record) bool {
+		return r.Phase == PhaseRunning && r.Step == prev.Step && r.Holder == prev.Holder &&
+			r.Released == prev.Released && r.HeartbeatAt.Equal(prev.HeartbeatAt) && r.Critical == prev.Critical
+	}
+	if rec.Critical {
+		// 危険区間の中で持ち主が消えた（#52）。書込が済んだと Observe で確かめられ
+		// なければ、リブート中か壊れたかを区別できないので、人手ゲートにする。
+		if st, _ := pr.CheckStep(ctx, req, rec.Step); st != StepDone {
+			return m.openGate(ctx, id, rec, st, sameAsPrev)
+		}
+	}
 	cur, took, err := m.store.Update(ctx, id.String(), rec.TaskID, func(r *Record) bool {
-		if r.Phase != PhaseRunning || r.Step != prev.Step || r.Holder != prev.Holder ||
-			r.Released != prev.Released || !r.HeartbeatAt.Equal(prev.HeartbeatAt) {
+		if !sameAsPrev(r) {
 			return false // 先に誰かが引き継いだ
 		}
-		r.Holder, r.Released, r.HeartbeatAt = m.holder, false, now.UTC()
+		// 危険区間の印は、相の完了を Observe で確かめた（上）ので下ろす。
+		r.Holder, r.Released, r.HeartbeatAt, r.Critical = m.holder, false, now.UTC(), false
 		return true
 	})
 	if err != nil {
@@ -331,7 +354,7 @@ func (m *Manager) runPhased(ctx context.Context, pr PhasedRunner, req Request, s
 			}
 		}
 		// 書けなければ running のまま残る（=中断扱い。安全側）。
-		write(func(r *Record) { r.Phase, r.RolledBack, r.Error = PhaseFailed, rolledBack, msg })
+		write(func(r *Record) { r.Phase, r.RolledBack, r.Error, r.Critical = PhaseFailed, rolledBack, msg, false })
 	}
 
 	for i := idx; i < len(steps); i++ {
@@ -366,8 +389,15 @@ func (m *Manager) runPhased(ctx context.Context, pr PhasedRunner, req Request, s
 			release()
 			return
 		}
+		if s.Critical && !write(func(r *Record) { r.Critical = true }) {
+			return // 印を立てられなければ書込を始めない
+		}
 		if err := pr.RunStep(ctx, req, s.Name); err != nil {
 			fail(s.Name, err)
+			return
+		}
+		// 書けなければ印が立ったまま残る（引き継ぐデーモンは人手ゲートにする。安全側）。
+		if s.Critical && !write(func(r *Record) { r.Critical = false }) {
 			return
 		}
 		if !s.Await && m.stopped() {

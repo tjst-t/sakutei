@@ -234,6 +234,9 @@ func runDaemon() {
 	// #41: strategy: task の進行フェーズの S2（§6.2）。
 	taskStore := fs.String("task-store", "",
 		"S2 store file of strategy: task progress phases (§6.2); empty=no Task is launched (strategy: task resources are held)")
+	// #52: 危険区間の中で止まった多相 Task の人手ゲートの上限（§29.1）。
+	taskGateTimeout := fs.Duration("task-gate-timeout", 0,
+		"#52: how long a phased Task stopped inside its critical section waits for `sakutei task approve` before it halts (default 24h)")
 	// #42: 最小 Workflow の進行位置（S2）・S4 監査・承認 API（§6.3 / §6.4）。
 	workflowStore := fs.String("workflow-store", "",
 		"S2 store file of the Workflows' progress (§6.3); empty=no Workflow advances (their targets are held)")
@@ -463,6 +466,7 @@ func runDaemon() {
 	if *taskStore != "" {
 		cfg.TaskStore = task.NewFileStore(*taskStore)
 	}
+	cfg.TaskGateTimeout = *taskGateTimeout
 	if *workflowStore != "" {
 		cfg.WorkflowStore = workflow.NewFileStore(*workflowStore)
 	}
@@ -516,7 +520,7 @@ Usage:
   sakutei import       export existing reality as intent YAML
   sakutei sync         record the reality of mode: sync scopes into generated/
   sakutei fence        show the fencing generations of claimed scopes (§17.6)
-  sakutei task         list / cancel outstanding strategy: task Tasks (§6.2)
+  sakutei task         list / cancel / approve / reject outstanding strategy: task Tasks (§6.2, §29.1)
   sakutei workflow     list / cancel Workflow runs (§6.3)
   sakutei approve      approve a Workflow gate (§6.4)
   sakutei reject       reject a Workflow gate: the Workflow halts (§6.4)
