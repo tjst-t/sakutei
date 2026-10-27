@@ -2,6 +2,19 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## v1.3.1（2026-10-27）
+
+PostgreSQL provider の、ずれがいつまでも直らなかった穴の修正と、Event を通知に送る口。
+
+### 修正
+
+- **PostgreSQL provider：PUBLIC への権限**（#133）：データベースの権限の対象に `PUBLIC` を書けるようにした。宣言した一覧ちょうどに合わせ、PUBLIC に限り空の一覧で全部外せる（新しいデータベースに既定で付く CONNECT・TEMPORARY も外せる）。手で PUBLIC に付けた権限も drift として見えて戻る。宣言していない PUBLIC の権限は prune で外さない。
+- **PostgreSQL provider：ロールの `bypassrls`・`replication`**（#133）：宣言すれば観測して直す。手で `BYPASSRLS` を付けられても見えなかった。
+
+### 追加
+
+- **通知の口**（#131、設計書 §22.3）：`--event-webhook` で Event を JSON のまま POST し、`--event-alertmanager` で level の Event（firing・resolved）を Alertmanager の alerts に写して送る。送れなくても収束は止めない。
+
 ## v1.3.0（2026-10-27）
 
 PostgreSQL と Ansible の provider、sqlmigrate の PostgreSQL 版、Workflow で複数の provider を扱う口。設計書は v3.21 → v3.22（`docs/architecture/CHANGELOG-v3.22.md`）。
