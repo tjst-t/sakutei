@@ -1019,11 +1019,11 @@
       ],
       "body": "設計 §29.1「多相 Task の『相の途中 death』の人手ゲート」（実装中に決める事項）。相境界での停止は入口 Observe で守れるが、Applying（書き込み中）の途中で止まると「リブート中」と「壊れた（bricked）」を区別できない。\n\n- Applying を危険区間として S2 に印を付ける。\n- 危険区間の中で止まった Task は、Observe で Done を確かめられない限り自動で再開せず、人手ゲート（承認・§6.4／§14.4）にする。\n- 判定の具体（何を見たら Done と言えるか・ゲートのタイムアウト）を実装時に決め、設計書 §29.1 に書き戻す。",
       "doneWhen": "Applying の途中で止めた多相 Task が自動再開されず人手ゲートで止まり、承認後に再開できることをテストで示す。決めた判定を設計書 §29.1 に書く。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/v2-task-applying）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-27T15:11:30.259Z",
+      "updatedAt": "2026-10-27T15:23:15.976Z",
       "closedAt": "2026-10-27T15:11:30.259Z",
       "extra": {}
     },
