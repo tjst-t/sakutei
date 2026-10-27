@@ -99,7 +99,23 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 
   5 周（`--stuck-after` で変えられる）続くと、`[firing stuck count=5 since=…]` の付いた行が 1 回出て critical に上がる。JSON（`--log-format json`・`--event-log`）では `"state":"firing"`／`"resolved"`・`"since"`・`"count"`・`"class":"transient"`／`"stuck"` が付く。デーモンを起こし直すと、続いているずれは改めて 1 回出る。予算の halt・prune の急減 halt（D3）も同じく、始まった周と消えた周に 1 回ずつ。
 - `--log-format json` を足すと（デーモン・`reconcile`・`plan`。既定は `text`）、同じ知らせが 1 行 1 Event の JSON lines で出る（#77）。`DRIFT EVENT` は `{"kind":"DriftWouldApply","cycle":4,"resource":"dnszone//api.example.com./A","cause":"B","intent_revision":…}` の形。周の要約は `kind":"CycleSummary"`、そのほかのログ行は `"kind":"Log"` の同じ形の行になる。
-- `--event-log <path>` を足すと（デーモン・`reconcile`）、標準エラーへの出力はそのままに、知らせ（Event）をファイルにも JSON lines で追記する（#78）。1 Event を 1 行で書き切り、周の要約とそのほかのログ行は入れない。Alertmanager などへ送るのはこのファイルを読む側に任せる（§22.3）。ファイルに書けなくても収束は止まらず、`sakutei: warn: event sink: …` の 1 行が出る。S4 監査ログ（`--audit-log`）とは別物。
+- `--event-log <path>` を足すと（デーモン・`reconcile`）、標準エラーへの出力はそのままに、知らせ（Event）をファイルにも JSON lines で追記する（#78）。1 Event を 1 行で書き切り、周の要約とそのほかのログ行は入れない。ファイルに書けなくても収束は止まらず、`sakutei: warn: event sink: …` の 1 行が出る。S4 監査ログ（`--audit-log`）とは別物。
+- `--event-webhook <url>` を足すと、知らせを 1 件ずつ同じ JSON で POST する。`--event-alertmanager <url>` を足すと、level の知らせ（ずれ・halt など）を Alertmanager の alert（`<url>/api/v2/alerts`）として firing・resolved で送り、firing の間は期限が切れないように送り直す（既定 1 分ごと）。warning 以上の edge の知らせは edge_ttl（既定 1 時間）で終わる alert として 1 回送る（#131、§22.3）。認証のヘッダ・TLS・送り直しの間隔・足す labels は `--event-notify-config <file>` に書く:
+
+  ```yaml
+  secret_store: secrets.json          # ヘッダの値はここから（SecretRef でしか書けない）
+  webhook:
+    headers:
+      Authorization: secretref:file/notify/webhook_auth
+    ca_file: ca.pem                   # 省略可。insecure_skip_verify: true は明示したときだけ
+  alertmanager:
+    resend_interval: 1m
+    edge_ttl: 1h
+    labels:
+      instance: sakutei-tokyo
+  ```
+
+  送り先が落ちていても収束は止まらない。送れないと `sakutei: warn: event sink: webhook …: … not delivered: …; retrying in …` の行が出て、待ちを挙げながら送り直す。
 
 ### D3. 破壊的な操作の上限で halt（2026-10-21 に確かめた）
 

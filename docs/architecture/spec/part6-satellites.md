@@ -495,6 +495,17 @@ vm:
 - **Task の実行中は Drift を数えない**：自分がこのデーモンで起動した Task が走っている周（`task.Running`）は、その周の `DriftEvent` を出さない——続いた周数（stuck への昇格の数え）を増やさず、firing のままにする（resolved にもしない。差分はまだ残っているので「消えた」とは言えない）。Task が長くかかっても、走っている間は stuck（critical）に上がらない。Task の実行時間そのものへの別の上限・timeout の知らせは v1 では持たない。
 - **`RequiresTask` も level にする**：`EventRequiresTask` を level の kind に加える。Task を起動できない理由（窓の外・outstanding・no task runner・fencing）が続く間は、初めて出た周に firing、理由が変わった周（severity・分類が変わったとき）だけ更新を出し、差分が消えた周（Task が完了して Observe で差分が無くなった、または desired から外れた）に resolved を出して忘れる。起動した知らせ（`task launched`）も同じ level 系列に入り、Task が終わって差分が消えた周に resolved になる。message は毎周変わりうる（経過時間・待ち時間の文言）ので、fingerprint の比較には使わない（Drift と同じ扱い）。
 
+**通知の口の決まり（Backlog #131）**：sink に webhook と Alertmanager を足す。ここにあるのは届ける口だけで、振り分け・抑制・エスカレーションは送り先に委ねる（§22.1）。
+
+- **webhook**（`--event-webhook <url>`）：知らせ（周の要約とログ行を除く Event）を 1 件ずつ、`--event-log` の 1 行と同じ JSON（今の `Event` の型のまま）で POST する。出た順に送る。
+- **Alertmanager**（`--event-alertmanager <url>`）：API v2（`<url>/api/v2/alerts`）の alert に写して送る。labels は `alertname`（= kind）・`kind`・`severity`・`resource`・`scope`・`class`・`provider`（あれば）と設定の labels、annotations は `message`・`cause`・`since`・`count`。
+  - **level の firing**：続いている alert としてメモリ（S3）に覚え、`startsAt = since`・`endsAt = 送る時刻 + 4 × resend_interval`（既定 1 分）で送る。level の Event は続く間は毎周出ないので、sink が resend_interval ごとに送り直して Alertmanager の期限を切らさない。Sakutei が止まれば送り直しも止まり、alert は endsAt で消える（起こし直せば level が改めて firing を出し、同じ labels の alert として続く）。
+  - **labels が変わる更新**（stuck に上がって severity・class が変わる）：前の labels の alert を resolved として送り、新しい labels で firing にする（Alertmanager では alert の同一性が labels の組のため）。
+  - **resolved**：覚えた alert を `endsAt = 消えた時刻` で 1 回送って忘れる。覚えていない resolved（起こし直した後など）は送らない。
+  - **edge の Event**（と、一回性の `reconcile` の state を持たない Event）：severity が warning 以上のものだけ、`startsAt = 時刻`・`endsAt = 時刻 + edge_ttl`（既定 1 時間）の alert として 1 回送り、送り直さない。info の edge（`Pruned`・Workflow の進み）は送らない（webhook・`--event-log` には出る）。edge は「起きた」ことの知らせで続く状態ではないので、送り直して長く保つことはせず、edge_ttl のあいだ Alertmanager の通知・抑制の対象にする。
+- **送れないとき**：Emit は送り待ちに積むだけで戻り、送るのは sink ごとの goroutine（収束の周は待たない）。送れなければ待ちを 1 秒から倍々に挙げて（webhook は最大 1 分、Alertmanager は最大 resend_interval）送り直し、そのたびにログに 1 行出す（`sakutei: warn: event sink: …`）。送り待ちは 1000 件まで（溢れたら古いものから捨て、ログに出す）。408・429 を除く 4xx は送り直しても通らないので、ログに出して捨てる。一回性の `reconcile` は終わる前に最長 10 秒、送り待ちを送り切ろうとする。
+- **資格と TLS**（`--event-notify-config <file>`）：認証のヘッダは SecretRef でしか書けず（生の値はエラー）、送るたびに file SecretBackend から解決する（JIT、§20.2）。値は Event にもログにも出さない（Event はもとから secret の値を載せない）。TLS は `ca_file`、検証の省略は `insecure_skip_verify: true` を明示したときだけ。URL に資格（userinfo）は書けない。
+
 Break Glass の使用（`BreakGlassUsed`・§20.6）や監査アンカーの push（§26）も、この単一 Event → sink に流れる。発生源と sink を分けることで、通知系の交換が収束コアに波及しない。
 
 ### §22.4 衛星停止影響表（何を止め、何を止めないか）

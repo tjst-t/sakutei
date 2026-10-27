@@ -249,6 +249,7 @@ func runDaemon() {
 	gd := addGitDistFlags(fs)
 	logFormat := addLogFormatFlag(fs)
 	eventLog := addEventLogFlag(fs)
+	eventNotify := addEventNotifyFlags(fs)
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// "-h"/"--help" makes flag.Parse return flag.ErrHelp after printing
@@ -261,7 +262,7 @@ func runDaemon() {
 	}
 
 	setLogFormat("sakutei", *logFormat)
-	eventSinks := openEventLog("sakutei", *eventLog)
+	eventSinks := append(openEventLog("sakutei", *eventLog), eventNotify.open("sakutei")...)
 	soaSerial := checkZoneSOASerial("sakutei", *zoneSOASerial)
 	zScope := checkScope("sakutei", "zone-scope", *zoneScope)
 	rScope := checkScope("sakutei", "ruleset-scope", *rulesetScope)
@@ -481,9 +482,9 @@ func runDaemon() {
 
 	if err := reconcile.Run(context.Background(), cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
-	os.Exit(0)
+	exitAfterEvents(0)
 }
 
 func printUsage() {

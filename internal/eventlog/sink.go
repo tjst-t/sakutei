@@ -17,10 +17,12 @@ package eventlog
 // Event の sink（§22.3: 発生源と sink を分ける）。
 //
 // 収束コアは Event を io.Writer に Emit するだけで、その先を知らない。Route が
-// その Emit を Sink に渡す。Sink は今のところ 2 つ:
+// その Emit を Sink に渡す。Sink はここに 2 つ:
 //
 //   - StreamSink: 標準エラー・標準出力（--log-format に従う。従来の出力）。
 //   - FileSink:   JSON lines のファイル（--event-log <path>。追記・1 行ずつ書き切る）。
+//
+// 通知の先へ送る sink（webhook・Alertmanager、#131）は internal/eventnotify。
 //
 // ルーティング・エスカレーション・沈黙は Sakutei が持たず、sink の先
 // （Alertmanager など）に委ねる。sink の失敗は収束を止めない（ログに 1 行出して

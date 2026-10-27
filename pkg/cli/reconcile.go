@@ -170,13 +170,14 @@ func runReconcile(args []string) {
 
 	logFormat := addLogFormatFlag(fs)
 	eventLog := addEventLogFlag(fs)
+	eventNotify := addEventNotifyFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
 		os.Exit(1)
 	}
 	setLogFormat("sakutei reconcile", *logFormat)
-	routeEventLog("sakutei reconcile", *eventLog)
+	routeEventLog("sakutei reconcile", *eventLog, eventNotify)
 	soaSerial := checkZoneSOASerial("sakutei reconcile", *zoneSOASerial)
 	zScope := checkScope("sakutei reconcile", "zone-scope", *zoneScope)
 	rScope := checkScope("sakutei reconcile", "ruleset-scope", *rulesetScope)
@@ -185,14 +186,14 @@ func runReconcile(args []string) {
 	if *intentDir == "" {
 		fmt.Fprintln(logErr, "sakutei reconcile: --intent <dir> is required")
 		fs.Usage()
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 
 	// Parse remediation configuration (Scf7762-3, §14.1).
 	remMode, remModeErr := remediation.ParseMode(*modeStr)
 	if remModeErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: invalid --mode %q: %v\n", *modeStr, remModeErr)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 	remCfg := remediation.Config{
 		Mode:   remMode,
@@ -210,7 +211,7 @@ func runReconcile(args []string) {
 		d, err := time.ParseDuration(*windowDurationStr)
 		if err != nil {
 			fmt.Fprintf(logErr, "sakutei reconcile: invalid --window-duration %q: %v\n", *windowDurationStr, err)
-			os.Exit(1)
+			exitAfterEvents(1)
 		}
 		budgetCfg.WindowDuration = d
 	}
@@ -221,7 +222,7 @@ func runReconcile(args []string) {
 		budgetCfg.OnExceed = budget.OnExceedHaltAll
 	default:
 		fmt.Fprintf(logErr, "sakutei reconcile: unknown --on-exceed value %q; use halt-all or halt-destructive-only\n", *onExceedStr)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 	budgetEngine := budget.New(budgetCfg)
 
@@ -238,7 +239,7 @@ func runReconcile(args []string) {
 	in, err := loader.LoadIntent(*intentDir)
 	if err != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: load intent: %v\n", err)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 	// §13.3 / §14.5: one-shot reconcile builds a fresh budget engine every
 	// invocation, so it opens the planned_change lanes only with the S4 audit
@@ -249,7 +250,7 @@ func runReconcile(args []string) {
 	if *auditLog != "" {
 		if err := budgetEngine.AttachAudit(audit.NewLog(*auditLog)); err != nil {
 			fmt.Fprintf(logErr, "sakutei reconcile: read audit log: %v\n", err)
-			os.Exit(1)
+			exitAfterEvents(1)
 		}
 		budgetEngine.SetPlannedChanges(in.PlannedChanges)
 	} else if len(in.PlannedChanges) > 0 {
@@ -291,7 +292,7 @@ func runReconcile(args []string) {
 				"sakutei reconcile: ExternalInputUnreachable (first call): %v\n"+
 					"  No prior cached value available; convergence not advanced (halt-safe, §9.2)\n",
 				phase1Result.Err)
-			os.Exit(1)
+			exitAfterEvents(1)
 		}
 		externalInputs = append(externalInputs, phase1Result.ExternalInputHashes...)
 		recomputeRendered = true
@@ -302,7 +303,7 @@ func runReconcile(args []string) {
 	claimSelector, claimErr := parseClaimSelector(*claim)
 	if claimErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: invalid --claim %q: %v\n", *claim, claimErr)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 
 	// #24: render phase 1 — allocation (§9.1, §19).  reconcile ALLOCATES
@@ -312,12 +313,12 @@ func runReconcile(args []string) {
 	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
 	if allocErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: %v\n", allocErr)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocAllocate, in, claimSelector)
 	if allocErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: %v\n  convergence not advanced (halt-safe, §9.2)\n", allocErr)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 	for _, w := range allocRes.Warnings {
 		fmt.Fprintf(logErr, "sakutei reconcile: warn: allocation: %s\n", w)
@@ -343,7 +344,7 @@ func runReconcile(args []string) {
 		fmt.Fprintf(logErr,
 			"sakutei reconcile: RevisionMismatch: --expect-revision %s but rendered_revision is %s (intent, allocations or inventory changed since plan); nothing applied — re-run plan (§26.6)\n",
 			*expectRevision, rev.RenderedRevision)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 
 	// S072a14-1: render phase 2 — expand composite resources (§9.5).
@@ -351,7 +352,7 @@ func runReconcile(args []string) {
 	expanded, expandErr := render.ExpandAll(expRegistry, intentResources)
 	if expandErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: render phase 2: %v\n", expandErr)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 
 	// §9.6: validate existing generated/ file and warn on direct human edits.
@@ -365,7 +366,7 @@ func runReconcile(args []string) {
 	// time for the same intent, preventing two-management drift).
 	if writeErr := render.WriteGenerated(genDir, expanded); writeErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: write generated/: %v\n", writeErr)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 
 	// Build the desired slice: only non-composite resources enter Diff/Apply.
@@ -435,7 +436,7 @@ func runReconcile(args []string) {
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
 	if resolveErr != nil {
 		fmt.Fprintln(logErr, resolveErr)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 
 	// Build per-provider diff engines (each provider has its own Schema).
@@ -533,7 +534,7 @@ func runReconcile(args []string) {
 		if !ok {
 			// Should not happen: resolveProviders already validated all names.
 			fmt.Fprintf(logErr, "sakutei reconcile: internal error: no provider for %q\n", res.ID.Provider)
-			os.Exit(1)
+			exitAfterEvents(1)
 		}
 		engine := engines[res.ID.Provider]
 
@@ -597,13 +598,13 @@ func runReconcile(args []string) {
 		// The error names the field only, never the value.
 		if err := engine.ValidateDesired(res); err != nil {
 			fmt.Fprintf(logErr, "sakutei reconcile: %v\n", err)
-			os.Exit(1)
+			exitAfterEvents(1)
 		}
 
 		resourcePlan, planErr := engine.Plan(obs, res, resCauseCtxRec)
 		if planErr != nil {
 			fmt.Fprintf(logErr, "sakutei reconcile: %v\n", planErr)
-			os.Exit(1)
+			exitAfterEvents(1)
 		}
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff),
 		// and filter them out of the Apply set (§10.4, task Scb0ecd-2-2).
@@ -741,7 +742,7 @@ func runReconcile(args []string) {
 			}
 		}
 		// alert-only exits 0: detection without action is not a failure.
-		os.Exit(0)
+		exitAfterEvents(0)
 	}
 	if in.Remediation != nil {
 		fmt.Fprintf(logOut, "Remediation mode: auto (%s)\n", decision.Reason)
@@ -839,7 +840,7 @@ func runReconcile(args []string) {
 		budgetEngine.ReserveLanes(budgetDecision, laneOps)
 		if err := budgetEngine.FlushLaneAudit(); err != nil {
 			fmt.Fprintf(logErr, "sakutei reconcile: planned_change: cannot record lane executions in S4: %v; nothing applied\n", err)
-			os.Exit(1)
+			exitAfterEvents(1)
 		}
 	}
 
@@ -874,7 +875,7 @@ func runReconcile(args []string) {
 	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, heldReason, ready, logErr)
 	if waveErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: wave apply: %v\n", waveErr)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 
 	// #110: count the resources whose Apply failed this cycle — they had ops,
@@ -957,13 +958,13 @@ func runReconcile(args []string) {
 	switch {
 	case capacityHalted && appliedOps == 0:
 		runSummary(fmt.Sprintf("Reconcile: CAPACITY HALTED (no changes applied): %s", capacityDecision.Reason))
-		os.Exit(1)
+		exitAfterEvents(1)
 	case budgetHalted && appliedOps == 0:
 		// A (Scf7762-2): the BUDGET HALTED stderr line is already emitted once,
 		// above, right after CheckCycle (the single stderr source of truth).  Do
 		// NOT repeat it here — only the stdout summary belongs in this switch.
 		runSummary(fmt.Sprintf("Reconcile: BUDGET HALTED (no changes applied): %s", budgetDecision.Reason))
-		os.Exit(1)
+		exitAfterEvents(1)
 	case appliedOps > 0:
 		failedText := ""
 		if applyFailed > 0 {
@@ -1030,12 +1031,12 @@ func runReconcile(args []string) {
 		fmt.Fprintf(logErr,
 			"sakutei reconcile: %d resource(s) were unobservable this cycle; convergence incomplete\n",
 			len(unobservable)-n)
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 	if budgetHalted || capacityHalted {
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
-	os.Exit(0)
+	exitAfterEvents(0)
 }
 
 // parseClaimSelector parses a --claim scope-selector string into a core.Scope

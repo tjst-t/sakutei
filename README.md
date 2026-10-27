@@ -187,7 +187,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 | **v1.5** | 単純 Task ＋ 最小 Workflow（直列＋不変条件＋N-of-M 手動承認）＋ remediation schedule ＋ planned_change ＋ 運用プロファイル ＋ DR モード（break-glass） | ✅ 完成 |
 | **v2+** | 多相 Task、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、intent UI、採番の SQLite 版、一括 API を持つ対象（Proxmox・vCenter 等）の provider | 予定 |
 
-既知の v1 の限界（設計 §29 に記録）: 振動の検知と隔離は未配線（`StatusOscillating` は型のみ。破壊的な flip-flop は ghost-diff hold で抑制）／ Vault SecretBackend はスタブ（file backend は実装済み）／ 採番はファイル版（同一ホストでの同時払い出しは flock で直列化。SQLite 版は v2）／ BulkObserve は dnszone・nftables での実証まで（一括 API を持つ対象は Backlog #49）／ Event の出し先（sink）は標準エラーと JSON lines のファイル（`--event-log`）だけで、Alertmanager などへ直接送る sink は無い（ファイルを外の仕組みで拾う）。firing / resolved の状態はメモリに持つので、デーモンを起こし直すと続いているものを改めて firing として出す。／ Redfish provider は qemu-bmc（0.9.0）を相手にした統合テストまでで、実機のサーバの BMC では確かめていない。IPMI は持たない。起動先の `Once` は宣言できない（将来 Task 側）。
+既知の v1 の限界（設計 §29 に記録）: 振動の検知と隔離は未配線（`StatusOscillating` は型のみ。破壊的な flip-flop は ghost-diff hold で抑制）／ Vault SecretBackend はスタブ（file backend は実装済み）／ 採番はファイル版（同一ホストでの同時払い出しは flock で直列化。SQLite 版は v2）／ BulkObserve は dnszone・nftables での実証まで（一括 API を持つ対象は Backlog #49）／ Event の出し先（sink）は標準エラー・JSON lines のファイル（`--event-log`）・webhook（`--event-webhook`）・Alertmanager（`--event-alertmanager`）。Alertmanager は本物を相手にした統合テストをまだ持たない（httptest まで）。firing / resolved の状態はメモリに持つので、デーモンを起こし直すと続いているものを改めて firing として出す。／ Redfish provider は qemu-bmc（0.9.0）を相手にした統合テストまでで、実機のサーバの BMC では確かめていない。IPMI は持たない。起動先の `Once` は宣言できない（将来 Task 側）。
 
 ---
 
