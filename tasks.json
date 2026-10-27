@@ -3010,13 +3010,13 @@
         "redfish",
         "test"
       ],
-      "body": "qemu-bmc 0.10.0 から、BMC の故障を注入する機能が入った。今の `make integration-redfish` は、BMC のコンテナを止める（docker pause）ことでしか、届かない BMC を作っていない。故障の注入を使って、次の場合の provider の振る舞いを確かめる試験を足す。\n\n- 応答が遅れる（タイムアウトより短い／長い）\n- 5xx を返す\n- 応答しない\n\n確かめたいのは、どの場合も観測できない（unknown）として何も操作せず、故障が消えたら収束し直すこと（§3 unknown≠absent・§5.4）。操作の途中で故障したときに、操作を重ねないことも確かめる。\n\n使う qemu-bmc の版と注入の口は、着手するときに qemu-bmc の文書で確かめる。",
-      "doneWhen": "make integration-redfish に、遅延・5xx・応答なしの故障を注入する項目があり、どれも unknown で無操作、故障が消えたら収束し直すことを示して通る。make check・make test-race が通る",
+      "body": "qemu-bmc 0.10.0 から、BMC の故障を注入する機能が入った。今の `make integration-redfish` は、BMC のコンテナを止める（docker pause）ことでしか、届かない BMC を作っていない。故障の注入を使って、次の場合の provider の振る舞いを確かめる試験を足す。\n\n- 応答が遅れる：タイムアウトより短い遅れなら、ふつうに観測・収束する。タイムアウトより長い遅れなら、観測できない（unknown）\n- 5xx を返す：観測できない（unknown）\n- 応答しない：観測できない（unknown）\n\n観測できないときは何も操作せず、故障が消えたら収束し直すことを確かめる（§3 unknown≠absent・§5.4）。操作の途中で故障したときに、操作を重ねないことも確かめる。\n\n使う qemu-bmc の版と注入の口は、着手するときに qemu-bmc の文書で確かめる。",
+      "doneWhen": "make integration-redfish に遅延・5xx・応答なしの故障を注入する項目があり、タイムアウトより短い遅延では収束し、それ以外は unknown で無操作、故障が消えたら収束し直すことを示して通る。make check・make test-race が通る",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T11:05:55.859Z",
-      "updatedAt": "2026-10-27T11:05:55.859Z",
+      "updatedAt": "2026-10-27T11:06:09.058Z",
       "closedAt": null,
       "extra": {}
     }
