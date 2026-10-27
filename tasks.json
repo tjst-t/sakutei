@@ -2223,11 +2223,11 @@
       "labels": [],
       "body": "設計書 v3.17 §29.1「単純 Task の実 provider：sqlmigrate」を実装する。新しいパッケージ internal/sqlmigrate（Go の標準ライブラリだけ。DB のドライバは入れず、sqlite3 の CLI を os/exec で呼ぶ。CLI のパスは設定で変えられ、既定は PATH の sqlite3）。templates/provider の雛形と契約テスト（#32）のやり方に合わせる。task.Runner（internal/task/task.go の RunTask / RollbackTask）を実装する。参考：internal/fakeprovider/task.go、tests/acceptance/task_strategy_test.go。\n\n## 決まり\n- リソース：ID はデータベース名。設定（provider に渡す）は名前ごとに path（DB ファイル）と migrations（ディレクトリ）。\n- 宣言するフィールドは version（非負の整数）だけ。マイグレーションのディレクトリに無い版を宣言したら計画の時点でエラー。\n- Read：schema_migrations（version INTEGER PRIMARY KEY, applied_at TEXT）の最大の版。表が無ければ 0。DB ファイルが無い場合は 0 として扱ってよいかを考え、設計の「unknown ≠ absent」に反しないようにする（ディレクトリも無い・読めないなどは Unknown）。sqlite3 が無い・起動できない・DB がロック中で読めないときは Unknown（何もしない）。観測だけの値として pending（未適用の up の本数など）を出してもよい。\n- 収束ループの Apply は拒否する。strategy: task でない宣言は計画の時点でエラー（provider.IntentValidator など既存の口を使う）。\n- RunTask：今の版の次から宣言の版まで NNNN_<名前>.up.sql を 1 本ずつ、BEGIN … その SQL … INSERT INTO schema_migrations … COMMIT を 1 回の sqlite3 の呼び出しで流す（-bail で失敗を拾い、失敗したらその 1 本は巻き戻るようにする）。宣言の版が今より小さいときは .down.sql を逆順に流し schema_migrations から消す（down が無ければ失敗）。版の飛び・同じ版の二重は読み込みでエラー。\n- RollbackTask：起動したときの版（Request.Plan の古い値、無ければ RunTask の頭で記録した値）まで down で戻す。\n- 実行中の二重起動は Task の仕組み（1-outstanding）が防ぐが、念のため DB ごとにプロセス内の排他を持つ。\n- SQL の中身やパスにシェルを通さない（exec に引数で渡し、SQL は標準入力）。\n\n## テスト\n- 契約テストと単体テスト。本物の sqlite3 を使うテストは、sqlite3 が PATH に無ければ t.Skip（CI に無いかもしれない）。このコンテナには sqlite3 3.45.1 があるので実際に回ること。\n- up で収束、down で戻る、途中の 1 本が失敗するとその版は残らず前の版は残る、RollbackTask で起動時の版に戻る、Apply は拒否、strategy: task でない宣言はエラー、sqlite3 が無いと Unknown。",
       "doneWhen": "本物の sqlite3 を相手に、RunTask が宣言の版まで up（または down）を 1 本ずつトランザクションで流して完了印を書き、失敗した 1 本は残らず、RollbackTask で起動時の版に戻り、Apply と strategy: task 以外の宣言を拒否し、sqlite3 が無いと Unknown になることをテストで示す。契約テスト・make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/sqlmigrate-provider-schema-migrations-ta）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:11:11.923Z",
-      "updatedAt": "2026-10-23T15:26:11.936Z",
+      "updatedAt": "2026-10-27T09:39:04.933Z",
       "closedAt": "2026-10-23T15:26:11.936Z",
       "extra": {}
     },
