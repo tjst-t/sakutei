@@ -423,11 +423,11 @@
       "labels": [],
       "body": "設計 §19。段0 VM-HA 上の active/standby + fencing、割当事実のシャードローカル無期限キャッシュ（S3）、allocator 停止時の waiting-allocation 縮退（原則8：衛星が止まっても維持は止めない）。intent で disjoint なレンジを宣言してプールを claim ごとに分ける。",
       "doneWhen": "allocator を止めても既存リソースの定常収束が続き、新規割当だけが waiting-allocation になることを chaos テストで示す",
-      "resolution": "Factory が取り込みました（factory/v1b-allocator-ha-lookup-waiting-allocati）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T12:50:52.909Z",
+      "updatedAt": "2026-10-27T09:32:56.878Z",
       "closedAt": "2026-10-20T12:50:52.909Z",
       "extra": {}
     },
