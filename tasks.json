@@ -3180,11 +3180,11 @@
       "labels": [],
       "body": "## やること\n- `sakutei plan --json` で、標準出力に JSON を 1 つ出す（schema_version 1）。中身：操作ごと（provider・scope・local id・CREATE / UPDATE / DELETE・フィールドの前と後・破壊的か・原因タグ）、予算や安全装置で止めた操作とその理由・使う予算のレーン（planned_change を含む）、Workflow に任せている対象、採番待ち、直してよい時間帯の外か、計画のエラー。今の文の出力が持つ情報は全部入れる。秘密の値は出さない（SecretRef のまま）。\n- 終了コードは文の出力と同じ。形は docs（status-json.md と並べて plan-json.md）に書く。\n\n## 確かめ方\n受け入れテスト：作る・変える・消す・予算で止める・Workflow に任せる・採番待ちを含む intent で、--json の件数と内容が文の出力と一致する。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "plan --json が文の出力と一致する JSON を出し、秘密の値を含まないことを受け入れテストで示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/plan-json）",
+      "resolution": "main に取り込んだ。レビューの小さな指摘（docs/plan-json.md の「JSON を出さない場合」の書き方が実際の動きとずれている）は #136 で直す。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T14:31:10.032Z",
-      "updatedAt": "2026-10-27T14:51:15.832Z",
+      "updatedAt": "2026-10-27T14:55:38.450Z",
       "closedAt": "2026-10-27T14:51:15.832Z",
       "extra": {}
     },
