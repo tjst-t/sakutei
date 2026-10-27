@@ -135,6 +135,10 @@ Exit codes:
 	// inventory's resources would show as UNMANAGED.
 	invFlags := addInventoryFlags(fs, true)
 
+	// #118: machine-readable output for tools that collect status results.
+	jsonOut := fs.Bool("json", false,
+		"print the report as one JSON object on stdout (schema_version 1, see docs/status-json.md); exit codes are unchanged")
+
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
@@ -366,10 +370,14 @@ Exit codes:
 			for _, o := range plan.Ops {
 				fields = append(fields, o.Fields...)
 			}
-			builder.AddDrifted(res.ID, op.Cause, tier, op.Diagnostic, curFields, fields...)
+			if obs.State == nil {
+				builder.AddMissing(res.ID, op.Cause, tier, op.Diagnostic, curFields, fields...)
+			} else {
+				builder.AddDrifted(res.ID, op.Cause, tier, op.Diagnostic, curFields, fields...)
+			}
 		} else {
 			// 適合（drift なし）。
-			builder.AddConverged()
+			builder.AddConvergedID(res.ID)
 		}
 
 		// 今周の観測を last-seen リングへ記録（S3・非永続）。AddDrifted の後に記録する
@@ -414,7 +422,17 @@ Exit codes:
 	// 適合レポートを整形して出力。Apply（CREATE/UPDATE/DELETE/applied）系の行は
 	// 一切含まれない —— drift を「一覧」するだけで実行はしない（read-only 契約）。
 	report := builder.Build()
-	fmt.Print(report.String())
+	if *jsonOut {
+		// #118: 機械で読む形。情報源は文の出力と同じ Report。
+		data, err := report.JSON(time.Now())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei status: encode json: %v\n", err)
+			os.Exit(1)
+		}
+		os.Stdout.Write(append(data, '\n'))
+	} else {
+		fmt.Print(report.String())
+	}
 	if report.Incomplete() {
 		os.Exit(3)
 	}
@@ -459,8 +477,7 @@ func detectUnmanaged(
 		fp := providers[name]
 		lister, ok := fp.(provider.Lister)
 		if !ok {
-			builder.NoteUnmanagedUndetectable(
-				fmt.Sprintf("unmanaged 検出不可（List 非対応 provider: %s）", name))
+			builder.NoteListUnsupported(name)
 			continue
 		}
 		// The whole world is listed; --claim narrows the candidates below (#111).
@@ -469,13 +486,11 @@ func detectUnmanaged(
 			// complete-or-error: a failed List must NOT read as "no unmanaged".
 			// #117: counted as not observed (exit 3), not as a status failure.
 			fmt.Fprintf(os.Stderr, "sakutei status: list %s: %v\n", name, err)
-			builder.NoteListError(
-				fmt.Sprintf("unmanaged 検出不可（List エラー: %s: %v）", name, err))
+			builder.NoteListError(name, err)
 			continue
 		}
 		if result.Status != core.ListComplete {
-			builder.NoteUnmanagedUndetectable(
-				fmt.Sprintf("unmanaged 検出不可（List 未完全: %s: status=%v）", name, result.Status))
+			builder.NoteListIncomplete(name, fmt.Sprintf("%v", result.Status))
 			continue
 		}
 		for _, realID := range result.IDs {

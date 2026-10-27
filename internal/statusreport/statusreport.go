@@ -98,6 +98,9 @@ type DriftedItem struct {
 	// Fields はずれているフィールドと、その現実の値（From）・宣言の値（To）（#111）。
 	// diff エンジンの FieldDiff をそのまま採録する（secret は参照の形に正規化済み、§20.2）。
 	Fields []core.FieldDiff
+	// Missing は、宣言されているのに現実に無い（観測した State が nil）こと（#118）。
+	// 文の出力では DRIFTED のまま。JSON の missing に出る。
+	Missing bool
 }
 
 // UnobservableItem は観測できなかったリソース 1 つ（#117）。
@@ -105,6 +108,24 @@ type UnobservableItem struct {
 	ID     core.ID
 	Reason string
 }
+
+// UndetectableItem は宣言外（unmanaged）の検出ができなかった provider 1 つ（#118）。
+type UndetectableItem struct {
+	Provider string
+	// Kind は検出できなかったわけの種類（UndetectableListUnsupported など）。
+	Kind string
+	// Reason は人向けの理由（List のエラー文、List の Status など。非対応なら空）。
+	Reason string
+	// Note は文の出力に出す注記の行。
+	Note string
+}
+
+// 宣言外の検出ができなかったわけの種類（JSON の unmanaged_undetectable[].kind）。
+const (
+	UndetectableListUnsupported = "list_unsupported"
+	UndetectableListError       = "list_error"
+	UndetectableListIncomplete  = "list_incomplete"
+)
 
 // WorkflowHeldItem は Workflow に任せている対象 1 つ（#89）。
 type WorkflowHeldItem struct {
@@ -123,6 +144,9 @@ type Report struct {
 	Drifted []DriftedItem
 	// ConvergedCount は適合（drift なし）だったリソース数。
 	ConvergedCount int
+	// Converged は適合だったリソース（ID 文字列昇順）（#118）。ID の分からない呼び出し
+	// （AddConverged）は数だけ増やし、ここには載せない。
+	Converged []core.ID
 	// UnobservableCount は観測不能（Availability != Ok）だったリソース数。
 	// unknown ≠ absent（§3）: これらは drifted にも converged にも数えない。
 	UnobservableCount int
@@ -142,6 +166,9 @@ type Report struct {
 	// （List 非対応 / List エラー）。検出不能を「宣言外ゼロ」と混同しないための
 	// graceful degradation の可視化。
 	UnmanagedNotes []string
+	// Undetectable は unmanaged 検出ができなかった provider とその理由（#118）。
+	// provider 名の昇順で整列済み。UnmanagedNotes の行と同じ情報の構造化した形。
+	Undetectable []UndetectableItem
 	// WorkflowHeld は done でない Workflow に任せている対象（#89、§6.3）。収束ループは
 	// これを Observe も Apply もしないので、drifted にも converged にも数えない。
 	// Local ID 昇順で整列済み。
@@ -173,11 +200,12 @@ type Builder struct {
 	ring             DriftSummaryProvider
 	drifted          []DriftedItem
 	converged        int
+	convergedIDs     []core.ID
 	unobservable     int
 	unobservableList []UnobservableItem
 	listErrors       int
 	unmanaged        []core.ID
-	unmanagedNotes   []string
+	undetectable     []UndetectableItem
 	workflowHeld     []WorkflowHeldItem
 	daemon           *DaemonHealth
 	daemonNote       string
@@ -212,8 +240,21 @@ func (b *Builder) AddDrifted(id core.ID, cause core.CauseTag, tier Tier, diagnos
 	})
 }
 
+// AddMissing は、宣言されているのに現実に無いリソース（drift の 1 種）を記録する
+// （#118）。引数は AddDrifted と同じ。
+func (b *Builder) AddMissing(id core.ID, cause core.CauseTag, tier Tier, diagnostic string, curFields map[string]string, fields ...core.FieldDiff) {
+	b.AddDrifted(id, cause, tier, diagnostic, curFields, fields...)
+	b.drifted[len(b.drifted)-1].Missing = true
+}
+
 // AddConverged は適合（drift なし）だったリソースを 1 つ数える。
 func (b *Builder) AddConverged() { b.converged++ }
+
+// AddConvergedID は適合だったリソースを ID つきで 1 つ数える（#118）。
+func (b *Builder) AddConvergedID(id core.ID) {
+	b.converged++
+	b.convergedIDs = append(b.convergedIDs, id)
+}
 
 // AddUnobservable は観測不能だったリソースを 1 つ数える（unknown ≠ absent）。
 func (b *Builder) AddUnobservable() { b.unobservable++ }
@@ -227,9 +268,14 @@ func (b *Builder) AddUnobservableReason(id core.ID, reason string) {
 
 // NoteListError は provider の List がエラーだったことを注記し、観測できないものとして
 // 数える（#117）。注記は unmanaged 検出不可の注記として出る。
-func (b *Builder) NoteListError(note string) {
+func (b *Builder) NoteListError(providerName string, err error) {
 	b.listErrors++
-	b.unmanagedNotes = append(b.unmanagedNotes, note)
+	b.undetectable = append(b.undetectable, UndetectableItem{
+		Provider: providerName,
+		Kind:     UndetectableListError,
+		Reason:   err.Error(),
+		Note:     fmt.Sprintf("unmanaged 検出不可（List エラー: %s: %v）", providerName, err),
+	})
 }
 
 // AddUnmanaged は「宣言外・実在」リソース（現実に在るが intent に無い）を 1 つ
@@ -238,11 +284,26 @@ func (b *Builder) AddUnmanaged(id core.ID) {
 	b.unmanaged = append(b.unmanaged, id)
 }
 
-// NoteUnmanagedUndetectable は unmanaged 検出が「できなかった」provider の注記を
-// 追加する（List 非対応、または List エラー）。graceful degradation：検出不能を
-// 「宣言外ゼロ」と混同させず、現実を過少報告しないための可視化。
-func (b *Builder) NoteUnmanagedUndetectable(note string) {
-	b.unmanagedNotes = append(b.unmanagedNotes, note)
+// NoteListUnsupported は List 非対応で unmanaged 検出が「できなかった」provider を
+// 注記する。graceful degradation：検出不能を「宣言外ゼロ」と混同させず、現実を
+// 過少報告しないための可視化。
+func (b *Builder) NoteListUnsupported(providerName string) {
+	b.undetectable = append(b.undetectable, UndetectableItem{
+		Provider: providerName,
+		Kind:     UndetectableListUnsupported,
+		Note:     fmt.Sprintf("unmanaged 検出不可（List 非対応 provider: %s）", providerName),
+	})
+}
+
+// NoteListIncomplete は List が完全でなく（Partial/Unknown）unmanaged 判定を控えた
+// provider を注記する。status は List の Status。
+func (b *Builder) NoteListIncomplete(providerName, status string) {
+	b.undetectable = append(b.undetectable, UndetectableItem{
+		Provider: providerName,
+		Kind:     UndetectableListIncomplete,
+		Reason:   "status=" + status,
+		Note:     fmt.Sprintf("unmanaged 検出不可（List 未完全: %s: status=%s）", providerName, status),
+	})
 }
 
 // AddWorkflowHeld は Workflow に任せている対象を 1 つ記録する（#89）。
@@ -272,9 +333,17 @@ func (b *Builder) Build() Report {
 	sort.Slice(unmanaged, func(i, j int) bool {
 		return unmanaged[i].String() < unmanaged[j].String()
 	})
-	notes := make([]string, len(b.unmanagedNotes))
-	copy(notes, b.unmanagedNotes)
+	undetectable := make([]UndetectableItem, len(b.undetectable))
+	copy(undetectable, b.undetectable)
+	sort.SliceStable(undetectable, func(i, j int) bool { return undetectable[i].Provider < undetectable[j].Provider })
+	notes := make([]string, 0, len(undetectable))
+	for _, u := range undetectable {
+		notes = append(notes, u.Note)
+	}
 	sort.Strings(notes)
+	converged := make([]core.ID, len(b.convergedIDs))
+	copy(converged, b.convergedIDs)
+	sort.Slice(converged, func(i, j int) bool { return converged[i].String() < converged[j].String() })
 	held := make([]WorkflowHeldItem, len(b.workflowHeld))
 	copy(held, b.workflowHeld)
 	sort.Slice(held, func(i, j int) bool { return held[i].ID.Local < held[j].ID.Local })
@@ -289,6 +358,8 @@ func (b *Builder) Build() Report {
 		RenderedRevision:  b.renderedRevision,
 		Drifted:           sorted,
 		ConvergedCount:    b.converged,
+		Converged:         converged,
+		Undetectable:      undetectable,
 		UnobservableCount: b.unobservable,
 		Unmanaged:         unmanaged,
 		UnmanagedNotes:    notes,

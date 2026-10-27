@@ -21,6 +21,7 @@
 package statusreport
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -211,7 +212,7 @@ func TestReport_UnmanagedUndetectableNote(t *testing.T) {
 	// [AC-Sc7a647-3-unmanaged]
 	b := NewBuilder("rev-int", "rev-rendered", nil)
 	b.AddConverged()
-	b.NoteUnmanagedUndetectable("unmanaged 検出不可（List 非対応 provider: noimpl）")
+	b.NoteListUnsupported("noimpl")
 	out := b.Build().String()
 
 	if !strings.Contains(out, "unmanaged 検出不可（List 非対応 provider: noimpl）") {
@@ -251,7 +252,7 @@ func TestReport_IncompleteOnUnobservableOrListError(t *testing.T) {
 	}
 
 	b = NewBuilder("r1", "r1", nil)
-	b.NoteListError("unmanaged 検出不可（List エラー: fake: boom）")
+	b.NoteListError("fake", errors.New("boom"))
 	r = b.Build()
 	if !r.Incomplete() || r.ListErrorCount != 1 {
 		t.Errorf("a List error should make the report incomplete: %+v", r)
