@@ -73,11 +73,25 @@ import (
 //
 // Exit codes:
 //
-//	0 — status completed (適合でも drift ありでも 0; 観測は成功した)
-//	1 — error (flag parse error, intent load failure, observe error, etc.)
+//	0 — status completed and every resource was observed (適合でも drift ありでも 0)
+//	1 — the report itself could not be made (flag parse error, intent load
+//	    failure, provider resolution failure, etc.)
+//	3 — the report was made, but some resource could not be observed (a Read
+//	    error or Availability != ok) or a provider's List failed (#117).  1 is
+//	    kept for "status itself failed" so existing callers are not broken.
 func runStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: sakutei status --intent <dir> [flags]")
+		fs.PrintDefaults()
+		fmt.Fprintln(os.Stderr, `
+Exit codes:
+  0  every resource was observed and reported (drift does not change it)
+  3  reported, but some resource could not be observed (Read error or
+     availability != ok) or a provider's List failed (#117)
+  1  no report (flag error, intent load failure, provider resolution failure)`)
+	}
 
 	intentDir := fs.String("intent", "", "directory containing intent JSON files (required)")
 	statePath := fs.String("state", "sakutei-fake-state.json",
@@ -302,14 +316,17 @@ func runStatus(args []string) {
 		engine := engines[res.ID.Provider]
 
 		// ADR-0002: リソースごとに独立して Observe（read-only Read）。
+		// #117: Read のエラーは報告を止めず、そのリソースを観測できないものとして
+		// 数える。1 台の BMC が落ちてもほかの適合は出す。
 		obs, readErr := fp.Read(ctx, res.ID.Local)
 		if readErr != nil {
 			fmt.Fprintf(os.Stderr, "sakutei status: observe %s: %v\n", res.ID, readErr)
-			os.Exit(1)
+			builder.AddUnobservableReason(res.ID, fmt.Sprintf("observe error: %v", readErr))
+			continue
 		}
 		if obs.Availability != core.AvailabilityOk {
 			// unknown ≠ absent（§3）: 観測不能は drift とも converged とも数えない。
-			builder.AddUnobservable()
+			builder.AddUnobservableReason(res.ID, fmt.Sprintf("availability=%v", obs.Availability))
 			continue
 		}
 
@@ -398,6 +415,9 @@ func runStatus(args []string) {
 	// 一切含まれない —— drift を「一覧」するだけで実行はしない（read-only 契約）。
 	report := builder.Build()
 	fmt.Print(report.String())
+	if report.Incomplete() {
+		os.Exit(3)
+	}
 	os.Exit(0)
 }
 
@@ -447,7 +467,9 @@ func detectUnmanaged(
 		result, err := lister.List(ctx, core.NewScope(nil))
 		if err != nil {
 			// complete-or-error: a failed List must NOT read as "no unmanaged".
-			builder.NoteUnmanagedUndetectable(
+			// #117: counted as not observed (exit 3), not as a status failure.
+			fmt.Fprintf(os.Stderr, "sakutei status: list %s: %v\n", name, err)
+			builder.NoteListError(
 				fmt.Sprintf("unmanaged 検出不可（List エラー: %s: %v）", name, err))
 			continue
 		}

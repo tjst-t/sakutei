@@ -459,7 +459,8 @@ Usage:
   sakutei              run continuously, converging on every cycle
   sakutei plan         dry-run: show what would change
   sakutei reconcile    run one convergence cycle manually
-  sakutei status       report drifted resources
+  sakutei status       report drifted resources (exit 0: all observed,
+                       3: reported but some resource unobservable, 1: no report)
   sakutei import       export existing reality as intent YAML
   sakutei sync         record the reality of mode: sync scopes into generated/
   sakutei fence        show the fencing generations of claimed scopes (§17.6)

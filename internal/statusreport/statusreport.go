@@ -100,6 +100,12 @@ type DriftedItem struct {
 	Fields []core.FieldDiff
 }
 
+// UnobservableItem は観測できなかったリソース 1 つ（#117）。
+type UnobservableItem struct {
+	ID     core.ID
+	Reason string
+}
+
 // WorkflowHeldItem は Workflow に任せている対象 1 つ（#89）。
 type WorkflowHeldItem struct {
 	ID       core.ID
@@ -120,6 +126,13 @@ type Report struct {
 	// UnobservableCount は観測不能（Availability != Ok）だったリソース数。
 	// unknown ≠ absent（§3）: これらは drifted にも converged にも数えない。
 	UnobservableCount int
+	// Unobservable は観測できなかったリソースと、その理由（Read のエラー文、または
+	// Availability）（#117）。Local ID 昇順で整列済み。理由が分からない呼び出し
+	// （AddUnobservable）は数だけ増やし、ここには載せない。
+	Unobservable []UnobservableItem
+	// ListErrorCount は List がエラーだった provider の数（#117）。宣言外の検出が
+	// できなかった＝現実を見られなかったので、観測できないものとして終了コードに効く。
+	ListErrorCount int
 	// Unmanaged は「宣言外・実在」リソース一覧（現実に在るが intent に無い）。
 	// FIX #2 (Sc7a647-3): provider の List でリアルを列挙し、宣言集合との差分から
 	// 求める。既定の DeletionPolicy（ExplicitAbsentOnly）では prune 対象外＝削除され
@@ -161,6 +174,8 @@ type Builder struct {
 	drifted          []DriftedItem
 	converged        int
 	unobservable     int
+	unobservableList []UnobservableItem
+	listErrors       int
 	unmanaged        []core.ID
 	unmanagedNotes   []string
 	workflowHeld     []WorkflowHeldItem
@@ -202,6 +217,20 @@ func (b *Builder) AddConverged() { b.converged++ }
 
 // AddUnobservable は観測不能だったリソースを 1 つ数える（unknown ≠ absent）。
 func (b *Builder) AddUnobservable() { b.unobservable++ }
+
+// AddUnobservableReason は観測できなかったリソースを理由つきで 1 つ数える（#117）。
+// reason は Read のエラー文、または Availability。
+func (b *Builder) AddUnobservableReason(id core.ID, reason string) {
+	b.unobservable++
+	b.unobservableList = append(b.unobservableList, UnobservableItem{ID: id, Reason: reason})
+}
+
+// NoteListError は provider の List がエラーだったことを注記し、観測できないものとして
+// 数える（#117）。注記は unmanaged 検出不可の注記として出る。
+func (b *Builder) NoteListError(note string) {
+	b.listErrors++
+	b.unmanagedNotes = append(b.unmanagedNotes, note)
+}
 
 // AddUnmanaged は「宣言外・実在」リソース（現実に在るが intent に無い）を 1 つ
 // 記録する（FIX #2, Sc7a647-3）。既定 DeletionPolicy では prune 対象外＝削除されない。
@@ -249,7 +278,12 @@ func (b *Builder) Build() Report {
 	held := make([]WorkflowHeldItem, len(b.workflowHeld))
 	copy(held, b.workflowHeld)
 	sort.Slice(held, func(i, j int) bool { return held[i].ID.Local < held[j].ID.Local })
+	unobs := make([]UnobservableItem, len(b.unobservableList))
+	copy(unobs, b.unobservableList)
+	sort.Slice(unobs, func(i, j int) bool { return unobs[i].ID.String() < unobs[j].ID.String() })
 	return Report{
+		Unobservable:      unobs,
+		ListErrorCount:    b.listErrors,
 		WorkflowHeld:      held,
 		IntentRevision:    b.intentRevision,
 		RenderedRevision:  b.renderedRevision,
@@ -321,6 +355,17 @@ func (r Report) String() string {
 		}
 	}
 
+	// #117 (§3): 観測できなかったリソース。drifted にも converged にも数えない
+	// （unknown ≠ absent）。1 つの失敗で報告全体を止めず、理由をリソースごとに出す。
+	if len(r.Unobservable) > 0 {
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "観測できない（drift とも適合とも数えない）: %d リソース\n", len(r.Unobservable))
+		for _, it := range r.Unobservable {
+			fmt.Fprintf(&sb, "  UNOBSERVABLE %s\n", it.ID)
+			fmt.Fprintf(&sb, "    理由: %s\n", it.Reason)
+		}
+	}
+
 	// #89 (§6.3): Workflow に任せている対象。drifted としては出さない（収束ループは
 	// 触らない）。
 	if len(r.WorkflowHeld) > 0 {
@@ -383,6 +428,12 @@ func (r Report) String() string {
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// Incomplete は、報告はできたが観測できないもの（観測不能なリソース、または List
+// エラーの provider）があったこと（#117）。status はこのとき終了コード 3 を返す。
+func (r Report) Incomplete() bool {
+	return r.UnobservableCount > 0 || r.ListErrorCount > 0
 }
 
 // 静的な型アサーション: *lastseen.ResourceRing が DriftSummaryProvider を満たすこと

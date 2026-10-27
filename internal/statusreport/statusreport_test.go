@@ -225,3 +225,38 @@ func TestReport_UnmanagedUndetectableNote(t *testing.T) {
 		t.Errorf("[AC-Sc7a647-3-unmanaged] no UNMANAGED entries should be listed; got:\n%s", out)
 	}
 }
+
+// TestReport_IncompleteOnUnobservableOrListError (#117): a resource that could
+// not be observed, or a provider whose List failed, makes the report
+// Incomplete (status exits 3); a plain drift does not.
+//
+// [AC-114-3-1]
+func TestReport_IncompleteOnUnobservableOrListError(t *testing.T) {
+	id := core.ID{Provider: "fake", Local: "bmc-1"}
+
+	b := NewBuilder("r1", "r1", nil)
+	b.AddDrifted(id, core.CauseTagB, Tier{}, "", nil)
+	if b.Build().Incomplete() {
+		t.Errorf("a drift alone must not make the report incomplete")
+	}
+
+	b = NewBuilder("r1", "r1", nil)
+	b.AddUnobservableReason(id, "observe error: boom")
+	r := b.Build()
+	if !r.Incomplete() || r.UnobservableCount != 1 || len(r.Unobservable) != 1 {
+		t.Fatalf("unobservable resource should make the report incomplete: %+v", r)
+	}
+	if out := r.String(); !strings.Contains(out, "UNOBSERVABLE fake//bmc-1") || !strings.Contains(out, "observe error: boom") {
+		t.Errorf("report should list the unobservable resource with its reason; got:\n%s", out)
+	}
+
+	b = NewBuilder("r1", "r1", nil)
+	b.NoteListError("unmanaged 検出不可（List エラー: fake: boom）")
+	r = b.Build()
+	if !r.Incomplete() || r.ListErrorCount != 1 {
+		t.Errorf("a List error should make the report incomplete: %+v", r)
+	}
+	if !strings.Contains(r.String(), "List エラー: fake: boom") {
+		t.Errorf("List error note should be shown; got:\n%s", r.String())
+	}
+}
