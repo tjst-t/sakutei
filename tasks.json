@@ -3327,6 +3327,30 @@
       "updatedAt": "2026-10-27T16:42:57.809Z",
       "closedAt": "2026-10-27T16:42:35.793Z",
       "extra": {}
+    },
+    {
+      "id": "vm-proxmox-vm-ldap-ip",
+      "number": 142,
+      "kind": "story",
+      "title": "管理系・監視系の VM とアプリを宣言で組み上げる：Proxmox の VM・LDAP・IP のプール",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "provider",
+        "vm"
+      ],
+      "body": "ハイパーバイザの上に VM を宣言で作り（cloud-init で Sakutei の ssh の鍵とアドレスを入れる）、その中の設定を離れたホストの層（#130）・Ansible provider（#127）で合わせ、LDAP の項目を宣言で管理する。VM のアドレスを採番から配れるようにする。サービスの配備はまず Ansible provider で行う（podman と systemd の quadlet を想定、docs に例）。\n\n決定：2026-10-27。",
+      "doneWhen": "子タスクがすべて done、make check・make test-race と各統合テストが通り、設計書と CHANGELOG に反映して main に push 済み",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T17:17:03.816Z",
+      "updatedAt": "2026-10-27T17:17:03.816Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
