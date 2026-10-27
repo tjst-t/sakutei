@@ -2103,11 +2103,11 @@
       ],
       "body": "#84 の統合テスト（make integration-redfish）のログで気づいた。\n\n- BMC を止めて Unknown で飛ばした周に `cycle 2: observed=2 converged (no changes)` と出る（次の行に `2 resource(s) skipped` は出る）。飛ばした資源がある周は converged と言わない方が誤解がない（#76 の「prune した周に converged と出さない」と同じ系統）。\n- `observe redfish-system//node1: availability=2 (not Ok)` と Availability が数字で出る。Converging などの名前で出す。\n\n害は表示だけ。",
       "doneWhen": "飛ばした資源がある周の要約が converged ではなく、飛ばした件数を含む文になる。Availability が名前で出る。make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/converged-availability）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T05:06:28.085Z",
-      "updatedAt": "2026-10-22T11:05:35.812Z",
+      "updatedAt": "2026-10-27T09:38:19.360Z",
       "closedAt": "2026-10-22T11:05:35.812Z",
       "extra": {}
     },
