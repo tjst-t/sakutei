@@ -157,7 +157,8 @@ func (e *Engine) Held(ctx context.Context, defs []Definition) (map[string]string
 // Hold は done でない Workflow 1 つ（その対象は収束ループが触らない）と、その run。
 type Hold struct {
 	Workflow string
-	Targets  []core.ID
+	// Targets は Workflow が触るリソース（対象と手順の resource、Definition.Resources）。
+	Targets []core.ID
 	// Run は Store にある run。nil なら未起動（Store が無いときも nil）。
 	Run *Run
 	// Restart は前の run が done だが定義が変わった（次の周に新しい run が起動する）。
@@ -171,7 +172,7 @@ type Hold struct {
 func Holds(ctx context.Context, store Store, defs []Definition) []Hold {
 	var out []Hold
 	for _, def := range defs {
-		h := Hold{Workflow: def.Name, Targets: def.Targets()}
+		h := Hold{Workflow: def.Name, Targets: def.Resources()}
 		if store != nil {
 			run, ok, err := store.Get(ctx, def.Name)
 			switch {
@@ -376,22 +377,32 @@ func (s *stepper) advance(ctx context.Context) {
 		stage := s.def.Stages[s.run.Stage]
 		target := stage.Targets[s.run.Target]
 		step := s.def.Steps[s.run.Step]
+		// res は手順が触るリソース（#87: 手順の resource。無ければ対象）。
+		res := step.ResourceFor(target)
 		where := fmt.Sprintf("stage %s, target %s, step %d (%s)", stage.Name, target.Local, s.run.Step+1, step.Kind)
+		if step.Resource != "" {
+			where = fmt.Sprintf("stage %s, target %s, step %d (%s %s/%s)", stage.Name, target.Local, s.run.Step+1, step.Kind, res.Provider, res.Local)
+		}
 
 		obs := s.observeAll(ctx)
+		resObs := obs[target.Local]
+		if step.Resource != "" {
+			resObs = s.observe(ctx, res)
+		}
 		// 不変条件（前）: この手順を施した後の見込みで破れるなら進まない。active を
 		// 減らさない手順（Task・undrain など）は止めない: 外から破られている最中でも
 		// それ以上悪くはせず、止めると drain した対象を持ったまま動けなくなる。
+		// 対象でないリソースへの手順は active を変えない（見込みは今と同じ）。
 		if s.def.Invariant.MinActive > 0 && (step.Kind == StepApply || step.Kind == StepTask) {
-			n := s.countActive(obs, target, step.Fields)
-			if n < s.def.Invariant.MinActive && n < s.countActive(obs, target, nil) {
+			n := s.countActive(obs, res, step.Fields)
+			if n < s.def.Invariant.MinActive && n < s.countActive(obs, res, nil) {
 				s.wait(EventBlocked, "%s: invariant min_active %d would break (%d active); not proceeding until it holds",
 					where, s.def.Invariant.MinActive, n)
 				return
 			}
 		}
 
-		status, msg := s.exec(ctx, step, target, obs[target.Local])
+		status, msg := s.exec(ctx, step, res, resObs)
 		switch status {
 		case stepPending:
 			s.wait(EventWaiting, "%s: %s", where, msg)
@@ -461,7 +472,8 @@ func (s *stepper) wait(kind EventKind, format string, args ...any) {
 	s.emit(kind, "%s", reason)
 }
 
-// exec は 1 つの手順を施す（冪等: 既に済んでいれば何もしない）。
+// exec は 1 つの手順を施す（冪等: 既に済んでいれば何もしない）。target は
+// 手順が触るリソース（手順の resource か、今の対象）、obs はその観測。
 func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.Observation) (stepStatus, string) {
 	switch step.Kind {
 	case StepVerify:
@@ -469,12 +481,16 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 			return stepFailed, fmt.Sprintf("verify: invariant min_active %d broken (%d active)", s.def.Invariant.MinActive, n)
 		}
 		return stepDone, "invariant holds"
-	case StepWait:
+	case StepWait, StepRequire:
+		// 観測できない間も待つ（unknown ≠ absent）。timeout は手順に入った時刻から。
 		if s.satisfied(obs, target, step.Fields) {
 			return stepDone, fmt.Sprintf("observed %v", step.Fields)
 		}
 		if step.Timeout > 0 && !s.now.Before(s.run.StepStartedAt.Add(step.Timeout)) {
-			return stepFailed, fmt.Sprintf("wait for %v timed out after %s", step.Fields, step.Timeout)
+			return stepFailed, fmt.Sprintf("%s %v timed out after %s", step.Kind, step.Fields, step.Timeout)
+		}
+		if obs.Availability != core.AvailabilityOk {
+			return stepPending, fmt.Sprintf("waiting for %v (unobservable; unknown ≠ absent)", step.Fields)
 		}
 		return stepPending, fmt.Sprintf("waiting for %v", step.Fields)
 	}
@@ -561,18 +577,22 @@ func (s *stepper) satisfied(obs core.Observation, id core.ID, fields map[string]
 func (s *stepper) observeAll(ctx context.Context) map[string]core.Observation {
 	out := map[string]core.Observation{}
 	for _, id := range s.def.Targets() {
-		p := s.e.providerOf(id)
-		if p == nil {
-			out[id.Local] = core.Observation{Availability: core.AvailabilityUnknown}
-			continue
-		}
-		obs, err := p.Read(ctx, id.Local)
-		if err != nil {
-			obs = core.Observation{Availability: core.AvailabilityUnknown}
-		}
-		out[id.Local] = obs
+		out[id.Local] = s.observe(ctx, id)
 	}
 	return out
+}
+
+// observe は id を新しく Observe する。provider が無いか読めなければ unknown。
+func (s *stepper) observe(ctx context.Context, id core.ID) core.Observation {
+	p := s.e.providerOf(id)
+	if p == nil {
+		return core.Observation{Availability: core.AvailabilityUnknown}
+	}
+	obs, err := p.Read(ctx, id.Local)
+	if err != nil {
+		return core.Observation{Availability: core.AvailabilityUnknown}
+	}
+	return obs
 }
 
 // countActive は active な対象の数を返す。override があれば target の観測値に

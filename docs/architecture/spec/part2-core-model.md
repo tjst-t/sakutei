@@ -419,6 +419,30 @@ on_failure:
 
 これは過剰ではない——HA 上げは本来的に「順序・不変条件・失敗回復」を持つ問題で、どのツールでも要る本質的複雑さである。それを第一級プリミティブとして構造化する。
 
+**手順が触るリソースと前提条件（Backlog #87）。** 手順は Workflow の target と別の provider のリソースを触れる。OS の導入では「CD（`redfish-virtual-media`）にインストーラを差す」→「CD 起動にして電源オン（`redfish-system`）」の順が要り、CD を普段の宣言にすると順番が保証されない（CD より先に電源が入ると空のドライブから起動しようとして止まる）。そこで二つを入れる。
+
+- **手順ごとの対象**：`apply`・`wait`・`require` に `resource: <provider>/<id>` を書くと、その手順はそのリソースを Observe・Diff・Apply する（その provider の Schema で比べる）。id の `{target}` は今の対象の Local ID に置き換わり（例 `redfish-virtual-media/{target}/cd`）、scope は Workflow の `target.scope`。`apply` は `{ resource, fields }` の形で書き、`resource` を書かない手順は今までどおり対象そのもの（`apply: { active: "false" }` のように fields を直に書く形もそのまま使える）。`task` は対象だけ（別のリソースの Task は多相 Task、v2）。
+- **前提条件 `require`**：`{ resource, fields, timeout }`。観測で fields が満たされるまで次の手順に進まず、`timeout`（必須）を過ぎると on_failure（halt）。観測できない間も待つ（unknown ≠ absent）。`wait` と判定は同じで、「手順の結果を待つ」`wait` は timeout を省けるが、「前に要るもの」を確かめる `require` は満たされないまま待ち続けないよう省けない。
+
+```yaml
+steps:
+  - apply:                                   # 1. CD を差す（別の provider）
+      resource: redfish-virtual-media/{target}/cd
+      fields:
+        image: /iso/installer.iso
+  - require:                                 # 2. 差さったことを確かめる（前提条件）
+      resource: redfish-virtual-media/{target}/cd
+      fields:
+        image: /iso/installer.iso
+      timeout: 5m
+  - apply:                                   # 3. CD 起動で電源オン（target そのもの）
+      boot_enabled: Continuous
+      boot_target: Cd
+      power: "On"
+```
+
+手順が触るリソースは target と同じに扱う：done でない Workflow の target と手順の resource（target ごとに展開したもの）は収束ループが Apply せず、plan・status は「Workflow に任せる」と示す。2 つの Workflow が同じリソースを触る宣言と、`strategy: task` のリソースを手順で触る宣言はロード時に拒否する。承認ゲート・1 台ずつ（target ごとに全手順）・不変条件（`min_active` は target だけで数える。target でないリソースへの手順は active の見込みを変えない）・S2 の進行位置・起こし直しからの再開は変わらない。claim は Workflow が触るリソースがすべて claim の内にあるシャードだけが進める。
+
 ### §6.4 承認ゲート
 
 段階適用の承認ゲートは既存 Workflow（wave + invariant + Event/sink + フェーズ永続化）の組み合わせで表現でき、新プリミティブは不要である。ゲートは health_check（自動）と manual_approval（人）を持てる。

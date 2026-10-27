@@ -38,8 +38,8 @@ func TestRedfishOSInstallTrialIntentLoads(t *testing.T) {
 	if sys := fields["redfish-system/node1"]; sys["power"] != "On" || sys["boot_enabled"] != "Disabled" {
 		t.Errorf("redfish-system node1 = %v", sys)
 	}
-	if cd := fields["redfish-virtual-media/node1/cd"]; cd["image"] != "/iso/sakutei-autoinstall.iso" {
-		t.Errorf("redfish-virtual-media node1/cd = %v", cd)
+	if cd, ok := fields["redfish-virtual-media/node1/cd"]; !ok || cd["image"] != "" {
+		t.Errorf("redfish-virtual-media node1/cd = %v (want declared, ejected after the install)", cd)
 	}
 	if len(in.Workflows) != 1 {
 		t.Fatalf("workflows = %+v", in.Workflows)
@@ -48,7 +48,8 @@ func TestRedfishOSInstallTrialIntentLoads(t *testing.T) {
 	if def.Name != "os-install" || len(def.Targets()) != 1 || def.Targets()[0].Provider != "redfish-system" || def.Targets()[0].Local != "node1" {
 		t.Errorf("workflow = %s, targets = %+v", def.Name, def.Targets())
 	}
-	kinds := []workflow.StepKind{workflow.StepApply, workflow.StepWait, workflow.StepApply}
+	// #87: CD を差す → 差さったことを確かめる → CD 起動で電源オン → 電源オフを待つ → ディスクから起動。
+	kinds := []workflow.StepKind{workflow.StepApply, workflow.StepRequire, workflow.StepApply, workflow.StepWait, workflow.StepApply}
 	if len(def.Steps) != len(kinds) {
 		t.Fatalf("steps = %+v", def.Steps)
 	}
@@ -57,15 +58,30 @@ func TestRedfishOSInstallTrialIntentLoads(t *testing.T) {
 			t.Errorf("steps[%d].kind = %q, want %q", i, def.Steps[i].Kind, k)
 		}
 	}
-	s1, s2, s3 := def.Steps[0].Fields, def.Steps[1], def.Steps[2].Fields
-	if s1["boot_enabled"] != "Continuous" || s1["boot_target"] != "Cd" || s1["power"] != "On" {
-		t.Errorf("steps[0] = %v", s1)
+	const iso = "/iso/sakutei-autoinstall.iso"
+	node1 := def.Targets()[0]
+	for _, i := range []int{0, 1} {
+		id := def.Steps[i].ResourceFor(node1)
+		if id.Provider != "redfish-virtual-media" || id.Local != "node1/cd" || def.Steps[i].Fields["image"] != iso {
+			t.Errorf("steps[%d] = %+v (resource %+v)", i, def.Steps[i], id)
+		}
 	}
-	if s2.Fields["power"] != "Off" || s2.Timeout != 15*time.Minute {
-		t.Errorf("steps[1] = %+v", s2)
+	if def.Steps[1].Timeout != 5*time.Minute {
+		t.Errorf("steps[1].timeout = %s", def.Steps[1].Timeout)
 	}
-	if s3["boot_enabled"] != "Disabled" || s3["power"] != "On" {
-		t.Errorf("steps[2] = %v", s3)
+	s3, s4, s5 := def.Steps[2], def.Steps[3], def.Steps[4]
+	if s3.Resource != "" || s3.Fields["boot_enabled"] != "Continuous" || s3.Fields["boot_target"] != "Cd" || s3.Fields["power"] != "On" {
+		t.Errorf("steps[2] = %+v", s3)
+	}
+	if s4.Fields["power"] != "Off" || s4.Timeout != 15*time.Minute {
+		t.Errorf("steps[3] = %+v", s4)
+	}
+	if s5.Fields["boot_enabled"] != "Disabled" || s5.Fields["power"] != "On" {
+		t.Errorf("steps[4] = %+v", s5)
+	}
+	// Workflow が触るのは node1 と node1/cd（done まで収束ループが触らない）。
+	if res := def.Resources(); len(res) != 2 || res[1].Local != "node1/cd" {
+		t.Errorf("Resources = %+v", res)
 	}
 }
 

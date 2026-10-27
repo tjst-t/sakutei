@@ -207,24 +207,54 @@ func parseRequirements(v any) (*workflow.Requirements, error) {
 }
 
 // parseStep reads one step: an object with exactly one of apply / task /
-// wait / verify.
+// wait / require / verify.
+//
+// apply takes either the fields of the target directly (apply: { active:
+// "false" }) or, to name the resource it touches (#87), { resource:
+// <provider>/<id>, fields: {...} } — recognized by a `fields` key holding an
+// object.  wait and require take { resource, fields, timeout } (resource
+// optional; require's timeout is mandatory).
 func parseStep(v any) (workflow.Step, error) {
 	m, ok := v.(map[string]any)
 	if !ok || len(m) != 1 {
-		return workflow.Step{}, fmt.Errorf("a step is an object with exactly one of apply / task / wait / verify")
+		return workflow.Step{}, fmt.Errorf("a step is an object with exactly one of apply / task / wait / require / verify")
 	}
 	for k, val := range m {
 		step := workflow.Step{Kind: workflow.StepKind(k)}
 		switch step.Kind {
 		case workflow.StepApply, workflow.StepTask:
-			step.Fields = stringifyStringMap(val)
-		case workflow.StepWait:
+			am, _ := val.(map[string]any)
+			if _, nested := am["fields"].(map[string]any); !nested {
+				step.Fields = stringifyStringMap(val)
+				break
+			}
+			if step.Kind == workflow.StepTask {
+				return workflow.Step{}, fmt.Errorf("task takes the target's fields directly (a task runs on the target; resource is v2's polymorphic Task)")
+			}
+			for key := range am {
+				if key != "resource" && key != "fields" {
+					return workflow.Step{}, fmt.Errorf("apply.%s is not supported (resource | fields)", key)
+				}
+			}
+			if err := parseStepResource(&step, am); err != nil {
+				return workflow.Step{}, err
+			}
+			step.Fields = stringifyStringMap(am["fields"])
+		case workflow.StepWait, workflow.StepRequire:
 			wm, _ := val.(map[string]any)
+			for key := range wm {
+				if key != "resource" && key != "fields" && key != "timeout" {
+					return workflow.Step{}, fmt.Errorf("%s.%s is not supported (resource | fields | timeout)", k, key)
+				}
+			}
+			if err := parseStepResource(&step, wm); err != nil {
+				return workflow.Step{}, err
+			}
 			step.Fields = stringifyStringMap(wm["fields"])
 			if ts, ok := wm["timeout"].(string); ok {
 				d, err := time.ParseDuration(strings.TrimSpace(ts))
 				if err != nil {
-					return workflow.Step{}, fmt.Errorf("wait.timeout: %w", err)
+					return workflow.Step{}, fmt.Errorf("%s.timeout: %w", k, err)
 				}
 				step.Timeout = d
 			}
@@ -242,16 +272,31 @@ func parseStep(v any) (workflow.Step, error) {
 				return workflow.Step{}, fmt.Errorf("verify must be \"invariant\" or { invariant: min_active }")
 			}
 		default:
-			return workflow.Step{}, fmt.Errorf("unknown step %q (apply | task | wait | verify)", k)
+			return workflow.Step{}, fmt.Errorf("unknown step %q (apply | task | wait | require | verify)", k)
 		}
 		return step, nil
 	}
 	return workflow.Step{}, nil
 }
 
+// parseStepResource reads the step's optional `resource: <provider>/<id>`.
+func parseStepResource(step *workflow.Step, m map[string]any) error {
+	raw, ok := m["resource"]
+	if !ok {
+		return nil
+	}
+	ref, isString := raw.(string)
+	if !isString || strings.TrimSpace(ref) == "" {
+		return fmt.Errorf("%s.resource must be \"<provider>/<id>\"", step.Kind)
+	}
+	step.Resource = strings.TrimSpace(ref)
+	return nil
+}
+
 // validateWorkflows rejects two workflows with the same name (the name is the
-// API's {id}) and a target claimed by two workflows or also declared as a
-// strategy: task resource (two procedures would drive the same resource).
+// API's {id}) and a resource touched by two workflows (as a target or by a
+// step's resource, #87) or also declared as a strategy: task resource (two
+// procedures would drive the same resource).
 func validateWorkflows(defs []workflow.Definition, resources []diff.DesiredResource) error {
 	names := map[string]bool{}
 	owner := map[string]string{}
@@ -260,7 +305,7 @@ func validateWorkflows(defs []workflow.Definition, resources []diff.DesiredResou
 			return fmt.Errorf("workflow %s is declared twice", def.Name)
 		}
 		names[def.Name] = true
-		for _, id := range def.Targets() {
+		for _, id := range def.Resources() {
 			if other, ok := owner[id.Local]; ok {
 				return fmt.Errorf("target %s is in both workflow %s and %s", id.Local, other, def.Name)
 			}

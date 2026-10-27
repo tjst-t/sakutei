@@ -31,6 +31,11 @@
 //	[AC-84-5]  BMC のコンテナを止める（docker pause）と、そのノードは観測できず
 //	           （Unknown）何も操作しない。もう 1 台は収束を続ける。
 //	[AC-84-6]  boot_enabled: Once の宣言は計画の時点でエラー（BMC に書かない）。
+//	[AC-87-7]  OS 導入の Workflow（#87）: 1 つの Workflow で「CD（別の provider）を
+//	           差す → 差さったことを require で確かめる → CD 起動で電源オン →
+//	           電源オフを待つ → ディスクから起動」を回し、電源が入るのは CD が
+//	           差さったあと。done まで CD は収束ループが触らず、done で resources
+//	           どおり抜かれる。
 package redfish
 
 import (
@@ -563,6 +568,7 @@ func TestRedfishIntegration(t *testing.T) {
 		{"4_graceful_then_force", stepGracefulThenForce},
 		{"5_bmc_paused_unknown", stepPausedUnknown},
 		{"6_once_rejected", stepOnceRejected},
+		{"7_workflow_cd_before_power", stepWorkflowCDBeforePower},
 	}
 	for _, s := range steps {
 		if !t.Run(s.name, s.fn) {
@@ -904,6 +910,112 @@ func stepOnceRejected(t *testing.T) {
 	after := mustSystem(t, node2)
 	if after.Boot != before.Boot || after.PowerState != before.PowerState {
 		t.Fatalf("[AC-84-6] node2 changed: %+v → %+v", before, after)
+	}
+}
+
+// [AC-87-7]
+func stepWorkflowCDBeforePower(t *testing.T) {
+	// 6 の終わり: node1 は電源 Off・CD は isoB。node2 は電源 On・CD は空。
+	if s := mustSystem(t, node1); s.PowerState != "Off" {
+		t.Fatalf("node1 is %s at the start, want Off", s.PowerState)
+	}
+	cd := "redfish-virtual-media/{target}/cd"
+	rs := desiredStep2()
+	rs[0] = systemRes(node1, map[string]string{"power": "On", "boot_enabled": "Disabled"})
+	rs[1] = mediaRes(node1, "") // 終わったあとは抜く
+	intent := map[string]any{
+		"resources": rs,
+		"workflows": []any{map[string]any{
+			"workflow": "os-install",
+			"target":   map[string]any{"provider": "redfish-system"},
+			"stages":   []any{map[string]any{"name": "install", "targets": []string{node1.name}}},
+			"steps": []any{
+				map[string]any{"apply": map[string]any{"resource": cd, "fields": map[string]string{"image": isoA}}},
+				map[string]any{"require": map[string]any{"resource": cd, "fields": map[string]string{"image": isoA}, "timeout": "1m"}},
+				map[string]any{"apply": map[string]string{"boot_enabled": "Continuous", "boot_target": "Cd", "power": "On"}},
+				map[string]any{"wait": map[string]any{"fields": map[string]string{"power": "Off"}, "timeout": "3m"}},
+				map[string]any{"apply": map[string]string{"boot_enabled": "Disabled", "power": "On"}},
+			},
+		}},
+	}
+	b, err := json.MarshalIndent(intent, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lab.dir, "intent", "bmc.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(lab.dir, "workflows.json")
+	_ = os.Remove(store)
+
+	// 電源が初めて Off でなくなったときの CD を記録する（system → media の順に見る）。
+	type sample struct {
+		power string
+		media mediaDoc
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	var firstOn *sample
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		for ctx.Err() == nil {
+			s, err1 := getSystem(node1)
+			m, err2 := getMedia(node1)
+			if err1 == nil && err2 == nil && s.PowerState != "Off" {
+				mu.Lock()
+				if firstOn == nil {
+					firstOn = &sample{power: s.PowerState, media: m}
+				}
+				mu.Unlock()
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	defer func() { cancel(); <-watched }()
+
+	d := startDaemon(t, "workflow", "--workflow-store", store)
+	waitFor(t, 2*time.Minute, "node1 powered on by the workflow", powerIs(node1, "On"))
+	mu.Lock()
+	got := firstOn
+	mu.Unlock()
+	if got == nil || !got.media.Inserted || got.media.Image != isoA {
+		t.Fatalf("[AC-87-7] node1 powered on before the CD held %s: %+v", isoA, got)
+	}
+	if s := mustSystem(t, node1); s.Boot.BootSourceOverrideEnabled != "Continuous" || s.Boot.BootSourceOverrideTarget != "Cd" {
+		t.Fatalf("[AC-87-7] boot override %+v, want Continuous/Cd", s.Boot)
+	}
+
+	// インストーラが走っている間、resources の「CD は抜く」を当てない。
+	time.Sleep(3 * 2 * time.Second)
+	if m := mustMedia(t, node1); !m.Inserted || m.Image != isoA {
+		t.Fatalf("[AC-87-7] the loop touched the CD while the workflow runs: %+v", m)
+	}
+	if !strings.Contains(d.out.String(), "driven by their Workflow (not converged by the loop): [node1 node1/cd]") {
+		t.Fatalf("[AC-87-7] the daemon does not report node1/cd as driven by the workflow:\n%s", d.out.String())
+	}
+
+	// インストーラが終わって電源を切った（ここでは手で）→ ディスクから起動して done。
+	handReset(t, node1, "ForceOff")
+	waitFor(t, time.Minute, "node1 booted from disk", func() (bool, string) {
+		s, err := getSystem(node1)
+		if err != nil {
+			return false, err.Error()
+		}
+		return s.PowerState == "On" && s.Boot.BootSourceOverrideEnabled == "Disabled",
+			s.PowerState + "/" + s.Boot.BootSourceOverrideEnabled
+	})
+	waitFor(t, time.Minute, "the workflow done and the CD ejected by the loop", func() (bool, string) {
+		m, err := getMedia(node1)
+		if err != nil {
+			return false, err.Error()
+		}
+		return !m.Inserted && strings.Contains(d.out.String(), "WorkflowCompleted"), fmt.Sprintf("%+v", m)
+	})
+	d.stop()
+	out, err := exec.Command(lab.bin, "workflow", "list", "--store", store).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "done") {
+		t.Fatalf("[AC-87-7] workflow list: %v\n%s", err, out)
 	}
 }
 

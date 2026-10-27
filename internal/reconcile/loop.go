@@ -1544,7 +1544,7 @@ func runCycleAsync(
 	if len(in.Workflows) > 0 {
 		if workflows == nil {
 			for _, def := range in.Workflows {
-				for _, id := range def.Targets() {
+				for _, id := range def.Resources() {
 					wfHeld[id.Local] = def.Name
 				}
 				wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventError, Workflow: def.Name,
@@ -1554,7 +1554,7 @@ func runCycleAsync(
 			var runnable []workflow.Definition
 			for _, def := range in.Workflows {
 				ok := true
-				for _, id := range def.Targets() {
+				for _, id := range def.Resources() {
 					if !id.Scope.Matches(cfg.Claim) || fencedKey[fencing.ScopeKey(id.Scope)] {
 						ok = false
 						break

@@ -261,7 +261,7 @@ func runReconcile(args []string) {
 	// diff (conservative).
 	workflowOf := map[string]string{}
 	for _, def := range in.Workflows {
-		for _, id := range def.Targets() {
+		for _, id := range def.Resources() {
 			workflowOf[id.Local] = def.Name
 		}
 	}

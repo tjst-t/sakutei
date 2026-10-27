@@ -7,11 +7,11 @@ resources:
     fields:
       power: "On"
       boot_enabled: Disabled
-  # CD には自動インストールの ISO を差したままにする（起動先の上書きが無ければディスクから起動する）
+  # 終わったら CD は抜く（Workflow が done になるまでは Workflow に任せ、収束ループは触らない）
   - provider: redfish-virtual-media
     id: node1/cd
     fields:
-      image: /iso/sakutei-autoinstall.iso
+      image: ""
 
 workflows:
   - workflow: os-install
@@ -25,17 +25,28 @@ workflows:
         targets:
           - node1
     steps:
-      # 1. CD から起動する（インストーラが走る）
+      # 1. CD（別の provider）に自動インストールの ISO を差す
+      - apply:
+          resource: redfish-virtual-media/{target}/cd
+          fields:
+            image: /iso/sakutei-autoinstall.iso
+      # 2. 差さったことを確かめる（前提条件。満たさないまま 5 分過ぎたら halt）
+      - require:
+          resource: redfish-virtual-media/{target}/cd
+          fields:
+            image: /iso/sakutei-autoinstall.iso
+          timeout: 5m
+      # 3. CD から起動する（インストーラが走る）
       - apply:
           boot_enabled: Continuous
           boot_target: Cd
           power: "On"
-      # 2. インストーラが終わって電源を切るのを待つ
+      # 4. インストーラが終わって電源を切るのを待つ
       - wait:
           fields:
             power: "Off"
           timeout: 15m
-      # 3. ディスクから起動する
+      # 5. ディスクから起動する
       - apply:
           boot_enabled: Disabled
           power: "On"

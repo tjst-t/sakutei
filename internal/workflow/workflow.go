@@ -83,6 +83,31 @@
 //     数えるだけ、§7）。requirements の無いゲートは単一承認。
 //   - 実行中・待ち・halt の Workflow の対象は収束ループが Apply しない（converging
 //     扱い、§6）。完了（done）すると収束に戻る。
+//   - 手順は対象と別の provider のリソースを触れる（#87）。apply・wait・require に
+//     resource: "<provider>/<id>" を書くと、その手順はそのリソースを Observe・Diff・
+//     Apply する（id の {target} は今の対象の Local ID）。apply は { resource,
+//     fields } の形、wait / require は { resource, fields, timeout }。require は
+//     前提条件で、観測で満たすまで待ち、timeout（必須）で halt する。手順が触る
+//     リソースも対象と同じく、done まで収束ループが Apply しない（Resources）。
+//     invariant（min_active）は対象だけで数える。
+//
+// 別の provider を触る手順の例（OS の導入: CD を差す → 差さったことを確かめる →
+// CD 起動で電源オン。全体は docs/trial/redfish-os-install/intent/os.yaml）:
+//
+//	steps:
+//	  - apply:
+//	      resource: redfish-virtual-media/{target}/cd
+//	      fields:
+//	        image: /iso/installer.iso
+//	  - require:
+//	      resource: redfish-virtual-media/{target}/cd
+//	      fields:
+//	        image: /iso/installer.iso
+//	      timeout: 5m
+//	  - apply:
+//	      boot_enabled: Continuous
+//	      boot_target: Cd
+//	      power: "On"
 package workflow
 
 import (
@@ -90,6 +115,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/pkg/core"
@@ -117,15 +143,55 @@ const (
 	StepWait StepKind = "wait"
 	// StepVerify は invariant を検証する。破れていれば失敗。
 	StepVerify StepKind = "verify"
+	// StepRequire は手順の前提条件（#87）。fields が観測されるまで待ち、timeout
+	// （必須）を過ぎたら失敗。wait と同じく観測で判定するが、満たされないまま
+	// 永遠に待たないよう timeout を省けない。
+	StepRequire StepKind = "require"
 )
+
+// TargetPlaceholder は Step.Resource の中で今の対象の Local ID に置き換わる文字列。
+const TargetPlaceholder = "{target}"
 
 // Step は対象ごとの手順の 1 つ。
 type Step struct {
 	Kind StepKind `json:"kind"`
-	// Fields は apply / task が現実に施す値、wait が待つ値。
+	// Resource は手順が触る（観測する）リソース "<provider>/<id>"（#87）。空なら
+	// 今の対象。id の中の {target} は今の対象の Local ID に置き換わる（例
+	// "redfish-virtual-media/{target}/cd"）。scope は Workflow の target.scope。
+	// apply / wait / require が持てる（task は対象だけ。多相 Task は v2）。
+	Resource string `json:"resource,omitempty"`
+	// Fields は apply / task が現実に施す値、wait / require が待つ値。
 	Fields map[string]string `json:"fields,omitempty"`
-	// Timeout は wait の上限（0 なら無期限）。
+	// Timeout は wait / require の上限（wait は 0 なら無期限、require は必須）。
 	Timeout time.Duration `json:"timeout,omitempty"`
+}
+
+// ResourceFor は対象 target のときに手順が触るリソースの ID を返す。
+func (s Step) ResourceFor(target core.ID) core.ID {
+	if s.Resource == "" {
+		return target
+	}
+	ref := strings.ReplaceAll(s.Resource, TargetPlaceholder, target.Local)
+	prov, local, _ := strings.Cut(ref, "/")
+	return core.NewID(prov, target.Scope, local)
+}
+
+// validateResource は Resource の書き方の誤りを返す。
+func (s Step) validateResource() error {
+	if s.Resource == "" {
+		return nil
+	}
+	if s.Kind != StepApply && s.Kind != StepWait && s.Kind != StepRequire {
+		return fmt.Errorf("resource is only for apply / wait / require (a task runs on the target; polymorphic Task is v2)")
+	}
+	prov, local, ok := strings.Cut(s.Resource, "/")
+	if !ok || strings.TrimSpace(prov) == "" || strings.TrimSpace(local) == "" {
+		return fmt.Errorf("resource %q: want \"<provider>/<id>\" (e.g. \"redfish-virtual-media/%s/cd\")", s.Resource, TargetPlaceholder)
+	}
+	if rest := strings.ReplaceAll(local, TargetPlaceholder, ""); strings.ContainsAny(rest, "{}") {
+		return fmt.Errorf("resource %q: only %s can be substituted", s.Resource, TargetPlaceholder)
+	}
+	return nil
 }
 
 // Gate はステージ末尾の手動承認ゲート（§6.4）。
@@ -265,6 +331,33 @@ func (d Definition) Targets() []core.ID {
 	return out
 }
 
+// Resources は Workflow が触るリソース（全対象と、手順の resource を対象ごとに
+// 展開したもの）を重複なしに宣言順で返す（#87）。done でない Workflow の
+// Resources は収束ループが Apply しない。
+func (d Definition) Resources() []core.ID {
+	var out []core.ID
+	seen := map[core.IDKey]bool{}
+	add := func(id core.ID) {
+		if !seen[id.Key()] {
+			seen[id.Key()] = true
+			out = append(out, id)
+		}
+	}
+	targets := d.Targets()
+	for _, id := range targets {
+		add(id)
+	}
+	for _, step := range d.Steps {
+		if step.Resource == "" {
+			continue
+		}
+		for _, id := range targets {
+			add(step.ResourceFor(id))
+		}
+	}
+	return out
+}
+
 // Hash は定義のハッシュ。実行中に定義が変わったことを見分けるのに使う。
 func (d Definition) Hash() string {
 	type target struct {
@@ -361,12 +454,22 @@ func (d Definition) Validate() error {
 			if len(s.Fields) == 0 {
 				return fmt.Errorf("workflow %s: steps[%d] (%s): fields are required", d.Name, i, s.Kind)
 			}
+		case StepRequire:
+			if len(s.Fields) == 0 {
+				return fmt.Errorf("workflow %s: steps[%d] (%s): fields are required", d.Name, i, s.Kind)
+			}
+			if s.Timeout <= 0 {
+				return fmt.Errorf("workflow %s: steps[%d] (require): timeout is required (a precondition that never holds halts instead of waiting forever)", d.Name, i)
+			}
 		case StepVerify:
 		default:
-			return fmt.Errorf("workflow %s: steps[%d]: unknown step kind %q (apply | task | wait | verify)", d.Name, i, s.Kind)
+			return fmt.Errorf("workflow %s: steps[%d]: unknown step kind %q (apply | task | wait | require | verify)", d.Name, i, s.Kind)
 		}
 		if s.Timeout < 0 {
 			return fmt.Errorf("workflow %s: steps[%d]: timeout must not be negative", d.Name, i)
+		}
+		if err := s.validateResource(); err != nil {
+			return fmt.Errorf("workflow %s: steps[%d] (%s): %w", d.Name, i, s.Kind, err)
 		}
 	}
 	return nil

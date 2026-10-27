@@ -1,7 +1,7 @@
 # Redfish と Workflow で OS を入れる（自動インストールの ISO は利用者が用意する）
 
 Redfish の BMC provider（[docs/providers/redfish.md](../../providers/redfish.md)）と最小 Workflow（§6.3、`internal/workflow`）を組み合わせて、
-「CD から起動 → インストーラが電源を切るのを待つ → ディスクから起動」を 1 台に回す手順。2026-10-22 に qemu-bmc 0.9.0 で試した。
+「CD に ISO を差す → 差さったことを確かめる → CD から起動 → インストーラが電源を切るのを待つ → ディスクから起動」を 1 台に回す手順。2026-10-22 に qemu-bmc 0.9.0 で試した。
 
 ## 線引き：何を Sakutei がして、何を利用者が用意するか
 
@@ -72,11 +72,11 @@ resources:
     fields:
       power: "On"
       boot_enabled: Disabled
-  # CD には自動インストールの ISO を差したままにする（起動先の上書きが無ければディスクから起動する）
+  # 終わったら CD は抜く（Workflow が done になるまでは Workflow に任せ、収束ループは触らない）
   - provider: redfish-virtual-media
     id: node1/cd
     fields:
-      image: /iso/sakutei-autoinstall.iso
+      image: ""
 
 workflows:
   - workflow: os-install
@@ -90,17 +90,28 @@ workflows:
         targets:
           - node1
     steps:
-      # 1. CD から起動する（インストーラが走る）
+      # 1. CD（別の provider）に自動インストールの ISO を差す
+      - apply:
+          resource: redfish-virtual-media/{target}/cd
+          fields:
+            image: /iso/sakutei-autoinstall.iso
+      # 2. 差さったことを確かめる（前提条件。満たさないまま 5 分過ぎたら halt）
+      - require:
+          resource: redfish-virtual-media/{target}/cd
+          fields:
+            image: /iso/sakutei-autoinstall.iso
+          timeout: 5m
+      # 3. CD から起動する（インストーラが走る）
       - apply:
           boot_enabled: Continuous
           boot_target: Cd
           power: "On"
-      # 2. インストーラが終わって電源を切るのを待つ
+      # 4. インストーラが終わって電源を切るのを待つ
       - wait:
           fields:
             power: "Off"
           timeout: 15m
-      # 3. ディスクから起動する
+      # 5. ディスクから起動する
       - apply:
           boot_enabled: Disabled
           power: "On"
@@ -108,11 +119,12 @@ workflows:
 
 読み方：
 
-- `resources` は**終わったあとの姿**。Workflow が走っている間（done になるまで）、対象の `node1` は収束ループが Apply しない（Workflow に任せる、§6.3）。
-  done になると収束に戻り、最終形と同じなので何もしない。以後、手で電源を切られても次の周に On に戻す。
-- CD（`node1/cd`）は Workflow の対象ではなく、普段の宣言として最初の周から差しておく（v1.5 の Workflow の target は provider 1 種類だけ。下の「限界」）。
-- 手順 1 は電源が **Off から**始まる前提（qemu-bmc は `POWER_ON_AT_START` の既定で Off）。電源が入ったままの台に回すと、起動先を変えるだけで再起動はしない
-  （再起動は宣言できない、§29.1）ので、手順 2 の待ちが `timeout` で切れて halt する。
+- `resources` は**終わったあとの姿**。Workflow が走っている間（done になるまで）、対象の `node1` と手順が触る CD（`node1/cd`）は収束ループが Apply しない（Workflow に任せる、§6.3）。
+  done になると収束に戻り、`node1` は最終形と同じなので何もせず、CD は宣言どおり抜く。以後、手で電源を切られても次の周に On に戻す。
+- 手順 1・2 は別の provider（`redfish-virtual-media`）の CD を触る（`resource: <provider>/<id>`、`{target}` は今の対象のノード名、Backlog #87）。
+  手順 2 の `require` は前提条件で、CD が差さったと観測できるまで手順 3（電源オン）に進まない。BMC が ISO を取りに行けないなどで `timeout`（5m）を過ぎると halt。
+- 手順 3 は電源が **Off から**始まる前提（qemu-bmc は `POWER_ON_AT_START` の既定で Off）。電源が入ったままの台に回すと、起動先を変えるだけで再起動はしない
+  （再起動は宣言できない、§29.1）ので、手順 4 の待ちが `timeout` で切れて halt する。
 - `wait` の `timeout`（15m）を過ぎると on_failure の halt。インストーラが失敗して電源を切らないとき（`autoinstall.start` は失敗すると切らずに止まる）もこれで止まる。
 - `boot_target: Cd` は BMC の `@Redfish.AllowableValues` にある値でなければならない（計画の時点で確かめる）。
 
@@ -140,6 +152,8 @@ sudo containerlab destroy -t topology.clab.yml --cleanup
 
 ## 結果（2026-10-22）
 
+この節と次の節は、CD を普段の宣言にして手順を 3 つ（CD から起動 → 電源オフを待つ → ディスクから起動）にしていた当時の intent で回した記録（手順の番号も当時のもの）。
+
 KVM が使える開発用のコンテナ（`/dev/kvm` あり、docker 29.1.3・containerlab 0.81.1）で、qemu-bmc 0.9.0 を 1 台（`VM_DISK_SIZE` 2G・`VM_MEMORY` 512）、`--interval 5s` で回した。
 
 - **インストールは約 20 秒**（シリアルの `SAKUTEI-AUTOINSTALL: start` 12:36:00Z → `done, powering off`）、**Workflow 全体は約 35 秒**（cycle 1 で開始 → cycle 7 で完了）。
@@ -160,7 +174,7 @@ sakutei: cycle 7: WorkflowCompleted: workflow os-install: run os-install-1792672
 sakutei: cycle 8: observed=2 converged (no changes)
 ```
 
-CD（`node1/cd`）は cycle 1 に普段の収束で差され（初回の観測なので cause B の Drift として出る）、同じ周に Workflow が電源を入れた。試用では間に合ったが、順番は保証されない（下の「限界」）。
+CD（`node1/cd`）は cycle 1 に普段の収束で差され（初回の観測なので cause B の Drift として出る）、同じ周に Workflow が電源を入れた。試用では間に合ったが、順番は保証されなかった。#87 で CD を Workflow の手順に入れ、`require` で差さったことを確かめてから電源を入れるようにした（上の intent。順番は偽 BMC の受け入れテスト `TestWorkflowMultiProvider_CDBeforePower` と `make integration-redfish` の [AC-87-7] で確かめる）。
 
 ### 手順書どおりにやり直した結果（2026-10-23）
 
@@ -172,7 +186,6 @@ CD（`node1/cd`）は cycle 1 に普段の収束で差され（初回の観測�
 
 | 限界 | 何が起きるか | 先の話 |
 |---|---|---|
-| **完了は電源オフでしか判断できない** | Workflow が見るのは BMC から見た `power: Off` だけ。インストーラが失敗しても電源を切れば成功と見なして手順 3 へ進む（試用での成功は、シリアルを人が読んで確かめた）。電源を切らずに止まれば `timeout` で halt する | ゲスト OS を観測する手段（SSH・エージェント）で完了を確かめる：Backlog #86（v2） |
-| **CD を差す順番は保証されない** | CD は別の provider（`redfish-virtual-media`）なので Workflow の手順に入れられず、普段の宣言として収束させる。CD より先に電源が入ると、空のドライブから起動しようとして進まない（手順 2 の `timeout` で halt） | 手順ごとに対象の provider を書く・手順の前提条件（CD が差してあること）：Backlog #87（v2）。今は CD（`node1/cd`）の宣言だけを先に入れて 1 周回し、差さったのを見てから `node1` の宣言と Workflow を足すと確実（`node1` の最終形だけを先に入れると、電源が入ってディスクから起動しようとし、Workflow の手順 1 が Off から始まらない） |
-| **入れ直しは手で cancel** | done の Workflow は二度と走らない（定義を変えれば新しい run になる）。入れ直すには `sakutei workflow cancel --store wf.json os-install` で記録を消す。次の周に新しい run が始まる（2026-10-23 に確かめた）。**ただし電源が On のまま cancel すると入れ直しにならない**：手順 1 の apply は起動先を CD に書き換えるだけで電源を入れ直さず（再起動は宣言できない）、インストーラは走らずに手順 2 で待ち続ける（`timeout` で halt）。先に台を止めて（電源 Off を確かめて）から cancel する | planned_change の `kind: reimage` で入れ直しを宣言する：Backlog #88（v2） |
-| **workflow store を失うと、もう一度走る** | 進み具合（done）は `--workflow-store` のファイルにしか無い。消える・別のファイルを指すと、次の周に手順 1 から走る（電源が入っていれば手順 2 で halt、切れていれば**ディスクを消して入れ直す**）。消えない場所に置く | #88 で入れ直しを宣言に寄せるときに合わせて考える |
+| **完了は電源オフでしか判断できない** | Workflow が見るのは BMC から見た `power: Off` だけ。インストーラが失敗しても電源を切れば成功と見なして手順 5 へ進む（試用での成功は、シリアルを人が読んで確かめた）。電源を切らずに止まれば `timeout` で halt する | ゲスト OS を観測する手段（SSH・エージェント）で完了を確かめる：Backlog #86（v2） |
+| **入れ直しは手で cancel** | done の Workflow は二度と走らない（定義を変えれば新しい run になる）。入れ直すには `sakutei workflow cancel --store wf.json os-install` で記録を消す。次の周に新しい run が始まる（2026-10-23 に確かめた）。**ただし電源が On のまま cancel すると入れ直しにならない**：手順 3 の apply は起動先を CD に書き換えるだけで電源を入れ直さず（再起動は宣言できない）、インストーラは走らずに手順 4 で待ち続ける（`timeout` で halt）。先に台を止めて（電源 Off を確かめて）から cancel する | planned_change の `kind: reimage` で入れ直しを宣言する：Backlog #88（v2） |
+| **workflow store を失うと、もう一度走る** | 進み具合（done）は `--workflow-store` のファイルにしか無い。消える・別のファイルを指すと、次の周に手順 1 から走る（電源が入っていれば手順 4 で halt、切れていれば**ディスクを消して入れ直す**）。消えない場所に置く | #88 で入れ直しを宣言に寄せるときに合わせて考える |
