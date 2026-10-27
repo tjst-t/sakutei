@@ -19,7 +19,7 @@ vet:
 
 check: build vet test
 
-# Redfish の統合テスト（#84、設計 §26.1 の 3 段目）。qemu-bmc 0.9.0 を containerlab
+# Redfish の統合テスト（#84、設計 §26.1 の 3 段目）。qemu-bmc 0.10.0 を containerlab
 # で 2 台立てて回し、終わったら（失敗しても）消す。KVM・docker・containerlab と
 # sudo（パスワードなし）が要るので、check・test・CI には入れない。
 # 手順と結果は docs/providers/redfish.md の「統合テスト」。

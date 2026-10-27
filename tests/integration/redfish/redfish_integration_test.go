@@ -14,7 +14,7 @@
 
 //go:build integration_redfish
 
-// redfish_integration_test.go — #84: qemu-bmc 0.9.0 を 2 台、containerlab で
+// redfish_integration_test.go — #84: qemu-bmc 0.10.0 を 2 台、containerlab で
 // 立て、sakutei の CLI と常駐ループを本物の Redfish に向けて回す（§26.1 の
 // 3 段目、§29.1 の（7））。TestMain が deploy し、終わったら（失敗・中断でも）
 // destroy する。
@@ -58,7 +58,7 @@ const (
 	labName     = "sakutei-rf84"
 	bmcUser     = "admin"
 	bmcPassword = "password"
-	qemuBMCVer  = "v0.9.0"
+	qemuBMCVer  = "v0.10.0"
 
 	// 常駐ループの周期と、stuck に上げる連続の周数。
 	daemonInterval = "2s"

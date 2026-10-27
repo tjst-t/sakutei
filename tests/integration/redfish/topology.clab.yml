@@ -1,6 +1,6 @@
 # Redfish の統合テスト（#84、設計 §26.1 の 3 段目・§29.1 の（7））のトポロジ。
 #
-# qemu-bmc 0.9.0 を 2 台。BMC（Redfish、HTTPS 443、自己署名、admin/password）は
+# qemu-bmc 0.10.0 を 2 台。BMC（Redfish、HTTPS 443、自己署名、admin/password）は
 # containerlab の管理ネット（eth0）に固定のアドレスで置き、ホストの sakutei から
 # 直に届く。VM の NIC は eth1（2 台を直結）で、VM_MACS で MAC を固定する。
 #
@@ -26,7 +26,7 @@ mgmt:
 topology:
   defaults:
     kind: linux
-    image: ghcr.io/tjst-t/qemu-bmc:0.9.0
+    image: ghcr.io/tjst-t/qemu-bmc:0.10.0@sha256:875c9b6490eb444821a5dbcde348716bedfce767563d4c683728b7185022526a
     devices:
       - /dev/kvm       # accel=kvm
       - /dev/net/tun   # VM の NIC（eth1 を VM に渡す）
