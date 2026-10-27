@@ -1,0 +1,196 @@
+// Copyright 2026 tjst-t
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package metrics
+
+import (
+	"bytes"
+	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func values(t *testing.T, text string) map[string]float64 {
+	t.Helper()
+	ps, err := Parse(strings.NewReader(text))
+	if err != nil {
+		t.Fatalf("Parse: %v\n%s", err, text)
+	}
+	m := map[string]float64{}
+	for _, p := range ps {
+		m[p.Key()] = p.Value
+	}
+	return m
+}
+
+func TestWrite_Format(t *testing.T) {
+	var b bytes.Buffer
+	err := Write(&b, []Family{
+		{Name: "a_total", Type: Counter, Help: "line\nwith \\ back", Samples: []Sample{{Value: 3}}},
+		{Name: "empty", Type: Gauge, Help: "no samples: not written"},
+		{Name: "g", Type: Gauge, Help: "g", Samples: []Sample{
+			{Labels: []Label{{"k", "q\"\\\n"}}, Value: 0.5},
+			{Labels: []Label{{"k", "inf"}}, Value: math.Inf(1)},
+			{Labels: []Label{{"k", "-inf"}}, Value: math.Inf(-1)},
+			{Labels: []Label{{"k", "nan"}}, Value: math.NaN()},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `# HELP a_total line\nwith \\ back
+# TYPE a_total counter
+a_total 3
+# HELP g g
+# TYPE g gauge
+g{k="q\"\\\n"} 0.5
+g{k="inf"} +Inf
+g{k="-inf"} -Inf
+g{k="nan"} NaN
+`
+	if b.String() != want {
+		t.Fatalf("got\n%s\nwant\n%s", b.String(), want)
+	}
+	ps, err := Parse(strings.NewReader(b.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps[1].Labels["k"] != "q\"\\\n" {
+		t.Errorf("label value read back as %q", ps[1].Labels["k"])
+	}
+}
+
+func TestParse_RejectsBadFormat(t *testing.T) {
+	for name, text := range map[string]string{
+		"no TYPE":        "x 1\n",
+		"not contiguous": "# TYPE x gauge\n# TYPE y gauge\nx 1\ny 1\nx{a=\"b\"} 1\n",
+		"two TYPE":       "# TYPE x gauge\n# TYPE x gauge\nx 1\n",
+		"bad name":       "# TYPE 1x gauge\n1x 1\n",
+		"bad label":      "# TYPE x gauge\nx{1a=\"b\"} 1\n",
+		"bad escape":     "# TYPE x gauge\nx{a=\"\\t\"} 1\n",
+		"bad value":      "# TYPE x gauge\nx one\n",
+		"twice":          "# TYPE x gauge\nx 1\nx 2\n",
+		"counter name":   "# TYPE x counter\nx 1\n",
+		"unterminated":   "# TYPE x gauge\nx{a=\"b} 1\n",
+	} {
+		if _, err := Parse(strings.NewReader(text)); err == nil {
+			t.Errorf("%s: Parse accepted\n%s", name, text)
+		}
+	}
+}
+
+func TestExporter_BeforeFirstCycle(t *testing.T) {
+	e := NewExporter(BudgetLimits{DestructivePerWindow: 5, Window: time.Hour})
+	var b bytes.Buffer
+	if err := Write(&b, e.Families()); err != nil {
+		t.Fatal(err)
+	}
+	v := values(t, b.String())
+	if v["sakutei_cycles_total"] != 0 || v["sakutei_budget_destructive_window_limit"] != 5 || v["sakutei_budget_window_seconds"] != 3600 {
+		t.Errorf("got %v", v)
+	}
+	// No cycle yet: the cycle's gauges have no value (not zero).
+	for _, k := range []string{`sakutei_resources{state="drifted"}`, "sakutei_cycle_duration_seconds", "sakutei_budget_destructive_window_remaining"} {
+		if _, ok := v[k]; ok {
+			t.Errorf("%s exported before the first cycle", k)
+		}
+	}
+}
+
+func TestExporter_Cycle(t *testing.T) {
+	e := NewExporter(BudgetLimits{DestructivePerWindow: 3, DestructivePerCycle: 2, Window: 24 * time.Hour})
+	e.Record(Cycle{Number: 1, Err: true, End: time.Unix(100, 0)})
+	e.Record(Cycle{
+		Number: 2, End: time.Unix(200, 500_000_000), Duration: 1500 * time.Millisecond, ObserveDuration: 250 * time.Millisecond,
+		Desired: 10, Observed: 8, Drifted: 3, Unknown: 2, Converging: 1, Held: 4,
+		BudgetHalted: true, BudgetWindowUsed: 5, ConsecutiveUnreachableSkips: 0,
+	})
+	rec := httptest.NewRecorder()
+	e.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != ContentType {
+		t.Fatalf("code=%d content-type=%q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	v := values(t, rec.Body.String())
+	want := map[string]float64{
+		"sakutei_cycles_total":                        2,
+		"sakutei_cycle_errors_total":                  1,
+		"sakutei_last_cycle":                          2,
+		"sakutei_last_cycle_end_timestamp_seconds":    200.5,
+		"sakutei_cycle_duration_seconds":              1.5,
+		"sakutei_observe_duration_seconds":            0.25,
+		`sakutei_resources{state="desired"}`:          10,
+		`sakutei_resources{state="observed"}`:         8,
+		`sakutei_resources{state="drifted"}`:          3,
+		`sakutei_resources{state="unknown"}`:          2,
+		`sakutei_resources{state="converging"}`:       1,
+		`sakutei_halted{gate="budget"}`:               1,
+		`sakutei_halted{gate="capacity"}`:             0,
+		`sakutei_halted{gate="prune"}`:                0,
+		`sakutei_halted{gate="inventory"}`:            0,
+		`sakutei_halted{gate="external_input"}`:       0,
+		"sakutei_held_ops":                            4,
+		"sakutei_last_cycle_error":                    0,
+		"sakutei_budget_destructive_window_used":      5,
+		"sakutei_budget_destructive_window_limit":     3,
+		"sakutei_budget_destructive_window_remaining": 0, // used over the limit: never negative
+		"sakutei_budget_destructive_cycle_limit":      2,
+	}
+	for k, w := range want {
+		if got, ok := v[k]; !ok || got != w {
+			t.Errorf("%s = %v (present %v), want %v", k, got, ok, w)
+		}
+	}
+	if _, ok := v["sakutei_budget_changes_cycle_limit"]; ok {
+		t.Error("an unlimited budget exports a limit")
+	}
+}
+
+func TestExporter_HTTP(t *testing.T) {
+	h := NewExporter(BudgetLimits{}).Handler()
+	for _, c := range []struct {
+		method, path string
+		code         int
+	}{
+		{http.MethodGet, "/metrics", 200},
+		{http.MethodHead, "/metrics", 200},
+		{http.MethodPost, "/metrics", 405},
+		{http.MethodGet, "/", 404},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(c.method, c.path, nil))
+		if rec.Code != c.code {
+			t.Errorf("%s %s: %d, want %d", c.method, c.path, rec.Code, c.code)
+		}
+	}
+}
+
+// Record and the HTTP side run on different goroutines (make test-race).
+func TestExporter_Concurrent(t *testing.T) {
+	e := NewExporter(BudgetLimits{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			e.Record(Cycle{Number: i})
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	}
+	<-done
+}

@@ -122,6 +122,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/fencing"
 	"github.com/tjst-t/sakutei/internal/lastseen"
 	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/internal/metrics"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
@@ -311,6 +312,10 @@ type Config struct {
 	// transient → stuck (§22.3).  A permanent failure (sdk.IsPermanent) and a
 	// capacity halt are stuck at once.  <= 0 means eventlog.DefaultStuckAfter.
 	StuckAfter int
+
+	// Metrics, when set, receives every cycle Run runs (#54, §27.5): the
+	// daemon serves it on /metrics.  Nil means no metrics.
+	Metrics *metrics.Exporter
 
 	// cycleBase is the number of cycles run by earlier daemons of this Run
 	// (claim handoffs), so Events carry the cycle number Run prints.
@@ -549,7 +554,9 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 		}
 
+		cycleStart := time.Now()
 		res, cycleErr := d.RunCycle(ctx)
+		cycleDuration := time.Since(cycleStart)
 		// The cycle's reports go through the daemon's writers, so the level
 		// Events among them are reported as firing / resolved (§22.3).
 		out, errOut := d.cfg.Out, d.cfg.ErrOut
@@ -725,6 +732,30 @@ func Run(ctx context.Context, cfg Config) error {
 			if err := statusreport.WriteDaemonHealth(cfg.DaemonStatusPath, h); err != nil {
 				fmt.Fprintf(errOut, "sakutei: cycle %d: write daemon status: %v\n", cycleNum, err)
 			}
+		}
+		if cfg.Metrics != nil {
+			cfg.Metrics.Record(metrics.Cycle{
+				Number:                      cycleNum,
+				End:                         time.Now(),
+				Duration:                    cycleDuration,
+				ObserveDuration:             res.Observe.Duration,
+				Err:                         cycleErr != nil,
+				Desired:                     res.Observe.Desired,
+				Observed:                    res.Observed,
+				Drifted:                     res.Observe.Drifted,
+				Unknown:                     res.Observe.Unknown,
+				Converging:                  res.Observe.Converging,
+				Held:                        res.Held,
+				BudgetHalted:                res.BudgetHalted,
+				CapacityHalted:              res.CapacityHalted,
+				PruneHalted:                 res.PruneHalted,
+				InventoryHalted:             res.InventoryHalted,
+				ExternalInputSkipped:        res.SkippedDueToUnreachable,
+				AlertOnly:                   res.AlertOnly,
+				BudgetWindowUsed:            d.budgetEngine.WindowTotal(),
+				ConsecutiveUnreachableSkips: unreachableSkips,
+				ConsecutiveErrors:           errorCycles,
+			})
 		}
 		if res.Mode.Reason != "" && res.Mode != lastMode {
 			// #40 (§14.2): the schedule switches the mode by the clock; log
@@ -1184,10 +1215,26 @@ type CycleResult struct {
 	// cycle (their Workflow is not done).
 	WorkflowHeld []string
 
+	// Observe is what the Observe phase found, for the metrics (#54).
+	Observe ObserveStats
+
 	// level is what this cycle established about reality, so the daemon's
 	// level report can tell a level Event that is gone from one that was
 	// merely not looked at (§22.3).
 	level levelCoverage
+}
+
+// ObserveStats is what a cycle's Observe phase found (#54, the metrics of
+// §27.5).  Zero when the cycle ended before Observe.
+type ObserveStats struct {
+	// Desired is the resources of the cycle's desired (after the claim and
+	// fencing).  Drifted were Observed with a diff against desired; Unknown
+	// could not be observed (read error, availability unknown, provider
+	// unresolved or invalid, unknown ≠ absent); Converging have an in-flight
+	// Apply or were observed with availability converging.
+	Desired, Drifted, Unknown, Converging int
+	// Duration is the Observe phase: Observe and Diff of the due resources.
+	Duration time.Duration
 }
 
 // levelCoverage is what a cycle saw, for resolving level Events (§22.3).  A
@@ -1700,6 +1747,9 @@ func runCycleAsync(
 	// #67: one CycleObserver per provider.
 	cycleObs := make(map[string]*sdk.CycleObserver, len(cycleProviders))
 
+	// #54: what the Observe phase found, for the metrics.
+	obsStats := ObserveStats{Desired: len(desired)}
+	observeStart := time.Now()
 	for _, res := range desired {
 		local := res.ID.Local
 
@@ -1725,6 +1775,7 @@ func runCycleAsync(
 		if ifl.IsInFlight(local) {
 			inFlightThisCycle = append(inFlightThisCycle, local)
 			unobservable[local] = true // propagate skip to downstream
+			obsStats.Converging++
 			continue
 		}
 
@@ -1740,6 +1791,7 @@ func runCycleAsync(
 		// leaves the resource unobservable (resolveCycleProviders logged why).
 		if unresolved[res.ID.Provider] {
 			unobservable[local] = true
+			obsStats.Unknown++
 			sched.Observed(res, false)
 			continue
 		}
@@ -1763,6 +1815,7 @@ func runCycleAsync(
 		if readErr != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
 			unobservable[local] = true
+			obsStats.Unknown++
 			sched.Observed(res, false)
 			continue
 		}
@@ -1771,6 +1824,11 @@ func runCycleAsync(
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: availability=%v (not Ok); treating as unobservable this cycle\n",
 				res.ID, obs.Availability)
 			unobservable[local] = true
+			if obs.Availability == core.AvailabilityConverging {
+				obsStats.Converging++
+			} else {
+				obsStats.Unknown++
+			}
 			sched.Observed(res, false)
 			continue
 		}
@@ -1802,6 +1860,7 @@ func runCycleAsync(
 		if err := pe.engine.ValidateDesired(res); err != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: %v\n", err)
 			unobservable[local] = true
+			obsStats.Unknown++
 			sched.Observed(res, false)
 			continue
 		}
@@ -1814,6 +1873,7 @@ func runCycleAsync(
 		if planErr != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: plan: %v\n", planErr)
 			unobservable[local] = true
+			obsStats.Unknown++
 			sched.Observed(res, false)
 			continue
 		}
@@ -1892,8 +1952,11 @@ func runCycleAsync(
 		sched.Observed(res, len(plan.Ops) == 0)
 		if len(plan.Ops) == 0 {
 			cov.settled[res.ID.String()] = true
+		} else {
+			obsStats.Drifted++
 		}
 	}
+	obsStats.Duration = time.Since(observeStart)
 
 	// §8.3: ready_condition upstreams outside the desired set (external owner,
 	// §7) are observed here so they can still gate their dependents.
@@ -1992,7 +2055,8 @@ func runCycleAsync(
 			WorkflowEvents: wfEvents,
 			WorkflowHeld:   wfHeldThisCycle,
 
-			level: cov,
+			Observe: obsStats,
+			level:   cov,
 		}, nil
 	}
 
@@ -2163,7 +2227,7 @@ func runCycleAsync(
 		dispatch, commit, launchTask)
 	backedOff = backedOffList
 	if waveErr != nil {
-		return CycleResult{Observed: observed}, waveErr
+		return CycleResult{Observed: observed, Observe: obsStats}, waveErr
 	}
 
 	// Phase 3: Execute approved prune Delete ops.
@@ -2216,7 +2280,8 @@ func runCycleAsync(
 		WorkflowEvents: wfEvents,
 		WorkflowHeld:   wfHeldThisCycle,
 
-		level: cov,
+		Observe: obsStats,
+		level:   cov,
 	}, nil
 }
 

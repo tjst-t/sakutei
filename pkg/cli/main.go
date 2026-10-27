@@ -44,6 +44,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/budget"
 	"github.com/tjst-t/sakutei/internal/fencing"
 	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/internal/metrics"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
 	"github.com/tjst-t/sakutei/internal/render"
@@ -146,6 +147,7 @@ func Main(opts ...Option) {
 //	--workflow-store <f> S2 store of the Workflows' progress (§6.3)
 //	--audit-log <f>      S4 audit log (append-only) of approvals and gate timeouts (§6.4) and planned_change (§14.5)
 //	--approval-listen <addr>  serve the approval gate API (§6.4)
+//	--metrics-listen <addr>   serve the convergence state on /metrics (Prometheus text format, #54)
 //	--daemon-status <f>  rewritten every cycle with the daemon health (consecutive unreachable skips, #15)
 //	--unreachable-skip-limit <n>  consecutive unreachable skips before the Prolonged alert (default 3)
 //	--stuck-after <n>    consecutive cycles after which a level Event is promoted transient → stuck (default 5, §22.3)
@@ -245,6 +247,9 @@ func runDaemon() {
 		"§22.3: consecutive cycles a level Event (drift, convergence failure, halt) stays firing before it is promoted transient → stuck (default 5)")
 	approvalListen := fs.String("approval-listen", "",
 		"address to serve the approval gate API on, e.g. 127.0.0.1:8470 (§6.4; no authorization, §7); requires --workflow-store and --audit-log")
+	// #54: Prometheus exporter（§27.5）。待ち受けは明示したときだけ。
+	metricsListen := fs.String("metrics-listen", "",
+		"address to serve /metrics on (Prometheus text format: drifted / unknown counts, budget left, halts, cycle and Observe durations), e.g. 127.0.0.1:9470 (#54, §27.5; no authorization); empty=not served")
 	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。
 	gd := addGitDistFlags(fs)
 	logFormat := addLogFormatFlag(fs)
@@ -470,6 +475,18 @@ func runDaemon() {
 			os.Exit(1)
 		}
 		if err := serveApprovalAPI(*approvalListen, cfg.WorkflowStore, cfg.Audit); err != nil {
+			fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if *metricsListen != "" {
+		cfg.Metrics = metrics.NewExporter(metrics.BudgetLimits{
+			DestructivePerCycle:  budgetCfg.MaxDestructivePerCycle,
+			ChangesPerCycle:      budgetCfg.MaxChangesPerCycleAbsolute,
+			DestructivePerWindow: budgetCfg.MaxDestructivePerWindow,
+			Window:               budgetWindow(budgetCfg),
+		})
+		if err := serveMetrics(*metricsListen, cfg.Metrics); err != nil {
 			fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 			os.Exit(1)
 		}
