@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // LintError is returned by LintSchema when one or more Schema declarations

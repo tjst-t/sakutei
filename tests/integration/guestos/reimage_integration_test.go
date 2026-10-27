@@ -45,8 +45,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
-	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
 )
 
 // reimageNodes は入れ直しを試す 2 台（応答ファイルは 2 台とも成功する中身）。

@@ -247,6 +247,7 @@ Ansible provider では横断保証の多くが落ちる。**check mode は「�
 
 provider は本体のバイナリに組み込む（プラグインのプロセス境界や動的ロードは持たない。§3 原則 4・5：境界は Go の interface で今切り、プロセス分割は後）。本体のリポジトリの外で provider を書く人は、fork せずに **Sakutei を Go のライブラリとして使い、自前の provider を登録した自前のバイナリを作る**。
 
+- **モジュールのパスは `github.com/tjst-t/sakutei/v2`**（v2.0.1 から。Go の決まりでメジャー版 2 以上はパスに `/v2` を付ける）。外のモジュールは `go get github.com/tjst-t/sakutei/v2@<版>` で取り、`github.com/tjst-t/sakutei/v2/pkg/...` を import する。
 - **入口は `pkg/cli`**。`cmd/sakutei` は `cli.Main()` を呼ぶだけで、外のモジュールも同じ入口を使う。`cli.WithProviders(func(*registry.ProviderRegistry))`（または組み立て済みの registry を渡す `cli.WithRegistry`）で足した provider は、組み込みの provider（`registry.DefaultRegistry`）に加わる。verb・フラグ・終了コードは本体と同じで、足した provider は常駐・`plan`・`reconcile`・`status`・`import`・`sync` のすべてで名前（intent の `provider`）から解決される。
 - **名前の衝突は起動時のエラー**。組み込みと同じ名前、または二つの登録で同じ名前を使うと、どの verb でも起動時に終了コード 1 で止まる。上書きはしない（黙って別の実装に差し替わると、Schema と ProviderVersion の前提が崩れる。§10.4）。
 - **provider の設定はファイルで渡す**（`--provider-config <file>`、JSON または YAML）：

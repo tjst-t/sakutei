@@ -22,13 +22,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/graphreport"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/internal/revision"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/graphreport"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/internal/revision"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // runGraph implements "sakutei graph" (#136): the depends_on DAG of the

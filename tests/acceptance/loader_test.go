@@ -28,8 +28,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
 )
 
 // writeIntent は tmp ディレクトリに 1 ファイルを書き、そのディレクトリパスを返す。

@@ -33,9 +33,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/audit"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
 )
 
 const nofmGate = `"gate": { "manual_approval": { "requirements": {

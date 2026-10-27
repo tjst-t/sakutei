@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/tjst-t/sakutei/internal/task"
+	"github.com/tjst-t/sakutei/v2/internal/task"
 )
 
 // Provider は Task の実行体でもある（§6.2、§29.1）。RunTask は今の版の次から

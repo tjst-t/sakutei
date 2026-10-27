@@ -17,8 +17,8 @@ package render
 import (
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 func expandTwoParents(t *testing.T, p1Extra, p2Extra string) []ExpandedResource {

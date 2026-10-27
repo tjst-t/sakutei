@@ -45,9 +45,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/importer"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/importer"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // HeaderMarker is the first line of every Sync Mode snapshot.

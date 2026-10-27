@@ -51,8 +51,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/eventlog"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/eventlog"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // reservedLabels は Event から決める label（設定の labels で書けない）。

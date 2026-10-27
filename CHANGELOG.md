@@ -2,6 +2,14 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## v2.0.1（2026-10-27）
+
+### 修正
+
+- **Go のモジュールのパスを `github.com/tjst-t/sakutei/v2` にした**。Go の決まりでは、メジャー版を 2 以上にするとき module のパスに `/v2` を付ける。v2.0.0 は付け忘れていたため、`go get` で取れなかった（`go get github.com/tjst-t/sakutei@v2.0.0` も `.../v2@v2.0.0` も断られる）。v2.0.0 は使わず、v2.0.1 を使うこと。
+  - 移り方：`go get github.com/tjst-t/sakutei/v2@v2.0.1` で取り、import のパスを `github.com/tjst-t/sakutei/pkg/...` から `github.com/tjst-t/sakutei/v2/pkg/...` に変える（例 `github.com/tjst-t/sakutei/v2/pkg/cli`）。go.mod の `require github.com/tjst-t/sakutei vX` は `require github.com/tjst-t/sakutei/v2 v2.0.1` に変える。
+  - 中身（動き・フラグ・終了コード）は v2.0.0 と同じ。
+
 ## v2.0.0（2026-10-27）
 
 設計で v2 に置いていた核の 1 つ、**多相 Task**（相を持ち、リブートをまたぐ手続き）が入った版。あわせて、空の物理サーバに宣言だけで OS を入れて完了を確かめる部品、入れ直し、BIOS の設定、NETCONF 対応の機器の観測、外の道具が状態を読む読み取り専用の口。設計書は v3.23 → v3.25（`docs/architecture/CHANGELOG-v3.24.md`・`v3.25.md`、と §29.1）。

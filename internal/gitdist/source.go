@@ -24,9 +24,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/internal/statusreport"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/internal/statusreport"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // DefaultPoll は拠点がミラーを見に行く既定の間隔（§17.4 の算術: 300 拠点 × 60s）。

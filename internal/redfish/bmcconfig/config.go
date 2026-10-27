@@ -54,10 +54,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/redfish"
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/redfish"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // BMC は 1 ノードの BMC の設定。

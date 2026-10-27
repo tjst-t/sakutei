@@ -156,7 +156,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // DefaultGateTimeout はゲートの timeout の既定（§6.4）。

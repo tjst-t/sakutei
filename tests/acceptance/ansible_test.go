@@ -45,12 +45,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/ansible"
-	"github.com/tjst-t/sakutei/internal/ansible/ansiblefake"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/ansible"
+	"github.com/tjst-t/sakutei/v2/internal/ansible/ansiblefake"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/registry"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 var (

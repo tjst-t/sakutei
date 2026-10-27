@@ -18,14 +18,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/tjst-t/sakutei/internal/audit"
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/capacity"
-	"github.com/tjst-t/sakutei/internal/planreport"
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/capacity"
+	"github.com/tjst-t/sakutei/v2/internal/planreport"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // alertOnlyScopeReason is the block reason of an op in a scope declared

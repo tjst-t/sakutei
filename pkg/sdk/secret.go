@@ -15,8 +15,8 @@
 package sdk
 
 import (
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // NewFileSecretResolver returns the file SecretBackend (§20.5, §23.6) reading

@@ -40,9 +40,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/dnszone"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/dnszone"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // soaDay は差し替える時計の「今日」（UTC）。

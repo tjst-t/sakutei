@@ -65,8 +65,8 @@ func TestProviderTemplate_CopyRenameBuildsAndPasses(t *testing.T) {
 			}
 
 			gomod := "module example.com/" + tc.newName + "\n\ngo 1.22\n\n" +
-				"require github.com/tjst-t/sakutei v0.0.0\n\n" +
-				"replace github.com/tjst-t/sakutei => " + repoRoot + "\n"
+				"require github.com/tjst-t/sakutei/v2 v2.0.0\n\n" +
+				"replace github.com/tjst-t/sakutei/v2 => " + repoRoot + "\n"
 			if err := os.WriteFile(filepath.Join(dst, "go.mod"), []byte(gomod), 0o644); err != nil {
 				t.Fatal(err)
 			}

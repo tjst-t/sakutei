@@ -41,7 +41,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/s3bucket"
+	"github.com/tjst-t/sakutei/v2/internal/s3bucket"
 )
 
 // API の名前（Options.NotImplemented に使う）。

@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
 )
 
 // Profile is the operational profile (§14.5): a named bundle of defaults for

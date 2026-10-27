@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/gitdist"
+	"github.com/tjst-t/sakutei/v2/internal/gitdist"
 )
 
 // gitDistFlags は常駐ループの claim の git 配布（§17.4）・S2-free シャード（§17.5）・

@@ -26,9 +26,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/lastseen"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/lastseen"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // TestReport_LastSeenPreviousSnapshot verifies the "前周は X だった" mechanism at

@@ -17,7 +17,7 @@ package provider
 import (
 	"context"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // BulkObserver extends a Provider with the ability to observe every resource

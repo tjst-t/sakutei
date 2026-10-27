@@ -21,7 +21,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/fencing"
+	"github.com/tjst-t/sakutei/v2/internal/fencing"
 )
 
 // runFence implements "sakutei fence": print the fencing generation and the

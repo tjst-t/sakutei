@@ -35,8 +35,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/redfish"
-	"github.com/tjst-t/sakutei/internal/redfish/redfishtest"
+	"github.com/tjst-t/sakutei/v2/internal/redfish"
+	"github.com/tjst-t/sakutei/v2/internal/redfish/redfishtest"
 )
 
 // clock は偽 BMC に渡す手で進める時計。

@@ -49,11 +49,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/dnszone"
-	"github.com/tjst-t/sakutei/internal/nftables"
-	"github.com/tjst-t/sakutei/internal/prune"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/dnszone"
+	"github.com/tjst-t/sakutei/v2/internal/nftables"
+	"github.com/tjst-t/sakutei/v2/internal/prune"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

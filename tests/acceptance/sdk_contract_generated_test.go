@@ -33,11 +33,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/dnszone"
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
-	"github.com/tjst-t/sakutei/internal/nftables"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/dnszone"
+	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/v2/internal/nftables"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // corruptFile replaces path with unparseable content and returns a restore

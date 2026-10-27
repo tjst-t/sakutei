@@ -23,11 +23,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/remote"
-	"github.com/tjst-t/sakutei/internal/remote/remotefake"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/remote"
+	"github.com/tjst-t/sakutei/v2/internal/remote/remotefake"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // guest は偽のホストの "/" に files を置く。

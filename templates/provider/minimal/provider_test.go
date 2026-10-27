@@ -20,8 +20,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // fakeClient は Client のインメモリ実装（契約テスト用の対象の代役）。

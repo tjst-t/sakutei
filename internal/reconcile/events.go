@@ -23,10 +23,10 @@ import (
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/tjst-t/sakutei/internal/eventlog"
-	"github.com/tjst-t/sakutei/internal/prune"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/eventlog"
+	"github.com/tjst-t/sakutei/v2/internal/prune"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // The notices of the convergence paths (the daemon, scoped runs, and the

@@ -41,9 +41,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // EventName is the Event emitted when a capacity gate halts changes (§13.4).

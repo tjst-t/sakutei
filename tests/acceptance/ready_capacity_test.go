@@ -41,7 +41,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
 )
 
 // reconcileCapture runs "sakutei reconcile" with extra flags and returns

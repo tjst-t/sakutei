@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // Format は出力の形。

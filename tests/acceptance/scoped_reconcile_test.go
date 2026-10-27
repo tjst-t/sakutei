@@ -42,14 +42,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/cause"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/executor"
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/cause"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/executor"
+	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // scopeX and scopeY are two disjoint routing scopes used across these tests.

@@ -44,7 +44,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // Invocation は psql の 1 回の起動。

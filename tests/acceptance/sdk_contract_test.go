@@ -32,10 +32,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/task"
+	"github.com/tjst-t/sakutei/v2/internal/task"
 )
 
 // The fake provider is also a task.PhasedRunner (#51, §6.2 多相型): a resource

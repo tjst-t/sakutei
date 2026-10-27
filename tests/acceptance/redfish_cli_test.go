@@ -32,8 +32,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/redfish/redfishtest"
-	"github.com/tjst-t/sakutei/internal/redfish/system"
+	"github.com/tjst-t/sakutei/v2/internal/redfish/redfishtest"
+	"github.com/tjst-t/sakutei/v2/internal/redfish/system"
 )
 
 const rfCLIPassword = "Sup3r-s3cret-BMC"

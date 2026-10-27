@@ -42,7 +42,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
 )
 
 // Subtree は設定の部分木の「どこ」。

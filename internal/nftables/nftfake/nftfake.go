@@ -37,7 +37,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tjst-t/sakutei/internal/nftables"
+	"github.com/tjst-t/sakutei/v2/internal/nftables"
 )
 
 // NFT は偽の nft。ゼロ値は空の ruleset。

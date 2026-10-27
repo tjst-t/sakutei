@@ -31,11 +31,11 @@ import (
 	"os"
 	"sort"
 
-	"github.com/tjst-t/sakutei/internal/dnszone"
-	"github.com/tjst-t/sakutei/internal/nftables"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/dnszone"
+	"github.com/tjst-t/sakutei/v2/internal/nftables"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // report は sdk.TB を満たし、違反を数えて出す。

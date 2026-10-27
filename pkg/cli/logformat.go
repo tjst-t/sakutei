@@ -22,9 +22,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/eventlog"
-	"github.com/tjst-t/sakutei/internal/eventnotify"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/eventlog"
+	"github.com/tjst-t/sakutei/v2/internal/eventnotify"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // logOut / logErr are where the daemon, reconcile and plan write their

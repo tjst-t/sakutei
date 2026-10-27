@@ -22,9 +22,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/metrics"
-	"github.com/tjst-t/sakutei/internal/readapi"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/metrics"
+	"github.com/tjst-t/sakutei/v2/internal/readapi"
 )
 
 // serveMetrics serves the daemon's metrics on addr/metrics in the background

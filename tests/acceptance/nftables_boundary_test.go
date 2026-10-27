@@ -33,9 +33,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/nftables"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/nftables"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // nftBaseChainBlock は再現の ruleset の base chain ブロック（4 スペースの

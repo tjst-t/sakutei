@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // 多相 Task（§6.2 多相型、Backlog #51）。firmware 更新のような、中断できず・長く・

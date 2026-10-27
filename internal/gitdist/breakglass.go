@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
 )
 
 // 書込 break-glass（§25.1 (b)）。

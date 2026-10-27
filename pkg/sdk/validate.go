@@ -17,7 +17,7 @@ package sdk
 import (
 	"fmt"
 
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // ValidateProvider runs all startup invariants for a provider (fail-closed).

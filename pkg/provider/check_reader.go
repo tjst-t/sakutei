@@ -17,7 +17,7 @@ package provider
 import (
 	"context"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // CheckReader is an OPTIONAL capability of the minimal tier (§5.6, §28.7),

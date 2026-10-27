@@ -42,9 +42,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/executor"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/executor"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // Token は1つの scope の fencing 世代と、その世代の holder（シャード ID）。

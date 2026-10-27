@@ -23,8 +23,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // DRDir は DR intent のプリステージ（shards/dr/<名前>.yaml）を置くディレクトリ（§25.1 (a)）。

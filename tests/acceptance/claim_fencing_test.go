@@ -38,11 +38,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/executor"
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
-	"github.com/tjst-t/sakutei/internal/fencing"
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/executor"
+	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/v2/internal/fencing"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 const twoSiteFencingIntent = `{

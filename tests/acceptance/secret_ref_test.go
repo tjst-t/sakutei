@@ -30,12 +30,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/cause"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/executor"
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/cause"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/executor"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // theSecret is the known plaintext value used across the safety tests.  It must

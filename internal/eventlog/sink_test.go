@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 type recordSink struct{ got []core.Event }

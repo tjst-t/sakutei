@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 func scopedOp(kind core.OpKind, labels map[string]string, local string) core.Op {

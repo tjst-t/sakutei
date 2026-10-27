@@ -28,11 +28,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/eventlog"
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/internal/remediation"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/eventlog"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/internal/remediation"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // resolvedOf is the Events of kind k in state resolved.

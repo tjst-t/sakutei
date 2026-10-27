@@ -31,9 +31,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/postgresql"
-	"github.com/tjst-t/sakutei/internal/task"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/postgresql"
+	"github.com/tjst-t/sakutei/v2/internal/task"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 const pgAdminPW = "pg-admin:pw"

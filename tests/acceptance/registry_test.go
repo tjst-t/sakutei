@@ -164,7 +164,7 @@ func TestRegistry_NoCmdFakeproviderImport(t *testing.T) {
 			continue
 		}
 		content := string(data)
-		if strings.Contains(content, `"github.com/tjst-t/sakutei/internal/fakeprovider"`) {
+		if strings.Contains(content, `"github.com/tjst-t/sakutei/v2/internal/fakeprovider"`) {
 			t.Errorf("[AC-S62dbba-2-2] %s contains direct import of internal/fakeprovider — must use registry instead", f)
 		}
 	}
@@ -176,7 +176,7 @@ func TestRegistry_NoCmdFakeproviderImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("[AC-S62dbba-2-2] cannot read pkg/registry/default.go: %v", err)
 	}
-	if !strings.Contains(string(data), `"github.com/tjst-t/sakutei/internal/fakeprovider"`) {
+	if !strings.Contains(string(data), `"github.com/tjst-t/sakutei/v2/internal/fakeprovider"`) {
 		t.Errorf("[AC-S62dbba-2-2] pkg/registry/default.go should import fakeprovider (it's the registration point)")
 	}
 }

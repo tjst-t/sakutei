@@ -17,7 +17,7 @@ package provider
 import (
 	"context"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // Provider is the canonical two-layer abstraction that every resource type

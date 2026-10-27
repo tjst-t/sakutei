@@ -130,10 +130,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/filelock"
-	"github.com/tjst-t/sakutei/internal/remote"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/filelock"
+	"github.com/tjst-t/sakutei/v2/internal/remote"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // Test seams (Backlog #72): the concurrency test swaps lockZone for a no-op to

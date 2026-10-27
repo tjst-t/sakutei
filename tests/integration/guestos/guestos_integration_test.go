@@ -59,7 +59,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
 )
 
 const (

@@ -45,13 +45,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/internal/redfish/redfishtest"
-	"github.com/tjst-t/sakutei/internal/redfish/system"
-	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/internal/redfish/redfishtest"
+	"github.com/tjst-t/sakutei/v2/internal/redfish/system"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
 )
 
 // reimageSteps は 1 回だけ CD から起動して入れ直す手順（#139 の形）。

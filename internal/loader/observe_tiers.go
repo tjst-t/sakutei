@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
 )
 
 // ObserveTier is an Observe-frequency tier declared in intent (§16.5):

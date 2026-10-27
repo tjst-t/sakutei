@@ -24,7 +24,7 @@
 // a single bad child makes the whole composite bad.
 package render
 
-import "github.com/tjst-t/sakutei/pkg/core"
+import "github.com/tjst-t/sakutei/v2/pkg/core"
 
 // AggregateCompositeStatus returns the §9.7 worst-first aggregate status for a
 // composite resource given the statuses of its expanded children.

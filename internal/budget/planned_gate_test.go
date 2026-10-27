@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
 )
 
 func auditKinds(t *testing.T, path string) map[audit.Kind]int {

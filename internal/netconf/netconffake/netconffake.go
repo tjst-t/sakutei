@@ -36,8 +36,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tjst-t/sakutei/internal/netconf"
-	"github.com/tjst-t/sakutei/internal/remote"
+	"github.com/tjst-t/sakutei/v2/internal/netconf"
+	"github.com/tjst-t/sakutei/v2/internal/remote"
 )
 
 // Server は偽の NETCONF サーバ。

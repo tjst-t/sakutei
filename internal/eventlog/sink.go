@@ -40,7 +40,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // Sink は Event の consumer。Emit がエラーを返しても、呼び手は収束を止めない。

@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/workflow"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // plannedDecl is one planned_change as written: the declaration plus what the

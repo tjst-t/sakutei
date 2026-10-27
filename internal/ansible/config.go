@@ -38,8 +38,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/render"
 )
 
 // 既定値。

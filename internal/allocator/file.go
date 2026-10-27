@@ -34,7 +34,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/allocation"
+	"github.com/tjst-t/sakutei/v2/pkg/allocation"
 )
 
 // DefaultCooldown is how long a released value stays out of circulation

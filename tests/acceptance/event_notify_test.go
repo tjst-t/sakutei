@@ -43,11 +43,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/eventlog"
-	"github.com/tjst-t/sakutei/internal/eventnotify"
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/eventlog"
+	"github.com/tjst-t/sakutei/v2/internal/eventnotify"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 const notifySecret = "Bearer n0tify-s3cret"

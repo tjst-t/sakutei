@@ -31,8 +31,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
-	"github.com/tjst-t/sakutei/internal/task"
+	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/v2/internal/task"
 )
 
 var firmwareActionSteps = []string{task.StepStaging, task.StepVerifying, task.StepApplying, task.StepRebooting}

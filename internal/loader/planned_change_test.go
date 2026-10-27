@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
 )
 
 func loadPlannedYAML(t *testing.T, body string) (Intent, error) {

@@ -19,7 +19,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // JSONSchemaVersion は "sakutei status --json" の出力の版（#118）。フィールドを

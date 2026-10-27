@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/remote"
+	"github.com/tjst-t/sakutei/v2/internal/remote"
 )
 
 // Runner は nft を 1 回走らせる seam（Backlog #121）。live の Provider は nft を

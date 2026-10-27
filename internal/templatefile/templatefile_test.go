@@ -21,11 +21,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/cause"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/cause"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // trialTemplates は docs の Alpine の雛形の置き場（試用と統合テストが使うもの）。

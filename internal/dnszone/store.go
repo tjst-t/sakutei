@@ -45,9 +45,9 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/tjst-t/sakutei/internal/filelock"
-	"github.com/tjst-t/sakutei/internal/remote"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/filelock"
+	"github.com/tjst-t/sakutei/v2/internal/remote"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // zoneStore reads and writes one zone file.

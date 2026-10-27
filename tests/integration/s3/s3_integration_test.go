@@ -41,7 +41,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/s3bucket"
+	"github.com/tjst-t/sakutei/v2/internal/s3bucket"
 )
 
 // 既定のイメージ。digest は docker pull で確かめた値（2026-10-27）。

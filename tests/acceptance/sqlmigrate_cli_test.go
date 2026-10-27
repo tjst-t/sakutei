@@ -36,7 +36,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/sqlmigrate"
+	"github.com/tjst-t/sakutei/v2/internal/sqlmigrate"
 )
 
 type smCLIRig struct {

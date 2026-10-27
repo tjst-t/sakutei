@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
 )
 
 // Decide はゲートへの判断（承認 / 却下）を受け付ける。承認 API と CLI の共通の入口。

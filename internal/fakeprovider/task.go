@@ -18,7 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/tjst-t/sakutei/internal/task"
+	"github.com/tjst-t/sakutei/v2/internal/task"
 )
 
 // The fake provider is also a task.Runner (#41, §6.2): the executor of a

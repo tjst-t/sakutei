@@ -74,7 +74,7 @@
 // constraint).
 package cause
 
-import "github.com/tjst-t/sakutei/pkg/core"
+import "github.com/tjst-t/sakutei/v2/pkg/core"
 
 // CauseContext carries the revision and version signals needed to classify a
 // single resource's diff into one of the five cause tags A–E.

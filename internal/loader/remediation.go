@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/remediation"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/remediation"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // parseRemediation reads the intent's top-level `remediation:` (§14.2).  A

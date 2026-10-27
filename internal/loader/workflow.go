@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/workflow"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // parseWorkflows reads the intent's top-level `workflows:` (§6.3, §6.4).  See

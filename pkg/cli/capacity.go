@@ -17,7 +17,7 @@ package cli
 import (
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/capacity"
+	"github.com/tjst-t/sakutei/v2/internal/capacity"
 )
 
 // capacityGateUsage is the shared help text of the --capacity-gate flag.

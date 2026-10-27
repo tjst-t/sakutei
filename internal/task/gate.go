@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // 多相 Task の危険区間と人手ゲート（§29.1、Backlog #52）。

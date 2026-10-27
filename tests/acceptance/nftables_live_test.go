@@ -33,14 +33,14 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/cause"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/nftables"
-	"github.com/tjst-t/sakutei/internal/nftables/nftfake"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/cause"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/nftables"
+	"github.com/tjst-t/sakutei/v2/internal/nftables/nftfake"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/registry"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 var liveTables = []nftables.TableRef{{Family: "inet", Name: "filter"}, {Family: "ip", Name: "nat"}}

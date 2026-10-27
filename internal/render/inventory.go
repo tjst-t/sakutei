@@ -37,8 +37,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
 )
 
 // InventorySource is the render-phase-1 seam for inventory composition: it

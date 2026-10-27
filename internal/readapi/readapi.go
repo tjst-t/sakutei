@@ -39,12 +39,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/eventlog"
-	"github.com/tjst-t/sakutei/internal/graphreport"
-	"github.com/tjst-t/sakutei/internal/planreport"
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/internal/statusreport"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/eventlog"
+	"github.com/tjst-t/sakutei/v2/internal/graphreport"
+	"github.com/tjst-t/sakutei/v2/internal/planreport"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/internal/statusreport"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // SubscriberBuffer は読み手 1 人あたりに貯めておける Event の数。これを超えた分は

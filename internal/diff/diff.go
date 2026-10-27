@@ -34,9 +34,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/cause"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/cause"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // DesiredResource represents a single resource as declared in intent.

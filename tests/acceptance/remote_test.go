@@ -46,15 +46,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/dnszone"
-	"github.com/tjst-t/sakutei/internal/nftables"
-	"github.com/tjst-t/sakutei/internal/nftables/nftfake"
-	"github.com/tjst-t/sakutei/internal/remote"
-	"github.com/tjst-t/sakutei/internal/remote/remotefake"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/dnszone"
+	"github.com/tjst-t/sakutei/v2/internal/nftables"
+	"github.com/tjst-t/sakutei/v2/internal/nftables/nftfake"
+	"github.com/tjst-t/sakutei/v2/internal/remote"
+	"github.com/tjst-t/sakutei/v2/internal/remote/remotefake"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/registry"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // nftHost is a fake remote host whose nft is a fake nft.

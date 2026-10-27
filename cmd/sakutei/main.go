@@ -16,7 +16,7 @@
 // infrastructure convergence engine.  The command line lives in pkg/cli.
 package main
 
-import "github.com/tjst-t/sakutei/pkg/cli"
+import "github.com/tjst-t/sakutei/v2/pkg/cli"
 
 func main() {
 	cli.Main()

@@ -55,7 +55,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // PlannedKind is the change kind a planned_change declares (§13.3).

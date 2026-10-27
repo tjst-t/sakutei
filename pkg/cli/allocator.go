@@ -27,9 +27,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/allocator"
-	"github.com/tjst-t/sakutei/internal/audit"
-	"github.com/tjst-t/sakutei/pkg/allocation"
+	"github.com/tjst-t/sakutei/v2/internal/allocator"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/pkg/allocation"
 )
 
 // runAllocator is "sakutei allocator": the allocation authority as a service,

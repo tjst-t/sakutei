@@ -29,7 +29,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/remote"
+	"github.com/tjst-t/sakutei/v2/internal/remote"
 )
 
 func TestSSH_Subsystem(t *testing.T) {

@@ -23,13 +23,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/cause"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/s3bucket"
-	"github.com/tjst-t/sakutei/internal/s3bucket/s3test"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/cause"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/s3bucket"
+	"github.com/tjst-t/sakutei/v2/internal/s3bucket/s3test"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 const (

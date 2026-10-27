@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
 )
 
 // #88: 設計書 §6.3 の trigger: reimage の例（Workflow と planned_change）は、そのまま

@@ -21,7 +21,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // 同時の Acquire は世代を飛ばさず重複させない（ロックで直列化される）。

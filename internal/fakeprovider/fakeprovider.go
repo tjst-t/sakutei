@@ -37,8 +37,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // ProviderName is the canonical name used in intent files and IDs.

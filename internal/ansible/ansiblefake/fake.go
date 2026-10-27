@@ -34,7 +34,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tjst-t/sakutei/internal/ansible"
+	"github.com/tjst-t/sakutei/v2/internal/ansible"
 )
 
 // Ansible は偽の ansible。ゼロ値は使えない（New を使う）。

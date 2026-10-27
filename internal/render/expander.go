@@ -48,8 +48,8 @@ package render
 import (
 	"fmt"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // CompositeKind is the "kind" field value that marks a resource as a composite

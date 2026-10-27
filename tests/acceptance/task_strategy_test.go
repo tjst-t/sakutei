@@ -40,11 +40,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/internal/task"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/internal/task"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // taskIntent は migration 役の db（strategy: task、size = スキーマ版）と、それに依存する app。

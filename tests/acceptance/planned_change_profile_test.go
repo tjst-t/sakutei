@@ -37,7 +37,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
 )
 
 type pcRig struct {

@@ -54,7 +54,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // ComputeIntentRevision computes a deterministic SHA-256 hex digest of all

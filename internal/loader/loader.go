@@ -55,13 +55,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/remediation"
-	"github.com/tjst-t/sakutei/internal/revision"
-	"github.com/tjst-t/sakutei/internal/task"
-	"github.com/tjst-t/sakutei/internal/workflow"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/remediation"
+	"github.com/tjst-t/sakutei/v2/internal/revision"
+	"github.com/tjst-t/sakutei/v2/internal/task"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // parseDeletionPolicy converts the string form used in intent files to the

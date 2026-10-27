@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/redfish/system"
+	"github.com/tjst-t/sakutei/v2/internal/redfish/system"
 )
 
 func (r *rfCLIRig) writeBiosIntent(t *testing.T, attrs string) {

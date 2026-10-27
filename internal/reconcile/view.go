@@ -31,17 +31,17 @@ import (
 	"sort"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/graphreport"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/planreport"
-	"github.com/tjst-t/sakutei/internal/prune"
-	"github.com/tjst-t/sakutei/internal/remediation"
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/internal/statusreport"
-	"github.com/tjst-t/sakutei/internal/workflow"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/graphreport"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/planreport"
+	"github.com/tjst-t/sakutei/v2/internal/prune"
+	"github.com/tjst-t/sakutei/v2/internal/remediation"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/internal/statusreport"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // CycleView は常駐ループの 1 周の見え方（#136）。

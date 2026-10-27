@@ -31,8 +31,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // Options は sink の動きの調整（テスト用の値を差す口）。ゼロ値は既定。

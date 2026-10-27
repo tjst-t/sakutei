@@ -17,7 +17,7 @@ package sdk
 import (
 	"errors"
 
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // IsTransient reports whether err (or any error in its chain) is a

@@ -14,7 +14,7 @@
 
 package provider
 
-import "github.com/tjst-t/sakutei/pkg/core"
+import "github.com/tjst-t/sakutei/v2/pkg/core"
 
 // UpdatePolicyValidator is an OPTIONAL Provider capability, discovered by type
 // assertion in the same style as IntentValidator.  It lets a provider reject,

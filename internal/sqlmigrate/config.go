@@ -44,8 +44,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/postgresql"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/postgresql"
 )
 
 // Config は設定ファイルの中身。

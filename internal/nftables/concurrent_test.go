@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/filelock"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/filelock"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 const concurrentRuleset = `table ip filter {

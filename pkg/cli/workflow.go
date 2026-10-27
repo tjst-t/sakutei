@@ -25,9 +25,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
-	"github.com/tjst-t/sakutei/internal/workflow"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // runApprove implements "sakutei approve" and "sakutei reject" (#42, §6.4):

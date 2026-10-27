@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
 )
 
 // #101: 試用の手順書（docs/trial/workflow-gates）の intent は、そのまま loader で読め、

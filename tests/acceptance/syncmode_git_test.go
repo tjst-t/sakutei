@@ -41,10 +41,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/syncmode"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/syncmode"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 const syncSnapRel = "generated/legacy/sync-fake.yaml"

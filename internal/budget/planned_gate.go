@@ -38,7 +38,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
 )
 
 // PlannedGate is what must hold, besides the window, before a planned_change

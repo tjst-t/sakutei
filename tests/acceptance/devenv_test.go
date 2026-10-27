@@ -42,7 +42,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/v2/internal/render"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

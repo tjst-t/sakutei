@@ -38,12 +38,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/cause"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/postgresql"
-	"github.com/tjst-t/sakutei/internal/postgresql/pgtest"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/cause"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/postgresql"
+	"github.com/tjst-t/sakutei/v2/internal/postgresql/pgtest"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 const pgStoreWithAdmin = `{"secrets": {"pg/admin": {"gen": 1, "value": "` + pgAdminSecret + `"}, "pg/app": {"gen": 1, "value": "app-role-secret"}}}`

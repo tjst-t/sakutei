@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
 )
 
 // budgetFlags are the change-budget flags (§13) shared by reconcile and plan

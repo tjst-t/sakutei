@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // 起こし直したデーモンは既定で別の holder（<ホスト名>-<pid>）になるので、前の

@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // TestReport_ToJSON (#118): every section of the text report is in the JSON

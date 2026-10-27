@@ -51,8 +51,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // OnExceedPolicy controls what happens when a budget limit is breached.

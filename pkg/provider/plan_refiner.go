@@ -14,7 +14,7 @@
 
 package provider
 
-import "github.com/tjst-t/sakutei/pkg/core"
+import "github.com/tjst-t/sakutei/v2/pkg/core"
 
 // PlanRefiner is an OPTIONAL Provider capability, discovered by type assertion
 // in the same style as Lister and IntentValidator.  It lets a provider refine,

@@ -45,7 +45,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // Executor は外部コマンドを 1 つのホストで走らせる。

@@ -31,7 +31,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // destructiveOps returns n distinct destructive Delete ops.

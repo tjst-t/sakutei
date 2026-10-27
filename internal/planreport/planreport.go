@@ -25,7 +25,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // JSONSchemaVersion は "sakutei plan --json" の出力の版。フィールドを足すだけなら

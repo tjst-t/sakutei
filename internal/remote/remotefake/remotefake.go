@@ -29,7 +29,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tjst-t/sakutei/internal/remote"
+	"github.com/tjst-t/sakutei/v2/internal/remote"
 )
 
 // Handler はコマンドに答える。0 以外で終わるなら *remote.ExitError を返す。

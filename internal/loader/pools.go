@@ -19,8 +19,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // Pool is an allocation pool declared in intent (§19.8):

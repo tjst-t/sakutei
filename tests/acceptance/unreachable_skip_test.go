@@ -36,9 +36,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/fakeprovider"
-	"github.com/tjst-t/sakutei/internal/reconcile"
-	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
+	"github.com/tjst-t/sakutei/v2/internal/render"
 )
 
 var skipCountRe = regexp.MustCompile(`consecutive_unreachable_skips=(\d+)`)

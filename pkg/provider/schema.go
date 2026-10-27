@@ -17,7 +17,7 @@
 // These are the seam abstractions described in §5 (ADR-0003).
 package provider
 
-import "github.com/tjst-t/sakutei/pkg/core"
+import "github.com/tjst-t/sakutei/v2/pkg/core"
 
 // FieldSpec declares the attributes of a single Schema field (§5.2).
 //

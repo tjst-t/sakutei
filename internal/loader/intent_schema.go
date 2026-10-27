@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
 )
 
 // intentSchema は理想状態木のルートスキーマ。

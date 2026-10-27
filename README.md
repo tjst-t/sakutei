@@ -10,7 +10,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 
 - **ライセンス:** Apache-2.0
 - **言語:** Go（1.22・標準ライブラリのみ、外部依存なし）
-- **状態:** 設計 v3.25／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.0`、変更点は [CHANGELOG.md](CHANGELOG.md)）
+- **状態:** 設計 v3.25／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.1`、変更点は [CHANGELOG.md](CHANGELOG.md)）
 
 ---
 

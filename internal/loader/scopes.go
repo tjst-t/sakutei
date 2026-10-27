@@ -18,8 +18,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // ScopeMode is the per-scope policy of §24.5: a scope either converges

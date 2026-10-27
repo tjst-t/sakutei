@@ -21,8 +21,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/render"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/render"
 )
 
 // inventoryFlags are the render phase 1 inventory flags (#31, §9.1, §9.2),

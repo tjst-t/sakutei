@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // stepRunner は相ごとの現実を map で持つ PhasedRunner。

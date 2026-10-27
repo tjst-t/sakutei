@@ -17,6 +17,6 @@
 // JSON のファイル（pgtest.SaveState で書く）。
 package main
 
-import "github.com/tjst-t/sakutei/internal/postgresql/pgtest"
+import "github.com/tjst-t/sakutei/v2/internal/postgresql/pgtest"
 
 func main() { pgtest.Main() }

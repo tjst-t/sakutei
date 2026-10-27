@@ -39,7 +39,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // ProviderFactory creates a provider instance from a string→string config map.

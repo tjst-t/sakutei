@@ -36,7 +36,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // validArgKey はモジュールの引数の名前（-a のテンプレートにそのまま埋める）。

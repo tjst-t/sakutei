@@ -17,8 +17,8 @@ package reconcile
 import (
 	"fmt"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // Held is the outcome of HoldAlertOnly: what was held back as alert-only

@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // BulkProvider is the fake Provider plus the optional BulkObserver capability

@@ -19,10 +19,10 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/pkg/allocation"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/pkg/allocation"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // AllocMode selects how render phase 1 resolves allocation requests.

@@ -17,8 +17,8 @@ package loader
 import (
 	"context"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // DesiredSource は理想状態（desired）の供給源を表す seam である。

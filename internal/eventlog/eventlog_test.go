@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 func TestTextIsTheLegacyLine(t *testing.T) {

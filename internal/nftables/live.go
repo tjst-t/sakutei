@@ -65,9 +65,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/remote"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/remote"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // liveProviderVersion は live 版の正規化のソースハッシュ。canonRule や読み方を

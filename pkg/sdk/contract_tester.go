@@ -20,8 +20,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // TB is the subset of testing.TB used by ContractTester.  It is satisfied by

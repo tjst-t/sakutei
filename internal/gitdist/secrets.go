@@ -18,8 +18,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // CheckSecretLocality は拠点ローカルの file SecretBackend（store）が claim の拠点の

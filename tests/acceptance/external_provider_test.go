@@ -251,16 +251,16 @@ func TestExternalProvider_DuplicateNameIsStartupError(t *testing.T) {
 	for name, call := range cases {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			gomod := "module example.com/dup\n\ngo 1.22\n\nrequire github.com/tjst-t/sakutei v0.0.0\n\n" +
-				"replace github.com/tjst-t/sakutei => " + root + "\n"
+			gomod := "module example.com/dup\n\ngo 1.22\n\nrequire github.com/tjst-t/sakutei/v2 v2.0.0\n\n" +
+				"replace github.com/tjst-t/sakutei/v2 => " + root + "\n"
 			src := `package main
 
 import (
 	"errors"
 
-	"github.com/tjst-t/sakutei/pkg/cli"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
+	"github.com/tjst-t/sakutei/v2/pkg/cli"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/registry"
 )
 
 func f(map[string]string) (provider.Provider, error) { return nil, errors.New("never built") }

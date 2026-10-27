@@ -24,14 +24,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/ansible"
-	"github.com/tjst-t/sakutei/internal/ansible/ansiblefake"
-	"github.com/tjst-t/sakutei/internal/cause"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/ansible"
+	"github.com/tjst-t/sakutei/v2/internal/ansible/ansiblefake"
+	"github.com/tjst-t/sakutei/v2/internal/cause"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 const motdArgs = `{"path": "/etc/motd", "line": "managed by sakutei", "create": true}`

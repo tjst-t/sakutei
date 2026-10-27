@@ -23,13 +23,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/cause"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/postgresql"
-	"github.com/tjst-t/sakutei/internal/postgresql/pgtest"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/internal/cause"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/postgresql"
+	"github.com/tjst-t/sakutei/v2/internal/postgresql/pgtest"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // TestMain は、環境変数 SAKUTEI_FAKE_PSQL_MAIN があればこのテストのバイナリを

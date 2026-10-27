@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/registry"
 )
 
 func TestBuildRegistry_RejectsDuplicates(t *testing.T) {

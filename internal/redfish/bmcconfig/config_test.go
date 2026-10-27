@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/redfish"
-	"github.com/tjst-t/sakutei/internal/redfish/redfishtest"
+	"github.com/tjst-t/sakutei/v2/internal/redfish"
+	"github.com/tjst-t/sakutei/v2/internal/redfish/redfishtest"
 )
 
 func writeFile(t *testing.T, dir, name, content string) string {

@@ -44,11 +44,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/allocator"
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/allocation"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/allocator"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/pkg/allocation"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 func newAuthority(t *testing.T, lo, hi int) (*allocator.FileAuthority, string) {

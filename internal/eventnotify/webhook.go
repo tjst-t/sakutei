@@ -28,7 +28,7 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // Webhook は Event を webhook に送る sink。

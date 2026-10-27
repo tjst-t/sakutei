@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
 )
 
 func loadJSONFiles(t *testing.T, files map[string]map[string]any) (Intent, error) {

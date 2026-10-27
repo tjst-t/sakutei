@@ -18,8 +18,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/sdk"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
 
 // 付属の契約テスト（§28.6）。Schema を書き換えたら Examples を合わせる。

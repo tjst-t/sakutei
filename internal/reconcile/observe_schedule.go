@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
 )
 
 // ObserveScheduler is the Observe scheduler seam of §16.5: it decides, per

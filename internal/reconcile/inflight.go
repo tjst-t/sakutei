@@ -47,7 +47,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // errKind classifies an Apply error for the backoff table key.

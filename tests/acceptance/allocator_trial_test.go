@@ -32,7 +32,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/allocator"
+	"github.com/tjst-t/sakutei/v2/internal/allocator"
 )
 
 func TestAllocatorTrial_FailedStartDoesNotPromote(t *testing.T) {

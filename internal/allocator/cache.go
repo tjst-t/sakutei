@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/allocation"
+	"github.com/tjst-t/sakutei/v2/pkg/allocation"
 )
 
 // Cache is the shard-local Lookup cache of §19.6.  An allocation fact does

@@ -44,11 +44,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/budget"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/redfish/redfishtest"
-	"github.com/tjst-t/sakutei/internal/redfish/system"
-	"github.com/tjst-t/sakutei/internal/workflow"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/redfish/redfishtest"
+	"github.com/tjst-t/sakutei/v2/internal/redfish/system"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
 )
 
 // osInstallOnceWorkflow は action で 1 回だけ CD から起動する OS 導入の Workflow。

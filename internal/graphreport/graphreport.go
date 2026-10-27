@@ -26,8 +26,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/diff"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // JSONSchemaVersion は graph の JSON の版。フィールドを足すだけなら上げない。

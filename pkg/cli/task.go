@@ -21,8 +21,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/audit"
-	"github.com/tjst-t/sakutei/internal/task"
+	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/task"
 )
 
 // runTask implements "sakutei task" (#41, §6.2):

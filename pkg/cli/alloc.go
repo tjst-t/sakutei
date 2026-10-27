@@ -32,11 +32,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tjst-t/sakutei/internal/allocator"
-	"github.com/tjst-t/sakutei/internal/loader"
-	"github.com/tjst-t/sakutei/internal/render"
-	"github.com/tjst-t/sakutei/pkg/allocation"
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/internal/allocator"
+	"github.com/tjst-t/sakutei/v2/internal/loader"
+	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/pkg/allocation"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // allocURLUsage is the help text of --alloc-url, shared by every verb.

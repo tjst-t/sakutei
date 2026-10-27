@@ -4,7 +4,7 @@
 
 - `main.go` — `cli.Main(cli.WithProviders(...))` で provider `kvfile` を登録する。verb・フラグ・終了コードは `sakutei` と同じ。
 - `kvfile/` — `pkg/` だけで書いた provider。レコード（`name` → `value`）を 1 つの JSON ファイルに持つ。secret のフィールド `token` は SecretRef のまま受け取り、Apply の直前に file SecretBackend で解決して、値のダイジェストだけをファイルに書く。
-- `go.mod` — 別のモジュール。`replace github.com/tjst-t/sakutei => ../..` で本体を指す（外部依存なし）。
+- `go.mod` — 別のモジュール。`replace github.com/tjst-t/sakutei/v2 => ../..` で本体を指す（外部依存なし）。
 
 ## 使い方
 

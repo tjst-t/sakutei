@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjst-t/sakutei/internal/postgresql"
+	"github.com/tjst-t/sakutei/v2/internal/postgresql"
 )
 
 func writeConfig(t *testing.T, body string) string {

@@ -23,9 +23,9 @@ package main
 import (
 	"example.com/sakutei-external-provider/kvfile"
 
-	"github.com/tjst-t/sakutei/pkg/cli"
-	"github.com/tjst-t/sakutei/pkg/provider"
-	"github.com/tjst-t/sakutei/pkg/registry"
+	"github.com/tjst-t/sakutei/v2/pkg/cli"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/pkg/registry"
 )
 
 func main() {

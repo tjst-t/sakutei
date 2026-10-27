@@ -63,9 +63,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/internal/postgresql"
-	"github.com/tjst-t/sakutei/pkg/core"
-	"github.com/tjst-t/sakutei/pkg/provider"
+	"github.com/tjst-t/sakutei/v2/internal/postgresql"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 const (

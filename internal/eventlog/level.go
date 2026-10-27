@@ -40,7 +40,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // DefaultStuckAfter は transient → stuck に上げる連続の周数の既定値（§22.3）。
