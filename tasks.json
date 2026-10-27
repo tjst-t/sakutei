@@ -3110,11 +3110,11 @@
       ],
       "body": "## なぜ\nS3 互換の実装には、AWS と違う振る舞いのものがある。\n- 一部の設定の API を持たない。501・NotImplemented を返すものは、今でも「unsupported」として扱う。宣言していなければ無視し、宣言していれば計画の時点で「この endpoint は未対応」と分かるエラーにする。ただし、別のコード（400・403 など）で返す実装では、宣言していない設定の Get で観測エラーになり、バケット全体が観測できなくなる。Read は宣言を知らないので、今は 4 つの設定（versioning・policy・lifecycle・tags）の Get を毎周すべて呼んでいる。\n- lifecycle の StorageClass を、受け取ったあと実装独自の名前に書き換えて返すものがある。今は Apply の読み戻しで食い違いを見つけ、「endpoint が持つ形で書け」という永続エラーにする。しかし、PUT では標準の名前しか受け付けない実装では、どちらの名前で書いても毎周 drift になる。\n\n## やること\n- endpoint の設定に `fields`（このendpoint で扱う設定の一覧。既定は 4 つ全部）を足す。一覧に無い設定の Get は呼ばない（unsupported と同じ扱い）。一覧に無い設定を宣言したら、計画の時点で分かるエラーにする。\n- endpoint の設定に `storage_class_aliases`（実装が返す名前 → 標準の名前、例 `{\"<実装の名前>\": \"GLACIER\"}`）を足す。観測した lifecycle の StorageClass をこの表で読み替えてから比べる。読み戻しの確かめも同じ。\n- 文書：docs/providers/s3-bucket.md に「S3 互換実装との差異への対応」として、今の扱い（NotImplemented の扱い・policy の正規化・読み戻しの確かめ）と、この 2 つの設定を書く。設計書 §29.1。特定の製品の名前は書かない。\n\n## 確かめ方\n- 単体・受け入れテスト：偽の S3 サーバで、versioning の Get に 400 を返す・StorageClass を書き換えて返す、を作る。`fields` で外せば観測が続くこと、alias で drift が出ないことを示す。\n- 統合テスト：SeaweedFS（make integration-s3）で再現できる範囲を足す。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "fields に無い設定の Get を呼ばず、storage_class_aliases で読み替えた lifecycle が毎周 drift にならないことをテストで示す。文書に S3 互換実装との差異への対応がある。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/s3-bucket-s3-storageclass）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T12:19:20.486Z",
-      "updatedAt": "2026-10-27T12:38:30.354Z",
+      "updatedAt": "2026-10-27T12:56:37.899Z",
       "closedAt": "2026-10-27T12:38:30.354Z",
       "extra": {}
     }
