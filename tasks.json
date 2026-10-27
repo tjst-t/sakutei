@@ -811,11 +811,11 @@
       "labels": [],
       "body": "設計 §13.3。設計書では「型と専用予算レーンは v1a」だが、実際には未実装（internal/budget のコメントで v1.5 に先送りされている）。\n\nintent のトップレベルに planned_change（scope・kind: delete|update|reimage|recreate・max_count・window・approval）を宣言できるようにする。\n- 窓内・scope 内・種別一致の変更は、max_count までの専用予算レーンで実行。通常の累積時間窓予算・cycle rate limit とは別枠で計上する（バイパスではない）\n- 宣言済みの削除・再作成による件数減は List 急減 halt（§12.4）に数えない\n- kind: reimage は delete+create を破壊予算の delete として数えない（ペアリングの判定基準は §29.1 で実装中に決める事項。決めた基準をコミットの説明と設計書に書く）\n- 窓を過ぎたら自動失効\n- 宣言外の変更（別 scope・別種別・上限超過分）は通常予算で評価され続ける\n- kind の整合検証（宣言 kind と実際の Plan の操作種別の一致、§29.1）\n\napproval の requirements 連携（§14.4）は別タスク。",
       "doneWhen": "planned_change の窓内で 500 件の削除が通常予算を消費せずに進み、同じ周期の宣言外の削除は通常予算で halt すること、窓の後は通常予算に戻ること、reimage が delete として数えられないことを chaos テストで示す",
-      "resolution": "Factory が取り込みました（factory/v1-5-planned-change-list-halt-kind-reima）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T13:38:03.379Z",
-      "updatedAt": "2026-10-20T14:16:21.032Z",
+      "updatedAt": "2026-10-27T09:34:44.196Z",
       "closedAt": "2026-10-20T14:16:21.032Z",
       "extra": {}
     },
