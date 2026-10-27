@@ -3166,6 +3166,50 @@
       "updatedAt": "2026-10-27T14:30:48.544Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "plan-json",
+      "number": 135,
+      "kind": "task",
+      "title": "plan --json（差分を機械で読める形で出す）",
+      "status": "ready",
+      "parent": "sakutei",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "## やること\n- `sakutei plan --json` で、標準出力に JSON を 1 つ出す（schema_version 1）。中身：操作ごと（provider・scope・local id・CREATE / UPDATE / DELETE・フィールドの前と後・破壊的か・原因タグ）、予算や安全装置で止めた操作とその理由・使う予算のレーン（planned_change を含む）、Workflow に任せている対象、採番待ち、直してよい時間帯の外か、計画のエラー。今の文の出力が持つ情報は全部入れる。秘密の値は出さない（SecretRef のまま）。\n- 終了コードは文の出力と同じ。形は docs（status-json.md と並べて plan-json.md）に書く。\n\n## 確かめ方\n受け入れテスト：作る・変える・消す・予算で止める・Workflow に任せる・採番待ちを含む intent で、--json の件数と内容が文の出力と一致する。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
+      "doneWhen": "plan --json が文の出力と一致する JSON を出し、秘密の値を含まないことを受け入れテストで示す。make check・make test-race が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T14:31:10.032Z",
+      "updatedAt": "2026-10-27T14:31:10.032Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "daemon-read-api",
+      "number": 136,
+      "kind": "task",
+      "title": "デーモンの読み取り専用の HTTP：GET /status・/plan・/events（SSE）・/graph と、status に claim とミラーの状態",
+      "status": "ready",
+      "parent": "sakutei",
+      "dependsOn": [
+        "plan-json"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "## やること\n- `--read-listen <addr>`：明示したときだけ待ち受ける読み取り専用の HTTP。既定の例は 127.0.0.1。承認の書き込みの口（`--approval-listen`）とは別の待ち受けにする。書き込みの要求は受けない（405）。\n  - `GET /status`：直前の周の観測から作った status の JSON（`status --json` と同じ形。周の番号と時刻を足す）。\n  - `GET /plan`：直前の周の計画（`plan --json` と同じ形）。止めた操作と理由、保留を含む。\n  - `GET /events`：Event の流し出し（Server-Sent Events。Event の JSON をそのまま 1 件ずつ。接続した時点で firing 中の level の Event を先に送る）。遅い読み手で収束を止めない（送れない分は落として数える）。\n  - `GET /graph`：依存の DAG（リソースと depends_on・ready_condition、今の ready かどうか）の JSON。一回性の CLI にも `sakutei graph --json` を足す。\n  - 既にある `/metrics`（#54）と `GET /workflows` はそのまま。\n- `status`（JSON と文）に、claim（このデーモンの担当）・fencing の世代・git のミラーの状態（最後に取れた revision と時刻、中央に届いているか）を足す（あるときだけ）。\n- 認証は持たない（手元で待ち受ける前提）。外に出すときは前段に置く道具で守ることを docs に書く。\n- 文書：docs（status-json.md・plan-json.md と並べて API の説明）と設計書 §26.4・§22.3。\n\n## 確かめ方\n受け入れテスト：デーモンを回し、/status・/plan が CLI の --json と同じ形、/events にずれの firing と resolved が流れる、/graph が依存の順を返す、書き込みの要求が断られる、待ち受けを指定しなければ口が開かない。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
+      "doneWhen": "デーモンの /status・/plan・/events・/graph が読み取り専用で動き、status に claim とミラーの状態が出ることを受け入れテストで示す。make check・make test-race が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T14:31:10.032Z",
+      "updatedAt": "2026-10-27T14:31:10.032Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
