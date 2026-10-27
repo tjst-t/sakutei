@@ -984,7 +984,7 @@
       "number": 51,
       "kind": "task",
       "title": "v2: 多相 Task 状態機械（相の S2 永続化・相ごとの入口 Observe・リブート跨ぎ）",
-      "status": "backlog",
+      "status": "ready",
       "parent": "v2-task-ui",
       "dependsOn": [],
       "milestone": null,
@@ -998,7 +998,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:59:40.915Z",
+      "updatedAt": "2026-10-27T14:31:16.295Z",
       "closedAt": null,
       "extra": {}
     },
