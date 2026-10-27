@@ -2750,7 +2750,7 @@
       "number": 117,
       "kind": "task",
       "title": "status は観測エラーで止めず、観測できないものとして最後まで報告する（#109 の 5）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "w1-provider-cli",
       "dependsOn": [
         "w1-inventory-file-oneshot"
@@ -2760,12 +2760,12 @@
       "labels": [],
       "body": "## なぜ\n`sakutei status` は1つのリソースの Read のエラーで終了コード 1 になり、ほかの provider の適合を出さない（cmd/sakutei/status.go の fp.Read の後の os.Exit(1)）。BMC が1台落ちただけで status が使えなくなり、障害のときの見え方を測れない。\n\n## やること\n- Read のエラー（と List のエラー）を、そのリソースの「観測できない」（既存の unknown の扱い、§3 unknown≠absent・§5.4）として数え、全リソースを最後まで評価して報告する。エラーの文はリソースごとに出す。\n- 終了コードを決めて help と §26.4 に書く：0＝すべて観測でき報告できた（drift があっても 0、今と同じ）／3＝報告はできたが観測できないリソースがある／1＝フラグ・intent の読み込みなど、報告そのものができない。（3 にする理由：既存の呼び出し側が 1 を「status 自体の失敗」と見ているのを壊さない。2 はフラグの誤りで使っている。）\n- provider の解決（resolveProviders）の失敗は今どおり 1。\n- 設計書 §26.4（status の適合報告）に書き足す。版の行と CHANGELOG のファイルは触らない。\n\n## 確かめ方\n受け入れテスト `[AC-114-3-*]`：2 provider のうち片方の Read が失敗しても、もう片方の適合が出て、失敗したリソースが観測できないとして数えられ、終了コード 3／全部観測できれば 0。fakeprovider に失敗を入れる手段が無ければテスト用に足す。\n\n## 決まり\nstdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "観測エラーでも status が全リソースを報告し終了コード 3 を返す。AC-114-3 と make check・make test-race が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/w1-status-unobservable）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T07:46:45.249Z",
-      "updatedAt": "2026-10-27T08:06:01.815Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-27T08:15:33.392Z",
+      "closedAt": "2026-10-27T08:15:33.392Z",
       "extra": {}
     },
     {
