@@ -2900,11 +2900,11 @@
       "labels": [],
       "body": "## なぜ\n#122 の統合試験（tests/integration/s3）は MinIO を必須の相手にし、イメージを `:latest` で指している。MinIO は 2026-04 にアーカイブされ、公式イメージを匿名で取れないことがある。必須の相手にすると、いずれイメージが取れなくなって試験が止まる。`:latest` では結果が再現しない。\n\n## やること\n- **SeaweedFS を必須の相手**にする。MinIO（と古い SeaweedFS などほかの相手）は**任意**：イメージが取れない（pull が失敗する）ときは、その相手だけ t.Skip 相当で飛ばし、理由をログに出す。必須の相手が取れないときは失敗にする。Garage など保守されている実装を任意で足してよい。\n- すべてのイメージを **tag と digest（`name:tag@sha256:…`）で固定**する。digest は実際に pull して確かめた値を書く。環境変数での上書きは残してよい。\n- SeaweedFS の起動に `-volume.max` を大きくする設定を入れる（例 `-volume.max=1000 -master.volumeSizeLimitMB=64`。既定の 8 だとバケットごとにボリュームを約 7 個使い、3 つ目のバケットから PUT が 500 になる）。起動後の最初の PUT に 15 秒ほどかかることがあるので、待ち時間に見込む。\n- docs/providers/s3-bucket.md の統合テストの節を合わせて直し、SeaweedFS の上の注意を一般的な注意として書く。特定の環境の話は書かない。\n\n## 確かめ方\n`make integration-s3` を実際に回して通す（SeaweedFS は必ず回る、任意の相手は回るか飛ばされる）。任意の相手のイメージ名をわざと取れないものにして、飛ばされて失敗にならないことも確かめる。結果を docs に書く。make check・make test-race が通る。",
       "doneWhen": "SeaweedFS を必須・ほかを任意（取れなければ飛ばす）にし、全イメージが tag@digest で固定され、make integration-s3・make check・make test-race が通る",
-      "resolution": "Factory が取り込みました（factory/w2-s3-it-targets）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T10:00:32.646Z",
-      "updatedAt": "2026-10-27T10:35:27.037Z",
+      "updatedAt": "2026-10-27T10:35:43.232Z",
       "closedAt": "2026-10-27T10:35:27.037Z",
       "extra": {}
     }
