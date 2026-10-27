@@ -2030,11 +2030,11 @@
       "labels": [],
       "body": "設計 §22.3。\n\n- 収束失敗・ずれ・halt（予算・prune の急減・外部入力不達）は level（継続状態）として扱う：初めて出た周に firing、続く間は同じ知らせを毎周は出さない（内容が変わったときだけ更新として出す）、消えた周に resolved。キーは kind + resource（または scope）。\n- Event に state（firing / resolved）・since（始まった時刻）・count（連続の周数）を持たせる。\n- 連続回数から transient → stuck に自動で上げる（しきい値は既定値を決めてフラグで変えられるようにし、設計書に書く）。権限・欠損・容量など permanent な失敗はすぐ stuck。oscillating はこのタスクの外（振動の検知は既知の限界のまま）。blocked（依存未達）は上流の Event にまとめる。\n- Workflow の失敗は edge（従来どおり 1 回）。\n- level の状態は S3（メモリ）。デーモンを起こし直すと、続いているものは改めて firing になる（取りこぼさない側）。\n- 決めた既定値（stuck に上げる回数など）を設計書 §22.3 に書き戻す。docs/trial/README.md の D2（alert-only で毎周同じ知らせが出る）も直す。",
       "doneWhen": "alert-only で手でずらしたまま N 周回すと、ずれの Event が firing で 1 回だけ出て（count と since 付き）、戻すと resolved が 1 回出ること。予算の halt も同じく firing と resolved が 1 回ずつであること。しきい値を超えて続くと stuck に上がること。起こし直し後は改めて firing になること。以上をテストで示す。設計書 §22.3 に既定値を書く。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/level-halt-firing-resolved-since）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T14:27:46.439Z",
-      "updatedAt": "2026-10-21T15:24:00.345Z",
+      "updatedAt": "2026-10-27T09:37:57.505Z",
       "closedAt": "2026-10-21T15:24:00.345Z",
       "extra": {}
     },
