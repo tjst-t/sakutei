@@ -2376,11 +2376,11 @@
       "labels": [],
       "body": "親 #96 の共通の決まりに従う。docs/trial/planned-change/。設計 §13.3・§29.1 を読む。dnszone・nftables（と必要なら fake）で実際に：大きな削除を planned_change で宣言すると通常の予算では止まらず専用レーンで通る、宣言と合わない kind の破壊的な操作は PlannedChangeKindMismatch、承認情報（requirements）が足りないと通らない、期限・範囲の外は効かない、急減判定から差し引かれる。",
       "doneWhen": "docs/trial/planned-change/ に手順と実際に回した結果がある。見つけた不具合は直すか列挙されている。make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/planned-change-kind-reimage）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:13:21.447Z",
-      "updatedAt": "2026-10-23T15:49:37.395Z",
+      "updatedAt": "2026-10-27T09:39:49.093Z",
       "closedAt": "2026-10-23T15:49:37.395Z",
       "extra": {}
     },
