@@ -3086,11 +3086,11 @@
       "labels": [],
       "body": "## なぜ\nEvent の sink（§22.3）は標準エラーと JSON lines のファイルだけで、止まった・ずれが続いていることを人が気づく経路が無い。通知の振り分け・抑制は Alertmanager などに委譲する（§22.1）ので、そこへ届ける口だけを足す。\n\n## やること\n- `--event-webhook <url>`：Event を JSON（今の Event の型のまま）で POST する sink。認証のヘッダは SecretRef。TLS（ca_file・insecure_skip_verify は明示したときだけ）。\n- `--event-alertmanager <url>`：level の Event（firing・resolved、§22.3）を Alertmanager の API（v2 の alerts）の形に写して送る。labels（kind・resource・scope・severity・class）と annotations（message・cause）、startsAt・endsAt。firing が続く間は Alertmanager の期限が切れないように送り直す。edge の Event の扱いは実装で決めて§22.3 に書く。\n- 送れないときは待ちを挙げながら送り直すが、収束は止めない（今の sink と同じ決まり）。送れなかったことはログに出す。秘密の値を Event に載せない。\n- 単体・受け入れテストは httptest で。任意で、版を tag と digest で固定した本物の Alertmanager を相手にした統合テスト（`make integration-alertmanager`、check・CI には入れない）。\n- 文書：docs（Event の説明の場所）と設計書 §22.3。版の行と CHANGELOG のファイルは触らない。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "ずれ・halt の level の Event が webhook と Alertmanager に firing・resolved として届き、送り先が落ちていても収束が続くことをテストで示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/event-notify-sink）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T11:27:28.338Z",
-      "updatedAt": "2026-10-27T13:15:05.548Z",
+      "updatedAt": "2026-10-27T14:02:37.928Z",
       "closedAt": "2026-10-27T13:15:05.548Z",
       "extra": {}
     },
