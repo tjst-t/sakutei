@@ -2708,7 +2708,7 @@
       "number": 115,
       "kind": "task",
       "title": "status・plan・reconcile に --inventory-file を足す（#109 の 3）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "w1-provider-cli",
       "dependsOn": [],
       "milestone": null,
@@ -2720,7 +2720,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T07:46:45.249Z",
-      "updatedAt": "2026-10-27T07:46:45.249Z",
+      "updatedAt": "2026-10-27T07:47:20.828Z",
       "closedAt": null,
       "extra": {}
     },
