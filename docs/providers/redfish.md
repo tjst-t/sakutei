@@ -1,13 +1,14 @@
-# Redfish の BMC provider（redfish-system / redfish-virtual-media）
+# Redfish の BMC provider（redfish-system / redfish-virtual-media / redfish-bios）
 
-物理サーバの BMC を Redfish で扱う provider。決まりの正は設計書 §29.1「Redfish の BMC provider」（v3.15・v3.16）。ここは使い方の説明で、矛盾したら spec/ が優先する。
+物理サーバの BMC を Redfish で扱う provider。決まりの正は設計書 §29.1「Redfish の BMC provider」（v3.15・v3.16）と「Redfish の BIOS の設定」（#140）。ここは使い方の説明で、矛盾したら spec/ が優先する。
 
 | provider 名 | ID | 扱うもの |
 | --- | --- | --- |
 | `redfish-system` | ノード名（例 `node1`） | 電源（On / Off）・起動先の上書き（Continuous / Disabled）。Workflow の手順から一度きりの操作（1 回だけの起動先・再起動、#139） |
 | `redfish-virtual-media` | `<ノード名>/cd`（例 `node1/cd`） | 仮想メディアの CD（Insert / Eject） |
+| `redfish-bios` | `<ノード名>/bios`（例 `node1/bios`） | BIOS の設定（宣言した属性だけを `Bios/Settings` で合わせる。効くのは次の再起動、#140） |
 
-どちらも標準階級（List・BulkObserve を持たない）で、prune の対象にしない（サーバは Sakutei が作ったり消したりしない）。
+どれも標準階級（List・BulkObserve を持たない）で、prune の対象にしない（サーバは Sakutei が作ったり消したりしない）。
 
 ## BMC の一覧（--redfish-config）
 
@@ -107,6 +108,54 @@ YAML の `On` / `Off` は文字列のまま読まれる（bool になるのは `
 
 観測だけの値: `inserted`・`media_image`。
 
+## BIOS の設定（redfish-bios、#140）
+
+`attributes` に書いた BIOS の属性だけを合わせる。書かない属性は見ない・触らない（BMC の画面で人が変えてもずれにしない）。
+
+```yaml
+resources:
+  - provider: redfish-bios
+    id: node1/bios                     # <ノード名>/bios（システムの node1 と並べて書ける）
+    fields:
+      attributes: '{"ProcVirtualization": "Enabled", "PowerProfile": "MaxPerformance", "BootRetryCount": 3}'
+```
+
+| フィールド | 値 | 意味 |
+| --- | --- | --- |
+| `attributes` | JSON のオブジェクト（値は文字列・数・真偽） | 管理する属性。名前は BMC の属性の名前（`Bios` の `Attributes` のキー）。`""` か `{}` は何も管理しない。値の型は BMC のとおりに書く（`"3"` と `3` は違う）。 |
+
+観測だけの値: `pending_attributes`（保留中の変更のうち今の値と違うもの、JSON）・`attribute_registry`（属性の登録簿の Id）・`bios_present`（BMC が Bios を持つか）。観測の `attributes` は今の値の全部（キー順の JSON）で、比べるのは宣言した属性だけ。
+
+### 再起動が要る
+
+BIOS の設定は書いてもすぐには効かない。sakutei は `Bios/Settings` に PATCH するだけで（保留中の変更になる）、**再起動はしない**。効かせるには再起動が要る:
+
+- 人が再起動する、か
+- Workflow の手順に `action: { op: reset }`（[一度きりの操作](#一度きりの操作workflow-の-action-手順139)）を書く。
+
+保留中の変更があるあいだ、`redfish-bios` の観測は **converging** になる（BMC が次の再起動を待っている途中なので、同じ変更を重ねて出さない）。`plan` は `unobservable (availability=converging)`、一回性の `reconcile` は「収束しきらない」終了コード（1）、常駐は converging として数える。再起動で効けば、次の周に今の値で比べ直して converged になる。
+
+- 保留中の変更が宣言と**違っても**重ねない（ほかの道具が置いた変更と取り合わない）。再起動で効いたあとに今の値で比べ、違えばそこで PATCH する。急ぐなら BMC の側で保留中を消す。
+- 保留中に「既定値に戻す」（`ResetBiosToDefaultsPending`）があるときも converging。
+- PATCH は宣言した属性のうち「保留中があればその値、無ければ今の値」と違うものだけ。PATCH のあと読み直し、保留中にも今の値にも宣言の値が見えなければ PermanentError（`Bios/Settings` を報告しない BMC に毎周 PATCH を重ねない）。
+- BIOS の設定の変更は破壊的に数えない（予算 §13 を使わない）。再起動の `ForceRestart` は Workflow の側で破壊的に数える。
+
+### 計画の時点で断るもの
+
+- BMC が属性の登録簿（`Bios` の `AttributeRegistry` の Id、`/redfish/v1/Registries` から辿る）を出していれば、それで確かめる: 登録簿に無い名前・読み取り専用（`ReadOnly`・`Immutable`）・型違い（`Enumeration`・`String` は文字列、`Integer` は整数、`Boolean` は真偽）・選べない値・長すぎる / 短すぎる文字列・範囲の外の数・`Password` 型の属性（秘密は intent に書かない、§20）。登録簿は Id ごとに 1 度だけ読み、Id が変われば（BMC の版が上がれば）読み直す。
+- 登録簿を出さない BMC では、今の値に無い名前と、今の値と JSON の型が違う値だけを断る。ほかは PATCH で BMC が断れば（400）PermanentError で、BMC の言葉をそのまま出す。
+- BMC が Bios を持たない（System に `Bios` のリンクが無い・404）ときは、`attributes` を宣言したときだけ `the BMC of node "…" has no Bios resource` で止まる。システム・仮想メディアは影響を受けない。
+- 届かない・5xx・時間切れは unknown（何も操作しない）。
+
+### qemu-bmc で分かったこと（0.10.0）
+
+- `Systems/1/Bios` の値は**文字列だけ**（`Integer`・`Boolean` の属性は無い）。属性と既定値は qemu-bmc の README の表のとおり（`ProcVirtualization`・`PowerProfile`・`AssetTag` など。`BootMode`・`SecureBoot` は読み取り専用）。値は表示用で、`BootMode`・`SecureBoot` 以外は VM の動きを変えない。
+- `Bios/Settings` は保留中の属性だけを返す（今の値の写しは返さない）。PATCH は 200 で本文に Settings を返す。保留中は電源オン・`ForceRestart`・`GracefulRestart`・`PowerCycle` のたびに効いて空になる（ゲストの中からの再起動では効かない）。
+- 登録簿は `/redfish/v1/Registries/BiosAttributeRegistry`（`Registry` は `BiosAttributeRegistry.1.0`）の `Location` の `Uri` にあり、`Bios` の `AttributeRegistry` は `BiosAttributeRegistry.1.0.0`。sakutei は `Registry` が Id の版を除いた頭に当たるものを使う。
+- 読み取り専用・選べない値などの PATCH は 400（`@Message.ExtendedInfo` に属性ごとの Base のメッセージ）で、何も変えない。
+
+偽 BMC（`internal/redfish/redfishtest`）は qemu-bmc の Bios を真似たうえで、数（`BootRetryCount`）と真偽（`SriovGlobalEnable`）の属性も持つ。契約テストは `internal/redfish/system/bios_test.go`（`[AC-140-1]`〜`[AC-140-5]`。契約テストは Apply の直後の観測が宣言どおりであることを求めるので、Apply と偽 BMC の再起動を組にして回す）、CLI の受け入れテストは `tests/acceptance/redfish_bios_test.go`（`[AC-140-6]`・`[AC-140-7]`）。
+
 ## 一度きりの操作（Workflow の action 手順、#139）
 
 「次の 1 回だけ CD から起動」と「再起動」は、あるべき状態ではない（Once は BMC が 1 回の起動で使い切り、再起動は終われば何も残らない）ので宣言できない。
@@ -174,7 +223,7 @@ $ make integration-redfish
 
 1. 一時ディレクトリにトポロジ（`tests/integration/redfish/topology.clab.yml`）を写し、小さな ISO 9660 を 2 つ（`iso/sakutei-a.iso`・`iso/sakutei-b.iso`、テストがその場で書く）と sakutei のバイナリ、BMC の一覧（`insecure_skip_verify: true`、パスワードは file SecretBackend の SecretRef）を置く。
 2. 同じ名前の lab の残りを消してから `sudo containerlab deploy` する。lab 名と管理ネットは `sakutei-rf84`（`172.31.84.0/24`、BMC は node1 = `172.31.84.11`・node2 = `172.31.84.12`、Redfish は HTTPS 443・自己署名・`admin`/`password`）。
-3. (1)〜(6) を順に回す（前の段の現実を次の段が使うので、1 つ落ちたら残りは回さない）。
+3. (1)〜(8) を順に回す（前の段の現実を次の段が使うので、1 つ落ちたら残りは回さない）。
 4. **終わったら必ず `containerlab destroy --cleanup`**（失敗しても・Ctrl-C で止めても）。テストのプロセスごと落ちた（`-timeout` など）ときは、Makefile が lab の残りを見つけて消す。
 
 トポロジの要点: 2 台とも `/dev/kvm`・`/dev/net/tun` を渡し、`SYSTEM_UUID`・`VM_MACS` を固定、VM の NIC は eth1（2 台を直結）、`GRACEFUL_TIMEOUT` は 10 秒。**`VM_DISK_SIZE` は付けない**——ディスクの無い VM は BIOS のまま ACPI の電源ボタンに応えないので、GracefulShutdown は PoweringOff のあと `GRACEFUL_TIMEOUT` 秒で On に戻る。これを既定停止の stuck と graceful_then_force の確かめに使う。`POWER_ON_AT_START` の既定（false）で VM は Off から始まる。
@@ -201,6 +250,26 @@ $ sudo containerlab destroy -t topology.clab.yml --cleanup && rm -rf iso
 | (4) `[AC-84-4]` | graceful_then_force は force_after 後に ForceOff | `power_off: graceful_then_force`・`force_after: 10s`。電源の移り変わりは On → PoweringOff →（BMC があきらめて）On → **Off**（PoweringOff を経ずに Off = ForceOff）。Off になったのは起動から force_after 以上あと。予算で止まらない（BudgetHalted なし）。続く plan は Converged。 |
 | (5) `[AC-84-5]` | BMC を止めると Unknown で何も操作しない | node2 を手で ForceOff・node1 の起動先を手で外してから、node2 のコンテナを `docker pause`。plan は node2 の観測が unreachable でエラー。常駐は node2 を毎周「unobservable」として飛ばし（3 周以上）、node1 は収束を続ける（起動先が戻る）。node2 には Apply を出さない。unpause して 5 秒待っても node2 は Off のまま（止まっている間に送った要求が受信待ちに溜まっていれば、ここで実行されてしまう）。reconcile で On に戻る。 |
 | (6) `[AC-84-6]` | Once は計画の時点でエラー | node2 を `boot_enabled: Once` にすると、plan も reconcile も `boot_enabled "Once" cannot be declared` で失敗し、node2 は変わらない。 |
+| (7) `[AC-87-7]` | OS 導入の Workflow | CD を差して差さったことを確かめてから電源を入れる（[OS を入れる](#os-を入れるworkflow-と組み合わせる)）。 |
+| (8) `[AC-140-8]` | BIOS の設定（redfish-bios） | node1 のシステムと `node1/bios`（`ProcVirtualization: Disabled`・`PowerProfile: Balanced`・`AssetTag`）を並べて宣言。plan は差分を出して `Bios/Settings` に書かない。reconcile は Settings に保留中として書き、今の値は変わらず電源も On のまま。2 回目の reconcile は converging で、qemu-bmc のログの「pending until the next boot」は 1 回だけ（PATCH を重ねない）。node2 に読み取り専用（`BootMode`）・選べない値・登録簿に無い名前を宣言すると plan がエラーで、保留中は空のまま。`ForceRestart` で効いたあと plan は Converged で、宣言していない属性は元のまま。 |
+
+### 結果（2026-10-27、qemu-bmc 0.10.0、BIOS の設定を足して、#140）
+
+(8) BIOS の設定を足して、同じ機械（docker 29.1.3・containerlab 0.81.1）で `make integration-redfish` が合格した。qemu-bmc の振る舞いは上の「qemu-bmc で分かったこと」のとおりで、sakutei の側で合わせたところは無い。
+
+```
+--- PASS: TestRedfishIntegration (84.93s)
+    --- PASS: TestRedfishIntegration/0_lab (0.00s)
+    --- PASS: TestRedfishIntegration/1_plan_reconcile (0.34s)
+    --- PASS: TestRedfishIntegration/2_daemon_restores_drift (2.54s)
+    --- PASS: TestRedfishIntegration/3_graceful_stuck (31.09s)
+    --- PASS: TestRedfishIntegration/4_graceful_then_force (11.03s)
+    --- PASS: TestRedfishIntegration/5_bmc_paused_unknown (30.76s)
+    --- PASS: TestRedfishIntegration/6_once_rejected (0.01s)
+    --- PASS: TestRedfishIntegration/7_workflow_cd_before_power (9.05s)
+    --- PASS: TestRedfishIntegration/8_bios_settings (0.11s)
+ok  	github.com/tjst-t/sakutei/tests/integration/redfish	89.105s
+```
 
 ### 結果（2026-10-27、qemu-bmc 0.10.0）
 

@@ -31,6 +31,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -491,5 +492,106 @@ func TestTaskResponseIsNotSuccess(t *testing.T) {
 	err = c.PatchBoot(context.Background(), redfish.BootContinuous, "Pxe")
 	if !redfish.IsUnreachable(err) || !strings.Contains(err.Error(), "202") {
 		t.Fatalf("got %v, want unreachable for 202", err)
+	}
+}
+
+func TestBios(t *testing.T) {
+	srv, c := newPair(t, redfishtest.Options{})
+	ctx := context.Background()
+	b, err := c.GetBios(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Path != redfishtest.BiosPath || b.SettingsPath != redfishtest.BiosSettingsPath || b.AttributeRegistry != redfishtest.BiosRegistryID ||
+		b.Attributes["ProcVirtualization"] != "Enabled" || b.Attributes["BootRetryCount"] != float64(3) || b.Attributes["SriovGlobalEnable"] != false ||
+		len(b.Pending) != 0 || b.ResetPending {
+		t.Fatalf("GetBios = %+v", b)
+	}
+	if err := c.PatchBiosSettings(ctx, map[string]any{"ProcVirtualization": "Disabled"}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err = c.GetBios(ctx); err != nil || b.Pending["ProcVirtualization"] != "Disabled" || b.Attributes["ProcVirtualization"] != "Enabled" {
+		t.Fatalf("GetBios after PATCH = %+v, %v", b, err)
+	}
+	err = c.PatchBiosSettings(ctx, map[string]any{"BootMode": "Bios"})
+	if !redfish.IsRequest(err) || !strings.Contains(err.Error(), "read only") {
+		t.Fatalf("PATCH of a read-only attribute = %v, want a request error with the BMC's message", err)
+	}
+	srv.Restart()
+	if b, err = c.GetBios(ctx); err != nil || len(b.Pending) != 0 || b.Attributes["ProcVirtualization"] != "Disabled" {
+		t.Fatalf("GetBios after the reboot = %+v, %v", b, err)
+	}
+
+	reg, err := c.GetAttributeRegistry(ctx, redfishtest.BiosRegistryID)
+	if err != nil || reg.ID != redfishtest.BiosRegistryID || len(reg.Attributes) != len(redfishtest.DefaultBiosAttributes) {
+		t.Fatalf("GetAttributeRegistry = %+v, %v", reg, err)
+	}
+	for _, a := range reg.Attributes {
+		if a.AttributeName == "PowerProfile" && !reflect.DeepEqual(a.Values, []string{"MaxPerformance", "Balanced", "PowerSaving"}) {
+			t.Errorf("PowerProfile values = %v", a.Values)
+		}
+		if a.AttributeName == "BootRetryCount" && (a.UpperBound == nil || *a.UpperBound != 10 || a.Type != "Integer") {
+			t.Errorf("BootRetryCount = %+v", a)
+		}
+	}
+	if _, err := c.GetAttributeRegistry(ctx, "OtherRegistry.1.0.0"); !redfish.IsRequest(err) {
+		t.Fatalf("GetAttributeRegistry of an unknown id = %v, want a request error", err)
+	}
+}
+
+func TestBiosMissing(t *testing.T) {
+	_, c := newPair(t, redfishtest.Options{NoBios: true})
+	_, err := c.GetBios(context.Background())
+	if !redfish.IsNoBios(err) || !redfish.IsRequest(err) {
+		t.Fatalf("GetBios without Bios = %v, want ErrNoBios", err)
+	}
+	if !errors.Is(err, redfish.ErrNoBios) {
+		t.Fatalf("errors.Is(%v, ErrNoBios) = false", err)
+	}
+}
+
+// Settings を持たない BMC（@Redfish.Settings が無く /Settings は 404）では
+// 保留中は空。登録簿は Id で引ける。Bios が 404 なら ErrNoBios。
+func TestBiosVendorLayout(t *testing.T) {
+	var biosGone atomic.Bool
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/redfish/v1/Systems/S":
+			w.Write([]byte(`{"Bios":{"@odata.id":"/redfish/v1/Systems/S/Bios"}}`))
+		case "/redfish/v1/Systems/S/Bios":
+			if biosGone.Load() {
+				http.NotFound(w, r)
+				return
+			}
+			w.Write([]byte(`{"AttributeRegistry":"BiosAttributeRegistry.v1_0_3","Attributes":{"LogicalProc":"Enabled"}}`))
+		case "/redfish/v1/Registries":
+			w.Write([]byte(`{"Members":[{"@odata.id":"/redfish/v1/Registries/Base"},{"@odata.id":"/redfish/v1/Registries/BiosAttributeRegistry.v1_0_3"}]}`))
+		case "/redfish/v1/Registries/Base":
+			w.Write([]byte(`{"Id":"Base.1.8","Registry":"Base.1.8","Location":[{"Language":"en","Uri":"/registries/base.json"}]}`))
+		case "/redfish/v1/Registries/BiosAttributeRegistry.v1_0_3":
+			w.Write([]byte(`{"Id":"BiosAttributeRegistry.v1_0_3","Location":[{"Language":"ja","Uri":"/registries/ja.json"},{"Language":"en","Uri":"/registries/bios.json"}]}`))
+		case "/registries/bios.json":
+			w.Write([]byte(`{"Id":"BiosAttributeRegistry.v1_0_3","RegistryEntries":{"Attributes":[{"AttributeName":"LogicalProc","Type":"Enumeration","Value":[{"ValueName":"Enabled"},{"ValueName":"Disabled"}]}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	c, err := redfish.New(redfish.Config{Endpoint: ts.URL, InsecureSkipVerify: true, SystemPath: "/redfish/v1/Systems/S"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	b, err := c.GetBios(ctx)
+	if err != nil || b.SettingsPath != "/redfish/v1/Systems/S/Bios/Settings" || len(b.Pending) != 0 || b.Attributes["LogicalProc"] != "Enabled" {
+		t.Fatalf("GetBios = %+v, %v", b, err)
+	}
+	reg, err := c.GetAttributeRegistry(ctx, b.AttributeRegistry)
+	if err != nil || len(reg.Attributes) != 1 || !reflect.DeepEqual(reg.Attributes[0].Values, []string{"Enabled", "Disabled"}) {
+		t.Fatalf("GetAttributeRegistry = %+v, %v", reg, err)
+	}
+	biosGone.Store(true)
+	if _, err := c.GetBios(ctx); !redfish.IsNoBios(err) {
+		t.Fatalf("GetBios with Bios 404 = %v, want ErrNoBios", err)
 	}
 }

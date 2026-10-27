@@ -36,6 +36,12 @@
 //	           電源オフを待つ → ディスクから起動」を回し、電源が入るのは CD が
 //	           差さったあと。done まで CD は収束ループが触らず、done で resources
 //	           どおり抜かれる。
+//	[AC-140-8] BIOS の設定（#140、redfish-bios）: plan は宣言した属性の違いを
+//	           出して BMC に書かない。reconcile は Bios/Settings に 1 度だけ
+//	           PATCH し（保留中、再起動しない）、保留中のあいだの reconcile は
+//	           converging で PATCH を重ねない。登録簿に合わない属性（読み取り
+//	           専用・選べない値）は計画の時点でエラー。再起動で効けば plan は
+//	           Converged で、宣言していない属性は変わらない。
 package redfish
 
 import (
@@ -554,7 +560,7 @@ func systemID(n node) string { return "redfish-system//" + n.name }
 
 // ---- テスト ----
 
-// TestRedfishIntegration は (1)〜(6) を順に回す。前の段が作った現実を次の段が
+// TestRedfishIntegration は (1)〜(8) を順に回す。前の段が作った現実を次の段が
 // 使うので、1 つ失敗したら残りは回さない。
 func TestRedfishIntegration(t *testing.T) {
 	steps := []struct {
@@ -569,6 +575,7 @@ func TestRedfishIntegration(t *testing.T) {
 		{"5_bmc_paused_unknown", stepPausedUnknown},
 		{"6_once_rejected", stepOnceRejected},
 		{"7_workflow_cd_before_power", stepWorkflowCDBeforePower},
+		{"8_bios_settings", stepBiosSettings},
 	}
 	for _, s := range steps {
 		if !t.Run(s.name, s.fn) {
@@ -1016,6 +1023,123 @@ func stepWorkflowCDBeforePower(t *testing.T) {
 	out, err := exec.Command(lab.bin, "workflow", "list", "--store", store).CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "done") {
 		t.Fatalf("[AC-87-7] workflow list: %v\n%s", err, out)
+	}
+}
+
+type biosDoc struct {
+	AttributeRegistry          string
+	Attributes                 map[string]any
+	ResetBiosToDefaultsPending bool
+}
+
+func getBios(t *testing.T, n node) (current, pending biosDoc) {
+	t.Helper()
+	if err := getJSON(n, "/redfish/v1/Systems/1/Bios", &current); err != nil {
+		t.Fatalf("%s: %v", n.name, err)
+	}
+	if err := getJSON(n, "/redfish/v1/Systems/1/Bios/Settings", &pending); err != nil {
+		t.Fatalf("%s: %v", n.name, err)
+	}
+	return current, pending
+}
+
+// biosPatches は qemu-bmc のログの「保留中に足した」の回数（Settings の PATCH を
+// 受け付けた回数）。
+func biosPatches(n node) int {
+	logs, _ := sudoCmd("docker", "logs", containerName(n)).CombinedOutput()
+	return strings.Count(string(logs), "BIOS: pending until the next boot")
+}
+
+func biosRes(n node, attrs string) resource {
+	return resource{Provider: "redfish-bios", ID: n.name + "/bios", Fields: map[string]string{"attributes": attrs}}
+}
+
+// [AC-140-8]
+func stepBiosSettings(t *testing.T) {
+	// 7 の終わり: node1 は電源 On。Bios は既定値で、保留中は無い。
+	before, pending := getBios(t, node1)
+	if len(pending.Attributes) != 0 || before.ResetBiosToDefaultsPending {
+		t.Fatalf("node1 has pending BIOS settings at the start: %+v", pending)
+	}
+	if before.Attributes["ProcVirtualization"] != "Enabled" || before.Attributes["PowerProfile"] != "MaxPerformance" {
+		t.Fatalf("node1 BIOS is not at the defaults: %v", before.Attributes)
+	}
+	declared := map[string]string{"ProcVirtualization": "Disabled", "PowerProfile": "Balanced", "AssetTag": "sakutei-140"}
+	attrs, _ := json.Marshal(declared)
+	// 同じノードのシステム（ID はノード名）と並べて書く。
+	writeIntent(t, systemRes(node1, map[string]string{"power": "On"}), biosRes(node1, string(attrs)))
+	patches := biosPatches(node1)
+
+	out, code := sakutei(t, "plan")
+	if code != 0 || !strings.Contains(out, "redfish-bios") || !strings.Contains(out, "ProcVirtualization") || strings.Contains(out, "Converged (no changes)") {
+		t.Fatalf("[AC-140-8] plan exit %d:\n%s", code, out)
+	}
+	if _, p := getBios(t, node1); len(p.Attributes) != 0 {
+		t.Fatalf("[AC-140-8] plan wrote to the BMC: pending %v", p.Attributes)
+	}
+
+	if out, code := sakutei(t, "reconcile"); code != 0 {
+		t.Fatalf("[AC-140-8] reconcile exit %d:\n%s", code, out)
+	}
+	cur, p := getBios(t, node1)
+	if len(p.Attributes) != len(declared) {
+		t.Fatalf("[AC-140-8] pending after reconcile = %v, want the declared %v", p.Attributes, declared)
+	}
+	for k, v := range declared {
+		if p.Attributes[k] != v {
+			t.Fatalf("[AC-140-8] pending %s = %v, want %s", k, p.Attributes[k], v)
+		}
+		if cur.Attributes[k] != before.Attributes[k] {
+			t.Fatalf("[AC-140-8] current %s changed before a reboot: %v", k, cur.Attributes[k])
+		}
+	}
+	if s := mustSystem(t, node1); s.PowerState != "On" {
+		t.Fatalf("[AC-140-8] node1 is %s after reconcile (it must not be rebooted)", s.PowerState)
+	}
+
+	// 保留中のあいだは converging で、PATCH を重ねない。
+	out, code = sakutei(t, "reconcile")
+	if code == 0 || !strings.Contains(out, "availability=converging") {
+		t.Fatalf("[AC-140-8] reconcile while pending: exit %d, want converging:\n%s", code, out)
+	}
+	if n := biosPatches(node1) - patches; n != 1 {
+		t.Fatalf("[AC-140-8] qemu-bmc accepted %d Bios/Settings PATCHes, want 1", n)
+	}
+
+	// 登録簿に合わない属性は計画の時点でエラー。
+	for bad, want := range map[string]string{
+		`{"BootMode": "Bios"}`:          `"BootMode" is read-only`,
+		`{"ProcVirtualization": "Off"}`: `"Off" is not one of the values the BMC offers`,
+		`{"NoSuchAttribute": "x"}`:      `"NoSuchAttribute" is not in the BMC's attribute registry`,
+	} {
+		writeIntent(t, biosRes(node2, bad))
+		if out, code := sakutei(t, "plan"); code == 0 || !strings.Contains(out, want) {
+			t.Fatalf("[AC-140-8] plan with %s: exit %d, want %q:\n%s", bad, code, want, out)
+		}
+	}
+	if _, p := getBios(t, node2); len(p.Attributes) != 0 {
+		t.Fatalf("[AC-140-8] node2 got pending settings: %v", p.Attributes)
+	}
+
+	// 再起動（Workflow の reset の代役）で効く。
+	writeIntent(t, systemRes(node1, map[string]string{"power": "On"}), biosRes(node1, string(attrs)))
+	handReset(t, node1, "ForceRestart")
+	waitFor(t, time.Minute, "the pending BIOS settings applied", func() (bool, string) {
+		cur, p := getBios(t, node1)
+		return len(p.Attributes) == 0 && cur.Attributes["ProcVirtualization"] == "Disabled", fmt.Sprint(p.Attributes)
+	})
+	if out, code := sakutei(t, "plan"); code != 0 || !strings.Contains(out, "Converged (no changes)") {
+		t.Fatalf("[AC-140-8] plan after the reboot (exit %d) is not converged:\n%s", code, out)
+	}
+	after, _ := getBios(t, node1)
+	for k, v := range before.Attributes {
+		want := any(v)
+		if d, ok := declared[k]; ok {
+			want = d
+		}
+		if after.Attributes[k] != want {
+			t.Fatalf("[AC-140-8] after the reboot %s = %v, want %v (undeclared attributes are not touched)", k, after.Attributes[k], want)
+		}
 	}
 }
 

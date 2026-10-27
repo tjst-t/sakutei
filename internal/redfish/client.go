@@ -20,9 +20,9 @@
 //   - stdlib only: net/http と encoding/json で書く（gofish は使わない）。
 //   - HTTPS と Basic 認証だけ。自己署名の証明書は、CA ファイルを指定したか
 //     InsecureSkipVerify を明示したときだけ許す。
-//   - Reset・Boot の PATCH・InsertMedia・EjectMedia は 200 / 204 を成功とし、
-//     本文は期待しない。Redfish の Task（202）は使わない。
-//   - 観測 state レス（§3 原則 1）: System・Manager・VirtualMedia のパスは
+//   - Reset・Boot の PATCH・InsertMedia・EjectMedia・Bios/Settings の PATCH は
+//     200 / 204 を成功とし、本文は期待しない。Redfish の Task（202）は使わない。
+//   - 観測 state レス（§3 原則 1）: System・Manager・VirtualMedia・Bios のパスは
 //     キャッシュせず、呼ぶたびに辿り直す。
 //   - エラーは Error の Kind で分ける（errors.go）。届かない・タイムアウト・
 //     5xx・認証以外の想定外は KindUnreachable、401 / 403 は KindAuth、証明書の
@@ -149,6 +149,51 @@ type VirtualMedia struct {
 	EjectTarget  string
 }
 
+// Bios は ComputerSystem の Bios の観測（§29.1、#140）。値は JSON の
+// 文字列・数・真偽（encoding/json で読んだ string / float64 / bool）。
+type Bios struct {
+	// Path は読んだ Bios のパス。
+	Path string
+	// AttributeRegistry は Bios.AttributeRegistry（属性の登録簿の Id）。
+	AttributeRegistry string
+	// Attributes は今の値（Bios.Attributes）。
+	Attributes map[string]any
+	// SettingsPath は保留中の変更の置き場（@Redfish.Settings の
+	// SettingsObject、無ければ Path + "/Settings"）。
+	SettingsPath string
+	// Pending は Settings の Attributes（次の再起動で効く）。BMC によっては
+	// 今の値と同じものも返す。Settings を持たない BMC では空。
+	Pending map[string]any
+	// ResetPending は Bios.ResetBiosToDefaultsPending（次の再起動で既定値に
+	// 戻る）。
+	ResetPending bool
+}
+
+// AttributeRegistry は Bios の属性の登録簿（必要なところだけ）。
+type AttributeRegistry struct {
+	ID         string
+	Attributes []RegistryAttribute
+}
+
+// RegistryAttribute は登録簿の 1 属性。
+type RegistryAttribute struct {
+	AttributeName string   `json:"AttributeName"`
+	Type          string   `json:"Type"` // Enumeration / String / Integer / Boolean / Password
+	ReadOnly      bool     `json:"ReadOnly"`
+	Immutable     bool     `json:"Immutable"`
+	Values        []string `json:"-"` // Enumeration の Value[].ValueName
+	MinLength     *int     `json:"MinLength"`
+	MaxLength     *int     `json:"MaxLength"`
+	LowerBound    *float64 `json:"LowerBound"`
+	UpperBound    *float64 `json:"UpperBound"`
+}
+
+// ErrNoBios は System が Bios を持たないこと（Bios のリンクが無い・404）。
+var ErrNoBios = errors.New("the system has no Bios resource")
+
+// IsNoBios は err が ErrNoBios（BMC が Bios を持たない）かを返す。
+func IsNoBios(err error) bool { return errors.Is(err, ErrNoBios) }
+
 // Client は 1 台の BMC への Redfish の操作。provider はこの interface に対して
 // 書き、テストは偽 BMC（redfishtest）に向けた実装か差し替えで回す。
 type Client interface {
@@ -165,6 +210,17 @@ type Client interface {
 	InsertMedia(ctx context.Context, image string) error
 	// EjectMedia は CD を取り出す。
 	EjectMedia(ctx context.Context) error
+	// GetBios は ComputerSystem の Bios（今の値）と、その Settings（次の再起動で
+	// 効く保留中の変更）を読む。System に Bios が無ければ ErrNoBios を包んだ
+	// KindRequest のエラー。
+	GetBios(ctx context.Context) (Bios, error)
+	// PatchBiosSettings は attrs を Bios の Settings に PATCH する（保留中の変更に
+	// 足す。再起動はしない）。
+	PatchBiosSettings(ctx context.Context, attrs map[string]any) error
+	// GetAttributeRegistry は Id が id の AttributeRegistry（Bios の
+	// AttributeRegistry）を /redfish/v1/Registries から探して読む。無ければ
+	// KindRequest のエラー。
+	GetAttributeRegistry(ctx context.Context, id string) (AttributeRegistry, error)
 }
 
 // HTTPClient は net/http による Client の実装。
@@ -268,6 +324,7 @@ type systemDoc struct {
 		AllowableTargets []string `json:"BootSourceOverrideTarget@Redfish.AllowableValues"`
 	} `json:"Boot"`
 	EthernetInterfaces odataRef `json:"EthernetInterfaces"`
+	Bios               odataRef `json:"Bios"`
 	Actions            struct {
 		Reset struct {
 			Target     string   `json:"target"`
@@ -296,6 +353,36 @@ type virtualMediaDoc struct {
 			Target string `json:"target"`
 		} `json:"#VirtualMedia.EjectMedia"`
 	} `json:"Actions"`
+}
+
+type biosDoc struct {
+	AttributeRegistry string         `json:"AttributeRegistry"`
+	Attributes        map[string]any `json:"Attributes"`
+	ResetPending      bool           `json:"ResetBiosToDefaultsPending"`
+	Settings          struct {
+		Object odataRef `json:"SettingsObject"`
+	} `json:"@Redfish.Settings"`
+}
+
+type registryFileDoc struct {
+	ID       string `json:"Id"`
+	Registry string `json:"Registry"`
+	Location []struct {
+		Language string `json:"Language"`
+		URI      string `json:"Uri"`
+	} `json:"Location"`
+}
+
+type registryDoc struct {
+	ID              string `json:"Id"`
+	RegistryEntries struct {
+		Attributes []struct {
+			RegistryAttribute
+			Value []struct {
+				ValueName string `json:"ValueName"`
+			} `json:"Value"`
+		} `json:"Attributes"`
+	} `json:"RegistryEntries"`
 }
 
 // ---- 操作 ----
@@ -405,6 +492,128 @@ func (c *HTTPClient) EjectMedia(ctx context.Context) error {
 		target = path + "/Actions/VirtualMedia.EjectMedia"
 	}
 	return c.send(ctx, http.MethodPost, target, map[string]any{})
+}
+
+// GetBios は Client の実装。
+func (c *HTTPClient) GetBios(ctx context.Context) (Bios, error) {
+	sysPath, sys, err := c.system(ctx)
+	if err != nil {
+		return Bios{}, err
+	}
+	path := sys.Bios.ID
+	if path == "" {
+		return Bios{}, &Error{Kind: KindRequest, Method: http.MethodGet, Path: sysPath, Err: ErrNoBios,
+			Message: "the ComputerSystem has no Bios link"}
+	}
+	var doc biosDoc
+	if err := c.getJSON(ctx, path, &doc); err != nil {
+		if re := (*Error)(nil); errors.As(err, &re) && re.StatusCode == http.StatusNotFound {
+			re.Err = ErrNoBios
+		}
+		return Bios{}, err
+	}
+	b := Bios{
+		Path:              path,
+		AttributeRegistry: doc.AttributeRegistry,
+		Attributes:        doc.Attributes,
+		SettingsPath:      doc.Settings.Object.ID,
+		ResetPending:      doc.ResetPending,
+	}
+	if b.Attributes == nil {
+		b.Attributes = map[string]any{}
+	}
+	if b.SettingsPath == "" {
+		b.SettingsPath = strings.TrimSuffix(path, "/") + "/Settings"
+	}
+	var settings biosDoc
+	switch err := c.getJSON(ctx, b.SettingsPath, &settings); {
+	case err == nil:
+		b.Pending = settings.Attributes
+	case IsRequest(err):
+		// Settings を持たない BMC: 保留中の変更は無い（PATCH は BMC が断る）。
+	default:
+		return Bios{}, err
+	}
+	if b.Pending == nil {
+		b.Pending = map[string]any{}
+	}
+	return b, nil
+}
+
+// PatchBiosSettings は Client の実装。
+func (c *HTTPClient) PatchBiosSettings(ctx context.Context, attrs map[string]any) error {
+	b, err := c.GetBios(ctx)
+	if err != nil {
+		return err
+	}
+	return c.send(ctx, http.MethodPatch, b.SettingsPath, map[string]any{"Attributes": attrs})
+}
+
+// GetAttributeRegistry は Client の実装。/redfish/v1/Registries のメンバー
+// （MessageRegistryFile）のうち、Id か Registry が id に当たるものの Location
+// の Uri（BMC の上のもの、英語を先に）を読む。
+func (c *HTTPClient) GetAttributeRegistry(ctx context.Context, id string) (AttributeRegistry, error) {
+	const coll = ServiceRoot + "/Registries"
+	var members collectionDoc
+	if err := c.getJSON(ctx, coll, &members); err != nil {
+		return AttributeRegistry{}, err
+	}
+	for _, m := range members.Members {
+		var f registryFileDoc
+		if err := c.getJSON(ctx, m.ID, &f); err != nil {
+			if IsRequest(err) {
+				continue
+			}
+			return AttributeRegistry{}, err
+		}
+		if !registryMatches(f, id) {
+			continue
+		}
+		var uris []string
+		for _, l := range f.Location {
+			if l.URI == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.ToLower(l.Language), "en") {
+				uris = append([]string{l.URI}, uris...)
+			} else {
+				uris = append(uris, l.URI)
+			}
+		}
+		for _, u := range uris {
+			var doc registryDoc
+			if err := c.getJSON(ctx, u, &doc); err != nil {
+				if IsRequest(err) {
+					continue
+				}
+				return AttributeRegistry{}, err
+			}
+			if doc.ID != "" && doc.ID != id {
+				continue
+			}
+			reg := AttributeRegistry{ID: id}
+			for _, a := range doc.RegistryEntries.Attributes {
+				ra := a.RegistryAttribute
+				for _, v := range a.Value {
+					ra.Values = append(ra.Values, v.ValueName)
+				}
+				reg.Attributes = append(reg.Attributes, ra)
+			}
+			return reg, nil
+		}
+	}
+	return AttributeRegistry{}, &Error{Kind: KindRequest, Method: http.MethodGet, Path: coll,
+		Message: fmt.Sprintf("no attribute registry %q", id)}
+}
+
+// registryMatches は登録簿のファイル f が Id id の登録簿か（Id が同じか、
+// Registry〈例 "BiosAttributeRegistry.1.0"〉が id〈例
+// "BiosAttributeRegistry.1.0.0"〉の版を除いた頭か）を返す。
+func registryMatches(f registryFileDoc, id string) bool {
+	if f.ID == id || f.Registry == id {
+		return true
+	}
+	return f.Registry != "" && strings.HasPrefix(id, f.Registry+".")
 }
 
 // ---- パスの解決 ----

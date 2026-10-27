@@ -32,6 +32,14 @@
 //   - /redfish/v1/Managers/1/VirtualMedia/CD1: InsertMedia・EjectMedia（204）。
 //     電源オフ中も残る。SetMediaFetchFails(true) なら入れたあと
 //     MediaFetchDelay で Inserted が false に戻る（Image は残す）。
+//   - /redfish/v1/Systems/1/Bios と Bios/Settings（qemu-bmc 0.10.0 の Bios を
+//     真似る、#140）: Settings の PATCH（200、本文は Settings）は保留中の変更に
+//     足し、次の起動（Off → On・ForceRestart・GracefulRestart）で今の値に移して
+//     空にする。登録簿（/redfish/v1/Registries の BiosAttributeRegistry）に
+//     無い・読み取り専用・型が違う・選べない値・長すぎる文字列の属性があれば
+//     400 で、何も変えない。qemu-bmc と違い、値は文字列だけでなく数（Integer）
+//     と真偽（Boolean）の属性も持つ。Options.NoBios なら Bios のリンクも無く
+//     404、Options.NoBiosRegistry なら登録簿だけが無い。
 //
 // 時刻は Options.Now で差し替えられる（状態の移り変わりは要求を受けたときに
 // その時刻で進めるので、goroutine を持たない）。
@@ -65,7 +73,37 @@ const (
 	ResetPath        = SystemPath + "/Actions/ComputerSystem.Reset"
 	InsertMediaPath  = VirtualMediaPath + "/Actions/VirtualMedia.InsertMedia"
 	EjectMediaPath   = VirtualMediaPath + "/Actions/VirtualMedia.EjectMedia"
+	BiosPath         = SystemPath + "/Bios"
+	BiosSettingsPath = BiosPath + "/Settings"
+	RegistriesPath   = "/redfish/v1/Registries"
+	// BiosRegistryID は Bios の AttributeRegistry（登録簿の Id）。
+	BiosRegistryID       = "BiosAttributeRegistry.1.0.0"
+	BiosRegistryFilePath = RegistriesPath + "/BiosAttributeRegistry"
+	BiosRegistryURI      = BiosRegistryFilePath + "/" + BiosRegistryID + ".json"
 )
+
+// BiosAttribute は偽 BMC の Bios の属性の登録簿の 1 行。
+type BiosAttribute struct {
+	Name     string
+	Type     string // Enumeration / String / Integer / Boolean
+	ReadOnly bool
+	Values   []string // Enumeration
+	Max      int      // String の最大長・Integer の上限
+	Min      int      // Integer の下限
+	Default  any
+}
+
+// DefaultBiosAttributes は偽 BMC の Bios の登録簿（qemu-bmc 0.10.0 の一部に、
+// 数と真偽の属性を足したもの）。
+var DefaultBiosAttributes = []BiosAttribute{
+	{Name: "BootMode", Type: "Enumeration", ReadOnly: true, Values: []string{"Uefi", "Bios"}, Default: "Uefi"},
+	{Name: "ProcVirtualization", Type: "Enumeration", Values: []string{"Enabled", "Disabled"}, Default: "Enabled"},
+	{Name: "ProcHyperThreading", Type: "Enumeration", Values: []string{"Enabled", "Disabled"}, Default: "Enabled"},
+	{Name: "PowerProfile", Type: "Enumeration", Values: []string{"MaxPerformance", "Balanced", "PowerSaving"}, Default: "MaxPerformance"},
+	{Name: "AssetTag", Type: "String", Max: 64, Default: ""},
+	{Name: "BootRetryCount", Type: "Integer", Min: 0, Max: 10, Default: float64(3)},
+	{Name: "SriovGlobalEnable", Type: "Boolean", Default: false},
+}
 
 // Options は偽 BMC の初期値。ゼロ値の項目は既定値になる。
 type Options struct {
@@ -97,6 +135,11 @@ type Options struct {
 	// MediaFetchDelay は SetMediaFetchFails のとき Inserted が false に戻るまでの
 	// 時間（既定 0）。
 	MediaFetchDelay time.Duration
+	// NoBios は Bios を持たない BMC（System に Bios のリンクが無く、Bios は 404）。
+	NoBios bool
+	// NoBiosRegistry は Bios はあるが属性の登録簿（/redfish/v1/Registries）が
+	// 空の BMC。
+	NoBiosRegistry bool
 	// Now は時刻（既定 time.Now）。
 	Now func() time.Time
 }
@@ -128,6 +171,10 @@ type Server struct {
 	image          string
 	insertedAt     time.Time
 	mediaFetchFail bool
+	// Bios。
+	biosAttrs        map[string]any
+	biosPending      map[string]any
+	biosResetPending bool
 	// 試験用の口。
 	ignoreGraceful bool
 	unreachable    bool
@@ -179,6 +226,11 @@ func New(opts Options) *Server {
 		power:       opts.PowerState,
 		bootEnabled: "Disabled",
 		bootTarget:  "None",
+		biosAttrs:   map[string]any{},
+		biosPending: map[string]any{},
+	}
+	for _, a := range DefaultBiosAttributes {
+		s.biosAttrs[a.Name] = a.Default
 	}
 	s.Server = httptest.NewUnstartedServer(http.HandlerFunc(s.serve))
 	// 証明書を拒むクライアントの TLS ハンドシェイク失敗をログに撒かない。
@@ -229,6 +281,59 @@ func (s *Server) SetBoot(enabled, target string) {
 	s.bootEnabled, s.bootTarget = enabled, target
 }
 
+// SetBiosAttribute は Bios の今の値を直接変える（人が BIOS の画面で変えた、
+// の代役）。
+func (s *Server) SetBiosAttribute(name string, v any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.biosAttrs[name] = v
+}
+
+// SetBiosPending は保留中の変更を直接足す（ほかの道具が Settings に書いた、
+// の代役。登録簿では確かめない）。
+func (s *Server) SetBiosPending(attrs map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range attrs {
+		s.biosPending[k] = v
+	}
+}
+
+// SetBiosResetPending は ResetBiosToDefaultsPending を直接変える。
+func (s *Server) SetBiosResetPending(v bool) { s.mu.Lock(); s.biosResetPending = v; s.mu.Unlock() }
+
+// BiosAttributes は Bios の今の値の写しを返す。
+func (s *Server) BiosAttributes() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.advance()
+	return copyAttrs(s.biosAttrs)
+}
+
+// BiosPending は保留中の変更の写しを返す。
+func (s *Server) BiosPending() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.advance()
+	return copyAttrs(s.biosPending)
+}
+
+func copyAttrs(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// Restart は ForceRestart を受けたのと同じく再起動する（Bios の保留中の変更が
+// 効く）。
+func (s *Server) Restart() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reset("ForceRestart")
+}
+
 // PowerState は今の電源状態を返す。
 func (s *Server) PowerState() string {
 	s.mu.Lock()
@@ -274,11 +379,22 @@ func (s *Server) ClearRequests() { s.mu.Lock(); s.requests = nil; s.mu.Unlock() 
 // ---- 状態の移り変わり（s.mu を持って呼ぶ） ----
 
 // boot は電源が入って OS が起動し始めたときの処理。Once は 1 回で戻る。
+// Bios の保留中の変更（と既定値への戻し）はここで効く。
 func (s *Server) boot() {
 	s.boots++
 	if s.bootEnabled == "Once" {
 		s.bootEnabled, s.bootTarget = "Disabled", "None"
 	}
+	if s.biosResetPending {
+		for _, a := range DefaultBiosAttributes {
+			s.biosAttrs[a.Name] = a.Default
+		}
+		s.biosResetPending = false
+	}
+	for k, v := range s.biosPending {
+		s.biosAttrs[k] = v
+	}
+	s.biosPending = map[string]any{}
 }
 
 // advance は進行中の操作を今の時刻まで進める。
@@ -400,6 +516,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && path == EjectMediaPath:
 		s.inserted, s.image = false, ""
 		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodPatch && path == BiosSettingsPath && !s.opts.NoBios:
+		s.patchBiosSettings(w, body)
 	default:
 		if _, ok := s.document(path); ok {
 			writeError(w, http.StatusMethodNotAllowed, "Base.1.0.ActionNotSupported", r.Method+" not allowed on "+path)
@@ -479,6 +597,102 @@ func (s *Server) postInsert(w http.ResponseWriter, body []byte) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// patchBiosSettings は Settings の PATCH を受ける。属性を 1 つでも断れば何も
+// 変えない（qemu-bmc と同じ）。
+func (s *Server) patchBiosSettings(w http.ResponseWriter, body []byte) {
+	var req struct {
+		Attributes map[string]any
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Base.1.0.MalformedJSON", err.Error())
+		return
+	}
+	if req.Attributes == nil {
+		writeError(w, http.StatusBadRequest, "Base.1.0.PropertyMissing", "Attributes is required")
+		return
+	}
+	for k, v := range req.Attributes {
+		if msg := checkBiosAttribute(k, v); msg != "" {
+			writeError(w, http.StatusBadRequest, "Base.1.0.PropertyValueError", msg)
+			return
+		}
+	}
+	for k, v := range req.Attributes {
+		s.biosPending[k] = v
+	}
+	w.Header().Set("Content-Type", "application/json")
+	doc, _ := s.document(BiosSettingsPath)
+	_ = json.NewEncoder(w).Encode(doc)
+}
+
+// checkBiosAttribute は属性 k に v を書けるかを登録簿で確かめ、書けなければ
+// 理由を返す。
+func checkBiosAttribute(k string, v any) string {
+	for _, a := range DefaultBiosAttributes {
+		if a.Name != k {
+			continue
+		}
+		if a.ReadOnly {
+			return fmt.Sprintf("The property %s is a read only property and cannot be assigned a value.", k)
+		}
+		switch a.Type {
+		case "Enumeration":
+			if str, ok := v.(string); !ok || !contains(a.Values, str) {
+				return fmt.Sprintf("The value %v for the property %s is not in the list of acceptable values.", v, k)
+			}
+		case "String":
+			str, ok := v.(string)
+			if !ok {
+				return fmt.Sprintf("The value %v for the property %s is of a different type than the property can accept.", v, k)
+			}
+			if len(str) > a.Max {
+				return fmt.Sprintf("The string %s exceeds the length limit %d.", str, a.Max)
+			}
+		case "Integer":
+			f, ok := v.(float64)
+			if !ok || f != float64(int64(f)) || f < float64(a.Min) || f > float64(a.Max) {
+				return fmt.Sprintf("The value %v for the property %s is not an integer from %d to %d.", v, k, a.Min, a.Max)
+			}
+		case "Boolean":
+			if _, ok := v.(bool); !ok {
+				return fmt.Sprintf("The value %v for the property %s is of a different type than the property can accept.", v, k)
+			}
+		}
+		return ""
+	}
+	return fmt.Sprintf("The property %s is not in the list of valid properties for the resource.", k)
+}
+
+// biosRegistry は登録簿の文書（AttributeRegistry）。
+func biosRegistry() map[string]any {
+	var attrs []any
+	for _, a := range DefaultBiosAttributes {
+		e := map[string]any{
+			"AttributeName": a.Name, "DisplayName": a.Name, "Type": a.Type,
+			"ReadOnly": a.ReadOnly, "ResetRequired": true, "Immutable": false,
+		}
+		switch a.Type {
+		case "Enumeration":
+			var vs []any
+			for _, v := range a.Values {
+				vs = append(vs, map[string]string{"ValueName": v, "ValueDisplayName": v})
+			}
+			e["Value"] = vs
+		case "String":
+			e["MinLength"], e["MaxLength"] = 0, a.Max
+		case "Integer":
+			e["LowerBound"], e["UpperBound"] = a.Min, a.Max
+		}
+		attrs = append(attrs, e)
+	}
+	return map[string]any{
+		"@odata.type": "#AttributeRegistry.v1_3_6.AttributeRegistry",
+		"Id":          BiosRegistryID, "Name": "redfishtest BIOS Attribute Registry",
+		"Language": "en", "OwningEntity": "redfishtest", "RegistryVersion": "1.0.0",
+		"RegistryEntries": map[string]any{"Attributes": attrs},
+	}
+}
+
 func (s *Server) document(path string) (any, bool) {
 	ref := func(p string) map[string]string { return map[string]string{"@odata.id": p} }
 	coll := func(p string, members ...string) map[string]any {
@@ -493,11 +707,50 @@ func (s *Server) document(path string) (any, bool) {
 		return map[string]any{
 			"@odata.id": "/redfish/v1", "RedfishVersion": "1.6.0",
 			"Systems": ref("/redfish/v1/Systems"), "Managers": ref("/redfish/v1/Managers"),
+			"Registries": ref(RegistriesPath),
 		}, true
 	case "/redfish/v1/Systems":
 		return coll(path, SystemPath), true
-	case SystemPath:
+	case RegistriesPath:
+		if s.opts.NoBios || s.opts.NoBiosRegistry {
+			return coll(path), true
+		}
+		return coll(path, BiosRegistryFilePath), true
+	case BiosRegistryFilePath, BiosRegistryURI:
+		if s.opts.NoBios || s.opts.NoBiosRegistry {
+			return nil, false
+		}
+		if path == BiosRegistryURI {
+			return biosRegistry(), true
+		}
 		return map[string]any{
+			"@odata.id": path, "Id": "BiosAttributeRegistry", "Registry": "BiosAttributeRegistry.1.0",
+			"Languages": []string{"en"},
+			"Location":  []any{map[string]string{"Language": "en", "Uri": BiosRegistryURI}},
+		}, true
+	case BiosPath:
+		if s.opts.NoBios {
+			return nil, false
+		}
+		return map[string]any{
+			"@odata.id": BiosPath, "Id": "Bios", "AttributeRegistry": BiosRegistryID,
+			"Attributes":                 copyAttrs(s.biosAttrs),
+			"ResetBiosToDefaultsPending": s.biosResetPending,
+			"@Redfish.Settings": map[string]any{
+				"SettingsObject":      ref(BiosSettingsPath),
+				"SupportedApplyTimes": []string{"OnReset"},
+			},
+		}, true
+	case BiosSettingsPath:
+		if s.opts.NoBios {
+			return nil, false
+		}
+		return map[string]any{
+			"@odata.id": BiosSettingsPath, "Id": "Settings", "AttributeRegistry": BiosRegistryID,
+			"Attributes": copyAttrs(s.biosPending),
+		}, true
+	case SystemPath:
+		sys := map[string]any{
 			"@odata.id":          SystemPath,
 			"Id":                 "1",
 			"PowerState":         s.power,
@@ -517,7 +770,11 @@ func (s *Server) document(path string) (any, bool) {
 					"ResetType@Redfish.AllowableValues": s.opts.ResetTypes,
 				},
 			},
-		}, true
+		}
+		if !s.opts.NoBios {
+			sys["Bios"] = ref(BiosPath)
+		}
+		return sys, true
 	case SystemPath + "/EthernetInterfaces":
 		var ms []string
 		for i := range s.opts.MACs {

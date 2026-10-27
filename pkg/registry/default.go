@@ -201,8 +201,8 @@ func DefaultRegistry() *ProviderRegistry {
 		return nftables.New(rulesetPath, nftables.WithScope(scope)), nil
 	})
 
-	// "redfish-system" / "redfish-virtual-media" — Redfish の BMC provider
-	// （§29.1、#83）。config["redfish_config"] は BMC の一覧（--redfish-config）。
+	// "redfish-system" / "redfish-virtual-media" / "redfish-bios" — Redfish の
+	// BMC provider（§29.1、#83・#140）。config["redfish_config"] は BMC の一覧（--redfish-config）。
 	// --state は代わりにならない（BMC のアドレスと資格は推測しない）。
 	r.Register(system.Name, func(config map[string]string) (provider.Provider, error) {
 		clients, err := redfishClients(config)
@@ -217,6 +217,13 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, err
 		}
 		return system.NewMedia(clients), nil
+	})
+	r.Register(system.BiosName, func(config map[string]string) (provider.Provider, error) {
+		clients, err := redfishClients(config)
+		if err != nil {
+			return nil, err
+		}
+		return system.NewBios(clients), nil
 	})
 
 	// "sqlmigrate" — SQLite・PostgreSQL のマイグレーション（§29.1、#92・#94・#126）。
