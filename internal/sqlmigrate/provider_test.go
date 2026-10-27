@@ -15,6 +15,7 @@
 package sqlmigrate
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -524,6 +525,10 @@ func TestRead_LockedIsUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stdout, err := holder.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := holder.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -531,8 +536,27 @@ func TestRead_LockedIsUnknown(t *testing.T) {
 		stdin.Close()
 		_ = holder.Wait()
 	}()
-	if _, err := io.WriteString(stdin, "BEGIN EXCLUSIVE;\nINSERT INTO users (id) VALUES (1);\n"); err != nil {
+	// ロックを取ったことを holder 自身に言わせてから確かめる（CI で、holder が
+	// まだ BEGIN EXCLUSIVE を流していないうちに観測しないように）。
+	if _, err := io.WriteString(stdin, "BEGIN EXCLUSIVE;\nINSERT INTO users (id) VALUES (1);\nSELECT 'holding-the-lock';\n"); err != nil {
 		t.Fatal(err)
+	}
+	ready := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(stdout).ReadString('\n')
+		if err == nil && !strings.Contains(line, "holding-the-lock") {
+			err = fmt.Errorf("unexpected output from the lock holder: %q", line)
+		}
+		ready <- err
+		_, _ = io.Copy(io.Discard, stdout)
+	}()
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatalf("the lock holder did not take the lock: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the lock holder did not take the lock within 10s")
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
