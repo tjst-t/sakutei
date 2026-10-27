@@ -41,7 +41,7 @@ type Held struct {
 // before Apply and prune.
 func HoldAll(desired []diff.DesiredResource, plans map[string]core.Plan, unobservable map[string]bool,
 	pruneOps []core.Op) Held {
-	return hold(desired, plans, unobservable, pruneOps, func(core.Scope) bool { return true }, false)
+	return hold(desired, plans, unobservable, pruneOps, func(core.ID) bool { return true }, false)
 }
 
 // HoldAlertOnly takes the resources and orphans of scopes declared
@@ -54,9 +54,9 @@ func HoldAll(desired []diff.DesiredResource, plans map[string]core.Plan, unobser
 // reported, never carried: the next cycle re-observes it and decides afresh.
 func HoldAlertOnly(desired []diff.DesiredResource, plans map[string]core.Plan, unobservable map[string]bool,
 	pruneOps []core.Op, scopes []core.Scope) Held {
-	return hold(desired, plans, unobservable, pruneOps, func(s core.Scope) bool {
+	return hold(desired, plans, unobservable, pruneOps, func(id core.ID) bool {
 		for _, sc := range scopes {
-			if s.Matches(sc) {
+			if id.Scope.Matches(sc) {
 				return true
 			}
 		}
@@ -64,12 +64,24 @@ func HoldAlertOnly(desired []diff.DesiredResource, plans map[string]core.Plan, u
 	}, true)
 }
 
+// HoldObserveOnly takes the resources (and any orphans) of the providers that
+// declare Capabilities.ObserveOnly (§23.4) out of Apply and prune, by type:
+// observeOnly names them.  As for a scope hold, a held resource's plan is
+// removed, it is marked in unobservable (its downstream waits) and its drift
+// is reported as DriftWouldApply Events — never applied, in any mode.
+func HoldObserveOnly(desired []diff.DesiredResource, plans map[string]core.Plan, unobservable map[string]bool,
+	pruneOps []core.Op, observeOnly func(providerName string) bool) Held {
+	return hold(desired, plans, unobservable, pruneOps, func(id core.ID) bool {
+		return observeOnly(id.Provider)
+	}, true)
+}
+
 func hold(desired []diff.DesiredResource, plans map[string]core.Plan, unobservable map[string]bool,
-	pruneOps []core.Op, held func(core.Scope) bool, remove bool) Held {
+	pruneOps []core.Op, held func(core.ID) bool, remove bool) Held {
 	var h Held
 	for _, res := range desired {
 		local := res.ID.Local
-		if unobservable[local] || !held(res.ID.Scope) {
+		if unobservable[local] || !held(res.ID) {
 			continue
 		}
 		plan, ok := plans[local]
@@ -90,7 +102,7 @@ func hold(desired []diff.DesiredResource, plans map[string]core.Plan, unobservab
 		}
 	}
 	for _, op := range pruneOps {
-		if held(op.Target.Scope) {
+		if held(op.Target) {
 			h.DriftCount++
 			h.Events = append(h.Events, wouldApply(op, fmt.Sprintf("DELETE %s (orphan; would be pruned)", op.Target)))
 			continue

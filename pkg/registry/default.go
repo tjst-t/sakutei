@@ -24,6 +24,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/guestos"
+	"github.com/tjst-t/sakutei/internal/netconf"
 	"github.com/tjst-t/sakutei/internal/nftables"
 	"github.com/tjst-t/sakutei/internal/postgresql"
 	"github.com/tjst-t/sakutei/internal/redfish"
@@ -74,6 +75,12 @@ import (
 //     /etc/os-release and the markers config["guest_markers"]
 //     ("installed=/etc/sakutei-installed,...").  Observe only (Backlog #86):
 //     a Workflow's wait / require uses it (resource: guest-os/{target}).
+//
+//   - "netconf": observes subtrees of the running configuration of NETCONF
+//     devices (Backlog #141): config["netconf_hosts"] ("sw1,sw2", from
+//     config["remote_config"]) over the ssh "netconf" subsystem, the subtrees
+//     named in config["netconf_subtrees"] (name → subtree filter).  Observe
+//     only (Capabilities.ObserveOnly, §23.4): drift is reported, never applied.
 //
 //   - "template-file": writes files rendered from the user's text/template
 //     templates (config["template_dir"]) into config["output_dir"], e.g. the
@@ -276,6 +283,32 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, fmt.Errorf("guest-os: %w", err)
 		}
 		return guestos.New(execs, markers)
+	})
+
+	// "netconf" — NETCONF の機器の設定の部分木の観測だけ（§23.4、§29.1、#141）。
+	// config["netconf_hosts"] の機器に config["remote_config"] の ssh で netconf
+	// サブシステムを開き、config["netconf_subtrees"]（部分木の一覧）の filter で
+	// running を読む。Apply しない（Capabilities.ObserveOnly）。
+	r.Register(netconf.Name, func(config map[string]string) (provider.Provider, error) {
+		if config["netconf_hosts"] == "" {
+			return nil, errors.New("netconf: the devices are not set: netconf_hosts (and remote_config) in --provider-config")
+		}
+		if config["netconf_subtrees"] == "" {
+			return nil, errors.New("netconf: the subtrees are not set: netconf_subtrees in --provider-config")
+		}
+		subtrees, err := netconf.LoadSubtrees(config["netconf_subtrees"])
+		if err != nil {
+			return nil, err
+		}
+		execs, _, err := remoteHosts(config, "netconf_hosts")
+		if err != nil {
+			return nil, fmt.Errorf("netconf: %w", err)
+		}
+		dialers, err := netconf.SSHDialers(execs)
+		if err != nil {
+			return nil, err
+		}
+		return netconf.New(dialers, subtrees)
 	})
 
 	// "template-file" — 雛形（text/template）に対象ごとの値を入れたファイルを

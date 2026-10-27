@@ -324,9 +324,9 @@ func (v *viewBuilder) holdAll(decision remediation.Decision, events []string) {
 	v.plan.Summarize()
 }
 
-// gates はこの周のゲートの判定（alert-only の scope・予算・容量）を操作に書く。
-// 判定は収束ループが実際に使ったもの（plan の再評価ではない）。
-func (v *viewBuilder) gates(alertScopes []core.Scope, planned []budget.PlannedChange,
+// gates はこの周のゲートの判定（観測だけの provider・alert-only の scope・予算・
+// 容量）を操作に書く。判定は収束ループが実際に使ったもの（plan の再評価ではない）。
+func (v *viewBuilder) gates(observeOnly func(string) bool, alertScopes []core.Scope, planned []budget.PlannedChange,
 	bd, cd budget.CycleDecision) {
 	if v == nil || v.plan == nil {
 		return
@@ -347,6 +347,9 @@ func (v *viewBuilder) gates(alertScopes []core.Scope, planned []budget.PlannedCh
 		}
 		op := v.planOps[i]
 		switch {
+		case observeOnly(op.Target.Provider):
+			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByObserveOnly, planreport.ObserveOnlyReason
+			continue
 		case inScopes(op.Target.Scope, alertScopes):
 			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByAlertOnlyScope, planreport.AlertOnlyScopeReason
 			continue

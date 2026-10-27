@@ -837,6 +837,15 @@ func Run(ctx context.Context, cfg Config) error {
 				note(out, ev)
 			}
 		}
+		if res.ObserveOnlyCount > 0 {
+			// §23.4: an observe-only provider's drift is reported, never applied.
+			fmt.Fprintf(out, "sakutei: cycle %d: observe-only provider(s): %d drifted resource(s) reported — never applied (§23.4)\n",
+				cycleNum, res.ObserveOnlyCount)
+			for _, ev := range res.ObserveOnlyEvents {
+				ev.Text = fmt.Sprintf("sakutei: cycle %d: DRIFT EVENT: %s", cycleNum, ev.Message)
+				note(out, ev)
+			}
+		}
 		if res.AlertOnly {
 			// Scf7762-3: alert-only mode — no Apply was executed; drifted resources
 			// are reported via the DriftEvents list.
@@ -1256,6 +1265,12 @@ type CycleResult struct {
 	DriftCount int
 	// DriftEvents are the DriftWouldApply Events of the held resources.
 	DriftEvents []core.Event
+	// ObserveOnlyCount is the number of drifted resources of observe-only
+	// providers (Capabilities.ObserveOnly, §23.4) reported this cycle; they
+	// are never applied.  Zero when AlertOnly (DriftCount has them all).
+	ObserveOnlyCount int
+	// ObserveOnlyEvents are their DriftWouldApply Events.
+	ObserveOnlyEvents []core.Event
 
 	// #31 render phase 1 inventory field:
 
@@ -2260,6 +2275,13 @@ func runCycleAsync(
 		}, nil
 	}
 
+	// §23.4: the resources of an observe-only provider (Capabilities.
+	// ObserveOnly) are held by type before anything else: their drift is
+	// reported, never applied, whatever the mode.  Held first, so a scope hold
+	// does not count them again.
+	obsHeld := HoldObserveOnly(desired, plans, unobservable, pruneResult.DeleteOps, providers.observeOnly)
+	pruneResult.DeleteOps = obsHeld.PruneOps
+
 	// §14.3: a scope declared `remediation: alert-only` holds its resources
 	// even though every run-wide source allowed auto.  Their ops (and prune
 	// Deletes in those scopes) are reported as drift and dropped from this
@@ -2327,7 +2349,7 @@ func runCycleAsync(
 		EmitCapacityHalted(cfg.ErrOut, capacityDecision.Reason,
 			fmt.Sprintf("sakutei: %s: %s", capacity.EventName, capacityDecision.Reason))
 	}
-	view.gates(in.AlertOnlyScopes(), in.PlannedChanges, budgetDecision, capacityDecision)
+	view.gates(providers.observeOnly, in.AlertOnlyScopes(), in.PlannedChanges, budgetDecision, capacityDecision)
 	budgetDecision = budget.Merge(budgetDecision, capacityDecision)
 	// E (Scf7762-2): do NOT log BUDGET HALTED here.  This helper has no cycle
 	// number; the single, cycle-numbered "cycle N: BUDGET HALTED" line is emitted
@@ -2475,6 +2497,9 @@ func runCycleAsync(
 		Mode:        decision,
 		DriftCount:  scopeHeld.DriftCount,
 		DriftEvents: scopeHeld.Events,
+
+		ObserveOnlyCount:  obsHeld.DriftCount,
+		ObserveOnlyEvents: obsHeld.Events,
 
 		PlannedChangeEvents: budgetDecision.Events,
 

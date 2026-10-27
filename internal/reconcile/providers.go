@@ -145,6 +145,23 @@ func (s *providerSet) provider(r diff.DesiredResource) provider.Provider {
 	return e.p
 }
 
+// observeOnly reports whether the provider of name declares
+// Capabilities.ObserveOnly (§23.4).  An unresolvable name is not: its
+// resources are unobservable anyway.
+func (s *providerSet) observeOnly(name string) bool {
+	e, err := s.get(name)
+	return err == nil && e.p.Capabilities().ObserveOnly
+}
+
+// providerObservesOnly reports whether the resources of providerName, applied
+// through p (a provider itself, or the multi-provider router), are observe-only.
+func providerObservesOnly(p provider.Provider, providerName string) bool {
+	if r, ok := p.(*routedProvider); ok {
+		return r.set.observeOnly(providerName)
+	}
+	return p.Capabilities().ObserveOnly
+}
+
 // router returns the provider.Provider the executor applies plans through.
 // With a single provider it is that provider itself.
 func (s *providerSet) router() provider.Provider {
@@ -214,6 +231,10 @@ func (r *routedProvider) Apply(ctx context.Context, plan core.Plan) error {
 		e, err := r.set.get(name)
 		if err != nil {
 			return provider.NewPermanentError(err)
+		}
+		if e.p.Capabilities().ObserveOnly {
+			// §23.4: never, even if an op got this far.
+			return provider.NewPermanentError(fmt.Errorf("provider %q observes only (§23.4); refusing to apply %s", name, byName[name][0].Target))
 		}
 		if err := e.p.Apply(ctx, core.Plan{Ops: byName[name]}); err != nil {
 			return err

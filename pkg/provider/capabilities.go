@@ -79,6 +79,17 @@ type Capabilities struct {
 	// automatic rollback (typical for network devices with dual-config).
 	CommitConfirm bool
 
+	// ObserveOnly declares that the provider observes and never applies (§23.4,
+	// §29.1 netconf).  The core enforces it by type, whatever the intent says:
+	// a diff of its resources is reported as drift (DriftWouldApply Events, plan
+	// blocked_by observe_only) and never reaches Apply — not in the daemon's
+	// cycle, the early convergence path, a one-shot reconcile, or the router.
+	// A held resource counts as an unconverged upstream (its downstream waits).
+	// A network device provider without CommitConfirm declares it, so that a
+	// config push can never lock the operator out.  An ObserveOnly provider
+	// must not declare List or Pruneable (it never deletes either).
+	ObserveOnly bool
+
 	// BulkObserve indicates the provider implements the BulkObserver interface,
 	// allowing a single call to observe all resources in a scope (§5.7).
 	BulkObserve bool
@@ -113,6 +124,7 @@ type Capabilities struct {
 //     - List:true        → must implement Lister (prune set-difference source).
 //     - BulkObserve:true  → must implement BulkObserver (§5.7, §16.3, ADR-0011).
 //     - TrueObserve:true  → must NOT implement CheckReader (§5.6, §28.7).
+//     - ObserveOnly:true  → must NOT declare List or Pruneable (§23.4).
 //
 // Future checks (SDK, S62dbba):
 //   - Schema lint: required fields declared, secret/managed/identity flags valid.
@@ -131,6 +143,9 @@ func ValidateProvider(p Provider) error {
 		if _, ok := p.(BulkObserver); !ok {
 			return fmt.Errorf("provider declares Capabilities.BulkObserve=true but does not implement provider.BulkObserver (§5.7, §16.3, ADR-0011)")
 		}
+	}
+	if caps.ObserveOnly && (caps.List || caps.Pruneable) {
+		return fmt.Errorf("provider declares Capabilities.ObserveOnly=true with List or Pruneable: an observe-only provider never deletes, so it must not offer prune (§23.4)")
 	}
 	if caps.TrueObserve {
 		if _, ok := p.(CheckReader); ok {

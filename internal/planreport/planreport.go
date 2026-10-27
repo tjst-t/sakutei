@@ -57,7 +57,13 @@ const (
 	// BlockedByPruneHalt は prune の安全装置（§12.4）が止めた宣言外の削除。
 	// デーモンの GET /plan だけが使う（#136）。
 	BlockedByPruneHalt = "prune_halt"
+	// BlockedByObserveOnly は観測だけの provider（Capabilities.ObserveOnly、
+	// §23.4。netconf など）の操作。どの mode でも Apply しない（知らせるだけ）。
+	BlockedByObserveOnly = "observe_only"
 )
+
+// ObserveOnlyReason は観測だけの provider（§23.4）で止めた操作の理由。
+const ObserveOnlyReason = "the provider observes only (Capabilities.ObserveOnly, §23.4) — reported as drift, never applied"
 
 // AlertOnlyScopeReason は remediation: alert-only の scope（§14.3）で止めた操作の理由。
 const AlertOnlyScopeReason = "scope declared remediation: alert-only — reported, not remediated (§14.3)"

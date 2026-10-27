@@ -80,7 +80,7 @@ BMC・スイッチ管理ポートへ到達するための**管理NW**は段0 の
 2. commit-confirm（§14）——到達性を切っても自動ロールバックする。**管理NW機器では `Capabilities.CommitConfirm` を必須とする**。
 3. platform 層 + PR 必須 + 変更予算厳格（§7・§13）——管理NWコアの変更は全機器を全盲にしうる。
 
-**管理 NW の要件（CommitConfirm 不在なら型で Apply 禁止）**：commit-confirm は Apply 契約の transactional / candidate-commit であり、v2 の NW 機器 provider で入る（v1a/v1b には無い）。commit-confirm 未実装のまま管理NWコアを Apply すると、config push で自分を締め出す経路が残る。→ **v1 では管理NWコアを Apply 対象にしない**。NW 機器 provider は `Capabilities.CommitConfirm` が false の間は「**Apply 不可・観測のみ**」を Capabilities で機械的に強制し、ロックアウト経路を型で塞ぐ。到達性の最小核はそもそも段0（Ansible）で Sakutei は触らない。
+**管理 NW の要件（CommitConfirm 不在なら型で Apply 禁止）**：commit-confirm は Apply 契約の transactional / candidate-commit であり、v2 の NW 機器 provider で入る（v1a/v1b には無い）。commit-confirm 未実装のまま管理NWコアを Apply すると、config push で自分を締め出す経路が残る。→ **v1 では管理NWコアを Apply 対象にしない**。NW 機器 provider は `Capabilities.CommitConfirm` が false の間は「**Apply 不可・観測のみ**」を Capabilities で機械的に強制し、ロックアウト経路を型で塞ぐ。強制の口は `Capabilities.ObserveOnly`（§5.3）：コアはその provider の差分を知らせるだけで、どの経路でも Apply に渡さない（最初の NW 機器 provider `netconf` がこれ。§29.1、Backlog #141）。到達性の最小核はそもそも段0（Ansible）で Sakutei は触らない。
 
 **OOB（帯域外）= ネットワーク版 Break Glass**：管理NW そのものが死んだときの経路として、コンソールサーバ（シリアル集約）/ OOB 専用NW を持つ。これは Sakutei の管理対象外に置き、Break Glass の経路（§20）として扱う。
 

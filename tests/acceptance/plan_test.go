@@ -43,6 +43,9 @@ var binaryDir string
 // TestMain sets up a package-level temp dir, compiles the sakutei binary into
 // it once, and runs all tests.
 func TestMain(m *testing.M) {
+	// #141: the test binary doubles as a fake NETCONF server behind a fake ssh.
+	serveNetconfHelperIfAsked()
+
 	// Use os.MkdirTemp so the dir is NOT cleaned up by t.Cleanup (we manage
 	// it ourselves via defer + os.RemoveAll).
 	dir, err := os.MkdirTemp("", "sakutei-acceptance-")

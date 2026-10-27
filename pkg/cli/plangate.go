@@ -58,6 +58,9 @@ func gatePlanOps(ctx context.Context, in gatePlanInput, fail func(string, ...any
 	for i, op := range in.ops {
 		o := &r.Operations[i]
 		switch {
+		case observeOnly(in.providerFor, op.Target.Provider):
+			// §23.4: never applied, in any mode — so it uses no budget either.
+			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByObserveOnly, planreport.ObserveOnlyReason
 		case scopeIn(op.Target.Scope, in.alertScopes):
 			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByAlertOnlyScope, alertOnlyScopeReason
 		case o.Task != nil || op.Cause == core.CauseTagC:
@@ -110,6 +113,13 @@ func gatePlanOps(ctx context.Context, in gatePlanInput, fail func(string, ...any
 			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByCapacity, cd.Reason
 		}
 	}
+}
+
+// observeOnly reports whether the provider name declares
+// Capabilities.ObserveOnly (§23.4).
+func observeOnly(providerFor func(string) provider.Provider, name string) bool {
+	p := providerFor(name)
+	return p != nil && p.Capabilities().ObserveOnly
 }
 
 // gateOf is the report form of a gate decision.

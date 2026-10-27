@@ -27,6 +27,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
@@ -69,6 +70,12 @@ func New() *LocalExecutor {
 // The reconcile loop only calls Execute when plan.Ops is non-empty (already
 // converged resources are skipped by the caller), so Apply here always has
 // work to do.  A no-op apply would still be valid and must not error.
+//
+// An observe-only provider (Capabilities.ObserveOnly, §23.4) is never applied:
+// the loop holds its ops before this point, and this refusal is the last line.
 func (e *LocalExecutor) Execute(ctx context.Context, p provider.Provider, plan core.Plan) error {
+	if len(plan.Ops) > 0 && p.Capabilities().ObserveOnly {
+		return provider.NewPermanentError(fmt.Errorf("the provider observes only (§23.4); refusing to apply %s", plan.Ops[0].Target))
+	}
 	return p.Apply(ctx, plan)
 }

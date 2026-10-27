@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos
+.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -146,6 +146,25 @@ integration-guestos:
 	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^clab-sakutei-os86-'; then \
 	  echo 'integration-guestos: the lab was left behind; destroying it'; \
 	  sudo -n containerlab destroy --name sakutei-os86 --cleanup || status=1; \
+	fi; \
+	exit $$status
+
+# netconf provider（観測だけ）の統合テスト（#141）。docker で公開の NETCONF
+# サーバ（netopeer2 のコンテナ。tag と digest で固定）を 127.0.0.1 の空いた
+# ポートに立て、sakutei の CLI から ssh の netconf サブシステムで設定の部分木を
+# 観測し（適合・手で変えると drift・Apply は出ない・止めると unknown）、終わったら
+# （失敗しても）コンテナを消す。docker・ssh・ssh-keygen と sudo（パスワードなし）が
+# 要るので、check・test・CI には入れない。イメージは SAKUTEI_IT_NETOPEER2_IMAGE で
+# 差し替えられる。手順と結果は docs/providers/netconf.md の「統合テスト」。
+NETCONF_IT := ./tests/integration/netconf/
+integration-netconf:
+	go vet -tags integration_netconf $(NETCONF_IT)
+	@status=0; \
+	go test -tags integration_netconf -count=1 -v -timeout 10m $(NETCONF_IT) || status=$$?; \
+	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-ncit-'); \
+	if [ -n "$$left" ]; then \
+	  echo "integration-netconf: containers were left behind; removing: $$left"; \
+	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
 	fi; \
 	exit $$status
 

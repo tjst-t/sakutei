@@ -1,6 +1,6 @@
 # 離れたホストを扱う（ssh 越しの実行の層）
 
-1 台の Sakutei のデーモンから、agent を置かずに離れたホストの FW（nftables の live）と DNS のゾーンファイル（dnszone）を収束させるための層（Backlog #130）。ゲスト OS を観測するだけの [guest-os](providers/guest-os.md)（#86）も同じ層と対象の一覧を使う。provider が流す外部コマンドとファイル操作を「手元」か「ssh 越し」で走らせる。決まりの正は設計書 §29.1「離れたホストを扱う口：ssh 越しの実行の層」。ここは使い方の説明で、矛盾したら spec/ が優先する。
+1 台の Sakutei のデーモンから、agent を置かずに離れたホストの FW（nftables の live）と DNS のゾーンファイル（dnszone）を収束させるための層（Backlog #130）。ゲスト OS を観測するだけの [guest-os](providers/guest-os.md)（#86）と、NETCONF の機器の設定を観測するだけの [netconf](providers/netconf.md)（#141。コマンドでなく ssh の netconf サブシステムを開く）も同じ層と対象の一覧を使う。provider が流す外部コマンドとファイル操作を「手元」か「ssh 越し」で走らせる。決まりの正は設計書 §29.1「離れたホストを扱う口：ssh 越しの実行の層」。ここは使い方の説明で、矛盾したら spec/ が優先する。
 
 - ssh は OpenSSH の `ssh` CLI を呼ぶ（Go の依存は増やさない）。ホストに要るのは sshd と、扱うもののコマンド（nft、ゾーンファイルなら `sh`・`cat`・`flock`・`mktemp`・`mv`・`chmod`・`dirname`）だけ。
 - 完全の階級（List・BulkObserve・順序つき diff・原因タグ）はそのまま。prune も手元と同じ決まりで効く。
@@ -40,7 +40,7 @@ hosts:
 - 相対パス（`secret_store`・`known_hosts`・`control_dir`、`/` を含む `ssh`）は、このファイルのあるディレクトリから。
 - 知らないキーはエラー（書き間違いを黙って無視しない）。
 
-provider ごとに、どのホストを扱うかを `--provider-config` で名指しする（guest-os は `guest_hosts`、[providers/guest-os.md](providers/guest-os.md)）。
+provider ごとに、どのホストを扱うかを `--provider-config` で名指しする（guest-os は `guest_hosts`、[providers/guest-os.md](providers/guest-os.md)。netconf は `netconf_hosts`、[providers/netconf.md](providers/netconf.md)）。
 
 ```yaml
 # providers.yaml

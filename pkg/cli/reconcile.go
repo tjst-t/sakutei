@@ -718,6 +718,20 @@ func runReconcile(args []string) {
 	if in.Remediation != nil {
 		fmt.Fprintf(logOut, "Remediation mode: auto (%s)\n", decision.Reason)
 	}
+	// §23.4: the resources of an observe-only provider are held by type,
+	// before the scope hold: their drift is reported, never applied.
+	obsHeld := reconcile.HoldObserveOnly(desired, plans, unobservable, precomputedPruneOps, func(name string) bool {
+		p, ok := providers[name]
+		return ok && p.Capabilities().ObserveOnly
+	})
+	precomputedPruneOps = obsHeld.PruneOps
+	if obsHeld.DriftCount > 0 {
+		fmt.Fprintf(logOut, "Observe-only provider(s): %d drifted resource(s) reported — never applied (§23.4)\n", obsHeld.DriftCount)
+		for _, ev := range obsHeld.Events {
+			ev.Text = "  " + ev.TextLine()
+			eventlog.Emit(logOut, ev)
+		}
+	}
 	// §14.3: scopes declared remediation: alert-only are held even in auto.
 	scopeHeld := reconcile.HoldAlertOnly(desired, plans, unobservable, precomputedPruneOps, in.AlertOnlyScopes())
 	precomputedPruneOps = scopeHeld.PruneOps
@@ -835,6 +849,8 @@ func runReconcile(args []string) {
 		switch {
 		case waitingAlloc[local]:
 			heldReason[local] = reconcile.WaitingAllocationSkipReason
+		case obsHeld.Locals[local]:
+			heldReason[local] = "held: its provider observes only (§23.4)"
 		case scopeHeld.Locals[local]:
 			heldReason[local] = "held by an alert-only scope (§14.3)"
 		case taskHeld[local]:
@@ -960,6 +976,8 @@ func runReconcile(args []string) {
 		runSummary(fmt.Sprintf("Reconcile: no changes applied; %d resource(s) skipped", len(skipped)))
 	case scopeHeld.DriftCount > 0:
 		runSummary(fmt.Sprintf("Reconcile: no changes applied; %d drifted resource(s) held by alert-only scope(s)", scopeHeld.DriftCount))
+	case obsHeld.DriftCount > 0:
+		runSummary(fmt.Sprintf("Reconcile: no changes applied; %d drifted resource(s) of observe-only provider(s) reported (§23.4)", obsHeld.DriftCount))
 	default:
 		runSummary("Converged (no changes)")
 	}
@@ -981,7 +999,7 @@ func runReconcile(args []string) {
 	for local := range unobservable {
 		if waitingAlloc[local] {
 			waitingCount++
-		} else if scopeHeld.Locals[local] {
+		} else if scopeHeld.Locals[local] || obsHeld.Locals[local] {
 			heldCount++
 		} else if taskHeld[local] {
 			taskCount++
@@ -1182,9 +1200,13 @@ func (m *multiProviderApply) Schema() provider.Schema {
 
 // Capabilities returns the capabilities of the fallback provider.
 // See Schema() for the same caveat about per-provider capabilities.
+// ObserveOnly is not the router's: Apply refuses an observe-only provider's
+// ops per provider (§23.4), and the router itself must not refuse the others.
 func (m *multiProviderApply) Capabilities() provider.Capabilities {
 	if m.fallback != nil {
-		return m.fallback.Capabilities()
+		caps := m.fallback.Capabilities()
+		caps.ObserveOnly = false
+		return caps
 	}
 	return provider.Capabilities{}
 }
@@ -1241,6 +1263,10 @@ func (m *multiProviderApply) Apply(ctx context.Context, plan core.Plan) error {
 			if !ok {
 				p = m.fallback
 			}
+		}
+		if p.Capabilities().ObserveOnly {
+			// §23.4: never, even if an op got this far.
+			return provider.NewPermanentError(fmt.Errorf("provider %q observes only (§23.4); refusing to apply %s", name, ops[0].Target))
 		}
 		if err := p.Apply(ctx, core.Plan{Ops: ops}); err != nil {
 			return err

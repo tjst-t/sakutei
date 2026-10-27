@@ -68,6 +68,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/executor"
+	"github.com/tjst-t/sakutei/internal/planreport"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 )
@@ -330,6 +331,14 @@ func ScopedReconcile(
 		if r.UpdatePolicy.IsTask() {
 			unobservable[local] = true
 			fmt.Fprintf(errOut, "sakutei: scoped: skip %s: strategy: task は定期周期が Task を起動する（直接 Apply しない）\n", r.ID)
+			continue
+		}
+
+		// §23.4: 観測だけの provider（Capabilities.ObserveOnly）は早期収束パスでも
+		// Apply しない。ずれの知らせは定期周期が出す。下流は収束中扱いで待たせる。
+		if providerObservesOnly(fp, r.ID.Provider) {
+			unobservable[local] = true
+			fmt.Fprintf(errOut, "sakutei: scoped: skip %s: %s\n", r.ID, planreport.ObserveOnlyReason)
 			continue
 		}
 
