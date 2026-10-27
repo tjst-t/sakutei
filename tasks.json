@@ -2814,6 +2814,29 @@
       "updatedAt": "2026-10-27T08:36:52.478Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "w2-fw-nftables-s3",
+      "number": 120,
+      "kind": "story",
+      "title": "試用評価 W2：実際の FW を扱う nftables と S3 のバケット",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "eval-w2"
+      ],
+      "body": "試用評価の2週目。(1) nftables provider は今、管理する ruleset ファイルを読み書きするだけで、カーネルの実際の ruleset を読まず・流さない。ファイルを書いても FW に反映されず、FW を直に変えても drift として見えないため、「ずれを直す」の評価に使えない。実の ruleset を扱う版を足す（ファイル版は残す）。(2) S3 互換 API のバケット provider（W2 後半に着手、仕上げは W3 の頭）。\n\n決定：2026-10-27、人の任せを受けた管理側の判断。",
+      "doneWhen": "子タスクがすべて done、make check と make test-race が通り、設計書と CHANGELOG に反映して main に push 済み",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T09:01:01.402Z",
+      "updatedAt": "2026-10-27T09:01:01.402Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
