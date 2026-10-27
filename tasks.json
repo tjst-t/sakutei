@@ -3123,7 +3123,7 @@
       "number": 133,
       "kind": "task",
       "title": "postgresql provider：PUBLIC への権限を宣言で扱う・ロールの bypassrls と replication を足す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -3139,7 +3139,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T13:14:16.399Z",
-      "updatedAt": "2026-10-27T13:14:16.399Z",
+      "updatedAt": "2026-10-27T13:14:25.869Z",
       "closedAt": null,
       "extra": {}
     }
