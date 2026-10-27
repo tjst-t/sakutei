@@ -432,7 +432,10 @@ func TestNetconf_CLI(t *testing.T) {
 	// Stopped: unobservable (unknown — not absent, not a Create).
 	writeFile(downPath, "", 0o600)
 	out, errOut, _ = run("status")
-	if !strings.Contains(out, "UNOBSERVABLE netconf//sw1/if-uplink") || !strings.Contains(out, "unreachable") || strings.Contains(out, "CREATE") {
+	// 止まった偽のサーバに当たったときの文は、届かない（unreachable）のほか、相手が
+	// 先に閉じて書き込みが broken pipe になる（transient）こともある（CI で揺れた）。
+	// 確かめたいのは「観測できない」になり、Create を出さないこと。
+	if !strings.Contains(out, "UNOBSERVABLE netconf//sw1/if-uplink") || !(strings.Contains(out, "unreachable") || strings.Contains(out, "transient")) || strings.Contains(out, "CREATE") {
 		t.Fatalf("[AC-141-4-3] status while down:\n%s%s", out, errOut)
 	}
 }
