@@ -3310,7 +3310,7 @@
       "number": 141,
       "kind": "task",
       "title": "NETCONF provider（観測だけ）：機種に依らない設定の部分木の観測とずれの知らせ、Apply は型で止める",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "os-bios",
       "dependsOn": [
         "os-install-task"
@@ -3324,7 +3324,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T15:46:11.578Z",
-      "updatedAt": "2026-10-27T15:46:11.578Z",
+      "updatedAt": "2026-10-27T16:01:05.698Z",
       "closedAt": null,
       "extra": {}
     }
