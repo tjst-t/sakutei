@@ -3320,11 +3320,11 @@
       "labels": [],
       "body": "## なぜ\nNETCONF 対応のネットワーク機器の設定を、まず観測してずれを知らせられるようにする。設定を当てるのは、後で commit confirmed を使う 2 段の Apply を入れてから（§23.4「CommitConfirm が無ければ Apply 禁止」）。\n\n## やること\n- provider 名 `netconf`、internal/netconf。通信は NETCONF over SSH（RFC 6241・6242）を、離れたホストの層（#130）の ssh で netconf サブシステムとして流す。メッセージの区切り（1.0 の `]]>]]>`、1.1 の chunked）と XML は stdlib。hello の capability を記録する（base:1.0・1.1、candidate、confirmed-commit:1.0・1.1、validate など）。\n- リソース：「設定の部分木」（どこ＝ subtree filter の XML と名前空間、中身＝宣言する XML）。ID は `<ホスト名>/<利用者が付ける名前>`。観測は `<get-config source=\"running\">` を subtree filter で絞って取る。\n- 比べ方：名前空間・空白・属性の順をそろえた正規形で比べる。順に意味のある列は宣言で ordered にできる形にする（既定は順を問わない）。機種固有の設定の型（YANG）は利用者の側で書く。\n- **Apply は型で止める**：Capabilities で「観測だけ」を宣言し、差分は知らせ（Drift）にするだけで計画に Apply を出さない。List も持たない（prune しない）。\n- 届かない・hello が合わない・rpc-error は観測できない（unknown）。\n- 偽の NETCONF サーバ（Go の中で動かす。base:1.0 だけのものと 1.1 のもの）で単体・契約テスト。\n- **統合テスト**：build tag `integration_netconf`、`make integration-netconf`。公開の NETCONF サーバ（netopeer2 のコンテナ。tag と digest で固定）を立て、設定の部分木が宣言どおりなら適合、別の接続で手で変えると drift が知らされ、Apply は出ない、何周でもずれが出ない、止めると unknown。必ず片づける。check・CI には入れない。\n- 文書：docs/providers/netconf.md（今は観測だけであること、後で入れる 2 段の Apply の方針：:confirmed-commit:1.0 だけの機器では同じセッションで commit confirmed → 新しい接続で確かめる → 同じセッションで確定）、設計書 §29.1。機種名は書かない。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "netconf provider が設定の部分木を観測してずれを知らせ、Apply を出さないことを、偽のサーバと make integration-netconf（netopeer2）で示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/netconf-observe）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T15:46:11.578Z",
-      "updatedAt": "2026-10-27T16:42:35.793Z",
+      "updatedAt": "2026-10-27T16:42:57.809Z",
       "closedAt": "2026-10-27T16:42:35.793Z",
       "extra": {}
     }
