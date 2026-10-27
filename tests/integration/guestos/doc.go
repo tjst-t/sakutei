@@ -19,7 +19,9 @@
 // した」で先へ進む・インストーラが失敗したときは進まないことを示す。#139 で、
 // 起動先を 1 回だけ CD にする手順（action boot_once・reset）と、宣言から書き出す
 // 応答ファイル（template-file）で 1 つの ISO を 3 台に使う形にし、起動先の上書きが
-// 残らないことも確かめる。
+// 残らないことも確かめる。#88 で、planned_change の kind: reimage の宣言を書いたり
+// 外したりして、trigger: reimage の Workflow が承認された宣言ごとに 1 回だけ走り、
+// 動いている台を入れ直すことを確かめる（reimage_integration_test.go）。
 //
 // テストは build tag integration_guestos の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-guestos

@@ -132,7 +132,9 @@ integration-remote:
 # containerlab で 3 台立て、Alpine の自動インストールの ISO（docs/trial/
 # redfish-os-install/make-iso.sh で作る）で本当に OS を入れ、終わったら（失敗しても）
 # lab を消す。#139 で、1 回だけ CD から起動する手順（action boot_once・reset）と、
-# 宣言から書き出す応答ファイル（template-file、テストが HTTP で配る）の形にした。KVM・docker・containerlab・sudo（パスワードなし）・ssh・xorriso・curl と、
+# 宣言から書き出す応答ファイル（template-file、テストが HTTP で配る）の形にした。#88 で、
+# planned_change の reimage の宣言で入れ直しの Workflow が 1 回走ること（TestReimage）を足した。
+# KVM・docker・containerlab・sudo（パスワードなし）・ssh・xorriso・curl と、
 # 初回は Alpine の ISO とパッケージを取るネットワークが要る（取ったものは
 # SAKUTEI_IT_CACHE、既定 ~/.cache/sakutei-it/alpine に残す）。check・test・CI には
 # 入れない。手順と結果は docs/providers/guest-os.md の「統合テスト」。
@@ -140,7 +142,7 @@ GUESTOS_IT := ./tests/integration/guestos/
 integration-guestos:
 	go vet -tags integration_guestos $(GUESTOS_IT)
 	@status=0; \
-	go test -tags integration_guestos -count=1 -v -timeout 30m $(GUESTOS_IT) || status=$$?; \
+	go test -tags integration_guestos -count=1 -v -timeout 50m $(GUESTOS_IT) || status=$$?; \
 	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^clab-sakutei-os86-'; then \
 	  echo 'integration-guestos: the lab was left behind; destroying it'; \
 	  sudo -n containerlab destroy --name sakutei-os86 --cleanup || status=1; \

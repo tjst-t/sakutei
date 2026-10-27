@@ -78,6 +78,11 @@ type Run struct {
 	// 送る直前に立てて S2 に書き、送れて次の手順へ進むときに消す。立ったまま
 	// 読み直したら、送ったかどうか分からないので二度送らない（halt）。
 	ActionSending bool `json:"action_sending,omitempty"`
+	// Trigger は run を起こした planned_change の Key（trigger: reimage の Workflow、
+	// #88）。同じ宣言では二度起こさない。Reserved は今の対象がその宣言の
+	// max_count を 1 つ使った印（対象を移るときに消す）。
+	Trigger  string `json:"trigger,omitempty"`
+	Reserved bool   `json:"reserved,omitempty"`
 	// Gate は待っているゲート（= ステージ名）。PhaseAwaitingApproval のときだけ。
 	Gate         string    `json:"gate,omitempty"`
 	GateOpenedAt time.Time `json:"gate_opened_at,omitempty"`

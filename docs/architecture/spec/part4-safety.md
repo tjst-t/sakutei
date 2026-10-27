@@ -187,6 +187,8 @@ planned_change:
 - **kind と Plan の操作種別（§29.1 kind 整合検証の決定）**：`delete` は Delete op、`update` は Update op、`reimage` / `recreate` は下記の対になった Delete+Create を通す（対 1 組で枠を 1 消費する。予算上 `reimage` と `recreate` は同じで、違いは監査上の名前だけ）。有効な宣言の scope 内にあるのに kind が合わずレーンに入らない破壊的 op は、通常予算で評価し、`PlannedChangeKindMismatch` Event を出す。
 - **reimage / recreate の対（§29.1 ペアリング判定の決定）**：同じ周期の Plan の Delete X と Create Y は、(1) 同じ provider、(2) scope のラベル集合が完全に一致（宣言 scope の内側、だけでは足りない。同じ置き場所の入れ替えであること）、(3) 1 対 1（同じ scope の中で Local ID 昇順に組む）のとき対になる。余った Delete は純粋な削除（kind 不一致）、余った Create はただの追加として通常予算で評価する。scope に機体を表すラベル（`slot` など）を持たせれば、1 台ずつの入れ替えとして判定される。
 
+**Workflow による入れ直し（Backlog #88、v3.25）**：物理サーバの入れ直しは Plan の Delete+Create にならない（台は消えも生まれもしない）。`kind: reimage` の宣言は、上の対のほかに、**`trigger: reimage` の Workflow（§6.3）を起こす**。宣言の scope が Workflow の対象の scope を覆い、レーンが開いている（窓の中・承認と cooling-off が揃った）ときだけ、宣言ごとに 1 回 run を起こす。対象ごとに手を付ける前に `max_count` を 1 つ使い（対の 1 組と同じ数え方。使用量は同じく S4 の `planned_change.executed` に残るので、Workflow の S2 を失って起こし直しても `max_count` を越えて入れ直さない）、通常予算の破壊的変更には数えない。`max_count` を使い切った宣言は run を起こさず、走っている run の次の対象は halt にする。
+
 **承認と運用プロファイル（v1.5 の実装、Backlog #44）**：窓の中でも、次の 2 つが揃うまでレーンは開かない（開かない間、scope 内の変更は通常予算で評価される）。
 
 - **承認**：`approval.approvers` を、宣言の `requirements`（書式はゲートと同じ `quorum` / `roles` / `separation`・§14.4）、書かなければ運用プロファイル（§14.5）の既定で検証する。既定は solo = 要件なし、team = 承認者 1 人、enterprise = `quorum: {n: 2, of: 2}` + `separation: applicant_ne_approver`（役割は現場ごとの名前なので既定化しない）。数えるのは要件を満たす異なる承認者だけで、申請者（`applicant`）本人・役割の合わない承認・同じ人の二重記載は数えない。承認者は ID か `{ id, roles: [...] }`（名乗った役割。真偽は上位 IdP・§7）で書く。separation が要るのに `applicant` が無い宣言は開かない。満たさなければ `PlannedChangeUnapproved` Event を出す（閉じている間は 1 回だけ）。ロードは失敗させない（宣言 1 つの不備で収束全体を止めない。レーンが閉じるのは保守側）。

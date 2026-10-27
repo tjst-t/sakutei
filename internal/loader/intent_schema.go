@@ -38,7 +38,7 @@ import (
 //   - planned_change は大量正当作業の宣言（scope / kind / max_count / window / applicant / approval /
 //     requirements / cooling_off、§13.3 / §14.4 / §14.5）。1 件ならオブジェクト、複数なら配列で書く。
 //   - profile は運用プロファイル（solo / team / enterprise、§14.5）、solo はその設定（cooling_off）。
-//   - workflows は最小 Workflow の宣言（workflow / applicant / target / invariant / strategy / stages /
+//   - workflows は最小 Workflow の宣言（workflow / applicant / trigger / target / invariant / strategy / stages /
 //     steps / on_failure、§6.3 / §6.4）。書式の詳細と v1.5 で拒否するものは workflow.go。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
 //     depends_on（文字列、または { id, ready_condition } の配列）、fields（文字列→スカラーのマップ）、
@@ -210,6 +210,8 @@ func workflowsSchema() schemaNode {
 			"properties": map[string]any{
 				"workflow":  schemaNode{"type": "string"},
 				"applicant": schemaNode{"type": "string"},
+				// trigger: reimage は planned_change kind: reimage で起こす（#88）。
+				"trigger": schemaNode{"type": "string"},
 				"target": schemaNode{
 					"type":                 "object",
 					"additionalProperties": false,

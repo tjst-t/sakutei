@@ -91,6 +91,10 @@
 //     Workflow that is not done are converging for the loop: not Observed, not
 //     Applied, their downstream waits.  In alert-only / freeze no Workflow
 //     advances (the mode gate holds every change).
+//   - #88: a Workflow with trigger: reimage starts a run only while an open
+//     planned_change kind: reimage covers its target scope (the budget engine's
+//     lane: window, approval, cooling-off), once per declaration, and uses one
+//     of its max_count per target.  Until then its targets converge as usual.
 //
 // #79 additions (§22.3):
 //   - Drift, convergence failures and halts are level Events: the Daemon's
@@ -1056,12 +1060,17 @@ func NewDaemon(cfg Config) *Daemon {
 			// per-cycle limit and the cumulative window.
 			Admit: func(op core.Op) (bool, string) {
 				d := budgetEngine.CheckCycle([]core.Op{op}, budget.InFlight{}, 0)
+				// The cycle's planned_change notices stay for the cycle's own check.
+				budgetEngine.RequeueEvents(d.Events)
 				if d.IsHalted(op) {
 					return false, d.Reason
 				}
 				return true, ""
 			},
-			Commit:   func(op core.Op) { budgetEngine.CommitOps([]core.Op{op}) },
+			Commit: func(op core.Op) { budgetEngine.CommitOps([]core.Op{op}) },
+			// #88: a trigger: reimage Workflow runs once per open planned_change
+			// kind: reimage (§13.3) and uses its max_count per target.
+			Reimage:  budgetEngine,
 			Tasks:    tasks,
 			TasksOff: tasksOff,
 			Holder:   taskHolder(cfg),

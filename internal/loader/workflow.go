@@ -51,6 +51,13 @@ func parseWorkflow(m map[string]any) (workflow.Definition, error) {
 	def.Name = strings.TrimSpace(def.Name)
 	def.Applicant, _ = m["applicant"].(string)
 	def.Applicant = strings.TrimSpace(def.Applicant)
+	if v, ok := m["trigger"]; ok {
+		t, isStr := v.(string)
+		if !isStr {
+			return def, fmt.Errorf("trigger must be a string (%s)", workflow.TriggerReimage)
+		}
+		def.Trigger = strings.TrimSpace(t)
+	}
 
 	providerName, scope := "", core.NewScope(nil)
 	if t, ok := m["target"].(map[string]any); ok {

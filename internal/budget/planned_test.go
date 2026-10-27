@@ -263,3 +263,50 @@ func TestParseWindow(t *testing.T) {
 		t.Error("an empty scope must be rejected")
 	}
 }
+
+// #88: 入れ直しの Workflow のレーン。scope を覆う開いた reimage の宣言だけを返し、
+// 対象ごとに max_count を 1 つ使う。窓の外・使い切り・取り下げは断る。
+func TestPlannedChange_ReimageLaneForWorkflows(t *testing.T) {
+	clk := &fakeClock{t: t0.Add(time.Hour)}
+	e := newEngineWithClock(Config{}, clk)
+	target := core.NewID("redfish-system", core.NewScope(decomScope), "node1")
+
+	if _, _, _, ok := e.OpenReimage(core.NewScope(decomScope)); ok {
+		t.Fatalf("no declaration: OpenReimage ok")
+	}
+	e.SetPlannedChanges([]PlannedChange{decl(PlannedDelete, decomScope, 5), decl(PlannedReimage, otherScope, 5)})
+	if _, _, _, ok := e.OpenReimage(core.NewScope(decomScope)); ok {
+		t.Fatalf("a delete declaration and a reimage of another scope opened the reimage lane")
+	}
+
+	p := decl(PlannedReimage, decomScope, 1)
+	e.SetPlannedChanges([]PlannedChange{p})
+	key, _, left, ok := e.OpenReimage(core.NewScope(map[string]string{"pool": "decom", "rack": "r1"}))
+	if !ok || !left || key != p.Key() {
+		t.Fatalf("OpenReimage = %q %v %v, want the declaration with max_count left", key, left, ok)
+	}
+	if _, err := e.ReserveReimage(key, target, "w"); err != nil {
+		t.Fatal(err)
+	}
+	if e.LaneUsed(p) != 1 {
+		t.Fatalf("LaneUsed = %d, want 1", e.LaneUsed(p))
+	}
+	if _, _, left, ok := e.OpenReimage(core.NewScope(decomScope)); !ok || left {
+		t.Fatalf("after max_count: left %v ok %v, want open without left", left, ok)
+	}
+	if _, err := e.ReserveReimage(key, target, "w"); err == nil || !strings.Contains(err.Error(), "max_count") {
+		t.Fatalf("second reserve err = %v", err)
+	}
+	if d := e.CheckCycle(nil, InFlight{}, 0); !hasEvent(d, "PlannedChange: ") || !hasEvent(d, "PlannedChangeExhausted") {
+		t.Fatalf("events = %v", d.Events)
+	}
+
+	clk.t = t0.Add(7 * time.Hour)
+	if _, _, _, ok := e.OpenReimage(core.NewScope(decomScope)); ok {
+		t.Fatalf("OpenReimage outside the window")
+	}
+	e.SetPlannedChanges(nil)
+	if _, err := e.ReserveReimage(key, target, "w"); err == nil || !strings.Contains(err.Error(), "no longer declared") {
+		t.Fatalf("reserve of a withdrawn declaration: err = %v", err)
+	}
+}

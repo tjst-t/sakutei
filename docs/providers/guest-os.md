@@ -102,7 +102,7 @@ steps:
 
 ## 統合テスト
 
-qemu-bmc 0.10.0 を containerlab で 3 台立て、本当に Alpine を入れる統合テスト（Backlog #86、#139 で広げた）。build tag `integration_guestos` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
+qemu-bmc 0.10.0 を containerlab で 3 台立て、本当に Alpine を入れる統合テスト（Backlog #86、#139 で広げ、#88 で入れ直しの TestReimage を足した）。build tag `integration_guestos` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
 
 ```console
 $ make integration-guestos
@@ -203,3 +203,62 @@ cycle 40: WorkflowHalted: workflow os-install-node3: stage install, target node3
   その間の待ちの理由は `unobservable: … remote node2: unreachable: Connection timed out during banner exchange`（VM は動いているがゲストの sshd がいない）→ `… ssh: connect to host 172.31.86.12 port 2222: Connection refused`（電源が切れて QEMU がいない）で、3 分の timeout で halt。CD は差さったまま。
 - **node3**：起動したあとは観測できる（unobservable が付かない）`waiting for map[…]` が続き、3 分の timeout で halt。CD は差さったまま。手で ssh すると os-release があり目印が無い。
 - 最初に回したとき、ssh の master のソケットを長い一時ディレクトリの下に置いて unix ソケットのパスの上限を超え、ゲスト OS がすべて観測できなかった（`control_dir` は短いパスにする。docs/remote.md）。2 回目は `--provider-config` の `remote_config` を相対パスで書き、デーモンを別のディレクトリで動かしたので provider が作れなかった（`provider guest-os is unavailable`）。どちらも待ちの理由が「unobservable」だけでは分からなかったので、Workflow の待ちの理由に観測できない理由を添えるようにした。
+
+### 入れ直しを宣言で起こす（TestReimage、#88）
+
+同じ lab の node1・node2 に、`trigger: reimage` の OS 導入の Workflow（`reimage-<ノード>`、`target.scope` は `rack: r1`）を 1 台 1 つずつ置き、常駐の sakutei（`--audit-log` 付き）を 1 つ回したまま、
+`planned_change` の `kind: reimage`（scope `rack: r1`・`max_count: 1`）を書いたり外したりする（[docs/trial/redfish-os-install](../trial/redfish-os-install/README.md) の「入れ直し」）。応答ファイルは 2 台とも成功する中身で、
+手順 4 の再起動は `type: ForceRestart`（ディスクを消して入れ直すので正常停止を待たない。入れ直しの 1 回分に含まれ、通常予算に数えない）。`go test -tags integration_guestos -run TestReimage` で単独でも回せる。
+
+| | 内容 |
+| --- | --- |
+| [AC-88-9] | 宣言が無い間は走らない（run を作らず、`WorkflowStarted` も無い）。2 台は収束ループが電源 On に保つ |
+| [AC-88-10] | 承認の無い宣言では走らない（`PlannedChangeUnapproved`。運用プロファイル team は 1 人） |
+| [AC-88-11] | 承認された宣言で node1 に 1 回走り、今回の目印の OS が起動して done（手で ssh して目印を見る）。node2 は枠が無いので走らない（インストーラも起動しない）。S4 に `planned_change.executed` が 1 |
+| [AC-88-12] | 宣言を外すと走らない（同じ done の run のまま、OS も前の目印のまま） |
+| [AC-88-13] | 新しい宣言（別の窓・新しい目印）で、動いている node1 がもう一度入れ直されて新しい目印の OS になる。node2 は走らない。起動先の上書きは Disabled・CD は抜けている |
+
+#### 結果（2026-10-27）
+
+同じ開発機で、qemu-bmc 0.10.0・Alpine 3.24.3（PASS）。1 回目の入れ直しは承認から 40 秒、動いている OS の入れ直しは 45 秒:
+
+```
+    reimage_integration_test.go:256: reimage-node1 finished in 40s
+    reimage_integration_test.go:317: second reimage-node1 finished in 45s
+--- PASS: TestReimage (140.55s)
+```
+
+デーモンの出力（抜粋。宣言は `planned_change(scope=rack=r1 kind=reimage window=…)` を `<宣言>` と略す）:
+
+```
+cycle 5: PlannedChangeUnapproved: <宣言>: approval has 0 of the 1 approver(s) required by the team profile; the lane stays closed …
+cycle 8: WorkflowStarted: workflow reimage-node1: run … started (1 stage(s), 1 target(s)) for <宣言>
+cycle 8: WorkflowStepDone: workflow reimage-node1: stage install, target node1: reimage admitted by <宣言>
+cycle 8: WorkflowStepDone: … target node1, step 3 (action): sent boot_once Cd (boot override Once) (in the planned_change lane)
+cycle 8: WorkflowStepDone: … target node1, step 4 (action): sent reset ForceRestart (On if powered off; destructive) (in the planned_change lane)
+cycle 8: WorkflowWaiting: workflow reimage-node2: not starting: <宣言> has no max_count left for scope rack=r1
+cycle 8: PlannedChangeOpened: <宣言>: lane opened (profile team; approval 1 of 1 approver(s) [alice] required by the team profile)
+cycle 8: PlannedChange: <宣言>: reimage of redfish-system/rack=r1/node1 by workflow reimage-node1 admitted to the lane (used 1 of max_count 1); not counted in the normal budget
+cycle 14: WorkflowStepDone: … target node1, step 7 (require guest-os/node1): observed map[marker.hostname:node1 marker.installed:it86-1793117468-r1 os_id:alpine]
+cycle 14: WorkflowCompleted: workflow reimage-node1: run … completed; targets return to convergence
+  …（宣言を外した cycle 15〜18 は何も起きない）
+cycle 19: WorkflowStarted: workflow reimage-node1: run … started (1 stage(s), 1 target(s)) for <新しい宣言>
+cycle 25: WorkflowStepDone: … target node1, step 7 (require guest-os/node1): observed map[marker.hostname:node1 marker.installed:it86-1793117468-r2 os_id:alpine]
+cycle 25: WorkflowCompleted: workflow reimage-node1: run … completed; targets return to convergence
+```
+
+node1 のシリアル（インストーラは宣言ごとに 1 回だけ走り、2 回目は動いている OS を ForceRestart で止めて CD から入れ直した）:
+
+```
+SAKUTEI-AUTOINSTALL: start 2026-10-27T16:11:51Z
+SAKUTEI-AUTOINSTALL: answer file http://172.31.86.1:42181/6f1b7c52-0e1a-4d2b-9c11-000000008601 (hostname node1, mark it86-1793117468-r1)
+SAKUTEI-AUTOINSTALL: done, powering off
+SAKUTEI-INSTALLED-OS: booted from disk: it86-1793117468-r1
+SAKUTEI-AUTOINSTALL: start 2026-10-27T16:12:54Z
+SAKUTEI-AUTOINSTALL: answer file http://172.31.86.1:42181/6f1b7c52-0e1a-4d2b-9c11-000000008601 (hostname node1, mark it86-1793117468-r2)
+SAKUTEI-AUTOINSTALL: done, powering off
+SAKUTEI-INSTALLED-OS: booted from disk: it86-1793117468-r2
+```
+
+- node2 のシリアルに `SAKUTEI-AUTOINSTALL` は一度も出なかった（宣言の `max_count: 1` を node1 が使い、node2 の Workflow は起動しなかった）。
+- `not starting` の待ちは、枠の無い宣言が開いている間、毎周出る。

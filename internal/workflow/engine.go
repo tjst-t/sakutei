@@ -93,6 +93,9 @@ type Engine struct {
 	// Commit は施した操作を予算の累積に数える。どちらも nil なら予算を見ない。
 	Admit  func(op core.Op) (ok bool, reason string)
 	Commit func(op core.Op)
+	// Reimage は trigger: reimage の Workflow（#88）を起こす planned_change の
+	// レーン（§13.3）。nil なら trigger: reimage の Workflow は起動しない。
+	Reimage ReimageLanes
 	// Tasks は task ステップの単純 Task を起動する（1-outstanding、§6.2）。nil なら
 	// task ステップは進めず、TasksOff を理由として待つ。
 	Tasks    *task.Manager
@@ -142,6 +145,17 @@ func (e *Engine) diff(id core.ID) *diff.Engine {
 	return d
 }
 
+// ReimageLanes は planned_change kind: reimage のレーン（§13.3、#88）。budget.Engine
+// が実装する（承認・cooling-off・窓・max_count はそちらが判定する）。
+type ReimageLanes interface {
+	// OpenReimage は scope を覆う、いま開いている（窓の中・承認済み）reimage の
+	// 宣言の Key と名前を返す。left は max_count がまだ残っているか。無ければ ok false。
+	OpenReimage(scope core.Scope) (key, name string, left, ok bool)
+	// ReserveReimage は宣言 key の max_count を target の入れ直し 1 回分使う。
+	// 宣言がもう開いていない・使い切っていればエラー。
+	ReserveReimage(key string, target core.ID, workflow string) (name string, err error)
+}
+
 // Held は収束ループが Apply してはならない対象（Local ID → Workflow 名）を返す。
 // 完了（done）していない Workflow の対象はすべて含む（実行中・待ち・halt・未起動）。
 // Store を読めなければ全対象を返す（確信が持てないときは触らない、原則 3）。
@@ -174,6 +188,8 @@ type Hold struct {
 
 // Holds は done でない Workflow を宣言順に返す（Engine.Held と plan・status が共有する
 // 判定、#89）。store が nil なら、どの Workflow も done と言えないので全部を返す。
+// trigger: reimage の Workflow（#88）は run が無いか done なら返さない（宣言が来る
+// までは対象を収束ループに任せる。宣言が来た周は Tick が先に run を起こす）。
 func Holds(ctx context.Context, store Store, defs []Definition) []Hold {
 	var out []Hold
 	for _, def := range defs {
@@ -183,6 +199,8 @@ func Holds(ctx context.Context, store Store, defs []Definition) []Hold {
 			switch {
 			case err != nil:
 				h.Err = err
+			case def.Trigger != "" && (!ok || run.Phase == PhaseDone):
+				continue
 			case ok && run.Phase == PhaseDone && run.DefHash == def.Hash():
 				continue
 			case ok && run.Phase == PhaseDone:
@@ -282,7 +300,30 @@ func (e *Engine) tick(ctx context.Context, def Definition) []Event {
 		return s.events
 	}
 	hash := def.Hash()
-	if !ok || (run.Phase == PhaseDone && run.DefHash != hash) {
+	start := !ok || (run.Phase == PhaseDone && run.DefHash != hash)
+	trigger, by := "", ""
+	if def.Trigger != "" {
+		// #88: 宣言（planned_change kind: reimage）があるときだけ、宣言ごとに 1 回。
+		start = false
+		if !ok || run.Phase == PhaseDone {
+			if e.Reimage == nil {
+				s.emit(EventError, "trigger %s needs the planned_change lanes; not starting", def.Trigger)
+				return s.events
+			}
+			key, name, left, open := e.Reimage.OpenReimage(def.Scope())
+			switch {
+			case !open:
+				return s.events
+			case ok && run.Trigger == key:
+				return s.events // この宣言ではもう走った
+			case !left:
+				s.emit(EventWaiting, "not starting: %s has no max_count left for scope %s", name, def.Scope())
+				return s.events
+			}
+			start, trigger, by = true, key, fmt.Sprintf(" for %s", name)
+		}
+	}
+	if start {
 		s.run = Run{
 			Workflow:      def.Name,
 			RunID:         fmt.Sprintf("%s-%d", def.Name, s.now.UnixNano()),
@@ -292,12 +333,13 @@ func (e *Engine) tick(ctx context.Context, def Definition) []Event {
 			StepStartedAt: s.now.UTC(),
 			Holder:        e.Holder,
 			StartedAt:     s.now.UTC(),
+			Trigger:       trigger,
 			Version:       run.Version,
 		}
 		if !s.save() {
 			return s.events
 		}
-		s.emit(EventStarted, "run %s started (%d stage(s), %d target(s))", s.run.RunID, len(def.Stages), len(def.Targets()))
+		s.emit(EventStarted, "run %s started (%d stage(s), %d target(s))%s", s.run.RunID, len(def.Stages), len(def.Targets()), by)
 	} else {
 		s.run = run
 	}
@@ -359,6 +401,7 @@ func (s *stepper) gate(ctx context.Context) bool {
 func (s *stepper) nextStage() bool {
 	s.run.Stage++
 	s.run.Target, s.run.Step = 0, 0
+	s.run.Reserved = false
 	s.run.StepStartedAt = s.now.UTC()
 	s.run.Reason = ""
 	if s.run.Stage >= len(s.def.Stages) {
@@ -392,6 +435,25 @@ func (s *stepper) advance(ctx context.Context) {
 		where := fmt.Sprintf("stage %s, target %s, step %d (%s)", stage.Name, target.Local, s.run.Step+1, step.Kind)
 		if step.Resource != "" {
 			where = fmt.Sprintf("stage %s, target %s, step %d (%s %s/%s)", stage.Name, target.Local, s.run.Step+1, step.Kind, res.Provider, res.Local)
+		}
+
+		// #88: 入れ直しの Workflow は、対象に手を付ける前に宣言の max_count を 1 つ使う。
+		// 宣言が取り下げられた・窓を過ぎた・使い切ったなら、その対象は入れ直さない。
+		if s.def.Trigger != "" && s.run.Step == 0 && !s.run.Reserved {
+			if s.e.Reimage == nil {
+				s.halt("stage %s, target %s: trigger %s needs the planned_change lanes", stage.Name, target.Local, s.def.Trigger)
+				return
+			}
+			name, err := s.e.Reimage.ReserveReimage(s.run.Trigger, target, s.def.Name)
+			if err != nil {
+				s.halt("stage %s, target %s: not reimaged: %v", stage.Name, target.Local, err)
+				return
+			}
+			s.run.Reserved = true
+			if !s.save() {
+				return
+			}
+			s.emit(EventStepDone, "stage %s, target %s: reimage admitted by %s", stage.Name, target.Local, name)
 		}
 
 		obs := s.observeAll(ctx)
@@ -446,6 +508,7 @@ func (s *stepper) advance(ctx context.Context) {
 		}
 		s.run.Step = 0
 		s.run.Target++
+		s.run.Reserved = false
 		if s.run.Target < len(stage.Targets) {
 			if !s.save() {
 				return
@@ -593,7 +656,11 @@ func (s *stepper) action(ctx context.Context, step Step, target core.ID) (stepSt
 	}
 	op := core.Op{Kind: core.OpKindUpdate, Target: target, Destructive: plan.Destructive,
 		Diagnostic: fmt.Sprintf("workflow %s: one-time operation %s on %s", s.def.Name, desc, target)}
-	if s.e.Admit != nil {
+	// #88: 入れ直しの run の対象は planned_change のレーンで 1 回分を使っている
+	// （ReserveReimage）。その入れ直しの中の破壊的な操作（強制再起動）は通常予算に
+	// 数えない（reimage の対を破壊的変更に数えないのと同じ、§13.3）。
+	inLane := s.def.Trigger != "" && s.run.Reserved
+	if s.e.Admit != nil && !inLane {
 		if ok, why := s.e.Admit(op); !ok {
 			return stepPending, fmt.Sprintf("action %s is held by the change budget: %s", desc, why)
 		}
@@ -611,6 +678,9 @@ func (s *stepper) action(ctx context.Context, step Step, target core.ID) (stepSt
 			return stepPending, fmt.Sprintf("action %s not sent: %s; trying again next cycle", desc, shortReason(err))
 		}
 		return stepFailed, fmt.Sprintf("action %s: %v", desc, err)
+	}
+	if inLane {
+		return stepDone, fmt.Sprintf("sent %s (in the planned_change lane)", desc)
 	}
 	if plan.Destructive && s.e.Commit != nil {
 		s.e.Commit(op)

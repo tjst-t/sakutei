@@ -100,6 +100,14 @@
 //     それ以外の失敗は halt。破壊的な操作（ForceRestart）は予算（§13）を通し、
 //     止められれば待つ。invariant は action では見込みを変えない（止まる間の
 //     active は後の手順で確かめる）。
+//   - trigger: reimage（#88）の Workflow は、対象の scope（target.scope、必須）を
+//     覆う planned_change の kind: reimage（§13.3）のレーンが開いている（窓の中・
+//     承認・cooling-off）ときだけ、その宣言ごとに 1 回走る（Run.Trigger に宣言の
+//     Key）。宣言が無い間は run を作らず、対象は収束ループに任せる（Holds が
+//     返さない）。対象ごとに手を付ける前に宣言の max_count を 1 つ使い
+//     （Run.Reserved、ReimageLanes）、使い切った・取り下げられた・窓を過ぎたなら
+//     その対象の手前で halt する。入れ直しの中の破壊的な action はレーンの 1 回分に
+//     含まれ、通常予算に通さない。
 //
 // 別の provider を触る手順と一度きりの操作の例（OS の導入: CD を差す → 差さった
 // ことを確かめる → 次の 1 回だけ CD から起動 → 再起動〈切れていれば電源 On〉→
@@ -182,6 +190,10 @@ const (
 	// 観測で済んだかを確かめない（後の wait / require で確かめる）。
 	StepAction StepKind = "action"
 )
+
+// TriggerReimage は planned_change の kind: reimage（§13.3）で起こす Workflow の
+// 引き金（#88）。Definition.Trigger。
+const TriggerReimage = "reimage"
 
 // TargetPlaceholder は Step.Resource の中で今の対象の Local ID に置き換わる文字列。
 const TargetPlaceholder = "{target}"
@@ -354,10 +366,25 @@ type Definition struct {
 	Name string `json:"workflow"`
 	// Applicant は申請者 ID（PR の作者など）。separation: applicant_ne_approver の
 	// ゲートはこの ID の承認を拒否する。
-	Applicant string    `json:"applicant,omitempty"`
+	Applicant string `json:"applicant,omitempty"`
+	// Trigger が空なら、Workflow は宣言されたときに 1 回走る（done のあとは定義が
+	// 変わったときだけ）。TriggerReimage なら、対象の scope を覆う planned_change
+	// kind: reimage（窓の中・承認済み、§13.3）があるときだけ、その宣言ごとに 1 回
+	// 走る（#88）。対象ごとに宣言の max_count を 1 つ使う。
+	Trigger   string    `json:"trigger,omitempty"`
 	Invariant Invariant `json:"invariant"`
 	Stages    []Stage   `json:"stages"`
 	Steps     []Step    `json:"steps"`
+}
+
+// Scope は対象の scope（target.scope。全対象で同じ）。
+func (d Definition) Scope() core.Scope {
+	for _, st := range d.Stages {
+		for _, id := range st.Targets {
+			return id.Scope
+		}
+	}
+	return core.NewScope(nil)
 }
 
 // Targets は全ステージの対象を宣言順に返す。
@@ -411,10 +438,11 @@ func (d Definition) Hash() string {
 	v := struct {
 		Name      string    `json:"name"`
 		Applicant string    `json:"applicant,omitempty"`
+		Trigger   string    `json:"trigger,omitempty"`
 		Invariant Invariant `json:"invariant"`
 		Stages    []stage   `json:"stages"`
 		Steps     []Step    `json:"steps"`
-	}{Name: d.Name, Applicant: d.Applicant, Invariant: d.Invariant, Steps: d.Steps}
+	}{Name: d.Name, Applicant: d.Applicant, Trigger: d.Trigger, Invariant: d.Invariant, Steps: d.Steps}
 	for _, st := range d.Stages {
 		s := stage{Name: st.Name, Gate: st.Gate}
 		for _, id := range st.Targets {
@@ -482,6 +510,15 @@ func (d Definition) Validate() error {
 				return fmt.Errorf("workflow %s: stage %s: separation %s needs the workflow's applicant", d.Name, st.Name, st.Gate.Requirements.Separation)
 			}
 		}
+	}
+	switch d.Trigger {
+	case "":
+	case TriggerReimage:
+		if len(d.Scope().Labels) == 0 {
+			return fmt.Errorf("workflow %s: trigger %s needs target.scope (a planned_change covers a scope; a target without one is never covered)", d.Name, d.Trigger)
+		}
+	default:
+		return fmt.Errorf("workflow %s: unknown trigger %q (%s)", d.Name, d.Trigger, TriggerReimage)
 	}
 	if d.Invariant.MinActive > len(targets) {
 		return fmt.Errorf("workflow %s: invariant.min_active %d exceeds the %d target(s)", d.Name, d.Invariant.MinActive, len(targets))

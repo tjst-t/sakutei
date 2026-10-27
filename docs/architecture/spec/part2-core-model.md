@@ -461,6 +461,52 @@ steps:
       op: reset
 ```
 
+**入れ直しを宣言で起こす `trigger: reimage`（Backlog #88、v3.25）。** Workflow は宣言されると 1 回走り、done のあとは定義が変わったときだけもう一度走る。これでは「この台を入れ直したい」を宣言で書けない（入れ直すには `sakutei workflow cancel` か定義の書き換え）。`trigger: reimage` を書いた Workflow は、**対象の scope を覆う `planned_change` の `kind: reimage`（§13.3）が開いているときだけ**、その宣言ごとに 1 回走る。
+
+- **起こす条件**：宣言の窓の中で、承認と cooling-off（§13.3「承認と運用プロファイル」）が揃ってレーンが開いていること。宣言が無い・承認が足りない・窓の外の間は run を作らず、対象は収束ループが普段どおり収束させる（done でない Workflow として持たない）。run は起こした宣言（Key：scope・kind・窓）を S2（Run の `trigger`）に持ち、同じ宣言では二度起こさない。宣言を外せば起こさず、新しい宣言（別の窓）でもう一度 1 回走る。
+- **予算**：対象ごとに、手を付ける前に宣言の `max_count` を 1 つ使う（使ったことは Run の `reserved` と、レーンの使用量として S4 の `planned_change.executed` に残る）。通常予算の破壊的変更には数えず、その入れ直しの中の破壊的な一度きりの操作（ForceRestart）も通常予算に通さない（レーンの 1 回分に含まれる）。`max_count` が残っていない宣言では run を起こさない。複数の対象を持つ run が途中で使い切った・宣言が取り下げられた・窓を過ぎたら、次の対象の手前で halt する（その対象には触らない）。
+- **書き方**：`trigger: reimage` には `target.scope` が要る（宣言は scope を覆うので、scope の無い対象は覆われない）。手順は普通の Workflow と同じ（OS の導入なら CD を差す → `action boot_once` → `action reset` → …）。動いている台を CD から起動し直すのは `reset`（#139）が担う。
+
+```yaml
+workflows:
+  - workflow: reimage-node1
+    trigger: reimage                         # planned_change kind: reimage で起こす
+    target:
+      provider: redfish-system
+      scope:
+        rack: r1
+    stages:
+      - name: install
+        targets:
+          - node1
+    steps:                                   # 全体（CD・guest-os の確かめ）は docs/trial/redfish-os-install
+      - action:
+          op: boot_once
+          args:
+            target: Cd
+      - action:                              # ディスクを消して入れ直すので正常停止を待たない
+          op: reset
+          args:
+            type: ForceRestart
+      - wait:
+          fields:
+            power: "Off"
+          timeout: 15m
+      - apply:
+          power: "On"
+planned_change:                              # この宣言が承認されると、node1 が 1 回入れ直される
+  scope:
+    rack: r1
+  kind: reimage
+  max_count: 1
+  window: "2026-10-28 00:00 .. 2026-10-28 06:00"
+  applicant: carol
+  approval:
+    pr: 1500
+    approvers:
+      - alice
+```
+
 ### §6.4 承認ゲート
 
 段階適用の承認ゲートは既存 Workflow（wave + invariant + Event/sink + フェーズ永続化）の組み合わせで表現でき、新プリミティブは不要である。ゲートは health_check（自動）と manual_approval（人）を持てる。

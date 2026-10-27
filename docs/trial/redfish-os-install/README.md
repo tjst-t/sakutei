@@ -260,12 +260,86 @@ CD（`node1/cd`）は cycle 1 に普段の収束で差され（初回の観測�
 
 続けて、電源が On（入れた OS が動いている）のまま `sakutei workflow cancel` すると、次の周に新しい run が始まり手順 1 を施した（起動先が Continuous・Cd になった）が、電源は入れ直されず、インストーラは走らなかった（シリアルの `AUTOINSTALL: start` は 1 回のまま）。run は手順 2 で `waiting for map[power:Off]` のまま待ち続けた。下の「限界」の「入れ直し」。
 
+## 入れ直し（#88）
+
+上の `os-install` は宣言されると 1 回走り、done のあとはもう走らない。入れ直しは、Workflow に `trigger: reimage` と `target.scope` を書き、**入れ直したいときに `planned_change` の `kind: reimage` を宣言する**（PR で承認を通す）。
+
+```yaml
+workflows:
+  - workflow: reimage-node1
+    trigger: reimage                 # planned_change kind: reimage が開いているときだけ、宣言ごとに 1 回
+    applicant: trial
+    target:
+      provider: redfish-system
+      scope:
+        rack: r1
+    stages:
+      - name: install
+        targets:
+          - node1
+    steps:                           # 上の os-install と同じ。ただし手順 4 と目印が違う
+      - apply:
+          resource: redfish-virtual-media/{target}/cd
+          fields:
+            image: /iso/sakutei-autoinstall.iso
+      - require:
+          resource: redfish-virtual-media/{target}/cd
+          fields:
+            image: /iso/sakutei-autoinstall.iso
+          timeout: 5m
+      - action:
+          op: boot_once
+          args:
+            target: Cd
+      # 4. 正常停止を待たずに再起動する（ディスクを消して入れ直すので。入れ直しの
+      #    1 回分に含まれ、通常予算に数えない）
+      - action:
+          op: reset
+          args:
+            type: ForceRestart
+      - wait:
+          fields:
+            power: "Off"
+          timeout: 15m
+      - apply:
+          power: "On"
+      # 7. 目印は入れ直すたびに変える（応答ファイルの install_mark も同じ値に）
+      - require:
+          resource: guest-os/{target}
+          fields:
+            os_id: alpine
+            marker.installed: sakutei-trial-2
+            marker.hostname: node1
+          timeout: 10m
+      - apply:
+          resource: redfish-virtual-media/{target}/cd
+          fields:
+            image: ""
+planned_change:
+  scope:
+    rack: r1
+  kind: reimage
+  max_count: 1                       # 入れ直す台の数
+  window: "2026-10-28 00:00 .. 2026-10-28 06:00"
+  applicant: carol
+  approval:
+    pr: 1500
+    approvers:
+      - alice                        # 運用プロファイル team（既定）は 1 人
+```
+
+- 宣言が無い・承認が足りない・窓の外の間は走らない。対象（`node1`）は収束ループが普段どおり最終形に保つ。
+- 承認された宣言の窓の中で、対象の scope を覆う宣言があれば run が 1 回走る。対象ごとに手を付ける前に `max_count` を 1 つ使い、使い切った宣言では同じ scope のほかの Workflow は走らない。
+- done のあと、同じ宣言ではもう走らない。宣言を外しても走らない。もう一度入れ直すには、別の窓の宣言を書く（目印の値も変える）。
+- 予算の使用量は S4（`--audit-log`）に残る。`--audit-log` を付けて回す。
+- qemu-bmc での確かめは `make integration-guestos` の TestReimage（[docs/providers/guest-os.md](../../providers/guest-os.md) の「統合テスト」）。
+
 ## 限界（v1 の今）
 
 | 限界 | 何が起きるか | 先の話 |
 |---|---|---|
 | ~~完了は電源オフでしか判断できない~~（#86 で解消） | 2026-10-22 の試用では Workflow が見るのは BMC から見た `power: Off` だけで、インストーラが失敗しても電源を切れば成功と見なして先へ進んだ。今は手順 7 で入れた OS を ssh で観測し（`guest-os`）、目印が見えるまで進まない | 入れた OS に sshd と鍵を置けない（ssh で届かない）OS では使えない。agent を置く観測は持たない |
 | ~~起動先の上書きを戻す手順を書く~~（#139 で解消） | 当時は Continuous の上書きしか書けず、導入のあとに Disabled に戻す手順が要った。今は `action: boot_once` で 1 回だけ CD から起動し、BMC が使い切る | Once を使い切る時を BMC がどう決めるかは BMC 次第（qemu-bmc は電源 On のとき。上の「なぜ電源を切るのか」） |
-| **入れ直しは手で cancel** | done の Workflow は二度と走らない（定義を変えれば新しい run になる）。入れ直すには `sakutei workflow cancel --store wf.json os-install` で記録を消す。次の周に新しい run が始まる（2026-10-23 に確かめた）。#139 で手順 4 が再起動（`reset`）になったので、電源が On のままでも入れ直しになる（**ディスクを消して入れ直す**。目印の値を変えておかないと、前の導入の OS を見て進んでしまう） | planned_change の `kind: reimage` で入れ直しを宣言する：Backlog #88（v2） |
-| **workflow store を失うと、もう一度走る** | 進み具合（done）は `--workflow-store` のファイルにしか無い。消える・別のファイルを指すと、次の周に手順 1 から走り、**ディスクを消して入れ直す**。消えない場所に置く | #88 で入れ直しを宣言に寄せるときに合わせて考える |
+| ~~**入れ直しは手で cancel**~~（#88 で解消） | 当時は done の Workflow は二度と走らず、入れ直すには `sakutei workflow cancel --store wf.json os-install` で記録を消すしかなかった。今は Workflow に `trigger: reimage` を書き、`planned_change` の `kind: reimage` を宣言すると、承認されたその宣言ごとに 1 回走る（下の「入れ直し」） | 入れ直しは**ディスクを消す**。目印の値を変えておかないと、前の導入の OS を見て進んでしまう |
+| **workflow store を失うと、もう一度走る** | 進み具合（done）は `--workflow-store` のファイルにしか無い。消える・別のファイルを指すと、次の周に手順 1 から走り、**ディスクを消して入れ直す**。消えない場所に置く。`trigger: reimage` の Workflow は宣言が無ければ走らず、宣言の `max_count` の使用量は S4（`--audit-log`）に残るので、store を失っても同じ宣言で `max_count` を越えては入れ直さない | |
 | **応答ファイルを届けるのは利用者** | `template-file` はファイルを書くだけ。HTTP で配る・ISO に入れるのは利用者の側（試用は `python3 -m http.server`）。Workflow は応答ファイルが書かれたことを確かめずに進む（収束ループが最初の周に書く。インストーラは取れるまで 2 分待つ） | |

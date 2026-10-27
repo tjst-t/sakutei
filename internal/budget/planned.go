@@ -234,6 +234,19 @@ func (e *Engine) TakePlannedEvents() []string {
 	return out
 }
 
+// RequeueEvents puts planned_change notices back for the cycle's CheckCycle to
+// report.  A check of a single op outside the cycle's Plan (a Workflow's
+// one-time operation, #139) takes the pending notices with it; this keeps
+// them from being lost (#88).
+func (e *Engine) RequeueEvents(evs []string) {
+	if len(evs) == 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pendingEvents = append(evs, e.pendingEvents...)
+}
+
 // ReserveLanes consumes lane capacity for the ops about to be dispatched.  Call
 // it right before executing ops that passed d (only the ops actually sent to
 // the provider).  Ops outside the lanes are ignored.
@@ -456,4 +469,68 @@ func (d CycleDecision) OutsideLanes(ops []core.Op) []core.Op {
 // LaneAdmitted is the number of ops admitted to planned_change lanes.
 func (d CycleDecision) LaneAdmitted() int {
 	return len(d.lane)
+}
+
+// OpenReimage returns the planned_change of kind reimage that covers scope and
+// whose lane is open now (in its window, its gate open, §14.4 / §14.5): its Key
+// and name, and whether its max_count has any left (#88).  A reimage Workflow
+// (trigger: reimage) starts a run only when one is open.  Among several, the
+// first with max_count left in declaration order wins.  Gate notices go to the
+// cycle's planned_change events.
+func (e *Engine) OpenReimage(scope core.Scope) (key, name string, left, ok bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := e.cfg.now()
+	for _, p := range e.planned {
+		if p.Kind != PlannedReimage || !p.Active(now) || !scope.Matches(p.Scope) {
+			continue
+		}
+		e.noteDeclared(p, now, &e.pendingEvents)
+		if !e.gateOpen(p, now, &e.pendingEvents) {
+			continue
+		}
+		hasLeft := e.laneUsed[p.Key()] < p.MaxCount
+		if !ok || (hasLeft && !left) {
+			key, name, left, ok = p.Key(), p.String(), hasLeft, true
+		}
+	}
+	return key, name, left, ok
+}
+
+// ReserveReimage consumes one of the max_count of the reimage declaration key
+// for re-imaging target by a Workflow (#88).  It is the lane consumption of a
+// change dispatched outside the Plan: like ReserveLanes it is recorded in S4 by
+// FlushLaneAudit, so max_count holds across restarts.  It fails when the
+// declaration is no longer open (withdrawn, past its window) or used up.
+func (e *Engine) ReserveReimage(key string, target core.ID, workflow string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ensureGateMaps()
+	now := e.cfg.now()
+	for _, p := range e.planned {
+		if p.Key() != key {
+			continue
+		}
+		if !p.Active(now) {
+			return "", fmt.Errorf("%s is outside its window", p)
+		}
+		if !e.gateOpen(p, now, &e.pendingEvents) {
+			return "", fmt.Errorf("the lane of %s is closed", p)
+		}
+		used := e.laneUsed[key]
+		if used >= p.MaxCount {
+			e.pendingEvents = append(e.pendingEvents, fmt.Sprintf(
+				"PlannedChangeExhausted: %s: max_count %d reached; %s is not reimaged by workflow %s", p, p.MaxCount, target, workflow))
+			return "", fmt.Errorf("%s has used its max_count %d", p, p.MaxCount)
+		}
+		if e.laneUsed == nil {
+			e.laneUsed = map[string]int{}
+		}
+		e.laneUsed[key] = used + 1
+		e.pendingEvents = append(e.pendingEvents, fmt.Sprintf(
+			"PlannedChange: %s: reimage of %s by workflow %s admitted to the lane (used %d of max_count %d); not counted in the normal budget",
+			p, target, workflow, used+1, p.MaxCount))
+		return p.String(), nil
+	}
+	return "", fmt.Errorf("the planned_change that started the run (%s) is no longer declared", keyString(key))
 }
