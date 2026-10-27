@@ -2672,11 +2672,11 @@
       ],
       "body": "2026-10-23 の sqlmigrate の試用（docs/trial/sqlmigrate/README.md の見つけたこと 6・7）。\n\n1. rollback_on_fail で戻したとき、記録のエラーは `… failed (rolled back; the database stays at version 2)` で、rollback の後の版（1）が書かれない（`(rolled back; …)` は失敗した 1 本のトランザクションのこと）。`sakutei task list` の PHASE も `failed` だけで、rollback したかはデーモンの出力でしか分からない。task list に rollback したか（記録の RolledBack）を出し、sqlmigrate は rollback 後の版を記録のエラーに含める。\n2. 周の要約 `cycle N: observed=1 applied=0 launched=0` の `launched` は非同期の Apply の数で、Task を起動した周も 0（次の行の `1 task(s) launched` が Task）。要約に Task の起動数を含める（例 `tasks=1`）か、`launched` を `applies-launched` と分かる言葉にする。",
       "doneWhen": "task list に rollback の有無が出て、rollback 後の版が分かり、周の要約から Task の起動が読めることをテストで示す。make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/task-task-list-rollback-launched-task）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T16:58:02.783Z",
-      "updatedAt": "2026-10-23T17:17:03.527Z",
+      "updatedAt": "2026-10-27T09:40:41.615Z",
       "closedAt": "2026-10-23T17:17:03.527Z",
       "extra": {}
     },
