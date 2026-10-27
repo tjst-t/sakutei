@@ -4,7 +4,7 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 ## 未リリース
 
-設計書は v3.17 → v3.20（各 `docs/architecture/CHANGELOG-v3.*.md`）。
+設計書は v3.17 → v3.21（各 `docs/architecture/CHANGELOG-v3.*.md`）。
 
 ### 追加
 
@@ -12,6 +12,8 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 - **`sakutei status --json`**（#118）：結果を JSON で出す。形は `docs/status-json.md`。
 - **`status`・`plan`・`reconcile` の `--inventory-file`**（#115）：デーモンと同じ inventory の合成をする。
 - **`sakutei allocator release`・`list`**（#116）：採番を人が CLI で解放する・一覧を見る。
+- **nftables の実の ruleset 版**（#121、設計書 v3.21 §29.1）：`--ruleset-target live` で、カーネルの実際の ruleset を `nft -j list` で観測し、`nft -c -f` で検査してから `nft -f` で一括して適用する。管理する table は `--ruleset-tables` で必ず指定する。管理外の table・base chain・set には触らない。`make integration-nftables`（使い捨ての network namespace）。使い方は `docs/providers/nftables.md`。
+- **S3 互換のバケット provider `s3-bucket`**（#122・#123、設計書 v3.21 §29.1）：versioning・policy・lifecycle・tags を宣言で合わせる。署名（SigV4）は標準ライブラリだけで実装。中身のあるバケットは消さない。`make integration-s3`（SeaweedFS が必須の相手、ほかは取れなければ飛ばす。イメージは tag と digest で固定）。使い方は `docs/providers/s3-bucket.md`。
 
 ### 変更
 
