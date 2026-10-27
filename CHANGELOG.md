@@ -2,6 +2,17 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## v1.4.0（2026-10-27）
+
+1 台のデーモンから、agent を置かずに離れたホストを扱えるようにした。ゲスト OS を観測して OS の導入の完了を確かめる provider、デーモンの /metrics、s3-bucket の S3 互換実装への対応。設計書は v3.22 → v3.23（`docs/architecture/CHANGELOG-v3.23.md`）。
+
+### 追加
+
+- **離れたホストを扱う実行の層**（#130、設計書 v3.23 §29.1）：外部コマンドとファイル操作を、手元か ssh 越し（OpenSSH の `ssh` CLI を exec、Go の依存は増やさない）で流す。ホスト鍵は設定の known_hosts で確かめ、知らない鍵は拒む。接続を使い回す。秘密鍵は SecretRef。nftables（live）と dnszone がこの上で動き、1 台のデーモンで複数のホストを扱える。dnszone は書き換えのあとの再読み込みのコマンドを設定できる。届かない・鍵が合わない・ホスト鍵が変わったときは観測できない（unknown）として何もしない。`make integration-remote`。使い方は `docs/remote.md`。
+- **ゲスト OS の観測 `guest-os`**（#86）：ssh 越しに到達・OS の識別・導入の目印を読む（観測だけ）。Workflow の `require`・`wait` に使い、OS の導入の完了を「電源が切れた」ではなく「ゲスト OS が目印つきで起動した」で判断できる。インストーラが失敗したときは先へ進まない。`make integration-guestos`。
+- **デーモンの `/metrics`**（#54）：Prometheus の text format で、リソースの状態ごとの件数・周と観測の所要時間・予算の残り・halt・発火中の Event などを出す（待ち受けは明示したときだけ）。
+- **s3-bucket の S3 互換実装への対応**（#132）：endpoint ごとに扱う設定の一覧 `fields`（一覧に無い設定は読みに行かない）と、StorageClass の名前の読み替え `storage_class_aliases`。
+
 ## v1.3.1（2026-10-27）
 
 PostgreSQL provider の、ずれがいつまでも直らなかった穴の修正と、Event を通知に送る口。
