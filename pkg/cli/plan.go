@@ -18,6 +18,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,6 +29,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/loader"
+	"github.com/tjst-t/sakutei/internal/planreport"
 	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/internal/reconcile"
 	"github.com/tjst-t/sakutei/internal/remediation"
@@ -123,6 +125,19 @@ func runPlan(args []string) {
 	claim := fs.String("claim", "",
 		"scope-selector restricting the plan to a claim, e.g. site=tokyo,cluster=prod (§17.1); empty=whole world")
 
+	// #135: the change budget, planned_change lanes and capacity gates of
+	// reconcile, evaluated (never consumed) to show what a reconcile now
+	// would halt.  --audit-log is only read: plan writes nothing to S4.
+	budgetFl := addBudgetFlags(fs)
+	auditLog := fs.String("audit-log", "",
+		"S4 audit log file read (never written) to evaluate the planned_change lanes as a reconcile with the same --audit-log would (§13.3, §14.5)")
+	var capacityGates capacityGateFlag
+	fs.Var(&capacityGates, "capacity-gate", capacityGateUsage)
+
+	// #135: one JSON object on stdout (schema_version 1, docs/plan-json.md).
+	jsonOut := fs.Bool("json", false,
+		"print the plan as one JSON object on stdout (schema_version 1, see docs/plan-json.md); exit codes are unchanged")
+
 	logFormat := addLogFormatFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -130,10 +145,33 @@ func runPlan(args []string) {
 		os.Exit(1)
 	}
 	setLogFormat("sakutei plan", *logFormat)
+
+	// #135: the text and the JSON are made from one report.  With --json the
+	// text lines of stdout are dropped and the report is printed instead; the
+	// notices on stderr are unchanged.
+	report := planreport.New(time.Now())
+	if *jsonOut {
+		logOut = io.Discard
+	}
+	// fail ends the plan with exit code 1: the reason goes to stderr and, with
+	// --json, into the report's error.
+	fail := func(format string, a ...any) {
+		msg := fmt.Sprintf(format, a...)
+		fmt.Fprintln(logErr, msg)
+		if *jsonOut {
+			report.Error = strings.TrimPrefix(msg, "sakutei plan: ")
+			report.Summarize()
+			writePlanJSON(report)
+		}
+		os.Exit(1)
+	}
+	budgetCfg, budgetCfgErr := budgetFl.config()
+	if budgetCfgErr != nil {
+		fail("sakutei plan: %v", budgetCfgErr)
+	}
 	claimSelector, claimErr := parseClaimSelector(*claim)
 	if claimErr != nil {
-		fmt.Fprintf(logErr, "sakutei plan: invalid --claim %q: %v\n", *claim, claimErr)
-		os.Exit(1)
+		fail("sakutei plan: invalid --claim %q: %v", *claim, claimErr)
 	}
 	soaSerial := checkZoneSOASerial("sakutei plan", *zoneSOASerial)
 	zScope := checkScope("sakutei plan", "zone-scope", *zoneScope)
@@ -141,9 +179,8 @@ func runPlan(args []string) {
 	rulesetTarget.check("sakutei plan")
 
 	if *intentDir == "" {
-		fmt.Fprintln(logErr, "sakutei plan: --intent <dir> is required")
 		fs.Usage()
-		os.Exit(1)
+		fail("sakutei plan: --intent <dir> is required")
 	}
 
 	// Resolve generated/ directory (S072a14-1: §9.6).
@@ -156,8 +193,7 @@ func runPlan(args []string) {
 	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
 	in, err := loader.LoadIntent(*intentDir)
 	if err != nil {
-		fmt.Fprintf(logErr, "sakutei plan: load intent: %v\n", err)
-		os.Exit(1)
+		fail("sakutei plan: load intent: %v", err)
 	}
 	var externalInputs []string
 	recomputeRendered := false
@@ -206,11 +242,9 @@ func runPlan(args []string) {
 		}
 		if phase1Result.FirstCallFailed {
 			// No prior value — halt-safe: do not converge (§9.2).
-			fmt.Fprintf(logErr,
-				"sakutei plan: ExternalInputUnreachable (first call): %v\n"+
-					"  No prior cached value available; convergence not advanced (halt-safe, §9.2)\n",
+			fail("sakutei plan: ExternalInputUnreachable (first call): %v\n"+
+				"  No prior cached value available; convergence not advanced (halt-safe, §9.2)",
 				phase1Result.Err)
-			os.Exit(1)
 		}
 		// Recompute rendered_revision with the external inputs so that a change
 		// in inventory hash causes rendered_revision to diverge from
@@ -228,13 +262,11 @@ func runPlan(args []string) {
 	// pending and is allocated by reconcile.
 	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
 	if allocErr != nil {
-		fmt.Fprintf(logErr, "sakutei plan: %v\n", allocErr)
-		os.Exit(1)
+		fail("sakutei plan: %v", allocErr)
 	}
 	allocRes, allocErr := render.RenderAllocations(context.Background(), allocAuth, render.AllocLookupOnly, in, claimSelector)
 	if allocErr != nil {
-		fmt.Fprintf(logErr, "sakutei plan: %v\n", allocErr)
-		os.Exit(1)
+		fail("sakutei plan: %v", allocErr)
 	}
 	intentResources = allocRes.Resources
 	if len(allocRes.Inputs) > 0 {
@@ -242,13 +274,16 @@ func runPlan(args []string) {
 		recomputeRendered = true
 	}
 	for _, pa := range allocRes.Pending {
-		fmt.Fprintln(logErr, pendingLine("plan", pa))
+		line := pendingLine("plan", pa)
+		fmt.Fprintln(logErr, line)
+		report.PendingAllocations = append(report.PendingAllocations, pendingAllocationJSON(pa, line))
 	}
 	if recomputeRendered {
 		rootScope := core.NewScope(nil)
 		rev.RenderedRevision = revision.ComputeRenderedRevision(
 			rootScope, rev.IntentRevision, externalInputs)
 	}
+	report.IntentRevision, report.RenderedRevision = rev.IntentRevision, rev.RenderedRevision
 
 	// S072a14-1: render phase 2 — expand composite resources into concrete
 	// children (§9.5).  Composites themselves are NOT passed to Diff/Apply;
@@ -256,8 +291,7 @@ func runPlan(args []string) {
 	expRegistry := render.DefaultRegistry()
 	expanded, expandErr := render.ExpandAll(expRegistry, intentResources)
 	if expandErr != nil {
-		fmt.Fprintf(logErr, "sakutei plan: render phase 2: %v\n", expandErr)
-		os.Exit(1)
+		fail("sakutei plan: render phase 2: %v", expandErr)
 	}
 
 	// §9.6: validate the existing generated/ file for direct human edits.
@@ -269,8 +303,7 @@ func runPlan(args []string) {
 
 	// §9.6: write expanded children to generated/expanded.json.
 	if writeErr := render.WriteGenerated(genDir, expanded); writeErr != nil {
-		fmt.Fprintf(logErr, "sakutei plan: write generated/: %v\n", writeErr)
-		os.Exit(1)
+		fail("sakutei plan: write generated/: %v", writeErr)
 	}
 
 	// Build the desired slice: only non-composite resources enter Diff/Apply.
@@ -292,6 +325,7 @@ func runPlan(args []string) {
 		fmt.Fprintf(logErr,
 			"sakutei plan: --claim %s: %d resource(s) in claim, %d excluded (out of scope)\n",
 			claimSelector.String(), len(desired), excludedByClaim)
+		report.Claim = &planreport.Claim{Selector: claimSelector.String(), InClaim: len(desired), Excluded: excludedByClaim}
 	}
 
 	// Scb0ecd-1: print revision header so the caller can observe revision values.
@@ -301,7 +335,9 @@ func runPlan(args []string) {
 	// #111 (§14.2): with a remediation schedule in intent, say whether a
 	// reconcile run now would fix the diffs below or only report them.
 	if in.Remediation != nil {
-		fmt.Fprintln(logOut, remediationNowLine(in.Remediation, time.Now()))
+		rem := remediationNow(in.Remediation, time.Now())
+		fmt.Fprintln(logOut, rem.Line)
+		report.Remediation = &rem
 	}
 	// §22.3: the Events of this run carry its revision.
 	logOut = eventlog.Stamp(logOut, 0, rev)
@@ -341,8 +377,7 @@ func runPlan(args []string) {
 	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei plan")
 	if resolveErr != nil {
-		fmt.Fprintln(logErr, resolveErr)
-		os.Exit(1)
+		fail("%v", resolveErr)
 	}
 
 	// Build per-provider diff engines (each provider has its own Schema).
@@ -429,8 +464,7 @@ func runPlan(args []string) {
 		fp, ok := providers[res.ID.Provider]
 		if !ok {
 			// Should not happen: resolveProviders already validated all names.
-			fmt.Fprintf(logErr, "sakutei plan: internal error: no provider for %q\n", res.ID.Provider)
-			os.Exit(1)
+			fail("sakutei plan: internal error: no provider for %q", res.ID.Provider)
 		}
 		engine := engines[res.ID.Provider]
 
@@ -438,11 +472,14 @@ func runPlan(args []string) {
 		// Read is fresh; no observation is carried across resources or cycles.
 		obs, err := provider.ReadFor(ctx, fp, res.ID.Local, res.Fields)
 		if err != nil {
-			fmt.Fprintf(logErr, "sakutei plan: observe %s: %v\n", res.ID, err)
-			os.Exit(1)
+			fail("sakutei plan: observe %s: %v", res.ID, err)
 		}
 		if obs.Availability != core.AvailabilityOk {
 			unobservable[res.ID.Local] = true
+			// #135: say so, instead of leaving it out of the plan silently.
+			fmt.Fprintf(logErr, "sakutei plan: %s: unobservable (availability=%s) — not planned (unknown ≠ absent, §3)\n", res.ID, obs.Availability)
+			report.Unobservable = append(report.Unobservable, planreport.Unobservable{
+				Target: planreport.NewTarget(res.ID), Availability: obs.Availability.String()})
 			continue
 		}
 
@@ -462,14 +499,12 @@ func runPlan(args []string) {
 		// intent error (plaintext secret + perpetual non-converging diff).  Fail
 		// loud; the error names the field only, never the value.
 		if err := engine.ValidateDesired(res); err != nil {
-			fmt.Fprintf(logErr, "sakutei plan: %v\n", err)
-			os.Exit(1)
+			fail("sakutei plan: %v", err)
 		}
 
 		plan, planErr := engine.Plan(obs, res, resCauseCtx)
 		if planErr != nil {
-			fmt.Fprintf(logErr, "sakutei plan: %v\n", planErr)
-			os.Exit(1)
+			fail("sakutei plan: %v", planErr)
 		}
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff).
 		for _, op := range plan.Ops {
@@ -496,7 +531,9 @@ func runPlan(args []string) {
 	// plan does NOT call Apply; it only computes and displays the Delete ops.
 	// S62dbba-2: prune is computed per provider so each provider's Lister is
 	// used for the resources it manages.
-	allOps = append(allOps, planPruneOpsMulti(ctx, providers, claimSelector, desired, unobservable, syncScopeList(in))...)
+	diffOpCount := len(allOps)
+	pruneOps := planPruneOpsMulti(ctx, providers, claimSelector, desired, unobservable, syncScopeList(in), report)
+	allOps = append(allOps, pruneOps...)
 
 	// S072a14-3: compute composite status aggregation (§9.7) for reporting.
 	// Build per-resource ConvergenceStatus from diff results and unobservable set.
@@ -528,18 +565,57 @@ func runPlan(args []string) {
 	}
 	// Compute composite status summaries.
 	compositeSummaries := render.AggregateCompositeStatuses(parentToChildren, resourceStatus)
+	for _, parentID := range sortedCompositeParentIDs(compositeSummaries) {
+		report.Composites = append(report.Composites, planreport.Composite{
+			ID: parentID, Status: compositeSummaries[parentID].AggregatedStatus.String()})
+	}
+	for _, h := range heldShown {
+		report.Workflow = append(report.Workflow, planreport.WorkflowTarget{
+			Target: planreport.NewTarget(h.ID), Workflow: h.Workflow, Stage: h.Stage})
+	}
+
+	// #135: the gates a reconcile now would apply to these ops — the scopes
+	// declared remediation: alert-only (§14.3), the change budget with its
+	// planned_change lanes (§13) and the capacity gates (§13.4).  Like
+	// reconcile, the budget sees only the ops a reconcile would Apply: not a
+	// ghost diff (cause C), not the op of a strategy: task resource.
+	for i, op := range allOps {
+		o := planreport.NewOperation(op, i >= diffOpCount)
+		if pol, ok := taskPolicies[op.Target.String()]; ok && op.Kind != core.OpKindDelete {
+			o.Task = &planreport.Task{Window: pol.Window, RollbackOnFail: pol.RollbackOnFail}
+		}
+		report.Operations = append(report.Operations, o)
+	}
+	gatePlanOps(ctx, gatePlanInput{
+		ops:          allOps,
+		report:       report,
+		alertScopes:  in.AlertOnlyScopes(),
+		planned:      in.PlannedChanges,
+		budgetCfg:    budgetCfg,
+		auditLog:     *auditLog,
+		capacity:     capacityGates,
+		totalDesired: len(desired),
+		providerFor: func(name string) provider.Provider {
+			if p, ok := providers[name]; ok {
+				return p
+			}
+			p, err := reg.Get(name, providerConfig)
+			if err != nil {
+				return nil
+			}
+			return p
+		},
+	}, fail)
+	report.Summarize()
 
 	// Print plan output.
 	printWorkflowHeld(heldShown)
 	if len(allOps) == 0 {
 		// Even if no ops, print composite status if there are composites.
-		if len(compositeSummaries) > 0 {
+		if len(report.Composites) > 0 {
 			fmt.Fprintln(logOut, "Composite status:")
-			// F-3: sort parent IDs so the output order is deterministic
-			// (map iteration order is randomised in Go).
-			parentIDs := sortedCompositeParentIDs(compositeSummaries)
-			for _, parentID := range parentIDs {
-				fmt.Fprintf(logOut, "  composite %s: %s\n", parentID, compositeSummaries[parentID].AggregatedStatus)
+			for _, c := range report.Composites {
+				fmt.Fprintf(logOut, "  composite %s: %s\n", c.ID, c.Status)
 			}
 		}
 		if len(heldShown) > 0 {
@@ -547,29 +623,48 @@ func runPlan(args []string) {
 		} else {
 			fmt.Fprintln(logOut, "Converged (no changes)")
 		}
-		os.Exit(0)
+		finishPlan(report, *jsonOut)
 	}
 
+	printGateLines(report)
 	fmt.Fprintf(logOut, "Plan: %d change(s)\n\n", len(allOps))
-	for _, op := range allOps {
+	for i, op := range allOps {
 		printOpLines(op)
-		if pol, ok := taskPolicies[op.Target.String()]; ok && op.Kind != core.OpKindDelete {
-			printTaskNote(pol)
+		o := report.Operations[i]
+		if o.Task != nil {
+			printTaskNote(taskPolicies[op.Target.String()])
 		}
+		printOpGate(o)
 		fmt.Fprintln(logOut)
 	}
 
 	// S072a14-3: print composite status aggregation (§9.7).
-	if len(compositeSummaries) > 0 {
+	if len(report.Composites) > 0 {
 		fmt.Fprintln(logOut, "Composite status (§9.7 worst-first):")
-		// F-3: sort parent IDs so the output order is deterministic
-		// (map iteration order is randomised in Go).
-		parentIDs := sortedCompositeParentIDs(compositeSummaries)
-		for _, parentID := range parentIDs {
-			fmt.Fprintf(logOut, "  composite %s: %s\n", parentID, compositeSummaries[parentID].AggregatedStatus)
+		for _, c := range report.Composites {
+			fmt.Fprintf(logOut, "  composite %s: %s\n", c.ID, c.Status)
 		}
 	}
+	finishPlan(report, *jsonOut)
+}
+
+// finishPlan ends a plan that completed (exit 0): with --json the report is
+// printed on stdout.
+func finishPlan(report *planreport.Report, jsonOut bool) {
+	if jsonOut {
+		writePlanJSON(report)
+	}
 	os.Exit(0)
+}
+
+// writePlanJSON prints the report as one JSON object on stdout (#135).
+func writePlanJSON(report *planreport.Report) {
+	data, err := report.JSON()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei plan: encode json: %v\n", err)
+		os.Exit(1)
+	}
+	os.Stdout.Write(append(data, '\n'))
 }
 
 // printTaskNote follows the op of a strategy: task resource (§6.2, #94): the
@@ -606,7 +701,8 @@ func sortedCompositeParentIDs(summaries map[string]render.CompositeStatusSummary
 // providers.  It calls the per-provider Lister (if the provider implements
 // provider.Lister) with only the resources managed by that provider.
 //
-// No Apply is called (dry-run).
+// No Apply is called (dry-run).  #135: a provider whose prune a safety guard
+// halted, and the candidates it deferred, are said on stderr and put in report.
 func planPruneOpsMulti(
 	ctx context.Context,
 	providers map[string]provider.Provider,
@@ -614,6 +710,7 @@ func planPruneOpsMulti(
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 	syncScopes []core.Scope,
+	report *planreport.Report,
 ) []core.Op {
 	var allDeleteOps []core.Op
 
@@ -623,7 +720,14 @@ func planPruneOpsMulti(
 		byProvider[r.ID.Provider] = append(byProvider[r.ID.Provider], r)
 	}
 
-	for name, fp := range providers {
+	// #135: in name order, so the plan's ops come out in the same order.
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fp := providers[name]
 		lister, ok := fp.(provider.Lister)
 		if !ok {
 			continue
@@ -635,10 +739,23 @@ func planPruneOpsMulti(
 		// FIX #6 / #111: the --claim selector scopes the prune preview to the
 		// claim (empty = whole world), as in reconcile.
 		result, err := engine.ComputePrune(ctx, lister, fp, scope, claim, provDesired, unobservable, logErr)
-		if err != nil || result.Halted {
+		if err != nil {
+			result = prune.PruneResult{Halted: true, HaltReason: fmt.Sprintf("prune compute error: %v", err)}
+		}
+		for _, id := range result.Deferred {
+			report.PruneDeferred = append(report.PruneDeferred, planreport.NewTarget(id))
+		}
+		if result.Halted {
+			reconcile.EmitPruneHalted(logErr, result, name, "sakutei plan: prune halted: "+result.HaltReason)
+			report.PruneHalts = append(report.PruneHalts, planreport.PruneHalt{
+				Provider: name, Reason: result.HaltReason, CountDrop: result.CountDrop, HeldOrphans: result.HeldOrphans})
 			continue
 		}
-		allDeleteOps = append(allDeleteOps, result.DeleteOps...)
+		// #135: by ID, so two plans of one reality list the same ops in the same
+		// order (a List need not be ordered).
+		ops := append([]core.Op(nil), result.DeleteOps...)
+		sort.SliceStable(ops, func(i, j int) bool { return ops[i].Target.String() < ops[j].Target.String() })
+		allDeleteOps = append(allDeleteOps, ops...)
 	}
 	return allDeleteOps
 }
@@ -735,6 +852,17 @@ func joinedProviderVersions(providers map[string]provider.Provider) string {
 		parts = append(parts, n+":"+providers[n].Capabilities().ProviderVersion)
 	}
 	return strings.Join(parts, ",")
+}
+
+// remediationNow is remediationNowLine with the mode it is about (#135).
+func remediationNow(s *remediation.Schedule, now time.Time) planreport.Remediation {
+	m, why := s.ModeAt(now)
+	alertOnly := m == remediation.ModeAlertOnly
+	mode := "auto"
+	if alertOnly {
+		mode = "alert-only"
+	}
+	return planreport.Remediation{Mode: mode, Reason: why, OutsideWindow: alertOnly, Line: remediationNowLine(s, now)}
 }
 
 // remediationNowLine is plan's account of the intent's remediation schedule at

@@ -139,6 +139,7 @@ type Engine struct {
 	// keyed by PlannedChange.Fingerprint, opened and gateNoted likewise;
 	// laneFlushed is the part of laneUsed already recorded in S4.
 	audit       *audit.Log
+	auditRO     bool // AttachAuditReadOnly: S4 is read, never written
 	declaredAt  map[string]time.Time
 	opened      map[string]bool
 	gateNoted   map[string]string

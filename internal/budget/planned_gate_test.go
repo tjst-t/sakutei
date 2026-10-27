@@ -16,6 +16,8 @@
 package budget
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -284,5 +286,59 @@ func TestPlannedGate_WithdrawnNamesDeclarationLikeOthers(t *testing.T) {
 	}
 	if strings.Contains(ev[0], p.Key()) {
 		t.Errorf("the withdrawal must not show the internal key %q: %s", p.Key(), ev[0])
+	}
+}
+
+// #135: a read-only audit log restores the cooling-off clock from S4 and
+// evaluates the gate as a run now would, but never writes to the log.
+func TestPlannedGate_AuditReadOnly(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	p := decl(PlannedDelete, decomScope, 10)
+	p.Gate = PlannedGate{Profile: "solo", CoolingOff: 2 * time.Hour}
+	ops := deletesIn(decomScope, "d", 5)
+
+	// A real run records the declaration at t0+1m.
+	clk := &fakeClock{t: t0.Add(time.Minute)}
+	e := newEngineWithClock(Config{MaxDestructivePerCycle: 3}, clk)
+	if err := e.AttachAudit(audit.NewLog(logPath)); err != nil {
+		t.Fatal(err)
+	}
+	e.SetPlannedChanges([]PlannedChange{p})
+	before := auditKinds(t, logPath)
+
+	// A preview after the cooling-off sees the lane open and records nothing.
+	clk2 := &fakeClock{t: t0.Add(3 * time.Hour)}
+	ro := newEngineWithClock(Config{MaxDestructivePerCycle: 3}, clk2)
+	if err := ro.AttachAuditReadOnly(audit.NewLog(logPath)); err != nil {
+		t.Fatal(err)
+	}
+	ro.SetPlannedChanges([]PlannedChange{p})
+	d := ro.CheckCycle(ops, InFlight{}, 0)
+	if d.LaneAdmitted() != 5 || d.HaltDestructive || !hasEvent(d, "PlannedChangeOpened") {
+		t.Fatalf("read-only: the lane must open as for a run now: lane=%d halt=%v events=%v", d.LaneAdmitted(), d.HaltDestructive, d.Events)
+	}
+	if got := d.LaneOf(ops[0]); got != p.Key() {
+		t.Errorf("LaneOf = %q, want %q", got, p.Key())
+	}
+	ro.ReserveLanes(d, ops)
+	if err := ro.FlushLaneAudit(); err != nil {
+		t.Fatal(err)
+	}
+	if after := auditKinds(t, logPath); fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Errorf("read-only engine wrote S4: before %v after %v", before, after)
+	}
+
+	// A preview of a declaration not yet in S4 takes it as declared now.
+	empty := filepath.Join(t.TempDir(), "none.jsonl")
+	ro2 := newEngineWithClock(Config{MaxDestructivePerCycle: 3}, clk2)
+	if err := ro2.AttachAuditReadOnly(audit.NewLog(empty)); err != nil {
+		t.Fatal(err)
+	}
+	ro2.SetPlannedChanges([]PlannedChange{p})
+	if d := ro2.CheckCycle(ops, InFlight{}, 0); d.LaneAdmitted() != 0 || !hasEvent(d, "PlannedChangeCoolingOff") {
+		t.Errorf("an unrecorded declaration starts its cooling-off now: lane=%d events=%v", d.LaneAdmitted(), d.Events)
+	}
+	if _, err := os.Stat(empty); !os.IsNotExist(err) {
+		t.Errorf("read-only engine created the audit log (stat err %v)", err)
 	}
 }

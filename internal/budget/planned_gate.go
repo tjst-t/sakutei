@@ -101,6 +101,29 @@ func (e *Engine) AttachAudit(log *audit.Log) error {
 	return nil
 }
 
+// AttachAuditReadOnly is AttachAudit for a preview (sakutei plan, #135): the
+// engine restores what earlier runs recorded in S4 and evaluates the gates as
+// a run now would, but writes nothing to the log.  A declaration not yet in S4
+// is taken as declared now (its cooling-off would start with that run).
+func (e *Engine) AttachAuditReadOnly(log *audit.Log) error {
+	if err := e.AttachAudit(log); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.auditRO = true
+	return nil
+}
+
+// appendAudit appends rec to the attached S4 log, or does nothing when the log
+// is attached read-only.  Must be called with e.mu held and e.audit set.
+func (e *Engine) appendAudit(rec audit.Record) error {
+	if e.auditRO {
+		return nil
+	}
+	return e.audit.Append(rec)
+}
+
 // HasAudit reports whether an S4 audit log is attached.
 func (e *Engine) HasAudit() bool {
 	e.mu.Lock()
@@ -143,7 +166,7 @@ func (e *Engine) FlushLaneAudit() error {
 				name = p.String()
 			}
 		}
-		if err := e.audit.Append(audit.Record{
+		if err := e.appendAudit(audit.Record{
 			Time: e.cfg.now(), Kind: audit.KindPlannedChangeExecuted,
 			PlannedChange: k, Count: delta,
 			Detail: fmt.Sprintf("%s: %d change(s) dispatched in the lane (used %d in total)", name, delta, e.laneUsed[k]),
@@ -198,7 +221,7 @@ func (e *Engine) withdrawMissing(now time.Time) {
 		key, max := strings.TrimSuffix(fp, fmt.Sprintf("|%d", e.declaredMax[fp])), e.declaredMax[fp]
 		msg := fmt.Sprintf("PlannedChangeWithdrawn: %s (max_count %d) was removed from intent before its lane opened; writing it back starts its cooling-off over (§14.5)", keyString(key), max)
 		if e.audit != nil {
-			if err := e.audit.Append(audit.Record{
+			if err := e.appendAudit(audit.Record{
 				Time: now, Kind: audit.KindPlannedChangeWithdrawn, PlannedChange: key, Count: max, Detail: msg,
 			}); err != nil {
 				// Forget the clock anyway: a re-declaration writes a later declared
@@ -235,7 +258,7 @@ func (e *Engine) noteDeclared(p PlannedChange, now time.Time, events *[]string) 
 		return
 	}
 	if e.audit != nil {
-		if err := e.audit.Append(audit.Record{
+		if err := e.appendAudit(audit.Record{
 			Time: now, Kind: audit.KindPlannedChangeDeclared,
 			PlannedChange: p.Key(), Count: p.MaxCount, Actor: p.Applicant,
 			Detail: fmt.Sprintf("%s declared (max_count %d, profile %s, pr %d, approvers %v)",
@@ -291,7 +314,7 @@ func (e *Engine) gateOpen(p PlannedChange, now time.Time, events *[]string) bool
 		detail = fmt.Sprintf("%s: lane opened (profile %s; no approval required)", p, g.Profile)
 	}
 	if e.audit != nil {
-		if err := e.audit.Append(audit.Record{
+		if err := e.appendAudit(audit.Record{
 			Time: now, Kind: audit.KindPlannedChangeOpened,
 			PlannedChange: p.Key(), Count: p.MaxCount, Actor: p.Applicant, Detail: detail,
 		}); err != nil {

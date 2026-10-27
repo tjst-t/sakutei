@@ -432,6 +432,12 @@ func (d CycleDecision) InLane(op core.Op) bool {
 	return ok
 }
 
+// LaneOf returns the Key of the planned_change declaration whose lane admitted
+// op ("" when op is outside the lanes).
+func (d CycleDecision) LaneOf(op core.Op) string {
+	return d.lane[opKey(op)].decl
+}
+
 // OutsideLanes returns the ops that were not admitted to a planned_change lane
 // — the ones the normal budget's window counter must record (CommitOps).
 func (d CycleDecision) OutsideLanes(ops []core.Op) []core.Op {

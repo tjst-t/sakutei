@@ -129,18 +129,7 @@ func runReconcile(args []string) {
 	invFlags := addInventoryFlags(fs, true)
 
 	// Scf7762-2: change-budget flags (§13).
-	maxDestructivePerCycle := fs.Int("max-destructive-per-cycle", 0,
-		"maximum destructive (Delete/destructive-Update) ops per cycle; 0=unlimited (§13.1)")
-	maxChangesPerCycleAbsolute := fs.Int("max-changes-per-cycle", 0,
-		"maximum total (additive+destructive) ops per cycle; 0=unlimited (§13.1)")
-	maxDestructivePerWindow := fs.Int("max-destructive-per-window", 0,
-		"maximum destructive ops in the rolling time window; 0=unlimited (§13.2)")
-	windowDurationStr := fs.String("window-duration", "",
-		"rolling window duration for cumulative budget, e.g. 24h, 10m (default: 24h) (§13.2)")
-	onExceedStr := fs.String("on-exceed", "halt-all",
-		"action when budget is exceeded: halt-all | halt-destructive-only (§13.1)")
-	approveLargeChange := fs.Int("approve-large-change", 0,
-		"explicitly approve up to N destructive changes this cycle (overrides per-cycle rate limit)")
+	budgetFl := addBudgetFlags(fs)
 
 	// §13.4: capacity gate.
 	var capacityGates capacityGateFlag
@@ -201,27 +190,9 @@ func runReconcile(args []string) {
 	}
 
 	// Parse budget configuration.
-	budgetCfg := budget.Config{
-		MaxDestructivePerCycle:     *maxDestructivePerCycle,
-		MaxChangesPerCycleAbsolute: *maxChangesPerCycleAbsolute,
-		MaxDestructivePerWindow:    *maxDestructivePerWindow,
-		ApproveLargeChange:         *approveLargeChange,
-	}
-	if *windowDurationStr != "" {
-		d, err := time.ParseDuration(*windowDurationStr)
-		if err != nil {
-			fmt.Fprintf(logErr, "sakutei reconcile: invalid --window-duration %q: %v\n", *windowDurationStr, err)
-			exitAfterEvents(1)
-		}
-		budgetCfg.WindowDuration = d
-	}
-	switch *onExceedStr {
-	case "halt-destructive-only":
-		budgetCfg.OnExceed = budget.OnExceedHaltDestructiveOnly
-	case "halt-all", "":
-		budgetCfg.OnExceed = budget.OnExceedHaltAll
-	default:
-		fmt.Fprintf(logErr, "sakutei reconcile: unknown --on-exceed value %q; use halt-all or halt-destructive-only\n", *onExceedStr)
+	budgetCfg, budgetCfgErr := budgetFl.config()
+	if budgetCfgErr != nil {
+		fmt.Fprintf(logErr, "sakutei reconcile: %v\n", budgetCfgErr)
 		exitAfterEvents(1)
 	}
 	budgetEngine := budget.New(budgetCfg)
