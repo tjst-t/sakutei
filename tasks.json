@@ -444,11 +444,11 @@
       "labels": [],
       "body": "設計 §8 / §13。最初の実インフラ provider（VM / 物理）を書く段で必要になる。上流が ready_condition を満たすまで下流を待たせる（複数周期に跨る）。容量が足りないときに Apply を止める capacity gate。",
       "doneWhen": "上流が ready になるまで下流が Apply されず、ready になった次の周期で下流が収束することをテストで示す。容量超過で capacity gate が止めることをテストで示す",
-      "resolution": "Factory が取り込みました（factory/v1b-ready-condition-cycle-capacity-gate）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T12:27:59.502Z",
+      "updatedAt": "2026-10-27T09:33:05.387Z",
       "closedAt": "2026-10-20T12:27:59.502Z",
       "extra": {}
     },
