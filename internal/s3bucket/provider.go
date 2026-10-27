@@ -34,10 +34,16 @@
 //   - endpoint・bucket: 識別子（ID と同じ値。省略できる）。
 //
 // 観測だけの値（Computed）: creation_date（ListBuckets の CreationDate）と
-// unsupported（endpoint がその API を持たない〈NotImplemented〉フィールドの一覧）。
-// unsupported のフィールドは State に入れない。宣言していれば計画の時点で
-// 「観測できない」として止め（RefinePlan のエラー、分かる文で）、宣言して
-// いなければ無視する。
+// unsupported（endpoint がその API を持たない〈NotImplemented〉か、endpoint の
+// 設定の fields に無いフィールドの一覧）。unsupported のフィールドは State に
+// 入れない。宣言していれば計画の時点で「観測できない」として止め（RefinePlan
+// のエラー、分かる文で）、宣言していなければ無視する。fields に無いフィールドの
+// Get は呼ばない（API を持たないことを 501 でなく 400・403 などで知らせる
+// endpoint で、バケット全体が観測できなくならないように）。
+//
+// S3 互換実装の差異（docs/providers/s3-bucket.md）: lifecycle の StorageClass を
+// 実装独自の名前で持つ endpoint は、設定の storage_class_aliases（実装の名前 →
+// 標準の名前）で観測を読み替えてから比べる（読み戻しの確かめも同じ）。
 //
 // 削除：Delete は破壊的（prune が Destructive にして予算に数える）。中身がある
 // バケットは消さない——オブジェクトを消す機能は持たず、endpoint の
@@ -103,6 +109,52 @@ type Endpoint struct {
 	// BucketPrefix が空でなければ、この接頭辞のバケットだけを扱う（List もこれ
 	// だけを返す。prune の閉じた世界をこの接頭辞に限る）。
 	BucketPrefix string
+	// Fields はこの endpoint で扱う設定（FieldVersioning・FieldPolicy・
+	// FieldLifecycle・FieldTags）。nil なら 4 つ全部。無いものの Get は呼ばず、
+	// unsupported と同じに扱う。
+	Fields []string
+	// StorageClassAliases は endpoint が返す lifecycle の StorageClass の名前 →
+	// 標準の名前。観測した lifecycle をこれで読み替えてから比べる。
+	StorageClassAliases map[string]string
+}
+
+// SettingFields は endpoint の fields に書ける設定（既定はこの全部）。
+var SettingFields = []string{FieldVersioning, FieldPolicy, FieldLifecycle, FieldTags}
+
+// handles は endpoint が field を扱うか（fields にあるか）を返す。
+func (e Endpoint) handles(field string) bool {
+	return e.Fields == nil || contains(e.Fields, field)
+}
+
+// aliasStorageClass は rules の StorageClass（Transition・
+// NoncurrentVersionTransition の中など、どの深さでも）を aliases で標準の名前に
+// 読み替える。rules をその場で書き換える。
+func aliasStorageClass(rules []map[string]any, aliases map[string]string) {
+	if len(aliases) == 0 {
+		return
+	}
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			for k, x := range t {
+				if s, ok := x.(string); ok && k == "StorageClass" {
+					if to, ok := aliases[strings.TrimSpace(s)]; ok {
+						t[k] = to
+					}
+					continue
+				}
+				walk(x)
+			}
+		case []any:
+			for _, x := range t {
+				walk(x)
+			}
+		}
+	}
+	for _, r := range rules {
+		walk(r)
+	}
 }
 
 // Options は Provider の設定。
@@ -228,7 +280,7 @@ func (p *Provider) Read(ctx context.Context, localID string) (core.Observation, 
 	}
 	for _, b := range buckets {
 		if b.Name == bucket {
-			st, err := observeBucket(ctx, sess, name, b)
+			st, err := observeBucket(ctx, sess, name, ep, b)
 			if err != nil {
 				return unknownObs(), classify(fmt.Errorf("%s: Read %q: %w", Name, localID, err))
 			}
@@ -239,8 +291,9 @@ func (p *Provider) Read(ctx context.Context, localID string) (core.Observation, 
 }
 
 // observeBucket は 1 つのバケットの設定を読んで State にする。endpoint が持た
-// ない API のフィールドは State に入れず、unsupported に挙げる。
-func observeBucket(ctx context.Context, sess *Session, endpoint string, b BucketInfo) (core.State, error) {
+// ない API のフィールドと、ep の fields に無いフィールド（Get を呼ばない）は
+// State に入れず、unsupported に挙げる。
+func observeBucket(ctx context.Context, sess *Session, endpoint string, ep Endpoint, b BucketInfo) (core.State, error) {
 	str := func(v string) core.TypedValue { return core.TypedValue{Kind: core.FieldKindString, Value: v} }
 	st := core.State{
 		FieldEndpoint:     str(endpoint),
@@ -248,6 +301,11 @@ func observeBucket(ctx context.Context, sess *Session, endpoint string, b Bucket
 		FieldCreationDate: str(b.CreationDate),
 	}
 	var unsupported []string
+	for _, f := range SettingFields {
+		if !ep.handles(f) {
+			unsupported = append(unsupported, f)
+		}
+	}
 	// skip は NotImplemented を unsupported にし、それ以外のエラーは返す。
 	skip := func(field string, err error) (bool, error) {
 		if err == nil {
@@ -264,40 +322,49 @@ func observeBucket(ctx context.Context, sess *Session, endpoint string, b Bucket
 		return true, err
 	}
 
-	v, err := sess.GetVersioning(ctx, b.Name)
-	if s, err := skip(FieldVersioning, err); err != nil {
-		return nil, err
-	} else if !s {
-		st[FieldVersioning] = str(v)
-	}
-
-	pol, err := sess.GetPolicy(ctx, b.Name)
-	if s, err := skip(FieldPolicy, err); err != nil {
-		return nil, err
-	} else if !s {
-		c, cerr := CanonPolicy(pol)
-		if cerr != nil {
-			c = strings.TrimSpace(pol) // 読めないものはそのまま（宣言の正規形とは一致しない＝drift として見える）。
+	if ep.handles(FieldVersioning) {
+		v, err := sess.GetVersioning(ctx, b.Name)
+		if s, err := skip(FieldVersioning, err); err != nil {
+			return nil, err
+		} else if !s {
+			st[FieldVersioning] = str(v)
 		}
-		st[FieldPolicy] = str(c)
 	}
 
-	lc, err := sess.GetLifecycle(ctx, b.Name)
-	if s, err := skip(FieldLifecycle, err); err != nil {
-		return nil, err
-	} else if !s {
-		rules, perr := lifecycleFromXML(lc)
-		if perr != nil {
-			return nil, &Error{Kind: KindUnreachable, Op: "GetBucketLifecycleConfiguration", Bucket: b.Name, Message: "unreadable response", Err: perr}
+	if ep.handles(FieldPolicy) {
+		pol, err := sess.GetPolicy(ctx, b.Name)
+		if s, err := skip(FieldPolicy, err); err != nil {
+			return nil, err
+		} else if !s {
+			c, cerr := CanonPolicy(pol)
+			if cerr != nil {
+				c = strings.TrimSpace(pol) // 読めないものはそのまま（宣言の正規形とは一致しない＝drift として見える）。
+			}
+			st[FieldPolicy] = str(c)
 		}
-		st[FieldLifecycle] = str(canonRules(rules))
 	}
 
-	tags, err := sess.GetTagging(ctx, b.Name)
-	if s, err := skip(FieldTags, err); err != nil {
-		return nil, err
-	} else if !s {
-		st[FieldTags] = str(CanonTagMap(tags))
+	if ep.handles(FieldLifecycle) {
+		lc, err := sess.GetLifecycle(ctx, b.Name)
+		if s, err := skip(FieldLifecycle, err); err != nil {
+			return nil, err
+		} else if !s {
+			rules, perr := lifecycleFromXML(lc)
+			if perr != nil {
+				return nil, &Error{Kind: KindUnreachable, Op: "GetBucketLifecycleConfiguration", Bucket: b.Name, Message: "unreadable response", Err: perr}
+			}
+			aliasStorageClass(rules, ep.StorageClassAliases)
+			st[FieldLifecycle] = str(canonRules(rules))
+		}
+	}
+
+	if ep.handles(FieldTags) {
+		tags, err := sess.GetTagging(ctx, b.Name)
+		if s, err := skip(FieldTags, err); err != nil {
+			return nil, err
+		} else if !s {
+			st[FieldTags] = str(CanonTagMap(tags))
+		}
 	}
 
 	sort.Strings(unsupported)
@@ -362,7 +429,7 @@ func (p *Provider) BulkObserve(ctx context.Context, _ core.Scope) (provider.Bulk
 				continue
 			}
 			key := core.NewID(Name, p.scope, LocalID(name, b.Name)).Key()
-			st, err := observeBucket(ctx, sess, name, b)
+			st, err := observeBucket(ctx, sess, name, ep, b)
 			if err != nil {
 				obs[key] = unknownObs()
 				continue
@@ -380,7 +447,7 @@ func (p *Provider) BulkObserve(ctx context.Context, _ core.Scope) (provider.Bulk
 
 // ValidateIntent は現実を見ずに決まる誤りを、読み込みの時点で断る（§28.4）。
 func (p *Provider) ValidateIntent(localID string, fields map[string]string) error {
-	name, _, bucket, err := p.coords(localID)
+	name, ep, bucket, err := p.coords(localID)
 	if err != nil {
 		return fmt.Errorf("%s: %w", Name, err)
 	}
@@ -398,6 +465,9 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 		case spec.Computed:
 			return fmt.Errorf("%s %q: field %q is observed only and cannot be declared", Name, localID, k)
 		}
+	}
+	if err := excludedFields(localID, name, ep, fields); err != nil {
+		return err
 	}
 	if v, ok := fields[FieldEndpoint]; ok && v != name {
 		return fmt.Errorf("%s %q: endpoint %q must equal the endpoint in the id (%s)", Name, localID, v, name)
@@ -435,6 +505,21 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	return nil
 }
 
+// excludedFields は endpoint の fields に無い設定を宣言していればエラーを返す。
+func excludedFields(localID, name string, ep Endpoint, desired map[string]string) error {
+	var excluded []string
+	for _, f := range SettingFields {
+		if _, declared := desired[f]; declared && !ep.handles(f) {
+			excluded = append(excluded, f)
+		}
+	}
+	if len(excluded) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s %q: cannot manage %s: endpoint %s does not handle it (not in the endpoint's fields in the s3 config); remove the field from the intent or add it to fields",
+		Name, localID, strings.Join(excluded, ", "), name)
+}
+
 // canonField は宣言の値の正規形（versioning などはそのまま）。
 func canonField(field, v string) (string, error) {
 	switch field {
@@ -450,11 +535,19 @@ func canonField(field, v string) (string, error) {
 
 // RefinePlan は core の差分を S3 の決まりで直す（§28.4）。I/O はしない。
 //
+//   - 宣言したフィールドが endpoint の設定の fields に無いなら、扱わない設定と
+//     してエラー（ValidateIntent も同じ検査をする。まだ無いバケットは
+//     RefinePlan に来ないので、作る前はそちらで分かる）。
 //   - 宣言したフィールドの API を endpoint が持たない（観測の unsupported に
 //     ある）なら、観測できないとしてエラー（このリソースはこの周、何もしない）。
 //   - policy・lifecycle・tags は正規形が観測と同じなら差分から落とす（キー順・
 //     空白・書き方の違いを drift にしない）。
 func (p *Provider) RefinePlan(localID string, observed core.State, desired map[string]string, ops []core.Op) ([]core.Op, error) {
+	if name, ep, _, err := p.coords(localID); err == nil {
+		if err := excludedFields(localID, name, ep, desired); err != nil {
+			return nil, err
+		}
+	}
 	var missing []string
 	for _, f := range observedList(observed, FieldUnsupported) {
 		if _, declared := desired[f]; declared {
@@ -519,9 +612,14 @@ func (p *Provider) applyOp(ctx context.Context, op core.Op) error {
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("%s: Apply %q: "+format, append([]any{Name, localID}, args...)...)
 	}
-	_, ep, bucket, err := p.coords(localID)
+	name, ep, bucket, err := p.coords(localID)
 	if err != nil {
 		return provider.NewPermanentError(fail("%w", err))
+	}
+	for _, f := range op.Fields {
+		if contains(SettingFields, f.Field) && !ep.handles(f.Field) {
+			return provider.NewPermanentError(fail("%s: endpoint %s does not handle it (not in the endpoint's fields)", f.Field, name))
+		}
 	}
 	sess, err := ep.Client.Open(ctx)
 	if err != nil {
@@ -546,14 +644,14 @@ func (p *Provider) applyOp(ctx context.Context, op core.Op) error {
 		}
 	}
 	for _, f := range op.Fields {
-		if err := p.applyField(ctx, sess, bucket, f.Field, f.To); err != nil {
+		if err := p.applyField(ctx, sess, ep, bucket, f.Field, f.To); err != nil {
 			return fail("%s: %w", f.Field, err)
 		}
 	}
 	return nil
 }
 
-func (p *Provider) applyField(ctx context.Context, sess *Session, bucket, field, to string) error {
+func (p *Provider) applyField(ctx context.Context, sess *Session, ep Endpoint, bucket, field, to string) error {
 	switch field {
 	case FieldEndpoint, FieldBucket:
 		return nil // 識別子（ID が決める）。
@@ -601,6 +699,7 @@ func (p *Provider) applyField(ctx context.Context, sess *Session, bucket, field,
 		if err != nil {
 			return provider.NewTransientError(err)
 		}
+		aliasStorageClass(gotRules, ep.StorageClassAliases)
 		return readBack(field, canonRules(rules), canonRules(gotRules), nil)
 	case FieldTags:
 		tags, err := ParseTags(to)
@@ -636,7 +735,11 @@ func readBack(field, want, got string, canon func(string) (string, error)) error
 	if got == want {
 		return nil
 	}
-	return provider.NewPermanentError(fmt.Errorf("the endpoint accepted the %s but keeps it in another form, so it would never compare equal; write it in the form the endpoint keeps: %s", field, got))
+	hint := ""
+	if field == FieldLifecycle {
+		hint = " (if the endpoint renames StorageClass and only accepts the standard name on PUT, map its name to the standard one with storage_class_aliases in the endpoint config)"
+	}
+	return provider.NewPermanentError(fmt.Errorf("the endpoint accepted the %s but keeps it in another form, so it would never compare equal; write it in the form the endpoint keeps%s: %s", field, hint, got))
 }
 
 // putErr は設定の要求のエラーを分ける。endpoint がその API を持たなければ

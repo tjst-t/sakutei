@@ -95,6 +95,11 @@ func TestLoadConfig_Errors(t *testing.T) {
 		{base("    access_key: secretref:file/s3/ak\n    secret_key: secretref:file/s3/sk\n"), "endpoint is required"},
 		{"endpoints:\n  e1:\n" + ok, "secret_store"},
 		{"secret_store: secrets.json\nendpoints:\n  Bad/Name:\n" + ok, "the name must match"},
+		{base(ok + "    fields: versioning\n"), "fields: want a list"},
+		{base(ok + "    fields:\n      - versioning\n      - acl\n"), "fields[1] acl: want one of"},
+		{base(ok + "    fields:\n      - tags\n      - tags\n"), `duplicate "tags"`},
+		{base(ok + "    storage_class_aliases: GLACIER\n"), "storage_class_aliases: want a map"},
+		{base(ok + "    storage_class_aliases:\n      COLD: \"\"\n"), "non-empty storage class name"},
 	} {
 		dir := writeFiles(t, map[string]string{"secrets.json": testStore, "s3.yaml": tc.yaml})
 		_, err := LoadConfig(filepath.Join(dir, "s3.yaml"))
@@ -104,5 +109,48 @@ func TestLoadConfig_Errors(t *testing.T) {
 		if err != nil && (strings.Contains(err.Error(), "plain-secret-value") || strings.Contains(err.Error(), "AKIA-PLAIN")) {
 			t.Errorf("the error shows a key: %v", err)
 		}
+	}
+}
+
+func TestLoadConfig_FieldsAndAliases(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"secrets.json": testStore,
+		"s3.yaml": `secret_store: secrets.json
+endpoints:
+  odd:
+    endpoint: http://127.0.0.1:9000
+    access_key: secretref:file/s3/ak
+    secret_key: secretref:file/s3/sk
+    fields:
+      - policy
+      - lifecycle
+    storage_class_aliases:
+      COLD_TIER: GLACIER
+  plain:
+    endpoint: http://127.0.0.1:9001
+    access_key: secretref:file/s3/ak
+    secret_key: secretref:file/s3/sk
+`,
+	})
+	cfg, err := LoadConfig(filepath.Join(dir, "s3.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := cfg.Endpoints["odd"]
+	if strings.Join(o.Fields, ",") != "policy,lifecycle" || o.StorageClassAliases["COLD_TIER"] != "GLACIER" {
+		t.Errorf("odd = %+v", o)
+	}
+	if pl := cfg.Endpoints["plain"]; pl.Fields != nil || pl.StorageClassAliases != nil {
+		t.Errorf("plain = %+v; want the defaults (all fields, no aliases)", pl)
+	}
+	eps, err := cfg.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := eps["odd"]; e.handles(FieldVersioning) || !e.handles(FieldLifecycle) || e.StorageClassAliases["COLD_TIER"] != "GLACIER" {
+		t.Errorf("Build odd = %+v", e)
+	}
+	if e := eps["plain"]; !e.handles(FieldVersioning) || !e.handles(FieldTags) {
+		t.Errorf("Build plain = %+v; want all fields", e)
 	}
 }

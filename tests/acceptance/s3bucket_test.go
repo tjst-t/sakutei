@@ -31,6 +31,18 @@
 //	AC-122-4  sakutei status: a declared field whose API the endpoint does not
 //	          implement (NotImplemented) makes that bucket unobservable, with
 //	          the reason, and the report goes on for the other buckets
+//
+// Backlog #132 (differences among S3-compatible implementations):
+//
+//	AC-132-1  an endpoint that answers the Get of a setting with 400 (not
+//	          501) makes every bucket unobservable by default; with the
+//	          setting left out of the endpoint's fields it is never read,
+//	          sakutei status reports the buckets conformant, and declaring
+//	          the setting is an error at load / plan time
+//	AC-132-2  an endpoint that keeps lifecycle StorageClass under its own
+//	          name (and accepts only the standard name on PUT): with
+//	          storage_class_aliases the lifecycle converges and stays
+//	          converged cycle after cycle (no perpetual drift)
 package acceptance
 
 import (
@@ -60,10 +72,17 @@ import (
 // and returns the path of the list.
 func writeS3Config(t *testing.T, srv *s3test.Server) string {
 	t.Helper()
+	return writeS3ConfigWith(t, srv, "")
+}
+
+// writeS3ConfigWith is writeS3Config with extra YAML lines for the endpoint
+// (indented by four spaces).
+func writeS3ConfigWith(t *testing.T, srv *s3test.Server, extra string) string {
+	t.Helper()
 	dir := t.TempDir()
 	store := `{"secrets": {"s3/fake/access_key": {"gen": 1, "value": "test-access"}, "s3/fake/secret_key": {"gen": 1, "value": "test-secret"}}}`
 	cfg := "secret_store: secrets.json\nendpoints:\n  fake:\n    endpoint: " + srv.URL + "\n" +
-		"    access_key: secretref:file/s3/fake/access_key\n    secret_key: secretref:file/s3/fake/secret_key\n    timeout: 2s\n"
+		"    access_key: secretref:file/s3/fake/access_key\n    secret_key: secretref:file/s3/fake/secret_key\n    timeout: 2s\n" + extra
 	for name, body := range map[string]string{"secrets.json": store, "s3.yaml": cfg} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
@@ -231,5 +250,116 @@ func TestS3Bucket_StatusReportsAnUnimplementedAPIAsUnobservable(t *testing.T) {
 		if r.LocalID == "fake/with-lifecycle" && (r.State != "unobservable" || !strings.Contains(r.ObserveError, "GetBucketLifecycleConfiguration (NotImplemented)")) {
 			t.Errorf("[AC-122-4] fake/with-lifecycle = %+v; want unobservable naming the NotImplemented API", r)
 		}
+	}
+}
+
+// s3Status runs sakutei status --json for intent against cfg.
+func s3Status(t *testing.T, cfg, intent string) (conformant, unobservable int, raw string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "intent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "intent", "b.json"), []byte(intent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(buildBinary(t), "status", "--json", "--intent", filepath.Join(dir, "intent"),
+		"--state", filepath.Join(dir, "state.json"), "--s3-config", cfg)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, _ := cmd.Output()
+	var doc struct {
+		Summary struct {
+			Conformant   int `json:"conformant"`
+			Unobservable int `json:"unobservable"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("status --json: %v\n%s\n%s", err, out, stderr.String())
+	}
+	return doc.Summary.Conformant, doc.Summary.Unobservable, string(out) + stderr.String()
+}
+
+func TestS3Bucket_FieldsLeaveOutASettingTheEndpointRejects(t *testing.T) {
+	// [AC-132-1]
+	ctx := context.Background()
+	srv := s3test.New(s3test.Options{GetStatus: map[string]int{s3test.APIVersioning: 400}})
+	defer srv.Close()
+	srv.CreateBucket("app-a")
+	srv.CreateBucket("app-b")
+	intent := `{"resources": [
+	  {"provider": "s3-bucket", "id": "fake/app-a", "fields": {"tags": "{}"}},
+	  {"provider": "s3-bucket", "id": "fake/app-b", "fields": {}}
+	]}`
+
+	// Without fields: the Get of versioning fails, so no bucket is observable.
+	if c, u, raw := s3Status(t, writeS3Config(t, srv), intent); c != 0 || u != 2 {
+		t.Errorf("[AC-132-1] status without fields: conformant=%d unobservable=%d; want 0 and 2\n%s", c, u, raw)
+	}
+
+	cfg := writeS3ConfigWith(t, srv, "    fields:\n      - policy\n      - lifecycle\n      - tags\n")
+	before := srv.Calls("GetBucketVersioning")
+	if c, u, raw := s3Status(t, cfg, intent); c != 2 || u != 0 {
+		t.Errorf("[AC-132-1] status with fields: conformant=%d unobservable=%d; want 2 and 0\n%s", c, u, raw)
+	}
+	if n := srv.Calls("GetBucketVersioning") - before; n != 0 {
+		t.Errorf("[AC-132-1] GetBucketVersioning called %d times; want 0 (not in fields)", n)
+	}
+
+	p, err := registry.DefaultRegistry().Get(s3bucket.Name, map[string]string{"s3_config": cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := map[string]string{s3bucket.FieldVersioning: "Enabled"}
+	if err := p.(provider.IntentValidator).ValidateIntent("fake/app-a", declared); err == nil || !strings.Contains(err.Error(), "cannot manage versioning") {
+		t.Errorf("[AC-132-1] ValidateIntent with versioning declared: %v; want cannot manage versioning", err)
+	}
+	obs, err := p.Read(ctx, "fake/app-a")
+	if err != nil {
+		t.Fatalf("[AC-132-1] Read: %v", err)
+	}
+	id := core.NewID(s3bucket.Name, core.NewScope(nil), "fake/app-a")
+	if _, err := diff.ForProvider(p).Plan(obs, diff.DesiredResource{ID: id, Fields: declared}, cause.CauseContext{}); err == nil || !strings.Contains(err.Error(), "not in the endpoint's fields") {
+		t.Errorf("[AC-132-1] plan with versioning declared: %v; want an error naming the endpoint's fields", err)
+	}
+}
+
+func TestS3Bucket_StorageClassAliasesStopPerpetualDrift(t *testing.T) {
+	// [AC-132-2]
+	ctx := context.Background()
+	srv := s3test.New(s3test.Options{StorageClassRewrite: map[string]string{"GLACIER": "VENDOR_COLD"}})
+	defer srv.Close()
+	cfg := writeS3ConfigWith(t, srv, "    storage_class_aliases:\n      VENDOR_COLD: GLACIER\n")
+	p, err := registry.DefaultRegistry().Get(s3bucket.Name, map[string]string{"s3_config": cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := core.NewID(s3bucket.Name, core.NewScope(nil), "fake/archive")
+	want := diff.DesiredResource{ID: id, Fields: map[string]string{
+		s3bucket.FieldLifecycle: `[{"ID":"to-cold","Status":"Enabled","Filter":{"Prefix":""},"Transition":{"Days":30,"StorageClass":"GLACIER"}}]`,
+	}}
+	applied := 0
+	for cycle := 0; cycle < 4; cycle++ {
+		obs, err := p.Read(ctx, id.Local)
+		if err != nil {
+			t.Fatalf("[AC-132-2] cycle %d: Read: %v", cycle, err)
+		}
+		pl, err := diff.ForProvider(p).Plan(obs, want, cause.CauseContext{ResourceObservedAbsent: obs.State == nil})
+		if err != nil {
+			t.Fatalf("[AC-132-2] cycle %d: Plan: %v", cycle, err)
+		}
+		if len(pl.Ops) == 0 {
+			continue
+		}
+		applied++
+		if err := p.Apply(ctx, pl); err != nil {
+			t.Fatalf("[AC-132-2] cycle %d: Apply: %v", cycle, err)
+		}
+	}
+	if applied != 1 {
+		t.Errorf("[AC-132-2] applied in %d cycles; want 1 (the create), then converged", applied)
+	}
+	if _, _, lc, _, _ := srv.Snapshot("archive"); !strings.Contains(lc, "VENDOR_COLD") {
+		t.Errorf("[AC-132-2] the endpoint keeps %s; want its own storage class name", lc)
 	}
 }

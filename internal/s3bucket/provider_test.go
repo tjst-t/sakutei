@@ -445,3 +445,112 @@ func TestBulkObserve_OneEndpointDownKeepsTheOthers(t *testing.T) {
 		t.Error("BulkObserve succeeded with every endpoint down")
 	}
 }
+
+// newProviderEP は偽サーバと、ep（Client を除く）の設定の "fake" endpoint の
+// Provider を返す。
+func newProviderEP(t *testing.T, opts s3test.Options, ep s3bucket.Endpoint) (*s3test.Server, *s3bucket.Provider) {
+	t.Helper()
+	srv := s3test.New(opts)
+	t.Cleanup(srv.Close)
+	c, err := s3bucket.NewClient(s3bucket.ClientConfig{
+		Endpoint: srv.URL, Credentials: staticCreds("test-access", "test-secret"), Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep.Client = c
+	return srv, s3bucket.New(map[string]s3bucket.Endpoint{"fake": ep}, s3bucket.Options{})
+}
+
+// endpoint が versioning の GET を 400 で断る：既定（4 つ全部）ではバケット全体が
+// 観測できず、fields で外せば Get を呼ばずに観測が続く。
+func TestFields_ExcludedSettingIsNotRead(t *testing.T) {
+	opts := s3test.Options{GetStatus: map[string]int{s3test.APIVersioning: http.StatusBadRequest}}
+
+	srv, p := newProviderEP(t, opts, s3bucket.Endpoint{})
+	srv.CreateBucket("f-bucket")
+	if obs, err := p.Read(context.Background(), "fake/f-bucket"); err == nil || obs.Availability != core.AvailabilityUnknown {
+		t.Fatalf("without fields: Read = %+v, %v; want unobservable", obs, err)
+	}
+
+	fields := []string{s3bucket.FieldPolicy, s3bucket.FieldLifecycle, s3bucket.FieldTags}
+	srv, p = newProviderEP(t, opts, s3bucket.Endpoint{Fields: fields})
+	srv.CreateBucket("f-bucket")
+	obs, err := p.Read(context.Background(), "fake/f-bucket")
+	if err != nil || obs.Availability != core.AvailabilityOk || obs.State == nil {
+		t.Fatalf("with fields: Read = %+v, %v; want observed", obs, err)
+	}
+	if n := srv.Calls("GetBucketVersioning"); n != 0 {
+		t.Errorf("GetBucketVersioning called %d times; want 0 (not in fields)", n)
+	}
+	if got := fmt.Sprint(obs.State[s3bucket.FieldUnsupported].Value); got != "versioning" {
+		t.Errorf("unsupported = %q, want versioning", got)
+	}
+	if _, ok := obs.State[s3bucket.FieldVersioning]; ok {
+		t.Error("State has versioning although it is not in fields")
+	}
+	// BulkObserve も同じ（Read と等価）。
+	bt := sdk.BulkEquivalenceTester{Provider: p, Lister: p, Scope: core.NewScope(nil)}
+	bt.Run(t)
+	if n := srv.Calls("GetBucketVersioning"); n != 0 {
+		t.Errorf("GetBucketVersioning called %d times after BulkObserve; want 0", n)
+	}
+	// 宣言しなければ収束する。
+	converge(t, p, "fake/f-bucket", map[string]string{s3bucket.FieldTags: sampleTags})
+	// 宣言すれば計画の時点でエラー（読み込みの検査は作る前のバケットでも）。
+	declared := map[string]string{s3bucket.FieldVersioning: "Enabled"}
+	_, err = plan(t, p, "fake/f-bucket", declared)
+	if err == nil || !strings.Contains(err.Error(), "cannot manage versioning") || !strings.Contains(err.Error(), "fields") {
+		t.Errorf("plan with versioning declared: err = %v; want cannot manage versioning … fields", err)
+	}
+	for _, id := range []string{"fake/f-bucket", "fake/f-new"} {
+		if err := p.ValidateIntent(id, declared); err == nil || !strings.Contains(err.Error(), "cannot manage versioning") {
+			t.Errorf("ValidateIntent %s with versioning declared: err = %v; want cannot manage versioning", id, err)
+		}
+	}
+	if n := srv.Calls("GetBucketVersioning"); n != 0 {
+		t.Errorf("GetBucketVersioning called %d times; want 0", n)
+	}
+	// Apply を直に呼ばれても設定しない。
+	err = p.Apply(context.Background(), core.Plan{Ops: []core.Op{{
+		Kind: core.OpKindUpdate, Target: core.NewID(s3bucket.Name, core.NewScope(nil), "fake/f-bucket"),
+		Fields: []core.FieldDiff{{Field: s3bucket.FieldVersioning, To: "Enabled"}},
+	}}})
+	var pe *provider.PermanentError
+	if !errors.As(err, &pe) {
+		t.Errorf("Apply of versioning not in fields = %v; want a PermanentError", err)
+	}
+	if v, _, _, _, _ := srv.Snapshot("f-bucket"); v != "" {
+		t.Errorf("versioning = %q; want untouched", v)
+	}
+}
+
+// endpoint が lifecycle の StorageClass を独自の名前に書き換えて持ち、PUT では
+// 標準の名前しか受け付けない：alias が無ければ Apply の読み戻しで止まり、alias で
+// 読み替えれば drift にならない。
+func TestStorageClassAliases_NoPerpetualDrift(t *testing.T) {
+	opts := s3test.Options{StorageClassRewrite: map[string]string{"GLACIER": "COLD_TIER", "STANDARD_IA": "WARM_TIER"}}
+	lc := `[{"ID":"archive","Status":"Enabled","Filter":{"Prefix":"logs/"},"Transition":[{"Days":30,"StorageClass":"STANDARD_IA"},{"Days":90,"StorageClass":"GLACIER"}],"NoncurrentVersionTransition":{"NoncurrentDays":7,"StorageClass":"GLACIER"}}]`
+	want := map[string]string{s3bucket.FieldLifecycle: lc}
+
+	_, p := newProviderEP(t, opts, s3bucket.Endpoint{})
+	pl, _ := plan(t, p, "fake/sc-bucket", want)
+	err := p.Apply(context.Background(), pl)
+	var pe *provider.PermanentError
+	if !errors.As(err, &pe) || !strings.Contains(err.Error(), "storage_class_aliases") || !strings.Contains(err.Error(), "COLD_TIER") {
+		t.Errorf("without aliases: Apply = %v; want a PermanentError pointing at storage_class_aliases", err)
+	}
+
+	srv, p := newProviderEP(t, opts, s3bucket.Endpoint{StorageClassAliases: map[string]string{"COLD_TIER": "GLACIER", "WARM_TIER": "STANDARD_IA"}})
+	converge(t, p, "fake/sc-bucket", want)
+	if _, _, got, _, _ := srv.Snapshot("sc-bucket"); !strings.Contains(got, "COLD_TIER") || strings.Contains(got, "GLACIER") {
+		t.Fatalf("the endpoint keeps %s; want the renamed storage class", got)
+	}
+	// 何周しても drift にならない。
+	for i := 0; i < 3; i++ {
+		pl, err := plan(t, p, "fake/sc-bucket", want)
+		if err != nil || len(pl.Ops) != 0 {
+			t.Fatalf("cycle %d: plan = %+v, %v; want converged", i, pl.Ops, err)
+		}
+	}
+}

@@ -179,6 +179,9 @@ func setup() error {
 	for _, name := range serverNames() {
 		fmt.Fprintf(&cfg, "  %s:\n    endpoint: %s\n    access_key: secretref:file/s3/access_key\n    secret_key: secretref:file/s3/secret_key\n    bucket_prefix: sk-it-\n    timeout: 5s\n", name, lab.servers[name].url)
 	}
+	// S3 互換実装との差異への対応（#132）: 同じサーバを別の名前・別の
+	// bucket_prefix（sk-it- と重ならない）で、扱う設定を絞って足す。
+	fmt.Fprintf(&cfg, "  seaweedfs-compat:\n    endpoint: %s\n    access_key: secretref:file/s3/access_key\n    secret_key: secretref:file/s3/secret_key\n    bucket_prefix: sk-compat-\n    timeout: 5s\n    fields:\n      - policy\n      - tags\n    storage_class_aliases:\n      VENDOR_COLD: GLACIER\n", lab.servers["seaweedfs"].url)
 	lab.s3cfg = filepath.Join(dir, "s3.yaml")
 	if err := os.WriteFile(lab.s3cfg, []byte(cfg.String()), 0o600); err != nil {
 		return err
@@ -712,6 +715,41 @@ func TestS3Integration(t *testing.T) {
 		if s, _ := status(t); stateOf(s, "seaweedfs-old/sk-it-old") != "conformant" {
 			t.Errorf("undeclared fields on seaweedfs-old: %+v", s)
 		}
+	})
+
+	t.Run("fields leave out the settings the endpoint is not asked about", func(t *testing.T) {
+		// seaweedfs-compat は fields が policy・tags だけ。versioning・lifecycle は
+		// 読まず（unsupported と同じ扱い）、宣言しなければ適合、宣言すれば読み込みの
+		// 時点で「この endpoint は扱わない」と分かるエラー。
+		compat := resource{Provider: s3bucket.Name, ID: "seaweedfs-compat/sk-compat-app", Fields: map[string]string{
+			"policy": policyFor("sk-compat-app"),
+			"tags":   `{"env": "integration"}`,
+		}}
+		writeIntent(t, appBuckets(main, false, compat)...)
+		mustReconcile(t)
+		s, errOut := status(t)
+		if got := stateOf(s, "seaweedfs-compat/sk-compat-app"); got != "conformant" {
+			t.Fatalf("seaweedfs-compat/sk-compat-app: %q, want conformant\n%+v\n%s", got, s, errOut)
+		}
+		// 同じバケットは seaweedfs の側（bucket_prefix sk-it-）には見えない。
+		if got := stateOf(s, "seaweedfs/sk-compat-app"); got != "" {
+			t.Errorf("seaweedfs/sk-compat-app is reported (%q); the prefixes must not overlap", got)
+		}
+		// versioning は既定のまま（触らない）。
+		if v, err := session(t, "seaweedfs").GetVersioning(ctx, "sk-compat-app"); err != nil || v == "Enabled" {
+			t.Errorf("versioning of sk-compat-app = %q, %v; want untouched", v, err)
+		}
+		compat.Fields["versioning"] = "Enabled"
+		writeIntent(t, appBuckets(main, false, compat)...)
+		out, code := sakutei(t, "plan")
+		if code == 0 || !strings.Contains(out, "cannot manage versioning") || !strings.Contains(out, "fields") {
+			t.Errorf("plan with versioning declared on seaweedfs-compat exited %d; want an error naming the endpoint's fields:\n%s", code, out)
+		}
+		// lifecycle の StorageClass の読み替え（storage_class_aliases）は、この版の
+		// SeaweedFS では再現できない（Transition を含む lifecycle の PUT は 501
+		// NotImplemented、seaweedfs-old は受け付けるが読み戻すと Transition が
+		// 無い）。読み替えは偽サーバの単体・受け入れテストで確かめる。
+		writeIntent(t, appBuckets(main, false)...)
 	})
 
 	t.Run("clean up through prune", func(t *testing.T) {

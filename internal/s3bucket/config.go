@@ -31,6 +31,11 @@ package s3bucket
 //	    ca_file: ca.pem                   # 省略可
 //	    insecure_skip_verify: true        # 明示したときだけ（既定 false）
 //	    timeout: 10s                      # 省略可（既定 10s）
+//	    fields:                           # 省略可（扱う設定。既定は versioning・
+//	      - policy                        #   policy・lifecycle・tags の全部）
+//	      - lifecycle
+//	    storage_class_aliases:            # 省略可（endpoint が返す StorageClass の
+//	      <実装の名前>: GLACIER           #   名前 → 標準の名前）
 //
 // 決まり（bmcconfig と同じ）:
 //
@@ -42,6 +47,11 @@ package s3bucket
 //     その path があることだけを確かめる（値は読まない）。
 //   - 相対パス（secret_store・ca_file）は設定ファイルのあるディレクトリから。
 //   - 未知のキーはエラー（書き間違いを黙って無視しない）。
+//   - fields は S3 互換実装との差異への対応（docs/providers/s3-bucket.md）。
+//     無い設定の Get は呼ばず（API を持たないことを 400・403 などで知らせる
+//     endpoint でもバケットを観測できるように）、intent で宣言すれば計画の
+//     時点でエラーにする。storage_class_aliases は観測した lifecycle の
+//     StorageClass を標準の名前に読み替える表。
 
 import (
 	"context"
@@ -76,6 +86,10 @@ type EndpointConfig struct {
 	CAFile             string
 	InsecureSkipVerify bool
 	Timeout            time.Duration
+	// Fields は扱う設定（nil なら全部）。
+	Fields []string
+	// StorageClassAliases は endpoint が返す StorageClass の名前 → 標準の名前。
+	StorageClassAliases map[string]string
 }
 
 // Config は設定ファイルの中身。
@@ -90,6 +104,7 @@ var (
 	endpointKeys = map[string]bool{
 		"endpoint": true, "region": true, "addressing": true, "access_key": true, "secret_key": true,
 		"bucket_prefix": true, "ca_file": true, "insecure_skip_verify": true, "timeout": true,
+		"fields": true, "storage_class_aliases": true,
 	}
 	// endpointName は endpoint の名前（ID の前半。"/" を含まない）。
 	endpointName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -224,6 +239,39 @@ func parseEndpoint(p string, m map[string]any, dir string) (EndpointConfig, erro
 		}
 		e.Timeout = d
 	}
+	if v, ok := m["fields"]; ok {
+		arr, isArr := v.([]any)
+		if !isArr {
+			return EndpointConfig{}, fmt.Errorf("%s.fields: want a list of %s", p, strings.Join(SettingFields, ", "))
+		}
+		e.Fields = []string{}
+		for i, x := range arr {
+			f, _ := x.(string)
+			f = strings.TrimSpace(f)
+			if !contains(SettingFields, f) {
+				return EndpointConfig{}, fmt.Errorf("%s.fields[%d] %v: want one of %s", p, i, x, strings.Join(SettingFields, ", "))
+			}
+			if contains(e.Fields, f) {
+				return EndpointConfig{}, fmt.Errorf("%s.fields[%d]: duplicate %q", p, i, f)
+			}
+			e.Fields = append(e.Fields, f)
+		}
+	}
+	if v, ok := m["storage_class_aliases"]; ok {
+		am, isMap := v.(map[string]any)
+		if !isMap {
+			return EndpointConfig{}, fmt.Errorf("%s.storage_class_aliases: want a map of the endpoint's storage class name → the standard name (such as GLACIER)", p)
+		}
+		e.StorageClassAliases = map[string]string{}
+		for from, x := range am {
+			to, _ := x.(string)
+			from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+			if from == "" || to == "" {
+				return EndpointConfig{}, fmt.Errorf("%s.storage_class_aliases.%s: want a non-empty storage class name", p, from)
+			}
+			e.StorageClassAliases[from] = to
+		}
+	}
 	for _, f := range []struct {
 		key string
 		dst *core.SecretRef
@@ -301,7 +349,7 @@ func (c Config) Build() (map[string]Endpoint, error) {
 		if err != nil {
 			return nil, fmt.Errorf("endpoints.%s: %w", name, err)
 		}
-		out[name] = Endpoint{Client: cl, BucketPrefix: e.BucketPrefix}
+		out[name] = Endpoint{Client: cl, BucketPrefix: e.BucketPrefix, Fields: e.Fields, StorageClassAliases: e.StorageClassAliases}
 	}
 	return out, nil
 }

@@ -17,7 +17,9 @@
 // バージョニング・ポリシー・ライフサイクル・タグ）だけを持ち、要求の SigV4 の
 // 署名（Authorization・x-amz-content-sha256・Content-MD5）を検証する。
 //
-// テストから: API を NotImplemented にする（Options.NotImplemented）、届かなく
+// テストから: API を NotImplemented にする（Options.NotImplemented）、GET を
+// 別のコードで断る（Options.GetStatus）、lifecycle の StorageClass を書き換えて
+// 持つ（Options.StorageClassRewrite）、届かなく
 // する（SetUnreachable：接続を切る）、5xx を返す（SetFailStatus）、中身を入れる
 // （PutObject）、現実を手で変える（SetPolicy など）。
 package s3test
@@ -33,6 +35,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -63,6 +66,14 @@ type Options struct {
 	// PolicyRewrite が nil でなければ、PutBucketPolicy の本文をこれで書き換えて
 	// 持つ（endpoint がポリシーを別の形で持つことの再現）。
 	PolicyRewrite func(string) string
+	// GetStatus に挙げた API（APIVersioning など）の GET は、その状態コード
+	// （400・403 など）の InvalidRequest を返す（API を持たないことを 501 では
+	// なく別のコードで知らせる endpoint の再現）。
+	GetStatus map[string]int
+	// StorageClassRewrite が nil でなければ、PutBucketLifecycleConfiguration の
+	// StorageClass はこの表のキー（標準の名前）だけを受け付け（ほかは 400
+	// InvalidStorageClass）、値（実装独自の名前）に書き換えて持つ。
+	StorageClassRewrite map[string]string
 	// Now は作成日時の時刻（nil なら time.Now）。
 	Now func() time.Time
 }
@@ -75,6 +86,9 @@ type bucket struct {
 	tags       map[string]string
 	objects    int
 }
+
+// storageClassRE は lifecycle の本文の StorageClass の要素。
+var storageClassRE = regexp.MustCompile(`<StorageClass>\s*([^<]*?)\s*</StorageClass>`)
 
 // Server は偽の S3 サーバ。
 type Server struct {
@@ -252,6 +266,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if code := s.opts.GetStatus[sub]; code != 0 && r.Method == http.MethodGet {
+			writeError(w, code, "InvalidRequest", "this endpoint does not support ?"+sub)
+			return
+		}
 	}
 
 	s.mu.Lock()
@@ -352,6 +370,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		if xml.Unmarshal(body, &doc) != nil || doc.XMLName.Local != "LifecycleConfiguration" || len(doc.Rules) == 0 {
 			writeError(w, http.StatusBadRequest, "MalformedXML", "bad LifecycleConfiguration")
 			return
+		}
+		if rw := s.opts.StorageClassRewrite; rw != nil {
+			var bad string
+			body = storageClassRE.ReplaceAllFunc(body, func(m []byte) []byte {
+				name := string(storageClassRE.FindSubmatch(m)[1])
+				to, ok := rw[name]
+				if !ok {
+					bad = name
+					return m
+				}
+				return []byte("<StorageClass>" + to + "</StorageClass>")
+			})
+			if bad != "" {
+				writeError(w, http.StatusBadRequest, "InvalidStorageClass", "The storage class you specified is not valid: "+bad)
+				return
+			}
 		}
 		b.lifecycle = body
 		w.WriteHeader(http.StatusOK)

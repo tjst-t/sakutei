@@ -29,6 +29,12 @@ endpoints:
     ca_file: ca.pem                   # 省略可。この CA だけで証明書を検証する
     insecure_skip_verify: false       # 明示したときだけ true（ca_file とは排他）
     timeout: 10s                      # 省略可。1 要求あたり（既定 10s）
+    fields:                           # 省略可。この endpoint で扱う設定（既定は 4 つ全部。下の「S3 互換実装との差異への対応」）
+      - policy
+      - lifecycle
+      - tags
+    storage_class_aliases:            # 省略可。endpoint が返す StorageClass の名前 → 標準の名前
+      <実装の名前>: GLACIER
 ```
 
 ```console
@@ -73,7 +79,7 @@ $ sakutei status --intent intent/ --s3-config s3.yaml --json
 | `tags` | JSON のオブジェクト（値は文字列。50 個まで） | キー順。`""` か `{}` は「タグが無い」 |
 | `endpoint`・`bucket` | ID と同じ値（省略可） | identity |
 | `creation_date`（観測だけ） | ListBuckets の CreationDate | 比べない |
-| `unsupported`（観測だけ） | endpoint がその API を持たない（NotImplemented）フィールドの一覧 | 比べない |
+| `unsupported`（観測だけ） | endpoint がその API を持たない（NotImplemented）か、endpoint の `fields` に無いフィールドの一覧 | 比べない |
 
 ### 正規形（永久 drift を出さない）
 
@@ -85,7 +91,7 @@ endpoint はポリシーやルールを書かれたとおりには持たない�
 
 ## 動き方
 
-- **Read**：ListBuckets で在るかを見て（無ければ absent）、GetBucketVersioning・GetBucketPolicy・GetBucketLifecycleConfiguration・GetBucketTagging を読む。設定が無いこと（NoSuchBucketPolicy など）は空の値。
+- **Read**：ListBuckets で在るかを見て（無ければ absent）、GetBucketVersioning・GetBucketPolicy・GetBucketLifecycleConfiguration・GetBucketTagging を読む（endpoint の `fields` に無い設定の Get は呼ばない）。設定が無いこと（NoSuchBucketPolicy など）は空の値。
 - **Apply**：Create は CreateBucket（既に自分のものなら成功）の後に宣言したフィールドを設定する。Update は差分のフィールドだけを設定する。同じ plan を 2 回流しても同じ。
 - **Delete**：prune（PruneWithinScope）か明示の absent からだけ来て、**破壊的**として予算に数える（§12・§13）。DeleteBucket は空のバケットしか消せない。中身があれば endpoint が `BucketNotEmpty` で断り、provider はそれを「中身があるので消さない（オブジェクトは消さない。手で空にするか、宣言し直す）」という PermanentError として知らせる。**オブジェクトを消す機能は持たない**。
 - **観測できないもの**：届かない・時間切れ・5xx（501 を除く）・認証の失敗（401 / 403）・資格を解決できない・証明書を検証できないは Unknown（absent にしない。作りも消しもしない）。リダイレクト（region や addressing の誤り）は辿らず、要求の誤りとして知らせる。
@@ -95,7 +101,40 @@ endpoint はポリシーやルールを書かれたとおりには持たない�
 ### endpoint がその API を持たないとき
 
 - GET が 501 / `NotImplemented` を返す API のフィールドは State に入れず `unsupported` に挙げる。**宣言していなければ無視**する。**宣言していれば観測できない**として計画の時点で止める（「cannot observe lifecycle: the endpoint does not implement GetBucketLifecycleConfiguration (NotImplemented)」）。常駐と `status` では観測できないものとして数える。一回性の `plan`・`reconcile` は、ほかの provider の計画のエラーと同じくその文を出して終了コード 1 で止まる。
-- GET は既定の値を返し、PUT だけが NotImplemented の endpoint もある（下の古い SeaweedFS）。この場合 Read は欠けを知れないので、宣言した値は drift として見え、Apply が「the endpoint does not implement this API (NotImplemented)」の PermanentError で止まる。
+- GET は既定の値を返し、PUT だけが NotImplemented の endpoint もある（下の古い SeaweedFS）。この場合 Read は欠けを知れないので、宣言した値は drift として見え、Apply が「the endpoint does not implement this API (NotImplemented)」の PermanentError で止まる。その endpoint の `fields` からそのフィールドを外せば、宣言は読み込みの時点で断られる（下）。
+
+## S3 互換実装との差異への対応
+
+S3 互換の実装には AWS と違う振る舞いのものがある（Backlog #132、設計書 §29.1）。provider が自分で吸収するものと、endpoint の設定で知らせるものがある。
+
+**provider が吸収するもの（設定は要らない）**
+
+- **API を持たない（501 / `NotImplemented`）**：上の「endpoint がその API を持たないとき」。そのフィールドは `unsupported` に挙げ、宣言していなければ無視、宣言していれば計画の時点で止める。
+- **policy・lifecycle の書き換え**：endpoint が意味の同じ別の書き方で返すもの（`"Principal": "*"` と `{"AWS": ["*"]}`、文字列と 1 要素の配列、数と文字列、日時の書き方、空の要素）は正規形でそろえて比べる（上の「正規形」）。
+- **読み戻しの確かめ**：policy・lifecycle・tags は設定した後に読み戻し、正規形でもそろわない形で endpoint が持つなら、その形を添えた PermanentError にする（毎周 Apply を繰り返さない）。
+
+**endpoint の設定で知らせるもの**
+
+- **`fields`（扱う設定の一覧）**：`versioning`・`policy`・`lifecycle`・`tags` のうち、この endpoint で扱うもの。省略すれば 4 つ全部。API を持たないことを 501 ではなく別のコード（400・403 など）で返す実装では、Read が宣言を知らないので、既定のままだと宣言していない設定の Get でも観測エラーになり、**バケット全体が観測できなくなる**。`fields` から外した設定は：
+  - Get を呼ばない（Read・BulkObserve のどちらも）。観測では `unsupported` に挙がり、State に入らない。
+  - intent で宣言すると、**読み込みの時点でエラー**（「cannot manage versioning: endpoint … does not handle it (not in the endpoint's fields in the s3 config)」）。ほかの invalid な intent と同じく、その周は Observe・Apply・prune をしない。intent から外すか、`fields` に足す。
+  - 宣言していなければ無視する（ほかのフィールドは観測・収束を続ける）。
+- **`storage_class_aliases`（StorageClass の名前の読み替え）**：lifecycle の `StorageClass`（`Transition`・`NoncurrentVersionTransition` の中など）を、受け取ったあと実装独自の名前に書き換えて返す実装がある。その実装が PUT では標準の名前しか受け付けないと、どちらの名前で宣言しても毎周 drift になる（標準の名前で書けば観測が独自の名前、独自の名前で書けば PUT が断られる）。`storage_class_aliases` に「実装が返す名前 → 標準の名前」を書くと、観測した lifecycle の StorageClass をこの表で読み替えてから比べる。Apply の読み戻しの確かめも同じ表で読み替える。intent には**標準の名前**（`GLACIER`・`STANDARD_IA` など）で書く。
+  - 表が無いとき、読み戻しは「keeps it in another form」の PermanentError になり、文言で `storage_class_aliases` を案内する。
+
+```yaml
+endpoints:
+  archive:
+    endpoint: https://s3.example.net
+    access_key: secretref:file/s3/archive/access_key
+    secret_key: secretref:file/s3/archive/secret_key
+    fields:                 # versioning の Get に 400 を返す実装：versioning を扱わない
+      - policy
+      - lifecycle
+      - tags
+    storage_class_aliases:  # lifecycle の StorageClass を独自の名前で返す実装
+      <実装の名前>: GLACIER
+```
 
 ## 統合テスト（docker、`make integration-s3`）
 
@@ -131,6 +170,7 @@ $ make integration-s3
 | a stopped server | minio を `docker pause`（minio が無ければ seaweedfs）→ status で止めたサーバのバケットだけが観測できない、reconcile はそれを skip（作らない）し、動いたままのサーバのバケットは観測を続ける。List が完全でないので prune は止まり、動いたままのサーバの空の orphan も消えない |
 | after the server is back | unpause → reconcile → main がすべて適合 |
 | an endpoint without the API | 今の minio・seaweedfs は 4 つの GET をどれも持つことを確かめる。seaweedfs-old に versioning・tags を宣言 → バケットは作られ、Apply が NotImplemented の PermanentError で止まり、status は drift。フィールドを宣言しなければ適合 |
+| fields leave out settings | 同じ seaweedfs を別の名前 `seaweedfs-compat`（`bucket_prefix: sk-compat-`、`fields` は policy・tags だけ）でも登録。policy・tags を宣言したバケットが適合し、versioning は触らない。versioning を宣言すると `plan` が `fields` を名指したエラーで止まる。`storage_class_aliases` は SeaweedFS では再現できない（この版は Transition を含む lifecycle の PUT が 501、古い版は受け付けるが読み戻すと Transition が無い）ので、偽サーバの単体・受け入れテストで確かめる |
 | clean up through prune | 宣言を 1 つだけにして PruneWithinScope で reconcile → 空のバケットが prune で消える（中身のあるものは残る）。コンテナは teardown で消す |
 
 ### 結果
