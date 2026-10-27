@@ -3357,7 +3357,7 @@
       "number": 143,
       "kind": "task",
       "title": "Proxmox VE の VM provider（VM・CPU・メモリ・ディスク・NIC・cloud-init）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "vm-proxmox-vm-ldap-ip",
       "dependsOn": [],
       "milestone": null,
@@ -3369,7 +3369,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T17:18:39.397Z",
-      "updatedAt": "2026-10-27T17:18:39.397Z",
+      "updatedAt": "2026-10-27T17:18:46.379Z",
       "closedAt": null,
       "extra": {}
     },
