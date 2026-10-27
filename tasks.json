@@ -3052,7 +3052,7 @@
       "number": 130,
       "kind": "task",
       "title": "離れたホストを扱う口：ssh の CLI 越しの実行の層と、nftables（live）・dnszone をその上に乗せる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "1-sakutei-ssh-metrics-os",
       "dependsOn": [
         "pg-provider",
@@ -3067,7 +3067,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T11:27:28.338Z",
-      "updatedAt": "2026-10-27T11:27:28.338Z",
+      "updatedAt": "2026-10-27T12:20:10.543Z",
       "closedAt": null,
       "extra": {}
     },
