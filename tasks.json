@@ -1738,11 +1738,11 @@
       ],
       "body": "2026-10-22 の OS インストールの試用で見つけた穴 3/6。\n\n## 何が足りないか\n一度 done になった Workflow はもう走らない。入れ直すには `sakutei workflow cancel <名前>` か、定義を変えるしかない。「この台を入れ直したい」を宣言で表す口が無い。設計の planned_change（§13.3）の `kind: reimage` とつながっていない。\n\n## 2026-10-23 に確かめたこと（cancel のあとの再実行）\ndocs/trial/redfish-os-install の手順どおり（make-iso.sh で ISO を作り直し、qemu-bmc 0.9.0 で Workflow を回す）で 1 回目は入った。そのあと `sakutei workflow cancel os-install` すると、次の周に新しい run が始まった（run は再実行される）。**しかし入れ直しにはならなかった**：\n- step 1 の apply（boot_enabled Continuous・boot_target Cd・power On）は、すでに電源が On（入れた OS が動いている）なので起動先を書き換えるだけで、電源を入れ直さない（apply は宣言に合わせるだけで、再起動はしない）。\n- インストーラは走らず、step 2（wait power: Off）で待ち続ける（timeout 15m で halt するはず。そこまでは見ていない）。\nつまり今の Workflow の手順（apply・wait）だけでは「動いている台を CD から起動し直す」が書けない。再起動は宣言できない（§29.1、一度きりの操作＝Task の領分）。手で「先に power: Off にする apply を足す」とすると、既定の停止（graceful）で止まるまで待つことになる。\n\n## 要るもの\n- planned_change の reimage を宣言すると、対象の台で OS 導入の Workflow（または多相 Task）が 1 回走る。\n- 動いている台を「止める → CD 起動で入れる」の相を持つこと（再起動・強制停止の扱いを含む。多相 Task #51 の領分）。\n- 入れ直しは破壊的（ディスクを消す）なので、予算・承認ゲートの扱いを決める。\n\n## 関連\n#51・#52、§13.3 planned_change（reimage のペアリング判定は v1.5 で決定済み）、docs/trial/redfish-os-install/README.md。",
       "doneWhen": "planned_change の reimage を宣言すると対象の台で OS 導入が 1 回走り、予算・承認を通ること、宣言を外すと走らないことを qemu-bmc の統合テストで示す",
-      "resolution": "Factory が取り込みました（factory/v2-reimage-planned-change-reimage-os-wor）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T01:14:31.629Z",
-      "updatedAt": "2026-10-27T16:30:41.888Z",
+      "updatedAt": "2026-10-27T16:43:05.945Z",
       "closedAt": "2026-10-27T16:30:41.888Z",
       "extra": {}
     },
