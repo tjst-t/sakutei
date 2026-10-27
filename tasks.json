@@ -693,11 +693,11 @@
       ],
       "body": "旧 ROADMAP.json の backlog（S94f1f9-3 review DD-1 の残差）。\n\n非同期 Apply では、上流 A を launch した同じサイクルで、A の失敗が記録される前に下流 B が 1 回だけ楽観的に launch されうる（apply_count<=1）。level-triggered なので次の周期に自己修復し、定常状態では skip されるが、上流 wave の in-flight 完了まで下流 wave を起動しない厳密なバリアにすれば、1 サイクルの窓も消せる。安全機構や段階ロールアウトと合わせて検討。上限があり自己修復するので、急ぎではない。",
       "doneWhen": "非同期 Apply で上流 A を launch した同じサイクルに、A が in-flight の間は下流 B を launch しないこと（A が失敗したときに B の apply_count が 0 のままであること）をテストで示す。既存の wave・非同期 Apply のテストが通る。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/wave-launch）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:43:22.279Z",
-      "updatedAt": "2026-10-21T10:20:39.192Z",
+      "updatedAt": "2026-10-27T09:34:09.209Z",
       "closedAt": "2026-10-21T10:20:39.192Z",
       "extra": {}
     },
