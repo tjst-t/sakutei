@@ -299,21 +299,23 @@ func parseStepResource(step *workflow.Step, m map[string]any) error {
 // procedures would drive the same resource).
 func validateWorkflows(defs []workflow.Definition, resources []diff.DesiredResource) error {
 	names := map[string]bool{}
-	owner := map[string]string{}
+	// owner is keyed by the whole id (provider, scope, local): one Workflow may
+	// touch node1 of redfish-system and node1 of guest-os (#86).
+	owner := map[core.IDKey]string{}
 	for _, def := range defs {
 		if names[def.Name] {
 			return fmt.Errorf("workflow %s is declared twice", def.Name)
 		}
 		names[def.Name] = true
 		for _, id := range def.Resources() {
-			if other, ok := owner[id.Local]; ok {
+			if other, ok := owner[id.Key()]; ok {
 				return fmt.Errorf("target %s is in both workflow %s and %s", id.Local, other, def.Name)
 			}
-			owner[id.Local] = def.Name
+			owner[id.Key()] = def.Name
 		}
 	}
 	for _, r := range resources {
-		if name, ok := owner[r.ID.Local]; ok && r.UpdatePolicy.IsTask() {
+		if name, ok := owner[r.ID.Key()]; ok && r.UpdatePolicy.IsTask() {
 			return fmt.Errorf("resource %s is a target of workflow %s and also declares strategy: task; drive it with one of them", r.ID.Local, name)
 		}
 	}

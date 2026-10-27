@@ -1,0 +1,11 @@
+# 対象の一覧（guest-os provider が入れた OS を ssh で観測する、#86）。書き方は docs/remote.md。
+secret_store: secrets.json
+known_hosts: known_hosts          # make-iso.sh の SSH_HOST_KEY の公開鍵から書く（README の「回し方」）
+hosts:
+  node1:
+    address: 172.31.85.11
+    port: 2222                    # topology.clab.yml の hostfwd
+    user: root
+    private_key: secretref:file/ssh/node1
+    connect_timeout: 5s
+    timeout: 20s

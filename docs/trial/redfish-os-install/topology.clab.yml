@@ -2,7 +2,7 @@
 #
 # qemu-bmc 0.9.0 を 1 台。統合テスト（tests/integration/redfish）と違ってディスク（VM_DISK_SIZE）を
 # 付け、そこへ OS を入れる。./iso（make-iso.sh で作った ISO を置く）を /iso に読み取り専用で差す。
-# BMC は 172.31.85.11（HTTPS 443、自己署名、admin/password）。VM は Off から始まる（POWER_ON_AT_START の既定）。
+# BMC は 172.31.85.11（HTTPS 443、自己署名、admin/password）、入れた OS の ssh は 172.31.85.11:2222。VM は Off から始まる（POWER_ON_AT_START の既定）。
 name: sakutei-os
 
 mgmt:
@@ -27,3 +27,6 @@ topology:
         IPMI_USER: admin
         IPMI_PASS: password
         SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008501"
+        # ゲストの NIC は QEMU の user ネット。ゲストの sshd（22）をコンテナの 2222 に出し、
+        # ホストの sakutei（guest-os provider）が 172.31.85.11:2222 で入れた OS に届く（#86）
+        QEMU_EXTRA_ARGS: "-netdev user,id=g0,hostfwd=tcp::2222-:22 -device virtio-net-pci,netdev=g0"

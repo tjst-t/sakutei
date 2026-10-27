@@ -23,6 +23,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/ansible"
 	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
+	"github.com/tjst-t/sakutei/internal/guestos"
 	"github.com/tjst-t/sakutei/internal/nftables"
 	"github.com/tjst-t/sakutei/internal/postgresql"
 	"github.com/tjst-t/sakutei/internal/redfish"
@@ -66,6 +67,12 @@ import (
 //     config["zone_hosts"] manages config["zone"] (absolute) on those hosts.
 //     The local ids then start with "<host>/".  config["zone_reload"] is the
 //     command run after an Apply changed the zone (here, or on the host).
+//
+//   - "guest-os": observes the guest OS of the hosts config["guest_hosts"]
+//     ("node1,node2", from config["remote_config"]) over ssh: reachability,
+//     /etc/os-release and the markers config["guest_markers"]
+//     ("installed=/etc/sakutei-installed,...").  Observe only (Backlog #86):
+//     a Workflow's wait / require uses it (resource: guest-os/{target}).
 func DefaultRegistry() *ProviderRegistry {
 	r := New()
 
@@ -244,6 +251,24 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, errors.New("the ansible settings are not set: pass --ansible-config <file> (or ansible_config in --provider-config)")
 		}
 		return ansible.NewFromConfig(path)
+	})
+
+	// "guest-os" — ゲスト OS の観測だけ（§29.1、#86）。config["guest_hosts"] の
+	// ホストを config["remote_config"] の対象の一覧から ssh 越しに読む。
+	// config["guest_markers"] は導入の目印（"<名前>=<パス>,..."）。
+	r.Register(guestos.Name, func(config map[string]string) (provider.Provider, error) {
+		if config["guest_hosts"] == "" {
+			return nil, errors.New("guest-os: the hosts to observe are not set: guest_hosts (and remote_config) in --provider-config")
+		}
+		markers, err := guestos.ParseMarkers(config["guest_markers"])
+		if err != nil {
+			return nil, fmt.Errorf("guest-os: guest_markers: %w", err)
+		}
+		execs, _, err := remoteHosts(config, "guest_hosts")
+		if err != nil {
+			return nil, fmt.Errorf("guest-os: %w", err)
+		}
+		return guestos.New(execs, markers)
 	})
 
 	return r

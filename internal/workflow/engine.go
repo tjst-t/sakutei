@@ -235,6 +235,9 @@ type stepper struct {
 	run    Run
 	now    time.Time
 	events []Event
+	// obsErr は最後の Observe が読めなかった理由（リソースごと）。待ちの理由に
+	// 添えて、なぜ観測できないのか（届かない・認証の失敗など）を人に見せる（#86）。
+	obsErr map[core.IDKey]error
 }
 
 func (s *stepper) emit(kind EventKind, format string, args ...any) {
@@ -490,6 +493,9 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 			return stepFailed, fmt.Sprintf("%s %v timed out after %s", step.Kind, step.Fields, step.Timeout)
 		}
 		if obs.Availability != core.AvailabilityOk {
+			if err := s.obsErr[target.Key()]; err != nil {
+				return stepPending, fmt.Sprintf("waiting for %v (unobservable: %s; unknown ≠ absent)", step.Fields, shortReason(err))
+			}
 			return stepPending, fmt.Sprintf("waiting for %v (unobservable; unknown ≠ absent)", step.Fields)
 		}
 		return stepPending, fmt.Sprintf("waiting for %v", step.Fields)
@@ -582,17 +588,33 @@ func (s *stepper) observeAll(ctx context.Context) map[string]core.Observation {
 	return out
 }
 
-// observe は id を新しく Observe する。provider が無いか読めなければ unknown。
+// observe は id を新しく Observe する。provider が無いか読めなければ unknown
+// （読めなかった理由は obsErr に残す）。
 func (s *stepper) observe(ctx context.Context, id core.ID) core.Observation {
+	if s.obsErr == nil {
+		s.obsErr = map[core.IDKey]error{}
+	}
+	delete(s.obsErr, id.Key())
 	p := s.e.providerOf(id)
 	if p == nil {
+		s.obsErr[id.Key()] = fmt.Errorf("provider %s is unavailable", id.Provider)
 		return core.Observation{Availability: core.AvailabilityUnknown}
 	}
 	obs, err := p.Read(ctx, id.Local)
 	if err != nil {
+		s.obsErr[id.Key()] = err
 		return core.Observation{Availability: core.AvailabilityUnknown}
 	}
 	return obs
+}
+
+// shortReason は待ちの理由に添える error の頭（1 行、160 文字まで）。
+func shortReason(err error) string {
+	msg, _, _ := strings.Cut(strings.TrimSpace(err.Error()), "\n")
+	if r := []rune(msg); len(r) > 160 {
+		msg = string(r[:160]) + "…"
+	}
+	return msg
 }
 
 // countActive は active な対象の数を返す。override があれば target の観測値に

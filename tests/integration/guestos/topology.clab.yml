@@ -1,0 +1,49 @@
+# ゲスト OS の観測で OS 導入の完了を確かめる統合テスト（#86、§29.1）のトポロジ。
+#
+# qemu-bmc 0.10.0 を 3 台。docs/trial/redfish-os-install と同じくディスク（VM_DISK_SIZE）を
+# 付け、そこへ Alpine を入れる。VM の NIC は QEMU の user ネット（slirp）で、ゲストの 22 番を
+# コンテナの 2222 番に出す（hostfwd）。ホストの sakutei は BMC と同じアドレスの 2222 番に
+# ssh でつなぐと、ゲスト OS に届く。
+#
+#   host (sakutei) ── sakutei-os86 (172.31.86.0/24) ──┬─ node1 BMC 172.31.86.11、ゲストの ssh :2222
+#                                                      ├─ node2 BMC 172.31.86.12、ゲストの ssh :2222
+#                                                      └─ node3 BMC 172.31.86.13、ゲストの ssh :2222
+#
+# ./iso（テストが make-iso.sh で作る 3 つの ISO）を /iso に読み取り専用で差す。VM は Off から
+# 始まる（POWER_ON_AT_START の既定）。
+name: sakutei-os86
+
+mgmt:
+  network: sakutei-os86
+  ipv4-subnet: 172.31.86.0/24
+
+topology:
+  defaults:
+    kind: linux
+    image: ghcr.io/tjst-t/qemu-bmc:0.10.0@sha256:875c9b6490eb444821a5dbcde348716bedfce767563d4c683728b7185022526a
+    devices:
+      - /dev/kvm
+      - /dev/net/tun
+    binds:
+      - ./iso:/iso:ro
+    env:
+      VM_MEMORY: "512"
+      VM_CPUS: "1"
+      VM_DISK_SIZE: "2G"
+      IPMI_USER: "admin"
+      IPMI_PASS: "password"
+      QEMU_EXTRA_ARGS: "-netdev user,id=g0,hostfwd=tcp::2222-:22 -device virtio-net-pci,netdev=g0"
+
+  nodes:
+    node1:
+      mgmt-ipv4: 172.31.86.11
+      env:
+        SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008601"
+    node2:
+      mgmt-ipv4: 172.31.86.12
+      env:
+        SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008602"
+    node3:
+      mgmt-ipv4: 172.31.86.13
+      env:
+        SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008603"

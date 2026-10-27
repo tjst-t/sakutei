@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote
+.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -125,6 +125,24 @@ integration-remote:
 	if [ -n "$$left" ]; then \
 	  echo "integration-remote: containers were left behind; removing: $$left"; \
 	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	exit $$status
+
+# ゲスト OS の観測で OS 導入の完了を確かめる統合テスト（#86）。qemu-bmc 0.10.0 を
+# containerlab で 3 台立て、Alpine の自動インストールの ISO（docs/trial/
+# redfish-os-install/make-iso.sh で作る）で本当に OS を入れ、終わったら（失敗しても）
+# lab を消す。KVM・docker・containerlab・sudo（パスワードなし）・ssh・xorriso・curl と、
+# 初回は Alpine の ISO とパッケージを取るネットワークが要る（取ったものは
+# SAKUTEI_IT_CACHE、既定 ~/.cache/sakutei-it/alpine に残す）。check・test・CI には
+# 入れない。手順と結果は docs/providers/guest-os.md の「統合テスト」。
+GUESTOS_IT := ./tests/integration/guestos/
+integration-guestos:
+	go vet -tags integration_guestos $(GUESTOS_IT)
+	@status=0; \
+	go test -tags integration_guestos -count=1 -v -timeout 30m $(GUESTOS_IT) || status=$$?; \
+	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^clab-sakutei-os86-'; then \
+	  echo 'integration-guestos: the lab was left behind; destroying it'; \
+	  sudo -n containerlab destroy --name sakutei-os86 --cleanup || status=1; \
 	fi; \
 	exit $$status
 

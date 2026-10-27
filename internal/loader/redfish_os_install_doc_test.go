@@ -48,8 +48,9 @@ func TestRedfishOSInstallTrialIntentLoads(t *testing.T) {
 	if def.Name != "os-install" || len(def.Targets()) != 1 || def.Targets()[0].Provider != "redfish-system" || def.Targets()[0].Local != "node1" {
 		t.Errorf("workflow = %s, targets = %+v", def.Name, def.Targets())
 	}
-	// #87: CD を差す → 差さったことを確かめる → CD 起動で電源オン → 電源オフを待つ → ディスクから起動。
-	kinds := []workflow.StepKind{workflow.StepApply, workflow.StepRequire, workflow.StepApply, workflow.StepWait, workflow.StepApply}
+	// #87: CD を差す → 差さったことを確かめる → CD 起動で電源オン → 電源オフを待つ → ディスクから起動
+	// → #86: 入れた OS が目印つきで起動したのを待つ。
+	kinds := []workflow.StepKind{workflow.StepApply, workflow.StepRequire, workflow.StepApply, workflow.StepWait, workflow.StepApply, workflow.StepWait}
 	if len(def.Steps) != len(kinds) {
 		t.Fatalf("steps = %+v", def.Steps)
 	}
@@ -79,8 +80,13 @@ func TestRedfishOSInstallTrialIntentLoads(t *testing.T) {
 	if s5.Fields["boot_enabled"] != "Disabled" || s5.Fields["power"] != "On" {
 		t.Errorf("steps[4] = %+v", s5)
 	}
-	// Workflow が触るのは node1 と node1/cd（done まで収束ループが触らない）。
-	if res := def.Resources(); len(res) != 2 || res[1].Local != "node1/cd" {
+	// #86: 入れた OS（guest-os/node1）が目印つきで起動したのを待つ。
+	if s6 := def.Steps[5]; s6.ResourceFor(node1).Provider != "guest-os" || s6.ResourceFor(node1).Local != "node1" ||
+		s6.Fields["os_id"] != "alpine" || s6.Fields["marker.installed"] == "" || s6.Timeout != 10*time.Minute {
+		t.Errorf("steps[5] = %+v", s6)
+	}
+	// Workflow が触るのは node1 と node1/cd と guest-os の node1（done まで収束ループが触らない）。
+	if res := def.Resources(); len(res) != 3 || res[1].Local != "node1/cd" || res[2].Provider != "guest-os" {
 		t.Errorf("Resources = %+v", res)
 	}
 }

@@ -7,6 +7,17 @@
 # リポジトリの「Go の標準ライブラリだけ」の決まりの外にあり、make check・CI からは呼ばない。
 # 要るもの: curl・xorriso・GNU tar・docker（alpine:3.24 のイメージで apk fetch する。
 # sudo が要るなら DOCKER="sudo docker"）。ネットワークから ISO とパッケージを取る。
+#
+# 環境変数（どれも省略できる）:
+#   ALPINE_ISO=<file>           手元の元の ISO を使う（取りに行かない）
+#   CACHE_DIR=<dir>             取った ISO と /extra のパッケージをここに残し、次から使い回す
+#   INSTALL_MARK=<値>           入れた OS の目印（/etc/sakutei-installed の中身。既定 sakutei-trial）。
+#                               英数字と . _ : - だけ。導入ごとに変えると、前の導入の OS と見分けられる
+#   SSH_AUTHORIZED_KEYS=<file>  入れた OS で sshd を動かし（eth0 は DHCP）、root にこの鍵で入れる
+#                               （guest-os provider で観測するため）
+#   SSH_HOST_KEY=<file>         入れた OS のホスト鍵（ed25519 の秘密鍵。<file>.pub も要る）。
+#                               known_hosts を前もって書ける（無ければ sshd が初回に作る）
+#   AUTOINSTALL_FAIL=disk|marker  試験用にわざと失敗する ISO にする（autoinstall.start を見る）
 set -eu
 
 VER=${ALPINE_VERSION:-3.24.3}
@@ -16,22 +27,39 @@ MIRROR=${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
 DOCKER=${DOCKER:-docker}
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=$(realpath -m "${1:-sakutei-autoinstall.iso}")
+MARK=${INSTALL_MARK:-sakutei-trial}
+FAIL=${AUTOINSTALL_FAIL:-}
+case "$MARK" in *[!A-Za-z0-9._:-]*|'') echo "INSTALL_MARK: only letters, digits and . _ : - ($MARK)" >&2; exit 1;; esac
+case "$FAIL" in ''|disk|marker) ;; *) echo "AUTOINSTALL_FAIL: want disk or marker ($FAIL)" >&2; exit 1;; esac
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
+CACHE=${CACHE_DIR:-$W/cache}
+mkdir -p "$CACHE"
 
 # 1. 元の ISO（ALPINE_ISO で手元のファイルを渡せる）
 ISO=${ALPINE_ISO:-}
 if [ -z "$ISO" ]; then
-  ISO=$W/alpine-virt-$VER-$ARCH.iso
-  curl -fsSL -o "$ISO" "$MIRROR/$BRANCH/releases/$ARCH/alpine-virt-$VER-$ARCH.iso"
+  ISO=$CACHE/alpine-virt-$VER-$ARCH.iso
+  if [ ! -s "$ISO" ]; then
+    curl -fsSL -o "$ISO.part" "$MIRROR/$BRANCH/releases/$ARCH/alpine-virt-$VER-$ARCH.iso"
+    mv "$ISO.part" "$ISO"
+  fi
 fi
 
 # 2. ISO の中のリポジトリ /extra。virt の ISO にはカーネルのパッケージが無く、setup-disk -m sys が
-#    入れる linux-virt・syslinux・mkinitfs などを足す。索引は公式のもの（署名つき）をそのまま置く。
-mkdir -p "$W/extra/$ARCH"
-$DOCKER run --rm -v "$W/extra/$ARCH:/out" "alpine:${BRANCH#v}" sh -c \
-  "apk update -q && apk fetch -q -R -o /out alpine-base linux-virt syslinux mkinitfs e2fsprogs sfdisk lsblk blkid util-linux-misc mtools && chmod -R a+rX /out"
-curl -fsSL -o "$W/extra/$ARCH/APKINDEX.tar.gz" "$MIRROR/$BRANCH/main/$ARCH/APKINDEX.tar.gz"
+#    入れる linux-virt・syslinux・mkinitfs などを足す（openssh は SSH_AUTHORIZED_KEYS のときに入れる）。
+#    索引は公式のもの（署名つき）をそのまま置く。
+PKGS="alpine-base linux-virt syslinux mkinitfs e2fsprogs sfdisk lsblk blkid util-linux-misc mtools openssh"
+EXTRA=$CACHE/extra-$VER-$(printf '%s' "$PKGS" | cksum | cut -d' ' -f1)
+if [ ! -s "$EXTRA/$ARCH/APKINDEX.tar.gz" ]; then
+  rm -rf "$EXTRA.part"
+  mkdir -p "$EXTRA.part/$ARCH"
+  $DOCKER run --rm -v "$EXTRA.part/$ARCH:/out" "alpine:${BRANCH#v}" sh -c \
+    "apk update -q && apk fetch -q -R -o /out $PKGS && chmod -R a+rwX /out"
+  curl -fsSL -o "$EXTRA.part/$ARCH/APKINDEX.tar.gz" "$MIRROR/$BRANCH/main/$ARCH/APKINDEX.tar.gz"
+  rm -rf "$EXTRA"
+  mv "$EXTRA.part" "$EXTRA"
+fi
 
 # 3. apkovl（live 環境の /etc に重ねる）。apkovl を使うと既定の runlevel が入らないので、
 #    sysinit に modloop を入れる（入れないとカーネルのモジュールが使えず、インストールが通らない）。
@@ -42,6 +70,17 @@ chmod 755 "$O/local.d/autoinstall.start"
 echo sakutei-installer > "$O/hostname"
 echo alpine-base > "$O/apk/world"
 echo /media/cdrom/apks > "$O/apk/repositories"
+printf 'MARK=%s\nFAIL=%s\n' "$MARK" "$FAIL" > "$O/sakutei-autoinstall.conf"
+if [ -n "${SSH_AUTHORIZED_KEYS:-}" ]; then
+  mkdir -p "$O/sakutei-ssh"
+  cp "$SSH_AUTHORIZED_KEYS" "$O/sakutei-ssh/authorized_keys"
+  if [ -n "${SSH_HOST_KEY:-}" ]; then
+    cp "$SSH_HOST_KEY" "$O/sakutei-ssh/ssh_host_ed25519_key"
+    cp "$SSH_HOST_KEY.pub" "$O/sakutei-ssh/ssh_host_ed25519_key.pub"
+  fi
+  chmod 700 "$O/sakutei-ssh"
+  chmod 600 "$O/sakutei-ssh/"*
+fi
 for s in devfs dmesg mdev hwdrivers modloop; do ln -s "/etc/init.d/$s" "$O/runlevels/sysinit/$s"; done
 for s in modules hwclock hostname sysctl bootmisc syslog; do ln -s "/etc/init.d/$s" "$O/runlevels/boot/$s"; done
 ln -s /etc/init.d/local "$O/runlevels/default/local"
@@ -57,7 +96,7 @@ grep -q 'console=ttyS0' "$W/syslinux.cfg" || sed -i 's|^\(APPEND .*\)$|\1 consol
 # 5. 起動の設定（El Torito・isohybrid）は元の ISO のまま、ファイルだけ足して書き出す
 rm -f "$OUT"
 xorriso -indev "$ISO" -outdev "$OUT" -boot_image any replay \
-  -map "$W/extra" /extra \
+  -map "$EXTRA" /extra \
   -map "$W/localhost.apkovl.tar.gz" /localhost.apkovl.tar.gz \
   -map "$W/syslinux.cfg" /boot/syslinux/syslinux.cfg 2>/dev/null
 echo "wrote $OUT"

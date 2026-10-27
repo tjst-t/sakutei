@@ -1,0 +1,6 @@
+# provider ごとの設定（--provider-config）。guest-os は入れた OS を観測するだけ（#86）。
+providers:
+  guest-os:
+    remote_config: hosts.yaml
+    guest_hosts: node1
+    guest_markers: installed=/etc/sakutei-installed
