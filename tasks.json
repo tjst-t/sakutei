@@ -1056,7 +1056,7 @@
       "number": 54,
       "kind": "task",
       "title": "v2: Prometheus exporter（収束の状態を metrics で出す）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v2-task-ui",
       "dependsOn": [
         "event-notify-sink"
@@ -1068,12 +1068,12 @@
       ],
       "body": "設計 §27.5。drifted の件数・予算の残り・halt の有無・cycle の所要時間・Observe の所要時間（§16 の早期警戒線）・unknown の件数などを Prometheus 形式で出す。\n\n- stdlib だけで text exposition format を書く（client ライブラリは入れない。リポジトリは stdlib のみの方針）。\n- daemon に /metrics を足す（待ち受けは明示したときだけ）。\n- 時系列監視・通知は作らない（§27.6）。",
       "doneWhen": "daemon の /metrics（待ち受けは明示したときだけ）が Prometheus の text format で主要な値（drifted・unknown の件数、予算の残り、halt の有無、cycle と Observe の所要時間）を返し、形式のテストを通る。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/v2-prometheus-exporter-metrics）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-27T14:02:29.975Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-27T14:23:31.984Z",
+      "closedAt": "2026-10-27T14:23:31.984Z",
       "extra": {}
     },
     {
