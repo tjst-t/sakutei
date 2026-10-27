@@ -488,11 +488,11 @@
       "labels": [],
       "body": "設計 §17。v1a で型だけ切った --claim を実際に効かせる。fencing の世代で二重 claim を検知して止める。再シャード（drain → claim 変更 PR → fencing 世代更新）の手順を用意する。手順を Workflow で自動化するには v1.5 の最小 Workflow が要るので、v1b では手動手順 + 検知までに留めてよい。",
       "doneWhen": "2 つのデーモンが同じ scope を claim すると片方が fencing で止まり、claim が分かれていれば互いの scope を Observe しないことをテストで示す",
-      "resolution": "Factory が取り込みました（factory/v1b-claim-fencing-claim）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:44:17.592Z",
-      "updatedAt": "2026-10-20T12:45:55.508Z",
+      "updatedAt": "2026-10-27T09:33:20.094Z",
       "closedAt": "2026-10-20T12:45:55.508Z",
       "extra": {}
     },
