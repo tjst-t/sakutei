@@ -3193,7 +3193,7 @@
       "number": 136,
       "kind": "task",
       "title": "デーモンの読み取り専用の HTTP：GET /status・/plan・/events（SSE）・/graph と、status に claim とミラーの状態",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "sakutei",
       "dependsOn": [
         "plan-json"
@@ -3207,7 +3207,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T14:31:10.032Z",
-      "updatedAt": "2026-10-27T14:56:07.347Z",
+      "updatedAt": "2026-10-27T14:56:14.361Z",
       "closedAt": null,
       "extra": {}
     },
