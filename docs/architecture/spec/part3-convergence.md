@@ -253,6 +253,12 @@ Vault が sealed-restart 中は世代解決も死ぬため、SecretRef のキャ
   halt する。どちらも「前回比 50% 未満で halt」という同じ規律である（v3.11 でそろえた）。
 - 基準は S3（メモリ）に置く。再起動後の最初の取得はそのまま受け入れる（期待基数を宣言していれば、それで下限を守る）。
 - inventory の内容ハッシュ（並び順に依存しない）を rendered_revision の外部入力に含める（cause E。§9.4）。
+- **一回性の `status`・`plan`・`reconcile` も同じ合成をする**（#115）。常駐と同じ `--inventory-file`・`--inventory-min-ratio`・
+  `--inventory-expected-min` を持ち、同じ関数（`InventoryGuard` + `FileInventorySource`、同じ既定値）で desired を作る。
+  これが無いと、inventory 由来のリソースが status で unmanaged に見え、plan・reconcile も常駐と違う desired で動く。
+  一回性のコマンドは前回の件数を持たないので、急減判定は `--inventory-expected-min` だけが効く（`--inventory-min-ratio` は
+  受け付けるが効かない）。前回の inventory も無いので、不達・incomplete のどちらでも、何も Observe・Apply せずに終了コード 1 で止まる
+  （incomplete≠empty）。
 
 ### §9.3 TTL キャッシュと平常時の頻度規律
 

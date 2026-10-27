@@ -99,6 +99,9 @@ func runPlan(args []string) {
 	// (inventory/allocation/secret) with fakes so no production pool/secret is
 	// contacted (§26.2).  When set, phase 1 resolves through the DevenvProfile's
 	// substituted inventory cache instead of the plain --inventory-hash resolver.
+	// #115: the daemon's inventory composition (§9.1, §9.2), so plan shows
+	// the same desired the daemon converges.
+	invFlags := addInventoryFlags(fs, true)
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	allocURL := fs.String("alloc-url", "", allocURLUsage)
@@ -151,9 +154,14 @@ func runPlan(args []string) {
 		fmt.Fprintf(logErr, "sakutei plan: load intent: %v\n", err)
 		os.Exit(1)
 	}
-	intentResources, rev := in.Resources, in.Revision
 	var externalInputs []string
 	recomputeRendered := false
+	// #115: render phase 1 — inventory composition, as in the daemon.
+	if input := composeOneShotInventory("sakutei plan", invFlags, &in, logErr); input != "" {
+		externalInputs = append(externalInputs, input)
+		recomputeRendered = true
+	}
+	intentResources, rev := in.Resources, in.Revision
 
 	// S072a14-2: render phase 1 — external input resolution (§9.1 フェーズ1).
 	// Build a FakeInventoryResolver from the --inventory-hash and

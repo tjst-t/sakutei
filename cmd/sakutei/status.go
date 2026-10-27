@@ -117,6 +117,10 @@ func runStatus(args []string) {
 	claim := fs.String("claim", "",
 		"scope-selector restricting the report to a claim, e.g. site=tokyo,cluster=prod (§17.1); empty=whole world")
 
+	// #115: the daemon's inventory composition (§9.1, §9.2): without it the
+	// inventory's resources would show as UNMANAGED.
+	invFlags := addInventoryFlags(fs, true)
+
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
@@ -141,6 +145,11 @@ func runStatus(args []string) {
 		fmt.Fprintf(os.Stderr, "sakutei status: load intent: %v\n", err)
 		os.Exit(1)
 	}
+	// #115: render phase 1 — inventory composition, as in the daemon.
+	var externalInputs []string
+	if input := composeOneShotInventory("sakutei status", invFlags, &in, os.Stderr); input != "" {
+		externalInputs = append(externalInputs, input)
+	}
 	intentResources, rev := in.Resources, in.Revision
 
 	// #24: render phase 1 — allocation.  status is read-only: it only looks
@@ -156,8 +165,9 @@ func runStatus(args []string) {
 		os.Exit(1)
 	}
 	intentResources = allocRes.Resources
-	if len(allocRes.Inputs) > 0 {
-		rev.RenderedRevision = revision.ComputeRenderedRevision(core.NewScope(nil), rev.IntentRevision, allocRes.Inputs)
+	externalInputs = append(externalInputs, allocRes.Inputs...)
+	if len(externalInputs) > 0 {
+		rev.RenderedRevision = revision.ComputeRenderedRevision(core.NewScope(nil), rev.IntentRevision, externalInputs)
 	}
 	for _, pa := range allocRes.Pending {
 		fmt.Fprintln(os.Stderr, pendingLine("status", pa))

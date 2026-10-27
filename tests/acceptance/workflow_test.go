@@ -103,7 +103,10 @@ func newWFRig(t *testing.T, intent string) *wfRig {
 		auditPath: filepath.Join(root, "audit.jsonl"),
 		taskPath:  filepath.Join(root, "tasks.json"),
 		fp:        fakeprovider.New(filepath.Join(root, "state.json")),
-		clock:     &taskClock{now: time.Date(2026, 10, 24, 3, 0, 0, 0, time.UTC)},
+		// The CLI verbs (approve / reject) judge the gate deadline by the real
+		// clock, so the rig starts from it: a fixed date expires the gates once
+		// the calendar passes it.
+		clock: &taskClock{now: time.Now().UTC().Truncate(time.Second)},
 	}
 	if err := os.MkdirAll(r.intentDir, 0o755); err != nil {
 		t.Fatal(err)

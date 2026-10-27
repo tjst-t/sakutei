@@ -186,6 +186,30 @@ func (g *InventoryGuard) Compose(ctx context.Context) InventoryResult {
 	return InventoryResult{Resources: fetched, Input: inventoryInput(fetched)}
 }
 
+// ComposeInventory is render phase 1's inventory step, shared by the daemon
+// and the one-shot status/plan/reconcile (#115): it runs g.Compose and, unless
+// the result halts, appends the inventory resources to intent.  An inventory
+// resource whose Local ID is also declared in intent is an error: which one
+// wins would otherwise be silent (same rule as the loader's duplicate-ID
+// check, D-2).  When res.Halt, merged is nil and the caller must not converge.
+func ComposeInventory(ctx context.Context, g *InventoryGuard, intent []diff.DesiredResource) (merged []diff.DesiredResource, res InventoryResult, err error) {
+	res = g.Compose(ctx)
+	if res.Halt {
+		return nil, res, nil
+	}
+	seen := make(map[string]struct{}, len(intent))
+	for _, r := range intent {
+		seen[r.ID.Local] = struct{}{}
+	}
+	for _, r := range res.Resources {
+		if _, dup := seen[r.ID.Local]; dup {
+			return nil, res, fmt.Errorf("render phase 1 (inventory): resource id %q is declared in both intent and inventory", r.ID.Local)
+		}
+	}
+	merged = append(append([]diff.DesiredResource(nil), intent...), res.Resources...)
+	return merged, res, nil
+}
+
 // inventoryInput hashes the inventory independently of item order, so a CMDB
 // that reorders its export does not look like an inventory change (§9.3).
 func inventoryInput(rs []diff.DesiredResource) string {

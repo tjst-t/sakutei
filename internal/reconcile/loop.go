@@ -1346,7 +1346,7 @@ func runCycleAsync(
 	// emit an InventoryIncomplete Event, instead of rendering the missing half
 	// as "absent from desired" and letting closed-world prune delete it.
 	if cfg.Inventory != nil {
-		inv := cfg.Inventory.Compose(ctx)
+		merged, inv, invErr := render.ComposeInventory(ctx, cfg.Inventory, in.Resources)
 		if inv.UnreachableFallback {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: ExternalInputUnreachable: %s; using the previous inventory (§9.2 last-value-on-unreachable)\n", inv.Reason)
 		}
@@ -1359,10 +1359,10 @@ func runCycleAsync(
 			return CycleResult{InventoryHalted: true, InventoryReason: inv.Reason,
 				SkippedDueToUnreachable: !inv.Incomplete}, nil
 		}
-		if err := checkInventoryIDs(in.Resources, inv.Resources); err != nil {
-			return CycleResult{}, err
+		if invErr != nil {
+			return CycleResult{}, invErr
 		}
-		in.Resources = append(append([]diff.DesiredResource(nil), in.Resources...), inv.Resources...)
+		in.Resources = merged
 		phase1ExternalInputHashes = append(phase1ExternalInputHashes, inv.Input)
 	}
 
@@ -2210,22 +2210,6 @@ func runCycleAsync(
 
 		level: cov,
 	}, nil
-}
-
-// checkInventoryIDs rejects an inventory resource whose Local ID is also
-// declared in intent: which one wins would otherwise be silent (same rule as
-// the loader's duplicate-ID check, D-2).
-func checkInventoryIDs(intent, inventory []diff.DesiredResource) error {
-	seen := make(map[string]struct{}, len(intent))
-	for _, r := range intent {
-		seen[r.ID.Local] = struct{}{}
-	}
-	for _, r := range inventory {
-		if _, dup := seen[r.ID.Local]; dup {
-			return fmt.Errorf("render phase 1 (inventory): resource id %q is declared in both intent and inventory", r.ID.Local)
-		}
-	}
-	return nil
 }
 
 // filterPlansByBudget filters the plans map according to the budget decision.

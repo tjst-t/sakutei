@@ -120,6 +120,9 @@ func runReconcile(args []string) {
 		"S072a14-2: inject deterministic inventory hash into rendered_revision (fake phase 1; empty=no external input)")
 	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
 		"S072a14-2: simulate an unreachable ExternalInputResolver (triggers last-value-on-unreachable path §9.2)")
+	// #115: the daemon's inventory composition (§9.1, §9.2), so a manual
+	// reconcile converges the same desired the daemon does.
+	invFlags := addInventoryFlags(fs, true)
 
 	// Scf7762-2: change-budget flags (§13).
 	maxDestructivePerCycle := fs.Int("max-destructive-per-cycle", 0,
@@ -257,9 +260,14 @@ func runReconcile(args []string) {
 			workflowOf[id.Local] = def.Name
 		}
 	}
-	intentResources, rev := in.Resources, in.Revision
 	var externalInputs []string
 	recomputeRendered := false
+	// #115: render phase 1 — inventory composition, as in the daemon.
+	if input := composeOneShotInventory("sakutei reconcile", invFlags, &in, logErr); input != "" {
+		externalInputs = append(externalInputs, input)
+		recomputeRendered = true
+	}
+	intentResources, rev := in.Resources, in.Revision
 
 	// S072a14-2: render phase 1 — external input resolution (§9.1 フェーズ1).
 	if *inventoryHash != "" || *inventoryUnreachable {
