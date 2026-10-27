@@ -3258,6 +3258,50 @@
       "updatedAt": "2026-10-27T15:23:34.241Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "os-install-task",
+      "number": 139,
+      "kind": "task",
+      "title": "OS の導入の手順を部品にする：1 回だけ CD から起動・完了をゲスト OS で確かめる・メディアを抜く、と自動導入の応答ファイル",
+      "status": "ready",
+      "parent": "os-bios",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "## なぜ\n#87（Workflow の手順ごとの対象・前提条件）と #86（ゲスト OS の観測）で、OS の導入を 1 つの Workflow に書けるようになった。ただし、(1) 起動先の上書きは Continuous しか宣言できず（Once は収束しないので計画で断る、§29.1）、導入のあとに戻す手順を利用者が書く必要がある。(2) 自動導入の応答ファイル（ホスト名・アドレス・Sakutei の ssh の公開鍵・導入の目印）を宣言から作る口が無い。\n\n## やること\n- Workflow の手順に、一度きりの操作を書けるようにする（収束の宣言ではなく手順として）：Redfish の「次の 1 回だけ CD から起動」（boot override Once）と「再起動」（Reset。既定は GracefulRestart、宣言で ForceRestart。ForceRestart は破壊的として予算に数える）。手順の形（例 `action: { resource, op: boot_once, target: Cd }`）は実装で決め §6.3・§29.1 に書く。収束の宣言で Once を断る今の決まりは変えない。\n- **OS の導入の例の Workflow**（docs と受け入れテスト）：CD を差す → 差さったことを require → 1 回だけ CD から起動 → 再起動（または電源 On）→ guest-os で目印つきの起動を require（timeout で halt）→ CD を抜く。起動先の宣言は Disabled のままでよい。\n- **自動導入の応答ファイルを宣言から作る**：render の仕組みで、利用者の雛形（テンプレート）に対象ごとの値（ホスト名・アドレス・公開鍵・目印）を入れたファイルを書き出す（置き場は設定。ISO や HTTP の置き場に入れるのは利用者の側、またはファイルを書く provider）。雛形の言語は stdlib の text/template。秘密は書き出さない（公開鍵だけ）。OS の種類ごとの雛形は例として docs に 1 つ（試験で使うもの）。\n- 文書：docs/trial/redfish-os-install（または docs/providers/redfish.md）の手順をこの形に更新。\n\n## 確かめ方\n統合テスト（make integration-guestos を広げる）：qemu-bmc の空のディスクのサーバに、宣言だけで OS が入り、完了を guest-os で確かめ、CD が抜かれ、起動先の上書きが残らない。失敗する導入では先へ進まない。応答ファイルが宣言から作られる。make check・make test-race。\n\n## 決まり\nGo は stdlib のみ。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T15:24:44.791Z",
+      "updatedAt": "2026-10-27T15:24:44.791Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "redfish-bios",
+      "number": 140,
+      "kind": "task",
+      "title": "Redfish provider：BIOS の設定（Bios・Bios/Settings）を宣言で合わせる",
+      "status": "ready",
+      "parent": "os-bios",
+      "dependsOn": [
+        "os-install-task"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "## やること\n- 新しい種類 `redfish-bios`（ID はノード名）。宣言した属性（`attributes`：名前と値の一覧）だけを管理し、書かない属性は触らない。\n- 観測：`Systems/<id>/Bios` の Attributes。保留中の変更（`Bios/Settings`、次の再起動で効く）も読み、「保留中」として区別する（保留中で宣言どおりなら、同じ変更を重ねて出さない。converging として扱う）。\n- Apply：`Bios/Settings` に PATCH。再起動はしない（反映には再起動が要ることを docs に書き、再起動は Workflow の手順で行う）。AttributeRegistry があれば属性名と値の型を確かめて計画の時点で断る。\n- BMC が Bios を持たなければ、宣言したときだけ分かるエラー。届かないのは unknown。\n- 偽 BMC（redfishtest）に Bios・Bios/Settings を足して契約テスト。qemu-bmc 0.10.0 の Bios で統合テスト（make integration-redfish に項目を足す）。qemu-bmc の振る舞いは着手時に確かめ、合わなければ分かったことを docs に書く。\n- 文書：docs/providers/redfish.md、設計書 §29.1。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T15:24:44.791Z",
+      "updatedAt": "2026-10-27T15:24:44.791Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
