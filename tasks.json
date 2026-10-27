@@ -2750,7 +2750,7 @@
       "number": 117,
       "kind": "task",
       "title": "status は観測エラーで止めず、観測できないものとして最後まで報告する（#109 の 5）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "w1-provider-cli",
       "dependsOn": [
         "w1-inventory-file-oneshot"
@@ -2764,7 +2764,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T07:46:45.249Z",
-      "updatedAt": "2026-10-27T07:47:02.778Z",
+      "updatedAt": "2026-10-27T08:06:01.815Z",
       "closedAt": null,
       "extra": {}
     },
