@@ -2796,7 +2796,7 @@
       "number": 119,
       "kind": "task",
       "title": "外の provider を足す口：CLI の入口を pkg/cli に出し、provider の設定をファイルで渡す（C0）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "w1-provider-cli",
       "dependsOn": [
         "w1-allocator-release-cli",
@@ -2811,7 +2811,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T07:46:45.249Z",
-      "updatedAt": "2026-10-27T07:47:13.957Z",
+      "updatedAt": "2026-10-27T08:36:52.478Z",
       "closedAt": null,
       "extra": {}
     }
