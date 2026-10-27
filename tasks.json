@@ -3234,6 +3234,30 @@
       "updatedAt": "2026-10-27T14:32:16.046Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "os-bios",
+      "number": 138,
+      "kind": "story",
+      "title": "空の物理サーバを使える状態にする：OS の導入の手順と BIOS の設定",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "os-install",
+        "redfish"
+      ],
+      "body": "BMC だけが見えている空のサーバに、宣言だけで OS を入れ、導入の完了をゲスト OS の観測で確かめる（#86・#87 の上に）。BIOS の設定を宣言で合わせる。入れ直しを宣言で起こす（#88）。\n\n決定：2026-10-27。",
+      "doneWhen": "子タスクがすべて done、make check・make test-race と make integration-redfish・make integration-guestos が通り、設計書と CHANGELOG に反映して main に push 済み",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-27T15:23:34.241Z",
+      "updatedAt": "2026-10-27T15:23:34.241Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
