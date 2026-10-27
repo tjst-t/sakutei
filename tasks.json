@@ -1056,7 +1056,7 @@
       "number": 54,
       "kind": "task",
       "title": "v2: Prometheus exporter（収束の状態を metrics で出す）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v2-task-ui",
       "dependsOn": [
         "event-notify-sink"
@@ -1072,7 +1072,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-27T11:27:44.205Z",
+      "updatedAt": "2026-10-27T14:02:29.975Z",
       "closedAt": null,
       "extra": {}
     },
