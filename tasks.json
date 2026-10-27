@@ -1539,11 +1539,11 @@
       "labels": [],
       "body": "設計書 v3.15 §29.1「Redfish の BMC provider」に従う。新しいパッケージ internal/redfish に作る（stdlib のみ、gofish 不可）。\n\n## 作るもの\n- Client（interface と net/http 実装）：Basic 認証、HTTPS。CA ファイルの指定か、明示した insecure_skip_verify のときだけ自己署名を許す。タイムアウト付き。\n  - GetSystem：/redfish/v1/Systems のメンバー（設定で system パスを指定でき、無ければ最初の 1 つ）を読み、PowerState・UUID・MemorySummary.TotalSystemMemoryGiB・ProcessorSummary.Count・Boot（BootSourceOverrideEnabled・Target・Mode・Target@Redfish.AllowableValues）・ResetType@Redfish.AllowableValues（Actions の #ComputerSystem.Reset の target も）・EthernetInterfaces を辿った MACAddress の一覧を返す。\n  - Reset(type)、PatchBoot(enabled, target)：204/200 を成功とし本文は期待しない。202（Task）は使わない。\n  - GetVirtualMedia／InsertMedia(image)／EjectMedia：Managers のメンバー（設定で指定でき、無ければ最初）の VirtualMedia から CD を含むもの（MediaTypes に CD）を使う。Inserted・Image を返す。\n- エラーの分け方：届かない・タイムアウト・5xx・認証以外の想定外は「到達できない」（provider 側で Unknown にする）。401/403 は PermanentError 相当にできる形で区別する。4xx（400 など）は内容つきで返す。\n- **偽 BMC**（internal/redfish/redfishtest など、テストからも統合テストの代役としても使える）：httptest.NewTLSServer で qemu-bmc v0.8.0 の振る舞いを真似る——PowerState On/Off/PoweringOff/PoweringOn、GracefulShutdown で PoweringOff を経て Off（応えない設定にすると一定時間で On に戻る）、途中で別の電源操作が来ると打ち切る、Boot の Once は電源 On（起動）で Disabled・None に戻る、Disabled でも Target を返し続ける、AllowableValues、VirtualMedia の Insert/Eject と取得失敗（Inserted false に戻る）、止める（到達不能にする）口、受けた要求の記録。\n\n## 確かめ方\nクライアントの単体テストを偽 BMC に対して書く（認証失敗・自己署名の拒否と明示許可・5xx・タイムアウトの分類を含む）。make check と make test-race が通る。",
       "doneWhen": "internal/redfish のクライアントが偽 BMC に対して System・Reset・Boot の PATCH・VirtualMedia の Insert/Eject を往復でき、自己署名は明示したときだけ許し、到達不能と認証失敗を区別して返す単体テストが通る。make check・make test-race が合格する",
-      "resolution": "Factory が取り込みました（factory/redfish-http-bmc-httptest）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-22T03:31:46.414Z",
-      "updatedAt": "2026-10-22T03:43:36.470Z",
+      "updatedAt": "2026-10-27T09:36:15.429Z",
       "closedAt": "2026-10-22T03:43:36.470Z",
       "extra": {}
     },
