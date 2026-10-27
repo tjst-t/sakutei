@@ -24,6 +24,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/redfish"
 	"github.com/tjst-t/sakutei/internal/redfish/bmcconfig"
 	"github.com/tjst-t/sakutei/internal/redfish/system"
+	"github.com/tjst-t/sakutei/internal/s3bucket"
 	"github.com/tjst-t/sakutei/internal/sqlmigrate"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
@@ -160,6 +161,18 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, errors.New("the database list is not set: pass --sqlmigrate-config <file>")
 		}
 		return sqlmigrate.NewFromConfig(path)
+	})
+
+	// "s3-bucket" — S3 互換の API のバケット（§29.1、#122）。
+	// config["s3_config"] は endpoint の一覧（--s3-config、または
+	// --provider-config の s3-bucket の s3_config）。--state は代わりにならない
+	// （endpoint と資格は推測しない）。
+	r.Register(s3bucket.Name, func(config map[string]string) (provider.Provider, error) {
+		path := config["s3_config"]
+		if path == "" {
+			return nil, errors.New("the endpoint list is not set: pass --s3-config <file> (or s3_config in --provider-config)")
+		}
+		return s3bucket.NewFromConfig(path)
 	})
 
 	return r

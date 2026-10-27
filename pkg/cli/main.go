@@ -174,6 +174,7 @@ func runDaemon() {
 	zoneScope := zoneScopeFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
+	s3Config := s3ConfigFlag(fs)
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	rulesetScope := rulesetScopeFlag(fs)
@@ -361,6 +362,9 @@ func runDaemon() {
 	if *sqlmigrateConfig != "" {
 		providerConfig["sqlmigrate_config"] = *sqlmigrateConfig
 	}
+	if *s3Config != "" {
+		providerConfig["s3_config"] = *s3Config
+	}
 
 	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
 	// A provider without a version cannot support ghost-diff (cause C) detection;
@@ -421,7 +425,7 @@ func runDaemon() {
 	cfg := reconcile.Config{
 		IntentDir:     *intentDir,
 		StatePath:     *statePath,
-		ProviderFiles: providerFilesText(fs, *statePath, *zonePath, *rulesetPath, *redfishConfig),
+		ProviderFiles: providerFilesText(fs, *statePath, *zonePath, *rulesetPath, *redfishConfig, *s3Config),
 		Providers: func(name string) (provider.Provider, error) {
 			return reg.Get(name, providerConfig)
 		},
@@ -534,7 +538,7 @@ func validateIntentProviders(reg *providerSet, intentDir string, providerConfig 
 // provider's default --state is shown only when nothing else is given (then
 // it is the file the providers fall back to); with only --zone, say, it is
 // left out, since it is not in use.
-func providerFilesText(fs *flag.FlagSet, statePath, zonePath, rulesetPath, redfishConfig string) string {
+func providerFilesText(fs *flag.FlagSet, statePath, zonePath, rulesetPath, redfishConfig, s3Config string) string {
 	stateSet := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "state" {
@@ -553,6 +557,9 @@ func providerFilesText(fs *flag.FlagSet, statePath, zonePath, rulesetPath, redfi
 	}
 	if redfishConfig != "" {
 		parts = append(parts, "redfish-config="+redfishConfig)
+	}
+	if s3Config != "" {
+		parts = append(parts, "s3-config="+s3Config)
 	}
 	if len(parts) == 0 {
 		return "state=" + statePath + " (default)"

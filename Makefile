@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables
+.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -44,6 +44,24 @@ NFTABLES_IT := ./tests/integration/nftables/
 integration-nftables:
 	go vet -tags integration_nftables $(NFTABLES_IT)
 	go test -tags integration_nftables -count=1 -v -timeout 10m $(NFTABLES_IT)
+
+# s3-bucket provider の統合テスト（#122）。docker で S3 互換のサーバ（MinIO・
+# SeaweedFS と、PUT の API を持たない古い SeaweedFS）を 127.0.0.1 の空いた
+# ポートに立てて回し、終わったら（失敗しても）コンテナを消す。docker と sudo
+# （パスワードなし）が要るので、check・test・CI には入れない。イメージは
+# SAKUTEI_IT_MINIO_IMAGE などで差し替えられる。手順と結果は
+# docs/providers/s3-bucket.md の「統合テスト」。
+S3_IT := ./tests/integration/s3/
+integration-s3:
+	go vet -tags integration_s3 $(S3_IT)
+	@status=0; \
+	go test -tags integration_s3 -count=1 -v -timeout 15m $(S3_IT) || status=$$?; \
+	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-s3it-'); \
+	if [ -n "$$left" ]; then \
+	  echo "integration-s3: containers were left behind; removing: $$left"; \
+	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	exit $$status
 
 clean:
 	rm -rf $(BIN) $(DEMODIR)

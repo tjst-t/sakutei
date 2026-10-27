@@ -76,7 +76,9 @@ import (
 //	1 — the report itself could not be made (flag parse error, intent load
 //	    failure, provider resolution failure, etc.)
 //	3 — the report was made, but some resource could not be observed (a Read
-//	    error or Availability != ok) or a provider's List failed (#117).  1 is
+//	    error, Availability != ok, or a plan error such as a declared field
+//	    whose API the target does not implement, #122) or a provider's List
+//	    failed (#117).  1 is
 //	    kept for "status itself failed" so existing callers are not broken.
 func runStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
@@ -87,8 +89,8 @@ func runStatus(args []string) {
 		fmt.Fprintln(os.Stderr, `
 Exit codes:
   0  every resource was observed and reported (drift does not change it)
-  3  reported, but some resource could not be observed (Read error or
-     availability != ok) or a provider's List failed (#117)
+  3  reported, but some resource could not be observed (Read error,
+     availability != ok or a plan error) or a provider's List failed (#117)
   1  no report (flag error, intent load failure, provider resolution failure)`)
 	}
 
@@ -102,6 +104,7 @@ Exit codes:
 	zoneScope := zoneScopeFlag(fs)
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
+	s3Config := s3ConfigFlag(fs)
 	// last-seen リングは S3・非永続（in-memory）。単一の status 呼び出しでは通常
 	// 「前周」は存在しない（初回扱い）。前周比較の機構は statusreport の report-builder
 	// 層で単体テストする。--cause-state と同様、リングの永続化は行わない。
@@ -225,6 +228,9 @@ Exit codes:
 	}
 	if *sqlmigrateConfig != "" {
 		providerConfig["sqlmigrate_config"] = *sqlmigrateConfig
+	}
+	if *s3Config != "" {
+		providerConfig["s3_config"] = *s3Config
 	}
 	if *rulesetPath != "" {
 		providerConfig["ruleset"] = *rulesetPath
@@ -354,10 +360,15 @@ Exit codes:
 		// but a cold-start drift-repair UPDATE is B — identical to plan/reconcile.
 		resCauseCtx.ResourceObservedAbsent = obs.State == nil
 
+		// #122: a desired state the provider cannot plan against this
+		// observation (e.g. a declared field whose API the target does not
+		// implement) is reported as unobservable, like a Read error (#117),
+		// instead of stopping the whole report.
 		plan, planErr := engine.Plan(obs, res, resCauseCtx)
 		if planErr != nil {
 			fmt.Fprintf(os.Stderr, "sakutei status: %v\n", planErr)
-			os.Exit(1)
+			builder.AddUnobservableReason(res.ID, fmt.Sprintf("plan: %v", planErr))
+			continue
 		}
 
 		// drift あり: 原因タグ・provider 階級・last-seen 注記を添えて一覧へ。

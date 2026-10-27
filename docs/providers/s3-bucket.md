@@ -1,0 +1,166 @@
+# S3 互換のバケット provider（s3-bucket）
+
+オブジェクトストレージのバケットを宣言で収束させる provider。S3 互換の API だけを使い、特定の製品に依らない。決まりの正は設計書 §29.1「S3 互換のバケット provider」（Backlog #122）。ここは使い方の説明で、矛盾したら spec/ が優先する。
+
+| provider 名 | ID | 扱うもの |
+| --- | --- | --- |
+| `s3-bucket` | `<endpoint の名前>/<bucket>`（例 `minio/app-logs`） | バケット 1 つ（バージョニング・ポリシー・ライフサイクル・タグ） |
+
+- 完全階級（Read・Apply・List・BulkObserve）。prune できる（`pruneable: true`）が、**中身のあるバケットは消さない**（後述）。
+- 持たないもの：アカウント・利用者・アクセスキーの管理（製品ごとに違う。要れば外の provider で足す、§28.9）、オブジェクトの読み書き・削除。
+- HTTP は Go の標準ライブラリだけで書き、AWS Signature Version 4 を自前で実装している（AWS の公開のテストベクタで単体テスト）。
+
+## endpoint の一覧（--s3-config）
+
+endpoint の一覧は設定ファイルで渡す。`--s3-config <file>`、または `--provider-config` の `s3-bucket` の `s3_config` キー（§28.9）。フラグは常駐の `sakutei`・`plan`・`reconcile`・`status`・`import`・`sync` で効く。書式は intent と同じ JSON / YAML。
+
+```yaml
+# s3.yaml
+secret_store: secrets.json            # file SecretBackend（§20.5）。相対パスは設定ファイルから
+scope: site=tokyo                     # 省略可。List・BulkObserve が ID に付ける固定の scope（既定 root）
+endpoints:
+  minio:                              # endpoint の名前。ID の前半になる（a-z 0-9 _ -）
+    endpoint: https://s3.example.net:9000   # scheme は必須（http / https）。パスは書かない
+    region: us-east-1                 # 省略可（既定 us-east-1）。署名と CreateBucket の LocationConstraint に使う
+    addressing: path                  # path（既定。<endpoint>/<bucket>）| virtual（<bucket>.<host>）
+    access_key: secretref:file/s3/minio/access_key
+    secret_key: secretref:file/s3/minio/secret_key
+    bucket_prefix: app-               # 省略可。この接頭辞のバケットだけを扱う
+    ca_file: ca.pem                   # 省略可。この CA だけで証明書を検証する
+    insecure_skip_verify: false       # 明示したときだけ true（ca_file とは排他）
+    timeout: 10s                      # 省略可。1 要求あたり（既定 10s）
+```
+
+```console
+$ sakutei reconcile --intent intent/ --s3-config s3.yaml
+$ sakutei status --intent intent/ --s3-config s3.yaml --json
+```
+
+- `access_key`・`secret_key` は **SecretRef でしか書けない**（`"secretref:file/<path>"` か `{"$secret": "<path>", "backend": "file"}`）。生の値を書くとエラーになり、その値は文言にも出ない。値は Read・Apply・List の直前に file SecretBackend から解決し、provider には持たない。読み込みの時点では store にその path があることだけを確かめる。
+- **`bucket_prefix` を勧める**。List は資格から見える全バケットを返すので、PruneWithinScope を宣言すると、prefix が無ければアカウントの全バケットが「閉じた世界」になる。prefix を書けば、その接頭辞の外のバケットは List にも Read にも出ない（intent に書くと読み込みの時点で断る）。
+- virtual-host 形式で https を使うとき、名前に `.` を含むバケットは証明書のワイルドカードに合わないことが多い。
+- 未知のキーはエラー（書き間違いを黙って無視しない）。
+
+## intent の例
+
+```json
+{
+  "resources": [
+    {
+      "provider": "s3-bucket",
+      "id": "minio/app-logs",
+      "fields": {
+        "versioning": "Enabled",
+        "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"public-read\", \"Effect\": \"Allow\", \"Principal\": \"*\", \"Action\": \"s3:GetObject\", \"Resource\": \"arn:aws:s3:::app-logs/*\"}]}",
+        "lifecycle": "[{\"ID\": \"expire-logs\", \"Status\": \"Enabled\", \"Filter\": {\"Prefix\": \"logs/\"}, \"Expiration\": {\"Days\": 30}}]",
+        "tags": "{\"env\": \"prod\", \"owner\": \"platform\"}"
+      },
+      "deletion_policy": "PruneWithinScope"
+    }
+  ]
+}
+```
+
+### フィールド
+
+宣言したものだけを管理し、**書かないものは触らない**（例えば `versioning` を書かなければ、誰が変えても drift にならず Apply もしない）。
+
+| フィールド | 値 | 比べ方 |
+| --- | --- | --- |
+| `versioning` | `Enabled` / `Suspended` | そのまま。一度も設定していないバケットの観測は `""` |
+| `policy` | バケットのポリシー（JSON のオブジェクト） | 正規形（下）。`""` は「ポリシーが無い」で、宣言すれば外す |
+| `lifecycle` | ルールの JSON の配列。各ルールは S3 の XML の `Rule` をそのまま JSON にした形（`Filter`・`Expiration`・`Transition`・`NoncurrentVersionExpiration` など。繰り返す要素は配列）。**`ID` と `Status` は必須** | 正規形（下）。`""` か `[]` は「ルールが無い」 |
+| `tags` | JSON のオブジェクト（値は文字列。50 個まで） | キー順。`""` か `{}` は「タグが無い」 |
+| `endpoint`・`bucket` | ID と同じ値（省略可） | identity |
+| `creation_date`（観測だけ） | ListBuckets の CreationDate | 比べない |
+| `unsupported`（観測だけ） | endpoint がその API を持たない（NotImplemented）フィールドの一覧 | 比べない |
+
+### 正規形（永久 drift を出さない）
+
+endpoint はポリシーやルールを書かれたとおりには持たないことがある（MinIO は `"Principal": "*"` を `{"AWS": ["*"]}` に、`"Action": "s3:GetObject"` を `["s3:GetObject"]` に書き換えて返す。SeaweedFS は書かれたまま返す）。宣言と観測を同じ正規形にしてから比べる。
+
+- **policy**：キー順・空白を捨てる。`Statement` が 1 つのオブジェクトなら配列に。`Action`・`NotAction`・`Resource`・`NotResource` と、`Principal`・`NotPrincipal`・`Condition` の値の文字列は、並べて重複を落とした配列に。`Principal` の `"*"` は `{"AWS": ["*"]}` と同じ。`Statement` の順は変えない。
+- **lifecycle**：値をすべて文字列に（`30` と `"30"` は同じ）、日時は RFC 3339 の UTC に（`2027-01-01T00:00:00.000Z` と `2027-01-01T00:00:00Z` は同じ）、空の値（`"Filter": {}`・`<Prefix></Prefix>`）を落とし、1 要素の配列は中身だけに、ルールと配列の並びは正規形の順に。
+- 正規形にしてもそろわない形で endpoint が持つとき（endpoint が文を足すなど）、Apply は読み戻して気づき、**endpoint の持っている形を添えた PermanentError** にする（Apply を繰り返さない）。その形で宣言し直せば適合する。
+
+## 動き方
+
+- **Read**：ListBuckets で在るかを見て（無ければ absent）、GetBucketVersioning・GetBucketPolicy・GetBucketLifecycleConfiguration・GetBucketTagging を読む。設定が無いこと（NoSuchBucketPolicy など）は空の値。
+- **Apply**：Create は CreateBucket（既に自分のものなら成功）の後に宣言したフィールドを設定する。Update は差分のフィールドだけを設定する。同じ plan を 2 回流しても同じ。
+- **Delete**：prune（PruneWithinScope）か明示の absent からだけ来て、**破壊的**として予算に数える（§12・§13）。DeleteBucket は空のバケットしか消せない。中身があれば endpoint が `BucketNotEmpty` で断り、provider はそれを「中身があるので消さない（オブジェクトは消さない。手で空にするか、宣言し直す）」という PermanentError として知らせる。**オブジェクトを消す機能は持たない**。
+- **観測できないもの**：届かない・時間切れ・5xx（501 を除く）・認証の失敗（401 / 403）・資格を解決できない・証明書を検証できないは Unknown（absent にしない。作りも消しもしない）。リダイレクト（region や addressing の誤り）は辿らず、要求の誤りとして知らせる。
+- **List**：全 endpoint の ListBuckets が ContinuationToken を最後まで辿れたときだけ complete。1 つでも失敗すれば error で、prune はその周止まる。
+- **BulkObserve**：endpoint ごとに ListBuckets 1 回と各バケットの設定の読み（Read と等価）。止まった endpoint のバケットは結果に入れず、SDK がそれだけを Read に回して Unknown にする。**1 つの endpoint が止まっても、ほかの endpoint のバケットは観測と収束を続ける**。
+
+### endpoint がその API を持たないとき
+
+- GET が 501 / `NotImplemented` を返す API のフィールドは State に入れず `unsupported` に挙げる。**宣言していなければ無視**する。**宣言していれば観測できない**として計画の時点で止める（「cannot observe lifecycle: the endpoint does not implement GetBucketLifecycleConfiguration (NotImplemented)」）。常駐と `status` では観測できないものとして数える。一回性の `plan`・`reconcile` は、ほかの provider の計画のエラーと同じくその文を出して終了コード 1 で止まる。
+- GET は既定の値を返し、PUT だけが NotImplemented の endpoint もある（下の古い SeaweedFS）。この場合 Read は欠けを知れないので、宣言した値は drift として見え、Apply が「the endpoint does not implement this API (NotImplemented)」の PermanentError で止まる。
+
+## 統合テスト（docker、`make integration-s3`）
+
+本物の S3 互換のサーバを相手にした統合テスト（Backlog #122）。build tag `integration_s3` の付いたファイル（`tests/integration/s3/`）にあり、`make check`・`make test`・CI には入らない。
+
+```console
+$ make integration-s3
+```
+
+要るもの: docker と、パスワードなしの `sudo`（`sudo -n docker`）。
+
+- 3 つのサーバを `docker run` で立て、127.0.0.1 の空いたポートにだけ公開する。イメージは環境変数で差し替えられる。
+
+  | endpoint の名前 | 環境変数 | 既定のイメージ |
+  | --- | --- | --- |
+  | `minio` | `SAKUTEI_IT_MINIO_IMAGE` | `cgr.dev/chainguard/minio:latest`（MinIO のソースから作ったイメージ。Docker Hub の `minio/minio` は取れなくなっている） |
+  | `seaweedfs` | `SAKUTEI_IT_SEAWEEDFS_IMAGE` | `chrislusf/seaweedfs:latest` |
+  | `seaweedfs-old` | `SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE` | `chrislusf/seaweedfs:3.80`（バージョニング・ポリシー・タグの PUT が NotImplemented の版。空にすると使わない） |
+
+- 資格は secret store（file SecretBackend）に置き、`--s3-config` の endpoint の一覧（`bucket_prefix: sk-it-`）から SecretRef で引く。sakutei のバイナリを作り、`status --json`・`reconcile` を回す。手での変更（ポリシー・バージョニング・オブジェクトの PUT）は sakutei の外から S3 の API で行う。
+- 終われば（落ちても）コンテナを `docker rm -f -v` で消す。`make integration-s3` は残った `sakutei-s3it-*` を最後にもう一度消す。
+
+確かめること:
+
+| 段 | 内容 |
+| --- | --- |
+| create from empty | minio・seaweedfs に全フィールドを宣言したバケット。status が drift 2（現実に無い）→ reconcile → 適合 2、各サーバの値が宣言どおり |
+| changed by hand | 両方のバージョニングを Suspended に、ポリシーを Deny に手で変える → status が drift 2 → reconcile で戻る |
+| no drift however many cycles | 宣言どおりのまま reconcile と status を 5 周 → drift 0、計画が出ない、ポリシーが書き直されない（MinIO が書き換えた形のまま） |
+| a bucket with objects is not pruned | 中身のある orphan・空の orphan・`bucket_prefix` の外のバケットを手で作り、PruneWithinScope で reconcile → 空の orphan だけが消える（`[DESTRUCTIVE]`）。中身のある orphan は `BucketNotEmpty` の PermanentError で残る。prefix の外は List に出ず残る |
+| a stopped server | minio を `docker pause` → status で minio のバケットだけが観測できない、reconcile は minio のバケットを skip（作らない）し、seaweedfs のバケットは観測を続ける。List が完全でないので prune は止まり、seaweedfs の空の orphan も消えない |
+| after the server is back | unpause → reconcile → 適合 2 |
+| an endpoint without the API | 今の minio・seaweedfs は 4 つの GET をどれも持つことを確かめる。seaweedfs-old に versioning・tags を宣言 → バケットは作られ、Apply が NotImplemented の PermanentError で止まり、status は drift。フィールドを宣言しなければ適合 |
+| clean up through prune | 宣言を 1 つだけにして PruneWithinScope で reconcile → 空のバケットが prune で消える（中身のあるものは残る）。コンテナは teardown で消す |
+
+### 結果
+
+MinIO RELEASE.2026-10-23T20-06-51Z（`cgr.dev/chainguard/minio`）・SeaweedFS 4.50（`chrislusf/seaweedfs:latest`）・SeaweedFS 3.80 で回した結果（全段 PASS、2026-10-27）:
+
+```
+--- PASS: TestS3Integration (26.02s)
+    --- PASS: TestS3Integration/create_from_empty (0.14s)
+    --- PASS: TestS3Integration/a_policy_and_versioning_changed_by_hand_are_drift_and_come_back (0.18s)
+    --- PASS: TestS3Integration/declared_as_is,_no_drift_however_many_cycles (0.12s)
+    --- PASS: TestS3Integration/a_bucket_with_objects_is_not_pruned (0.29s)
+    --- PASS: TestS3Integration/a_stopped_server_is_unobservable_and_nothing_is_done (25.14s)
+    --- PASS: TestS3Integration/after_the_server_is_back_it_converges_again (0.04s)
+    --- PASS: TestS3Integration/an_endpoint_without_the_API (0.06s)
+    --- PASS: TestS3Integration/clean_up_through_prune (0.05s)
+PASS
+```
+
+分かったこと:
+
+- **MinIO はポリシーを書き換えて持つ**。`"Principal": "*"`・`"Action": "s3:GetObject"` と宣言すると `{"AWS": ["*"]}`・`["s3:GetObject"]` で返す。SeaweedFS は書かれたまま返す。正規形で比べるので、どちらでも 5 周 drift が出ず、ポリシーは書き直されない（Apply が走らない）。
+- 4 つの API（バージョニング・ポリシー・ライフサイクル・タグ）の **GET は、今の MinIO・SeaweedFS のどちらも持つ**（NotImplemented にならない）。片方にしか無い GET は今の版には無いので、「宣言したフィールドの GET が NotImplemented なら観測できない」は偽サーバでだけ確かめている（`internal/s3bucket` の単体テスト）。
+- **SeaweedFS 3.80 は GET に既定の値を返し（バージョニングは常に Suspended、ポリシー・タグは無い）、PUT だけが 501 NotImplemented**。Read は欠けを知れないので、宣言した値は drift として見え、reconcile は「tags: permanent: the endpoint does not implement this API (NotImplemented) …」で止まる（バケット自体は作られる）。宣言しなければ適合。
+- MinIO は `AbortIncompleteMultipartUpload` を持つ lifecycle のルールを `InvalidArgument`（スキーマに合わない）で断る（SeaweedFS は受け付ける）。endpoint が拒む値は、その endpoint の文言つきの PermanentError になる。テストの宣言には使っていない。
+- prune：空の orphan は `- DELETE s3-bucket//minio/sk-it-orphan-empty [DESTRUCTIVE]` で消え、中身のある orphan は `prune apply …: permanent: … the bucket is not empty, so it is not deleted (Sakutei never deletes objects; …): … BucketNotEmpty` で残る。prune は毎周その Delete を試みて同じ文で断られる（中身を空にするか、宣言し直すまで）。
+- minio を止めると：`prune halted: List returned error: … List minio: … unreachable`、`skip minio/sk-it-app (unobservable …)`、`Reconcile: no changes applied; 1 resource(s) skipped`。seaweedfs のバケットは観測を続けて適合のまま。止まった endpoint への要求は `timeout` まで待つので、その周は遅くなる（この段の 25 秒の大半は時間切れの待ち）。
+
+## 通常のテスト
+
+`make check` は偽の S3 サーバ（`internal/s3bucket/s3test`、httptest。要求ごとに SigV4 の署名・`x-amz-content-sha256`・`Content-MD5` を検証する）で回る。
+
+- SigV4：AWS の公開のテストベクタ（Signature Version 4 の test suite の get-vanilla、S3 の文書の GET Object・PUT Object・GET Bucket Lifecycle・ListObjects の例、署名鍵の導出の例）と同じ値になる（`internal/s3bucket/sigv4_test.go`）。
+- 契約テスト（`sdk.ContractTester`、届かないのを absent にしないことを含む）・BulkObserve 等価性テスト（`sdk.BulkEquivalenceTester`）・正規形・NotImplemented・中身のあるバケットの Delete・観測できないもの（届かない・5xx・鍵の誤り・資格を解決できない）・ListBuckets のページ送りと `bucket_prefix`・path-style と virtual-host のアドレス・設定ファイルの検査（`internal/s3bucket/*_test.go`）。
+- 受け入れテスト（`tests/acceptance/s3bucket_test.go`、`[AC-122-*]`）：DefaultRegistry から作って契約テスト、PruneWithinScope の prune で空の orphan だけが消えること、届かないと prune が止まり何もしないこと。

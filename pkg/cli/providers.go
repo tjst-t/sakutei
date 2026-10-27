@@ -203,3 +203,11 @@ func sqlmigrateConfigFlag(fs *flag.FlagSet) *string {
 	return fs.String("sqlmigrate-config", "",
 		"sqlmigrate: database list (JSON / YAML): databases.<name>.path, databases.<name>.migrations (relative to the config file), sqlite3 (CLI path, optional), busy_timeout (optional)")
 }
+
+// s3ConfigFlag registers --s3-config, the endpoint list of the s3-bucket
+// provider (§29.1, #122): per endpoint name the URL, region, addressing and
+// the access / secret keys as SecretRefs.
+func s3ConfigFlag(fs *flag.FlagSet) *string {
+	return fs.String("s3-config", "",
+		"s3-bucket: endpoint list (JSON / YAML): secret_store, scope (optional), endpoints.<name>.endpoint, region, addressing (path|virtual), access_key and secret_key (SecretRefs), bucket_prefix, ca_file, insecure_skip_verify, timeout")
+}
