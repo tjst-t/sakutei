@@ -176,6 +176,7 @@ func runDaemon() {
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	s3Config := s3ConfigFlag(fs)
 	postgresqlConfig := postgresqlConfigFlag(fs)
+	ansibleConfig := ansibleConfigFlag(fs)
 	rulesetPath := fs.String("ruleset", "",
 		"path to the nftables provider ruleset file (default: falls back to --state)")
 	rulesetScope := rulesetScopeFlag(fs)
@@ -369,6 +370,9 @@ func runDaemon() {
 	if *postgresqlConfig != "" {
 		providerConfig["postgresql_config"] = *postgresqlConfig
 	}
+	if *ansibleConfig != "" {
+		providerConfig["ansible_config"] = *ansibleConfig
+	}
 
 	// Scb0ecd-3: fail-closed provider_version validation (§10.4, ADR-0008).
 	// A provider without a version cannot support ghost-diff (cause C) detection;
@@ -429,7 +433,7 @@ func runDaemon() {
 	cfg := reconcile.Config{
 		IntentDir:     *intentDir,
 		StatePath:     *statePath,
-		ProviderFiles: providerFilesText(fs, *statePath, *zonePath, *rulesetPath, *redfishConfig, *s3Config, *postgresqlConfig),
+		ProviderFiles: providerFilesText(fs, *statePath, *zonePath, *rulesetPath, *redfishConfig, *s3Config, *postgresqlConfig, *ansibleConfig),
 		Providers: func(name string) (provider.Provider, error) {
 			return reg.Get(name, providerConfig)
 		},
@@ -542,7 +546,7 @@ func validateIntentProviders(reg *providerSet, intentDir string, providerConfig 
 // provider's default --state is shown only when nothing else is given (then
 // it is the file the providers fall back to); with only --zone, say, it is
 // left out, since it is not in use.
-func providerFilesText(fs *flag.FlagSet, statePath, zonePath, rulesetPath, redfishConfig, s3Config, postgresqlConfig string) string {
+func providerFilesText(fs *flag.FlagSet, statePath, zonePath, rulesetPath, redfishConfig, s3Config, postgresqlConfig, ansibleConfig string) string {
 	stateSet := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "state" {
@@ -567,6 +571,9 @@ func providerFilesText(fs *flag.FlagSet, statePath, zonePath, rulesetPath, redfi
 	}
 	if postgresqlConfig != "" {
 		parts = append(parts, "postgresql-config="+postgresqlConfig)
+	}
+	if ansibleConfig != "" {
+		parts = append(parts, "ansible-config="+ansibleConfig)
 	}
 	if len(parts) == 0 {
 		return "state=" + statePath + " (default)"

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/tjst-t/sakutei/internal/ansible"
 	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/nftables"
@@ -186,6 +187,18 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, errors.New("the server list is not set: pass --postgresql-config <file> (or postgresql_config in --provider-config)")
 		}
 		return postgresql.NewFromConfig(path)
+	})
+
+	// "ansible" — Ansible のモジュールを 1 つのホストに流す最小階級の provider
+	// （§28.7、§29.1、#127）。config["ansible_config"] は設定（--ansible-config、
+	// または --provider-config の ansible の ansible_config）。--state は代わりに
+	// ならない（inventory は推測しない）。
+	r.Register(ansible.Name, func(config map[string]string) (provider.Provider, error) {
+		path := config["ansible_config"]
+		if path == "" {
+			return nil, errors.New("the ansible settings are not set: pass --ansible-config <file> (or ansible_config in --provider-config)")
+		}
+		return ansible.NewFromConfig(path)
 	})
 
 	return r

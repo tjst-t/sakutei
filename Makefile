@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql
+.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -83,6 +83,31 @@ integration-postgresql:
 	  sudo -n docker network rm sakutei-pgit-net >/dev/null || status=1; \
 	fi; \
 	exit $$status
+
+# ansible provider の統合テスト（#127）。本物の ansible-core を、版を固定した
+# 使い捨ての venv（ANSIBLE_IT_VENV、初回だけ作る。pip も wheel の sha256 で固定）
+# に入れ、local 接続で一時ディレクトリを相手に回す（テストの一時ディレクトリは
+# 終われば消える）。python3（venv モジュール）と、初回は PyPI に届くことが要る
+# ので、check・test・CI には入れない。SAKUTEI_IT_ANSIBLE で手持ちの ansible を
+# 渡せる（版が違えば SAKUTEI_IT_ANSIBLE_ANY=1 も）。手順と結果は
+# docs/providers/ansible.md の「統合テスト」。
+ANSIBLE_IT       := ./tests/integration/ansible/
+ANSIBLE_IT_VENV  ?= $(HOME)/.cache/sakutei/ansible-it-core-2.21.5
+PIP_WHEEL        := pip-26.2.2-py3-none-any.whl
+PIP_WHEEL_URL    := https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/$(PIP_WHEEL)
+PIP_WHEEL_SHA256 := fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
+integration-ansible:
+	go vet -tags integration_ansible $(ANSIBLE_IT)
+	@if [ -z "$$SAKUTEI_IT_ANSIBLE" ] && [ ! -x $(ANSIBLE_IT_VENV)/bin/ansible ]; then \
+	  echo "integration-ansible: creating $(ANSIBLE_IT_VENV)"; \
+	  rm -rf $(ANSIBLE_IT_VENV) && python3 -m venv --without-pip $(ANSIBLE_IT_VENV) && \
+	  curl -sSfL -o $(ANSIBLE_IT_VENV)/$(PIP_WHEEL) $(PIP_WHEEL_URL) && \
+	  echo "$(PIP_WHEEL_SHA256)  $(ANSIBLE_IT_VENV)/$(PIP_WHEEL)" | sha256sum -c - && \
+	  $(ANSIBLE_IT_VENV)/bin/python3 $(ANSIBLE_IT_VENV)/$(PIP_WHEEL)/pip install --quiet --only-binary=:all: \
+	    -r $(ANSIBLE_IT)requirements.txt || { rm -rf $(ANSIBLE_IT_VENV); exit 1; }; \
+	fi
+	SAKUTEI_IT_ANSIBLE=$${SAKUTEI_IT_ANSIBLE:-$(ANSIBLE_IT_VENV)/bin/ansible} \
+	  go test -tags integration_ansible -count=1 -v -timeout 15m $(ANSIBLE_IT)
 
 clean:
 	rm -rf $(BIN) $(DEMODIR)

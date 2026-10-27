@@ -82,7 +82,7 @@ type Op struct {
 }
 ```
 
-- **`Destructive`** が安全機構の駆動軸である。rate limit・破壊予算・全体凍結がこのフラグで動く。不明時（`TrueObserve:false`）は破壊的側に倒す（§5）。
+- **`Destructive`** が安全機構の駆動軸である。rate limit・破壊予算・全体凍結がこのフラグで動く。不明時（`TrueObserve:false`）は破壊的側に倒す（§5。Ansible provider は利用者の `destructive` の宣言に委ねる、§29.1）。
 - **`Cause`** は差分1件ごとに原因タグを帰属させる（per-resource）。原因の分類定義は §10 を正とする。
 
 ### §4.5 Observation —— Availability + State + Ready
@@ -244,7 +244,7 @@ type Capabilities struct {
 
 **縮退規則（コントローラに固定）**:
 
-- `TrueObserve:false` → actual 比較ができないので原因タグ A/B を区別不能。単一タグ `changed` に統合し、rate limit の重み付けは**破壊的側に倒す**（不明は危険扱い=非対称原則）。
+- `TrueObserve:false` → actual 比較ができないので原因タグ A/B を区別不能。単一タグ `changed` に統合し、rate limit の重み付けは**破壊的側に倒す**（不明は危険扱い=非対称原則）。ただし Ansible provider では、どの適用が破壊的かを利用者が `destructive` で宣言し、宣言の無いものは破壊的に数えない（すべてを破壊的に数えると行の追加まで予算で止まって使えないため。原因タグは新しいタグを足さず、intent の版の変化だけで A、ほかは B とする。§29.1、Backlog #127）。
 - `List:false` → その型への prune 宣言はロード時に拒否する。
 - Ansible でも `*_info` 系モジュールを Observe に使える対象は `TrueObserve:true` に**部分昇格**でき、縮退は全面でなく部分回復可能。
 

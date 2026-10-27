@@ -21,9 +21,11 @@ import "fmt"
 // The controller uses this struct to apply machine-readable degradation
 // rules instead of prose caveats.  Key degradation rules (§5.3):
 //
-//   - TrueObserve:false → cause tags A and B cannot be distinguished;
-//     they collapse to a single tag, and the Destructive flag is forced to
-//     true (assume dangerous; non-symmetric principle).
+//   - TrueObserve:false → cause tags A and B cannot be distinguished from
+//     reality (only from the intent revision), and the diff is coarse.  A
+//     CheckReader is observed by its dry run (core.CheckResult, §28.7); which
+//     of its ops are destructive is the provider's to raise (PlanRefiner) —
+//     for Ansible the operator's `destructive` declaration (§29.1).
 //   - List:false       → DeletionPolicy: PruneWithinScope is rejected at
 //     load time; open-world (ExplicitAbsentOnly) only.
 //   - Pruneable:false  → the engine never issues a Delete for an orphan of this
@@ -110,6 +112,7 @@ type Capabilities struct {
 //     flag is a silent lie that the executor would act on.
 //     - List:true        → must implement Lister (prune set-difference source).
 //     - BulkObserve:true  → must implement BulkObserver (§5.7, §16.3, ADR-0011).
+//     - TrueObserve:true  → must NOT implement CheckReader (§5.6, §28.7).
 //
 // Future checks (SDK, S62dbba):
 //   - Schema lint: required fields declared, secret/managed/identity flags valid.
@@ -127,6 +130,11 @@ func ValidateProvider(p Provider) error {
 	if caps.BulkObserve {
 		if _, ok := p.(BulkObserver); !ok {
 			return fmt.Errorf("provider declares Capabilities.BulkObserve=true but does not implement provider.BulkObserver (§5.7, §16.3, ADR-0011)")
+		}
+	}
+	if caps.TrueObserve {
+		if _, ok := p.(CheckReader); ok {
+			return fmt.Errorf("provider declares Capabilities.TrueObserve=true but implements provider.CheckReader: only a minimal-tier provider observes against the desired (§5.6, §28.7, ADR-0002)")
 		}
 	}
 	return nil

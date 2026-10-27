@@ -1472,6 +1472,11 @@ func runCycleAsync(
 			return CycleResult{ExcludedByClaim: excludedByClaim},
 				fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): resource %s: %w", r.ID, err)
 		}
+		// §5.3 / §12.1: PruneWithinScope needs a Lister (closed world).
+		if err := prune.ValidatePrunePolicy([]diff.DesiredResource{r}, p); err != nil {
+			return CycleResult{ExcludedByClaim: excludedByClaim},
+				fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): %w", err)
+		}
 	}
 
 	// §15.2 / §17.1: double-claim detection.  Fenced scopes leave the cycle
@@ -1754,7 +1759,7 @@ func runCycleAsync(
 
 		// ADR-0002: fresh observation per resource per cycle (from this
 		// cycle's bulk call when the provider declares BulkObserve).
-		obs, readErr := co.Observe(ctx, res.ID)
+		obs, readErr := co.ObserveDesired(ctx, res.ID, res.Fields)
 		if readErr != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
 			unobservable[local] = true
@@ -1827,6 +1832,9 @@ func runCycleAsync(
 					continue
 				}
 				summary := lsRing.DriftSummary(local, curFields)
+				if obs.Check != nil {
+					summary = checkDriftSummary(obs.Check)
+				}
 				EmitDrift(cfg.ErrOut, "sakutei: ", res.ID, op, summary, curFields)
 			}
 		}

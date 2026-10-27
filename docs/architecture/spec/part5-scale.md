@@ -104,7 +104,7 @@ resources:
   候補にもならない。間引きの記録は S3（周番号と desired のハッシュだけで、現実の観測値は持たない）であり、観測
   state レス（§3）に触れない。
 - 間引きは常駐ループの Observe スケジューラ（`ObserveScheduler` seam。v1b の実装は tier 別の間引き）で行う。
-  Ansible executor の既定は、executor を実装するまで「毎周」とする（§29.1）。
+  Ansible provider（§28.7）の既定も「毎周」とし、間引くかは利用者が `observe_tier` で宣言する（§29.1、Backlog #127）。
 
 破綻したときの延命の入口が、§8 の早期警戒線（間隔 30s に対し Observe 10s 超・API 課金/rate limit が頻度で効く・
 リソース数が桁で増えた）である。

@@ -106,6 +106,7 @@ Exit codes:
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	s3Config := s3ConfigFlag(fs)
 	postgresqlConfig := postgresqlConfigFlag(fs)
+	ansibleConfig := ansibleConfigFlag(fs)
 	// last-seen リングは S3・非永続（in-memory）。単一の status 呼び出しでは通常
 	// 「前周」は存在しない（初回扱い）。前周比較の機構は statusreport の report-builder
 	// 層で単体テストする。--cause-state と同様、リングの永続化は行わない。
@@ -236,6 +237,9 @@ Exit codes:
 	if *postgresqlConfig != "" {
 		providerConfig["postgresql_config"] = *postgresqlConfig
 	}
+	if *ansibleConfig != "" {
+		providerConfig["ansible_config"] = *ansibleConfig
+	}
 	if *rulesetPath != "" {
 		providerConfig["ruleset"] = *rulesetPath
 	}
@@ -335,7 +339,7 @@ Exit codes:
 		// ADR-0002: リソースごとに独立して Observe（read-only Read）。
 		// #117: Read のエラーは報告を止めず、そのリソースを観測できないものとして
 		// 数える。1 台の BMC が落ちてもほかの適合は出す。
-		obs, readErr := fp.Read(ctx, res.ID.Local)
+		obs, readErr := provider.ReadFor(ctx, fp, res.ID.Local, res.Fields)
 		if readErr != nil {
 			fmt.Fprintf(os.Stderr, "sakutei status: observe %s: %v\n", res.ID, readErr)
 			builder.AddUnobservableReason(res.ID, fmt.Sprintf("observe error: %v", readErr))

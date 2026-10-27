@@ -82,6 +82,7 @@ func runPlan(args []string) {
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	s3Config := s3ConfigFlag(fs)
 	postgresqlConfig := postgresqlConfigFlag(fs)
+	ansibleConfig := ansibleConfigFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
@@ -335,6 +336,9 @@ func runPlan(args []string) {
 	if *postgresqlConfig != "" {
 		providerConfig["postgresql_config"] = *postgresqlConfig
 	}
+	if *ansibleConfig != "" {
+		providerConfig["ansible_config"] = *ansibleConfig
+	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei plan")
 	if resolveErr != nil {
 		fmt.Fprintln(logErr, resolveErr)
@@ -432,7 +436,7 @@ func runPlan(args []string) {
 
 		// ADR-0002: Observe independently for each resource.  Each call to
 		// Read is fresh; no observation is carried across resources or cycles.
-		obs, err := fp.Read(ctx, res.ID.Local)
+		obs, err := provider.ReadFor(ctx, fp, res.ID.Local, res.Fields)
 		if err != nil {
 			fmt.Fprintf(logErr, "sakutei plan: observe %s: %v\n", res.ID, err)
 			os.Exit(1)

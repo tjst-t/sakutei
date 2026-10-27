@@ -51,6 +51,9 @@ type TB interface {
 //  3. List completeness: Every ID returned by List can be Read successfully
 //     with Availability=Ok.
 //
+// A provider that implements provider.CheckReader (minimal tier observed by a
+// dry run, §28.7) gets the check-mode contracts instead (runCheckContracts).
+//
 // These contracts are the minimum that any provider must satisfy for the
 // convergence loop to work correctly.  A provider that violates them will
 // cause repeated destructive operations, silent data loss, or incorrect
@@ -231,6 +234,18 @@ func (ct *ContractTester) RunAll(t TB) {
 
 func (ct *ContractTester) runAll(t TB) {
 	t.Helper()
+
+	// A minimal-tier provider observed by its dry run (provider.CheckReader,
+	// §28.7) has no State to compare: it gets the check-mode contracts.
+	if cr, ok := ct.Provider.(provider.CheckReader); ok {
+		ct.runCheckContracts(t, cr)
+		if ct.Cleanup != nil {
+			if err := ct.Cleanup(); err != nil {
+				t.Logf("ContractTester: cleanup returned error (non-fatal): %v", err)
+			}
+		}
+		return
+	}
 
 	// AF-3 (S62dbba verify): runAbsentCreateRead MUST run first, while the
 	// sample resource is still genuinely absent.  Its pre-Apply Read guard
@@ -457,6 +472,79 @@ func (ct *ContractTester) runThreeValued(t TB) {
 	default:
 		t.Errorf("ContractTester/ThreeValued: unreachable target reported Availability %v with State %v; want an error or Unknown", obs.Availability, obs.State)
 	}
+}
+
+// runCheckContracts verifies a CheckReader (minimal tier, §5.6, §28.7):
+//
+//  1. Read without the desired is never Ok (it has nothing to ask the target).
+//  2. Before Apply, the dry run of SampleDesired reports a change (the target
+//     is set up to differ from the sample; with Preexisting as well).
+//  3. Apply(CreatePlan) → the dry run reports no change (converged), and an
+//     observation with Check never also carries a State.
+//  4. Idempotency: a second Apply of the same plan → still no change.
+//  5. With MakeUnreachable: the dry run returns an error or Unknown — never
+//     Ok (a target that cannot answer is not "unchanged").
+func (ct *ContractTester) runCheckContracts(t TB, cr provider.CheckReader) {
+	t.Helper()
+	ctx := context.Background()
+
+	if obs, err := ct.Provider.Read(ctx, ct.SampleID); err == nil && obs.Availability == core.AvailabilityOk {
+		t.Errorf("ContractTester/Check: Read without the desired returned Ok (State %v); a CheckReader can only answer against the desired", obs.State)
+	}
+
+	check := func(step string) *core.CheckResult {
+		t.Helper()
+		obs, err := cr.ReadCheck(ctx, ct.SampleID, ct.SampleDesired)
+		if err != nil {
+			t.Fatalf("ContractTester/Check: %s: ReadCheck failed: %v", step, err)
+			return nil
+		}
+		if obs.Availability != core.AvailabilityOk || obs.Check == nil {
+			t.Fatalf("ContractTester/Check: %s: ReadCheck availability=%v check=%v, want Ok with a check result", step, obs.Availability, obs.Check)
+			return nil
+		}
+		if obs.State != nil {
+			t.Errorf("ContractTester/Check: %s: ReadCheck returned a State as well as the check result", step)
+		}
+		if obs.ObservedAt.IsZero() {
+			t.Errorf("ContractTester/Check: %s: ReadCheck returned a zero ObservedAt", step)
+		}
+		return obs.Check
+	}
+
+	if c := check("before Apply"); c == nil {
+		return
+	} else if !c.Changed {
+		t.Errorf("ContractTester/Check: before Apply the dry run reports no change; set the target up to differ from the sample")
+	}
+	plan := ct.buildCreatePlan()
+	for i, step := range []string{"after the first Apply", "after the second Apply (idempotency)"} {
+		if err := ct.Provider.Apply(ctx, plan); err != nil {
+			t.Fatalf("ContractTester/Check: Apply %d failed: %v", i+1, err)
+			return
+		}
+		if c := check(step); c == nil {
+			return
+		} else if c.Changed {
+			t.Errorf("ContractTester/Check: %s the dry run still reports a change", step)
+		}
+	}
+
+	if ct.MakeUnreachable != nil {
+		restore, err := ct.MakeUnreachable()
+		if err != nil {
+			t.Fatalf("ContractTester/Check: MakeUnreachable failed: %v", err)
+			return
+		}
+		obs, readErr := cr.ReadCheck(ctx, ct.SampleID, ct.SampleDesired)
+		if restore != nil {
+			restore()
+		}
+		if readErr == nil && obs.Availability == core.AvailabilityOk {
+			t.Errorf("ContractTester/Check: unreachable target reported Ok (check %v); want an error or Unknown (§4.5)", obs.Check)
+		}
+	}
+	t.Logf("ContractTester/Check: PASS")
 }
 
 // buildCreatePlan constructs a Create Plan for SampleID using SampleDesired.

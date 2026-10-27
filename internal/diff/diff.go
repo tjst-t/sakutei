@@ -113,16 +113,16 @@ func ForProvider(p provider.Provider) *Engine {
 // plan, reconcile, status) plan through it; Diff alone is the pure
 // Schema-driven diff.
 //
-// The refinement runs only for an Ok observation with a State (a target that
-// is unknown, converging or absent gives the provider nothing to check
-// against).  The core keeps it safe whatever the provider returns: an op can
+// The refinement runs only for an Ok observation with a State or a check
+// result (a target that is unknown, converging or absent gives the provider
+// nothing to check against; for a check result observed is nil).  The core keeps it safe whatever the provider returns: an op can
 // only lose FieldDiffs (one left without any is dropped), Destructive can
 // only be raised, and Kind / Target / Cause stay the core's.  An error from
 // the provider is returned with an empty Plan: the resource is not changed
 // this cycle.
 func (e *Engine) Plan(obs core.Observation, desired DesiredResource, ctx cause.CauseContext) (core.Plan, error) {
 	plan := e.Diff(obs, desired, ctx)
-	if e.refiner == nil || obs.Availability != core.AvailabilityOk || obs.State == nil {
+	if e.refiner == nil || obs.Availability != core.AvailabilityOk || (obs.State == nil && obs.Check == nil) {
 		return plan, nil
 	}
 	refined, err := e.refiner.RefinePlan(desired.ID.Local, obs.State, desired.Fields, plan.Ops)
@@ -229,6 +229,8 @@ func (e *Engine) ValidateDesired(desired DesiredResource) error {
 //   - If obs.State is nil (resource absent in reality): OpKindCreate.
 //   - If obs.State is non-nil and all fields match: no Op (already converged).
 //   - If obs.State is non-nil and fields differ: OpKindUpdate.
+//   - If obs.Check is set (minimal tier, §28.7): no Op when the target's dry
+//     run reports no change, otherwise OpKindUpdate (see diffCheck).
 //
 // CauseTag is determined by cause.Classify(ctx) per-resource (§10.3).
 func (e *Engine) Diff(obs core.Observation, desired DesiredResource, ctx cause.CauseContext) core.Plan {
@@ -236,6 +238,12 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource, ctx cause.C
 	// unknown ≠ absent (ADR-0002; §3 asymmetry principle).
 	if obs.Availability != core.AvailabilityOk {
 		return core.Plan{}
+	}
+
+	// Minimal tier (§5.6, §28.7): the target answered a dry run of the
+	// desired instead of returning State.
+	if obs.Check != nil {
+		return e.diffCheck(obs.Check, desired, ctx)
 	}
 
 	// Resource absent in reality → Create.
@@ -278,6 +286,42 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource, ctx cause.C
 			},
 		},
 	}
+}
+
+// diffCheck is the degraded diff of a minimal-tier observation (§5.6, §28.7):
+// no change reported → converged; a change reported → one Update carrying every
+// desired field (reality is unknown, so From is empty: the core cannot say
+// which field differs).  It is an Update, never a Create: the target was
+// reachable and answered, so nothing is known to be absent.
+//
+// Cause is classified as for a present resource (the target knows reality,
+// the core does not): A only when the intent revision says the desired
+// changed, otherwise B — A and B cannot be told apart from reality.
+// Destructive stays false here; the provider raises it (PlanRefiner).
+func (e *Engine) diffCheck(check *core.CheckResult, desired DesiredResource, ctx cause.CauseContext) core.Plan {
+	if !check.Changed {
+		return core.Plan{}
+	}
+	ctx.ResourceObservedAbsent = false
+	diagnostic := fmt.Sprintf("resource %s: the target's dry run reports a change (minimal tier: fields are not compared)", desired.ID)
+	if check.Detail != "" {
+		diagnostic += "\n" + check.Detail
+	}
+	var fields []core.FieldDiff
+	for _, f := range desiredFieldDiffs(desired.Fields, e.schema) {
+		if spec, ok := e.schema.Fields[f.Field]; ok && (spec.Computed || spec.Managed) {
+			continue
+		}
+		fields = append(fields, f)
+	}
+	return core.Plan{Ops: []core.Op{{
+		Kind:        core.OpKindUpdate,
+		Target:      desired.ID,
+		Destructive: false,
+		Cause:       cause.Classify(true, ctx),
+		Diagnostic:  diagnostic,
+		Fields:      fields,
+	}}}
 }
 
 // diffFields compares observed state against desired fields and returns the

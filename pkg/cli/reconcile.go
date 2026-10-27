@@ -106,6 +106,7 @@ func runReconcile(args []string) {
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	s3Config := s3ConfigFlag(fs)
 	postgresqlConfig := postgresqlConfigFlag(fs)
+	ansibleConfig := ansibleConfigFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
@@ -428,6 +429,9 @@ func runReconcile(args []string) {
 	if *postgresqlConfig != "" {
 		providerConfig["postgresql_config"] = *postgresqlConfig
 	}
+	if *ansibleConfig != "" {
+		providerConfig["ansible_config"] = *ansibleConfig
+	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
 	if resolveErr != nil {
 		fmt.Fprintln(logErr, resolveErr)
@@ -550,7 +554,7 @@ func runReconcile(args []string) {
 			obsv = sdk.NewCycleObserver(fp, claimSelector)
 			cycleObs[res.ID.Provider] = obsv
 		}
-		obs, err := obsv.Observe(ctx, res.ID)
+		obs, err := obsv.ObserveDesired(ctx, res.ID, res.Fields)
 		if err != nil {
 			// D-1: Observe error → unobservable, not converged.  Do not exit
 			// immediately: record it, keep observing the rest, and let ApplyWaves

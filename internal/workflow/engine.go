@@ -508,7 +508,7 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 		if err := s.e.execute(ctx, plan); err != nil {
 			return stepFailed, fmt.Sprintf("apply %v: %v", step.Fields, err)
 		}
-		fresh, err := s.e.providerOf(target).Read(ctx, target.Local)
+		fresh, err := provider.ReadFor(ctx, s.e.providerOf(target), target.Local, step.Fields)
 		if err == nil && s.satisfied(fresh, target, step.Fields) {
 			return stepDone, fmt.Sprintf("applied %v", step.Fields)
 		}
@@ -546,7 +546,7 @@ func (e *Engine) execute(ctx context.Context, plan core.Plan) error {
 
 // satisfied は obs が fields を満たすか（Schema に従う Diff に差分が無いか）。
 func (s *stepper) satisfied(obs core.Observation, id core.ID, fields map[string]string) bool {
-	if obs.Availability != core.AvailabilityOk || obs.State == nil {
+	if obs.Availability != core.AvailabilityOk || (obs.State == nil && obs.Check == nil) {
 		return false
 	}
 	d := s.e.diff(id)

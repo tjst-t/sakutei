@@ -287,7 +287,7 @@ func ScopedReconcile(
 			continue
 		}
 
-		obs, readErr := fp.Read(ctx, local)
+		obs, readErr := provider.ReadFor(ctx, fp, local, r.Fields)
 		if readErr != nil {
 			fmt.Fprintf(errOut, "sakutei: scoped: observe %s: %v\n", r.ID, readErr)
 			unobservable[local] = true

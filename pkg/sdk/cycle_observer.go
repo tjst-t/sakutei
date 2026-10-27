@@ -84,6 +84,17 @@ func (o *CycleObserver) Bulk() bool { return o.bo != nil }
 // (a file, like dnszone and nftables) keys its entries under the root scope,
 // as its List does, while the desired ID carries the intent's scope.
 func (o *CycleObserver) Observe(ctx context.Context, id core.ID) (core.Observation, error) {
+	return o.ObserveDesired(ctx, id, nil)
+}
+
+// ObserveDesired is Observe for a desired resource: a minimal-tier provider
+// (provider.CheckReader, §28.7) is observed by its dry run of desired
+// (provider.ReadFor); every other provider exactly as by Observe — desired is
+// not passed to it.
+func (o *CycleObserver) ObserveDesired(ctx context.Context, id core.ID, desired map[string]string) (core.Observation, error) {
+	if _, ok := o.p.(provider.CheckReader); ok {
+		return provider.ReadFor(ctx, o.p, id.Local, desired)
+	}
 	if o.bo == nil {
 		return o.p.Read(ctx, id.Local)
 	}

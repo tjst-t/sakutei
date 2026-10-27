@@ -36,6 +36,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/diff"
 	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/internal/nftables"
+	"github.com/tjst-t/sakutei/internal/prune"
 	"github.com/tjst-t/sakutei/pkg/core"
 	"github.com/tjst-t/sakutei/pkg/provider"
 	"github.com/tjst-t/sakutei/pkg/sdk"
@@ -88,6 +89,11 @@ func resolveProviders(
 		}
 		if err := provider.ValidateUpdatePolicy(result[r.ID.Provider], r.ID.Local, r.UpdatePolicy); err != nil {
 			return nil, fmt.Errorf("%s: resource %s: %w", commandName, r.ID, err)
+		}
+		// §5.3 / §12.1: PruneWithinScope needs a Lister (closed world); a
+		// provider without List (e.g. the minimal tier) is open-world only.
+		if err := prune.ValidatePrunePolicy([]diff.DesiredResource{r}, result[r.ID.Provider]); err != nil {
+			return nil, fmt.Errorf("%s: %w", commandName, err)
 		}
 	}
 	return result, nil
@@ -218,4 +224,12 @@ func s3ConfigFlag(fs *flag.FlagSet) *string {
 func postgresqlConfigFlag(fs *flag.FlagSet) *string {
 	return fs.String("postgresql-config", "",
 		"postgresql: server list (JSON / YAML): psql (optional), secret_store, scope (optional), servers.<name>.host, port, dbname, user, password (a SecretRef), sslmode, sslrootcert, connect_timeout, scope, verify_passwords")
+}
+
+// ansibleConfigFlag registers --ansible-config, the settings of the ansible
+// provider (§28.7, §29.1, #127): the inventory, the ansible binary, the
+// environment, the timeout and how many ansible runs may go at once.
+func ansibleConfigFlag(fs *flag.FlagSet) *string {
+	return fs.String("ansible-config", "",
+		"ansible: provider settings (JSON / YAML): inventory (required), ansible (path, optional), secret_store (for SecretRefs in args), env (map), timeout, max_parallel")
 }

@@ -79,4 +79,23 @@ type Observation struct {
 	// Time must be supplied by the caller; the core never calls time.Now()
 	// internally—this keeps the core deterministically testable.
 	ObservedAt time.Time
+	// Check is what a minimal-tier provider (Capabilities.TrueObserve false,
+	// §5.6, §28.7) observes instead of State: only whether applying the
+	// desired would change reality (provider.CheckReader).  When Check is set,
+	// State is nil — the provider cannot say what reality is, only whether it
+	// already matches.  Nil for every provider that observes State.
+	Check *CheckResult
+}
+
+// CheckResult is the observation of a minimal-tier provider (§5.6, §28.7):
+// the answer of a dry run of the desired against reality (for Ansible: the
+// module in check mode).  It is not a State: the core cannot diff it field by
+// field, only tell converged (Changed false) from not (Changed true).
+type CheckResult struct {
+	// Changed reports that applying the desired would change reality.
+	Changed bool
+	// Detail is the target's own description of the change (for Ansible the
+	// --diff output), shown with the drift.  Empty when the target gives
+	// none, or when it could carry a secret value (the provider leaves it out).
+	Detail string
 }

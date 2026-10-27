@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
+	"unicode/utf8"
 
 	"github.com/tjst-t/sakutei/internal/eventlog"
 	"github.com/tjst-t/sakutei/internal/prune"
@@ -159,4 +161,28 @@ func snapshotDigest(fields map[string]string) string {
 		fmt.Fprintf(h, "%s=%s\x00", k, fields[k])
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// checkDriftDetailMax bounds how much of a dry run's own diff a DriftEvent
+// quotes (the full text is in the plan's diagnostic).
+const checkDriftDetailMax = 512
+
+// checkDriftSummary is the DriftEvent summary of a minimal-tier observation
+// (§28.7): there is no snapshot to compare, only the target's dry run, so the
+// summary says so and quotes the target's own diff when it gave one (on one
+// line, cut at checkDriftDetailMax bytes).
+func checkDriftSummary(check *core.CheckResult) string {
+	s := "the target's dry run reports a change (minimal tier: no State to compare)"
+	if check.Detail == "" {
+		return s
+	}
+	d := check.Detail
+	if len(d) > checkDriftDetailMax {
+		n := checkDriftDetailMax
+		for n > 0 && !utf8.RuneStart(d[n]) {
+			n--
+		}
+		d = d[:n] + "…"
+	}
+	return s + "; diff: " + strconv.Quote(d)
 }
