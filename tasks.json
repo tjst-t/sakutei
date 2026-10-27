@@ -2970,11 +2970,11 @@
       "labels": [],
       "body": "## やること\n- internal/sqlmigrate（SQLite、strategy: task 専用、設計書 §29.1）に、データベースごとの engine（`sqlite`＝既定・今のまま／`postgresql`）を足す。postgresql では psql を exec（postgresql provider の接続の設定と psql の呼び方・パスワードの渡し方を共通にする。二重に書かない）。\n- 決まりは SQLite 版と同じ：schema_migrations の最大の版を観測、up を 1 本ずつ `BEGIN … INSERT INTO schema_migrations … COMMIT` で（`ON_ERROR_STOP=1`、失敗した 1 本は残らない）、down、RollbackTask、Apply は拒否、strategy: task 以外の宣言はエラー、届かない・psql が無いは unknown。トランザクションに入れられない文（CREATE INDEX CONCURRENTLY など）は失敗として知らせる（特別扱いはしない。docs に書く）。\n- 同じ DB を複数のデーモンが動かさないよう、流す間は `pg_advisory_lock` を取る。\n- 統合テスト：`make integration-postgresql` に足す（同じコンテナを使う）。常駐の sakutei（--task-store）で 0→3、失敗する 1 本、rollback_on_fail、3→1 の down を確かめる。\n- 文書：docs/providers/sqlmigrate.md と §29.1 に書き足す。版の行と CHANGELOG のファイルは触らない。\n\n## 決まり\nGo は stdlib のみ。既存の SQLite 版のテストはそのまま通る。`make check` と `make test-race` を通す。",
       "doneWhen": "engine: postgresql の sqlmigrate が本物の PostgreSQL で up・down・失敗・rollback を通り、既存の SQLite 版のテストと make check・make test-race・make integration-postgresql が通る",
-      "resolution": "Factory が取り込みました（factory/sqlmigrate-postgresql）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T10:43:04.303Z",
-      "updatedAt": "2026-10-27T12:19:59.627Z",
+      "updatedAt": "2026-10-27T12:20:20.425Z",
       "closedAt": "2026-10-27T12:19:59.627Z",
       "extra": {}
     },
