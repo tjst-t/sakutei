@@ -1782,11 +1782,11 @@
       ],
       "body": "2026-10-21、v1 を実際に使って確かめる手順を作る途中で見つけた。\n\n## 症状\n- `cmd/sakutei/main.go` の runDaemon は provider を `reg.Get(\"fake\", ...)` で決め打ちしている（コメント「Multi-provider daemon support is a future Story」）。`internal/reconcile` の Config も `Provider provider.Provider` 1 つだけ。そのため dnszone・nftables の resource を書いた intent をデーモンで回せない。\n- 1 回だけ回す `plan`・`reconcile` は intent の provider 名から registry で引いて振り分けている（`resolveProviders`）が、nftables の ruleset のパスを渡すフラグ（`--ruleset`）が無い。`--state` に頼るしかなく、fake と nftables を同じ intent に混ぜるとファイルがぶつかる。`status`・`import`・`sync` には `--ruleset` がある。\n\n## 直し方（設計の範囲：§27.2 v1a の「provider 2〜3 個」、§5 の provider seam）\n- デーモンも intent に出てくる provider 名ごとに registry から引き（`resolveProviders` と同じ規則・`sdk.ValidateProvider` で fail-closed）、Read・Apply・List・BulkObserve・prune・予算・capacity gate・外部上流の観測を resource の provider ごとに振り分ける。\n- デーモンに `--zone`・`--ruleset` を足し、`plan`・`reconcile` に `--ruleset` を足す（`status` と同じ意味）。\n- 1 つの provider だけの既存の使い方（`--state` だけで fake）は変えない。\n\n#15（デーモンの連続スキップの通知）と同じデーモンのループを触るので、#15 の後に流す。",
       "doneWhen": "dnszone と nftables の resource を 1 つの intent に書き、デーモン（--zone・--ruleset 付き）を回すと両方が収束し、手でファイルを変えたずれが次の周期で戻ることを受入テストで示す。plan・reconcile が --ruleset を受け付ける。fake だけの既存の受入テストが変わらず通る。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/fake-provider-dnszone-nftables-plan-reco）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T10:04:00.367Z",
-      "updatedAt": "2026-10-21T10:39:14.454Z",
+      "updatedAt": "2026-10-27T09:36:58.673Z",
       "closedAt": "2026-10-21T10:39:14.454Z",
       "extra": {}
     },
