@@ -13,8 +13,9 @@
 // limitations under the License.
 
 // Package s3 は s3-bucket provider（Backlog #122）の統合テスト。docker で
-// S3 互換のサーバを立て（MinIO と SeaweedFS、加えて PUT の API を持たない古い
-// SeaweedFS）、sakutei の CLI（plan・reconcile・status）をそこへ向ける。
+// S3 互換のサーバを立て（必須の SeaweedFS と、任意の MinIO・PUT の API を持たない
+// 古い SeaweedFS。任意のものはイメージが取れなければ飛ばす、#123）、sakutei の
+// CLI（plan・reconcile・status）をそこへ向ける。イメージは tag と digest で固定する。
 // コンテナは 127.0.0.1 の空いたポートにだけ公開し、終われば（落ちても）消す。
 //
 // テストは build tag integration_s3 の付いたファイルにあり、make check・

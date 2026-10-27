@@ -107,13 +107,15 @@ $ make integration-s3
 
 要るもの: docker と、パスワードなしの `sudo`（`sudo -n docker`）。
 
-- 3 つのサーバを `docker run` で立て、127.0.0.1 の空いたポートにだけ公開する。イメージは環境変数で差し替えられる。
+- サーバを `docker run` で立て、127.0.0.1 の空いたポートにだけ公開する。既定のイメージは **tag と digest（`name:tag@sha256:…`）で固定**している（digest は 2026-10-27 に docker pull で確かめた値）。環境変数で差し替えられる（Backlog #123）。
 
-  | endpoint の名前 | 環境変数 | 既定のイメージ |
-  | --- | --- | --- |
-  | `minio` | `SAKUTEI_IT_MINIO_IMAGE` | `cgr.dev/chainguard/minio:latest`（MinIO のソースから作ったイメージ。Docker Hub の `minio/minio` は取れなくなっている） |
-  | `seaweedfs` | `SAKUTEI_IT_SEAWEEDFS_IMAGE` | `chrislusf/seaweedfs:latest` |
-  | `seaweedfs-old` | `SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE` | `chrislusf/seaweedfs:3.80`（バージョニング・ポリシー・タグの PUT が NotImplemented の版。空にすると使わない） |
+  | endpoint の名前 | 必須か | 環境変数 | 既定のイメージ |
+  | --- | --- | --- | --- |
+  | `seaweedfs` | 必須 | `SAKUTEI_IT_SEAWEEDFS_IMAGE` | `chrislusf/seaweedfs:4.51@sha256:f7a49e3f3972ebed5be2ed4befa4a0c68eb7bdddba6e692d42729ceb545134b8` |
+  | `minio` | 任意 | `SAKUTEI_IT_MINIO_IMAGE` | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372`（MinIO のソースから作ったイメージ。MinIO は 2026-04 にアーカイブされ、公式のイメージは匿名で取れないことがある） |
+  | `seaweedfs-old` | 任意 | `SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE` | `chrislusf/seaweedfs:3.80@sha256:1055999e08eed1789b0ae45d235126e4495e23d3fb9d6396293fd42539b1ae6a`（バージョニング・ポリシー・タグの PUT が NotImplemented の版） |
+
+- 始める前に各イメージを `docker pull` する。**必須のサーバ（seaweedfs）が取れなければ失敗**にする。**任意のサーバは取れなければ（または環境変数が空なら）使わず**、「`minio (optional) is not used: docker pull … failed: …`」を出して、そのサーバに関わる段だけを飛ばす（`an endpoint without the API` は seaweedfs-old が無ければ SKIP。minio が無ければ main は seaweedfs だけになり、`a stopped server` は seaweedfs を止め、動いたままのサーバとして seaweedfs-old を使う。それも無ければ止めたサーバの側だけを確かめる）。
 
 - 資格は secret store（file SecretBackend）に置き、`--s3-config` の endpoint の一覧（`bucket_prefix: sk-it-`）から SecretRef で引く。sakutei のバイナリを作り、`status --json`・`reconcile` を回す。手での変更（ポリシー・バージョニング・オブジェクトの PUT）は sakutei の外から S3 の API で行う。
 - 終われば（落ちても）コンテナを `docker rm -f -v` で消す。`make integration-s3` は残った `sakutei-s3it-*` を最後にもう一度消す。
@@ -122,35 +124,43 @@ $ make integration-s3
 
 | 段 | 内容 |
 | --- | --- |
-| create from empty | minio・seaweedfs に全フィールドを宣言したバケット。status が drift 2（現実に無い）→ reconcile → 適合 2、各サーバの値が宣言どおり |
-| changed by hand | 両方のバージョニングを Suspended に、ポリシーを Deny に手で変える → status が drift 2 → reconcile で戻る |
+| create from empty | main（4 つの API を持つサーバ。seaweedfs と、使えれば minio）に全フィールドを宣言したバケット。status が drift 2（現実に無い）→ reconcile → 適合 2、各サーバの値が宣言どおり |
+| changed by hand | main の各サーバのバージョニングを Suspended に、ポリシーを Deny に手で変える → status が drift 2 → reconcile で戻る |
 | no drift however many cycles | 宣言どおりのまま reconcile と status を 5 周 → drift 0、計画が出ない、ポリシーが書き直されない（MinIO が書き換えた形のまま） |
 | a bucket with objects is not pruned | 中身のある orphan・空の orphan・`bucket_prefix` の外のバケットを手で作り、PruneWithinScope で reconcile → 空の orphan だけが消える（`[DESTRUCTIVE]`）。中身のある orphan は `BucketNotEmpty` の PermanentError で残る。prefix の外は List に出ず残る |
-| a stopped server | minio を `docker pause` → status で minio のバケットだけが観測できない、reconcile は minio のバケットを skip（作らない）し、seaweedfs のバケットは観測を続ける。List が完全でないので prune は止まり、seaweedfs の空の orphan も消えない |
-| after the server is back | unpause → reconcile → 適合 2 |
+| a stopped server | minio を `docker pause`（minio が無ければ seaweedfs）→ status で止めたサーバのバケットだけが観測できない、reconcile はそれを skip（作らない）し、動いたままのサーバのバケットは観測を続ける。List が完全でないので prune は止まり、動いたままのサーバの空の orphan も消えない |
+| after the server is back | unpause → reconcile → main がすべて適合 |
 | an endpoint without the API | 今の minio・seaweedfs は 4 つの GET をどれも持つことを確かめる。seaweedfs-old に versioning・tags を宣言 → バケットは作られ、Apply が NotImplemented の PermanentError で止まり、status は drift。フィールドを宣言しなければ適合 |
 | clean up through prune | 宣言を 1 つだけにして PruneWithinScope で reconcile → 空のバケットが prune で消える（中身のあるものは残る）。コンテナは teardown で消す |
 
 ### 結果
 
-MinIO RELEASE.2026-10-23T20-06-51Z（`cgr.dev/chainguard/minio`）・SeaweedFS 4.50（`chrislusf/seaweedfs:latest`）・SeaweedFS 3.80 で回した結果（全段 PASS、2026-10-27）:
+既定のイメージ（SeaweedFS 4.51・MinIO RELEASE.2026-08-04T00-00-00Z・SeaweedFS 3.80）で回した結果（全段 PASS、2026-10-27）:
 
 ```
---- PASS: TestS3Integration (26.02s)
-    --- PASS: TestS3Integration/create_from_empty (0.14s)
-    --- PASS: TestS3Integration/a_policy_and_versioning_changed_by_hand_are_drift_and_come_back (0.18s)
-    --- PASS: TestS3Integration/declared_as_is,_no_drift_however_many_cycles (0.12s)
+--- PASS: TestS3Integration (25.97s)
+    --- PASS: TestS3Integration/create_from_empty (0.21s)
+    --- PASS: TestS3Integration/a_policy_and_versioning_changed_by_hand_are_drift_and_come_back (0.16s)
+    --- PASS: TestS3Integration/declared_as_is,_no_drift_however_many_cycles (0.10s)
     --- PASS: TestS3Integration/a_bucket_with_objects_is_not_pruned (0.29s)
-    --- PASS: TestS3Integration/a_stopped_server_is_unobservable_and_nothing_is_done (25.14s)
-    --- PASS: TestS3Integration/after_the_server_is_back_it_converges_again (0.04s)
-    --- PASS: TestS3Integration/an_endpoint_without_the_API (0.06s)
-    --- PASS: TestS3Integration/clean_up_through_prune (0.05s)
+    --- PASS: TestS3Integration/a_stopped_server_is_unobservable_and_nothing_is_done (25.11s)
+    --- PASS: TestS3Integration/after_the_server_is_back_it_converges_again (0.03s)
+    --- PASS: TestS3Integration/an_endpoint_without_the_API (0.05s)
+    --- PASS: TestS3Integration/clean_up_through_prune (0.04s)
 PASS
 ```
+
+任意のサーバのイメージをわざと取れないものにした場合（同日）:
+
+- `SAKUTEI_IT_MINIO_IMAGE=registry.invalid/minio:none`：`minio (optional) is not used: docker pull registry.invalid/minio:none failed: … no such host` を出し、seaweedfs と seaweedfs-old で全段 PASS（`a stopped server` は seaweedfs を止め、seaweedfs-old の orphan が消えないことを確かめる）。
+- さらに `SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE=chrislusf/seaweedfs:0.0.0-nonexistent`：seaweedfs だけで回り、`an endpoint without the API` だけが SKIP（`seaweedfs-old is not used: docker pull … not found`）、ほかは PASS。
+- 必須の `SAKUTEI_IT_SEAWEEDFS_IMAGE=registry.invalid/weed:none`：`seaweedfs: docker pull registry.invalid/weed:none: …` で FAIL（テストを始めない）。
 
 分かったこと:
 
 - **MinIO はポリシーを書き換えて持つ**。`"Principal": "*"`・`"Action": "s3:GetObject"` と宣言すると `{"AWS": ["*"]}`・`["s3:GetObject"]` で返す。SeaweedFS は書かれたまま返す。正規形で比べるので、どちらでも 5 周 drift が出ず、ポリシーは書き直されない（Apply が走らない）。
+- **SeaweedFS（`weed server`）のボリュームの数**：既定の `-volume.max`（8）では、オブジェクトを書いたバケットごとにボリュームを約 7 個使うので、オブジェクトを入れるバケットが 3 つ目になるとその PUT が HTTP 500 になる。テストは `-volume.max=1000 -master.volumeSizeLimitMB=64` で立てる（小さいボリュームを多く持てるように）。バケットの作成やポリシー・タグなどの設定（この provider が使う API）はボリュームを使わないが、同じ SeaweedFS にオブジェクトを多くのバケットに入れる使い方では、この上限に気をつける。
+- **SeaweedFS は起動してから最初のオブジェクトの PUT に 15 秒ほどかかる**ことがある（ボリュームを割り当てる間）。テストは ListBuckets が通るのを待ったあと、`bucket_prefix` の外のバケットにオブジェクトを 1 つ PUT できるまで（最大 2 分）待ってから始める（そのバケットは消す）。
 - 4 つの API（バージョニング・ポリシー・ライフサイクル・タグ）の **GET は、今の MinIO・SeaweedFS のどちらも持つ**（NotImplemented にならない）。片方にしか無い GET は今の版には無いので、「宣言したフィールドの GET が NotImplemented なら観測できない」は偽サーバでだけ確かめている（`internal/s3bucket` の単体テスト）。
 - **SeaweedFS 3.80 は GET に既定の値を返し（バージョニングは常に Suspended、ポリシー・タグは無い）、PUT だけが 501 NotImplemented**。Read は欠けを知れないので、宣言した値は drift として見え、reconcile は「tags: permanent: the endpoint does not implement this API (NotImplemented) …」で止まる（バケット自体は作られる）。宣言しなければ適合。
 - MinIO は `AbortIncompleteMultipartUpload` を持つ lifecycle のルールを `InvalidArgument`（スキーマに合わない）で断る（SeaweedFS は受け付ける）。endpoint が拒む値は、その endpoint の文言つきの PermanentError になる。テストの宣言には使っていない。

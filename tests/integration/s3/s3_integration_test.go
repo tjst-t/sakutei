@@ -16,13 +16,15 @@
 
 package s3
 
-// サーバ（イメージは環境変数で差し替えられる。空にするとそのサーバを使わない）:
+// サーバ（イメージは環境変数で差し替えられる。既定は tag と digest で固定）:
 //
-//	minio          SAKUTEI_IT_MINIO_IMAGE          既定 cgr.dev/chainguard/minio:latest
-//	seaweedfs      SAKUTEI_IT_SEAWEEDFS_IMAGE      既定 chrislusf/seaweedfs:latest
-//	seaweedfs-old  SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE  既定 chrislusf/seaweedfs:3.80
+//	seaweedfs      SAKUTEI_IT_SEAWEEDFS_IMAGE      必須
+//	minio          SAKUTEI_IT_MINIO_IMAGE          任意
+//	seaweedfs-old  SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE  任意
 //
-// minio と seaweedfs は必須。seaweedfs-old（バージョニング・ポリシー・タグの
+// 必須のサーバはイメージが取れなければ失敗にする。任意のサーバはイメージが
+// 取れない（docker pull が失敗する）か環境変数が空なら、そのサーバの段だけを
+// 飛ばし、理由をログに出す。seaweedfs-old（バージョニング・ポリシー・タグの
 // PUT が NotImplemented の版）は、片方にしか無い API の扱いを本物で見るため。
 
 import (
@@ -42,6 +44,13 @@ import (
 	"github.com/tjst-t/sakutei/internal/s3bucket"
 )
 
+// 既定のイメージ。digest は docker pull で確かめた値（2026-10-27）。
+const (
+	seaweedfsImage    = "chrislusf/seaweedfs:4.51@sha256:f7a49e3f3972ebed5be2ed4befa4a0c68eb7bdddba6e692d42729ceb545134b8"
+	minioImage        = "pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372"
+	seaweedfsOldImage = "chrislusf/seaweedfs:3.80@sha256:1055999e08eed1789b0ae45d235126e4495e23d3fb9d6396293fd42539b1ae6a"
+)
+
 const (
 	accessKey = "sakutei-it"
 	secretKey = "sakutei-it-secret-key-0123456789"
@@ -54,6 +63,7 @@ type server struct {
 	args                        []string // コンテナに渡す引数
 	runOpts                     []string // docker run の追加の引数（-e・-v）
 	optional                    bool
+	warmup                      bool // 最初のオブジェクトの PUT を済ませてから始める（SeaweedFS）
 }
 
 var lab struct {
@@ -61,6 +71,7 @@ var lab struct {
 	bin     string
 	s3cfg   string
 	servers map[string]*server
+	skipped map[string]string // 任意で使わなかったサーバ → 理由
 	clients map[string]*s3bucket.Client
 }
 
@@ -108,20 +119,35 @@ func setup() error {
 	if err := os.Chmod(filepath.Join(dir, "weed-s3.json"), 0o644); err != nil { // umask に関わらず。
 		return err
 	}
-	weedArgs := []string{"server", "-s3", "-s3.config=/etc/sakutei/weed-s3.json", "-dir=/data"}
+	// -volume.max の既定（8）ではバケットごとにボリュームを約 7 個使うので、
+	// 3 つ目のバケットからオブジェクトの PUT が 500 になる。小さいボリュームを
+	// 多く持てるようにする。
+	weedArgs := []string{"server", "-s3", "-s3.config=/etc/sakutei/weed-s3.json", "-dir=/data",
+		"-volume.max=1000", "-master.volumeSizeLimitMB=64"}
 	weedMount := []string{"-v", dir + "/weed-s3.json:/etc/sakutei/weed-s3.json:ro"}
 	all := []*server{
-		{name: "minio", image: image("SAKUTEI_IT_MINIO_IMAGE", "cgr.dev/chainguard/minio:latest"), port: "9000",
+		{name: "seaweedfs", image: image("SAKUTEI_IT_SEAWEEDFS_IMAGE", seaweedfsImage), port: "8333", args: weedArgs, runOpts: weedMount, warmup: true},
+		{name: "minio", image: image("SAKUTEI_IT_MINIO_IMAGE", minioImage), port: "9000", optional: true,
 			args: []string{"server", "/data"}, runOpts: []string{"-e", "MINIO_ROOT_USER=" + accessKey, "-e", "MINIO_ROOT_PASSWORD=" + secretKey}},
-		{name: "seaweedfs", image: image("SAKUTEI_IT_SEAWEEDFS_IMAGE", "chrislusf/seaweedfs:latest"), port: "8333", args: weedArgs, runOpts: weedMount},
-		{name: "seaweedfs-old", image: image("SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE", "chrislusf/seaweedfs:3.80"), port: "8333", args: weedArgs, runOpts: weedMount, optional: true},
+		{name: "seaweedfs-old", image: image("SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE", seaweedfsOldImage), port: "8333", args: weedArgs, runOpts: weedMount, optional: true, warmup: true},
 	}
 	lab.servers = map[string]*server{}
+	lab.skipped = map[string]string{}
 	for _, s := range all {
 		if s.image == "" {
 			if !s.optional {
 				return fmt.Errorf("%s: the image must not be empty", s.name)
 			}
+			lab.skipped[s.name] = "the image is empty"
+			fmt.Fprintf(os.Stderr, "integration-s3: %s (optional) is not used: %s\n", s.name, lab.skipped[s.name])
+			continue
+		}
+		if out, err := docker("pull", s.image); err != nil {
+			if !s.optional {
+				return fmt.Errorf("%s: docker pull %s: %v: %s", s.name, s.image, err, lastLine(out))
+			}
+			lab.skipped[s.name] = fmt.Sprintf("docker pull %s failed: %s", s.image, lastLine(out))
+			fmt.Fprintf(os.Stderr, "integration-s3: %s (optional) is not used: %s\n", s.name, lab.skipped[s.name])
 			continue
 		}
 		s.container = prefix + s.name
@@ -167,10 +193,15 @@ func setup() error {
 		}
 		lab.clients[name] = c
 	}
-	// 立ち上がるのを待つ（ListBuckets が通るまで）。
-	for name := range lab.servers {
-		if err := waitReady(name, 3*time.Minute); err != nil {
-			out, _ := docker("logs", "--tail", "20", lab.servers[name].container)
+	// 立ち上がるのを待つ（ListBuckets が通るまで）。SeaweedFS は起動して最初の
+	// オブジェクトの PUT に 15 秒ほどかかることがあるので、それも済ませておく。
+	for name, s := range lab.servers {
+		err := waitReady(name, 3*time.Minute)
+		if err == nil && s.warmup {
+			err = warmup(name, 2*time.Minute)
+		}
+		if err != nil {
+			out, _ := docker("logs", "--tail", "20", s.container)
 			return fmt.Errorf("%s: %v\n%s", name, err, out)
 		}
 	}
@@ -207,6 +238,50 @@ func waitReady(name string, d time.Duration) error {
 	return fmt.Errorf("not ready after %s: %v", d, last)
 }
 
+// warmup は bucket_prefix の外のバケットにオブジェクトを 1 つ PUT し（通るまで
+// 繰り返す）、消す。
+func warmup(name string, d time.Duration) error {
+	const bucket = "sakutei-warmup"
+	ctx := context.Background()
+	sess, err := lab.clients[name].Open(ctx)
+	if err != nil {
+		return err
+	}
+	if err := sess.CreateBucket(ctx, bucket); err != nil {
+		return fmt.Errorf("warmup: %v", err)
+	}
+	url := lab.servers[name].url + "/" + bucket + "/warmup.txt"
+	client := &http.Client{Timeout: d}
+	deadline := time.Now().Add(d)
+	for {
+		code, err := objectRequest(client, http.MethodPut, url, []byte("warmup\n"))
+		if err == nil && code == http.StatusOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("warmup: the first object PUT did not succeed within %s: HTTP %d, %v", d, code, err)
+		}
+		time.Sleep(time.Second)
+	}
+	if code, err := objectRequest(client, http.MethodDelete, url, nil); err != nil || code/100 != 2 {
+		return fmt.Errorf("warmup: DELETE object: HTTP %d, %v", code, err)
+	}
+	return sess.DeleteBucket(ctx, bucket)
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return lines[len(lines)-1]
+}
+
+// need はそのサーバが使われていなければ t を飛ばす。
+func need(t *testing.T, name string) {
+	t.Helper()
+	if _, ok := lab.servers[name]; !ok {
+		t.Skipf("%s is not used: %s", name, lab.skipped[name])
+	}
+}
+
 func teardown() {
 	for _, s := range lab.servers {
 		_, _ = docker("unpause", s.container)
@@ -221,7 +296,7 @@ func teardown() {
 
 func serverNames() []string {
 	var out []string
-	for _, n := range []string{"minio", "seaweedfs", "seaweedfs-old"} {
+	for _, n := range []string{"seaweedfs", "minio", "seaweedfs-old"} {
 		if _, ok := lab.servers[n]; ok {
 			out = append(out, n)
 		}
@@ -258,19 +333,30 @@ func hasBucket(t *testing.T, name, bucket string) bool {
 // 扱わないので、ここで SigV4 の PUT を直に送る）。
 func putObject(t *testing.T, name, bucket, key string) {
 	t.Helper()
-	body := []byte("sakutei integration test object\n")
-	req, _ := http.NewRequest(http.MethodPut, lab.servers[name].url+"/"+bucket+"/"+key, bytes.NewReader(body))
-	sum := fmt.Sprintf("%x", sha256sum(body))
-	req.Header.Set("X-Amz-Content-Sha256", sum)
-	s3bucket.SignV4(req, sum, s3bucket.Credentials{AccessKey: accessKey, SecretKey: secretKey}, s3bucket.DefaultRegion, "s3", time.Now())
-	resp, err := http.DefaultClient.Do(req)
+	code, err := objectRequest(&http.Client{Timeout: time.Minute}, http.MethodPut, lab.servers[name].url+"/"+bucket+"/"+key, []byte("sakutei integration test object\n"))
 	if err != nil {
 		t.Fatalf("%s: PUT %s/%s: %v", name, bucket, key, err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("%s: PUT %s/%s: HTTP %d", name, bucket, key, resp.StatusCode)
+	if code != http.StatusOK {
+		t.Fatalf("%s: PUT %s/%s: HTTP %d", name, bucket, key, code)
 	}
+}
+
+// objectRequest はオブジェクトへの SigV4 の要求を 1 つ送り、状態コードを返す。
+func objectRequest(c *http.Client, method, url string, body []byte) (int, error) {
+	req, err := http.NewRequest(method, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	sum := fmt.Sprintf("%x", sha256sum(body))
+	req.Header.Set("X-Amz-Content-Sha256", sum)
+	s3bucket.SignV4(req, sum, s3bucket.Credentials{AccessKey: accessKey, SecretKey: secretKey}, s3bucket.DefaultRegion, "s3", time.Now())
+	resp, err := c.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	resp.Body.Close()
+	return resp.StatusCode, nil
 }
 
 // ---- intent と CLI ----
@@ -301,6 +387,15 @@ func appBucket(ep string, prune bool) resource {
 		r.DeletionPolicy = "PruneWithinScope"
 	}
 	return r
+}
+
+// appBuckets は 4 つの API を持つサーバ（main）ごとの appBucket。
+func appBuckets(main []string, prune bool, more ...resource) []resource {
+	var rs []resource
+	for _, ep := range main {
+		rs = append(rs, appBucket(ep, prune))
+	}
+	return append(rs, more...)
 }
 
 func writeIntent(t *testing.T, rs ...resource) {
@@ -390,18 +485,28 @@ func stateOf(doc statusDoc, localID string) string {
 
 func TestS3Integration(t *testing.T) {
 	ctx := context.Background()
-	main := []string{"minio", "seaweedfs"}
-	writeIntent(t, appBucket("minio", false), appBucket("seaweedfs", false))
+	// main は 4 つの API を持つサーバ（必須の seaweedfs と、使えれば minio）。
+	var main []string
+	for _, n := range []string{"seaweedfs", "minio"} {
+		if _, ok := lab.servers[n]; ok {
+			main = append(main, n)
+		}
+	}
+	for name, why := range lab.skipped {
+		t.Logf("%s (optional) is not used: %s", name, why)
+	}
+	n := len(main)
+	writeIntent(t, appBuckets(main, false)...)
 
 	t.Run("create from empty", func(t *testing.T) {
 		s, _ := status(t)
-		if s.Summary.Drift != 2 || !s.Complete {
-			t.Fatalf("before: %+v, want 2 drifted (the buckets do not exist yet)", s.Summary)
+		if s.Summary.Drift != n || !s.Complete {
+			t.Fatalf("before: %+v, want %d drifted (the buckets do not exist yet)", s.Summary, n)
 		}
 		mustReconcile(t)
 		s, errOut := status(t)
-		if s.Summary.Conformant != 2 || s.Summary.Drift != 0 {
-			t.Fatalf("after: %+v, want 2 conformant\n%s", s, errOut)
+		if s.Summary.Conformant != n || s.Summary.Drift != 0 {
+			t.Fatalf("after: %+v, want %d conformant\n%s", s, n, errOut)
 		}
 		for _, ep := range main {
 			sess := session(t, ep)
@@ -429,14 +534,14 @@ func TestS3Integration(t *testing.T) {
 			}
 		}
 		s, _ := status(t)
-		if s.Summary.Drift != 2 {
-			t.Fatalf("status after the hand changes: %+v, want 2 drifted", s.Summary)
+		if s.Summary.Drift != n {
+			t.Fatalf("status after the hand changes: %+v, want %d drifted", s.Summary, n)
 		}
 		out := mustReconcile(t)
 		if !strings.Contains(out, "policy") {
 			t.Logf("reconcile output:\n%s", out)
 		}
-		if s, _ := status(t); s.Summary.Conformant != 2 || s.Summary.Drift != 0 {
+		if s, _ := status(t); s.Summary.Conformant != n || s.Summary.Drift != 0 {
 			t.Fatalf("status after reconcile: %+v", s.Summary)
 		}
 		for _, ep := range main {
@@ -456,7 +561,7 @@ func TestS3Integration(t *testing.T) {
 			if strings.Contains(out, "will create") || strings.Contains(out, "out of sync") {
 				t.Fatalf("cycle %d planned a change:\n%s", i, out)
 			}
-			if s, _ := status(t); s.Summary.Drift != 0 || s.Summary.Conformant != 2 || !s.Complete {
+			if s, _ := status(t); s.Summary.Drift != 0 || s.Summary.Conformant != n || !s.Complete {
 				t.Fatalf("cycle %d: %+v", i, s.Summary)
 			}
 		}
@@ -480,7 +585,7 @@ func TestS3Integration(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		writeIntent(t, appBucket("minio", true), appBucket("seaweedfs", true))
+		writeIntent(t, appBuckets(main, true)...)
 		out, _ := sakutei(t, "reconcile")
 		t.Logf("reconcile with PruneWithinScope:\n%s", out)
 		for _, ep := range main {
@@ -502,57 +607,74 @@ func TestS3Integration(t *testing.T) {
 		}
 	})
 
-	t.Run("a stopped server is unobservable and nothing is done", func(t *testing.T) {
-		// seaweedfs に空の orphan を置き、minio を止める。List が完全でないので
-		// prune は止まり、minio のリソースは観測できない（absent にしない）。
-		// seaweedfs のリソースは観測を続ける。
-		if err := session(t, "seaweedfs").CreateBucket(ctx, "sk-it-orphan-2"); err != nil {
-			t.Fatal(err)
+	// 止めるサーバ（paused）と、動いたままのサーバ（running）。minio が使えれば
+	// minio を止めて seaweedfs を残す。使えなければ seaweedfs を止め、残すのは
+	// seaweedfs-old（それも無ければ残すサーバの段は飛ばす）。
+	paused, running := "minio", "seaweedfs"
+	if _, ok := lab.servers["minio"]; !ok {
+		paused, running = "seaweedfs", ""
+		if _, ok := lab.servers["seaweedfs-old"]; ok {
+			running = "seaweedfs-old"
 		}
-		if out, err := docker("pause", lab.servers["minio"].container); err != nil {
+	}
+
+	t.Run("a stopped server is unobservable and nothing is done", func(t *testing.T) {
+		// running に空の orphan を置き、paused を止める。List が完全でないので
+		// prune は止まり、paused のリソースは観測できない（absent にしない）。
+		// running のリソースは観測を続ける。
+		if running != "" {
+			if err := session(t, running).CreateBucket(ctx, "sk-it-orphan-2"); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			t.Logf("no other server is running (%s, %s); only the stopped one is checked", lab.skipped["minio"], lab.skipped["seaweedfs-old"])
+		}
+		writeIntent(t, appBuckets(main, true)...)
+		if out, err := docker("pause", lab.servers[paused].container); err != nil {
 			t.Fatalf("docker pause: %v: %s", err, out)
 		}
 		defer func() {
-			if out, err := docker("unpause", lab.servers["minio"].container); err != nil {
+			if out, err := docker("unpause", lab.servers[paused].container); err != nil {
 				t.Fatalf("docker unpause: %v: %s", err, out)
 			}
 		}()
 		s, _ := status(t)
-		if got := stateOf(s, "minio/sk-it-app"); s.Summary.Unobservable != 1 || got == "" || got == "conformant" || got == "drift" {
-			t.Fatalf("status with minio stopped: %+v (minio/sk-it-app: %q), want it unobservable", s.Summary, got)
+		if got := stateOf(s, paused+"/sk-it-app"); s.Summary.Unobservable != 1 || got == "" || got == "conformant" || got == "drift" {
+			t.Fatalf("status with %s stopped: %+v (%s/sk-it-app: %q), want it unobservable", paused, s.Summary, paused, got)
 		}
 		out, _ := sakutei(t, "reconcile")
-		t.Logf("reconcile with minio stopped:\n%s", out)
-		if !hasBucket(t, "seaweedfs", "sk-it-orphan-2") {
-			t.Error("prune ran while one endpoint could not be listed")
-		}
+		t.Logf("reconcile with %s stopped:\n%s", paused, out)
 		if strings.Contains(out, "will create") {
 			t.Errorf("reconcile planned to create a bucket it could not observe:\n%s", out)
 		}
-		// 止まっていない seaweedfs のバケットは観測を続ける（適合のまま、skip しない）。
-		if strings.Contains(out, "skip seaweedfs/sk-it-app") {
-			t.Errorf("the bucket on the running seaweedfs was skipped:\n%s", out)
+		if !strings.Contains(out, "skip "+paused+"/sk-it-app") {
+			t.Errorf("the bucket on the stopped %s was not reported as skipped:\n%s", paused, out)
 		}
-		if !strings.Contains(out, "skip minio/sk-it-app") {
-			t.Errorf("the bucket on the stopped minio was not reported as skipped:\n%s", out)
+		if running == "" {
+			return
+		}
+		if !hasBucket(t, running, "sk-it-orphan-2") {
+			t.Error("prune ran while one endpoint could not be listed")
+		}
+		// 止まっていないサーバのバケットは観測を続ける（skip しない）。
+		if strings.Contains(out, "skip "+running+"/") {
+			t.Errorf("a bucket on the running %s was skipped:\n%s", running, out)
 		}
 	})
 
 	t.Run("after the server is back it converges again", func(t *testing.T) {
-		if err := waitReady("minio", time.Minute); err != nil {
+		if err := waitReady(paused, time.Minute); err != nil {
 			t.Fatal(err)
 		}
-		writeIntent(t, appBucket("minio", false), appBucket("seaweedfs", false))
+		writeIntent(t, appBuckets(main, false)...)
 		mustReconcile(t)
-		if s, _ := status(t); s.Summary.Conformant != 2 || s.Summary.Drift != 0 {
+		if s, _ := status(t); s.Summary.Conformant != n || s.Summary.Drift != 0 {
 			t.Fatalf("%+v", s.Summary)
 		}
 	})
 
 	t.Run("an endpoint without the API", func(t *testing.T) {
-		if _, ok := lab.servers["seaweedfs-old"]; !ok {
-			t.Skip("SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE is empty")
-		}
+		need(t, "seaweedfs-old")
 		// 今の版の minio・seaweedfs は 4 つの API の GET をどれも持つ（NotImplemented
 		// にならない）。ここで確かめた結果を記録する。
 		for _, ep := range main {
@@ -572,7 +694,7 @@ func TestS3Integration(t *testing.T) {
 		// 欠けを知れず、宣言すれば drift になり、Apply が NotImplemented と分かる
 		// 文の PermanentError で止まる（宣言していなければ無視される）。
 		old := resource{Provider: s3bucket.Name, ID: "seaweedfs-old/sk-it-old", Fields: map[string]string{"versioning": "Enabled", "tags": `{"env": "integration"}`}}
-		writeIntent(t, appBucket("minio", false), appBucket("seaweedfs", false), old)
+		writeIntent(t, appBuckets(main, false, old)...)
 		out, _ := sakutei(t, "reconcile")
 		t.Logf("reconcile against seaweedfs-old:\n%s", out)
 		if !strings.Contains(out, "does not implement this API (NotImplemented)") {
@@ -586,7 +708,7 @@ func TestS3Integration(t *testing.T) {
 			t.Errorf("seaweedfs-old/sk-it-old: %q, want drift (the declared values are not there)", got)
 		}
 		// 宣言しなければ無視される（バケットだけなら適合）。
-		writeIntent(t, appBucket("minio", false), appBucket("seaweedfs", false), resource{Provider: s3bucket.Name, ID: "seaweedfs-old/sk-it-old", Fields: map[string]string{}})
+		writeIntent(t, appBuckets(main, false, resource{Provider: s3bucket.Name, ID: "seaweedfs-old/sk-it-old", Fields: map[string]string{}})...)
 		if s, _ := status(t); stateOf(s, "seaweedfs-old/sk-it-old") != "conformant" {
 			t.Errorf("undeclared fields on seaweedfs-old: %+v", s)
 		}
