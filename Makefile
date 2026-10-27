@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3
+.PHONY: build test test-race vet check demo clean integration-redfish integration-nftables integration-s3 integration-postgresql
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -60,6 +60,27 @@ integration-s3:
 	if [ -n "$$left" ]; then \
 	  echo "integration-s3: containers were left behind; removing: $$left"; \
 	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	exit $$status
+
+# postgresql provider の統合テスト（#125）。docker の公式の postgres イメージ
+# （tag と digest で固定）でサーバと psql を動かすクライアントを立て（ホストに
+# psql は要らない）、終わったら（失敗しても）コンテナとネットワークを消す。
+# docker と sudo（パスワードなし）が要るので、check・test・CI には入れない。
+# イメージは SAKUTEI_IT_POSTGRES_IMAGE で差し替えられる。手順と結果は
+# docs/providers/postgresql.md の「統合テスト」。
+POSTGRESQL_IT := ./tests/integration/postgresql/
+integration-postgresql:
+	go vet -tags integration_postgresql $(POSTGRESQL_IT)
+	@status=0; \
+	go test -tags integration_postgresql -count=1 -v -timeout 15m $(POSTGRESQL_IT) || status=$$?; \
+	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-pgit-'); \
+	if [ -n "$$left" ]; then \
+	  echo "integration-postgresql: containers were left behind; removing: $$left"; \
+	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	if sudo -n docker network ls --format '{{.Name}}' 2>/dev/null | grep -q '^sakutei-pgit-net$$'; then \
+	  sudo -n docker network rm sakutei-pgit-net >/dev/null || status=1; \
 	fi; \
 	exit $$status
 

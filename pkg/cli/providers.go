@@ -211,3 +211,11 @@ func s3ConfigFlag(fs *flag.FlagSet) *string {
 	return fs.String("s3-config", "",
 		"s3-bucket: endpoint list (JSON / YAML): secret_store, scope (optional), endpoints.<name>.endpoint, region, addressing (path|virtual), access_key and secret_key (SecretRefs), bucket_prefix, ca_file, insecure_skip_verify, timeout")
 }
+
+// postgresqlConfigFlag registers --postgresql-config, the server list of the
+// postgresql provider (§29.1, #125): per server name the connection settings
+// and the admin role's password as a SecretRef.
+func postgresqlConfigFlag(fs *flag.FlagSet) *string {
+	return fs.String("postgresql-config", "",
+		"postgresql: server list (JSON / YAML): psql (optional), secret_store, scope (optional), servers.<name>.host, port, dbname, user, password (a SecretRef), sslmode, sslrootcert, connect_timeout, scope, verify_passwords")
+}

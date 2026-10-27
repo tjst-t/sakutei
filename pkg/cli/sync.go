@@ -55,6 +55,7 @@ func runSync(args []string) {
 	providersFlag := fs.String("provider", "", "provider(s) to record, comma-separated (required)")
 	providerConfigFile := providerConfigFlag(fs)
 	s3Config := s3ConfigFlag(fs)
+	postgresqlConfig := postgresqlConfigFlag(fs)
 	statePath := fs.String("state", "sakutei-fake-state.json", "path to the fake provider state file")
 	zonePath := fs.String("zone", "", "path to the dnszone provider zone file (default: falls back to --state)")
 	zoneSOASerial := zoneSOASerialFlag(fs)
@@ -112,6 +113,9 @@ func runSync(args []string) {
 	rulesetTarget.put(cfg)
 	if *s3Config != "" {
 		cfg["s3_config"] = *s3Config
+	}
+	if *postgresqlConfig != "" {
+		cfg["postgresql_config"] = *postgresqlConfig
 	}
 	providers := map[string]provider.Provider{}
 	for _, name := range strings.Split(*providersFlag, ",") {

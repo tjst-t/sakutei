@@ -21,6 +21,7 @@ import (
 	"github.com/tjst-t/sakutei/internal/dnszone"
 	"github.com/tjst-t/sakutei/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/internal/nftables"
+	"github.com/tjst-t/sakutei/internal/postgresql"
 	"github.com/tjst-t/sakutei/internal/redfish"
 	"github.com/tjst-t/sakutei/internal/redfish/bmcconfig"
 	"github.com/tjst-t/sakutei/internal/redfish/system"
@@ -173,6 +174,18 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, errors.New("the endpoint list is not set: pass --s3-config <file> (or s3_config in --provider-config)")
 		}
 		return s3bucket.NewFromConfig(path)
+	})
+
+	// "postgresql" — PostgreSQL のロール・データベース・権限・拡張（§29.1、
+	// #125）。config["postgresql_config"] はサーバの一覧（--postgresql-config、
+	// または --provider-config の postgresql の postgresql_config）。--state は
+	// 代わりにならない（接続先と資格は推測しない）。
+	r.Register(postgresql.Name, func(config map[string]string) (provider.Provider, error) {
+		path := config["postgresql_config"]
+		if path == "" {
+			return nil, errors.New("the server list is not set: pass --postgresql-config <file> (or postgresql_config in --provider-config)")
+		}
+		return postgresql.NewFromConfig(path)
 	})
 
 	return r

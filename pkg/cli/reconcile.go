@@ -105,6 +105,7 @@ func runReconcile(args []string) {
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	s3Config := s3ConfigFlag(fs)
+	postgresqlConfig := postgresqlConfigFlag(fs)
 	// Scb0ecd-2: cause-state file for cross-invocation revision tracking.
 	causeStatePath := fs.String("cause-state", "",
 		"path to cause-state JSON file for cross-invocation revision tracking (Scb0ecd-2); optional")
@@ -423,6 +424,9 @@ func runReconcile(args []string) {
 	}
 	if *s3Config != "" {
 		providerConfig["s3_config"] = *s3Config
+	}
+	if *postgresqlConfig != "" {
+		providerConfig["postgresql_config"] = *postgresqlConfig
 	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
 	if resolveErr != nil {

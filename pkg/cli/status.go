@@ -105,6 +105,7 @@ Exit codes:
 	redfishConfig := redfishConfigFlag(fs)
 	sqlmigrateConfig := sqlmigrateConfigFlag(fs)
 	s3Config := s3ConfigFlag(fs)
+	postgresqlConfig := postgresqlConfigFlag(fs)
 	// last-seen リングは S3・非永続（in-memory）。単一の status 呼び出しでは通常
 	// 「前周」は存在しない（初回扱い）。前周比較の機構は statusreport の report-builder
 	// 層で単体テストする。--cause-state と同様、リングの永続化は行わない。
@@ -231,6 +232,9 @@ Exit codes:
 	}
 	if *s3Config != "" {
 		providerConfig["s3_config"] = *s3Config
+	}
+	if *postgresqlConfig != "" {
+		providerConfig["postgresql_config"] = *postgresqlConfig
 	}
 	if *rulesetPath != "" {
 		providerConfig["ruleset"] = *rulesetPath
