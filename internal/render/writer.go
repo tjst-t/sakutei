@@ -39,9 +39,9 @@ const GeneratedFileName = "expanded.json"
 // ADR-0008).  Any file in generated/ that lacks _generated:true is considered
 // to have been edited by a human and must be rejected or overwritten.
 const (
-	HeaderGenerated   = "_generated"
-	HeaderGeneratedBy = "_generated_by"
-	HeaderDoNotEdit   = "_do_not_edit"
+	HeaderGenerated        = "_generated"
+	HeaderGeneratedBy      = "_generated_by"
+	HeaderDoNotEdit        = "_do_not_edit"
 	HeaderGeneratedByValue = "sakutei render"
 )
 

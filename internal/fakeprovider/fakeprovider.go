@@ -272,10 +272,10 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 			reason := strings.ReplaceAll(mode, "\n", "\\n")
 			if reason == "error" {
 				return core.Observation{
-						Availability: core.AvailabilityUnknown,
-						ObservedAt:   time.Now(),
-					}, provider.NewTransientError(
-						fmt.Errorf("fakeprovider: injected observe error for %s", key))
+					Availability: core.AvailabilityUnknown,
+					ObservedAt:   time.Now(),
+				}, provider.NewTransientError(
+					fmt.Errorf("fakeprovider: injected observe error for %s", key))
 			}
 			return core.Observation{
 				Availability: core.AvailabilityUnknown,

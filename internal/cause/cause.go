@@ -32,11 +32,11 @@
 //
 //  3. A (intentional) — a genuine intent change, in one of two forms:
 //     (a) a KNOWN prior intent_revision that DIFFERS from the current one
-//         (IntentPrevRevision != "" && != IntentCurRevision): the operator
-//         committed a new desired state; or
+//     (IntentPrevRevision != "" && != IntentCurRevision): the operator
+//     committed a new desired state; or
 //     (b) cold start (IntentPrevRevision == "" / no history) where reality
-//         was observed ABSENT — i.e. the op is a Create.  A first declaration
-//         of a resource that does not yet exist is intentional, not drift.
+//     was observed ABSENT — i.e. the op is a Create.  A first declaration
+//     of a resource that does not yet exist is intentional, not drift.
 //
 //     COLD-START vs DRIFT (fix Sc7a647 cause-consistency): an EMPTY
 //     IntentPrevRevision means "no history / cold start", NOT "intent changed".

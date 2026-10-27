@@ -46,6 +46,19 @@ func TestMain(m *testing.M) {
 	// #141: the test binary doubles as a fake NETCONF server behind a fake ssh.
 	serveNetconfHelperIfAsked()
 
+	// git が裏で走らせる自動の手入れ（gc --auto・maintenance）が、テストの一時
+	// ディレクトリを消す間に .git へ書いて片づけが失敗することがある（CI で揺れた）。
+	// テストと、テストが起こす sakutei の子プロセスの git では止める。
+	for k, v := range map[string]string{
+		"GIT_CONFIG_COUNT":   "2",
+		"GIT_CONFIG_KEY_0":   "gc.auto",
+		"GIT_CONFIG_VALUE_0": "0",
+		"GIT_CONFIG_KEY_1":   "maintenance.auto",
+		"GIT_CONFIG_VALUE_1": "false",
+	} {
+		os.Setenv(k, v)
+	}
+
 	// Use os.MkdirTemp so the dir is NOT cleaned up by t.Cleanup (we manage
 	// it ourselves via defer + os.RemoveAll).
 	dir, err := os.MkdirTemp("", "sakutei-acceptance-")

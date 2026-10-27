@@ -175,10 +175,12 @@ func resourceExistsInState(t *testing.T, statePath, localID string) bool {
 // TestDeletion_PruneableDefaultFalse verifies [AC-Scf7762-1-1].
 //
 // Setup: reality contains "orphan-vm" (not in desired).
-//        desired declares "desired-vm" with DeletionPolicy=PruneWithinScope.
-//        The fake provider TYPE is NOT opted in to pruning (no
-//        pruneable_capability flag → Capabilities().Pruneable defaults to
-//        false, ADR-0005).
+//
+//	desired declares "desired-vm" with DeletionPolicy=PruneWithinScope.
+//	The fake provider TYPE is NOT opted in to pruning (no
+//	pruneable_capability flag → Capabilities().Pruneable defaults to
+//	false, ADR-0005).
+//
 // Expected: reconcile exits 0, "orphan-vm" remains in the state file.
 func TestDeletion_PruneableDefaultFalse(t *testing.T) {
 	// [AC-Scf7762-1-1]
@@ -191,7 +193,7 @@ func TestDeletion_PruneableDefaultFalse(t *testing.T) {
 
 	// Seed reality: "orphan-vm" exists but is not in desired.
 	seedStateWithResources(t, statePath, map[string]map[string]any{
-		"orphan-vm": {"name": "orphan-vm", "size": "5"},
+		"orphan-vm":  {"name": "orphan-vm", "size": "5"},
 		"desired-vm": {"name": "desired-vm", "size": "10"},
 	})
 
@@ -235,8 +237,10 @@ func TestDeletion_PruneableDefaultFalse(t *testing.T) {
 // TestDeletion_ListDropHalt verifies [AC-Scf7762-1-2].
 //
 // Setup: reality contains many resources; desired declares PruneWithinScope
-//        with pruneable:true; but ListPartial=true simulates a >50% drop
-//        in list count, which must trigger the halt safety guard.
+//
+//	with pruneable:true; but ListPartial=true simulates a >50% drop
+//	in list count, which must trigger the halt safety guard.
+//
 // Expected: reconcile does NOT delete any resources; prune is halted.
 //
 // Implementation note: we use the list_partial flag (ListPartial status) as the
@@ -482,7 +486,9 @@ func readFileString(logPath string) string {
 // TestDeletion_UnknownNotAbsent verifies [AC-Scf7762-1-3].
 //
 // Setup: reality contains "unreachable-vm" which is absent from desired AND
-//        whose Observe returns AvailabilityUnknown (via observe_unknown inject).
+//
+//	whose Observe returns AvailabilityUnknown (via observe_unknown inject).
+//
 // Expected: reconcile does NOT delete "unreachable-vm" (unknown ≠ absent).
 func TestDeletion_UnknownNotAbsent(t *testing.T) {
 	// [AC-Scf7762-1-3]
@@ -615,7 +621,7 @@ func TestDeletion_ExplicitAbsentOnly_NoPrune(t *testing.T) {
 
 	// Seed: "extra-vm" is in reality but not in desired.
 	seedStateWithResources(t, statePath, map[string]map[string]any{
-		"my-vm":   {"name": "my-vm", "size": "10"},
+		"my-vm":    {"name": "my-vm", "size": "10"},
 		"extra-vm": {"name": "extra-vm", "size": "5"},
 	})
 

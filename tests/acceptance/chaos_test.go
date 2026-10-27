@@ -851,7 +851,8 @@ func TestChaos_DaemonAlertOnly_MassDrift_NeverApplied(t *testing.T) {
 //
 // Phase 1: Run in alert-only mode.  20 prune candidates exist.  Nothing deleted.
 // Phase 2: Run in auto mode with a tight budget (max 2 destructive per cycle).
-//          The budget fires; only limited deletion is possible.
+//
+//	The budget fires; only limited deletion is possible.
 //
 // This proves the two safety layers are independent and additive:
 //   - alert-only is a mode gate (prevents any Apply at all).

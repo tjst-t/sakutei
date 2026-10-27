@@ -90,7 +90,7 @@ func runReconcileCombined(t *testing.T, intentDir, statePath string, extraArgs .
 // extractCauseTags parses the cause tag values from sakutei plan/reconcile
 // stdout.  It looks for lines of the form:
 //
-//	  cause:  A
+//	cause:  A
 //
 // and returns all found cause letter strings.
 func extractCauseTags(output string) []string {

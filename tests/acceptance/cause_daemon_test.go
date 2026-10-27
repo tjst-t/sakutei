@@ -24,10 +24,11 @@
 // exist in the daemon: a provider upgrade that produced a look-alike diff would
 // be silently auto-applied every cycle (ADR-0008's dangerous outcome).  These
 // tests verify the daemon now:
-//   (a) tags a fresh intent commit as A and applies it (no DriftEvent),
-//   (b) tags a real reality drift as B and applies it (DriftEvent [cause: B]),
-//   (c) tags a provider_version bump as C, logs ProviderUpgradeDiff, and does
-//       NOT apply it (the ghost-diff gate now fires in the daemon).
+//
+//	(a) tags a fresh intent commit as A and applies it (no DriftEvent),
+//	(b) tags a real reality drift as B and applies it (DriftEvent [cause: B]),
+//	(c) tags a provider_version bump as C, logs ProviderUpgradeDiff, and does
+//	    NOT apply it (the ghost-diff gate now fires in the daemon).
 //
 // Test discipline: every test launches the real "sakutei" binary as a
 // subprocess, drives it via files, inspects stdout/stderr and the state file,

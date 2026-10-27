@@ -487,10 +487,10 @@ func TestDNSZoneContractTests(t *testing.T) {
 	p := dnszone.New(zonePath)
 
 	ct := sdk.ContractTester{
-		Provider:      p,
-		Lister:        p,
-		Scope:         core.NewScope(nil),
-		SampleID:      "contract.example.com./A",
+		Provider: p,
+		Lister:   p,
+		Scope:    core.NewScope(nil),
+		SampleID: "contract.example.com./A",
 		SampleDesired: map[string]string{
 			"name":  "contract.example.com.",
 			"type":  "A",
@@ -527,10 +527,10 @@ beta.example.com. 300 IN A 10.0.0.2
 	p := dnszone.New(zonePath)
 
 	ct := sdk.ContractTester{
-		Provider:      p,
-		Lister:        p,
-		Scope:         core.NewScope(nil),
-		SampleID:      "gamma.example.com./AAAA",
+		Provider: p,
+		Lister:   p,
+		Scope:    core.NewScope(nil),
+		SampleID: "gamma.example.com./AAAA",
 		SampleDesired: map[string]string{
 			"name":  "gamma.example.com.",
 			"type":  "AAAA",

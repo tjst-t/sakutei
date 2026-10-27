@@ -38,7 +38,9 @@ func newStepRunner(steps []StepSpec) *stepRunner {
 	return &stepRunner{steps: steps, done: map[string]bool{}, runs: map[string]int{}}
 }
 
-func (r *stepRunner) RunTask(context.Context, Request) error { panic("simple RunTask on a phased task") }
+func (r *stepRunner) RunTask(context.Context, Request) error {
+	panic("simple RunTask on a phased task")
+}
 
 func (r *stepRunner) RollbackTask(_ context.Context, req Request) (string, error) {
 	r.mu.Lock()

@@ -205,7 +205,7 @@ func (FakeCompositeExpander) Expand(parent diff.DesiredResource) ([]ExpandedReso
 		childLocal := parent.ID.Local + "-" + suffix
 		childID := core.NewID(parent.ID.Provider, parent.ID.Scope, childLocal)
 		childFields := map[string]string{
-			"name":        childLocal,
+			"name":         childLocal,
 			ManagedByField: parent.ID.Local,
 		}
 		// #24: a parent "vlan" (typically allocated from a pool in render

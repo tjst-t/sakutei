@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 // task_phased_gate_test.go: 多相 Task の危険区間と人手ゲート（#52、§29.1）。
 //
 // 多相 Task の rig（task_phased_test.go）を使う。Applying（firmware の書込）が

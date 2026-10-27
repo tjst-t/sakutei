@@ -77,8 +77,10 @@ func (r bulkReality) read(local string) core.Observation {
 // readOnlyFake implements provider.Provider WITHOUT BulkObserver.
 type readOnlyFake struct{ reality bulkReality }
 
-func (f *readOnlyFake) Schema() provider.Schema             { return provider.Schema{} }
-func (f *readOnlyFake) Capabilities() provider.Capabilities { return provider.Capabilities{ProviderVersion: "v-test"} }
+func (f *readOnlyFake) Schema() provider.Schema { return provider.Schema{} }
+func (f *readOnlyFake) Capabilities() provider.Capabilities {
+	return provider.Capabilities{ProviderVersion: "v-test"}
+}
 func (f *readOnlyFake) Read(_ context.Context, id string) (core.Observation, error) {
 	return f.reality.read(id), nil
 }

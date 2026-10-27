@@ -61,26 +61,26 @@
 //
 // Ruleset ファイル形式（管理サブセット）:
 //
-//	table <family> <table> {
-//	    chain <chain> {
-//	        <rule text>
-//	        <rule text>
-//	        ...
-//	    }
-//	}
+//		table <family> <table> {
+//		    chain <chain> {
+//		        <rule text>
+//		        <rule text>
+//		        ...
+//		    }
+//		}
 //
-//   - table 行の <family> は "ip"/"ip6"/"inet" 等。table 名・chain 名は識別子。
-//   - chain ブロック内の各行が 1 ルール（順序保存）。
-//   - `type ... hook ...`（または `policy ...`）を含む chain は base chain
-//     （管理対象外）として扱う。
-//   - `#` から始まる行はコメント。空行は無視。
-//   - table 直下の chain 以外のブロック（set/map/named counter 等）と table の
-//     外の行は parse せず、Apply でもそのまま残す。
-//   - chain の中の複数行にわたる構文（複数行の匿名 set 等）や 1 行で書いた
-//     chain は書き直せないので opaque として管理対象外にし、Read・Apply は
-//     PermanentError を返す（黙って書き換えない）。
-//   - 管理する chain の中のコメント行は、その chain の Update/Delete で消える。
-//   - 括弧が閉じきらない/閉じすぎのファイルは parse エラー（unknown）。
+//	  - table 行の <family> は "ip"/"ip6"/"inet" 等。table 名・chain 名は識別子。
+//	  - chain ブロック内の各行が 1 ルール（順序保存）。
+//	  - `type ... hook ...`（または `policy ...`）を含む chain は base chain
+//	    （管理対象外）として扱う。
+//	  - `#` から始まる行はコメント。空行は無視。
+//	  - table 直下の chain 以外のブロック（set/map/named counter 等）と table の
+//	    外の行は parse せず、Apply でもそのまま残す。
+//	  - chain の中の複数行にわたる構文（複数行の匿名 set 等）や 1 行で書いた
+//	    chain は書き直せないので opaque として管理対象外にし、Read・Apply は
+//	    PermanentError を返す（黙って書き換えない）。
+//	  - 管理する chain の中のコメント行は、その chain の Update/Delete で消える。
+//	  - 括弧が閉じきらない/閉じすぎのファイルは parse エラー（unknown）。
 //
 // Local ID convention: "<family>/<table>/<chain>"（例 "ip/filter/input"）。
 // これは合成 identity {family, table, chain} を収束コアが Read/Apply に渡す
@@ -110,7 +110,7 @@ import (
 // show that without the lock concurrent Applies lose changes, and widens the
 // read-to-write window with beforeWrite.
 var (
-	lockRuleset    = filelock.Lock
+	lockRuleset = filelock.Lock
 	beforeWrite = func() {}
 )
 

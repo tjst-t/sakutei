@@ -50,7 +50,7 @@ func destructiveOps(n int) []core.Op {
 // fakeClock is a controllable time source for the injectable Config.now.
 type fakeClock struct{ t time.Time }
 
-func (c *fakeClock) now() time.Time { return c.t }
+func (c *fakeClock) now() time.Time          { return c.t }
 func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 // newEngineWithClock builds an Engine whose window clock is driven by clk.
