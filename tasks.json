@@ -2877,11 +2877,11 @@
       "labels": [],
       "body": "## なぜ\nオブジェクトストレージのバケットを宣言で収束させたい。S3 互換 API だけを使う汎用の provider にし、特定の製品に依らない（アカウント・利用者の管理は製品ごとに違うので対象外。外の provider、§28.9 で足す前提）。\n\n## やること\n- provider 名 `s3-bucket`、internal/s3bucket。完全の階級（Read・Apply・List。BulkObserve は ListBuckets と各バケットの設定の読みに等価になるなら付ける、無理なら付けない）。\n- 接続は stdlib だけ：AWS Signature V4 を自前で実装（net/http、crypto/hmac、crypto/sha256）。path-style のアドレスを既定に、virtual-host を設定で。region は設定（既定 us-east-1）。SigV4 は AWS の公開のテストベクタの形で単体テストする。\n- 設定（`--provider-config` の s3-bucket のキー、または `--s3-config <file>`）：endpoint、region、addressing（path|virtual）、access_key と secret_key（どちらも SecretRef。file SecretBackend で Apply・Read の直前にだけ解決し、値をログ・エラーに出さない、§20）、ca_file、insecure_skip_verify（明示したときだけ）、timeout。複数の endpoint を扱うなら redfish のように名前付きの一覧でもよい（そのとき ID は `<endpoint名>/<bucket>`）。どちらにするかは実装で決めて §29.1 に書く。\n- リソース：1バケット。フィールド（宣言したものだけ管理、書かないものは触らない）：`versioning`（Enabled / Suspended）、`policy`（JSON。キー順・空白を正規化して比べ、永久 drift を出さない）、`lifecycle`（ルールの一覧。正規化して比べる）、`tags`（バケットのタグ）。観測だけの値：作成日時など。endpoint がその API を持たない（NotImplemented 等）とき、宣言したフィールドなら観測できない（unknown。分かる文で）、宣言していなければ無視。\n- 削除：バケットの Delete は破壊的として予算に数える。**中身があるバケットは消さない**（オブジェクトを消す機能は持たない。BucketNotEmpty は永続エラーとして知らせる）。prune は既存の規律（§12）に従う。\n- 届かない・5xx・認証エラーは観測できない（absent にしない）。List は ListBuckets が成功したときだけ complete。\n- 契約テスト（sdk.ContractTester）を、自前の偽の S3 サーバ（httptest、SigV4 を検証する）で通す。\n- **統合テスト**：build tag `integration_s3`、`make integration-s3`。docker で S3 互換のサーバを立てて回す。\n  - **SeaweedFS を必須の相手**にする。MinIO は 2026-04 にアーカイブされ公式イメージを匿名で取れないことがあるので、使うなら**イメージが取れなければ飛ばす任意の相手**にする（必須にしない）。Garage など保守されている実装を任意で足してよい。片方にしか無い API は、無い側で unknown になることを確かめる。\n  - **イメージは tag と digest（`name:tag@sha256:…`）で固定**する。\n  - SeaweedFS は既定の `-volume.max=8` だとバケットごとにボリュームを約 7 個使い、3 つ目のバケットから PUT が 500 になる。試験では `-volume.max` を大きくする（例 `-volume.max=1000 -master.volumeSizeLimitMB=64`）。起動後の最初の PUT に 15 秒ほどかかることがあるので、待ち時間に見込む。この注意は docs に一般的な注意として書く。\n  - 確かめること：空から作る→適合／手でポリシー・バージョニングを変える→drift→戻る／中身のあるバケットは prune されない／宣言どおりなら何周でも drift が出ない／サーバを止めると観測できないで何もしない。必ず消して終わる。check・test・CI には入れない。実際に回して結果を docs に書く。\n- 文書：docs/providers/s3-bucket.md、設計書 §29.1 に決まり。特定の環境の話は書かない。版の行と CHANGELOG のファイルは触らない。\n\n## 決まり\nstdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "s3-bucket が偽サーバでの契約テストと make check・make test-race、SeaweedFS を相手にした make integration-s3 を通る（MinIO は取れなければ飛ばす）",
-      "resolution": "Factory が取り込みました（factory/w2-s3-bucket）",
+      "resolution": "main に取り込んだ。統合試験の相手と版の固定は #123 で直す。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T09:27:59.710Z",
-      "updatedAt": "2026-10-27T10:10:12.350Z",
+      "updatedAt": "2026-10-27T10:10:33.173Z",
       "closedAt": "2026-10-27T10:10:12.350Z",
       "extra": {}
     },
