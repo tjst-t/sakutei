@@ -467,6 +467,8 @@ sakutei import --provider <名前> --out intent/  # 既存の現実を intent �
 sakutei --claim <scope-selector> # 自分が収束を担当する scope を宣言して常駐（静的シャーディング・§17）
 sakutei sync --intent <dir> --provider <名前>   # mode: sync の scope の現実を generated/ に記録（§24.5）
 sakutei allocator --store <file> # 採番権威を HTTP サービスとして提供（active/standby・§19.8）
+sakutei allocator release --pool <p> --owner <o> (--store <file> | --url <a,b>)  # 人が採番を解放する（cooldown は効く・§19.3）
+sakutei allocator list (--store <file> | --url <a,b>) [--pool <p>]  # 採番の一覧（使用中・予約・cooldown・read-only）
 sakutei fence --store <file>     # scope ごとの fencing 世代と holder を表示（read-only・§15.2/§17.6）
 sakutei mirror --upstream <url> --dir <dir>     # 拠点が pull する読み取り専用 git ミラー（§17.4）
 sakutei secrets extract --from <file> --claim <selector> --out <file>  # 1 拠点分の資格を抜き出す（§20.5）
@@ -489,6 +491,8 @@ sakutei secrets extract --from <file> --claim <selector> --out <file>  # 1 拠�
 | `import` | `--provider <名前,...>`（必須）・`--out <dir>`（必須）・`--scope k=v,...`・`--samples N`（既定 3）・`--sample-interval`（既定 2s）・`--force` | §24.4 |
 | `sync` | `--intent <dir>`（必須）・`--provider <名前,...>`（必須）・`--interval <d>`（既定は 1 回で終了） | §24.5 |
 | `allocator` | `--store <file>`（必須）・`--listen`（既定 `127.0.0.1:7070`）・`--standby` | `--standby` なしは起動時に昇格（fencing 世代を上げる）。standby は `POST /v1/promote` まで 503（§19.8） |
+| `allocator release` | `--pool`・`--owner`（共に必須）・`--store <file>` / `--url <url,url>`（どちらか一方）・`--audit-log <file>` | `Release` を呼ぶ（#116）。値は cooldown に入る（§19.5（b））。記録の無い owner・未知の pool は終了コード 1。`--audit-log` で S4 に `allocation.released` を記録（§19.3） |
+| `allocator list` | `--store <file>` / `--url <url,url>`（どちらか一方）・`--pool` | pool・owner・値・状態・残り時間の表。read-only |
 | `fence` | `--store <file>`（常駐の `--fencing-store` と同じファイル） | read-only |
 | `mirror` | `--upstream <url>`・`--dir <dir>`（共に必須）・`--interval`（既定 30s）・`--once` | 状態を持たない中継（§17.4） |
 | `secrets extract` | `--from <file>`・`--claim <selector>`・`--out <file>`（すべて必須） | 出力はモード 0600（§20.5） |

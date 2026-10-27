@@ -270,8 +270,18 @@ func (a *FileAuthority) Confirm(_ context.Context, poolName, owner string) error
 // Release implements allocation.AllocationAuthority.  The value enters the
 // cooldown and is not handed out again before it ends.  Releasing an owner
 // that holds nothing is a no-op.
-func (a *FileAuthority) Release(_ context.Context, poolName, owner string) error {
-	return a.update(func(s *store) error {
+func (a *FileAuthority) Release(ctx context.Context, poolName, owner string) error {
+	_, _, err := a.ReleaseOwner(ctx, poolName, owner)
+	return err
+}
+
+// ReleaseOwner is Release that also reports what it released: the value and
+// whether owner held one at all (`sakutei allocator release`, #116, tells a
+// human when there was nothing to release).
+func (a *FileAuthority) ReleaseOwner(_ context.Context, poolName, owner string) (string, bool, error) {
+	var value string
+	var released bool
+	err := a.update(func(s *store) error {
 		p, err := s.pool(poolName)
 		if err != nil {
 			return err
@@ -281,9 +291,14 @@ func (a *FileAuthority) Release(_ context.Context, poolName, owner string) error
 			return nil
 		}
 		delete(p.Allocations, owner)
-		p.Cooldown[strconv.Itoa(e.Value)] = a.now().Add(a.cooldown())
+		value, released = strconv.Itoa(e.Value), true
+		p.Cooldown[value] = a.now().Add(a.cooldown())
 		return nil
 	})
+	if err != nil {
+		return "", false, err
+	}
+	return value, released, nil
 }
 
 // Lookup implements allocation.AllocationAuthority.  It never writes.
@@ -470,6 +485,78 @@ func (p *pool) used(now time.Time) map[int]bool {
 		}
 	}
 	return used
+}
+
+// Record states besides stateAllocated and stateReserved: a released value
+// cooling down (§19.5 (b)).  It has no owner any more.
+const stateCooldown = "cooldown"
+
+// Record is one row of List: a value in use (allocated or reserved, with its
+// owner) or cooling down.  Until is when a reservation expires or a cooldown
+// ends.
+type Record struct {
+	Pool  string     `json:"pool"`
+	Owner string     `json:"owner,omitempty"`
+	Value int        `json:"value"`
+	State string     `json:"state"`
+	Until *time.Time `json:"until,omitempty"`
+}
+
+// List returns the records of poolName (every pool when empty), sorted by
+// pool and value.  Expired reservations and ended cooldowns are left out.  It
+// never writes (`sakutei allocator list`, #116).
+func (a *FileAuthority) List(_ context.Context, poolName string) ([]Record, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	unlock, err := lockFile(a.path + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	s, err := a.load()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(s.Pools))
+	if poolName != "" {
+		if _, err := s.pool(poolName); err != nil {
+			return nil, err
+		}
+		names = append(names, poolName)
+	} else {
+		for n := range s.Pools {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+	}
+	now := a.now()
+	out := []Record{}
+	for _, n := range names {
+		p := s.Pools[n]
+		var rows []Record
+		for owner, e := range p.Allocations {
+			if e.expired(now) {
+				continue
+			}
+			rows = append(rows, Record{Pool: n, Owner: owner, Value: e.Value, State: e.State, Until: e.ExpiresAt})
+		}
+		for v, until := range p.Cooldown {
+			n2, err := strconv.Atoi(v)
+			if err != nil || !now.Before(until) {
+				continue
+			}
+			u := until
+			rows = append(rows, Record{Pool: n, Value: n2, State: stateCooldown, Until: &u})
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].Value != rows[j].Value {
+				return rows[i].Value < rows[j].Value
+			}
+			return rows[i].Owner < rows[j].Owner
+		})
+		out = append(out, rows...)
+	}
+	return out, nil
 }
 
 // Owners returns pool's owners sorted, for diagnostics and tests.

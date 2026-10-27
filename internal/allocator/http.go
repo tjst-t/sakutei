@@ -62,6 +62,8 @@ type response struct {
 	Generation uint64 `json:"generation,omitempty"`
 	Error      string `json:"error,omitempty"`
 	Code       string `json:"code,omitempty"`
+	// Records answers "list" (#116).
+	Records []Record `json:"records,omitempty"`
 }
 
 // Server serves a FileAuthority over HTTP as one member of an active/standby
@@ -150,7 +152,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "confirm":
 		err = s.auth.Confirm(ctx, req.Pool, req.Owner)
 	case "release":
-		err = s.auth.Release(ctx, req.Pool, req.Owner)
+		// OK says whether the owner held a value (#116); Release of an
+		// owner that holds nothing stays a no-op.
+		resp.Value, resp.OK, err = s.auth.ReleaseOwner(ctx, req.Pool, req.Owner)
+	case "list":
+		// Read only, like lookup: the records of req.Pool (all when empty).
+		resp.Records, err = s.auth.List(ctx, req.Pool)
 	case "lookup":
 		resp.Value, resp.OK, err = s.auth.Lookup(ctx, req.Pool, req.Owner)
 	case "ensure-pool":
@@ -316,6 +323,23 @@ func (c *Client) Confirm(ctx context.Context, pool, owner string) error {
 func (c *Client) Release(ctx context.Context, pool, owner string) error {
 	_, err := c.call(ctx, "release", request{Pool: pool, Owner: owner})
 	return err
+}
+
+// ReleaseOwner is Release that also reports the released value and whether
+// the owner held one (#116).
+func (c *Client) ReleaseOwner(ctx context.Context, pool, owner string) (string, bool, error) {
+	resp, err := c.call(ctx, "release", request{Pool: pool, Owner: owner})
+	return resp.Value, resp.OK, err
+}
+
+// List returns the records of pool (every pool when empty) from the active
+// allocator (#116).  It never writes.
+func (c *Client) List(ctx context.Context, pool string) ([]Record, error) {
+	resp, err := c.call(ctx, "list", request{Pool: pool})
+	if resp.Records == nil {
+		resp.Records = []Record{}
+	}
+	return resp.Records, err
 }
 
 // Lookup implements allocation.AllocationAuthority.

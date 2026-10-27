@@ -80,8 +80,14 @@ type AllocationAuthority interface {
 - **ファイル版 authority の振る舞い**：`Allocate` は owner ごとに冪等で、空いている値を小さい順に払い出す。枯渇は
   エラー。`Reserve` は TTL 付きで、期限切れの仮予約は解放される。`Release` 後の値は **cooldown（既定 24h）** の
   あいだ再払い出ししない（§19.5（b））。
-- **Release を呼ぶ経路はまだ作っていない**。§19.5 の「下流の削除を List で確かめてから」を満たす経路が要るためで、
-  v1b では割当は解放されない（保守側）。
+- **自動で Release する経路（§19.5）はまだ作っていない**。§19.5 の「下流の削除を List で確かめてから」を満たす経路が
+  要るためで、宣言から外しても収束は割当を解放しない（保守側）。**人は CLI で解放できる**（#116）：
+  `sakutei allocator release --pool <p> --owner <o>`（`--store <file>` はファイル版を flock で直に、`--url` は
+  サービスの `POST /v1/release`）が `Release` を呼ぶ。下流が消えたことを確かめるのは人の判断で、値は cooldown に
+  入り（§19.5（b））すぐには再利用されない。記録の無い owner は終了コード 1。`--audit-log <file>` を付ければ
+  解放を S4 に記録する（`allocation.released`）。`sakutei allocator list` は pool・owner・値・状態（使用中・
+  予約・cooldown 中と残り時間）を表で出す（読むだけ。サービスは `POST /v1/list`）。サービスが提供中の store は
+  fencing 世代が進んでいるので、`--store` からの直の解放は拒否される（`--url` を使う、§19.8）。
 
 ### §19.4 仮予約（Reserve → Confirm）
 

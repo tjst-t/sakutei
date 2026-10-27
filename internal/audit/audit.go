@@ -71,6 +71,11 @@ const (
 	// KindPlannedChangeExecuted はレーンで発射した変更の件数（Count）。reconcile は
 	// 実行をまたいで合計し、max_count を守る。
 	KindPlannedChangeExecuted Kind = "planned_change.executed"
+
+	// KindAllocationReleased は人による採番の解放（sakutei allocator release、#116）。
+	// 自動の解放の経路（§19.5）は v1 に無いので、解放はすべて人の判断である。
+	// Detail に pool・owner・値・cooldown の明けを書く。
+	KindAllocationReleased Kind = "allocation.released"
 )
 
 // Record は監査の 1 件。

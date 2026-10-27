@@ -467,7 +467,8 @@ Usage:
   sakutei workflow     list / cancel Workflow runs (§6.3)
   sakutei approve      approve a Workflow gate (§6.4)
   sakutei reject       reject a Workflow gate: the Workflow halts (§6.4)
-  sakutei allocator    serve the allocation authority (active/standby, §19.8)
+  sakutei allocator    serve the allocation authority (active/standby, §19.8);
+                       allocator release / list: give a value back, show allocations (#116)
   sakutei mirror       keep a read-only git mirror of the intent repository (§17.4)
   sakutei secrets      build a site-local secret store: secrets extract (§20.5)
   sakutei breakglass   DR write break-glass: keygen / commit / verify / status (§25.1)
