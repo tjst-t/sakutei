@@ -3266,7 +3266,7 @@
       "number": 139,
       "kind": "task",
       "title": "OS の導入の手順を部品にする：1 回だけ CD から起動・完了をゲスト OS で確かめる・メディアを抜く、と自動導入の応答ファイル",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "os-bios",
       "dependsOn": [],
       "milestone": null,
@@ -3278,7 +3278,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T15:24:44.791Z",
-      "updatedAt": "2026-10-27T15:25:03.078Z",
+      "updatedAt": "2026-10-27T15:25:16.520Z",
       "closedAt": null,
       "extra": {}
     },
