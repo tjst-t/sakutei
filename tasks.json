@@ -2947,11 +2947,11 @@
       "labels": [],
       "body": "## やること\n- provider 名 `postgresql`、internal/postgresql。Go の依存を増やさないため、`psql` の CLI を os/exec で呼ぶ（sqlmigrate が sqlite3 を呼ぶのと同じ形。パスは設定、既定 PATH の psql）。SQL は標準入力で渡し、シェルを通さない。識別子・文字列は正しく quote する（quote_ident / quote_literal 相当を自前で。SQL 注入のテストを付ける）。結果は `psql -X -A -t` など機械で読める形で取る。\n- 設定：名前付きのサーバの一覧（`--postgresql-config` か `--provider-config`）。host・port・dbname（管理用につなぐ DB、既定 postgres）・user・password（SecretRef。子プロセスの環境変数 PGPASSWORD か一時的な passfile で渡し、引数・ログ・エラーに出さない、§20）・sslmode・sslrootcert・connect_timeout・scope。\n- リソース（ID の形は実装で決め §29.1 に書く。例 `<server>/role/<name>`、`<server>/database/<name>`、`<server>/database/<db>/extension/<name>`、`<server>/database/<db>/grant/<role>`）：\n  - **ロール**：login、superuser、createdb、createrole、inherit、connection_limit、member_of（ロールの所属。宣言したものだけ管理）、password（SecretRef。観測できないので書き込みのみ：Create のときに設定。以後の差は、設定で明示したときだけそのパスワードでつないでみて確かめる、など実装で決めて §29.1 に書く。永久 drift を出さないこと）。\n  - **データベース**：owner、encoding・lc_collate・lc_ctype・template（作るときだけ。後で変える宣言は計画の時点でエラー）、connection_limit。\n  - **データベースの権限**：あるロールがあるデータベースに持つ CONNECT・CREATE・TEMPORARY。宣言した組だけを管理。スキーマ・表の権限と default privileges はこのタスクの外（§29.1 に書く）。\n  - **拡張**：あるデータベースの拡張と版（版を宣言したときだけ ALTER EXTENSION UPDATE）。\n- 完全の階級（Read・Apply・List。BulkObserve はカタログを一度読めば等価になるなら付ける）。List はシステムのロール（pg_ で始まるもの・接続に使う管理ロール）と template0/template1/postgres を返さない（prune で消さない。管理境界、§7）。\n- 削除：DROP DATABASE・DROP ROLE は破壊的として予算に数える。**利用者の表があるデータベースは消さない**（PermanentError。s3-bucket の中身のあるバケットと同じ考え）。他のオブジェクトを持つロールも消さない。\n- 届かない・認証失敗・psql が無いは観測できない（unknown。absent にしない）。\n- 偽の psql（seam）で契約テスト・単体テスト。\n- **統合テスト**：build tag `integration_postgresql`、`make integration-postgresql`。docker の公式 postgres イメージ（tag と digest で固定、例 17 系）を立て、空から作る→適合／手で権限・属性を変える→drift→戻る／利用者の表がある DB は prune されない／何周でも drift が出ない／サーバを止めると観測できないで何もしない、を確かめる。psql はホストに無ければ入れるか、コンテナの中の psql を呼ぶラッパーを使う。必ず消して終わる。check・CI には入れない。実際に回して結果を docs に書く。\n- 文書：docs/providers/postgresql.md、設計書 §29.1。特定の環境・利用者の話は書かない。版の行と CHANGELOG のファイルは触らない。コミットのメッセージにも内部の道具の名前を書かない。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "postgresql provider が偽の psql での契約テストと make check・make test-race、本物の PostgreSQL を相手にした make integration-postgresql を通る",
-      "resolution": "Factory が取り込みました（factory/pg-provider）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T10:43:04.303Z",
-      "updatedAt": "2026-10-27T11:24:59.499Z",
+      "updatedAt": "2026-10-27T11:32:46.937Z",
       "closedAt": "2026-10-27T11:24:59.499Z",
       "extra": {}
     },
