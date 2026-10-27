@@ -2991,11 +2991,11 @@
       "labels": [],
       "body": "## なぜ\n設計 §28.7 の 2 層 provider 戦略のロングテール層。雑多な機器・OS の設定を、Ansible の「モジュール」だけを借りて広く覆う（playbook と一回 push の実行モデルは借りない）。設計はあるが未実装。\n\n## やること\n- provider 名 `ansible`、internal/ansible。`ansible`（ad-hoc）を os/exec で呼ぶ。パスは設定。結果は JSON の出力（`ANSIBLE_STDOUT_CALLBACK=json`、`ANSIBLE_LOAD_CALLBACK_PLUGINS=1` など、ansible-core の版で確かめた方法）で読む。引数は JSON で渡し、シェルを通さない。\n- リソース：1 つのホストに対する 1 つのモジュールの呼び出し。ID は利用者が付ける名前。フィールド：host（inventory のホスト名）、module（FQCN、例 ansible.builtin.lineinfile）、args（モジュールの引数。secret の値は SecretRef で書け、実行の直前にだけ解決して渡し、ログに出さない）、destructive（このモジュールの適用を破壊的として予算に数えるか。既定 false）。\n- **観測**：`--check --diff` でモジュールを流し、changed=false なら適合、changed=true なら drift（diff があれば知らせに添える）。check mode を持たないモジュール・届かない（unreachable）・失敗は観測できない（unknown）。`Capabilities.TrueObserve = false`（State を返さない、§28.7）。List は持たない（prune しない）。コアの縮退（§5.6）が正しく効くこと。\n- **適用**：同じ呼び出しを通常実行。失敗は内容つきで返す。\n- 設定：inventory（ファイルのパス）、ansible のパス、環境変数、タイムアウト、同時に流す数の上限。高レイテンシなので observe_tiers（§16.5）で間引けることを docs に書く。\n- 偽の ansible（seam）で単体・契約テスト。\n- **統合テスト**：build tag `integration_ansible`、`make integration-ansible`。本物の ansible-core（版を固定。venv か、tag と digest で固定したコンテナ）を使い、使い捨ての対象（コンテナ、または local 接続で一時ディレクトリ）に対して、lineinfile・copy などで：空から適用→適合／手で変える→drift→戻る／何周でも drift が出ない／対象に届かないと観測できないで何もしない／destructive の適用が予算で止まる、を確かめる。必ず片づける。check・CI には入れない。実際に回して結果を docs に書く。\n- 文書：docs/providers/ansible.md（保証が落ちることを正直に書く：原因タグ・converging・破壊的変更の重み付け・prune が効かない、§28.7）、設計書 §29.1。版の行と CHANGELOG のファイルは触らない。\n\n## 決まり\nGo は stdlib のみ。`make check` と `make test-race` を通す。",
       "doneWhen": "ansible provider が偽の ansible でのテストと make check・make test-race、本物の ansible-core を使った make integration-ansible を通る",
-      "resolution": "Factory が取り込みました（factory/ansible-provider）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-27T10:43:04.303Z",
-      "updatedAt": "2026-10-27T11:31:36.500Z",
+      "updatedAt": "2026-10-27T11:32:54.745Z",
       "closedAt": "2026-10-27T11:31:36.500Z",
       "extra": {}
     },
