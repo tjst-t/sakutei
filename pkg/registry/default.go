@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/tjst-t/sakutei/v2/internal/ansible"
+	"github.com/tjst-t/sakutei/v2/internal/clidevice"
 	"github.com/tjst-t/sakutei/v2/internal/dnszone"
 	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/v2/internal/guestos"
@@ -118,6 +119,16 @@ import (
 //     credential as a SecretRef, metric name, label match, sum / max and the
 //     comparisons such as "< 1000").  Observe only (Capabilities.ObserveOnly):
 //     a Workflow's require and ready_condition read it.
+//
+//   - "cli-device": devices that can only be configured through their CLI
+//     (Backlog #159).  config["cli_hosts"] names the devices ("sw1,sw2" from
+//     config["remote_config"], over ssh); config["cli_definition"] is the
+//     device definition (clidevice.LoadDefinition: how to observe each item,
+//     how to read the output, the commands that change it, the error
+//     markers) for every device, and config["cli_definitions"]
+//     ("sw1=a.yaml,sw2=b.yaml") overrides it per device.  The local ids are
+//     "<device>/<item>".  config["secret_store"] (or the remote config's
+//     secret_store) resolves the secret fields.
 func DefaultRegistry() *ProviderRegistry {
 	r := New()
 
@@ -411,6 +422,57 @@ func DefaultRegistry() *ProviderRegistry {
 		})
 	})
 
+	// "cli-device" — CLI でしか設定できない装置（§29.1、#159）。config["cli_hosts"]
+	// の装置に config["remote_config"] の ssh でつなぎ、機種の定義
+	// （config["cli_definition"]、装置ごとの上書きは config["cli_definitions"]）に
+	// 従って CLI を打つ。
+	r.Register(clidevice.Name, func(config map[string]string) (provider.Provider, error) {
+		if config["cli_hosts"] == "" {
+			return nil, errors.New("cli-device: the devices are not set: cli_hosts (and remote_config) in --provider-config")
+		}
+		defs, err := cliDefinitions(config)
+		if err != nil {
+			return nil, err
+		}
+		execs, order, err := remoteHosts(config, "cli_hosts")
+		if err != nil {
+			return nil, fmt.Errorf("cli-device: %w", err)
+		}
+		hosts := map[string]clidevice.Host{}
+		for _, n := range order {
+			conn, ok := execs[n].(clidevice.Conn)
+			if !ok {
+				return nil, fmt.Errorf("cli-device: device %q cannot be reached through ssh", n)
+			}
+			d := defs[n]
+			if d == nil {
+				d = defs[""]
+			}
+			if d == nil {
+				return nil, fmt.Errorf("cli-device: device %q has no device definition: cli_definition (or cli_definitions %s=<file>)", n, n)
+			}
+			hosts[n] = clidevice.Host{Conn: conn, Def: d}
+		}
+		for n := range defs {
+			if _, ok := hosts[n]; n != "" && !ok {
+				return nil, fmt.Errorf("cli-device: cli_definitions names %q, which is not in cli_hosts", n)
+			}
+		}
+		opts := clidevice.Options{}
+		store := config["secret_store"]
+		if store == "" && config["remote_config"] != "" {
+			cfg, err := remote.LoadConfig(config["remote_config"])
+			if err != nil {
+				return nil, err
+			}
+			store = cfg.SecretStore
+		}
+		if store != "" {
+			opts.Secrets = render.NewFileSecretBackend(store)
+		}
+		return clidevice.New(hosts, opts)
+	})
+
 	// "proxmox-vm" — Proxmox VE の VM（§29.1、#143）。config["proxmox_config"] は
 	// クラスタの一覧（--provider-config の proxmox-vm の proxmox_config）。--state
 	// は代わりにならない（endpoint と資格は推測しない）。
@@ -500,6 +562,54 @@ func hostExecutors(config map[string]string, key string) (hostconf.Hosts, remote
 		}
 	}
 	return out, cfg, nil
+}
+
+// cliDefinitions は cli-device の機種の定義を読む: "" は cli_definition（全部の
+// 装置の既定）、ほかは cli_definitions（"<装置>=<ファイル>,..."）の装置ごと。
+// 同じファイルは 1 回だけ読む。
+func cliDefinitions(config map[string]string) (map[string]*clidevice.Definition, error) {
+	out := map[string]*clidevice.Definition{}
+	loaded := map[string]*clidevice.Definition{}
+	load := func(path string) (*clidevice.Definition, error) {
+		if d, ok := loaded[path]; ok {
+			return d, nil
+		}
+		d, err := clidevice.LoadDefinition(path)
+		if err != nil {
+			return nil, err
+		}
+		loaded[path] = d
+		return d, nil
+	}
+	if path := strings.TrimSpace(config["cli_definition"]); path != "" {
+		d, err := load(path)
+		if err != nil {
+			return nil, err
+		}
+		out[""] = d
+	}
+	for _, pair := range strings.Split(config["cli_definitions"], ",") {
+		if pair = strings.TrimSpace(pair); pair == "" {
+			continue
+		}
+		name, path, ok := strings.Cut(pair, "=")
+		name, path = strings.TrimSpace(name), strings.TrimSpace(path)
+		if !ok || name == "" || path == "" {
+			return nil, fmt.Errorf("cli-device: cli_definitions: %q: want <device>=<file>", pair)
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("cli-device: cli_definitions: device %q is listed twice", name)
+		}
+		d, err := load(path)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = d
+	}
+	if len(out) == 0 {
+		return nil, errors.New("cli-device: the device definition is not set: cli_definition (or cli_definitions) in --provider-config")
+	}
+	return out, nil
 }
 
 // redfishClients は config["redfish_config"] の BMC の一覧からノードごとの

@@ -59,6 +59,13 @@ func (s *SSH) OpenSubsystem(ctx context.Context, name string) (io.ReadWriteClose
 	if !subsystemName.MatchString(name) {
 		return nil, fmt.Errorf("remote %s: subsystem %q: not a subsystem name", s.h.Name, name)
 	}
+	return s.openStream(ctx, false, "-s", "--", s.h.Address, name)
+}
+
+// openStream は ssh を直に（使い回さずに）起こし、標準入出力をつないだままの
+// Stream を返す。tail は宛先とその後ろ（"-s -- <address> <name>" など）。
+// tty なら -T を外して -t -t（相手に pty を取らせる、OpenShell）。
+func (s *SSH) openStream(ctx context.Context, tty bool, tail ...string) (io.ReadWriteCloser, error) {
 	if err := s.recentFailure(); err != nil {
 		return nil, err
 	}
@@ -71,7 +78,17 @@ func (s *SSH) OpenSubsystem(ctx context.Context, name string) (io.ReadWriteClose
 		done()
 		return nil, err
 	}
-	args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none", "-s", "--", s.h.Address, name)
+	if tty {
+		kept := args[:0]
+		for _, a := range args {
+			if a != "-T" {
+				kept = append(kept, a)
+			}
+		}
+		args = append(kept, "-t", "-t")
+	}
+	args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
+	args = append(args, tail...)
 	cmd := exec.Command(s.h.SSH, args...)
 	in, err := cmd.StdinPipe()
 	if err != nil {

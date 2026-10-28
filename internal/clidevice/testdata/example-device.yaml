@@ -1,0 +1,90 @@
+# 架空の装置（internal/clidevice/clifake）の機種の定義。docs/providers/cli-device.md の例と同じ。
+name: example-device
+session:
+  mode: interactive
+  prompt: '^[a-z][a-z0-9-]*(\(config\))?# $'
+  pager: '^--More--$'
+  setup:
+    - terminal length 0
+  logout:
+    - exit
+  timeout: 5s
+errors:
+  - '^% '
+config:
+  enter:
+    - configure
+  leave:
+    - end
+items:
+  syslog:
+    fields:
+      host:
+        pattern: '[0-9]{1,3}(\.[0-9]{1,3}){3}'
+      port:
+        pattern: '[0-9]{1,5}'
+    observe:
+      command: show running-config
+      regex: '^logging host (?P<host>\S+) port (?P<port>[0-9]+)$'
+      absent: '^no logging host$'
+    set:
+      - logging host {host} port {port}
+    unset:
+      - no logging host
+  ntp:
+    fields:
+      server:
+        pattern: '[0-9]{1,3}(\.[0-9]{1,3}){3}'
+    observe:
+      command: show ntp
+      table:
+        header: '^Index +Server +Status$'
+        row: '^1 '
+        columns:
+          server: 1
+    set:
+      - ntp server {server}
+    disruptive: true
+  hostname:
+    fields:
+      name:
+        pattern: '[a-z][a-z0-9-]{0,30}'
+    observe:
+      command: show system
+      key_value:
+        separator: ":"
+        keys:
+          name: Hostname
+    set:
+      - hostname {name}
+  community:
+    fields:
+      community:
+        pattern: '[A-Za-z0-9]{8,32}'
+        secret: true
+    observe:
+      command: show running-config
+      regex: '^snmp community (?P<community>\S+)$'
+      absent: '^no snmp community$'
+    set:
+      - snmp community {community}
+    unset:
+      - no snmp community
+  version:
+    fields:
+      version:
+        pattern: '[0-9]+\.[0-9]+\.[0-9]+'
+    observe:
+      command: show system
+      key_value:
+        separator: ":"
+        keys:
+          version: Version
+actions:
+  upgrade:
+    args:
+      image:
+        pattern: '[0-9]+\.[0-9]+\.[0-9]+\.bin'
+    commands:
+      - upgrade image {image}
+    destructive: true

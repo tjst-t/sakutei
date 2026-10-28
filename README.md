@@ -10,7 +10,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 
 - **ライセンス:** Apache-2.0
 - **言語:** Go（1.22・標準ライブラリのみ、外部依存なし）
-- **状態:** 設計 v3.41／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.1`、変更点は [CHANGELOG.md](CHANGELOG.md)）
+- **状態:** 設計 v3.42／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.1`、変更点は [CHANGELOG.md](CHANGELOG.md)）
 
 ---
 
@@ -142,6 +142,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 | `ansible` | 実 | Ansible のモジュールを 1 つのホストに流す最小の階級の provider（§28.7）。観測は `--check --diff` の changed だけ（State を返さない）、適用は通常の実行。原因タグ・差分は粗く、prune しない。破壊的かは `destructive` で宣言する。設定は `--ansible-config`、[docs/providers/ansible.md](docs/providers/ansible.md) |
 | `host-file` | 実 | 離れたホスト（ssh 越し、または手元）のファイルの中身（平文か SecretRef）・mode・owner・group を保つ。観測は中身の hash と stat だけ。prune しない。[docs/providers/host-file.md](docs/providers/host-file.md) |
 | `systemd-unit` | 実 | 離れたホスト（または手元）の systemd のユニットと podman の quadlet の元のファイル・active / inactive・enabled を保つ。`restart_on` に書いたファイルを書き換えるとユニットを 1 回だけ入れ替える（ホストの側の印で判定）。[docs/providers/systemd-unit.md](docs/providers/systemd-unit.md) |
+| `cli-device` | 実 | CLI でしか設定できない装置を ssh で CLI を打って観測し、コマンド列で変える汎用の provider。機種ごとの観測のコマンド・読み方・変えるコマンドの雛形・エラーの印・確定と取り消しは機種の定義のファイルで与える。定義に合わない出力は unknown、部分的な失敗はどこまで流れたかを知らせる。定義の操作を Workflow の action として流せる。[docs/providers/cli-device.md](docs/providers/cli-device.md) |
 | `fake` | テスト | fault-injection 可能な検証用 provider（chaos テストの主戦場） |
 
 ---
@@ -170,7 +171,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 コードは設計仕様の**射影**です。設計に関する記述は `docs/` を正とします。
 
 - **[docs/README.md](docs/README.md)** — ドキュメント索引（まずここ）
-- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.41（8 部 29 節・分冊）。§番号は全体で一意
+- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.42（8 部 29 節・分冊）。§番号は全体で一意
 - **[docs/web/sakutei.html](docs/web/sakutei.html)** — 設計思想を庭園メタファで表したランディングページ
 - **[docs/web/buildout.html](docs/web/buildout.html)** — 段0だけがある状態から、20台規模のポッド(リーフスイッチ→BMC→ハイパーバイザー導入→クラスタ構築)を1つの intent PR から積み上げる様子を追う構築ウォークスルー
 - **[docs/web/scenarios.html](docs/web/scenarios.html)** — 稼働中の仮想基盤を題材に、増設/物理交換/FW更新/HVローリング更新が実際どう実行されるかを追う運用シナリオ集
