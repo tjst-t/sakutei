@@ -12,16 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package netconffake は Go の中で動く偽の NETCONF サーバ（Backlog #141 の
-// 単体・契約テスト用）。base:1.0 だけのもの（"]]>]]>" の区切り）と base:1.1 の
-// もの（chunked）になれる。
+// Package netconffake は Go の中で動く偽の NETCONF サーバ（Backlog #141・#175
+// の単体・契約・受け入れテスト用）。base:1.0 だけのもの（"]]>]]>" の区切り）と
+// base:1.1 のもの（chunked）になれる。
 //
 //   - running の設定を XML で持ち、get-config の subtree filter（RFC 6241 §6:
 //     選ぶ・中に入る・値で絞る）を当てて返す。
 //   - 受けた rpc の操作の名前を残す（edit-config などが来ていないことを確かめる）。
-//     get-config・close-session 以外の操作には rpc-error を返す。
-//   - 止める（Down）・セッションを切る（Drop）・hello を壊す・rpc-error を返す、
-//     を切り替えられる。
+//     commit confirmed は "commit-confirmed" と残す。Calls はセッションの番号も残す。
+//   - hello の Caps に :candidate があれば candidate を持つ（lock・unlock・
+//     edit-config〈merge・replace・create・delete・remove、yang:insert="last"〉・
+//     discard-changes・commit）。:validate があれば validate。:confirmed-commit
+//     （1.0・1.1）があれば commit confirmed: confirm-timeout（秒、TimeUnit で
+//     縮められる）が過ぎるか、persist の無い commit confirmed を送ったセッションが
+//     終われば running を戻す（RFC 6241 §8.4）。1.1 なら persist・persist-id・
+//     cancel-commit。戻した理由は Rollbacks に残る。
+//   - YANG を持たないので、リストのエントリは子の name（無ければ最初の葉）で、
+//     LeafLists で名指しした葉は値で突き合わせる。
+//   - 止める（Down）・セッションを切る（Drop）・hello を壊す・rpc-error を返す
+//     （SetRPCError・SetOpError）・行う前・応答の前に切る（SetDropBefore・
+//     SetDropAfter）・running
+//     しだいで新しい接続を断る（RefuseDialsWhen）、を切り替えられる。
 package netconffake
 
 import (
@@ -35,6 +46,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/netconf"
 	"github.com/tjst-t/sakutei/v2/internal/remote"
@@ -51,6 +63,14 @@ type Server struct {
 	RunningFile string
 	// OpsFile があれば、受けた rpc の操作の名前を 1 行ずつ足す。
 	OpsFile string
+	// TimeUnit は confirm-timeout の 1 の長さ（0 なら 1 秒）。
+	TimeUnit time.Duration
+	// LeafLists は値で突き合わせる葉（leaf-list）の名前（nil なら user-name と
+	// group）。
+	LeafLists []string
+	// RefuseDialsWhen が true を返す running の間は、新しい接続を断る（届かなく
+	// なる設定。開いているセッションは切らない）。
+	RefuseDialsWhen func(running string) bool
 
 	mu        sync.Mutex
 	running   string
@@ -63,6 +83,30 @@ type Server struct {
 	conns     map[io.Closer]bool
 	framings  []netconf.Framing
 	lastHello string
+
+	candidate  *string // nil: the same as running
+	lockedBy   int     // session holding the candidate lock (0: none)
+	pending    *confirmed
+	rollbacks  []string
+	calls      []Call
+	opErrors   map[string]string
+	dropAfter  map[string]int
+	dropBefore map[string]int
+}
+
+// Call は受けた rpc 1 つ（セッションの番号と操作の名前）。
+type Call struct {
+	Session int
+	Op      string
+}
+
+// confirmed は確定を待つ commit confirmed。
+type confirmed struct {
+	session int
+	persist string
+	backup  string
+	timer   *time.Timer
+	gen     int
 }
 
 // New は running の設定（最上位の要素の列の XML）を持つサーバ。
@@ -99,6 +143,86 @@ func (s *Server) SetRPCError(tag string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rpcError = tag
+}
+
+// SetOpError は操作 op（"edit-config"・"commit-confirmed" など）に error-tag
+// tag の rpc-error を返す（"" で戻す）。
+func (s *Server) SetOpError(op, tag string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.opErrors == nil {
+		s.opErrors = map[string]string{}
+	}
+	if tag == "" {
+		delete(s.opErrors, op)
+		return
+	}
+	s.opErrors[op] = tag
+}
+
+// SetDropAfter は、これから n 回目に受ける操作 op を行ったあと、応答を送らずに
+// その接続を切る（応答の前に切れた）。
+func (s *Server) SetDropAfter(op string, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dropAfter == nil {
+		s.dropAfter = map[string]int{}
+	}
+	s.dropAfter[op] = n
+}
+
+// SetDropBefore は、これから n 回目に受ける操作 op を行わずに、その接続を
+// 切る（送った要求が届かなかった）。
+func (s *Server) SetDropBefore(op string, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dropBefore == nil {
+		s.dropBefore = map[string]int{}
+	}
+	s.dropBefore[op] = n
+}
+
+// countdown は m[op] を 1 つ減らし、0 になったら true（s.mu を持って呼ぶ）。
+func countdown(m map[string]int, op string) bool {
+	n, ok := m[op]
+	if !ok {
+		return false
+	}
+	if n <= 1 {
+		delete(m, op)
+		return true
+	}
+	m[op] = n - 1
+	return false
+}
+
+// Running は今の running。
+func (s *Server) Running() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
+}
+
+// Calls は受けた rpc（順に、セッションの番号つき）。
+func (s *Server) Calls() []Call {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Call(nil), s.calls...)
+}
+
+// Rollbacks は commit confirmed を戻した理由（"timeout"・"session-end"・
+// "cancel"）の列。
+func (s *Server) Rollbacks() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.rollbacks...)
+}
+
+// Pending は確定を待つ commit confirmed があるか。
+func (s *Server) Pending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pending != nil
 }
 
 // Drop は開いているセッションを切る（機器が idle で切った）。
@@ -145,7 +269,7 @@ func (s *Server) Framings() []netconf.Framing {
 func (s *Server) Dialer(hostName string) netconf.Dialer {
 	return func(ctx context.Context) (io.ReadWriteCloser, error) {
 		s.mu.Lock()
-		if s.down {
+		if s.down || (s.RefuseDialsWhen != nil && s.RefuseDialsWhen(s.running)) {
 			s.mu.Unlock()
 			return nil, &remote.ConnError{Target: hostName, Kind: remote.Unreachable, Detail: "connection refused"}
 		}
@@ -168,18 +292,19 @@ func (s *Server) ServeStream(rw io.ReadWriteCloser) {
 }
 
 func (s *Server) serve(c io.ReadWriteCloser) {
-	defer func() {
-		c.Close()
-		s.mu.Lock()
-		delete(s.conns, c)
-		s.mu.Unlock()
-	}()
 	f := netconf.NewFramer(c, c)
 	s.mu.Lock()
 	id := s.nextID
 	s.nextID++
 	bad := s.badHello
 	s.mu.Unlock()
+	defer func() {
+		c.Close()
+		s.mu.Lock()
+		delete(s.conns, c)
+		s.sessionEnded(id)
+		s.mu.Unlock()
+	}()
 	hello := bad
 	if hello == "" {
 		caps := []string{netconf.CapBase10}
@@ -237,15 +362,52 @@ func (s *Server) serve(c io.ReadWriteCloser) {
 		if err != nil {
 			return
 		}
-		reply, closeAfter := s.handle(msg)
+		reply, closeAfter := s.handle(id, msg)
+		if reply == "" {
+			return // dropped before the reply
+		}
 		if err := f.WriteMessage([]byte(reply)); err != nil || closeAfter {
 			return
 		}
 	}
 }
 
-// handle は rpc 1 つに答える。
-func (s *Server) handle(msg []byte) (string, bool) {
+// sessionEnded は終わったセッションの lock を放し、persist の無い commit
+// confirmed を戻す（RFC 6241 §7.5・§8.4）。s.mu を持って呼ぶ。
+func (s *Server) sessionEnded(id int) {
+	if s.lockedBy == id {
+		s.lockedBy = 0
+		s.candidate = nil
+	}
+	if p := s.pending; p != nil && p.session == id && p.persist == "" {
+		s.rollbackLocked("session-end")
+	}
+}
+
+// rollbackLocked は確定を待つ commit confirmed を戻す。s.mu を持って呼ぶ。
+func (s *Server) rollbackLocked(why string) {
+	p := s.pending
+	if p == nil {
+		return
+	}
+	p.timer.Stop()
+	s.running = p.backup
+	s.candidate = nil
+	s.pending = nil
+	s.rollbacks = append(s.rollbacks, why)
+}
+
+func (s *Server) hasCap(c string) bool {
+	for _, x := range s.Caps {
+		if x == c {
+			return true
+		}
+	}
+	return false
+}
+
+// handle は rpc 1 つに答える。"" は応答の前に切る。
+func (s *Server) handle(sid int, msg []byte) (string, bool) {
 	root, err := parse(msg)
 	if err != nil || len(root) != 1 || root[0].Name.Local != "rpc" {
 		return rpcError("", "rpc", "malformed-message", "not an rpc"), false
@@ -261,15 +423,34 @@ func (s *Server) handle(msg []byte) (string, bool) {
 		return rpcError(mid, "rpc", "missing-element", "want one operation"), false
 	}
 	op := rpc.Children[0]
+	name := op.Name.Local
+	if name == "commit" && op.child("confirmed") != nil {
+		name = "commit-confirmed"
+	}
 	s.mu.Lock()
-	s.ops = append(s.ops, op.Name.Local)
-	running, rpcErr := s.running, s.rpcError
+	s.ops = append(s.ops, name)
+	s.calls = append(s.calls, Call{Session: sid, Op: name})
+	running, rpcErr, opErr := s.running, s.rpcError, s.opErrors[name]
+	dropBefore := countdown(s.dropBefore, name)
+	drop := !dropBefore && countdown(s.dropAfter, name)
 	s.mu.Unlock()
+	if dropBefore {
+		return "", true
+	}
 	if s.OpsFile != "" {
 		if f, err := os.OpenFile(s.OpsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
-			fmt.Fprintln(f, op.Name.Local)
+			fmt.Fprintln(f, name)
 			f.Close()
 		}
+	}
+	if opErr != "" {
+		return rpcError(mid, "application", opErr, "refused by the fake"), false
+	}
+	if reply, ok := s.handleEdit(sid, mid, name, op); ok {
+		if drop {
+			return "", true
+		}
+		return reply, false
 	}
 	if s.RunningFile != "" {
 		b, err := os.ReadFile(s.RunningFile)
@@ -285,8 +466,17 @@ func (s *Server) handle(msg []byte) (string, bool) {
 		if rpcErr != "" {
 			return rpcError(mid, "application", rpcErr, "refused by the fake"), false
 		}
-		if src := op.child("source"); src == nil || src.child("running") == nil {
-			return rpcError(mid, "protocol", "invalid-value", "only running"), false
+		src := op.child("source")
+		switch {
+		case src != nil && src.child("running") != nil:
+		case src != nil && src.child("candidate") != nil && s.hasCap(netconf.CapCandidate):
+			s.mu.Lock()
+			if s.candidate != nil {
+				running = *s.candidate
+			}
+			s.mu.Unlock()
+		default:
+			return rpcError(mid, "protocol", "invalid-value", "only running (and candidate)"), false
 		}
 		data, err := parse([]byte(running))
 		if err != nil {

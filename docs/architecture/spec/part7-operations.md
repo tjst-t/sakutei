@@ -82,6 +82,20 @@ BMC・スイッチ管理ポートへ到達するための**管理NW**は段0 の
 
 **管理 NW の要件（CommitConfirm 不在なら型で Apply 禁止）**：commit-confirm は Apply 契約の transactional / candidate-commit であり、v2 の NW 機器 provider で入る（v1a/v1b には無い）。commit-confirm 未実装のまま管理NWコアを Apply すると、config push で自分を締め出す経路が残る。→ **v1 では管理NWコアを Apply 対象にしない**。NW 機器 provider は `Capabilities.CommitConfirm` が false の間は「**Apply 不可・観測のみ**」を Capabilities で機械的に強制し、ロックアウト経路を型で塞ぐ。強制の口は `Capabilities.ObserveOnly`（§5.3）：コアはその provider の差分を知らせるだけで、どの経路でも Apply に渡さない（最初の NW 機器 provider `netconf` がこれ。§29.1、Backlog #141）。到達性の最小核はそもそも段0（Ansible）で Sakutei は触らない。
 
+**NETCONF の 2 段の Apply（commit confirmed、Backlog #175）**：`netconf` は provider の設定で明示したとき（`netconf_apply: "true"`）だけ `CommitConfirm` を宣言して `ObserveOnly` を外し、commit confirmed の 2 段で当てる。明示しなければ観測だけのまま。予算・承認ゲート・remediation mode は他の Apply と同じに通る。
+
+1. Apply 用の新しいセッションを開き、機器の hello に `:candidate` と `:confirmed-commit`（1.0 か 1.1）があることを確かめる。**どちらかが無い機器には何も送らない**（その機器は観測だけのまま。PermanentError）。
+2. candidate を lock し、running の部分木を読み、宣言を**部分木の置き換え**として candidate に `<edit-config>` する（filter が選ぶ部分木の外には触れない）。`:validate` があれば `<validate>`。
+3. **同じセッションで** `<commit><confirmed/><confirm-timeout>…</confirm-timeout></commit>`。
+4. **新しい ssh 接続で**、届くこと・running の部分木が宣言どおりなことを確かめる。確かめは **confirm-timeout の半分で打ち切る**。
+5. 確かめられたら**同じセッションで**確定の `<commit>`。
+
+主は **`:confirmed-commit:1.0` だけの機器**の流れ（確定は commit confirmed を送った同じセッションからしかできず、そのセッションが切れると取り消される。だから同じセッションを開いたまま新しい接続で確かめ、同じセッションで確定する）。1.1 の機器でもこの流れで動く。`:confirmed-commit:1.1` を持つ機器のために、設定で選べば persist の流れ（commit confirmed に `<persist>`、確定は `<persist-id>`。Apply のセッションが切れても新しいセッションから確定する）も持つ。
+
+- **確かめられなければ確定しない**：candidate を discard し、Apply のセッションを開いたまま confirm-timeout が過ぎるのを待って、**機器の自動の巻き戻しに任せる**（閉じる要求が届く保証は無いので、巻き戻しを機器の時計に頼る形にそろえる）。過ぎたら新しい接続で元に戻ったかを見て知らせる。PermanentError（同じ宣言は変わるまで当て直さない。届かなくなる設定を繰り返さない）。
+- **確定の成否が分からない**（commit confirmed・確定の commit の応答の前に切れた等）ときは unknown として次の周の観測に任せる（TransientError）。**途中で落ちたら機器の巻き戻しに任せる**（1.0 の機器はセッションの終わりで、そうでなくても confirm-timeout で戻す）。
+- lock の取り合いは TransientError、機器が受けない宣言（edit-config・validate の rpc-error）は candidate を discard して PermanentError。
+
 **OOB（帯域外）= ネットワーク版 Break Glass**：管理NW そのものが死んだときの経路として、コンソールサーバ（シリアル集約）/ OOB 専用NW を持つ。これは Sakutei の管理対象外に置き、Break Glass の経路（§20）として扱う。
 
 **管理系とデータ系は別系統である。** 上記は管理系（BMC アクセス・reconciler から全機器への到達性）の話であり、実運用ではデータ系（VM トラフィック・分散ストレージのレプリケーション・live migration）がもう一系統存在する。両者は帯域も経路も異なる。データ系が全断しても reconciler は管理系経由で機器を制御でき自分で直せる（single point of blindness にならない）ため、**データ系は全て段1**とする。データ系スイッチ自体の設定変更も管理系経由で行い、「データ系を壊しても、データ系を直す経路は生きている」を保証する。

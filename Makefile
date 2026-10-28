@@ -156,10 +156,12 @@ integration-guestos:
 	fi; \
 	exit $$status
 
-# netconf provider（観測だけ）の統合テスト（#141）。docker で公開の NETCONF
-# サーバ（netopeer2 のコンテナ。tag と digest で固定）を 127.0.0.1 の空いた
-# ポートに立て、sakutei の CLI から ssh の netconf サブシステムで設定の部分木を
-# 観測し（適合・手で変えると drift・Apply は出ない・止めると unknown）、終わったら
+# netconf provider の統合テスト（#141 の観測・#175 の 2 段の Apply）。docker で
+# 公開の NETCONF サーバ（netopeer2 のコンテナ。tag と digest で固定）を 127.0.0.1
+# の空いたポートに立て、sakutei の CLI から ssh の netconf サブシステムで設定の
+# 部分木を観測し（適合・手で変えると drift・観測だけなら Apply は出ない・止めると
+# unknown）、Apply を許した設定で commit confirmed の 2 段で当てる（1.0 と 1.1 の
+# 流れで確定・確かめに失敗すると確定せず confirm-timeout で戻る）。終わったら
 # （失敗しても）コンテナを消す。docker・ssh・ssh-keygen と sudo（パスワードなし）が
 # 要るので、check・test・CI には入れない。イメージは SAKUTEI_IT_NETOPEER2_IMAGE で
 # 差し替えられる。手順と結果は docs/providers/netconf.md の「統合テスト」。

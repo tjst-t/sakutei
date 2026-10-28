@@ -247,7 +247,7 @@ type Capabilities struct {
 
 - `TrueObserve:false` → actual 比較ができないので原因タグ A/B を区別不能。単一タグ `changed` に統合し、rate limit の重み付けは**破壊的側に倒す**（不明は危険扱い=非対称原則）。ただし Ansible provider では、どの適用が破壊的かを利用者が `destructive` で宣言し、宣言の無いものは破壊的に数えない（すべてを破壊的に数えると行の追加まで予算で止まって使えないため。原因タグは新しいタグを足さず、intent の版の変化だけで A、ほかは B とする。§29.1、Backlog #127）。
 - `List:false` → その型への prune 宣言はロード時に拒否する。
-- `ObserveOnly:true` → その provider の差分は**どの経路でも Apply しない**（定期周期・早期収束パス・一回性の reconcile。ずれの知らせ `DriftWouldApply` と plan の `blocked_by: observe_only` にするだけ。remediation mode が auto でも同じ）。止めたリソースは収束していない上流として下流を待たせる。Apply に届いた操作も executor と router が断る（最後の柵）。`List`・`Pruneable` と同時には宣言できない（起動時に拒否）。`CommitConfirm` の無い NW 機器 provider はこれを宣言する（§23.4、Backlog #141）。
+- `ObserveOnly:true` → その provider の差分は**どの経路でも Apply しない**（定期周期・早期収束パス・一回性の reconcile。ずれの知らせ `DriftWouldApply` と plan の `blocked_by: observe_only` にするだけ。remediation mode が auto でも同じ）。止めたリソースは収束していない上流として下流を待たせる。Apply に届いた操作も executor と router が断る（最後の柵）。`List`・`Pruneable` と同時には宣言できない（起動時に拒否）。`CommitConfirm` の無い NW 機器 provider はこれを宣言する（§23.4、Backlog #141）。`netconf` は設定で 2 段の Apply を許したときだけ `CommitConfirm` を宣言して `ObserveOnly` を外す（§23.4、Backlog #175）。
 - Ansible でも `*_info` 系モジュールを Observe に使える対象は `TrueObserve:true` に**部分昇格**でき、縮退は全面でなく部分回復可能。
 
 ### §5.4 Lister と各関数の契約

@@ -19,9 +19,9 @@ package netconf
 //   - hello: こちらは base:1.0 と base:1.1 を出す。相手の hello に session-id と
 //     base:1.0 か base:1.1 が無ければ「hello が合わない」（ErrHello）。両方が
 //     base:1.1 なら、hello の後は chunked の区切り（RFC 6242 §4.1）。
-//   - 送る rpc は get-config（running、subtree filter）と close-session だけ。
-//     このパッケージには edit-config・commit などを組み立てる道が無い
-//     （観測だけ、§23.4）。
+//   - 観測で送る rpc は get-config（running、subtree filter）と close-session
+//     だけ。2 段の Apply（apply.go、#175）は lock・unlock・edit-config・
+//     validate・commit（confirmed）・discard-changes を足す。
 //   - rpc-reply の rpc-error（error-severity が error のもの）は *RPCError。
 //     warning だけなら成功として扱う。
 //   - 1 つのセッションは 1 度に 1 つの rpc（Session は並行に使わない）。
@@ -46,6 +46,12 @@ const (
 	CapBase11 = "urn:ietf:params:netconf:base:1.1"
 	// capPrefix は NETCONF 自身の capability の頭（短い名前にして記録する）。
 	capPrefix = "urn:ietf:params:netconf:"
+	// 2 段の Apply が見る capability（RFC 6241 §8）。
+	CapCandidate         = "urn:ietf:params:netconf:capability:candidate:1.0"
+	CapConfirmedCommit10 = "urn:ietf:params:netconf:capability:confirmed-commit:1.0"
+	CapConfirmedCommit11 = "urn:ietf:params:netconf:capability:confirmed-commit:1.1"
+	CapValidate10        = "urn:ietf:params:netconf:capability:validate:1.0"
+	CapValidate11        = "urn:ietf:params:netconf:capability:validate:1.1"
 )
 
 // ErrHello は相手の hello が NETCONF のものとして合わないことを表す。
@@ -143,6 +149,19 @@ func (s *Session) Framing() Framing { return s.f.Framing() }
 // Capabilities は相手の hello の capability（そのまま）。
 func (s *Session) Capabilities() []string { return append([]string(nil), s.caps...) }
 
+// Has は相手の hello に capability c があるか（? 以下は比べない）。
+func (s *Session) Has(c string) bool {
+	for _, x := range s.caps {
+		if i := strings.IndexByte(x, '?'); i >= 0 {
+			x = x[:i]
+		}
+		if x == c {
+			return true
+		}
+	}
+	return false
+}
+
 // ShortCapabilities は NETCONF 自身の capability を短い名前（"base:1.1"・
 // "candidate:1.0"・"confirmed-commit:1.1"・"validate:1.1" など。? 以下は落とす）
 // にして、並べて返す。YANG のモジュールの capability は含めない。
@@ -183,6 +202,61 @@ func (s *Session) GetConfig(ctx context.Context, filter string) ([]byte, error) 
 		return nil, err
 	}
 	return dataOf(reply)
+}
+
+// Lock・Unlock は datastore（"candidate" など）を締める・放す。
+func (s *Session) Lock(ctx context.Context, target string) error {
+	_, err := s.rpc(ctx, `<lock><target><`+target+`/></target></lock>`)
+	return err
+}
+
+// Unlock は Lock の逆。
+func (s *Session) Unlock(ctx context.Context, target string) error {
+	_, err := s.rpc(ctx, `<unlock><target><`+target+`/></target></unlock>`)
+	return err
+}
+
+// EditConfig は candidate に config（<config> の中身の XML）を当てる。
+// default-operation は既定（merge）のまま: 置き換え・消すは config の中の
+// operation 属性で書く。
+func (s *Session) EditConfig(ctx context.Context, config string) error {
+	_, err := s.rpc(ctx, `<edit-config><target><candidate/></target><config>`+config+`</config></edit-config>`)
+	return err
+}
+
+// Validate は candidate を確かめる（:validate）。
+func (s *Session) Validate(ctx context.Context) error {
+	_, err := s.rpc(ctx, `<validate><source><candidate/></source></validate>`)
+	return err
+}
+
+// CommitConfirmed は commit confirmed（RFC 6241 §8.4）を送る。timeout は秒。
+// persist が空でなければ :confirmed-commit:1.1 の <persist>（セッションが
+// 切れても残り、persist-id で確定できる）。
+func (s *Session) CommitConfirmed(ctx context.Context, timeout int, persist string) error {
+	body := `<commit><confirmed/><confirm-timeout>` + strconv.Itoa(timeout) + `</confirm-timeout>`
+	if persist != "" {
+		body += `<persist>` + persist + `</persist>`
+	}
+	_, err := s.rpc(ctx, body+`</commit>`)
+	return err
+}
+
+// Commit は確定の commit。persistID が空でなければ <persist-id> を付ける
+// （:confirmed-commit:1.1 の persist で始めた commit confirmed を確定する）。
+func (s *Session) Commit(ctx context.Context, persistID string) error {
+	body := `<commit/>`
+	if persistID != "" {
+		body = `<commit><persist-id>` + persistID + `</persist-id></commit>`
+	}
+	_, err := s.rpc(ctx, body)
+	return err
+}
+
+// DiscardChanges は candidate を running に戻す。
+func (s *Session) DiscardChanges(ctx context.Context) error {
+	_, err := s.rpc(ctx, `<discard-changes/>`)
+	return err
 }
 
 // Close は close-session を送って閉じる（返事は待つが、失敗しても閉じる）。

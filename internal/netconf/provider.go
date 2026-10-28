@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package netconf は NETCONF の機器の設定の部分木を観測する provider
-// "netconf"（Backlog #141、§23.4、§29.1）。
+// Package netconf は NETCONF の機器の設定の部分木を観測し、設定で許したときは
+// commit confirmed の 2 段で当てる provider "netconf"（Backlog #141・#175、
+// §23.4、§29.1）。
 //
 // 通信は NETCONF over SSH（RFC 6241・6242）。ssh 越しの実行の層
 // （internal/remote、#130）の ssh で netconf サブシステムを開き、区切り
@@ -26,11 +27,13 @@
 //
 // 設計判断:
 //
-//   - 観測だけ（Capabilities.ObserveOnly）。差分はずれの知らせ（DriftWouldApply、
-//     plan の blocked_by observe_only）になるだけで、コアは Apply を呼ばない。
-//     Apply は呼ばれても PermanentError。このパッケージには edit-config を
-//     組み立てる道も無い。設定を当てるのは commit confirmed を使う 2 段の Apply
-//     を入れてから（§23.4「CommitConfirm が無ければ Apply 禁止」）。
+//   - 既定は観測だけ（Capabilities.ObserveOnly）。差分はずれの知らせ
+//     （DriftWouldApply、plan の blocked_by observe_only）になるだけで、コアは
+//     Apply を呼ばない（呼ばれても PermanentError）。設定で許したとき
+//     （AllowApply、--provider-config の netconf_apply）だけ CommitConfirm を
+//     宣言して ObserveOnly を外し、commit confirmed の 2 段で当てる（apply.go。
+//     §23.4「CommitConfirm が無ければ Apply 禁止」）。機器が :candidate と
+//     :confirmed-commit を持たなければ、その機器には当てない。
 //   - List・BulkObserve は持たない（prune しない）。
 //   - 比べ方は名前空間・空白・属性の順をそろえた正規形（canon.go）。兄弟の順は
 //     既定で問わず、intent の ordered で名指しした道だけ順を比べる。機種固有の
@@ -44,8 +47,8 @@
 //     セッションが切れていたら（機器が idle で切った等）1 度だけ開き直す。
 //     rpc-error ではセッションを捨てない。
 //   - hello の capability（base:1.0・1.1、candidate、confirmed-commit:1.0・1.1、
-//     validate など）は観測の capabilities（Computed）に記録する。後で入れる
-//     2 段の Apply の道を選ぶ材料。
+//     validate など）は観測の capabilities（Computed）に記録する。2 段の Apply
+//     は Apply のセッションの hello で道を選ぶ。
 package netconf
 
 import (
@@ -97,6 +100,8 @@ type Dialer func(ctx context.Context) (io.ReadWriteCloser, error)
 type Provider struct {
 	hosts    map[string]*host
 	subtrees map[string]Subtree
+	// apply は 2 段の Apply の設定（nil なら観測だけ）。
+	apply *ApplyConfig
 }
 
 var (
@@ -112,6 +117,9 @@ type host struct {
 
 	mu   sync.Mutex
 	sess *Session
+
+	// applyMu は 1 台に 1 度に 1 つの Apply（candidate は機器に 1 つ）。
+	applyMu sync.Mutex
 }
 
 // New は dialers（ホストの名前 → Dialer）の機器の、subtrees の部分木を観測する
@@ -160,22 +168,16 @@ func (p *Provider) Schema() provider.Schema {
 	}}
 }
 
-// Capabilities は観測だけ（§23.4）: CommitConfirm が無いので Apply させない。
-// List も BulkObserve も無く、消さない。
+// Capabilities は既定で観測だけ（§23.4）: CommitConfirm が無いので Apply
+// させない。2 段の Apply を許したときだけ CommitConfirm を宣言し、ObserveOnly
+// を外す。どちらでも List も BulkObserve も無く、消さない。
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
 		TrueObserve:     true,
-		ObserveOnly:     true,
+		ObserveOnly:     p.apply == nil,
+		CommitConfirm:   p.apply != nil,
 		ProviderVersion: ProviderVersion,
 	}
-}
-
-// Apply は常に断る（観測だけ。コアは ObserveOnly の provider に Apply を出さない）。
-func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
-	if len(plan.Ops) == 0 {
-		return nil
-	}
-	return provider.NewPermanentError(fmt.Errorf("%s: observes only (no commit confirmed yet, §23.4); nothing is applied to %s", Name, plan.Ops[0].Target))
 }
 
 // splitID は "<ホスト>/<部分木>" を分ける。
@@ -311,6 +313,9 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 			return fmt.Errorf("%s %q: config: <%s xmlns=%q> is not selected by the filter of subtree %s", Name, localID, n.name.Local, n.name.Space, st.Name)
 		}
 	}
+	if err := noEditAttrs(top); err != nil {
+		return fmt.Errorf("%s %q: config: %w", Name, localID, err)
+	}
 	if _, err := ParseOrdered(fields[FieldOrdered]); err != nil {
 		return fmt.Errorf("%s %q: %w", Name, localID, err)
 	}
@@ -328,9 +333,27 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	return nil
 }
 
+// noEditAttrs は宣言に edit-config の属性（nc:operation・yang:insert など）が
+// 無いことを確かめる: どう当てるかは Apply が決める。
+func noEditAttrs(nodes []*node) error {
+	for _, n := range nodes {
+		for _, a := range n.attrs {
+			if a.Name.Space == BaseNS || a.Name.Space == YANGNS {
+				return fmt.Errorf("<%s> has the attribute %s (how to edit is the provider's; declare the content only)", n.name.Local, a.Name.Local)
+			}
+		}
+		if err := noEditAttrs(n.children); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RefinePlan は比べ方の宣言を差分に当てる:
 //
-//   - ordered（機器に無い「どう比べるか」）の差分は落とす。
+//   - ordered（機器に無い「どう比べるか」）の差分は落とす。ただし Apply を
+//     許していて config も違うときは残す（Apply が順を並べ直し、宣言どおりかを
+//     同じ比べ方で確かめるのに使う）。
 //   - config は両側を並べ替えた正規形で比べ、同じなら差分を落とす。違えば
 //     どの行が違うかを Diagnostic に書く。
 func (p *Provider) RefinePlan(localID string, observed core.State, desired map[string]string, ops []core.Op) ([]core.Op, error) {
@@ -345,10 +368,13 @@ func (p *Provider) RefinePlan(localID string, observed core.State, desired map[s
 	var out []core.Op
 	for _, op := range ops {
 		var fields []core.FieldDiff
+		var orderedDiff *core.FieldDiff
 		diag := ""
 		for _, f := range op.Fields {
 			switch f.Field {
 			case FieldOrdered:
+				od := f
+				orderedDiff = &od
 				continue
 			case FieldConfig:
 				// The core refines only a present resource (observed != nil).
@@ -363,6 +389,9 @@ func (p *Provider) RefinePlan(localID string, observed core.State, desired map[s
 				diag = explain(localID, got, want, ordered)
 			}
 			fields = append(fields, f)
+		}
+		if p.apply != nil && orderedDiff != nil && len(fields) > 0 {
+			fields = append(fields, *orderedDiff)
 		}
 		op.Fields = fields
 		op.Diagnostic = diag

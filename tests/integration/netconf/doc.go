@@ -12,13 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package netconf は netconf provider（Backlog #141、観測だけ）の統合テスト。
+// Package netconf は netconf provider（Backlog #141 の観測、#175 の 2 段の
+// Apply）の統合テスト。
 // docker で公開の NETCONF サーバ（netopeer2 のコンテナ。イメージは tag と
 // digest で固定）を 127.0.0.1 の空いたポートに立て、手元の sakutei の CLI
 // （plan・reconcile・status）から ssh の netconf サブシステムで設定の部分木を
 // 観測する: 宣言どおりなら適合、別の接続（テストが直に送る edit-config）で手で
 // 変えると drift が知らされ、Apply は出ない（機器は手で変えたまま）、何周しても
-// ずれが出ない、止めると unknown（観測できない）。
+// ずれが出ない、止めると unknown（観測できない）。Apply を許した設定
+// （netconf_apply）では、手で変えた部分木を commit confirmed の 2 段で宣言どおりに
+// 当て（1.0 の流れと 1.1 の persist の流れ）、Sakutei 自身が NACM を読めなく
+// なる宣言は確かめに失敗して確定されず、confirm-timeout で機器が戻す。
 //
 // テストは build tag integration_netconf の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-netconf

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/ansible"
 	"github.com/tjst-t/sakutei/v2/internal/clidevice"
@@ -86,7 +87,10 @@ import (
 //     devices (Backlog #141): config["netconf_hosts"] ("sw1,sw2", from
 //     config["remote_config"]) over the ssh "netconf" subsystem, the subtrees
 //     named in config["netconf_subtrees"] (name → subtree filter).  Observe
-//     only (Capabilities.ObserveOnly, §23.4): drift is reported, never applied.
+//     only (Capabilities.ObserveOnly, §23.4) unless config["netconf_apply"] is
+//     "true" (Backlog #175): then it declares CommitConfirm and applies in two
+//     steps with commit confirmed (config["netconf_confirm_timeout"], default
+//     2m; config["netconf_commit_flow"] "1.0" (default) or "1.1" for persist).
 //
 //   - "ldap": entries of LDAP directories (Backlog #144), only the declared
 //     attributes, through the OpenLDAP clients ldapsearch / ldapmodify.
@@ -350,7 +354,10 @@ func DefaultRegistry() *ProviderRegistry {
 	// "netconf" — NETCONF の機器の設定の部分木の観測だけ（§23.4、§29.1、#141）。
 	// config["netconf_hosts"] の機器に config["remote_config"] の ssh で netconf
 	// サブシステムを開き、config["netconf_subtrees"]（部分木の一覧）の filter で
-	// running を読む。Apply しない（Capabilities.ObserveOnly）。
+	// running を読む。既定は Apply しない（Capabilities.ObserveOnly）。
+	// config["netconf_apply"] が "true" のときだけ commit confirmed の 2 段で当てる
+	// （#175）: netconf_confirm_timeout（既定 2m）・netconf_commit_flow（"1.0" が
+	// 既定、"1.1" で persist の流れ）。
 	r.Register(netconf.Name, func(config map[string]string) (provider.Provider, error) {
 		if config["netconf_hosts"] == "" {
 			return nil, errors.New("netconf: the devices are not set: netconf_hosts (and remote_config) in --provider-config")
@@ -370,7 +377,20 @@ func DefaultRegistry() *ProviderRegistry {
 		if err != nil {
 			return nil, err
 		}
-		return netconf.New(dialers, subtrees)
+		p, err := netconf.New(dialers, subtrees)
+		if err != nil {
+			return nil, err
+		}
+		ac, allow, err := netconfApplyConfig(config)
+		if err != nil {
+			return nil, err
+		}
+		if allow {
+			if err := p.AllowApply(ac); err != nil {
+				return nil, err
+			}
+		}
+		return p, nil
 	})
 
 	// "ldap" — LDAP のディレクトリの項目（§29.1、#144）。config["ldap_config"] は
@@ -620,4 +640,37 @@ func redfishClients(config map[string]string) (map[string]redfish.Client, error)
 		return nil, errors.New("the BMC list is not set: pass --redfish-config <file>")
 	}
 	return bmcconfig.LoadClients(path)
+}
+
+// netconfApplyConfig は netconf の 2 段の Apply の設定を読む（#175）。
+// netconf_apply が "true" でなければ許さない（"false"・無いは観測だけ。ほかの
+// 値はエラー）。Apply を許さないのに Apply の設定だけがあるのもエラー。
+func netconfApplyConfig(config map[string]string) (netconf.ApplyConfig, bool, error) {
+	var ac netconf.ApplyConfig
+	allow := false
+	switch v := config["netconf_apply"]; v {
+	case "true":
+		allow = true
+	case "", "false":
+	default:
+		return ac, false, fmt.Errorf("netconf: netconf_apply %q: want \"true\" or \"false\"", v)
+	}
+	if v := config["netconf_confirm_timeout"]; v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return ac, false, fmt.Errorf("netconf: netconf_confirm_timeout %q: want a duration such as \"2m\"", v)
+		}
+		ac.ConfirmTimeout = d
+	}
+	switch v := config["netconf_commit_flow"]; v {
+	case "", "1.0":
+	case "1.1":
+		ac.Persist = true
+	default:
+		return ac, false, fmt.Errorf("netconf: netconf_commit_flow %q: want \"1.0\" or \"1.1\"", v)
+	}
+	if !allow && (config["netconf_confirm_timeout"] != "" || config["netconf_commit_flow"] != "") {
+		return ac, false, errors.New("netconf: netconf_confirm_timeout / netconf_commit_flow are set but netconf_apply is not \"true\" (the provider observes only)")
+	}
+	return ac, allow, nil
 }

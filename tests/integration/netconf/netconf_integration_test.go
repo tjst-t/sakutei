@@ -32,6 +32,14 @@ package netconf
 // 「手で変える」はテストが ssh で直に開く別の NETCONF セッションの edit-config
 // （sakutei の外）。netconf ユーザに書き込みを許す NACM の規則は、準備のときに
 // コンテナの中の sysrepocfg（root、NACM を受けない）で入れる。
+//
+// 2 段の Apply（#175）は、Apply を許した provider の設定（netconf_apply、
+// confirm-timeout 10 秒）で回す: 手で変えた 2 つの部分木を 1.0 の流れ（既定）と
+// 1.1 の persist の流れで宣言どおりに戻す。確かめの失敗は、netconf ユーザの
+// rule-list の頭に「NACM を読むのを断る」規則を足す宣言（sw1/admin-rules。
+// 当てると Sakutei 自身が NACM の部分木を読めなくなる＝読みの締め出し）で
+// 起こし、確定せずに confirm-timeout で機器が戻すことを確かめる（書き込みは
+// 許したままなので、機器の巻き戻しも NACM に断られない）。
 
 import (
 	"bytes"
@@ -52,6 +60,8 @@ const (
 	netopeer2Image = "sysrepo/sysrepo-netopeer2:latest@sha256:36cc1d841c97f118d62f775024d60fb1ce210c3bca6b32135c1a9e5a358a1cc9"
 	nacmNS         = "urn:ietf:params:xml:ns:yang:ietf-netconf-acm"
 	baseNS         = "urn:ietf:params:xml:ns:netconf:base:1.0"
+	// confirmTimeout は 2 段の Apply の confirm-timeout（確かめはその半分）。
+	confirmTimeout = 10 * time.Second
 )
 
 var lab struct {
@@ -176,8 +186,9 @@ func setup() error {
 		return err
 	}
 	if err := writeJSON(filepath.Join(dir, "subtrees.json"), map[string]any{"subtrees": map[string]any{
-		"acl-rules": map[string]string{"filter": `<nacm xmlns="` + nacmNS + `"><rule-list><name>sakutei-it</name></rule-list></nacm>`},
-		"group":     map[string]string{"filter": `<nacm xmlns="` + nacmNS + `"><groups><group><name>sakutei-it</name></group></groups></nacm>`},
+		"acl-rules":   map[string]string{"filter": `<nacm xmlns="` + nacmNS + `"><rule-list><name>sakutei-it</name></rule-list></nacm>`},
+		"group":       map[string]string{"filter": `<nacm xmlns="` + nacmNS + `"><groups><group><name>sakutei-it</name></group></groups></nacm>`},
+		"admin-rules": map[string]string{"filter": `<nacm xmlns="` + nacmNS + `"><rule-list><name>sakutei-it-admin</name></rule-list></nacm>`},
 	}}); err != nil {
 		return err
 	}
@@ -190,6 +201,20 @@ func setup() error {
 		},
 	}}); err != nil {
 		return err
+	}
+	for file, flow := range map[string]string{"providers-apply.json": "1.0", "providers-apply11.json": "1.1"} {
+		if err := writeJSON(filepath.Join(dir, file), map[string]any{"providers": map[string]any{
+			"netconf": map[string]string{
+				"remote_config":           filepath.Join(dir, "hosts.json"),
+				"netconf_hosts":           "sw1",
+				"netconf_subtrees":        filepath.Join(dir, "subtrees.json"),
+				"netconf_apply":           "true",
+				"netconf_confirm_timeout": confirmTimeout.String(),
+				"netconf_commit_flow":     flow,
+			},
+		}}); err != nil {
+			return err
+		}
 	}
 	lab.bin = filepath.Join(dir, "sakutei")
 	build := exec.Command("go", "build", "-o", lab.bin, "./cmd/sakutei")
@@ -332,10 +357,16 @@ func writeIntent(t *testing.T) {
 
 func sakutei(t *testing.T, verb string, extra ...string) (string, string, int) {
 	t.Helper()
+	return sakuteiWith(t, filepath.Join(lab.dir, "intent"), lab.config, verb, extra...)
+}
+
+// sakuteiWith runs sakutei on another intent directory and provider config.
+func sakuteiWith(t *testing.T, intent, config, verb string, extra ...string) (string, string, int) {
+	t.Helper()
 	args := append([]string{verb,
-		"--intent", filepath.Join(lab.dir, "intent"),
+		"--intent", intent,
 		"--state", filepath.Join(lab.dir, "fake-state.json"),
-		"--provider-config", lab.config,
+		"--provider-config", config,
 	}, extra...)
 	cmd := exec.Command(lab.bin, args...)
 	var stdout, stderr bytes.Buffer
@@ -485,6 +516,89 @@ func TestNetconfIntegration(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			wantStates(t, fmt.Sprintf("restored %d", i), map[string]string{"sw1/acl-rules": "conformant", "sw1/group": "conformant"})
 		}
+	})
+
+	applyConfig := filepath.Join(lab.dir, "providers-apply.json")
+	changeByHand := func(t *testing.T) {
+		t.Helper()
+		editByHand(t, `<nacm xmlns="`+nacmNS+`" xmlns:nc="`+baseNS+`">`+
+			strings.Replace(ruleList(ruleR2, ruleR1), "<rule-list>", `<rule-list nc:operation="replace">`, 1)+
+			group("carol")+`</nacm>`)
+		wantStates(t, "changed", map[string]string{"sw1/acl-rules": "drift", "sw1/group": "drift"})
+	}
+	asDeclared := func(t *testing.T, step string) {
+		t.Helper()
+		wantStates(t, step, map[string]string{"sw1/acl-rules": "conformant", "sw1/group": "conformant"})
+		r := runningNACM(t)
+		if strings.Index(r, "<name>r1</name>") > strings.Index(r, "<name>r2</name>") || strings.Contains(r, "carol") || !strings.Contains(r, "sakutei-it-admin") {
+			t.Fatalf("%s: the device is not as declared:\n%s", step, r)
+		}
+	}
+
+	t.Run("apply 1.0: commit confirmed, checked, confirmed", func(t *testing.T) {
+		changeByHand(t)
+		out, errOut, code := sakuteiWith(t, filepath.Join(lab.dir, "intent"), applyConfig, "reconcile")
+		if code != 0 || strings.Contains(out, "Observe-only") {
+			t.Fatalf("reconcile (apply): exit %d\n%s%s", code, out, errOut)
+		}
+		t.Logf("sakutei reconcile (netconf_apply, 1.0):\n%s%s", out, errOut)
+		asDeclared(t, "applied (1.0)")
+		// Confirmed: still as declared after the confirm-timeout.
+		time.Sleep(confirmTimeout + 2*time.Second)
+		asDeclared(t, "after the confirm-timeout")
+		out, errOut, code = sakuteiWith(t, filepath.Join(lab.dir, "intent"), applyConfig, "reconcile")
+		if code != 0 || !strings.Contains(out, "Converged") {
+			t.Fatalf("reconcile after: exit %d\n%s%s", code, out, errOut)
+		}
+	})
+
+	t.Run("apply 1.1: persist", func(t *testing.T) {
+		changeByHand(t)
+		out, errOut, code := sakuteiWith(t, filepath.Join(lab.dir, "intent"), filepath.Join(lab.dir, "providers-apply11.json"), "reconcile")
+		if code != 0 {
+			t.Fatalf("reconcile (apply, 1.1): exit %d\n%s%s", code, out, errOut)
+		}
+		asDeclared(t, "applied (1.1)")
+		time.Sleep(confirmTimeout + 2*time.Second)
+		asDeclared(t, "after the confirm-timeout (1.1)")
+	})
+
+	t.Run("apply: the check fails, the device rolls back at the timeout", func(t *testing.T) {
+		// The declaration puts a rule that denies reading NACM before the
+		// netconf user's permit-all: once committed, a new connection cannot
+		// read the subtree (sakutei locks itself out of reading it).
+		dir := filepath.Join(lab.dir, "intent-lockout")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeJSON(filepath.Join(dir, "netconf.json"), map[string]any{"resources": []map[string]any{
+			{"provider": "netconf", "id": "sw1/admin-rules", "fields": map[string]string{
+				"config": `<nacm xmlns="` + nacmNS + `"><rule-list><name>sakutei-it-admin</name><group>sakutei-it-admin</group>` +
+					`<rule><name>deny-read-nacm</name><module-name>ietf-netconf-acm</module-name><access-operations>read</access-operations><action>deny</action></rule>` +
+					`<rule><name>permit-all</name><module-name>*</module-name><access-operations>*</access-operations><action>permit</action></rule></rule-list></nacm>`,
+				"ordered": "nacm/rule-list/rule"}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		out, errOut, code := sakuteiWith(t, dir, applyConfig, "reconcile")
+		took := time.Since(start)
+		t.Logf("sakutei reconcile (lockout, %s):\n%s%s", took.Round(time.Second), out, errOut)
+		// The failure is reported (a failed Apply does not change the exit code
+		// of a one-shot reconcile).
+		_ = code
+		if !strings.Contains(errOut, "not confirmed") || !strings.Contains(errOut, "the confirming commit was not sent") ||
+			!strings.Contains(errOut, "the device rolled back at the timeout") {
+			t.Fatalf("reconcile (lockout):\n%s%s", out, errOut)
+		}
+		if took < confirmTimeout {
+			t.Fatalf("reconcile (lockout) returned after %s, before the confirm-timeout %s", took, confirmTimeout)
+		}
+		// Rolled back: the deny rule is gone, NACM can be read again.
+		if r := runningNACM(t); !strings.Contains(r, "<name>permit-all</name>") || strings.Contains(r, "deny-read-nacm") {
+			t.Fatalf("not rolled back:\n%s", r)
+		}
+		asDeclared(t, "after the rollback")
 	})
 
 	t.Run("stopped: unknown", func(t *testing.T) {
