@@ -3789,11 +3789,11 @@
       "labels": [],
       "body": "## なぜ\n設計書 §7.3 は、intent で「この範囲は外の持ち主のもの、Sakutei は観測しても Apply しない」を宣言する `external_owner` を持つが、loader に実装が無い。いまは除外を provider ごとの設定（例 proxmox-vm の `protected_vmids`・`protected_names`）にしか書けず、「触らない」という正しい状態が宣言の外にある。\n\n## やること\n- intent に触らない宣言を汎用で入れる（§7.3 の書き方に合わせる。provider に依らない）。選び方：scope、provider と ID（完全一致と前方一致程度）、加えて観測のフィールドの値での選び方（例：proxmox-vm の vmid）を provider が申告できる形。書き方は実装で決めて設計書に書く。\n- 効き方：選ばれたものは Apply・Delete・prune をしない（観測と知らせだけはしてよい。§7.3 の「観測して待つ」協調と矛盾しないように）。intent が同じものを管理すると宣言したら読み込みで断る。\n- proxmox-vm の除外を intent にも書けるようにする。provider の設定の除外は最後の安全の網として残す。**食い違えば読み込みで断る**（例：provider の設定では除外しているのに intent では管理する）。弱い側に寄せない。provider の設定だけにある除外は、intent にも書くように知らせる（警告）。\n- 設計書 §7.3・§29.1。原則「provider の設定はつなぎ方（宛先・鍵・時間）だけ、管理の範囲と除外は intent」を書く（既存の provider の範囲の設定は後で順に移す、と書く）。docs/providers/proxmox-vm.md。CHANGELOG-v3.x。\n\n## 確かめ方\n受け入れテスト：intent で触らないと宣言したものは Apply・prune されない・intent がそれを管理すると読み込みで断る・proxmox-vm の除外を intent に書ける・provider の設定の除外と intent が食い違うと読み込みで断る。\n\n## 決まり\nGo は stdlib のみ。make check・make test-race を通す。",
       "doneWhen": "intent の触らない宣言が Apply・prune を止め、provider の設定と食い違うと読み込みで断ることを受け入れテストで示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/external-owner-intent）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:44:59.126Z",
-      "updatedAt": "2026-10-28T06:21:52.513Z",
+      "updatedAt": "2026-10-28T06:22:56.363Z",
       "closedAt": "2026-10-28T06:21:52.513Z",
       "extra": {}
     },
