@@ -4045,11 +4045,11 @@
       "labels": [],
       "body": "いまの nftables provider（file・live、ssh 越しを含む）は base chain（type/hook/policy を持つ chain）を読まず書かない（設計 §29.1 #121 の管理境界）。既定で拒否する FW を宣言で持てるよう、base chain の policy を管理に入れる。\n\n- intent で、名指しした base chain の type・hook・priority・policy（accept/drop）と中のルールを宣言できる。名指ししない base chain は今どおり触らない。宣言のある base chain だけが List・status の対象。\n- **締め出しの守り（commit confirmed と同じ考え）**：base chain の policy かルールを変える Apply は、(1) 変える前の table の写しを取る、(2) 1 つのトランザクションで流す、(3) **新しい ssh 接続**（手元の live なら設定した確かめの宛先への接続）で到達を確かめる、(4) 確かめられなければ時間の上限（設定、既定は短め）で写しに戻す。戻すのは対象ホストの側で時間で動く仕掛け（例：流す前に仕掛ける遅延の戻し、確かめたら取り消す）にし、Sakutei との接続が切れても戻ること。\n- 戻した・確かめられなかったときは Apply の失敗（unknown か一時的な失敗）として知らせ、次の周で同じ変更を繰り返し流し続けない（#166 の効かない Apply の扱いに合わせる）。\n- 到達性の最小の核（管理の ssh を通す規則など）は scope／触らない宣言で外せる。文書に「最小の核は Sakutei の外で保守する」と書く。\n- 単体・契約テストは偽の nft、統合テストは使い捨ての network namespace と ssh で、policy drop にして到達を確かめる・わざと ssh を塞ぐ宣言で時間切れの戻しが効く、を確かめる。\n- 設計書（§7・§29.1）と docs/providers/nftables.md を改める。",
       "doneWhen": "base chain の policy drop を宣言して Apply でき、ssh を塞ぐ宣言では時間切れで元の ruleset に戻ることを統合テスト（make integration-nftables）で示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/nftables-base-chain-policy）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:49:00.946Z",
-      "updatedAt": "2026-10-28T10:41:46.189Z",
+      "updatedAt": "2026-10-28T10:42:35.281Z",
       "closedAt": "2026-10-28T10:41:46.189Z",
       "extra": {}
     },
