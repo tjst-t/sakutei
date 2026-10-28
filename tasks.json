@@ -4129,7 +4129,7 @@
       "number": 176,
       "kind": "task",
       "title": "NETCONF：部分木だけに絞ったユーザーで観測と Apply が動く",
-      "status": "in-progress",
+      "status": "done",
       "parent": "m6-netconf-apply-base-chain-2-apply",
       "dependsOn": [
         "netconf-2-apply-confirmed-commit-1-0-1-1"
@@ -4139,12 +4139,12 @@
       "labels": [],
       "body": "NETCONF のユーザーを、宣言した部分木だけを読み書きできるよう機器の側（NACM）で絞った形で運用できるようにする。\n\n- 観測（get-config の subtree filter）と Apply（edit-config・commit）が、宣言した部分木の外を読まない・書かないことを確かめ、外を要る操作が残っていれば直す（hello・capability の読み方、lock の範囲、discard・validate など、権限の無い所で断られたときの扱い）。\n- 権限が無くて断られた rpc-error（access-denied）は、観測できない（unknown）か恒久的な失敗として、理由が分かる形で知らせる。\n- 統合テスト（make integration-netconf）で netopeer2 に NACM で部分木だけを許したユーザーを作り、観測・Apply が通り、部分木の外を変える宣言は断られることを確かめる。\n- docs/providers/netconf.md に、絞ったユーザーの作り方の例（NACM）を一般の書き方で載せる。",
       "doneWhen": "NACM で部分木だけを許したユーザーで、観測と 2 段の Apply が netopeer2 の統合テストで通り、外を触る操作が無いことを示す。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/netconf-apply）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:49:00.946Z",
-      "updatedAt": "2026-10-28T11:07:32.355Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-28T11:30:56.756Z",
+      "closedAt": "2026-10-28T11:30:56.756Z",
       "extra": {}
     },
     {
