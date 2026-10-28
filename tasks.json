@@ -3849,7 +3849,7 @@
       "number": 165,
       "kind": "task",
       "title": "proxmox-vm：複製・作成のときに Proxmox の pool を渡す（pool の名前は intent）、常駐の --cause-state の扱いを docs に",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "proxmox-vm-vm-vm-unmanaged-pool",
       "dependsOn": [
         "explicit-absent",
@@ -3864,7 +3864,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T03:54:32.654Z",
-      "updatedAt": "2026-10-28T03:54:32.654Z",
+      "updatedAt": "2026-10-28T04:52:35.095Z",
       "closedAt": null,
       "extra": {}
     }
