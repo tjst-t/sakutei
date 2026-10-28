@@ -313,8 +313,12 @@ func (a *Alertmanager) run() {
 			}
 		}
 		if a.o.closingNow() {
-			// Close: the one-shot alerts are out (or there were none).
-			return
+			// Close: stop once the one-shot alerts are out. Some may have been
+			// pushed after batch() and just before Close; send those first.
+			if a.Pending() == 0 {
+				return
+			}
+			continue
 		}
 		if !a.o.idle(a.resend) {
 			// Close began while idle: one last round sends what is left.

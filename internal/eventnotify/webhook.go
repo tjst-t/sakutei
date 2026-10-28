@@ -117,7 +117,10 @@ func (w *Webhook) run() {
 	for {
 		ev, ok := w.head()
 		if !ok {
-			if !w.o.idle(0) {
+			if !w.o.idle(0) && w.Pending() == 0 {
+				// Close (or abort) with nothing left. An Event queued just
+				// before Close is sent first; abort ends the loop on the
+				// failed post below.
 				return
 			}
 			continue
