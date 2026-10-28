@@ -3952,11 +3952,11 @@
       ],
       "body": "## なぜ\n#157 の書き戻しを review の仕方（人のレビューを通す）で使っているとき、`sakutei allocator release` をすると、取り込まれるまで作業ツリーのファイルにその owner が残る。store の側はもう解放（cooldown）しているので、その間プールの照合が ErrNotInStore になり、そのプールから新しい値を配らない（止まる向きは安全側で、決まりには反しない）。困るのは、そのとき出る案内が `sakutei allocator import` で、実際に import すると cooldown と食い違って断られること。知らせが人を間違った手当てに導く。\n\n## やること\n- internal/allocwriteback の照合で、store では cooldown 中（解放済み）・書き戻しのファイルにはまだ owner がある、を見分け、案内を「解放の書き戻しが取り込まれるのを待っている（取り込めば解ける）」にする。import を勧めない。\n- docs の採番の書き戻しの説明に一言。\n\n## 確かめ方\n単体テスト：review の仕方で release → 照合の知らせが取り込み待ちを言い、import を勧めない。取り込んだら解ける。\n\n## 決まり\nGo は stdlib のみ。make check・make test-race を通す。",
       "doneWhen": "review の仕方で解放したあと取り込みまでの間、照合の知らせが「取り込み待ち」を言い import を勧めないことを単体テストで示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/review）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T05:32:00.829Z",
-      "updatedAt": "2026-10-28T11:53:47.264Z",
+      "updatedAt": "2026-10-28T11:54:00.156Z",
       "closedAt": "2026-10-28T11:53:47.264Z",
       "extra": {}
     },
