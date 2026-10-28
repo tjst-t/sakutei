@@ -4142,6 +4142,31 @@
       "updatedAt": "2026-10-28T09:53:38.608Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "nftables-nft",
+      "number": 178,
+      "kind": "bug",
+      "title": "nftables：nft が集合の隣り合う範囲をまとめて書き戻すため、宣言と合わず差分が消えない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [
+        "nftables-base-chain-policy"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "nftables"
+      ],
+      "body": "nft は、interval の集合（例 `ip saddr { 10.0.0.0/24, 10.0.1.0/24 }`）の隣り合う・重なる範囲をまとめて書き戻す（この例は `10.0.0.0/23`）。live の Apply は流した後に読み戻して正規形で比べるので、宣言と合わず「nft が並べる形で宣言せよ」の PermanentError になり、差分が消えない。いまは送り元を 1 行に 1 つ書けば避けられる。\n\n- ルール文の中の集合（無名の集合 `{ ... }`。アドレス・アドレスの範囲・CIDR・ポートとポートの範囲）を、比べる前に正規化する：要素を範囲に展開して、まとめた形（重なり・隣り合いを合わせ、並べ替えたもの）どうしで比べる。宣言の側も観測の側も同じ関数で正規形にする（PlanRefiner と Apply の読み戻しの両方）。\n- 正規化しても違うもの（要素が本当に違う）は、いまどおり差分にする。\n- 名前の付いた set・map は管理の外のまま（§29.1 #121）。\n- file 版でも宣言と書き戻しの比べ方を揃える。\n- 網の間の許可（#174）の変換が出す集合でも同じことが起きないよう、変換の側でも同じ正規形を使う。\n- 単体テスト（IPv4・IPv6・ポートの範囲・重なり・隣り合い・並びの違い）と、統合テスト（make integration-nftables）で実際の nft が /24 を 2 つ /23 にまとめても drift にならないことを確かめる。\n- docs/providers/nftables.md に、集合は nft がまとめて書き戻すが比べるときは正規化することを書く。",
+      "doneWhen": "隣り合う CIDR の集合を宣言して live で Apply し、nft がまとめて書き戻しても差分が出ず、次の周も適合のままであることを統合テストで示す。単体テストで範囲・ポート・IPv6 の正規化を確かめる。make check・make test-race が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T09:53:58.997Z",
+      "updatedAt": "2026-10-28T09:53:58.997Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
