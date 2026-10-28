@@ -3538,7 +3538,7 @@
       "number": 150,
       "kind": "task",
       "title": "管理 API に更新の口が無い装置：版を観測し、承認ゲートつきの Task で人に作業を促し、観測で閉じる",
-      "status": "in-progress",
+      "status": "done",
       "parent": "fw-redfish-updateservice",
       "dependsOn": [
         "redfish-firmware"
@@ -3548,12 +3548,12 @@
       "labels": [],
       "body": "## なぜ\n更新の口が管理 API に無い装置（GUI だけで更新するもの）も、版を宣言で持ちたい。Sakutei は版を観測し、人の作業を促し、終わったことを観測で確かめる。試験用の模擬にだけある更新の口には頼らない。\n\n## やること\n- 版を観測できるリソース（provider の観測値の版のフィールド）に、更新の仕方 `update: manual`（書き方は実装で決める）を宣言できるようにする。\n- 版が違えば DriftEvent で知らせ、承認ゲートつきの Task（§6.2・§6.4）を起こす。Task は「人の作業を待つ」相を持ち、手順の文（宣言に書いた手順の説明・URL）と、いまの版・望む版を承認ゲートと Event に出す。\n- 人が作業したと答えたら（承認）、観測で版が宣言どおりになるのを時間を区切って待ち、なれば閉じる。ならなければ stuck として知らせる（勝手に閉じない）。人が答えなくても観測で版が合えば閉じる。\n- 収束ループは Apply しない（§6.5）。\n- 設計書 §6.2 に「人の手順で合わせる Task」の決まりを書く。\n\n## 確かめ方\n- fake provider で版を観測させる受け入れテスト：版が違う → 知らせと承認待ち → 承認 → 観測の版を変える → 閉じる。承認しても版が変わらなければ閉じず stuck。承認しなくても版が合えば閉じる。\n- CHANGELOG-v3.x、docs。\n\n## 決まり\nGo は stdlib のみ。make check・make test-race を通す。",
       "doneWhen": "人の手順で合わせる版の流れ（知らせ→承認→観測で閉じる、閉じない場合の stuck）を受け入れテストで示す。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/manual-update-procedure）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:41:13.586Z",
-      "updatedAt": "2026-10-28T07:10:21.230Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-28T07:43:42.321Z",
+      "closedAt": "2026-10-28T07:43:42.321Z",
       "extra": {}
     },
     {
