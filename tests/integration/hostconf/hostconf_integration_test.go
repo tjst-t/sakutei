@@ -56,7 +56,9 @@ const (
 
 var lab struct {
 	dir, bin, image, config, ctrl string
-	port                          int
+	// ranges は扱うホストを書かない --provider-config（#182）。
+	ranges string
+	port   int
 }
 
 func TestMain(m *testing.M) {
@@ -208,6 +210,14 @@ func setup() error {
 	}}); err != nil {
 		return err
 	}
+	// #182: 扱うホストを書かない設定（ホストは intent の providers:、§7.7）。
+	lab.ranges = filepath.Join(lab.dir, "providers-ranges.json")
+	if err := writeJSON(lab.ranges, map[string]any{"providers": map[string]any{
+		"host-file":    map[string]any{"remote_config": remoteCfg},
+		"systemd-unit": map[string]any{"remote_config": remoteCfg},
+	}}); err != nil {
+		return err
+	}
 	lab.bin = filepath.Join(lab.dir, "sakutei")
 	build := exec.Command("go", "build", "-o", lab.bin, "./cmd/sakutei")
 	build.Dir = "../../.."
@@ -320,8 +330,13 @@ func writeIntent(t *testing.T, s spec) {
 
 func sakutei(t *testing.T, verb string, extra ...string) (string, int) {
 	t.Helper()
+	return sakuteiWith(t, lab.config, verb, extra...)
+}
+
+func sakuteiWith(t *testing.T, config, verb string, extra ...string) (string, int) {
+	t.Helper()
 	args := append([]string{verb, "--intent", filepath.Join(lab.dir, "intent"),
-		"--state", filepath.Join(lab.dir, "fake-state.json"), "--provider-config", lab.config}, extra...)
+		"--state", filepath.Join(lab.dir, "fake-state.json"), "--provider-config", config}, extra...)
 	cmd := exec.Command(lab.bin, args...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -480,6 +495,41 @@ func TestHostConfIntegration(t *testing.T) {
 		}
 		if l := lines(t, appStarts); len(l) != 1 {
 			t.Fatalf("app restarted: %q", l)
+		}
+	})
+
+	t.Run("the hosts in the intent", func(t *testing.T) {
+		// #182: file_hosts・unit_hosts を intent の providers: に書く。設定に無くても
+		// 同じに動き（入れ替えもしない）、設定と違えば読み込みで断る。
+		path := filepath.Join(lab.dir, "intent", "intent.json")
+		orig, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.WriteFile(path, orig, 0o600) }()
+		withHosts := func(hosts ...string) {
+			var in map[string]any
+			if err := json.Unmarshal(orig, &in); err != nil {
+				t.Fatal(err)
+			}
+			in["providers"] = map[string]any{"host-file": map[string]any{"hosts": hosts}, "systemd-unit": map[string]any{"hosts": hosts}}
+			if err := writeJSON(path, in); err != nil {
+				t.Fatal(err)
+			}
+		}
+		withHosts("h1")
+		for name, config := range map[string]string{"intent only": lab.ranges, "both": lab.config} {
+			out, code := sakuteiWith(t, config, "reconcile")
+			if code != 0 || !strings.Contains(out, "Converged (no changes)") || strings.Contains(out, "only in the provider config") {
+				t.Fatalf("%s: reconcile exit %d:\n%s", name, code, out)
+			}
+		}
+		if l := lines(t, echoLog); len(l) != 1 {
+			t.Fatalf("echo restarted: %q", l)
+		}
+		withHosts("h1", "h2")
+		if out, code := sakuteiWith(t, lab.config, "reconcile"); code == 0 || !strings.Contains(out, "disagree") {
+			t.Fatalf("disagreeing hosts: reconcile exit %d, want a refusal:\n%s", code, out)
 		}
 	})
 

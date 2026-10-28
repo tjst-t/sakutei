@@ -382,6 +382,20 @@ func NewFromConfig(path string) (*Provider, error) {
 	return New(eps, Options{Scope: cfg.Scope}), nil
 }
 
+// NewFromConfigTree は path から読んだ設定の木 tree（intent の providers: の範囲を
+// 重ねたもの、§7.7、#182）から Provider を作る（registry の factory 用）。
+func NewFromConfigTree(path string, tree map[string]any) (*Provider, error) {
+	cfg, err := parseConfig(tree, filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("s3 config %s: %w", path, err)
+	}
+	eps, err := cfg.Build()
+	if err != nil {
+		return nil, fmt.Errorf("s3 config %s: %w", path, err)
+	}
+	return New(eps, Options{Scope: cfg.Scope}), nil
+}
+
 func unknownKeys(prefix string, m map[string]any, allowed map[string]bool) error {
 	keys := make([]string, 0, len(m))
 	for k := range m {

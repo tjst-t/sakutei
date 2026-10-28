@@ -8,7 +8,9 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 - **provider の範囲を intent に書く `providers:`**（#181）：provider の設定に残っていた管理の範囲——proxmox-vm のクラスタの `scope`、dnszone の `zone_scope`（`--zone-scope`）、nftables の `ruleset_scope`（`--ruleset-scope`）と live の `ruleset_tables`（`--ruleset-tables`）——を intent のトップレベルの `providers:` に provider ごとに書ける（`dnszone.scope`・`nftables.scope`・`nftables.tables`・`proxmox-vm.clusters.<名前>.scope`）。設定にだけあれば今どおり読んで警告し、両方にあって違えば読み込みで断る（常駐は起動で断り、周の途中で食い違えば周を飛ばす）。除外は `external_owners:` に寄せる。外の provider も `registry.RegisterIntentRanges` で同じ口を使える。設定から範囲を外すのは次のメジャー版。設計書 v3.53（`docs/architecture/CHANGELOG-v3.53.md`）。
 
-> **振る舞いの変化**：`--zone-scope`・`--ruleset-scope`・`--ruleset-tables`・proxmox-vm のクラスタの `scope` を設定にだけ書いていると、`plan`・`reconcile`・`status`・常駐が警告を出す（動きは変わらない）。
+- **残りの provider の範囲も intent の `providers:` に**（#182）：netconf の `hosts`・`subtrees`（旧 `netconf_hosts`・`netconf_subtrees`）、ldap の `scope`・`servers.<名前>.{base_dn, filter, scope}`、cli-device・host-file・systemd-unit の `hosts`（旧 `cli_hosts`・`file_hosts`・`unit_hosts`）、guest-os の `hosts`・`markers`（旧 `guest_hosts`・`guest_markers`）、postgresql の `scope`・`servers.<名前>.scope`、s3-bucket の `scope`・`endpoints.<名前>.bucket_prefix`。どれがつなぎ方（設定に残す）でどれが範囲（intent）かの一覧は [docs/providers/ranges.md](docs/providers/ranges.md)。移し方と食い違いの扱いは #181 と同じ。ldap の `base_dn` は intent に書けばサーバの一覧から外せる。
+
+> **振る舞いの変化**：`--zone-scope`・`--ruleset-scope`・`--ruleset-tables`・proxmox-vm のクラスタの `scope`、#182 の範囲（`netconf_hosts`・`netconf_subtrees`・ldap の `base_dn`・`filter`・`scope`・`*_hosts`・`guest_markers`・postgresql と s3-bucket の `scope`・`bucket_prefix`）を設定にだけ書いていると、`plan`・`reconcile`・`status`・常駐が警告を出す（動きは変わらない）。
 
 ## v2.6.0（2026-10-28）
 

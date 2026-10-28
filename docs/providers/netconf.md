@@ -42,8 +42,8 @@ subtrees:
 providers:
   netconf:
     remote_config: hosts.yaml
-    netconf_hosts: sw1,sw2              # 観測する機器（必須）
-    netconf_subtrees: subtrees.yaml     # 部分木の一覧（必須）
+    netconf_hosts: sw1,sw2              # 観測する機器（intent の providers.netconf.hosts に書かなければ必須）
+    netconf_subtrees: subtrees.yaml     # 部分木の一覧（intent の providers.netconf.subtrees に書かなければ必須）
     # 2 段の Apply を許すときだけ（書かなければ観測だけ）
     netconf_apply: "true"
     netconf_confirm_timeout: 2m         # commit confirmed の confirm-timeout（既定 2m、下限 2s、秒に切り上げる）
@@ -53,9 +53,34 @@ providers:
 - `netconf_apply` は `"true"` か `"false"`（書かないのと同じ）。ほかの値はエラー。`netconf_apply` を `"true"` にしないまま `netconf_confirm_timeout`・`netconf_commit_flow` を書くのもエラー（Apply しないのに Apply の設定があるのは書き間違い）。
 
 - `filter` か `filter_file` のどちらか 1 つ。中身は `<filter type="subtree">` の子にそのまま入る（RFC 6241 §6）。最上位の要素はどれも**名前空間を持つこと**（名前空間の無い subtree filter はすべての名前空間に当たるので断る）。
-- 「どこ」を intent でなく provider の側に書くのは、観測（Read）が宣言を見ない決まりだから（ADR-0002）。どこを読むかは観測が知り、何であるべきかは宣言が持つ。
+- 「どこ」は観測（Read）が知るべきこと（Read は宣言の `config` を見ない、ADR-0002）なので、provider を組み立てるときに渡す。部分木の一覧のファイルの代わりに intent の `providers.netconf.subtrees` にも書ける（下の「範囲を intent に書く」、#182）。provider はそれを組み立ての前に受け取り、Read が resources の宣言を見ないことは変わらない。
 - 部分木の名前は英小文字・数字・`_`・`.`・`-`。未知のキーはエラー。
 - `remote_config` の `sudo` はサブシステムには付かない。接続は ssh の多重化（`control_persist`）を使わず直につなぐ（多重化を受けない機器の ssh がある）。代わりに Sakutei が NETCONF のセッションをホストごとに 1 本使い回す。
+
+## 範囲を intent に書く（`providers:`、Backlog #182）
+
+観測・Apply する機器（`netconf_hosts`）と部分木の「どこ」（`netconf_subtrees` の filter）は管理の範囲なので、intent のトップレベルの
+`providers:` に書ける（§1.7・§7.7）。`remote_config` と 2 段の Apply の設定はつなぎ方として provider の設定に残る。
+
+```yaml
+# intent/providers.yaml
+providers:
+  netconf:
+    hosts: [sw1, sw2]                     # netconf_hosts と同じ（順は問わない）
+    subtrees:
+      if-uplink:                          # 部分木の一覧の subtrees.if-uplink と同じ
+        filter: '<interfaces xmlns="urn:ietf:params:xml:ns:yang:ietf-interfaces"><interface><name>uplink</name></interface></interfaces>'
+```
+
+- intent の部分木は `filter` だけ（`filter_file` は部分木の一覧のファイルにだけ書ける）。名前と filter の決まりは上と同じ。
+- 部分木は名前ごとに突き合わせる。filter は**正規形**（名前空間は接頭辞でなく URI、空白と兄弟の順を問わない）で比べるので、
+  一覧のファイルから写した filter は書き方が違っても同じと見る。intent にだけある部分木は一覧のファイルの部分木に足される。
+  部分木が intent にも一覧にも無ければ組み立てで断る。
+- intent にだけ書けば、設定に書いたのと同じに動く。設定にだけあれば今までどおり読み、`plan`・`reconcile`・`status`・常駐が
+  「is only in the provider config: write it in the intent too (providers.netconf.…)」と警告する（常駐では一度だけ）。
+- 両方にあれば設定は安全の網として残り、**食い違えば読み込みで断る**（弱い側に寄せない。常駐は起動で断り、動いているあいだに
+  食い違えばその周を飛ばす）。知らないキーも断る。設定から外すのは次のメジャー版。
+- どれがつなぎ方でどれが範囲かの一覧は [ranges.md](ranges.md)。
 
 ## ID とフィールド
 

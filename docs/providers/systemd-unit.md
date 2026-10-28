@@ -23,6 +23,25 @@ providers:
 
 ホストに要るのは sshd・systemd（`systemctl`）と、ファイルの読み書きの `sh`・`sha256sum`・`mktemp`・`mv` など（[host-file](host-file.md#設定) と同じ）。quadlet には podman 4.4 以上（generator）。ふつうは `sudo: true`（root）で入る。
 
+## 範囲を intent に書く（`providers:`、Backlog #182）
+
+扱うホスト（`unit_hosts`）は ID の頭で、どのユニットを管理できるかを決める範囲なので、intent のトップレベルの `providers:` に
+書ける（§1.7・§7.7）。`remote_config` とホストの上の置き場（`stamp_dir`・`unit_dir`・`quadlet_dir`）はつなぎ方として provider の
+設定に残る。
+
+```yaml
+# intent/providers.yaml
+providers:
+  systemd-unit:
+    hosts: [web1]                  # unit_hosts と同じ（順は問わない）
+```
+
+- intent にだけ書けば、設定に書いたのと同じに動く。設定にだけあれば今までどおり読み、`plan`・`reconcile`・`status`・常駐が
+  「is only in the provider config: write it in the intent too (providers.systemd-unit.…)」と警告する（常駐では一度だけ）。
+- 両方にあれば設定は安全の網として残り、**食い違えば読み込みで断る**（弱い側に寄せない。常駐は起動で断り、動いているあいだに
+  食い違えばその周を飛ばす）。知らないキーも断る。設定から外すのは次のメジャー版。
+- どれがつなぎ方でどれが範囲かの一覧は [ranges.md](ranges.md)。
+
 ## ID とフィールド
 
 ID は `<ホスト>/<ユニットのファイル名>`。quadlet はファイルの名前で書き、動くユニットは podman の generator と同じ規則で決まる。

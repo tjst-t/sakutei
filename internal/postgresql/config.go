@@ -334,6 +334,16 @@ func NewFromConfig(path string) (*Provider, error) {
 	return New(cfg.Servers, cfg.Options()), nil
 }
 
+// NewFromConfigTree は path から読んだ設定の木 tree（intent の providers: の範囲を
+// 重ねたもの、§7.7、#182）から Provider を作る（registry の factory 用）。
+func NewFromConfigTree(path string, tree map[string]any) (*Provider, error) {
+	cfg, err := parseConfig(tree, filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("postgresql config %s: %w", path, err)
+	}
+	return New(cfg.Servers, cfg.Options()), nil
+}
+
 // Options は設定の psql と secret_store から、psql の呼び方（Client・Provider の
 // Options）を作る。sqlmigrate の engine: postgresql も同じサーバの一覧から使う。
 func (cfg Config) Options() Options {

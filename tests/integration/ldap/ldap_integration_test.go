@@ -57,6 +57,9 @@ var lab struct {
 	// providers は StartTLS の設定、ldaps は LDAPS の設定、badBind は誤った
 	// bind のパスワードの設定（どれも --provider-config）。
 	providers, ldaps, badBind string
+	// ranges は base_dn と filter を書かない設定（範囲は intent の
+	// providers.ldap、§7.7、#182）。
+	ranges string
 }
 
 func TestMain(m *testing.M) { os.Exit(runMain(m)) }
@@ -158,12 +161,15 @@ func setup() error {
 	if err := writeSecrets(alicePW, 1); err != nil {
 		return err
 	}
-	server := func(uri, extra, pwRef string) string {
+	connection := func(uri, extra, pwRef string) string {
 		return "ldapsearch: " + filepath.Join(dir, "ldapsearch") + "\nldapmodify: " + filepath.Join(dir, "ldapmodify") + "\nsecret_store: secrets.json\nservers:\n  dir1:\n" +
-			"    uri: " + uri + "\n" + extra + "    ca_cert: ca.crt\n    bind_dn: " + dmDN + "\n    bind_password: " + pwRef + "\n" +
-			"    base_dn: " + suffix + "\n    filter: (!(ou=outside))\n    timeout: 5s\n"
+			"    uri: " + uri + "\n" + extra + "    ca_cert: ca.crt\n    bind_dn: " + dmDN + "\n    bind_password: " + pwRef + "\n    timeout: 5s\n"
+	}
+	server := func(uri, extra, pwRef string) string {
+		return connection(uri, extra, pwRef) + "    base_dn: " + suffix + "\n    filter: (!(ou=outside))\n"
 	}
 	files := map[string]string{
+		"ranges.yaml":   connection("ldap://"+serverName+":3389", "    starttls: true\n", "secretref:file/ldap/dm"),
 		"starttls.yaml": server("ldap://"+serverName+":3389", "    starttls: true\n", "secretref:file/ldap/dm"),
 		"ldaps.yaml":    server("ldaps://"+serverName+":3636", "", "secretref:file/ldap/dm"),
 		"bad.yaml":      server("ldap://"+serverName+":3389", "    starttls: true\n", "secretref:file/ldap/wrong"),
@@ -181,6 +187,8 @@ func setup() error {
 			lab.providers = pc
 		case "ldaps.yaml":
 			lab.ldaps = pc
+		case "ranges.yaml":
+			lab.ranges = pc
 		default:
 			lab.badBind = pc
 		}
@@ -343,13 +351,20 @@ func withPrune(rs []resource) []resource {
 	return out
 }
 
-func writeIntent(t *testing.T, rs []resource) {
+func writeIntent(t *testing.T, rs []resource) { writeIntentWith(t, rs, nil) }
+
+// writeIntentWith は providers（intent の providers:、nil なら書かない）つきで書く。
+func writeIntentWith(t *testing.T, rs []resource, providers map[string]any) {
 	t.Helper()
 	dir := filepath.Join(lab.dir, "intent")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	b, err := json.MarshalIndent(map[string]any{"resources": rs}, "", "  ")
+	in := map[string]any{"resources": rs}
+	if providers != nil {
+		in["providers"] = providers
+	}
+	b, err := json.MarshalIndent(in, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,6 +592,32 @@ func TestLDAPIntegration(t *testing.T) {
 		s, code, errOut := statusWith(t, lab.badBind)
 		if code != 3 || s.Summary.Unobservable != n || s.Summary.Missing != 0 {
 			t.Errorf("status with a wrong bind password (exit %d): %+v\n%s", code, s.Summary, errOut)
+		}
+	})
+
+	t.Run("the base and filter in the intent", func(t *testing.T) {
+		// #182: base_dn と filter を intent の providers.ldap に書く。設定（ranges.yaml）に
+		// 無くても同じに動き、設定の網と同じなら黙り、違えば読み込みで断る。
+		ranges := func(base string) map[string]any {
+			return map[string]any{"ldap": map[string]any{"servers": map[string]any{"dir1": map[string]any{"base_dn": base, "filter": "(!(ou=outside))"}}}}
+		}
+		rs := declared("secretref:file/ldap/alice#gen2")
+		writeIntentWith(t, rs, ranges(suffix))
+		defer writeIntent(t, rs)
+		for name, pc := range map[string]string{"intent only": lab.ranges, "both": lab.providers} {
+			s, code, errOut := statusWith(t, pc)
+			if code != 0 || s.Summary.Conformant != n || strings.Contains(errOut, "only in the provider config") {
+				t.Errorf("%s: status (exit %d) = %+v\n%s", name, code, s.Summary, errOut)
+			}
+		}
+		writeIntent(t, rs)
+		if _, code, errOut := statusWith(t, lab.providers); code != 0 || !strings.Contains(errOut, "providers.ldap.servers.dir1.base_dn") {
+			t.Errorf("only in the config: status exit %d, want a warning naming the intent's key:\n%s", code, errOut)
+		}
+		writeIntentWith(t, rs, ranges("ou=people,"+suffix))
+		out, err := exec.Command(lab.bin, cliArgs(lab.providers, "reconcile")...).CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "disagree") {
+			t.Errorf("a disagreeing base: reconcile %v, want a refusal:\n%s", err, out)
 		}
 	})
 

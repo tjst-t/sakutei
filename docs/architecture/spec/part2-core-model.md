@@ -853,8 +853,27 @@ providers:                    # intent のトップレベル。provider のイ�
   - **intent にだけある**：intent の値で provider を組み立てる（設定に書いたのと同じに動く）。
   - **両方にある**：設定は安全の網として残す。**同じでなければ読み込みで断る**（弱い側に寄せない。§7.3（c）と同じ）。
 - **読み込みで断るもの**：知らない provider の名前・範囲を intent から受け取らない provider・知らないキー・値の書き違い・
-  設定に無いもの（proxmox-vm のクラスタ）を指す範囲・同じ provider を 2 つのファイルに書くこと・inventory のファイルに書くこと・
+  設定に無いもの（proxmox-vm のクラスタ、ldap・postgresql のサーバ、s3-bucket の endpoint）を指す範囲・同じ provider を 2 つのファイルに書くこと・inventory のファイルに書くこと・
   file の対象の nftables に `tables` を書くこと（ファイルの全部を収束させる対象で範囲が黙って広がらないように）。
+- **何が範囲か**（v3.54、Backlog #182）：provider のインスタンスが「どれを管理するか」を決めるもの——ID・List に付ける scope、
+  ID の頭になる対象の集合（ホスト・装置）、管理の木の根と条件（LDAP の検索の根と filter、S3 のバケットの接頭辞、管理する表、
+  NETCONF の部分木）、観測の目印。宛先・資格・時間・コマンドのパス・機種の定義（どう話すか）・実装の能力（S3 の endpoint が持つ
+  API）・ホストの上の置き場・書き込みを許すかはつなぎ方で、設定に残す。同じ 1 つの対象を写す先（dnszone の `zone_hosts`・
+  nftables の `ruleset_hosts`、ID に現れない）もつなぎ方。組み込みの provider の分け方の一覧は docs/providers/ranges.md:
+
+  | provider | intent の `providers.<名前>.` |
+  | --- | --- |
+  | dnszone・nftables・proxmox-vm | 上の例（#181） |
+  | netconf | `hosts`（旧 `netconf_hosts`）・`subtrees.<名前>.filter`（旧 `netconf_subtrees` の一覧。filter は XML の正規形で比べる） |
+  | ldap | `scope`・`servers.<名前>.{base_dn, filter, scope}`（旧 `ldap_config` の同じキー。base_dn は DN の正規形で比べる） |
+  | cli-device・host-file・systemd-unit | `hosts`（旧 `cli_hosts`・`file_hosts`・`unit_hosts`） |
+  | guest-os | `hosts`（旧 `guest_hosts`）・`markers.<名前>`（旧 `guest_markers`） |
+  | postgresql | `scope`・`servers.<名前>.scope`（旧 `postgresql_config` の同じキー） |
+  | s3-bucket | `scope`・`endpoints.<名前>.bucket_prefix`（旧 `s3_config` の同じキー） |
+
+  設定のファイルを持つ provider（ldap・postgresql・s3-bucket）は intent の範囲をファイルの木に重ねてから読むので、ファイルで
+  必須だった範囲（ldap の `base_dn`）は intent に書けばファイルから外せる。ホストの組は順を問わず比べる。名前ごとの範囲（部分木・
+  目印）は名前ごとに突き合わせ、intent にだけある名前は設定の分に足す。
 - **経路**：`plan`・`reconcile`・`status`・`graph`・`sync`（起動のときに読んだ intent で）と常駐は、provider を組み立てる入口で同じ突き合わせをする。常駐は起動の時点で
   断り、動いているあいだに intent が食い違うように変われば、その周を飛ばす（Observe・Apply・prune をしない）。範囲の宣言が
   変われば、その provider を組み立て直す。

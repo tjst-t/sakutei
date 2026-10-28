@@ -29,6 +29,25 @@ providers:
   `sudo` も付けない（装置の CLI に sudo は無い）。
 - 1 つの装置へは同時に 1 つのやりとりだけを開く（観測と設定が交ざらない）。
 
+## 範囲を intent に書く（`providers:`、Backlog #182）
+
+扱う装置（`cli_hosts`）は管理の範囲なので、intent のトップレベルの `providers:` に書ける（§1.7・§7.7）。管理する項目は前から
+intent の `resources:`（`<装置>/<項目>`）にしかなく、機種の定義（どう観測しどう変えるか）・`cli_definitions`・`remote_config`・
+`secret_store` はつなぎ方として provider の設定に残る。
+
+```yaml
+# intent/providers.yaml
+providers:
+  cli-device:
+    hosts: [sw1, sw2]                  # cli_hosts と同じ（順は問わない）
+```
+
+- intent にだけ書けば、設定に書いたのと同じに動く。設定にだけあれば今までどおり読み、`plan`・`reconcile`・`status`・常駐が
+  「is only in the provider config: write it in the intent too (providers.cli-device.…)」と警告する（常駐では一度だけ）。
+- 両方にあれば設定は安全の網として残り、**食い違えば読み込みで断る**（弱い側に寄せない。常駐は起動で断り、動いているあいだに
+  食い違えばその周を飛ばす）。知らないキーも断る。設定から外すのは次のメジャー版。
+- どれがつなぎ方でどれが範囲かの一覧は [ranges.md](ranges.md)。
+
 ## 機種の定義
 
 使う側が持つファイル（JSON か、intent と同じ YAML のサブセット。`{ }`・`[ ]` のフロースタイルは書けない）。未知のキーは断る。

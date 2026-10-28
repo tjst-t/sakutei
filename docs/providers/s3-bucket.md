@@ -49,6 +49,29 @@ $ sakutei status --intent intent/ --s3-config s3.yaml --json
 - virtual-host 形式で https を使うとき、名前に `.` を含むバケットは証明書のワイルドカードに合わないことが多い。
 - 未知のキーはエラー（書き間違いを黙って無視しない）。
 
+## 範囲を intent に書く（`providers:`、Backlog #182）
+
+List・BulkObserve が ID に付ける `scope` と、endpoint ごとの扱うバケットの接頭辞（`bucket_prefix`）は管理の範囲なので、intent の
+トップレベルの `providers:` に endpoint の一覧と同じ形で書ける（§1.7・§7.7）。endpoint・鍵・時間と、実装が持つ API を言う
+`fields`・`storage_class_aliases` はつなぎ方として endpoint の一覧に残る。
+
+```yaml
+# intent/providers.yaml
+providers:
+  s3-bucket:
+    scope:                     # endpoint の一覧の scope（ラベルの map で書く）
+      site: tokyo
+    endpoints:
+      minio:                   # endpoint の一覧にある endpoint（無い名前は断る）
+        bucket_prefix: app-
+```
+
+- intent にだけ書けば、設定に書いたのと同じに動く。設定にだけあれば今までどおり読み、`plan`・`reconcile`・`status`・常駐が
+  「is only in the provider config: write it in the intent too (providers.s3-bucket.…)」と警告する（常駐では一度だけ）。
+- 両方にあれば設定は安全の網として残り、**食い違えば読み込みで断る**（弱い側に寄せない。常駐は起動で断り、動いているあいだに
+  食い違えばその周を飛ばす）。知らないキーも断る。設定から外すのは次のメジャー版。
+- どれがつなぎ方でどれが範囲かの一覧は [ranges.md](ranges.md)。
+
 ## intent の例
 
 ```json

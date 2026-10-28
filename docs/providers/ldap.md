@@ -30,7 +30,7 @@ servers:
     ca_cert: ca.pem                  # 省略可（サーバの証明書を確かめる CA。既定は OpenLDAP の設定）
     bind_dn: cn=Directory Manager    # 必須（simple bind）
     bind_password: secretref:file/ldap/dir1   # 必須（SecretRef だけ）
-    base_dn: dc=example,dc=com       # 必須。この下の項目だけを扱う
+    base_dn: dc=example,dc=com       # 必須（intent の providers.ldap に書けば省ける）。この下の項目だけを扱う
     filter: (objectClass=*)          # 省略可。List に出す項目の条件（管理の境界）
     timeout: 10s                     # 省略可（接続と検索の時間の上限）
 ```
@@ -39,6 +39,33 @@ servers:
 - 暗号化は `ldaps://` か `starttls: true` を使う。証明書は必ず確かめる（`LDAPTLS_REQCERT=demand`。利用者の `ldaprc` の `TLS_REQCERT never` などで緩めさせない）。平文の `ldap://` も書けるが、bind のパスワードが平文で流れる。
 - 親の環境変数のうち `LDAP` で始まるもの（`LDAPTLS_*` など）は引き継がない。
 - 相対パスは設定ファイルのあるディレクトリから。未知のキーはエラー。
+
+## 範囲を intent に書く（`providers:`、Backlog #182）
+
+検索の根（`base_dn`）と List の条件（`filter`）、ID の `scope` は管理の範囲なので、intent のトップレベルの `providers:` に
+サーバの一覧と同じ形で書ける（§1.7・§7.7）。接続（`uri`・`starttls`・`ca_cert`・`bind_dn`・`bind_password`・`timeout`）と
+コマンドのパス・`secret_store` はつなぎ方としてサーバの一覧に残る。
+
+```yaml
+# intent/providers.yaml
+providers:
+  ldap:
+    scope:                           # サーバの一覧の scope（ラベルの map で書く）
+      site: tokyo
+    servers:
+      dir1:                          # サーバの一覧にあるサーバ（無い名前は断る）
+        base_dn: dc=example,dc=com   # 必須だった base_dn は、ここに書けばサーバの一覧から外せる
+        filter: (!(ou=outside))
+        # scope: {site: osaka}       # サーバごとの scope
+```
+
+- `base_dn` は DN の正規形で比べる（`DC=Example,dc=com` と `dc=example,dc=com` は同じ）。intent にだけあるときは書いた形を使う。
+  `filter` は書いたとおりの文字列で比べる。
+- intent にだけ書けば、設定に書いたのと同じに動く。設定にだけあれば今までどおり読み、`plan`・`reconcile`・`status`・常駐が
+  「is only in the provider config: write it in the intent too (providers.ldap.…)」と警告する（常駐では一度だけ）。
+- 両方にあれば設定は安全の網として残り、**食い違えば読み込みで断る**（弱い側に寄せない。常駐は起動で断り、動いているあいだに
+  食い違えばその周を飛ばす）。知らないキーも断る。設定から外すのは次のメジャー版。
+- どれがつなぎ方でどれが範囲かの一覧は [ranges.md](ranges.md)。
 
 ## intent の例
 

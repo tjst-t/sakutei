@@ -22,6 +22,24 @@ providers:
 - 名前 `local` は手元（デーモンの動く機械）。`remote_config` に無くてよい（`file_hosts: local` だけなら `remote_config` も要らない）。
 - ファイルの読み書きは `sh`・`stat`・`sha256sum`・`mktemp`・`mv`・`chmod`・`chown`・`chgrp`・`mkdir` で行う（GNU coreutils か busybox）。`sudo: true` のホストでは root で書く。
 
+## 範囲を intent に書く（`providers:`、Backlog #182）
+
+扱うホスト（`file_hosts`）は ID の頭で、どのファイルを管理できるかを決める範囲なので、intent のトップレベルの `providers:` に
+書ける（§1.7・§7.7）。`remote_config`・`stamp_dir`・`secret_store` はつなぎ方として provider の設定に残る。
+
+```yaml
+# intent/providers.yaml
+providers:
+  host-file:
+    hosts: [web1, web2, local]     # file_hosts と同じ（順は問わない）
+```
+
+- intent にだけ書けば、設定に書いたのと同じに動く。設定にだけあれば今までどおり読み、`plan`・`reconcile`・`status`・常駐が
+  「is only in the provider config: write it in the intent too (providers.host-file.…)」と警告する（常駐では一度だけ）。
+- 両方にあれば設定は安全の網として残り、**食い違えば読み込みで断る**（弱い側に寄せない。常駐は起動で断り、動いているあいだに
+  食い違えばその周を飛ばす）。知らないキーも断る。設定から外すのは次のメジャー版。
+- どれがつなぎ方でどれが範囲かの一覧は [ranges.md](ranges.md)。
+
 ## ID とフィールド
 
 ID は `<ホスト>/<絶対パス>`（例 `web1/etc/app/app.env` はホスト web1 の `/etc/app/app.env`）。パスは正規形（`..`・`//`・末尾の `/` を含まない）で、ホストは `file_hosts` にあるもの。違えば intent を読む時点で断る。

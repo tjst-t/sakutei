@@ -348,6 +348,16 @@ func NewFromConfig(path string) (*Provider, error) {
 	return New(cfg.Servers, cfg.Options())
 }
 
+// NewFromConfigTree は path から読んだ設定の木 tree（intent の providers: の範囲を
+// 重ねたもの、§7.7、#182）から Provider を作る（registry の factory 用）。
+func NewFromConfigTree(path string, tree map[string]any) (*Provider, error) {
+	cfg, err := parseConfig(tree, filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("ldap config %s: %w", path, err)
+	}
+	return New(cfg.Servers, cfg.Options())
+}
+
 // Options は設定のコマンドのパスと secret_store から Options を作る。
 func (cfg Config) Options() Options {
 	opts := Options{LDAPSearch: cfg.LDAPSearch, LDAPModify: cfg.LDAPModify}

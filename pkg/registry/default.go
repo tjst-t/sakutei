@@ -334,11 +334,14 @@ func DefaultRegistry() *ProviderRegistry {
 	// --provider-config の s3-bucket の s3_config）。--state は代わりにならない
 	// （endpoint と資格は推測しない）。
 	r.Register(s3bucket.Name, func(config map[string]string) (provider.Provider, error) {
-		path := config["s3_config"]
-		if path == "" {
+		if config["s3_config"] == "" {
 			return nil, errors.New("the endpoint list is not set: pass --s3-config <file> (or s3_config in --provider-config)")
 		}
-		return s3bucket.NewFromConfig(path)
+		path, tree, err := s3Ranges.Tree(config)
+		if err != nil {
+			return nil, err
+		}
+		return s3bucket.NewFromConfigTree(path, tree)
 	})
 
 	// "postgresql" — PostgreSQL のロール・データベース・権限・拡張（§29.1、
@@ -346,11 +349,14 @@ func DefaultRegistry() *ProviderRegistry {
 	// または --provider-config の postgresql の postgresql_config）。--state は
 	// 代わりにならない（接続先と資格は推測しない）。
 	r.Register(postgresql.Name, func(config map[string]string) (provider.Provider, error) {
-		path := config["postgresql_config"]
-		if path == "" {
+		if config["postgresql_config"] == "" {
 			return nil, errors.New("the server list is not set: pass --postgresql-config <file> (or postgresql_config in --provider-config)")
 		}
-		return postgresql.NewFromConfig(path)
+		path, tree, err := postgresqlRanges.Tree(config)
+		if err != nil {
+			return nil, err
+		}
+		return postgresql.NewFromConfigTree(path, tree)
 	})
 
 	// "ansible" — Ansible のモジュールを 1 つのホストに流す最小階級の provider
@@ -370,7 +376,7 @@ func DefaultRegistry() *ProviderRegistry {
 	// config["guest_markers"] は導入の目印（"<名前>=<パス>,..."）。
 	r.Register(guestos.Name, func(config map[string]string) (provider.Provider, error) {
 		if config["guest_hosts"] == "" {
-			return nil, errors.New("guest-os: the hosts to observe are not set: guest_hosts (and remote_config) in --provider-config")
+			return nil, errors.New("guest-os: the hosts to observe are not set: providers.guest-os.hosts in the intent (or guest_hosts in --provider-config), and remote_config in --provider-config")
 		}
 		markers, err := guestos.ParseMarkers(config["guest_markers"])
 		if err != nil {
@@ -392,12 +398,9 @@ func DefaultRegistry() *ProviderRegistry {
 	// 既定、"1.1" で persist の流れ）。
 	r.Register(netconf.Name, func(config map[string]string) (provider.Provider, error) {
 		if config["netconf_hosts"] == "" {
-			return nil, errors.New("netconf: the devices are not set: netconf_hosts (and remote_config) in --provider-config")
+			return nil, errors.New("netconf: the devices are not set: providers.netconf.hosts in the intent (or netconf_hosts in --provider-config), and remote_config in --provider-config")
 		}
-		if config["netconf_subtrees"] == "" {
-			return nil, errors.New("netconf: the subtrees are not set: netconf_subtrees in --provider-config")
-		}
-		subtrees, err := netconf.LoadSubtrees(config["netconf_subtrees"])
+		subtrees, err := netconfSubtrees(config)
 		if err != nil {
 			return nil, err
 		}
@@ -429,11 +432,14 @@ func DefaultRegistry() *ProviderRegistry {
 	// サーバの一覧（--provider-config の ldap の ldap_config）。--state は代わりに
 	// ならない（接続先と資格は推測しない）。
 	r.Register(ldap.Name, func(config map[string]string) (provider.Provider, error) {
-		path := config["ldap_config"]
-		if path == "" {
+		if config["ldap_config"] == "" {
 			return nil, errors.New("ldap: the server list is not set: ldap_config in --provider-config")
 		}
-		return ldap.NewFromConfig(path)
+		path, tree, err := ldapRanges.Tree(config)
+		if err != nil {
+			return nil, err
+		}
+		return ldap.NewFromConfigTree(path, tree)
 	})
 
 	// "template-file" — 雛形（text/template）に対象ごとの値を入れたファイルを
@@ -480,7 +486,7 @@ func DefaultRegistry() *ProviderRegistry {
 	// 従って CLI を打つ。
 	r.Register(clidevice.Name, func(config map[string]string) (provider.Provider, error) {
 		if config["cli_hosts"] == "" {
-			return nil, errors.New("cli-device: the devices are not set: cli_hosts (and remote_config) in --provider-config")
+			return nil, errors.New("cli-device: the devices are not set: providers.cli-device.hosts in the intent (or cli_hosts in --provider-config), and remote_config in --provider-config")
 		}
 		defs, err := cliDefinitions(config)
 		if err != nil {

@@ -54,6 +54,29 @@ $ sakutei status --intent intent/ --postgresql-config pg.yaml --json
 - 名前は識別子として常に `"..."` で囲み（中の `"` は `""`）、値は `E'...'` で囲む（中の `'` は `''`、`\` は `\\`）。NUL を含む名前・値はエラー。
 - エラーは SQLSTATE で分ける。届かない（終了コード 2）・時間切れ・一時的な SQLSTATE（class 08・40・53・55・57、まだ無いデータベース 3D000・ロールなど 42704）は Transient、psql が無い・認証の失敗・そのほかの SQL のエラーは Permanent。管理用のパスワードを secret store から読めない（store から消えた・読めない）ときは、ほかの provider と同じく安全に止まる側（#137）：Read は unknown（観測できない。そのリソースと下流は飛ばす）、Apply は Transient で、秘密が戻れば次の周で続く（Permanent にすると常駐はそのリソースを stuck として長く止めてしまう）。起動の時点で store にその path が無ければ、設定のエラーとして何もせずに止まる（一回性の plan・reconcile は終了コード 1）。エラーの文から SCRAM・md5 の検証値は消す。
 
+## 範囲を intent に書く（`providers:`、Backlog #182）
+
+List・BulkObserve が ID に付ける `scope`（一覧の頭とサーバごと）は管理の範囲なので、intent のトップレベルの `providers:` に
+サーバの一覧と同じ形で書ける（§1.7・§7.7）。接続と資格はつなぎ方としてサーバの一覧に残る。
+
+```yaml
+# intent/providers.yaml
+providers:
+  postgresql:
+    scope:                     # サーバの一覧の scope（ラベルの map で書く）
+      site: tokyo
+    servers:
+      main:                    # サーバの一覧にあるサーバ（無い名前は断る）
+        scope:
+          site: osaka
+```
+
+- intent にだけ書けば、設定に書いたのと同じに動く。設定にだけあれば今までどおり読み、`plan`・`reconcile`・`status`・常駐が
+  「is only in the provider config: write it in the intent too (providers.postgresql.…)」と警告する（常駐では一度だけ）。
+- 両方にあれば設定は安全の網として残り、**食い違えば読み込みで断る**（弱い側に寄せない。常駐は起動で断り、動いているあいだに
+  食い違えばその周を飛ばす）。知らないキーも断る。設定から外すのは次のメジャー版。
+- どれがつなぎ方でどれが範囲かの一覧は [ranges.md](ranges.md)。
+
 ## intent の例
 
 ```json

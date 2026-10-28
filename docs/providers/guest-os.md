@@ -29,7 +29,7 @@ hosts:
 providers:
   guest-os:
     remote_config: hosts.yaml
-    guest_hosts: node1,node2                      # 観測するホスト（必須）
+    guest_hosts: node1,node2                      # 観測するホスト（intent の providers.guest-os.hosts に書かなければ必須）
     guest_markers: installed=/etc/sakutei-installed,cloud-init=/var/lib/cloud/instance/boot-finished
 ```
 
@@ -37,6 +37,28 @@ providers:
 - `guest_markers` は `<名前>=<絶対パス>` をカンマで並べる（名前は英小文字・数字・`_`・`-`）。無ければ目印なし。
 - ホストの名前を Workflow の対象（例 `redfish-system` のノード名）と同じにしておくと、手順に `resource: guest-os/{target}` と書ける。
 - ホスト鍵は known_hosts で確かめる（#130 と同じ）。入れ直すたびにホスト鍵が変わる OS では、導入のときに決めたホスト鍵を入れておけば known_hosts を前もって書ける（下の統合テストはそうしている）。
+
+## 範囲を intent に書く（`providers:`、Backlog #182）
+
+観測するホスト（`guest_hosts`）と導入の目印（`guest_markers`）は「何を観測するか」なので、intent のトップレベルの `providers:` に
+書ける（§1.7・§7.7）。`remote_config` はつなぎ方として provider の設定に残る。
+
+```yaml
+# intent/providers.yaml
+providers:
+  guest-os:
+    hosts: [node1, node2]                         # guest_hosts と同じ（順は問わない）
+    markers:                                      # guest_markers と同じ（名前 → 絶対パス）
+      installed: /etc/sakutei-installed
+      cloud-init: /var/lib/cloud/instance/boot-finished
+```
+
+- 目印は名前ごとに突き合わせる。intent にだけある目印は設定の目印に足される。
+- intent にだけ書けば、設定に書いたのと同じに動く。設定にだけあれば今までどおり読み、`plan`・`reconcile`・`status`・常駐が
+  「is only in the provider config: write it in the intent too (providers.guest-os.…)」と警告する（常駐では一度だけ）。
+- 両方にあれば設定は安全の網として残り、**食い違えば読み込みで断る**（弱い側に寄せない。常駐は起動で断り、動いているあいだに
+  食い違えばその周を飛ばす）。知らないキーも断る。設定から外すのは次のメジャー版。
+- どれがつなぎ方でどれが範囲かの一覧は [ranges.md](ranges.md)。
 
 ## ID とフィールド
 

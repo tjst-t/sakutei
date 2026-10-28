@@ -36,6 +36,10 @@ type RangeSetting struct {
 	// Value is the canonical form: two settings meaning the same have the
 	// same Value (e.g. a scope as core.Scope.String()).
 	Value string
+	// Raw is the value as written, for Apply, when the canonical Value is
+	// only for comparing (e.g. a netconf subtree filter, Backlog #182).
+	// Empty: Apply uses Value.
+	Raw string
 }
 
 // IntentRanges is how a provider takes its range settings from the intent's
