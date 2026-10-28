@@ -3502,11 +3502,11 @@
       "labels": [],
       "body": "## なぜ\n全体を止める型の更新の前に、上流の積もり（キューの長さ・待ちの件数など）を観測して、上限を超えそうなら止めない／待つ、を require（#87）で書きたい。観測の元は /metrics。\n\n## やること\n- provider `metrics-probe`（名前は実装で決めてよい）：HTTP(S) の /metrics（Prometheus の text 形式）を取り、宣言したメトリクス（名前とラベルの一致）の値を観測値として返す。観測だけ（ObserveOnly）、Apply は型で止める。\n- 宣言：endpoint・メトリクスの名前・ラベルの一致・（任意）集計（sum・max）。TLS は ca_file、insecure は明示したときだけ。認証の資格は SecretRef。\n- 値を `ready_condition`（§6・§11）や Workflow の手順の `require`（#87）から参照できるようにする（例：「値が 1000 未満なら ready」）。比べ方（< ≤ > ≥ =）の書き方は実装で決めて書く。\n- 届かない・メトリクスが無い・形が壊れているは unknown（absent と取り違えない）。\n- text 形式の parse は internal/metrics の既存の parse を使えるなら使う。\n\n## 確かめ方\n- httptest の /metrics で契約テストと受け入れテスト（値が閾値を越えている間は require が満たされず手順が進まない・下がれば進む・届かないと unknown で進まない）。\n- 設計書 §29.1、CHANGELOG-v3.x、docs/providers/metrics-probe.md。\n\n## 決まり\nGo は stdlib のみ。make check・make test-race を通す。",
       "doneWhen": "/metrics の値で Workflow の require が満たされる／満たされないを受け入れテストで示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/metrics-probe-provider）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:41:13.586Z",
-      "updatedAt": "2026-10-28T04:15:29.379Z",
+      "updatedAt": "2026-10-28T04:15:39.536Z",
       "closedAt": "2026-10-28T04:15:29.379Z",
       "extra": {}
     },
