@@ -3738,7 +3738,7 @@
       "number": 166,
       "kind": "bug",
       "title": "Apply が効かない（応答は成功でも現実が変わらない）とき、同じ Apply を繰り返し続け、成功として終わる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -3750,7 +3750,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T05:06:57.159Z",
-      "updatedAt": "2026-10-28T05:08:55.553Z",
+      "updatedAt": "2026-10-28T05:16:17.233Z",
       "closedAt": null,
       "extra": {}
     },
