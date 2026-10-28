@@ -4432,7 +4432,7 @@
       "number": 188,
       "kind": "task",
       "title": "秘密の取り出し先を足す口と、Vault 形（KV v2）の取り出し先",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "m7",
       "dependsOn": [
         "apply-2"
@@ -4446,7 +4446,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T16:17:03.915Z",
+      "updatedAt": "2026-10-28T16:57:08.174Z",
       "closedAt": null,
       "extra": {}
     },
