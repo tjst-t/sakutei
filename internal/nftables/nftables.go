@@ -122,7 +122,7 @@ const ProviderName = "nftables"
 // providerVersion is a hard-coded source hash for this provider version.
 // 正規化/diff ロジック（RuleSep やルール正規化）を変えたら増分すること
 // （cause-tag C（ghost diff）検出のため）。
-const providerVersion = "nftables-v1.2.0" // v1.2.0: rules を比べる形（無名の集合の正規化、Backlog #178）
+const providerVersion = "nftables-v1.3.0" // v1.3.0: 確かめる先の宣言 confirm（Backlog #179）
 
 // RuleSep はルール列を 1 本の文字列へ join/split する区切り。
 // intent の fields は string→string なので、順序付き rules をこの区切りで
@@ -246,6 +246,8 @@ func New(rulesetPath string, opts ...Option) *Provider {
 //   - rules  (string-list, ORDERED, required): ルール列。順序が意味を持つ。
 //   - type・hook・priority・policy (string): base chain の宣言（Backlog
 //     #173）。regular chain には無い。
+//   - confirm (string): base chain を変える live の Apply の到達を確かめる先
+//     （Backlog #179、confirm.go）。観測には出ない。
 //
 // identity は {family, table, chain} = chain の座標。rules は identity では
 // ない（並べ替えても同じ chain の Update として現れる）。rules に
@@ -284,6 +286,9 @@ func (p *Provider) Schema() provider.Schema {
 			"hook":     {Kind: core.FieldKindString},
 			"priority": {Kind: core.FieldKindString},
 			"policy":   {Kind: core.FieldKindString},
+			// base chain を変える Apply の到達を確かめる先（Backlog #179、
+			// confirm.go）。観測には出ない（PlanRefiner がそれだけの差分を落とす）。
+			FieldConfirm: {Kind: core.FieldKindString},
 		},
 	}
 }
@@ -540,7 +545,12 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	if err != nil {
 		return fmt.Errorf("invalid local id %q: %w", localID, err)
 	}
-	return validateBase(family, fields, localID)
+	if err := validateBase(family, fields, localID); err != nil {
+		return err
+	}
+	// confirm は live の守りの宣言（Backlog #179）。intent を対象によらず使える
+	// ように file も同じ形を断る（file の Apply は守りを通さないので使わない）。
+	return validateConfirm(fields, localID, false)
 }
 
 // RefinePlan は priority の差分のうち、数に直すと観測と同じもの（"filter" と

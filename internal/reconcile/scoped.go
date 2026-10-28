@@ -215,7 +215,8 @@ type ScopedReconcileResult struct {
 	// Tombstoned は個別削除（ensure: absent）した ID 群。
 	Tombstoned []core.ID
 	// AwaitingApproval は ensure: absent で現実に在るのに、planned_change のレーンが
-	// 開いていないので消さなかった ID 群（§13.3・§14.4、#163）。
+	// 開いていないので消さなかった ID 群（§13.3・§14.4、#163）と、provider が承認の
+	// 要る変更とした op をレーンが無いので流さなかった ID 群（#179）。
 	AwaitingApproval []core.ID
 	// BudgetHalted は予算超過で halt し、当該作業を次の定期周期へ縮退させたとき true。
 	BudgetHalted bool
@@ -442,7 +443,7 @@ func ScopedReconcile(
 	// 走る。レーンの外のものは消さずに知らせ、この run の plans から落とす。
 	for _, op := range UnapprovedOps(plans, decision) {
 		res.AwaitingApproval = append(res.AwaitingApproval, op.Target)
-		EmitAbsentAwaitingApproval(errOut, "sakutei: scoped: ", op.Target)
+		EmitAwaitingApproval(errOut, "sakutei: scoped: ", op)
 		delete(plans, op.Target.Local)
 	}
 	allPlannedOps = allPlannedOps[:0]

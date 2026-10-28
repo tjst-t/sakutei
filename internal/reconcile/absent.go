@@ -60,3 +60,20 @@ func EmitAbsentAwaitingApproval(w io.Writer, prefix string, id core.ID) {
 		Text: fmt.Sprintf("%sAbsentAwaitingApproval: %s: not deleted: %s", prefix, id, planreport.AbsentApprovalReason),
 	})
 }
+
+// EmitAwaitingApproval raises the Event of an op held for want of a lane: an
+// explicit absent's Delete (AbsentAwaitingApproval, #163) or a provider's
+// change that requires approval (ChangeAwaitingApproval, provider.
+// ApprovalRequirer, Backlog #179).
+func EmitAwaitingApproval(w io.Writer, prefix string, op core.Op) {
+	if op.ApprovalReason == "" {
+		EmitAbsentAwaitingApproval(w, prefix, op.Target)
+		return
+	}
+	why := planreport.ApprovalBlockReason(op)
+	eventlog.Emit(w, core.Event{
+		Kind: core.EventChangeAwaitingApproval, Severity: core.SeverityWarning,
+		Resource: op.Target, Message: why,
+		Text: fmt.Sprintf("%sChangeAwaitingApproval: %s: %s not applied: %s", prefix, op.Target, op.Kind, why),
+	})
+}

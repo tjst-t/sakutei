@@ -860,6 +860,10 @@ func printOpLines(op core.Op) {
 	if op.Diagnostic != "" {
 		fmt.Fprintf(logOut, "  reason: %s\n", op.Diagnostic)
 	}
+	if op.ApprovalReason != "" {
+		// #179: a change the provider requires approval for (destructive).
+		fmt.Fprintf(logOut, "  approval: required — %s (planned_change kind %s)\n", op.ApprovalReason, planreport.LaneKindFor(op.Kind))
+	}
 	if op.Cause != "" {
 		fmt.Fprintf(logOut, "  cause:  %s\n", string(op.Cause))
 	}

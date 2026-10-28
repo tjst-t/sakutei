@@ -23,6 +23,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -134,4 +135,59 @@ func TestTCPProbe(t *testing.T) {
 	if err := nftables.TCPProbe(addr)(ctx); err == nil {
 		t.Error("probe of a closed port: want an error")
 	}
+}
+
+func TestExecGuard_ConfirmTargets(t *testing.T) {
+	// [AC-179-2-2] self は Probe、tcp:// は新しい TCP の接続、ssh:// は Exec の
+	// ProbeVia。手立てが無ければ ErrCannotConfirm。
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	_, port, _ := net.SplitHostPort(l.Addr().String())
+	n, _ := strconv.Atoi(port)
+	ctx := context.Background()
+
+	g := nftables.ExecGuard{Exec: remote.Local{}}
+	if err := g.Confirm(ctx, nftables.ConfirmTarget{Kind: nftables.ConfirmTCP, Host: "127.0.0.1", Port: n}); err != nil {
+		t.Fatalf("tcp to a listener: %v", err)
+	}
+	if err := g.Confirm(ctx, nftables.SelfTarget); !errors.Is(err, nftables.ErrCannotConfirm) {
+		t.Errorf("self without a probe = %v, want ErrCannotConfirm", err)
+	}
+	if err := g.Confirm(ctx, nftables.ConfirmTarget{Kind: nftables.ConfirmSSH, Host: "192.0.2.1"}); !errors.Is(err, nftables.ErrCannotConfirm) {
+		t.Errorf("ssh from the local executor = %v, want ErrCannotConfirm", err)
+	}
+	probed := 0
+	g.Probe = func(context.Context) error { probed++; return nil }
+	if err := g.Confirm(ctx, nftables.SelfTarget); err != nil || probed != 1 {
+		t.Errorf("self with a probe: %v (probed %d)", err, probed)
+	}
+	via := &viaExec{}
+	g = nftables.ExecGuard{Exec: via}
+	if err := g.Confirm(ctx, nftables.ConfirmTarget{Kind: nftables.ConfirmSSH, User: "admin", Host: "192.0.2.9", Port: 2200}); err != nil || via.got != "admin@192.0.2.9:2200" {
+		t.Errorf("ssh via another path: %v, %q", err, via.got)
+	}
+}
+
+// viaExec は ProbeVia を持つ Executor（remote.SSH の代わり）。
+type viaExec struct {
+	remote.Local
+	got string
+}
+
+func (*viaExec) Target() string { return "fw1" }
+func (v *viaExec) ProbeVia(_ context.Context, user, address string, port int) error {
+	v.got = user + "@" + address + ":" + strconv.Itoa(port)
+	return nil
 }

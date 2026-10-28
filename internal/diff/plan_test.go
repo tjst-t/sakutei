@@ -116,3 +116,48 @@ func TestPlan_NoRefinementWithoutOkState(t *testing.T) {
 		t.Fatalf("RefinePlan called %d time(s) without an Ok State", p.calls)
 	}
 }
+
+// approvingProvider は ApprovalRequirer を持つ最小の provider（Backlog #179）。
+type approvingProvider struct {
+	refiningProvider
+	seen []core.OpKind
+}
+
+func (p *approvingProvider) ApprovalRequired(_ string, observed core.State, _ map[string]string, op core.Op) string {
+	p.seen = append(p.seen, op.Kind)
+	if op.Kind == core.OpKindCreate && observed != nil {
+		return "observed must be nil for a create"
+	}
+	return "needs approval"
+}
+
+func TestPlan_ApprovalRequirerMarksCreateAndUpdate(t *testing.T) {
+	p := &approvingProvider{refiningProvider: refiningProvider{refine: func(ops []core.Op) ([]core.Op, error) { return ops, nil }}}
+	desired := DesiredResource{ID: core.NewID("p", core.NewScope(nil), "x"), Fields: map[string]string{"name": "x", "a": "2"}}
+	eng := ForProvider(p)
+	for _, obs := range []core.Observation{
+		{Availability: core.AvailabilityOk},
+		{Availability: core.AvailabilityOk, State: core.State{"name": {Value: "x"}, "a": {Value: "1"}}},
+	} {
+		pl, err := eng.Plan(obs, desired, cause.CauseContext{})
+		if err != nil || len(pl.Ops) != 1 {
+			t.Fatalf("Plan = %+v, %v", pl, err)
+		}
+		op := pl.Ops[0]
+		if !op.Destructive || !op.RequiresApproval || op.ApprovalReason != "needs approval" {
+			t.Fatalf("%v: want destructive, requiring approval with the reason: %+v", op.Kind, op)
+		}
+	}
+	// Unknown: no ops, not asked; an explicit absent is the core's alone.
+	if _, err := eng.Plan(core.Observation{Availability: core.AvailabilityUnknown}, desired, cause.CauseContext{}); err != nil {
+		t.Fatal(err)
+	}
+	absent := DesiredResource{ID: desired.ID, Absent: true}
+	pl, _ := eng.Plan(core.Observation{Availability: core.AvailabilityOk, State: core.State{"name": {Value: "x"}}}, absent, cause.CauseContext{})
+	if len(pl.Ops) != 1 || pl.Ops[0].ApprovalReason != "" {
+		t.Fatalf("an absent's delete keeps the core's approval: %+v", pl)
+	}
+	if len(p.seen) != 2 || p.seen[0] != core.OpKindCreate || p.seen[1] != core.OpKindUpdate {
+		t.Fatalf("asked for %v, want create and update", p.seen)
+	}
+}

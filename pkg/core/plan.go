@@ -116,8 +116,14 @@ type Op struct {
 	// uses the lane's max_count.  Unlike other lane ops it is still counted —
 	// and halted — by the normal budget (§13.1 / §13.2): the lane approves it,
 	// it does not exempt it.  Outside every lane it is held (and, never
-	// running, not counted).
+	// running, not counted).  A provider raises it the same way for its own
+	// ops (provider.ApprovalRequirer, Backlog #179), with ApprovalReason.
 	RequiresApproval bool
+	// ApprovalReason says why a provider required approval for the op
+	// (provider.ApprovalRequirer, Backlog #179): shown in the plan and in
+	// the ChangeAwaitingApproval Event.  Empty for the explicit absent's
+	// Delete, the core's own.
+	ApprovalReason string
 }
 
 // Plan is the output of the Diff phase (§4.4).  It is an ephemeral,

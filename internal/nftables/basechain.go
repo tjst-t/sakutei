@@ -141,10 +141,68 @@ func refineBase(family, id string, observed core.State, desired map[string]strin
 	for _, op := range ops {
 		if op.Kind == core.OpKindUpdate {
 			op.Fields = refineRules(refinePriority(family, op.Fields))
+			if onlyConfirm(op.Fields) {
+				op.Fields = nil // confirm は観測に出ない（それだけなら収束、Backlog #179）
+			}
 		}
 		out = append(out, op)
 	}
 	return out, nil
+}
+
+// onlyConfirm は差分が confirm（確かめる先、観測に出ない「どう変えるか」の
+// 宣言、Backlog #179）だけかどうか。ほかの差分があれば confirm は Apply に
+// 渡すために op に残す。
+func onlyConfirm(fields []core.FieldDiff) bool {
+	for _, f := range fields {
+		if f.Field != FieldConfirm {
+			return false
+		}
+	}
+	return true
+}
+
+// approvalReason は base chain を作る・type/hook/priority/policy を変える
+// （regular chain から base chain にする作り直しを含む）・消す op の承認の理由
+// （provider.ApprovalRequirer、Backlog #179）。ルールだけを変える op と regular
+// chain の op は ""（今までどおり）。
+func approvalReason(localID string, observed core.State, desired map[string]string, op core.Op) string {
+	hook, _ := observed["hook"].Value.(string)
+	wasBase := hook != ""
+	switch op.Kind {
+	case core.OpKindCreate:
+		if declaresBase(desired) {
+			return fmt.Sprintf("creates base chain %s (type %s hook %s priority %s policy %s)",
+				localID, desired["type"], desired["hook"], desired["priority"], desired["policy"])
+		}
+	case core.OpKindUpdate:
+		if declaresBase(desired) && !wasBase {
+			return fmt.Sprintf("turns chain %s into a base chain (type %s hook %s priority %s policy %s; deleted and recreated)",
+				localID, desired["type"], desired["hook"], desired["priority"], desired["policy"])
+		}
+		var changes []string
+		recreate := false
+		for _, f := range op.Fields {
+			for _, b := range baseFields {
+				if f.Field == b {
+					changes = append(changes, fmt.Sprintf("%s %s → %s", f.Field, f.From, f.To))
+					recreate = recreate || b != "policy"
+				}
+			}
+		}
+		if len(changes) > 0 {
+			what := strings.Join(changes, ", ")
+			if recreate {
+				what += "; deleted and recreated"
+			}
+			return fmt.Sprintf("changes base chain %s (%s)", localID, what)
+		}
+	case core.OpKindDelete:
+		if wasBase {
+			return fmt.Sprintf("deletes base chain %s", localID)
+		}
+	}
+	return ""
 }
 
 // priorityNames は nft の priority の名前（family ごと。nft(8) の表）。

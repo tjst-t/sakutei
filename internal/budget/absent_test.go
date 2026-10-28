@@ -74,3 +74,28 @@ func op2(op core.Op, local string) core.Op {
 	op.Target = core.NewID(op.Target.Provider, op.Target.Scope, local)
 	return op
 }
+
+// provider が承認の要る変更とした Create・Update（Backlog #179）は、その種類の
+// レーン（create・update）だけが通し、ほかの種類のレーンでは止まる。
+func TestRequiresApproval_ProviderChangeNeedsItsKind(t *testing.T) {
+	clk := &fakeClock{t: t0.Add(time.Hour)}
+	e := newEngineWithClock(Config{}, clk)
+	create := scopedOp(core.OpKindCreate, decomScope, "input")
+	create.Destructive, create.RequiresApproval, create.ApprovalReason = true, true, "creates base chain input"
+	update := scopedOp(core.OpKindUpdate, decomScope, "output")
+	update.Destructive, update.RequiresApproval, update.ApprovalReason = true, true, "changes base chain output"
+
+	e.SetPlannedChanges([]PlannedChange{decl(PlannedDelete, decomScope, 5)})
+	d := e.CheckCycle([]core.Op{create, update}, InFlight{}, 10)
+	if !d.Unapproved(create) || !d.Unapproved(update) {
+		t.Fatalf("a delete lane must not approve a create or an update: %+v", d)
+	}
+	e.SetPlannedChanges([]PlannedChange{decl(PlannedCreate, decomScope, 5)})
+	d = e.CheckCycle([]core.Op{create, update}, InFlight{}, 10)
+	if !d.InLane(create) || d.IsHalted(create) || !d.Unapproved(update) {
+		t.Fatalf("a create lane approves the create only: %+v", d)
+	}
+	if got := d.OutsideLanes([]core.Op{create}); len(got) != 1 {
+		t.Fatalf("the approved create must still be counted by the normal budget: %v", got)
+	}
+}

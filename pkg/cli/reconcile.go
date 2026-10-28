@@ -925,13 +925,18 @@ func runReconcile(args []string) {
 
 	// §12.2 (#163): the Delete of an explicit absent runs only in an open
 	// planned_change lane (which a one-shot reconcile opens only with
-	// --audit-log); outside every lane it waits for its approval.
+	// --audit-log); outside every lane it waits for its approval.  #179: so
+	// does a provider's change that requires approval.
 	awaitingApproval := reconcile.UnapprovedOps(plans, budgetDecision)
+	absentAwaiting := 0
 	for _, op := range awaitingApproval {
-		reconcile.EmitAbsentAwaitingApproval(logErr, "sakutei reconcile: ", op.Target)
+		reconcile.EmitAwaitingApproval(logErr, "sakutei reconcile: ", op)
+		if op.ApprovalReason == "" {
+			absentAwaiting++
+		}
 	}
 	if len(awaitingApproval) > 0 && *auditLog == "" {
-		fmt.Fprintf(logErr, "sakutei reconcile: note: ensure: absent needs an open planned_change lane, and a one-shot reconcile opens lanes only with --audit-log (§13.3)\n")
+		fmt.Fprintf(logErr, "sakutei reconcile: note: a change awaiting approval (ensure: absent, or one the provider requires approval for) needs an open planned_change lane, and a one-shot reconcile opens lanes only with --audit-log (§13.3)\n")
 	}
 
 	// Filter per-resource plans through the budget decision.
@@ -943,7 +948,7 @@ func runReconcile(args []string) {
 			case !budgetDecision.IsHalted(op):
 				allowed = append(allowed, op)
 			case budgetDecision.Unapproved(op):
-				// Said above (AbsentAwaitingApproval).
+				// Said above (AbsentAwaitingApproval / ChangeAwaitingApproval).
 			default:
 				fmt.Fprintf(logErr, "sakutei reconcile: budget: blocked %v op for %s\n", op.Kind, op.Target)
 			}
@@ -1525,9 +1530,13 @@ func runReconcile(args []string) {
 			workflowCount++
 		}
 	}
-	if n := len(awaitingApproval); n > 0 {
+	if n := absentAwaiting; n > 0 {
 		// #163: not converged — the absent resources still exist.
 		runSummary(fmt.Sprintf("Reconcile: %d ensure: absent resource(s) not deleted: awaiting approval (an open planned_change lane of kind delete, §13.3)", n))
+	}
+	if n := len(awaitingApproval) - absentAwaiting; n > 0 {
+		// #179: not converged — the changes the provider requires approval for.
+		runSummary(fmt.Sprintf("Reconcile: %d change(s) not applied: awaiting approval (the provider requires it: an open planned_change lane of the change's kind, §13.3)", n))
 	}
 	if waitingCount > 0 {
 		runSummary(fmt.Sprintf("Reconcile: %d resource(s) waiting-allocation (retry once the allocator can allocate)", waitingCount))

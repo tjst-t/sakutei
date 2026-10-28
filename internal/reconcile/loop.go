@@ -1345,7 +1345,9 @@ type CycleResult struct {
 	PlannedChangeEvents []string
 	// AwaitingApproval lists the explicit absents (`ensure: absent`, §12.2,
 	// Backlog #163) present in reality whose Delete was held this cycle for
-	// want of an open planned_change lane (also counted in Held).
+	// want of an open planned_change lane (also counted in Held), and the
+	// resources whose change the provider requires approval for (Backlog #179),
+	// held likewise.
 	AwaitingApproval []string
 
 	// Scf7762-3 remediation mode fields:
@@ -2690,7 +2692,7 @@ func runCycleAsync(
 	var awaitingApproval []string
 	for _, op := range UnapprovedOps(plans, budgetDecision) {
 		awaitingApproval = append(awaitingApproval, op.Target.Local)
-		EmitAbsentAwaitingApproval(cfg.ErrOut, "sakutei: ", op.Target)
+		EmitAwaitingApproval(cfg.ErrOut, "sakutei: ", op)
 	}
 
 	// Filter prune ops through the budget decision.

@@ -138,6 +138,9 @@ type Engine struct {
 	// refiner is the provider's optional plan-time refinement (Plan); nil for
 	// an Engine built from a Schema alone.
 	refiner provider.PlanRefiner
+	// approver marks the provider's ops that must pass the approval gate
+	// (provider.ApprovalRequirer, Backlog #179).
+	approver provider.ApprovalRequirer
 }
 
 // New creates a diff Engine for the given provider schema.
@@ -151,6 +154,9 @@ func ForProvider(p provider.Provider) *Engine {
 	e := New(p.Schema())
 	if r, ok := p.(provider.PlanRefiner); ok {
 		e.refiner = r
+	}
+	if a, ok := p.(provider.ApprovalRequirer); ok {
+		e.approver = a
 	}
 	return e
 }
@@ -171,14 +177,35 @@ func (e *Engine) Plan(obs core.Observation, desired DesiredResource, ctx cause.C
 	plan := e.Diff(obs, desired, ctx)
 	// An explicit absent has no desired fields to refine against: its Delete
 	// is the core's alone.
-	if e.refiner == nil || desired.Absent || obs.Availability != core.AvailabilityOk || (obs.State == nil && obs.Check == nil) {
+	if desired.Absent || obs.Availability != core.AvailabilityOk {
 		return plan, nil
 	}
-	refined, err := e.refiner.RefinePlan(desired.ID.Local, obs.State, desired.Fields, plan.Ops)
-	if err != nil {
-		return core.Plan{}, fmt.Errorf("resource %s: %w", desired.ID, err)
+	if e.refiner != nil && (obs.State != nil || obs.Check != nil) {
+		refined, err := e.refiner.RefinePlan(desired.ID.Local, obs.State, desired.Fields, plan.Ops)
+		if err != nil {
+			return core.Plan{}, fmt.Errorf("resource %s: %w", desired.ID, err)
+		}
+		plan = core.Plan{Ops: mergeRefined(plan.Ops, refined)}
 	}
-	return core.Plan{Ops: mergeRefined(plan.Ops, refined)}, nil
+	if e.approver != nil {
+		markApproval(e.approver, obs.State, desired, plan.Ops)
+	}
+	return plan, nil
+}
+
+// markApproval asks the provider which of its ops must pass the approval gate
+// (provider.ApprovalRequirer, Backlog #179) and marks them destructive and
+// requiring approval.  The marks are only ever raised.
+func markApproval(a provider.ApprovalRequirer, observed core.State, desired DesiredResource, ops []core.Op) {
+	for i := range ops {
+		reason := a.ApprovalRequired(desired.ID.Local, observed, desired.Fields, ops[i])
+		if reason == "" {
+			continue
+		}
+		ops[i].Destructive = true
+		ops[i].RequiresApproval = true
+		ops[i].ApprovalReason = reason
+	}
 }
 
 // mergeRefined applies the provider's refinement to the core's ops under the

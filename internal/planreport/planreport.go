@@ -23,6 +23,7 @@ package planreport
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -61,7 +62,8 @@ const (
 	// §23.4。netconf など）の操作。どの mode でも Apply しない（知らせるだけ）。
 	BlockedByObserveOnly = "observe_only"
 	// BlockedByApproval は ensure: absent の削除（§12.2）で、planned_change
-	// （kind: delete）のレーンが開いていないもの（承認待ち、§13.3・§14.4、#163）。
+	// （kind: delete）のレーンが開いていないもの（承認待ち、§13.3・§14.4、#163）と、
+	// provider が承認の要る変更とした操作でその種類のレーンが開いていないもの（#179）。
 	BlockedByApproval = "approval"
 	// BlockedByApplyStopped は Apply を止めたリソース（oscillating、§11.1 Tier3、
 	// #166）の操作: 同じ Diff の Apply が成功を返しても現実が変わらないまま上限に
@@ -71,6 +73,29 @@ const (
 
 // AbsentApprovalReason は承認待ちで止めた ensure: absent の削除の理由（#163）。
 const AbsentApprovalReason = "ensure: absent — the Delete runs only in an open planned_change lane of kind delete covering the resource (approval, window, cooling-off: §13.3, §14.4, §14.5)"
+
+// ApprovalBlockReason は承認待ちで止めた op の理由: ensure: absent の削除なら
+// AbsentApprovalReason、provider が承認の要る変更としたもの（#179）ならその理由と
+// 開くべきレーンの種類。
+func ApprovalBlockReason(op core.Op) string {
+	if op.ApprovalReason == "" {
+		return AbsentApprovalReason
+	}
+	return fmt.Sprintf("%s — the change runs only in an open planned_change lane of kind %s covering the resource (approval, window, cooling-off: §13.3, §14.4, §14.5)",
+		op.ApprovalReason, LaneKindFor(op.Kind))
+}
+
+// LaneKindFor は op の種類を通す planned_change の kind（Create は create、
+// Update は update、Delete は delete）。
+func LaneKindFor(k core.OpKind) string {
+	switch k {
+	case core.OpKindCreate:
+		return "create"
+	case core.OpKindUpdate:
+		return "update"
+	}
+	return "delete"
+}
 
 // ObserveOnlyReason は観測だけの provider（§23.4）で止めた操作の理由。
 const ObserveOnlyReason = "the provider observes only (Capabilities.ObserveOnly, §23.4) — reported as drift, never applied"
@@ -165,10 +190,16 @@ type Operation struct {
 	Prune       bool   `json:"prune"` // 宣言外の削除（集合差 prune、§12）
 	// Absent は ensure: absent の削除（明示の absent、§12.2、#163）。planned_change
 	// のレーンが開いているときだけ走る（外なら blocked_by: approval）。
-	Absent     bool    `json:"absent,omitempty"`
-	Cause      string  `json:"cause,omitempty"`
-	Diagnostic string  `json:"diagnostic,omitempty"`
-	Fields     []Field `json:"fields,omitempty"`
+	Absent bool `json:"absent,omitempty"`
+	// ApprovalRequired は provider が承認の要る変更とした操作（provider.
+	// ApprovalRequirer、#179。nftables の base chain の作成・type/hook/
+	// priority/policy の変更）。その種類の planned_change のレーンが開いている
+	// ときだけ走る（外なら blocked_by: approval）。ApprovalReason はその理由。
+	ApprovalRequired bool    `json:"approval_required,omitempty"`
+	ApprovalReason   string  `json:"approval_reason,omitempty"`
+	Cause            string  `json:"cause,omitempty"`
+	Diagnostic       string  `json:"diagnostic,omitempty"`
+	Fields           []Field `json:"fields,omitempty"`
 
 	Lane          string `json:"lane"`
 	PlannedChange string `json:"planned_change,omitempty"`
@@ -212,10 +243,13 @@ func NewOperation(op core.Op, prune bool) Operation {
 		Kind:        KindName(op.Kind),
 		Destructive: op.Destructive,
 		Prune:       prune,
-		Absent:      op.RequiresApproval,
-		Cause:       string(op.Cause),
-		Diagnostic:  op.Diagnostic,
-		Lane:        LaneNormal,
+		Absent:      op.RequiresApproval && op.ApprovalReason == "",
+		// #179: a provider's change that requires approval.
+		ApprovalRequired: op.RequiresApproval && op.ApprovalReason != "",
+		ApprovalReason:   op.ApprovalReason,
+		Cause:            string(op.Cause),
+		Diagnostic:       op.Diagnostic,
+		Lane:             LaneNormal,
 	}
 	for _, fd := range op.Fields {
 		o.Fields = append(o.Fields, Field{Field: fd.Field, From: fd.From, To: fd.To})

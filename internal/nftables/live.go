@@ -82,7 +82,7 @@ import (
 
 // liveProviderVersion は live 版の正規化のソースハッシュ。canonRule や読み方を
 // 変えたら増分すること（cause-tag C（ghost diff）検出のため）。
-const liveProviderVersion = "nftables-live-v1.2.0" // v1.2.0: 無名の集合の正規化（Backlog #178）
+const liveProviderVersion = "nftables-live-v1.3.0" // v1.3.0: 確かめる先の宣言 confirm（Backlog #179）
 
 // 対象（config の ruleset_target、CLI の --ruleset-target）。
 const (
@@ -247,11 +247,12 @@ func (p *LiveProvider) Capabilities() provider.Capabilities {
 
 // Compile-time assertions.
 var (
-	_ provider.Provider        = (*LiveProvider)(nil)
-	_ provider.Lister          = (*LiveProvider)(nil)
-	_ provider.BulkObserver    = (*LiveProvider)(nil)
-	_ provider.IntentValidator = (*LiveProvider)(nil)
-	_ provider.PlanRefiner     = (*LiveProvider)(nil)
+	_ provider.Provider         = (*LiveProvider)(nil)
+	_ provider.Lister           = (*LiveProvider)(nil)
+	_ provider.BulkObserver     = (*LiveProvider)(nil)
+	_ provider.IntentValidator  = (*LiveProvider)(nil)
+	_ provider.PlanRefiner      = (*LiveProvider)(nil)
+	_ provider.ApprovalRequirer = (*LiveProvider)(nil)
 )
 
 // Read observes one chain.  table が無い・chain が無いのは absent、nft が
@@ -373,7 +374,10 @@ func (p *LiveProvider) ValidateIntent(localID string, fields map[string]string) 
 			return fmt.Errorf("rules[%d]: %w", i, err)
 		}
 	}
-	return validateBase(ref.Family, fields, localID)
+	if err := validateBase(ref.Family, fields, localID); err != nil {
+		return err
+	}
+	return validateConfirm(fields, localID, !p.multi)
 }
 
 // RefinePlan は rules の差分のうち、比べる形にすると観測と同じもの（空白や
@@ -386,6 +390,15 @@ func (p *LiveProvider) RefinePlan(localID string, observed core.State, desired m
 		family = ref.Family
 	}
 	return refineBase(family, localID, observed, desired, ops)
+}
+
+// ApprovalRequired は base chain を作る・type/hook/priority/policy を変える・
+// 消す op を、承認の要る壊す変更とする（provider.ApprovalRequirer、Backlog
+// #179）: 管理の経路を塞ぎうるので、予算に数え、その種類の planned_change の
+// レーン（承認）が開いているときだけ流す。ルールだけを変える op と regular
+// chain の op は今までどおり。I/O はしない。
+func (p *LiveProvider) ApprovalRequired(localID string, observed core.State, desired map[string]string, op core.Op) string {
+	return approvalReason(localID, observed, desired, op)
 }
 
 // chainCheck は Apply の後に読み戻して確かめる 1 つの chain。
@@ -438,7 +451,8 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 	var touched []TableRef // 変える table（写しを取る順）
 	var script strings.Builder
 	var checks []chainCheck
-	var baseChanged []string // 変える base chain の id
+	var baseChanged []string    // 変える base chain の id
+	var targets []ConfirmTarget // 確かめる先（Backlog #179。宣言が無ければ self）
 	for _, op := range ops {
 		_, ref, chain, err := p.coords(op.Target.Local)
 		if err != nil {
@@ -545,6 +559,14 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 			}
 			if declaresBase(opFields(op)) || (cur != nil && cur.base) {
 				baseChanged = append(baseChanged, hostLocalID(h.name, ref, chain))
+				ts, err := parseConfirm(opFields(op)[FieldConfirm])
+				if err != nil {
+					return provider.NewPermanentError(fmt.Errorf("nftables: Apply: %s: field %s: %w", op.Target.Local, FieldConfirm, err))
+				}
+				if len(ts) == 0 {
+					ts = []ConfirmTarget{SelfTarget}
+				}
+				targets = mergeTargets(targets, ts)
 			}
 		}
 	}
@@ -554,7 +576,7 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 
 	body := []byte(script.String())
 	if len(baseChanged) > 0 {
-		return p.applyGuarded(ctx, h, touched, baseChanged, body, checks)
+		return p.applyGuarded(ctx, h, touched, baseChanged, targets, body, checks)
 	}
 	if _, err := h.runner.Run(ctx, []string{"-c", "-f", "-"}, body); err != nil {
 		return classifyApplyErr(h.what("nft -c (check)"), err, true)
@@ -595,13 +617,27 @@ func containsRef(refs []TableRef, ref TableRef) bool {
 // applyGuarded は base chain を変えるトランザクションを締め出しの守りを通して
 // 流す（guard.go の 1〜6）。確かめられなかった・巻き戻しが先に動いたときは
 // provider.RolledBackError。
-func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []TableRef, changed []string, body []byte, checks []chainCheck) error {
+func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []TableRef, changed []string, targets []ConfirmTarget, body []byte, checks []chainCheck) error {
 	if h.guard == nil {
 		what := "set ruleset_confirm_address (--ruleset-confirm-address) to a host:port a new connection must reach after the change"
 		if h.name != "" {
 			what = "the host has no way to confirm reaching it"
 		}
 		return provider.NewPermanentError(fmt.Errorf("nftables: Apply: refusing to change base chain(s) %s without the lockout guard: %s", strings.Join(changed, ", "), what))
+	}
+	who := "the host"
+	if h.name != "" {
+		who = "host " + h.name
+	}
+	// 0. Confirm before the change (Backlog #179): a target not reached now
+	// would only fail the confirmation after it and roll it back.
+	if err := p.preconfirm(ctx, h, targets); err != nil {
+		err = fmt.Errorf("nftables: Apply: not changing base chain(s) %s: %s cannot be reached over a new connection before the change (%w); the change would only be rolled back. Confirm targets: %s",
+			strings.Join(changed, ", "), who, err, targetsText(targets))
+		if errors.Is(err, ErrCannotConfirm) {
+			return provider.NewPermanentError(err)
+		}
+		return provider.NewTransientError(err)
 	}
 	// 1. The tables as they are now.
 	var restore bytes.Buffer
@@ -637,13 +673,10 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 		}
 		return classifyApplyErr(h.what("nft -f"), err, false)
 	}
-	// 5. Confirm over a new connection, until half the time is gone.
-	confirmErr := p.confirm(ctx, h, fireAt.Add(-p.rollbackAfter/2))
+	// 5. Confirm every target over a new connection, until half the time is
+	// gone.
+	confirmErr := p.confirm(ctx, h, targets, fireAt.Add(-p.rollbackAfter/2))
 	tables := refsText(touched)
-	who := "the host"
-	if h.name != "" {
-		who = "host " + h.name
-	}
 	if confirmErr == nil {
 		// 6. Cancel the rollback.
 		derr := h.guard.Disarm(ctx, token)
@@ -664,22 +697,46 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 		who, p.rollbackAfter/2, strings.Join(changed, ", "), confirmErr, tables, p.rollbackAfter))
 }
 
-// confirm は until まで新しい接続での確かめを張り直す。届けば nil、届かなければ
-// 最後の error。
-func (p *LiveProvider) confirm(ctx context.Context, h liveHost, until time.Time) error {
+// preconfirm は変更の前に、targets のそれぞれへ新しい接続で 1 回ずつ確かめる
+// （Backlog #179。上限の半分まで）。届かない先があれば、その先を名指しした error。
+func (p *LiveProvider) preconfirm(ctx context.Context, h liveHost, targets []ConfirmTarget) error {
+	cctx, cancel := context.WithTimeout(ctx, p.rollbackAfter/2)
+	defer cancel()
+	var errs []error
+	for _, t := range targets {
+		if err := h.guard.Confirm(cctx, t); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", t, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// confirm は until まで、まだ届いていない先への新しい接続での確かめを張り直す。
+// すべてに届けば nil、届かなければ届かない先の最後の error。
+func (p *LiveProvider) confirm(ctx context.Context, h liveHost, targets []ConfirmTarget, until time.Time) error {
 	interval := p.rollbackAfter / 20
 	if interval > time.Second {
 		interval = time.Second
 	}
+	pending := targets
 	for {
-		cctx, cancel := context.WithDeadline(ctx, until)
-		err := h.guard.Confirm(cctx)
-		cancel()
-		if err == nil {
+		var still []ConfirmTarget
+		var errs []error
+		for _, t := range pending {
+			cctx, cancel := context.WithDeadline(ctx, until)
+			err := h.guard.Confirm(cctx, t)
+			cancel()
+			if err != nil {
+				still = append(still, t)
+				errs = append(errs, fmt.Errorf("%s: %w", t, err))
+			}
+		}
+		if len(still) == 0 {
 			return nil
 		}
+		pending = still
 		if ctx.Err() != nil || time.Now().Add(interval).After(until) {
-			return err
+			return errors.Join(errs...)
 		}
 		waitUntil(ctx, time.Now().Add(interval))
 	}

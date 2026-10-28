@@ -33,6 +33,9 @@ type Guard struct {
 	// Unreachable が true を返す間、Confirm は届かない（例: input の policy が
 	// drop で ssh を通すルールが無い）。nil なら常に届く。
 	Unreachable func(n *NFT) bool
+	// UnreachableTo が true を返す間、Confirm はその先に届かない（Backlog #179:
+	// 宣言した確かめる先ごと）。nil なら Unreachable だけで決める。
+	UnreachableTo func(n *NFT, to nftables.ConfirmTarget) bool
 	// ArmErr が nil でなければ Arm はこの error で失敗する。
 	ArmErr error
 
@@ -41,6 +44,7 @@ type Guard struct {
 	armed    map[string]*time.Timer
 	fired    map[string]bool
 	restores []string
+	confirms []string
 	// 数え: Arm・Disarm（取り消せた）・Fired（写しに戻した）・Confirm の失敗。
 	arms, disarms, fires, unconfirmed int
 }
@@ -96,14 +100,24 @@ func (g *Guard) Disarm(_ context.Context, token string) error {
 }
 
 // Confirm implements nftables.Guard.
-func (g *Guard) Confirm(_ context.Context) error {
-	if g.Unreachable != nil && g.Unreachable(g.NFT) {
+func (g *Guard) Confirm(_ context.Context, to nftables.ConfirmTarget) error {
+	g.mu.Lock()
+	g.confirms = append(g.confirms, to.String())
+	g.mu.Unlock()
+	if (g.Unreachable != nil && g.Unreachable(g.NFT)) || (g.UnreachableTo != nil && g.UnreachableTo(g.NFT, to)) {
 		g.mu.Lock()
 		g.unconfirmed++
 		g.mu.Unlock()
 		return errors.New("nftfake: connection timed out")
 	}
 	return nil
+}
+
+// Confirms は Confirm を呼ばれた先（ConfirmTarget.String()）を順に返す。
+func (g *Guard) Confirms() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.confirms...)
 }
 
 // Counts は Arm・Disarm・写しに戻した回数を返す。

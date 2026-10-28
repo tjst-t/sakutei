@@ -237,6 +237,10 @@ func DefaultRegistry() *ProviderRegistry {
 				}
 				cfg.RollbackAfter = d
 			}
+			// The local nft's guard: "self" is confirmed by a new TCP
+			// connection to ruleset_confirm_address (none: only the confirm
+			// targets the intent declares, tcp://host:port, Backlog #179).
+			local := nftables.ExecGuard{Exec: remote.Local{}, NFT: config["ruleset_nft"]}
 			if addr := config["ruleset_confirm_address"]; addr != "" {
 				if _, _, err := net.SplitHostPort(addr); err != nil {
 					return nil, fmt.Errorf("nftables: ruleset_confirm_address %q: want host:port", addr)
@@ -244,8 +248,9 @@ func DefaultRegistry() *ProviderRegistry {
 				if config["ruleset_hosts"] != "" {
 					return nil, errors.New("nftables: ruleset_confirm_address is for the local nft; a remote host is confirmed over a new ssh connection")
 				}
-				cfg.Guard = nftables.ExecGuard{Exec: remote.Local{}, NFT: config["ruleset_nft"], Probe: nftables.TCPProbe(addr)}
+				local.Probe = nftables.TCPProbe(addr)
 			}
+			cfg.Guard = local
 			// Backlog #130: the remote hosts (ruleset_hosts + remote_config).
 			if config["ruleset_hosts"] != "" {
 				execs, order, err := remoteHosts(config, "ruleset_hosts")

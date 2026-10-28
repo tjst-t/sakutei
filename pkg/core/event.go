@@ -63,6 +63,11 @@ const (
 	// planned_change（kind: delete）のレーンが開いていないので消さずに待っている
 	// （§12.2・§13.3・§14.4、Backlog #163）。
 	EventAbsentAwaitingApproval EventKind = "AbsentAwaitingApproval"
+	// EventChangeAwaitingApproval は provider が承認の要る変更とした op
+	// （provider.ApprovalRequirer。nftables の base chain の作成・type/hook/
+	// priority/policy の変更、Backlog #179）を、その種類の planned_change の
+	// レーンが開いていないので流さずに待っている（§13.3・§14.4）。
+	EventChangeAwaitingApproval EventKind = "ChangeAwaitingApproval"
 	// EventAllocationHeld は採番の書き戻しのファイル（§19.7、#157）がその要求を
 	// 止めた（ファイルと store の食い違い・store に無い・書き戻しの取り込み待ち）。
 	// そのリソースは Apply しない。
@@ -115,6 +120,8 @@ func (k EventKind) IsLevel() bool {
 		// Backlog #163: an absent resource waiting for its lane is a
 		// continuing condition, resolved when it is observed gone.
 		EventAbsentAwaitingApproval,
+		// Backlog #179: the same for a provider's change waiting for its lane.
+		EventChangeAwaitingApproval,
 		// #157: a write-back hold continues until the file and the store agree
 		// or the review is taken in.
 		EventAllocationHeld,

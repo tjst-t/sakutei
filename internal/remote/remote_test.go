@@ -549,3 +549,38 @@ func TestSSH_ProbeOpensANewConnection(t *testing.T) {
 		t.Errorf("a probe right after a failed one is not tried again: %v", err)
 	}
 }
+
+func TestSSH_ProbeViaAnotherPath(t *testing.T) {
+	// [AC-179-2-1] ProbeVia は別の経路（address・port・user）へ新しい接続を張り、
+	// 書かなかったものはその対象の設定のまま。known_hosts は同じ。悪い address は断る。
+	f := newFake(t)
+	s := f.host(t, nil)
+	if err := s.ProbeVia(context.Background(), "admin", "198.51.100.7", 2200); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProbeVia(context.Background(), "", "198.51.100.8", 0); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.calls(t)
+	if len(calls) != 2 {
+		t.Fatalf("%d calls, want 2: %q", len(calls), calls)
+	}
+	a, b := calls[0], calls[1]
+	if !hasPair(a, "-p", "2200") || !hasPair(a, "-l", "admin") || !hasPair(a, "-o", "ControlPath=none") || a[len(a)-2] != "198.51.100.7" || a[len(a)-1] != "true" {
+		t.Errorf("probe via another path: %q", a)
+	}
+	if !hasPair(b, "-p", "2222") || !hasPair(b, "-l", "sakutei") || b[len(b)-2] != "198.51.100.8" {
+		t.Errorf("probe via another address keeps the port and user: %q", b)
+	}
+	if !hasPair(a, "-o", "UserKnownHostsFile="+filepath.Join(f.dir, "known_hosts")) {
+		t.Errorf("the host's known_hosts: %q", a)
+	}
+	if err := s.ProbeVia(context.Background(), "", "-oProxyCommand=x", 0); err == nil {
+		t.Error("an address that looks like an option: want an error")
+	}
+	t.Setenv("FAKESSH_FAIL", "down")
+	var ce *remote.ConnError
+	if err := s.ProbeVia(context.Background(), "", "198.51.100.7", 0); !errors.As(err, &ce) || ce.Target != "fw1" {
+		t.Fatalf("probe via a path that is down = %v", err)
+	}
+}

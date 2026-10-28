@@ -15,21 +15,27 @@
 package nftables
 
 // guard.go — 締め出しの守り（Backlog #173。NETCONF の commit confirmed と同じ
-// 考え）。
+// 考え）。確かめる先の宣言と変更の前の確かめは Backlog #179。
 //
 // base chain の policy かルールを変える Apply は、自分（Sakutei）の管理の経路を
 // 塞ぐかもしれない。そこで live の Apply は、base chain を変えるトランザクション
 // を次の順で流す（LiveProvider.applyGuarded）:
 //
+//  0. 変更の前に、確かめる先（base chain の宣言の confirm、confirm.go。書かな
+//     ければ self）のすべてに新しい接続で届くかを確かめる（Guard.Confirm を
+//     先ごとに 1 回）。1 つでも届かなければ変えない（一時的な失敗）。前に届かない
+//     のに変えると、後の確かめが落ちて戻すだけになるため。
 //  1. 変える table の写しを取る（`nft list table`。無ければ「無い」こと）。
 //  2. `nft -c -f -` で検査する。
 //  3. 対象のホストの側に、時間の上限（RollbackAfter）の後に写しへ戻す仕掛けを
 //     置く（Guard.Arm）。仕掛けはホストの上で時間で動くので、Sakutei との接続が
 //     切れても戻る。
 //  4. `nft -f -` で 1 つのトランザクションとして流す。
-//  5. 新しい接続で到達を確かめる（Guard.Confirm。ssh なら master に相乗りしない
-//     新しい ssh の接続、手元なら設定した確かめの宛先への TCP の接続）。上限の
-//     半分まで張り直す。
+//  5. 確かめる先のすべてに新しい接続で到達を確かめる（Guard.Confirm。self は
+//     ssh なら master に相乗りしない新しい ssh の接続、手元なら設定した確かめの
+//     宛先への TCP の接続。ssh:// は別の経路の新しい ssh、tcp:// は TCP）。上限の
+//     半分まで、まだ届いていない先を張り直す。すべてに届いたときだけ確かめられた
+//     とする。
 //  6. 確かめられたら仕掛けを取り消す（Guard.Disarm）。確かめられなければ取り
 //     消さずに上限を待ち（仕掛けが写しに戻す）、Apply の失敗
 //     （provider.RolledBackError）として知らせる。収束のループは同じ差分の Apply
@@ -62,8 +68,9 @@ type Guard interface {
 	Arm(ctx context.Context, restore []byte, after time.Duration) (token string, err error)
 	// Disarm は token の仕掛けを取り消す。もう流れていたら ErrRollbackFired。
 	Disarm(ctx context.Context, token string) error
-	// Confirm は新しい接続でホストに届くかを確かめる。
-	Confirm(ctx context.Context) error
+	// Confirm は新しい接続で to に届くかを確かめる（Backlog #179）。確かめの
+	// 手立てが無ければ ErrCannotConfirm を包んで返す。
+	Confirm(ctx context.Context, to ConfirmTarget) error
 }
 
 // ExecGuard は仕掛けを POSIX の sh で置く Guard。Exec はそのホストでコマンドを
@@ -73,7 +80,10 @@ type ExecGuard struct {
 	Exec remote.Executor
 	// NFT はそのホストの nft のパス（既定 "nft"）。
 	NFT string
-	// Probe は新しい接続での確かめ（SSHProbe・TCPProbe）。
+	// Probe は self（Sakutei 自身の管理の接続）の新しい接続での確かめ
+	// （SSHProbe・TCPProbe）。nil なら self は確かめられない（ErrCannotConfirm）。
+	// ssh:// の先は Exec の ProbeVia（remote.SSH）で、tcp:// の先は TCPProbe で
+	// 確かめる（Backlog #179）。
 	Probe func(ctx context.Context) error
 }
 
@@ -144,11 +154,25 @@ func (g ExecGuard) Disarm(ctx context.Context, token string) error {
 }
 
 // Confirm implements Guard.
-func (g ExecGuard) Confirm(ctx context.Context) error {
-	if g.Probe == nil {
-		return errors.New("no way to confirm reaching the host")
+func (g ExecGuard) Confirm(ctx context.Context, to ConfirmTarget) error {
+	switch to.Kind {
+	case ConfirmSelf:
+		if g.Probe == nil {
+			return fmt.Errorf("self: %w (for the local nft set ruleset_confirm_address, or declare confirm: tcp://host:port)", ErrCannotConfirm)
+		}
+		return g.Probe(ctx)
+	case ConfirmSSH:
+		v, ok := g.Exec.(interface {
+			ProbeVia(ctx context.Context, user, address string, port int) error
+		})
+		if !ok {
+			return fmt.Errorf("%s: %w: host %q has no ssh settings", to, ErrCannotConfirm, g.Exec.Target())
+		}
+		return v.ProbeVia(ctx, to.User, to.Host, to.Port)
+	case ConfirmTCP:
+		return TCPProbe(net.JoinHostPort(to.Host, strconv.Itoa(to.Port)))(ctx)
 	}
-	return g.Probe(ctx)
+	return fmt.Errorf("%s: %w: unknown kind", to, ErrCannotConfirm)
 }
 
 // SSHProbe は新しい ssh の接続での確かめ（remote.SSH の Probe）。Exec が新しい

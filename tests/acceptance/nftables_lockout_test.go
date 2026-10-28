@@ -25,6 +25,9 @@ package acceptance
 //	              確かめられて policy drop に収束する。
 //	[AC-173-5-3]  DefaultRegistry: ruleset_rollback_timeout・ruleset_confirm_address
 //	              を読み、悪い値は断る。
+//
+// #179 から base chain の policy の変更は承認の要る変更なので、宣言に承認した
+// planned_change（kind: update）のレーンを置く（nftables_approval_test.go）。
 
 import (
 	"bytes"
@@ -61,14 +64,23 @@ func (l *lockedBuf) String() string {
 	return l.b.String()
 }
 
+// nftLabScope は base chain の宣言と planned_change のレーンの scope（#179）。
+var nftLabScope = map[string]string{"site": "lab"}
+
 func inputIntent(rules string) map[string]any {
-	return map[string]any{"resources": []map[string]any{{
-		"provider": "nftables", "id": "inet/filter/input",
-		"fields": map[string]string{
-			"family": "inet", "table": "filter", "chain": "input", "rules": rules,
-			"type": "filter", "hook": "input", "priority": "filter", "policy": "drop",
-		},
-	}}}
+	now := time.Now()
+	return map[string]any{
+		"resources": []map[string]any{{
+			"provider": "nftables", "id": "inet/filter/input", "scope": nftLabScope,
+			"fields": map[string]string{
+				"family": "inet", "table": "filter", "chain": "input", "rules": rules,
+				"type": "filter", "hook": "input", "priority": "filter", "policy": "drop",
+			},
+		}},
+		"planned_change": map[string]any{"scope": nftLabScope, "kind": "update", "max_count": 10,
+			"window":   pcWindow(now.Add(-time.Hour), now.Add(time.Hour)),
+			"approval": map[string]any{"pr": 179, "approvers": []string{"alice"}}},
+	}
 }
 
 func TestNFTablesLockout_DaemonStopsARolledBackApply(t *testing.T) {
@@ -82,7 +94,7 @@ func TestNFTablesLockout_DaemonStopsARolledBackApply(t *testing.T) {
 	p, err := nftables.NewLive(nftables.LiveConfig{
 		Runner: fake, Tables: []nftables.TableRef{{Family: "inet", Name: "filter"}},
 		Guard: guard, RollbackAfter: 100 * time.Millisecond,
-	})
+	}, nftables.WithScope(core.NewScope(nftLabScope)))
 	if err != nil {
 		t.Fatal(err)
 	}

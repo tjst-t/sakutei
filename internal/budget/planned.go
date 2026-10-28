@@ -66,6 +66,10 @@ const (
 	PlannedDelete PlannedKind = "delete"
 	// PlannedUpdate admits Update ops.
 	PlannedUpdate PlannedKind = "update"
+	// PlannedCreate admits Create ops (Backlog #179): the approval of a
+	// Create a provider requires approval for (provider.ApprovalRequirer,
+	// e.g. a new nftables base chain).
+	PlannedCreate PlannedKind = "create"
 	// PlannedReimage admits paired Delete+Create ops (re-imaging); the pair is
 	// not counted as a delete.
 	PlannedReimage PlannedKind = "reimage"
@@ -76,7 +80,7 @@ const (
 
 // PlannedKinds lists the accepted kinds in declaration order (for messages
 // and the intent schema enum).
-var PlannedKinds = []PlannedKind{PlannedDelete, PlannedUpdate, PlannedReimage, PlannedRecreate}
+var PlannedKinds = []PlannedKind{PlannedDelete, PlannedUpdate, PlannedCreate, PlannedReimage, PlannedRecreate}
 
 // Approval is the approval information of a planned_change (§13.3).  The
 // loader checks it against the requirements (§14.4) of the declaration or of
@@ -378,6 +382,8 @@ func (e *Engine) admitLanes(ops []core.Op) laneAdmission {
 				fits = op.Kind == core.OpKindDelete
 			case PlannedUpdate:
 				fits = op.Kind == core.OpKindUpdate
+			case PlannedCreate:
+				fits = op.Kind == core.OpKindCreate
 			case PlannedReimage, PlannedRecreate:
 				fits = op.Kind == core.OpKindDelete && paired
 			}
@@ -415,7 +421,7 @@ func (e *Engine) admitLanes(ops []core.Op) laneAdmission {
 		if admitted[j] > 0 {
 			budgetNote := "not counted in the normal budget"
 			if counted[j] > 0 {
-				budgetNote = fmt.Sprintf("%d ensure: absent delete(s) among them still counted in the normal budget, the rest not", counted[j])
+				budgetNote = fmt.Sprintf("%d change(s) requiring approval (ensure: absent, or the provider's) among them still counted in the normal budget, the rest not", counted[j])
 			}
 			out.events = append(out.events, fmt.Sprintf(
 				"PlannedChange: %s: %d change(s) admitted to the planned_change lane (used %d of max_count %d before this cycle); %s",
@@ -477,7 +483,8 @@ func (d CycleDecision) InLane(op core.Op) bool {
 }
 
 // Unapproved reports whether op requires approval (core.Op.RequiresApproval,
-// the Delete of an explicit absent) and was not admitted to an open
+// the Delete of an explicit absent or a provider's change, Backlog #179) and
+// was not admitted to an open
 // planned_change lane: it is held (IsHalted) whatever the budget says.
 func (d CycleDecision) Unapproved(op core.Op) bool {
 	return d.unapproved[opKey(op)]

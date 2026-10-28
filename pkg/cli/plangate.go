@@ -108,8 +108,9 @@ func gatePlanOps(ctx context.Context, in gatePlanInput, fail func(string, ...any
 		}
 		switch {
 		case bd.Unapproved(op):
-			// §12.2 (#163): an explicit absent's Delete outside every lane.
-			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByApproval, planreport.AbsentApprovalReason
+			// §12.2 (#163): an explicit absent's Delete outside every lane;
+			// #179: a provider's change that requires approval, likewise.
+			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByApproval, planreport.ApprovalBlockReason(op)
 		case bd.IsHalted(op):
 			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByBudget, bd.Reason
 		case budget.Merge(bd, cd).IsHalted(op):

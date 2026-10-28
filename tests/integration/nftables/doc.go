@@ -21,7 +21,9 @@
 // 入った使い捨ての docker のコンテナ（自分の network namespace を持つ）に手元から
 // ssh で入り、policy drop にして到達を確かめる・ssh を塞ぐ宣言が時間切れで元の
 // ruleset に戻る・sakutei が落ちてもホストの側で戻る、を確かめる
-// （lockout_integration_test.go）。手元の live（確かめは TCP の宛先）も namespace で
+// （lockout_integration_test.go）。宣言に書いた確かめる先（sshd を 2 つのポートで
+// 待たせた別の経路の ssh）での確かめと、変更の前の確かめ（Backlog #179）も足した。
+// 手元の live（確かめは TCP の宛先。設定の宛先と宣言の tcp://）も namespace で
 // 確かめる。
 //
 // テストは build tag integration_nftables の付いたファイルにあり、make check・

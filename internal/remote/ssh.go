@@ -179,19 +179,46 @@ func (s *SSH) Hold(ctx context.Context, argv []string) (func() error, error) {
 // （確かめは何度も張り直す。ほかの呼び出しを止めない）。届かない・認証の失敗・
 // ホスト鍵の不一致は *ConnError。
 func (s *SSH) Probe(ctx context.Context) error {
-	ctx, cancel := withTimeout(ctx, s.h.Timeout)
+	return s.probe(ctx, s)
+}
+
+// ProbeVia は Probe と同じ確かめを、別の経路（address・port・user。空・0 は
+// この対象の設定のまま）で行う（Backlog #179：宣言した別の経路の ssh で到達を
+// 確かめる）。鍵・known_hosts・タイムアウトはこの対象の設定を使う（ホスト鍵は
+// その経路の名前で known_hosts と照らす）。
+func (s *SSH) ProbeVia(ctx context.Context, user, address string, port int) error {
+	h := s.h
+	if address != "" {
+		h.Address = address
+	}
+	if port != 0 {
+		h.Port = port
+	}
+	if user != "" {
+		h.User = user
+	}
+	via, err := NewSSH(h)
+	if err != nil {
+		return err
+	}
+	return s.probe(ctx, via)
+}
+
+// probe は via の設定で master に相乗りしない新しい接続を張り、true を走らせる。
+func (s *SSH) probe(ctx context.Context, via *SSH) error {
+	ctx, cancel := withTimeout(ctx, via.h.Timeout)
 	defer cancel()
-	keyPath, done, err := s.writeKey(ctx)
+	keyPath, done, err := via.writeKey(ctx)
 	if err != nil {
 		return err
 	}
 	defer done()
-	args, err := s.baseArgs(keyPath)
+	args, err := via.baseArgs(keyPath)
 	if err != nil {
 		return err
 	}
-	args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none", "--", s.h.Address, "true")
-	_, err = runCmd(ctx, exec.CommandContext(ctx, s.h.SSH, args...), nil)
+	args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none", "--", via.h.Address, "true")
+	_, err = runCmd(ctx, exec.CommandContext(ctx, via.h.SSH, args...), nil)
 	return connError(s.h.Name, err)
 }
 

@@ -42,7 +42,7 @@ type plannedDecl struct {
 //
 //	planned_change:
 //	  scope: { site: hpc-a, cluster: gpu-pool }
-//	  kind: reimage                    # delete | update | reimage | recreate
+//	  kind: reimage                    # delete | update | create | reimage | recreate
 //	  max_count: 500
 //	  window: "2026-08-01 00:00 .. 2026-08-01 06:00"   # UTC, or RFC 3339
 //	  applicant: carol                 # the PR author (separation, §14.4)

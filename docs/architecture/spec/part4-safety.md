@@ -184,7 +184,7 @@ safety:
 ```yaml
 planned_change:
   scope: { site: hpc-a, cluster: gpu-pool }   # 対象 scope
-  kind: reimage                                # 変更種別:delete | update | reimage | recreate 等
+  kind: reimage                                # 変更種別:delete | update | create | reimage | recreate
   max_count: 500                               # 上限件数(この宣言で許す破壊/変更の総数)
   window: "2026-08-01 00:00 .. 2026-08-01 06:00"  # 時間窓(この間だけ有効)
   applicant: carol                             # 申請者(PR の作者。separation の判定に使う)
@@ -202,8 +202,8 @@ planned_change:
 
 **v1.5 の実装**（Backlog #39）：
 
-- **書式**：intent のトップレベルの `planned_change:`。1 件はオブジェクト、複数は配列で書く（v1b の YAML サブセットではブロックで書く・§21.3）。`scope`（空は拒否）・`kind`（`delete` / `update` / `reimage` / `recreate`）・`max_count`（1 以上）・`window` は必須、`approval`（`pr` / `approvers`）・`applicant`・`requirements`・`cooling_off` は任意で、レーンを開く条件になる（下記「承認と運用プロファイル」）。`window` は `"<開始> .. <終了>"` で、各端は RFC 3339 か `YYYY-MM-DD HH:MM`（ゾーン無しは UTC）。窓は `[開始, 終了)`。同じ scope・kind・窓の宣言を二度書くとロード時に拒否する。
-- **kind と Plan の操作種別（§29.1 kind 整合検証の決定）**：`delete` は Delete op、`update` は Update op、`reimage` / `recreate` は下記の対になった Delete+Create を通す（対 1 組で枠を 1 消費する。予算上 `reimage` と `recreate` は同じで、違いは監査上の名前だけ）。有効な宣言の scope 内にあるのに kind が合わずレーンに入らない破壊的 op は、通常予算で評価し、`PlannedChangeKindMismatch` Event を出す。
+- **書式**：intent のトップレベルの `planned_change:`。1 件はオブジェクト、複数は配列で書く（v1b の YAML サブセットではブロックで書く・§21.3）。`scope`（空は拒否）・`kind`（`delete` / `update` / `create` / `reimage` / `recreate`。`create` は v3.49、Backlog #179）・`max_count`（1 以上）・`window` は必須、`approval`（`pr` / `approvers`）・`applicant`・`requirements`・`cooling_off` は任意で、レーンを開く条件になる（下記「承認と運用プロファイル」）。`window` は `"<開始> .. <終了>"` で、各端は RFC 3339 か `YYYY-MM-DD HH:MM`（ゾーン無しは UTC）。窓は `[開始, 終了)`。同じ scope・kind・窓の宣言を二度書くとロード時に拒否する。
+- **kind と Plan の操作種別（§29.1 kind 整合検証の決定）**：`delete` は Delete op、`update` は Update op、`create` は Create op（provider が承認の要る変更とした Create を通すため。v3.49、#179：レーンの外の Create は今までどおり通常予算で評価し、承認の要るものだけがレーンを要る）、`reimage` / `recreate` は下記の対になった Delete+Create を通す（対 1 組で枠を 1 消費する。予算上 `reimage` と `recreate` は同じで、違いは監査上の名前だけ）。有効な宣言の scope 内にあるのに kind が合わずレーンに入らない破壊的 op は、通常予算で評価し、`PlannedChangeKindMismatch` Event を出す。
 - **reimage / recreate の対（§29.1 ペアリング判定の決定）**：同じ周期の Plan の Delete X と Create Y は、(1) 同じ provider、(2) scope のラベル集合が完全に一致（宣言 scope の内側、だけでは足りない。同じ置き場所の入れ替えであること）、(3) 1 対 1（同じ scope の中で Local ID 昇順に組む）のとき対になる。余った Delete は純粋な削除（kind 不一致）、余った Create はただの追加として通常予算で評価する。scope に機体を表すラベル（`slot` など）を持たせれば、1 台ずつの入れ替えとして判定される。
 
 **Workflow による入れ直し（Backlog #88、v3.25）**：物理サーバの入れ直しは Plan の Delete+Create にならない（台は消えも生まれもしない）。`kind: reimage` の宣言は、上の対のほかに、**`trigger: reimage` の Workflow（§6.3）を起こす**。宣言の scope が Workflow の対象の scope を覆い、レーンが開いている（窓の中・承認と cooling-off が揃った）ときだけ、宣言ごとに 1 回 run を起こす。対象ごとに手を付ける前に `max_count` を 1 つ使い（対の 1 組と同じ数え方。使用量は同じく S4 の `planned_change.executed` に残るので、Workflow の S2 を失って起こし直しても `max_count` を越えて入れ直さない）、通常予算の破壊的変更には数えない。`max_count` を使い切った宣言は run を起こさず、走っている run の次の対象は halt にする。
@@ -217,6 +217,7 @@ planned_change:
 - **レーンの計上**：レーンに入った op は通常の rate limit・累積時間窓予算の計算から外し、通常予算の halt でも止めない（capacity gate など予算以外のゲートは止める）。枠は op を provider へ発射する直前に消費する（halt や skip で発射しなかった op は枠を減らさない。発射して失敗した op の枠は戻さない＝保守側）。枠を超えた分は `PlannedChangeExhausted` を出して通常予算で評価する。窓を過ぎた宣言は `PlannedChangeExpired` を一度出して失効する。レーンで in-flight の Apply は通常予算の in-flight 計上に入れない。
 - **List 急減 halt との連動**：常駐ループがレーンで削除した ID は prune engine に記録し、次の List でそれが消えていれば、その件数を前周の基準件数から引いてから急減を測る。数えないのは**自分が宣言の下で消したもの**だけで、それ以外の減少は従来どおり halt する。
 - **明示の absent の削除（v3.32、Backlog #163）**：`ensure: absent`（§12.2）の Delete は、そのリソースを覆う `kind: delete` のレーンが開いているときだけ走る（レーンの門が承認ゲート）。ほかのレーンの op と違い、**通常予算からは外さない**（rate limit・累積時間窓予算・in-flight に数え、通常予算の halt で止まる）。レーンは消すことを承認するが、予算の除外はしない。レーンの外では消さずに `AbsentAwaitingApproval` を出し、通常予算にも数えない。
+- **provider が承認の要る変更とした op（v3.49、Backlog #179）**：provider が任意の `provider.ApprovalRequirer` で理由を返した op（nftables の live の base chain の作成・type/hook/priority/policy の変更・削除）も同じ門を通る：Destructive で、その種類（`create` / `update` / `delete`）のレーンが開いているときだけ走り、通常予算にも数える。レーンの外では流さずに `ChangeAwaitingApproval` を出す（理由とレーンの種類を添える）。
 - **経路**：レーンを開くのは常駐ループ（と同じ予算を共有する早期収束の scoped run）と、`--audit-log` を付けた one-shot の `sakutei reconcile` である。one-shot は呼び出しごとに予算エンジンを作り直すが、S4 が実行をまたいで `max_count` の消費と cooling-off の時計を持つ（下記「承認と運用プロファイル」、Backlog #44）。`--audit-log` を付けなければ、宣言があっても全変更を通常予算で評価する（その旨を表示する）。
 - **既知の限界**：レーンの使用量はメモリ（S3）に持つが、`--audit-log`（S4）を付けていれば、常駐の再起動や次の `reconcile` は `planned_change.executed` から使用量を引き継ぐ（下記「承認と運用プロファイル」、Backlog #44）。使用量が戻るのは S4 が無いとき（あるいは S4 から読めないとき）だけである。常駐は使用量を周の終わりに S4 へ書くので、周の途中で落ちるとその周の分は数えられない。通常予算の累積カウンタは S3 のままで、再起動で戻る（§13.2 の S2 永続化は未実装・§29.6）。
 

@@ -133,6 +133,17 @@ func TestContractGenerated_NFTables(t *testing.T) {
 		// Same corruption as the chaos suite: a chain outside any table.
 		MakeUnreachable: corruptFile(rules, "chain orphan {\n\tip saddr 10.9.9.9 accept\n}\n"),
 	}
+	// confirm (#179) says how to confirm a live change and is never observed:
+	// the sample is the generated one without it.
+	id, desired, err := ct.GenerateSample()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := desired[nftables.FieldConfirm]; !ok {
+		t.Fatalf("the generated sample must hold every writable field, confirm included: %v", desired)
+	}
+	delete(desired, nftables.FieldConfirm)
+	ct.SampleID, ct.SampleDesired = id, desired
 	ct.RunAll(t)
 }
 
