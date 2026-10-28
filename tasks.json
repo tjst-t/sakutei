@@ -3828,7 +3828,7 @@
       "number": 164,
       "kind": "task",
       "title": "宣言の外にあるものを status の unmanaged に出す（prune しない型も、宣言したものが 1 つも無い provider も）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "proxmox-vm-vm-vm-unmanaged-pool",
       "dependsOn": [],
       "milestone": null,
@@ -3840,7 +3840,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T03:54:32.654Z",
-      "updatedAt": "2026-10-28T03:54:32.654Z",
+      "updatedAt": "2026-10-28T04:15:45.859Z",
       "closedAt": null,
       "extra": {}
     },
