@@ -3940,7 +3940,7 @@
       "number": 167,
       "kind": "task",
       "title": "採番の書き戻し：review の仕方で解放したあと、取り込みを待つ間の知らせを「解放の取り込み待ち」にする",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [
         "allocation-write-back"
@@ -3956,7 +3956,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T05:32:00.829Z",
-      "updatedAt": "2026-10-28T05:32:00.829Z",
+      "updatedAt": "2026-10-28T11:31:13.246Z",
       "closedAt": null,
       "extra": {}
     },
