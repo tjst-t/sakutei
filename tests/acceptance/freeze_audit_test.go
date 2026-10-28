@@ -24,10 +24,13 @@ package acceptance
 //	           始まり・終わりが監査に残る。freeze の間は直さず、status と常駐の
 //	           健全性に freeze が出る。期限を過ぎた freeze は解け、期限切れが
 //	           監査に残る。
+//	[AC-184-4] 起動に失敗した常駐の --freeze は監査に何も残さない。
 
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -337,4 +340,61 @@ func waitForDriftSize(statePath, want string, deadline time.Duration) bool {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return false
+}
+
+// [AC-184-4] 起動に失敗した常駐の --freeze は監査に何も残さない（一度も効いて
+// いない freeze の started だけが残ると、終わりの無い freeze が今も効いている
+// ように見える）。起動の検証と listen が全部済んでから始まりを記録する。
+func TestFreezeAudit_DaemonStartFailureLeavesNoFreeze(t *testing.T) {
+	tmp := t.TempDir()
+	intentDir := filepath.Join(tmp, "intent")
+	statePath := filepath.Join(tmp, "state.json")
+	if err := os.MkdirAll(intentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seedDriftedState(t, statePath)
+	writeDriftIntent(t, intentDir)
+
+	// An address already in use makes the /metrics listen fail.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	cases := []struct {
+		name  string
+		extra []string
+	}{
+		{"invalid --claim", []string{"--claim", "no-equals-sign"}},
+		{"--shard-id without --fencing-store", []string{"--shard-id", "s1"}},
+		{"invalid --alloc-lookup-ttl", []string{"--alloc-store", filepath.Join(tmp, "alloc.json"), "--alloc-lookup-ttl", "soon"}},
+		{"metrics listen fails", []string{"--metrics-listen", ln.Addr().String()}},
+	}
+	for i, c := range cases {
+		auditPath := filepath.Join(tmp, fmt.Sprintf("audit-%d.jsonl", i))
+		args := append([]string{"--intent", intentDir, "--state", statePath, "--interval", "100ms",
+			"--freeze", "--freeze-reason", "maintenance", "--audit-log", auditPath}, c.extra...)
+		cmd := exec.Command(buildBinary(t), args...)
+		var errb bytes.Buffer
+		cmd.Stderr = &errb
+		done := make(chan error, 1)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
+				t.Errorf("[AC-184-4] %s: want exit 1, got %v\n%s", c.name, err, errb.String())
+			}
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+			t.Fatalf("[AC-184-4] %s: the daemon did not fail to start:\n%s", c.name, errb.String())
+		}
+		if recs := freezeRecords(t, auditPath); len(recs) != 0 {
+			t.Errorf("[AC-184-4] %s: a daemon that failed to start must leave no freeze in the audit log: %s", c.name, freezeKinds(recs))
+		}
+	}
 }

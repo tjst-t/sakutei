@@ -380,8 +380,10 @@ func runDaemon() {
 	remCfg := remediation.Config{
 		Mode: mode,
 	}
-	// #184: a --freeze is recorded as started here (and as ended when the
-	// daemon exits); --freeze-state is read every cycle.
+	// #184: the freeze flags are checked here; a --freeze is recorded as
+	// started only once the daemon is about to run (startFlagFreeze, below),
+	// so a start that fails leaves no freeze in the audit log.
+	// --freeze-state is read every cycle.
 	freezeControl := freezeFl.control("sakutei", *auditLog)
 	remCfg.Freeze = freezeControl != nil && freezeControl.Flag != nil
 
@@ -582,6 +584,9 @@ func runDaemon() {
 		cfg.IntentTree = true
 	}
 
+	// #184: every start check and listen has passed; the --freeze is in
+	// effect from here (its end is recorded when the daemon exits).
+	startFlagFreeze("sakutei", freezeControl)
 	if err := reconcile.Run(context.Background(), cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 		exitAfterEvents(1)

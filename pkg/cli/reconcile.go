@@ -221,6 +221,9 @@ func runReconcile(args []string) {
 	// #184: a --freeze is recorded as started here (and as ended when the
 	// run exits); the freeze is checked once the run's revision is known.
 	freezeControl := freezeFl.control("sakutei reconcile", *auditLog)
+	// Every exit from here on goes through exitAfterEvents, which records
+	// the end.
+	startFlagFreeze("sakutei reconcile", freezeControl)
 
 	// Parse budget configuration.
 	budgetCfg, budgetCfgErr := budgetFl.config()

@@ -83,10 +83,11 @@ func freezeActor(by string) string {
 }
 
 // control checks the flags and returns the freeze control of the run (nil:
-// neither --freeze nor --freeze-state).  A --freeze is recorded as started in
-// the audit log here, and as ended when the run exits (exitAfterEvents).  It
-// exits 1 on a freeze without a reason, without an audit log, or with a flag
-// that belongs to --freeze given alone.
+// neither --freeze nor --freeze-state).  It records nothing: the caller
+// records the --freeze as started with startFlagFreeze once nothing else can
+// stop the run from starting, so a run that fails to start leaves no freeze
+// in the audit log.  It exits 1 on a freeze without a reason, without an
+// audit log, or with a flag that belongs to --freeze given alone.
 func (f *freezeFlags) control(verb, auditLog string) *reconcile.FreezeControl {
 	fail := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, verb+": "+format+"\n", args...)
@@ -120,12 +121,24 @@ func (f *freezeFlags) control(verb, auditLog string) *reconcile.FreezeControl {
 	if err := fr.Validate(); err != nil {
 		fail("--freeze: %v (use --freeze-by)", err)
 	}
-	if err := freeze.RecordStart(c.Audit, fr); err != nil {
-		fail("--freeze: the start cannot be recorded: %v", err)
-	}
 	c.Flag = &fr
-	exitHooks = append(exitHooks, func() { endFlagFreeze(verb, c) })
 	return c
+}
+
+// startFlagFreeze records the run's --freeze as started (now) and has its end
+// recorded when the run exits (exitAfterEvents).  Nothing when c has no
+// --freeze.  It exits 1 when the start cannot be recorded (a freeze is never
+// in effect without its record).
+func startFlagFreeze(verb string, c *reconcile.FreezeControl) {
+	if c == nil || c.Flag == nil {
+		return
+	}
+	c.Flag.Since = time.Now().UTC()
+	if err := freeze.RecordStart(c.Audit, *c.Flag); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: --freeze: the start cannot be recorded: %v\n", verb, err)
+		exitAfterEvents(1)
+	}
+	exitHooks = append(exitHooks, func() { endFlagFreeze(verb, c) })
 }
 
 // endFlagFreeze records the end of the run's --freeze (unless it expired).
