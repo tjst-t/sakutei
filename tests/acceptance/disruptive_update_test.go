@@ -33,6 +33,12 @@
 //	[AC-152-5] 対象の手順を終えた周に Disruption は resolved になり、webhook・
 //	           Alertmanager にも resolved が届く。
 //	[AC-152-6] 上流が max_wait を過ぎても下がらなければ、止めずに halt して知らせる。
+//	[AC-152-8] 知らせる時点で notify_before と見積もりが時間帯の終わりまでに収まら
+//	           なければ知らせない（03:35 に知らせて 03:45 に止めると 04:05 まで掛かる）。
+//	           知らせた後、止める直前に時間帯（見積もりが収まること）と上流をもう一度
+//	           確かめ、外れていれば止めずに知らせを取り下げる（Disruption は resolved）。
+//	           デーモンが落ちている間に時間帯が閉じたときも、戻った周に止めない。
+//	           上流が戻れば改めて知らせ、notify_before の後に止める。
 //	[AC-152-7] 誤った書き方（estimate・affects の欠落、upstream に max_wait なし、
 //	           未知のキー、壊れた window）はロード時に拒否される。
 package acceptance
@@ -318,8 +324,8 @@ func TestDisruptiveUpdate_FlowsThroughWindowUpstreamApprovalAndNotice(t *testing
 		t.Fatalf("[AC-152-4] Disruption while stopped: firing=%d resolved=%d", n, len(r.disruptionEvents(core.EventResolved)))
 	}
 
-	// 止め始め（02:10）から見積もり（20m）を過ぎても終わらなければ stuck に上げる。
-	r.clock.Set(time.Date(2026, 10, 28, 2, 31, 0, 0, time.UTC))
+	// 止めた時刻（02:12）から見積もり（20m）を過ぎても終わらなければ stuck に上げる。
+	r.clock.Set(time.Date(2026, 10, 28, 2, 33, 0, 0, time.UTC))
 	r.waitFor("Disruption overrun", func() bool { return len(r.disruptionEvents(core.EventFiring)) > 1 })
 	if o := r.disruptionEvents(core.EventFiring)[1]; o.Class != core.EventStuck || o.Severity != core.SeverityCritical ||
 		o.Attrs["overrun"] != "true" || !strings.Contains(o.Message, "overrun") {
@@ -347,6 +353,129 @@ func TestDisruptiveUpdate_FlowsThroughWindowUpstreamApprovalAndNotice(t *testing
 	if n := len(r.rec.ofKind(core.EventDisruption)); n != 3 {
 		t.Fatalf("[AC-152-5] Disruption events = %d after done, want 3 (firing, overrun, resolved)", n)
 	}
+}
+
+// approvedAt は disruptIntentWith(opt) の Workflow を now で承認した状態まで進めた
+// RunCycle の rig（上流は 10 で上限内）。
+func approvedAt(t *testing.T, opt string, now time.Time) *disruptRig {
+	t.Helper()
+	r := newDisruptRig(t, disruptIntentWith(opt, ""))
+	r.q.set("10", false)
+	r.clock.Set(now)
+	r.step()
+	if run := r.wfRun(); run.Phase != workflow.PhaseAwaitingApproval {
+		t.Fatalf("run = %+v, want awaiting approval\n%s", run, r.out.String())
+	}
+	r.approve()
+	return r
+}
+
+func hasDisruption(res reconcile.CycleResult) bool {
+	return firstEvent(res, workflow.EventDisruption) != nil
+}
+
+func TestDisruptiveUpdate_NoticeMustLeaveRoomForLeadAndEstimate(t *testing.T) {
+	// [AC-152-8] 03:30 に承認。03:35 に知らせると 03:45 から 20 分止めて 04:05 になる。
+	r := approvedAt(t, `"notify_before": "10m",`, time.Date(2026, 10, 28, 3, 30, 0, 0, time.UTC))
+	r.clock.Set(time.Date(2026, 10, 28, 3, 35, 0, 0, time.UTC))
+	res := r.step()
+	if hasDisruption(res) || !hasEvent(res, workflow.EventWaiting, "notify_before 10m0s and the estimate 20m0s does not fit") {
+		t.Fatalf("[AC-152-8] events at 03:35: %+v", res.WorkflowEvents)
+	}
+	if run := r.wfRun(); run.Disrupt == nil || !run.Disrupt.NotifiedAt.IsZero() {
+		t.Fatalf("[AC-152-8] run = %+v, want not notified", run)
+	}
+	r.clock.Set(time.Date(2026, 10, 28, 3, 45, 0, 0, time.UTC))
+	r.step()
+	r.untouched("[AC-152-8]", "when notify_before and the estimate do not fit")
+}
+
+func TestDisruptiveUpdate_RecheckBeforeStopping(t *testing.T) {
+	// [AC-152-8] 03:25 に知らせる（03:35 から 20 分、03:55 に収まる）。止める前に
+	// 時計が 03:50 へ進んだ（周が遅れた）: 見積もりが 04:00 までに収まらないので止めない。
+	r := approvedAt(t, `"notify_before": "10m",`, time.Date(2026, 10, 28, 3, 20, 0, 0, time.UTC))
+	r.clock.Set(time.Date(2026, 10, 28, 3, 25, 0, 0, time.UTC))
+	if res := r.step(); !hasDisruption(res) {
+		t.Fatalf("[AC-152-8] no notice at 03:25: %+v", res.WorkflowEvents)
+	}
+	r.clock.Set(time.Date(2026, 10, 28, 3, 50, 0, 0, time.UTC))
+	res := r.step()
+	if hasDisruption(res) || !hasEvent(res, workflow.EventWaiting, "notice is withdrawn") ||
+		!hasEvent(res, workflow.EventWaiting, "the estimate 20m0s does not fit") {
+		t.Fatalf("[AC-152-8] events at 03:50: %+v", res.WorkflowEvents)
+	}
+	r.untouched("[AC-152-8]", "when the estimate no longer fits at the stop")
+	run := r.wfRun()
+	if run.Disrupt == nil || !run.Disrupt.NotifiedAt.IsZero() || !run.Disrupt.Approved || !run.Disrupt.StartedAt.IsZero() {
+		t.Fatalf("[AC-152-8] run.Disrupt = %+v, want withdrawn and still approved", run.Disrupt)
+	}
+
+	// デーモンが落ちている間に時間帯が閉じた: 03:25 に知らせ、戻ったのは 04:30。
+	r = approvedAt(t, `"notify_before": "10m",`, time.Date(2026, 10, 28, 3, 20, 0, 0, time.UTC))
+	r.clock.Set(time.Date(2026, 10, 28, 3, 25, 0, 0, time.UTC))
+	if res := r.step(); !hasDisruption(res) {
+		t.Fatalf("[AC-152-8] no notice at 03:25: %+v", res.WorkflowEvents)
+	}
+	r.clock.Set(time.Date(2026, 10, 28, 4, 30, 0, 0, time.UTC))
+	res = r.step()
+	if hasDisruption(res) || !hasEvent(res, workflow.EventWaiting, "outside the disruption window") ||
+		!hasEvent(res, workflow.EventWaiting, "notice is withdrawn") {
+		t.Fatalf("[AC-152-8] events at 04:30: %+v", res.WorkflowEvents)
+	}
+	r.untouched("[AC-152-8]", "after the window closed while the daemon was down")
+}
+
+func TestDisruptiveUpdate_UpstreamRecheckedBeforeStopping(t *testing.T) {
+	// [AC-152-8] 02:10 に知らせ、notify_before の間に上流が溢れた。
+	r := approvedAt(t, `"notify_before": "10m",`, time.Date(2026, 10, 28, 2, 5, 0, 0, time.UTC))
+	r.clock.Set(time.Date(2026, 10, 28, 2, 10, 0, 0, time.UTC))
+	if res := r.step(); !hasDisruption(res) {
+		t.Fatalf("[AC-152-8] no notice: %+v", res.WorkflowEvents)
+	}
+	r.q.set("1500", false)
+	r.clock.Set(time.Date(2026, 10, 28, 2, 21, 0, 0, time.UTC))
+	res := r.step()
+	if hasDisruption(res) || !hasEvent(res, workflow.EventWaiting, "upstream backlog over the limit") ||
+		!hasEvent(res, workflow.EventWaiting, "value=1500") || !hasEvent(res, workflow.EventWaiting, "notice is withdrawn") {
+		t.Fatalf("[AC-152-8] events with a high backlog at the stop: %+v", res.WorkflowEvents)
+	}
+	r.untouched("[AC-152-8]", "while the backlog is over the limit at the stop")
+
+	// 下がれば改めて知らせ、notify_before の後に止める。
+	r.q.set("5", false)
+	r.clock.Set(time.Date(2026, 10, 28, 2, 25, 0, 0, time.UTC))
+	if res := r.step(); !hasDisruption(res) {
+		t.Fatalf("[AC-152-8] no new notice: %+v", res.WorkflowEvents)
+	}
+	r.untouched("[AC-152-8]", "in the cycle of the new notice")
+	r.clock.Set(time.Date(2026, 10, 28, 2, 30, 0, 0, time.UTC))
+	r.step()
+	r.untouched("[AC-152-8]", "within the new notify_before")
+	r.clock.Set(time.Date(2026, 10, 28, 2, 36, 0, 0, time.UTC))
+	res = r.step()
+	if !hasEvent(res, workflow.EventStepDone, "re-checked") {
+		t.Fatalf("[AC-152-8] no re-check event at the stop: %+v", res.WorkflowEvents)
+	}
+	if got := r.field("gw1", "active"); got != "false" {
+		t.Fatalf("[AC-152-8] gw1 active = %s, want stopped after the new notice", got)
+	}
+
+	// 溢れたまま max_wait を過ぎれば止めずに halt（知らせは取り下げたまま）。
+	r = approvedAt(t, `"notify_before": "10m",`, time.Date(2026, 10, 28, 2, 5, 0, 0, time.UTC))
+	r.clock.Set(time.Date(2026, 10, 28, 2, 10, 0, 0, time.UTC))
+	r.step()
+	r.q.set("1500", false)
+	r.clock.Set(time.Date(2026, 10, 28, 2, 21, 0, 0, time.UTC))
+	r.step()
+	r.clock.Set(time.Date(2026, 10, 28, 3, 21, 0, 0, time.UTC))
+	res = r.step()
+	if run := r.wfRun(); run.Phase != workflow.PhaseHalted || !strings.Contains(run.Reason, "max_wait") {
+		t.Fatalf("[AC-152-8] run = %+v, want halted by max_wait", run)
+	}
+	if hasDisruption(res) {
+		t.Fatalf("[AC-152-8] Disruption firing for a halted run that never stopped: %+v", res.WorkflowEvents)
+	}
+	r.untouched("[AC-152-8]", "after the halt")
 }
 
 func TestDisruptiveUpdate_EstimateMustFitTheWindow(t *testing.T) {

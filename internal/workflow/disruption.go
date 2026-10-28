@@ -30,8 +30,8 @@ import (
 // Workflow は、対象ごとに最初の手順の前で次を通す。進みは Run.Disrupt（S2）に
 // 置き、上流の観測値は持たない（毎周 Observe し直す）。
 //
-//  1. 時間帯: いまが disruption.window の中で、見積もり（estimate）が時間帯の
-//     終わりまでに収まること。外なら待つ（起こさない）。remediation schedule が
+//  1. 時間帯: いまが disruption.window の中で、notify_before と見積もり
+//     （estimate）が時間帯の終わりまでに収まること。外なら待つ（起こさない）。remediation schedule が
 //     alert-only の間は Workflow 自体が進まない（§14.2）。
 //  2. 上流の積もり: upstream の各リソースを Observe し、fields に一致すること。
 //     満たさない・観測できない（unknown ≠ ok）間は止めずに待つ。待ち始めてから
@@ -43,9 +43,14 @@ import (
 //     外れていれば 1・2 と同じく待つ（承認は残る）。
 //  5. 知らせ: Disruption の Event（level、warning）を出し、その周は手順を始め
 //     ない（知らせが止める前に届く）。notify_before を宣言すればその間も待つ。
-//  6. 対象の手順を走らせる。手順の間（halt を含む）は Disruption を firing に
-//     保ち、対象の手順を終えた周に出さなくなる（resolved）。止め始めて見積もりを
-//     過ぎても終わらなければ overrun を付けて stuck（critical）に上げる。
+//  6. 止める直前に時間帯（見積もりが終わりまでに収まること）と上流をもう一度
+//     確かめる。外れていれば止めず、知らせを取り下げて（Disruption は resolved）
+//     1・2 の待ちに戻る（承認は残る。max_wait の数えも同じ）。デーモンが落ちて
+//     いる間に時間帯が閉じたときもここで止まらない。
+//  7. 対象の手順を走らせる（Run.Disrupt.StartedAt）。手順の途中は確かめ直さない。
+//     手順の間（halt を含む）は Disruption を firing に保ち、対象の手順を終えた周に
+//     出さなくなる（resolved）。止めてから見積もりを過ぎても終わらなければ
+//     overrun を付けて stuck（critical）に上げる。
 
 // isDisruptionGate は gate が今の対象を止める前のゲートか。
 func (s *stepper) isDisruptionGate(gate string) bool {
@@ -66,36 +71,67 @@ func (s *stepper) beforeDisruption(ctx context.Context, stage Stage, target core
 		s.run.Disrupt = st
 	}
 	where := fmt.Sprintf("stage %s, target %s", stage.Name, target.Local)
-	if !st.NotifiedAt.IsZero() {
+	if !st.StartedAt.IsZero() {
+		return true // 手順に入った（止めた）。手順の途中は確かめ直さない。
+	}
+	notified := !st.NotifiedAt.IsZero()
+	if notified {
 		if at := st.NotifiedAt.Add(d.NotifyBefore); s.now.Before(at) {
 			s.wait(EventWaiting, "%s: disruption notified at %s; stopping %s from %s (notify_before %s)",
 				where, st.NotifiedAt.Format(time.RFC3339), target.Local, at.Format(time.RFC3339), d.NotifyBefore)
 			return false
 		}
-		return true
+	}
+	// 知らせた後、止める直前にも時間帯と上流を確かめ直す。外れていれば止めずに
+	// 知らせを取り下げ（NotifiedAt を消す。Disruption はこの周に resolved）、
+	// 承認は残したまま 1・2 の待ちに戻る。戻れば改めて知らせ、notify_before を置く。
+	withdrawn := ""
+	withdraw := func() {
+		if notified {
+			st.NotifiedAt = time.Time{}
+			withdrawn = "; the disruption notice is withdrawn (not stopped)"
+		}
 	}
 
-	// 1. 時間帯。
-	if why := s.outsideWindow(d); why != "" {
+	// 1. 時間帯。知らせる前は notify_before と見積もりが、止める直前は見積もりが
+	// 時間帯の終わりまでに収まること。
+	lead := d.NotifyBefore
+	if notified {
+		lead = 0
+	}
+	if why := s.outsideWindow(d, lead); why != "" {
 		st.WaitingSince = time.Time{}
-		s.wait(EventWaiting, "%s: not stopping %s: %s", where, target.Local, why)
+		withdraw()
+		s.wait(EventWaiting, "%s: not stopping %s: %s%s", where, target.Local, why, withdrawn)
 		return false
 	}
 
 	// 2. 上流の積もり。
 	upstream, ok := s.observeUpstream(ctx, d, target)
 	if !ok {
+		withdraw()
 		if st.WaitingSince.IsZero() {
 			st.WaitingSince = s.now.UTC()
 		}
 		if !s.now.Before(st.WaitingSince.Add(d.MaxWait)) {
-			s.halt("%s: not stopping %s: the upstream backlog did not drop within max_wait %s (waiting since %s): %s",
-				where, target.Local, d.MaxWait, st.WaitingSince.Format(time.RFC3339), upstream)
+			s.halt("%s: not stopping %s: the upstream backlog did not drop within max_wait %s (waiting since %s): %s%s",
+				where, target.Local, d.MaxWait, st.WaitingSince.Format(time.RFC3339), upstream, withdrawn)
 			return false
 		}
-		s.wait(EventWaiting, "%s: not stopping %s: upstream backlog over the limit (waiting since %s, up to max_wait %s): %s",
-			where, target.Local, st.WaitingSince.Format(time.RFC3339), d.MaxWait, upstream)
+		s.wait(EventWaiting, "%s: not stopping %s: upstream backlog over the limit (waiting since %s, up to max_wait %s): %s%s",
+			where, target.Local, st.WaitingSince.Format(time.RFC3339), d.MaxWait, upstream, withdrawn)
 		return false
+	}
+	if notified {
+		// 6・7. 確かめを通った。止める（手順に入る）。
+		st.WaitingSince = time.Time{}
+		st.StartedAt = s.now.UTC()
+		s.run.Reason = ""
+		if !s.save() {
+			return false
+		}
+		s.emit(EventStepDone, "%s: window and upstream re-checked (%s); stopping %s", where, upstream, target.Local)
+		return true
 	}
 	st.WaitingSince = time.Time{}
 
@@ -141,8 +177,9 @@ func (s *stepper) beforeDisruption(ctx context.Context, stage Stage, target core
 	return false
 }
 
-// outsideWindow は今が止めてよい時間帯の外ならその説明を返す（中なら空）。
-func (s *stepper) outsideWindow(d *Disruption) string {
+// outsideWindow は今が止めてよい時間帯の外か、今から lead と見積もりを足した
+// 時刻が時間帯の終わりまでに収まらなければ、その説明を返す（よければ空）。
+func (s *stepper) outsideWindow(d *Disruption, lead time.Duration) string {
 	win, err := task.ParseWindow(d.Window)
 	if err != nil {
 		return err.Error() // Validate が拒むので来ない
@@ -150,9 +187,13 @@ func (s *stepper) outsideWindow(d *Disruption) string {
 	if !win.Contains(s.now) {
 		return fmt.Sprintf("outside the disruption window %s (now %s)", win, s.now.Format("Mon 15:04 MST"))
 	}
-	if end := s.now.Add(d.Estimate - time.Nanosecond); !win.Contains(end) {
-		return fmt.Sprintf("the estimate %s does not fit before the disruption window %s ends (now %s)",
-			d.Estimate, win, s.now.Format("Mon 15:04 MST"))
+	if end := s.now.Add(lead + d.Estimate - time.Nanosecond); !win.Contains(end) {
+		what := fmt.Sprintf("the estimate %s", d.Estimate)
+		if lead > 0 {
+			what = fmt.Sprintf("notify_before %s and the estimate %s", lead, d.Estimate)
+		}
+		return fmt.Sprintf("%s does not fit before the disruption window %s ends (now %s)",
+			what, win, s.now.Format("Mon 15:04 MST"))
 	}
 	return ""
 }
@@ -247,10 +288,10 @@ func (s *stepper) disrupting() {
 		"run": s.run.RunID, "estimate": d.Estimate.String(), "affects": affects, "window": window,
 		"notified_at": st.NotifiedAt.Format(time.RFC3339),
 	}
-	if !s.now.Before(from.Add(d.Estimate)) {
-		// 見積もりを過ぎても対象の手順が終わっていない（halt を含む）: stuck に上げる。
+	if !st.StartedAt.IsZero() && !s.now.Before(st.StartedAt.Add(d.Estimate)) {
+		// 止めてから見積もりを過ぎても対象の手順が終わっていない（halt を含む）: stuck に上げる。
 		attrs[eventlog.AttrOverrun] = "true"
-		msg += fmt.Sprintf("; overrun: still not done after the estimate (until %s)", from.Add(d.Estimate).Format(time.RFC3339))
+		msg += fmt.Sprintf("; overrun: still not done after the estimate (until %s)", st.StartedAt.Add(d.Estimate).Format(time.RFC3339))
 	}
 	s.events = append(s.events, Event{Kind: EventDisruption, Workflow: s.def.Name, Resource: target, Message: msg, Attrs: attrs})
 }

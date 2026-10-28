@@ -574,8 +574,8 @@ vm:
 
 **全体を止める型の更新の知らせ（v3.44、Backlog #152）**：kind `Disruption`（level、warning）を足す。Workflow の `disruption`（§6.3）が対象を止める前の周に firing で出し（resource は止める対象、attrs に `estimate`・`affects`・`window`・`notified_at`・`workflow`・`run`）、その周は手順を始めない——知らせが止める前に通知の口（webhook・Alertmanager）へ届く。
 
-- **続く間**：対象の手順の間（halt を含む）は同じ内容で出し続けるので更新は出ない。続いた周数では stuck に上げず、止め始めて見積もりを過ぎても終わらなければ attrs の `overrun: true` を付けて stuck（critical）に上げる。
-- **resolved**：その周に Workflow を進め（store が読めた）、対象の手順を終えた（または run を cancel した）とき。Workflow を進めなかった周（alert-only・claim の外・store のエラー）は resolved にしない（確かめられないものは firing のまま）。
+- **続く間**：対象の手順の間（halt を含む）は同じ内容で出し続けるので更新は出ない。続いた周数では stuck に上げず、止めてから見積もりを過ぎても終わらなければ attrs の `overrun: true` を付けて stuck（critical）に上げる。上流の観測値は `Disruption` には載せない（止める前の承認ゲートの Event に載せる）。
+- **resolved**：その周に Workflow を進め（store が読めた）、対象の手順を終えた・止める直前の確かめ（時間帯・上流）が外れて知らせを取り下げた（止めていない）・run を cancel したとき。Workflow を進めなかった周（alert-only・claim の外・store のエラー）は resolved にしない（確かめられないものは firing のまま）。
 - 止める前の承認ゲートの `StageAwaitingApproval`（edge）にも resource（止める対象）と同じ attrs（見積もり・下流・上流の観測値・時間帯）を載せる。上流が `max_wait` を過ぎて止めずに止まったときは `WorkflowHalted`（edge、warning）で知らせる。
 
 **読み取り専用の口の SSE（Backlog #136）**：デーモンの `GET /events`（`--read-listen`、§26.4）も、この単一 Event の sink の 1 つである。外の道具（可視化・ダッシュボード）が Event を流しで受けるための口で、通知の口とは別に持つ。口の TLS と認可（#161、§22.1・§26.4）は `/events` にもそのまま効く（接続のはじめに一度確かめる）。

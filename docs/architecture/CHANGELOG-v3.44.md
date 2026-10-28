@@ -15,14 +15,16 @@ schedule（§14.2）の上に乗せたもので、設計の向きは変えてい
   - Workflow に **`disruption:`**（`estimate`〈必須〉・`affects`〈必須、`<provider>/<id>`〉・`window`・`upstream`〈`{ resource, fields }`
     の並び〉・`max_wait`〈upstream があれば必須〉・`notify_before`・`gate`〈`manual_approval`・`timeout`、既定は単一承認・24h〉）。
     未知のキーは読み込みで断る。Task の update_policy には持たせず、止める Task は Workflow の `task` 手順で包む。
-  - 対象ごとに最初の手順の前で、**時間帯**（`window` の中で、見積もりが終わりまでに収まること。remediation が alert-only の間は
+  - 対象ごとに最初の手順の前で、**時間帯**（`window` の中で、`notify_before` と見積もりが終わりまでに収まること。remediation が alert-only の間は
     Workflow 自体が進まない）→ **上流の積もり**（観測の一致。満たさない・観測できない間は止めずに待ち、観測値を待ちの理由に出す。
     `max_wait` を過ぎたら止めずに halt して知らせる）→ **止める前の承認ゲート**（`<stage>-disruption-<n>`。見積もり・下流・上流の
     観測値・時間帯を Run の `gate_notice`・`reason` と `StageAwaitingApproval` の Event に出す）→ 承認の後に時間帯と上流をもう一度
-    → **知らせ**（Event の kind `Disruption`、level・warning。出した周は止めない。`notify_before` の間も待つ）→ 手順。
-  - 進みは Run の `disruption`（`waiting_since`・`approved`・`notified_at`、S2）に置き、対象を移るときに消す。上流の観測値は持たない。
+    → **知らせ**（Event の kind `Disruption`、level・warning。出した周は止めない。`notify_before` の間も待つ）→ **止める直前の
+    確かめ**（時間帯〈見積もりが終わりまでに収まること〉と上流をもう一度。外れていれば止めずに知らせを取り下げ〈resolved〉、承認を
+    残して待ちに戻る。周の遅れ・デーモンの停止の間に時間帯が閉じたときも止めない）→ 手順。
+  - 進みは Run の `disruption`（`waiting_since`・`approved`・`notified_at`・`started_at`、S2）に置き、対象を移るときに消す。上流の観測値は持たない。
   - `Disruption` は対象の手順の間（halt を含む）は firing のまま、終えた周に resolved（webhook・Alertmanager にも届く）。続いた
-    周数では stuck に上げず、止め始めて見積もりを過ぎたら `overrun: true` で stuck（critical）。Workflow を進めなかった周は resolved
+    周数では stuck に上げず、止めて（`started_at`）から見積もりを過ぎたら `overrun: true` で stuck（critical）。Workflow を進めなかった周は resolved
     にしない。
   - `affects`・`upstream` は Workflow が触るリソース（収束ループが Apply しないもの）に入れない。
 - **見送り**:
@@ -33,4 +35,4 @@ schedule（§14.2）の上に乗せたもので、設計の向きは変えてい
 ## 影響
 
 - §6.3・§6.4・§14.2・§22.3 に決まりを、§29.1 に 1 行を足した。
-- 受け入れテスト [AC-152-1]〜[AC-152-7]（`tests/acceptance/disruptive_update_test.go`）。loader の `TestDisruptionDocExampleLoads`。
+- 受け入れテスト [AC-152-1]〜[AC-152-8]（`tests/acceptance/disruptive_update_test.go`）。loader の `TestDisruptionDocExampleLoads`。

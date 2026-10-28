@@ -286,7 +286,7 @@ remediation:
 
 **保守窓のみ auto、他は alert-only** を宣言的に表現する。窓の外で検知した drift は次の窓まで alert-only として持ち越され、level-triggered なので窓が開いた周に自然に修復される。freeze（§14.3）は「今すぐ全体を alert-only に倒すマクロ」、schedule は「時間帯で mode を張る宣言」であり、両者は重ねられる（freeze が最優先）。
 
-**全体を止める型の更新との重ね方（v3.44、Backlog #152）。** Workflow の `disruption.window`（§6.3）は「止めてよい時間帯」で、schedule とは別の決定源として重ねる（most-restrictive-wins、§14.3）。schedule が alert-only の間は Workflow 自体が進まず、`disruption.window` の外では止める前の確かめに入らない。止めるのは両方が許す時間だけで、さらに見積もり（`estimate`）が `disruption.window` の終わりまでに収まるときだけ始める。窓が閉じた後に進行中の手順を中断はしない（止めた対象を置き去りにしない。Task の窓と同じ、§6.2）。
+**全体を止める型の更新との重ね方（v3.44、Backlog #152）。** Workflow の `disruption.window`（§6.3）は「止めてよい時間帯」で、schedule とは別の決定源として重ねる（most-restrictive-wins、§14.3）。schedule が alert-only の間は Workflow 自体が進まず、`disruption.window` の外では止める前の確かめに入らない。止めるのは両方が許す時間だけで、さらに知らせる時点では `notify_before` と見積もり（`estimate`）が、止める直前には見積もりが `disruption.window` の終わりまでに収まるときだけ始める（止める直前に外れていれば知らせを取り下げて待つ）。窓が閉じた後に進行中の手順を中断はしない（止めた対象を置き去りにしない。Task の窓と同じ、§6.2）。
 
 ### §14.3 優先規則（most-restrictive-wins）と freeze
 

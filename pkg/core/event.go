@@ -80,8 +80,10 @@ const (
 	// EventDisruption は全体を止める型の更新（Workflow の disruption、§6.3、
 	// Backlog #152）が対象を止めようとしている・止めている間の知らせ。Resource は
 	// 止める対象、attrs に止める時間の見積もり（estimate）・影響を受ける下流
-	// （affects）・時間帯（window）・上流の積もり（upstream）。止める前の周に
-	// firing で出し、その対象の手順を終えた周に resolved になる。
+	// （affects）・時間帯（window）・知らせた時刻（notified_at）・workflow・run
+	// （止めてから見積もりを過ぎたら overrun）。上流の観測値はここには載せず、
+	// 止める前の承認ゲートの Event に載せる。止める前の周に firing で出し、その対象の手順を終えた周、または止める直前の確かめ（時間帯・
+	// 上流）が外れて知らせを取り下げた周に resolved になる。
 	EventDisruption EventKind = "Disruption"
 
 	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。

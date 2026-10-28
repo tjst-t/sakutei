@@ -577,12 +577,13 @@ planned_change:                              # この宣言が承認されると
 
 **全体を止める型の更新 `disruption`（Backlog #152、v3.44）。** 止めている間は下流が使えない更新（ゲートウェイのソフト更新など）は、いつ止めるか・どれだけ止めるか・誰が影響を受けるかを人に見せ、上流が溢れない時にだけ止めたい。Workflow に `disruption:` を宣言すると、対象ごとに最初の手順の前で次を通す（進みは Run の `disruption`〈S2〉に置き、上流の観測値は持たない）。
 
-1. **時間帯**：いまが `window`（`update_policy.window` と同じ書式）の中で、かつ止める時間の見積もり `estimate` が時間帯の終わりまでに収まること。外なら待つ（起こさない）。remediation schedule（§14.2）が alert-only の間は Workflow 自体が進まないので、実際に止めるのは `window` と auto の重なりだけ。
+1. **時間帯**：いまが `window`（`update_policy.window` と同じ書式）の中で、かつ `notify_before` と止める時間の見積もり `estimate` を足した時刻が時間帯の終わりまでに収まること（知らせてから止め終えるまでが時間帯に入る）。外なら待つ（起こさない）。remediation schedule（§14.2）が alert-only の間は Workflow 自体が進まないので、実際に止めるのは `window` と auto の重なりだけ。
 2. **上流の積もり**：`upstream` の各リソース（`{ resource, fields }`、`require` と同じく観測の一致で比べる。`metrics-probe` のキューの長さなど）を Observe する。満たさない・観測できない（unknown ≠ ok）間は止めずに待ち、待ちの理由に観測値を出す。待ち始めてから `max_wait`（upstream があれば必須）を過ぎたら止めずに halt して知らせる（`WorkflowHalted`、warning）。
 3. **止める前の承認ゲート**：ゲート `<stage>-disruption-<n>`（n は stage の中の対象の番号）を開き、見積もり・影響を受ける下流（`affects`、`<provider>/<id>`）・いまの上流の観測値・時間帯を、Run の `gate_notice`・`reason` と `StageAwaitingApproval` の Event（attrs）に出す。承認の要件（`gate.manual_approval.requirements`）・timeout（既定 24h）・却下は stage のゲートと同じ（§6.4）。ゲートは省けない。
 4. **承認の後にもう一度**：ゲートで待つ間に時間帯や上流は変わりうるので、承認の後に 1・2 を確かめ直す。外れていれば承認を残したまま待つ。
 5. **知らせ**：`Disruption` の Event（level、warning、§22.3）を通知の口へ出し、**その周は手順を始めない**（知らせが止める前に届く）。`notify_before` を宣言すればその間も待つ。
-6. **手順**：対象の手順を走らせる。手順の間（halt を含む）は `Disruption` を firing に保ち、対象の手順を終えた周に resolved になる。止め始めて `estimate` を過ぎても終わらなければ overrun として stuck（critical）に上げる。
+6. **止める直前の確かめ**：`notify_before` を過ぎて手順に入る周に、時間帯（いまが中で、`estimate` が終わりまでに収まること）と上流をもう一度確かめる。外れていれば止めず、**知らせを取り下げて**（`Disruption` はその周に resolved）承認を残したまま 1・2 の待ちに戻る（上流は `max_wait` の数えも同じ）。戻れば改めて知らせ、もう一度 `notify_before` を置く。周が遅れた・デーモンが落ちている間に時間帯が閉じたときも、ここで止まらない。
+7. **手順**：確かめを通った時刻（Run の `disruption.started_at`）から対象の手順を走らせ、手順の途中は確かめ直さない。手順の間（halt を含む）は `Disruption` を firing に保ち、対象の手順を終えた周に resolved になる。止めてから `estimate` を過ぎても終わらなければ overrun として stuck（critical）に上げる。
 
 ```yaml
 workflows:

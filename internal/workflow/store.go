@@ -121,8 +121,12 @@ type DisruptState struct {
 	// Approved は止める前の承認ゲートを通った。
 	Approved bool `json:"approved,omitempty"`
 	// NotifiedAt は止める前の知らせ（Disruption の Event）を出した時刻。これが
-	// 立ってから対象の手順を始め、対象の手順を終えるまで知らせを firing に保つ。
+	// 立っている間は知らせを firing に保つ。止める直前の確かめで時間帯・上流が
+	// 外れていれば消す（知らせの取り下げ）。
 	NotifiedAt time.Time `json:"notified_at,omitempty"`
+	// StartedAt は止める直前の確かめを通って対象の手順に入った時刻（overrun の
+	// 起点）。立ってからは確かめ直さない。
+	StartedAt time.Time `json:"started_at,omitempty"`
 }
 
 // rejection は gate への却下を返す。
