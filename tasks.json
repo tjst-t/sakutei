@@ -4083,7 +4083,7 @@
       "number": 174,
       "kind": "task",
       "title": "網の間の許可を抽象のリソースにする（検査と nftables への変換）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m6-netconf-apply-base-chain-2-apply",
       "dependsOn": [
         "nftables-base-chain-policy",
@@ -4099,7 +4099,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:49:00.946Z",
-      "updatedAt": "2026-10-28T10:42:01.436Z",
+      "updatedAt": "2026-10-28T11:47:40.293Z",
       "closedAt": null,
       "extra": {}
     },
