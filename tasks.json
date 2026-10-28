@@ -4245,7 +4245,7 @@
       "number": 182,
       "kind": "task",
       "title": "A3 後半：netconf・ldap・cli-device・guest-os・host-file・systemd-unit などの範囲を intent に",
-      "status": "ready",
+      "status": "done",
       "parent": "m7",
       "dependsOn": [
         "a3-provider-intent-proxmox-vm-dnszone-nf"
@@ -4255,12 +4255,12 @@
       "labels": [],
       "body": "前半の共通の口で、残りの provider の範囲を intent に移す：netconf の netconf_subtrees、ldap の検索の根と filter、cli-device の管理する項目、guest-os の guest_markers、host-file・systemd-unit の管理する範囲など。どれをつなぎ方（設定に残す）、どれを範囲（intent へ移す）とするかの一覧を docs に書く。移行と食い違いの扱いは前半と同じ。",
       "doneWhen": "一覧の範囲の項目がすべて intent に書け、食い違いで断る・設定だけなら警告して動く受け入れテストが通る。make check・make test-race・関わる統合試験が通る",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T14:46:06.449Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-28T14:46:09.604Z",
+      "closedAt": "2026-10-28T14:46:09.604Z",
       "extra": {}
     },
     {
