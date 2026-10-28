@@ -3965,7 +3965,7 @@
       "number": 170,
       "kind": "task",
       "title": "proxmox-vm：cloud-init の初回のパッケージ更新（ciupgrade）を宣言できるようにする",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -3980,7 +3980,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T07:53:30.324Z",
-      "updatedAt": "2026-10-28T07:53:30.324Z",
+      "updatedAt": "2026-10-28T08:37:37.032Z",
       "closedAt": null,
       "extra": {}
     }
