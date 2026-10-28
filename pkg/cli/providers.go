@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/compat"
 	"github.com/tjst-t/sakutei/v2/internal/diff"
@@ -239,9 +240,13 @@ func rulesetScopeFlag(fs *flag.FlagSet) *string {
 // rulesetTargetFlags are the nftables provider's target settings (Backlog
 // #121): --ruleset-target file|live, and for live --ruleset-tables (the tables
 // to manage) and --ruleset-nft (the nft binary).  The same keys can be given in
-// --provider-config (ruleset_target, ruleset_tables, ruleset_nft).
+// --provider-config (ruleset_target, ruleset_tables, ruleset_nft).  Backlog
+// #173 adds the lockout guard of a live change to a base chain
+// (--ruleset-rollback-timeout, --ruleset-confirm-address):
+// ruleset_rollback_timeout, ruleset_confirm_address.
 type rulesetTargetFlags struct {
-	target, tables, nft *string
+	target, tables, nft        *string
+	rollbackTimeout, confirmTo *string
 }
 
 func rulesetTargetFlag(fs *flag.FlagSet) rulesetTargetFlags {
@@ -252,6 +257,10 @@ func rulesetTargetFlag(fs *flag.FlagSet) rulesetTargetFlags {
 			"nftables (live): the tables to manage, <family>/<name>,... (required for live; other tables are never touched)"),
 		nft: fs.String("ruleset-nft", "",
 			"nftables (live): path to the nft binary (default: nft)"),
+		rollbackTimeout: fs.String("ruleset-rollback-timeout", "",
+			"nftables (live): after changing a base chain, the time after which the host restores the tables unless reaching it over a new connection was confirmed (#173; default 30s, confirmed within half of it)"),
+		confirmTo: fs.String("ruleset-confirm-address", "",
+			"nftables (live, local nft): host:port a new TCP connection must reach after changing a base chain (#173; without it a local base chain is not changed)"),
 	}
 }
 
@@ -269,6 +278,12 @@ func (f rulesetTargetFlags) check(commandName string) {
 			os.Exit(1)
 		}
 	}
+	if *f.rollbackTimeout != "" {
+		if d, err := time.ParseDuration(*f.rollbackTimeout); err != nil || d < time.Second {
+			fmt.Fprintf(os.Stderr, "%s: --ruleset-rollback-timeout: %q: want a duration of 1s or more\n", commandName, *f.rollbackTimeout)
+			os.Exit(1)
+		}
+	}
 }
 
 // put adds the flags to the provider config.
@@ -279,6 +294,12 @@ func (f rulesetTargetFlags) put(cfg map[string]string) {
 	}
 	if *f.nft != "" {
 		cfg["ruleset_nft"] = *f.nft
+	}
+	if *f.rollbackTimeout != "" {
+		cfg["ruleset_rollback_timeout"] = *f.rollbackTimeout
+	}
+	if *f.confirmTo != "" {
+		cfg["ruleset_confirm_address"] = *f.confirmTo
 	}
 }
 

@@ -17,6 +17,7 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"net"
 	"path"
 	"strings"
 	"time"
@@ -195,7 +196,10 @@ func DefaultRegistry() *ProviderRegistry {
 	// --state flag can be used for all providers without extra CLI plumbing.
 	// Manages regular chains (identity = family/table/chain) whose `rules`
 	// field is an ORDERED list; base chains (type/hook/policy) are excluded
-	// as a management boundary (§27 FW〈順序付き〉).
+	// as a management boundary (§27 FW〈順序付き〉) unless the intent declares
+	// one (type/hook/priority/policy, Backlog #173; a live change to one goes
+	// through the lockout guard: ruleset_rollback_timeout, and for the local
+	// nft ruleset_confirm_address).
 	r.Register("nftables", func(config map[string]string) (provider.Provider, error) {
 		rulesetPath := config["ruleset"]
 		if rulesetPath == "" {
@@ -211,6 +215,7 @@ func DefaultRegistry() *ProviderRegistry {
 		if err != nil {
 			return nil, err
 		}
+		opts := []nftables.Option{nftables.WithScope(scope)}
 		switch config["ruleset_target"] {
 		case "", nftables.TargetFile:
 		case nftables.TargetLive:
@@ -224,6 +229,23 @@ func DefaultRegistry() *ProviderRegistry {
 				return nil, fmt.Errorf("nftables: ruleset_tables: %w", err)
 			}
 			cfg := nftables.LiveConfig{NFT: config["ruleset_nft"], Tables: tables}
+			// Backlog #173: the lockout guard of a change to a base chain.
+			if v := config["ruleset_rollback_timeout"]; v != "" {
+				d, err := time.ParseDuration(v)
+				if err != nil || d < time.Second {
+					return nil, fmt.Errorf("nftables: ruleset_rollback_timeout %q: want a duration of 1s or more (e.g. 30s)", v)
+				}
+				cfg.RollbackAfter = d
+			}
+			if addr := config["ruleset_confirm_address"]; addr != "" {
+				if _, _, err := net.SplitHostPort(addr); err != nil {
+					return nil, fmt.Errorf("nftables: ruleset_confirm_address %q: want host:port", addr)
+				}
+				if config["ruleset_hosts"] != "" {
+					return nil, errors.New("nftables: ruleset_confirm_address is for the local nft; a remote host is confirmed over a new ssh connection")
+				}
+				cfg.Guard = nftables.ExecGuard{Exec: remote.Local{}, NFT: config["ruleset_nft"], Probe: nftables.TCPProbe(addr)}
+			}
 			// Backlog #130: the remote hosts (ruleset_hosts + remote_config).
 			if config["ruleset_hosts"] != "" {
 				execs, order, err := remoteHosts(config, "ruleset_hosts")
@@ -231,20 +253,25 @@ func DefaultRegistry() *ProviderRegistry {
 					return nil, fmt.Errorf("nftables: %w", err)
 				}
 				for _, name := range order {
+					probe, err := nftables.SSHProbe(execs[name])
+					if err != nil {
+						return nil, fmt.Errorf("nftables: %w", err)
+					}
 					cfg.Hosts = append(cfg.Hosts, nftables.LiveHost{
 						Name:   name,
 						Runner: nftables.RemoteRunner{Exec: execs[name], NFT: config["ruleset_nft"]},
+						Guard:  nftables.ExecGuard{Exec: execs[name], NFT: config["ruleset_nft"], Probe: probe},
 					})
 				}
 			}
-			return nftables.NewLive(cfg, nftables.WithScope(scope))
+			return nftables.NewLive(cfg, opts...)
 		default:
 			return nil, fmt.Errorf("nftables: ruleset_target %q: want file or live", config["ruleset_target"])
 		}
 		if config["ruleset_hosts"] != "" {
 			return nil, errors.New("nftables: ruleset_hosts needs ruleset_target live")
 		}
-		return nftables.New(rulesetPath, nftables.WithScope(scope)), nil
+		return nftables.New(rulesetPath, opts...), nil
 	})
 
 	// "redfish-system" / "redfish-virtual-media" / "redfish-bios" /

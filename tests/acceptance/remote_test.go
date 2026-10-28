@@ -99,12 +99,11 @@ func TestRemoteNFT_ContractAndBulk(t *testing.T) {
 		Provider: p,
 		Lister:   p,
 		Scope:    core.NewScope(nil),
-		Examples: map[string]string{
+		// A regular chain (the Schema's base chain fields stay unset, #173).
+		SampleID: "fw2/inet/filter/contract",
+		SampleDesired: map[string]string{
 			"family": "inet", "table": "filter", "chain": "contract",
 			"rules": "tcp dport 22 accept" + nftables.RuleSep + "ip saddr 10.0.0.0/8 counter drop",
-		},
-		MakeID: func(f map[string]string) string {
-			return "fw2/" + f["family"] + "/" + f["table"] + "/" + f["chain"]
 		},
 		MakeUnreachable: func() (func(), error) {
 			h2.SetDown(remote.Unreachable)

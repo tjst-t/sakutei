@@ -111,16 +111,21 @@ func TestContractGenerated_DNSZone(t *testing.T) {
 func TestContractGenerated_NFTables(t *testing.T) {
 	// [#32-1] [#32-3]
 	rules := filepath.Join(t.TempDir(), "fw.rules")
+	// Every writable field gets a value, so the sample is a base chain (#173).
 	p := nftables.New(rules)
 	ct := sdk.ContractTester{
 		Provider: p,
 		Lister:   p,
 		Scope:    core.NewScope(nil),
 		Examples: map[string]string{
-			"family": "ip",
-			"table":  "filter",
-			"chain":  "contract",
-			"rules":  "tcp dport 22 accept",
+			"family":   "ip",
+			"table":    "filter",
+			"chain":    "contract",
+			"rules":    "tcp dport 22 accept",
+			"type":     "filter",
+			"hook":     "output",
+			"priority": "0",
+			"policy":   "accept",
 		},
 		MakeID: func(f map[string]string) string {
 			return f["family"] + "/" + f["table"] + "/" + f["chain"]

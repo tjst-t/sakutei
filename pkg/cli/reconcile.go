@@ -985,7 +985,7 @@ func runReconcile(args []string) {
 		case workflowHeld[local]:
 			heldReason[local] = "target of a Workflow (driven by the daemon, §6.3)"
 		case stoppedHeld[local]:
-			heldReason[local] = "Apply stopped (oscillating, §11.1 Tier3): its Applies of this diff reported success without changing reality (see ApplyIneffective)"
+			heldReason[local] = "Apply stopped (oscillating, §11.1 Tier3): its Applies of this diff did not take or were rolled back on the target (see ApplyIneffective)"
 		}
 	}
 	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, heldReason, ready, logErr)
@@ -1009,6 +1009,22 @@ func runReconcile(args []string) {
 			continue
 		}
 		applyFailed++
+	}
+	// #173: an Apply the provider rolled back on the target is not repeated:
+	// the same diff is stopped at once (recorded in --apply-check-state, so
+	// the next run does not apply it either).
+	rolledBackApplies := applyProvider.rolledBackLocals()
+	var rolledBack []string
+	for _, res := range desired {
+		if _, ok := rolledBackApplies[res.ID.Local]; !ok {
+			continue
+		}
+		rolledBack = append(rolledBack, res.ID.Local)
+		p := providers[res.ID.Provider]
+		lim := reconcile.ResolveApplyCheck(res, applyTypes, acFlags, p.Capabilities().Settle)
+		ops := filteredPlans[res.ID.Local].Ops
+		rec := checker.RolledBack(res.ID, reconcile.ApplyFingerprint(res, ops), reconcile.DiffText(ops), lim, time.Now())
+		reconcile.EmitApplyIneffective(logErr, "sakutei reconcile: ", rec)
 	}
 
 	// Report skipped resources (upstream failure or unobservable) to stderr.
@@ -1181,6 +1197,9 @@ func runReconcile(args []string) {
 	if n := len(stoppedHeld); n > 0 {
 		runSummary(fmt.Sprintf("Reconcile: not converged: %d resource(s) not applied: Apply stopped (oscillating, §11.1 Tier3) — their Applies of the same diff reported success without changing reality; they are applied again when the diff changes, reality converges, or after `sakutei apply-check release`", n))
 	}
+	if n := len(rolledBack); n > 0 {
+		runSummary(fmt.Sprintf("Reconcile: not converged: %d resource(s) rolled back on the target (what the Apply changed could not be confirmed; the target restored what it had): %v; their Apply of the same diff is stopped until the diff changes, reality converges, or `sakutei apply-check release`", n, rolledBack))
+	}
 	if n := len(unconfirmed); n > 0 {
 		runSummary(fmt.Sprintf("Reconcile: %d applied resource(s) not yet confirmed: unobservable or converging at the end of the settle: %v", n, unconfirmed))
 	}
@@ -1235,8 +1254,9 @@ func runReconcile(args []string) {
 	if budgetHalted || capacityHalted {
 		exitAfterEvents(1)
 	}
-	if len(notConverged) > 0 || len(stoppedHeld) > 0 {
+	if len(notConverged) > 0 || len(stoppedHeld) > 0 || len(rolledBack) > 0 {
 		// #166: an Apply reported success but reality is not what is declared.
+		// #173: an Apply rolled back on the target is the same: stopped.
 		exitAfterEvents(exitApplyIneffective)
 	}
 	exitAfterEvents(0)
@@ -1376,6 +1396,23 @@ type multiProviderApply struct {
 	// fallback is used when the local ID is not found in localToProvider
 	// (should not happen in normal operation).
 	fallback provider.Provider
+
+	// rolledBack records, per local ID, the Applies a provider rolled back on
+	// the target (provider.IsRolledBack, #173).  ApplyWaves applies in
+	// parallel, hence the mutex.
+	mu         sync.Mutex
+	rolledBack map[string]error
+}
+
+// rolledBackLocals returns the local IDs whose Apply was rolled back.
+func (m *multiProviderApply) rolledBackLocals() map[string]error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]error, len(m.rolledBack))
+	for k, v := range m.rolledBack {
+		out[k] = v
+	}
+	return out
 }
 
 // Compile-time assertion that multiProviderApply satisfies provider.Provider.
@@ -1485,6 +1522,16 @@ func (m *multiProviderApply) Apply(ctx context.Context, plan core.Plan) error {
 			return provider.NewPermanentError(fmt.Errorf("provider %q observes only (§23.4); refusing to apply %s", name, ops[0].Target))
 		}
 		if err := p.Apply(ctx, core.Plan{Ops: ops}); err != nil {
+			if provider.IsRolledBack(err) {
+				m.mu.Lock()
+				if m.rolledBack == nil {
+					m.rolledBack = map[string]error{}
+				}
+				for _, op := range ops {
+					m.rolledBack[op.Target.Local] = err
+				}
+				m.mu.Unlock()
+			}
 			return err
 		}
 	}

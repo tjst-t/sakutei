@@ -518,3 +518,34 @@ func TestSSH_ControlPathTooLong(t *testing.T) {
 		t.Errorf("[AC-130-1-2] a control socket path too long for a unix socket must be a clear error: %v", err)
 	}
 }
+
+func TestSSH_ProbeOpensANewConnection(t *testing.T) {
+	// [AC-173-4-1] Probe は master に相乗りせず（ControlPath=none）新しい接続で
+	// true を走らせ、sudo を付けない。届かないのは *ConnError で、その失敗は
+	// ほかの呼び出しを控えさせない。
+	f := newFake(t)
+	s := f.host(t, func(h *remote.SSHHost) {
+		h.Sudo = true
+		h.ControlPersist = 30 * time.Second
+	})
+	if err := s.Probe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.calls(t)
+	if len(calls) != 1 {
+		t.Fatalf("%d calls, want only the probe (no master): %q", len(calls), calls)
+	}
+	args := calls[0]
+	if !hasPair(args, "-o", "ControlPath=none") || !hasPair(args, "-o", "ControlMaster=no") || args[len(args)-1] != "true" {
+		t.Errorf("probe: %q", args)
+	}
+	t.Setenv("FAKESSH_FAIL", "down")
+	var ce *remote.ConnError
+	if err := s.Probe(context.Background()); !errors.As(err, &ce) || ce.Kind != remote.Unreachable {
+		t.Fatalf("probe of a host that is down = %v", err)
+	}
+	t.Setenv("FAKESSH_FAIL", "")
+	if err := s.Probe(context.Background()); err != nil {
+		t.Errorf("a probe right after a failed one is not tried again: %v", err)
+	}
+}

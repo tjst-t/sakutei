@@ -19,9 +19,16 @@
 //   - `-j list table <family> <name>`: 本物と同じ並び（table・set・chain・
 //     rule）の JSON。ルールの expr は持たない（live 版は読まない）。
 //   - `-a -s list table <family> <name>`: handle 付き・カウンタなしのテキスト。
-//   - `-c -f -` / `-f -`: live 版が書くスクリプト（add table・add chain・
+//   - `-c -f -` / `-f -`: live 版が書くスクリプト（add table・add chain（base
+//     chain の `{ type ... hook ... priority ... ; policy ... ; }` を含む）・
 //     flush chain・delete chain・add rule）を写しに当て、全部通れば（-f なら）
 //     入れ替える。1 つでも失敗すれば何も変わらない（本物のトランザクションと同じ）。
+//   - `list table <family> <name>`: handle なしのテキスト（締め出しの守りの写し、
+//     Backlog #173）。
+//
+// Guard は締め出しの守り（nftables.Guard）の偽物: Arm で ruleset の写しを取り、
+// 上限の後に（取り消されていなければ）写しに戻す。Confirm は Unreachable が
+// true を返す間は届かない。
 //
 // table が無いときの list は本物と同じ "No such file or directory" で終わる。
 // ルール文は空白を 1 つにそろえ、カウンタの値を落として持つ（本物の nft の
@@ -78,10 +85,20 @@ type named struct {
 }
 
 type chain struct {
-	name    string
-	handle  int
-	typeDef string // base chain の type 行（regular chain なら ""）
-	rules   []rule
+	name   string
+	handle int
+	// base chain の宣言（regular chain なら typ が ""）。prio は数。
+	typ, hook, policy string
+	prio              int
+	rules             []rule
+}
+
+// typeDef は base chain の type 行（nft list の形）。
+func (c *chain) typeDef() string {
+	if c.typ == "" {
+		return ""
+	}
+	return fmt.Sprintf("type %s hook %s priority %d; policy %s;", c.typ, c.hook, c.prio, c.policy)
 }
 
 type rule struct {
@@ -134,7 +151,8 @@ func (n *NFT) AddChain(family, tbl, name string, rules ...string) {
 }
 
 // AddBaseChain は base chain を作る（typeDef は "type filter hook input
-// priority filter; policy accept;" のような type 行）。
+// priority filter; policy accept;" のような type 行。priority の名前は filter
+// だけ（0）を数に直す）。
 func (n *NFT) AddBaseChain(family, tbl, name, typeDef string, rules ...string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -153,12 +171,35 @@ func (n *NFT) addChain(family, tbl, name, typeDef string, rules []string) {
 	t := n.ensureTable(family, tbl)
 	c := t.chain(name)
 	if c == nil {
-		c = &chain{name: name, handle: t.alloc(), typeDef: typeDef}
+		c = &chain{name: name, handle: t.alloc()}
+		if typeDef != "" {
+			if err := c.setSpec(typeDef); err != nil {
+				panic("nftfake: AddBaseChain: " + err.Error())
+			}
+		}
 		t.chains = append(t.chains, c)
 	}
 	for _, r := range rules {
 		c.rules = append(c.rules, rule{handle: t.alloc(), text: n.store(r)})
 	}
+}
+
+// Policy は base chain の policy を返す（chain が無い・regular なら ""）。
+func (n *NFT) Policy(family, tbl, name string) string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	t := n.table(family, tbl)
+	if t == nil || t.chain(name) == nil {
+		return ""
+	}
+	return t.chain(name).policy
+}
+
+// SetPolicy は base chain の policy を手で変える（`nft chain ... { policy ... ; }`）。
+func (n *NFT) SetPolicy(family, tbl, name, policy string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.table(family, tbl).chain(name).policy = policy
 }
 
 // DeleteRule は chain の i 番目のルールを消す（`nft delete rule ... handle`）。
@@ -239,6 +280,13 @@ func (n *NFT) Run(_ context.Context, args []string, stdin []byte) ([]byte, error
 			return nil, noSuchTable(args[4], args[5])
 		}
 		return []byte(listText(t)), nil
+	case strings.HasPrefix(a, "list table ") && len(args) == 4:
+		defer n.mu.Unlock()
+		t := n.table(args[2], args[3])
+		if t == nil {
+			return nil, noSuchTable(args[2], args[3])
+		}
+		return []byte(handleRe.ReplaceAllString(listText(t), "")), nil
 	case a == "-c -f -" || a == "-f -":
 		defer n.mu.Unlock()
 		work := n.clone()
@@ -305,8 +353,27 @@ func (n *NFT) exec(script string) error {
 		c := t.chain(f[4])
 		switch cmd {
 		case "add chain":
+			spec := ""
+			if len(f) > 5 {
+				if f[5] != "{" || f[len(f)-1] != "}" {
+					return fail("syntax error, unexpected " + f[5])
+				}
+				spec = strings.Join(f[6:len(f)-1], " ")
+			}
 			if c == nil {
-				t.chains = append(t.chains, &chain{name: f[4], handle: t.alloc()})
+				c = &chain{name: f[4], handle: t.alloc()}
+				t.chains = append(t.chains, c)
+			} else if spec != "" && c.typ == "" {
+				return fail(`Chain of type "filter" is not supported, perhaps kernel support is missing?`)
+			}
+			if spec != "" {
+				prev := *c
+				if err := c.setSpec(spec); err != nil {
+					return fail(err.Error())
+				}
+				if prev.typ != "" && (prev.typ != c.typ || prev.hook != c.hook || prev.prio != c.prio) {
+					return fail("Could not process rule: Device or resource busy")
+				}
 			}
 		case "flush chain":
 			if c == nil {
@@ -356,7 +423,40 @@ func jumpsTo(rule, chain string) bool {
 	return false
 }
 
-var counterRe = regexp.MustCompile(`counter packets \d+ bytes \d+`)
+var (
+	counterRe = regexp.MustCompile(`counter packets \d+ bytes \d+`)
+	handleRe  = regexp.MustCompile(` # handle \d+`)
+)
+
+// setSpec は base chain の宣言（"type filter hook input priority 0 ; policy
+// drop ;"、priority は数か filter）を c に当てる。
+func (c *chain) setSpec(spec string) error {
+	for _, part := range strings.Split(spec, ";") {
+		f := strings.Fields(part)
+		switch {
+		case len(f) == 0:
+		case f[0] == "policy" && len(f) == 2 && (f[1] == "accept" || f[1] == "drop"):
+			c.policy = f[1]
+		case f[0] == "type" && len(f) == 6 && f[2] == "hook" && f[4] == "priority":
+			prio := 0
+			if f[5] != "filter" {
+				if _, err := fmt.Sscanf(f[5], "%d", &prio); err != nil {
+					return fmt.Errorf("syntax error, unexpected %s", f[5])
+				}
+			}
+			c.typ, c.hook, c.prio = f[1], f[3], prio
+		default:
+			return fmt.Errorf("syntax error, unexpected %s", f[0])
+		}
+	}
+	if c.typ == "" {
+		return fmt.Errorf("syntax error, a base chain needs type ... hook ... priority")
+	}
+	if c.policy == "" {
+		c.policy = "accept"
+	}
+	return nil
+}
 
 // store はルール文を nft が持つ形にする（空白を 1 つに・カウンタの値を落とす・
 // Rewrite）。
@@ -386,8 +486,8 @@ func listText(t *table) string {
 	for _, c := range t.chains {
 		sep()
 		fmt.Fprintf(&b, "\tchain %s { # handle %d\n", c.name, c.handle)
-		if c.typeDef != "" {
-			fmt.Fprintf(&b, "\t\t%s\n", c.typeDef)
+		if d := c.typeDef(); d != "" {
+			fmt.Fprintf(&b, "\t\t%s\n", d)
 		}
 		for _, r := range c.rules {
 			fmt.Fprintf(&b, "\t\t%s # handle %d\n", r.text, r.handle)
@@ -409,8 +509,8 @@ func listJSON(t *table) []byte {
 	}
 	for _, c := range t.chains {
 		m := map[string]any{"family": t.family, "table": t.name, "name": c.name, "handle": c.handle}
-		if c.typeDef != "" {
-			m["type"], m["hook"], m["prio"], m["policy"] = "filter", "input", 0, "accept"
+		if c.typ != "" {
+			m["type"], m["hook"], m["prio"], m["policy"] = c.typ, c.hook, c.prio, c.policy
 		}
 		objs = append(objs, map[string]any{"chain": m})
 	}

@@ -96,6 +96,8 @@ $ sakutei status --intent intent/ --provider-config providers.yaml
 
 ホストごとに 1 本の ssh の master（`ControlMaster`）を立て、コマンドはそこに相乗りする（周ごとに TCP と鍵交換をし直さない）。master は `control_persist` の間使われなければ自分で終わり、死んでいれば次のコマンドで立て直す。ソケットは `control_dir`（既定は `$XDG_RUNTIME_DIR/sakutei-ssh`、無ければ `<一時ディレクトリ>/sakutei-ssh-<uid>`）に置く。このディレクトリは自分の uid の 0700 でなければ使わない。unix ソケットのパスには長さの上限（約 104 バイト）があるので、長すぎるとエラーになる（`control_dir` を短いパスにする）。
 
+例外は、nftables の base chain を変えた後の到達の確かめ（Backlog #173、[providers/nftables.md](providers/nftables.md) の「締め出しの守り」）。いまの master は既存の接続なので FW の新しい規則を通らないことがある。確かめは master に相乗りせず（`ControlPath=none`）、新しい ssh の接続で `true` を走らせる（sudo は付けない。前の失敗で新しい接続を控えることもしない）。
+
 ## 権限
 
 - `sudo: true` なら、すべてのコマンド（nft、ゾーンファイルを読み書きする `sh`、再読み込みのコマンド）の前に `sudo -n --` を付ける。`-n` なのでパスワードは尋ねない。sudoers で NOPASSWD を与えておく。

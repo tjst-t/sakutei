@@ -32,6 +32,11 @@ package reconcile
 //     Tier1 なので待たずにそこで終える）: 確かめられなかった（unknown ≠
 //     ineffective）。数えない。
 //
+// provider が Apply を対象の側で巻き戻したと言った（provider.RolledBackError、
+// Backlog #173。nftables の base chain の変更の後に新しい接続で届かなかった）
+// ときは、同じ Apply はまた巻き戻されるので、回数を待たずにその場で止める
+// （RolledBack、reason rolled_back）。
+//
 // 止めたリソースは、Diff の中身（desired か観測の値）が変わったとき（Gate）、
 // Diff が消えたとき（Settled）、人が解いたとき（Release、"sakutei apply-check
 // release"）に解く。
@@ -305,6 +310,8 @@ func (r ApplyRecord) StopReasonText() string {
 	case StopMaxDuration:
 		return fmt.Sprintf("Applies of the same diff have not taken for %s (limit %s; %d Apply(s))",
 			r.Last.Sub(r.First).Round(time.Second), r.Limits.MaxDuration, r.Applies)
+	case StopRolledBack:
+		return "the Apply was rolled back on the target: what it changed could not be confirmed (e.g. the target could not be reached over a new connection after it), so the target restored what it had before (#173)"
 	}
 	return fmt.Sprintf("%d Apply(s) of the same diff did not take", r.Applies)
 }
@@ -313,6 +320,9 @@ func (r ApplyRecord) StopReasonText() string {
 const (
 	StopMaxApplies  = "max_ineffective_applies"
 	StopMaxDuration = "max_ineffective_duration"
+	// StopRolledBack は provider が Apply を対象の側で巻き戻したと言った
+	// （provider.IsRolledBack、Backlog #173）。1 回で止める。
+	StopRolledBack = "rolled_back"
 )
 
 // ApplyChecker は効かない Apply の記録（S3）。安全に並行に呼べる（常駐では
@@ -394,6 +404,25 @@ func (c *ApplyChecker) Ineffective(id core.ID, fp, diffText string, lim ApplyChe
 			r.Stopped, r.StoppedAt, r.Reason = true, now, StopMaxDuration
 		}
 	}
+	c.fresh = append(c.fresh, *r)
+	return *r
+}
+
+// RolledBack は fp の Diff の Apply が対象の側で巻き戻された（provider の
+// RolledBackError、Backlog #173）ことを数え、その Diff への Apply をすぐに止める
+// （同じ Apply はまた巻き戻されるので、次の周に繰り返さない）。解き方は効かない
+// Apply と同じ（Diff が変わる・現実が宣言どおりになる・人が解く）。
+func (c *ApplyChecker) RolledBack(id core.ID, fp, diffText string, lim ApplyCheckLimits, now time.Time) ApplyRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	r, ok := c.recs[id.Key()]
+	if !ok || r.Fingerprint != fp {
+		r = &ApplyRecord{ID: id, Fingerprint: fp, First: now}
+		c.recs[id.Key()] = r
+	}
+	r.Diff, r.Limits, r.Last = diffText, lim, now
+	r.Applies++
+	r.Stopped, r.StoppedAt, r.Reason = true, now, StopRolledBack
 	c.fresh = append(c.fresh, *r)
 	return *r
 }

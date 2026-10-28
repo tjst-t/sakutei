@@ -161,10 +161,16 @@ func TestLive_ManagementBoundary(t *testing.T) {
 			t.Errorf("[AC-121-1-3] an unmanaged table was read: %v", c)
 		}
 	}
+	// #173: a base chain is read only because it is declared (List does not
+	// list it); a regular declaration of it is refused by the PlanRefiner and
+	// Apply never changes it without the lockout guard.
+	if obs, err := p.Read(context.Background(), "inet/filter/input"); err != nil || obs.State["hook"].Value != "input" {
+		t.Errorf("[AC-173-1-1] Read of the base chain = %v, %v", obs.State, err)
+	}
+	if _, err := p.Read(context.Background(), "ip/other/x"); !isPermanent(err) {
+		t.Errorf("[AC-121-1-3] Read ip/other/x: want PermanentError, got %v", err)
+	}
 	for _, id := range []string{"inet/filter/input", "ip/other/x"} {
-		if _, err := p.Read(context.Background(), id); !isPermanent(err) {
-			t.Errorf("[AC-121-1-3] Read %s: want PermanentError, got %v", id, err)
-		}
 		before := fake.Dump()
 		err := p.Apply(context.Background(), core.Plan{Ops: []core.Op{chainOp(core.OpKindUpdate, id, "drop")}})
 		if !isPermanent(err) {
@@ -397,8 +403,9 @@ func TestLive_RecordedOutput(t *testing.T) {
 	if got, ok := rulesOf(t, p, "inet/filter/empty"); !ok || got != "" {
 		t.Errorf("[AC-121-1-1] empty = %q, %v", got, ok)
 	}
-	if _, err := p.Read(context.Background(), "inet/filter/input"); !isPermanent(err) {
-		t.Errorf("[AC-121-1-1] the base chain must be refused, got %v", err)
+	// #173: the base chain is not listed, and read with its hook and policy.
+	if obs, err := p.Read(context.Background(), "inet/filter/input"); err != nil || obs.State["hook"].Value != "input" || obs.State["policy"].Value == "" {
+		t.Errorf("[AC-173-1-1] the base chain = %v, %v", obs.State, err)
 	}
 }
 

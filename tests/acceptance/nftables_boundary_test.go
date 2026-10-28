@@ -225,9 +225,15 @@ define ssh_port = 22
 		t.Fatalf("[#68-2] Delete rewrote lines outside the deleted chains\ngot:\n%s\nwant:\n%s", got, afterDelete)
 	}
 
-	// base chain（type と policy を別の行に書いたもの）は管理の外のまま。
-	if _, err := p.Read(ctx, "inet/filter/input"); !sdk.IsPermanent(err) {
-		t.Errorf("[#68-2] base chain with split type/policy lines must be a PermanentError on Read; got %v", err)
+	// base chain（type と policy を別の行に書いたもの）は宣言したときだけ扱う
+	// （#173）: Read は type・policy を別の行から読み、宣言が regular chain なら
+	// 計画の時点で断る（上の Update・Create・Delete でも行はそのまま）。
+	obs, err := p.Read(ctx, "inet/filter/input")
+	if err != nil || obs.State["hook"].Value != "input" || obs.State["policy"].Value != "drop" {
+		t.Errorf("[#173] base chain with split type/policy lines: Read = %v, %v", obs.State, err)
+	}
+	if _, err := p.RefinePlan("inet/filter/input", obs.State, map[string]string{"rules": "drop"}, nil); err == nil {
+		t.Errorf("[#173] a regular declaration of the base chain must be refused at plan time")
 	}
 	t.Logf("[#68-2] PASS: set/map/counter/define/other tables and base chains survive Update/Create/Delete")
 }

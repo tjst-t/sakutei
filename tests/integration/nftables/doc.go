@@ -17,8 +17,15 @@
 // 中で回し、sakutei の CLI（plan・reconcile・status）をそこへ向ける。ホストの
 // FW には触れない。
 //
+// base chain の policy drop と締め出しの守り（Backlog #173）は、sshd・nft・sudo の
+// 入った使い捨ての docker のコンテナ（自分の network namespace を持つ）に手元から
+// ssh で入り、policy drop にして到達を確かめる・ssh を塞ぐ宣言が時間切れで元の
+// ruleset に戻る・sakutei が落ちてもホストの側で戻る、を確かめる
+// （lockout_integration_test.go）。手元の live（確かめは TCP の宛先）も namespace で
+// 確かめる。
+//
 // テストは build tag integration_nftables の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-nftables
-// （nft・unshare・nsenter と sudo（パスワードなし）が要る）。手順と結果は
+// （nft・unshare・nsenter・docker・ssh・ssh-keygen と sudo（パスワードなし）が要る）。手順と結果は
 // docs/providers/nftables.md の「統合テスト」。
 package nftables

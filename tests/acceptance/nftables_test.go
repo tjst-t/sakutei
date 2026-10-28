@@ -373,12 +373,14 @@ func TestNFTables_ApplyAtomicAndIdempotent(t *testing.T) {
 	t.Logf("[AC-Sc7a647-1-2] PASS: atomic write + idempotent + order-preserving Read")
 }
 
-// TestNFTables_BaseChainIsPermanentError verifies that a base chain (one with a
-// type/hook/policy declaration) is treated as a management-boundary violation:
-// Read returns a PermanentError rather than silently mismanaging it, and the
-// chain is excluded from List (analog to dnszone excluding SOA/NS).
+// TestNFTables_BaseChainIsPermanentError verifies the management boundary of a
+// base chain (one with a type/hook/policy declaration): it is excluded from
+// List (analog to dnszone excluding SOA/NS), and since #173 it is managed only
+// when the intent declares it as one — Read observes it with its type, hook,
+// priority and policy, and a regular declaration of it is refused at plan time
+// (PlanRefiner) rather than silently mismanaging it.
 //
-// [AC-Sc7a647-1-2] [AC-Sc7a647-1-3]
+// [AC-Sc7a647-1-2] [AC-Sc7a647-1-3] [AC-173-1-4]
 func TestNFTables_BaseChainIsPermanentError(t *testing.T) {
 	// [AC-Sc7a647-1-2]
 	tmp := t.TempDir()
@@ -396,13 +398,14 @@ table ip filter {
 `)
 	p := nftables.New(rulesetPath)
 
-	// Reading the base chain must be a PermanentError.
-	_, err := p.Read(context.Background(), "ip/filter/input")
-	if err == nil {
-		t.Fatal("[AC-Sc7a647-1-2] base chain Read should return an error")
+	// Reading the base chain gives its declaration (#173).
+	base, err := p.Read(context.Background(), "ip/filter/input")
+	if err != nil || base.State["policy"].Value != "drop" || base.State["hook"].Value != "input" {
+		t.Fatalf("[AC-173-1-1] base chain Read = %v, %v", base.State, err)
 	}
-	if !sdk.IsPermanent(err) {
-		t.Errorf("[AC-Sc7a647-1-2] base chain Read error should be Permanent; got %v", err)
+	// A regular declaration of it is refused at plan time.
+	if _, err := p.RefinePlan("ip/filter/input", base.State, map[string]string{"family": "ip", "table": "filter", "chain": "input", "rules": "drop"}, nil); err == nil {
+		t.Error("[AC-173-1-4] a regular declaration of the base chain must be refused")
 	}
 
 	// The regular chain is readable.
@@ -421,7 +424,7 @@ table ip filter {
 			t.Errorf("[AC-Sc7a647-1-2] List must exclude base chain, but returned %q", id.Local)
 		}
 	}
-	t.Logf("[AC-Sc7a647-1-2] PASS: base chain → PermanentError + excluded from List; regular chain managed")
+	t.Logf("[AC-Sc7a647-1-2] PASS: base chain → refused as a regular chain + excluded from List; regular chain managed")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

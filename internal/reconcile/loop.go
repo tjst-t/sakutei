@@ -2859,9 +2859,19 @@ func runCycleAsync(
 		}
 	}
 
+	// #173: an Apply the provider rolled back on the target (its effect could
+	// not be confirmed) is not repeated: the same diff is stopped at once.
+	rolledBack := func(r diff.DesiredResource, plan core.Plan, applyErr error) {
+		if !provider.IsRolledBack(applyErr) {
+			return
+		}
+		rec := checker.RolledBack(r.ID, ApplyFingerprint(r, plan.Ops), DiffText(plan.Ops), applyLimits(r), time.Now())
+		EmitApplyIneffective(cfg.ErrOut, "sakutei: ", rec)
+	}
+
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
 		ctx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, quietHeld, waitingHeld, ready, cfg.ErrOut,
-		dispatch, commit, launchTask, verify)
+		dispatch, commit, launchTask, verify, rolledBack)
 	backedOff = backedOffList
 	if waveErr != nil {
 		return CycleResult{Observed: observed, Observe: obsStats, Ineffective: ineffective}, waveErr
@@ -3182,6 +3192,7 @@ func applyWavesAsync(
 	commitFn func([]core.Op),
 	taskFn func(diff.DesiredResource, core.Plan),
 	verifyFn func(context.Context, diff.DesiredResource, core.Plan),
+	failFn func(diff.DesiredResource, core.Plan, error),
 ) (applied, launched int, backedOff, skipped []string, err error) {
 	n := len(desired)
 	if n == 0 {
@@ -3338,6 +3349,9 @@ func applyWavesAsync(
 				if applyErr := exec.Execute(ctx, fp, planCopy); applyErr != nil {
 					EmitApplyFailed(errOut, "sakutei: ", "apply", idCopy, applyErr)
 					ifl.RecordFailure(localCopy, applyErr)
+					if failFn != nil {
+						failFn(resCopy, planCopy, applyErr)
+					}
 				} else {
 					// Success: clear any prior backoff for this resource.
 					ifl.ClearBackoff(localCopy)

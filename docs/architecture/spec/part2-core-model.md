@@ -774,6 +774,22 @@ external_owners:
 観測だけの provider（§23.4）のものは absent にできず、ほかのリソースが `depends_on` で依るものも absent にできない。どれも
 理想状態ロード時の同じ入口で断る。
 
+**FW の既定の拒否と到達性の最小の核（v3.46、Backlog #173）**：nftables の base chain（hook を持ち、`policy` で既定の判定を
+決める chain）は、intent が base chain として宣言したとき（`type`・`hook`・`priority`・`policy` の 4 つ）だけ管理の内側に入る。
+宣言していない base chain は今までどおり境界の外で、読まず・書かず・List にも出さない（status の宣言外にも出ない）。宣言が
+regular chain なのに現実が base chain のものは計画の時点で断る（policy を言わずに既定の拒否の chain のルールを変えさせない）。
+既定で拒否する FW は、Sakutei 自身の管理の経路（ssh）をその宣言の中で通さなければ、宣言どおりに収束した瞬間に Sakutei を
+締め出す。そこで次の 2 つを境界として置く。
+
+- **到達性の最小の核は Sakutei の外で保守する。** 管理の ssh を通す規則などの最小の核は、宣言した base chain から `jump` する
+  regular chain などに置き、intent の `external_owners:`（§7.3（c））か scope（§4.2）で外す（段0、§23 の持ち物と同じ扱い）。
+  nftables では、ほかの base chain の `accept` はこの chain の `policy drop` を越えない（`drop` だけが最終の判定）ので、核は
+  宣言した base chain から辿れる場所に置く。
+- **base chain を変える Apply は締め出しの守りを通す**（NETCONF の commit confirmed と同じ考え）：変える前の table の写しを取り、
+  対象のホストの側に時間切れで写しへ戻す仕掛けを置いてから 1 つのトランザクションで流し、**新しい接続**で到達を確かめてから
+  仕掛けを取り消す。確かめられなければ仕掛けが戻し（Sakutei との接続が切れても戻る）、Apply は巻き戻されたとして失敗し、
+  同じ差分の Apply を止める（§11.1 Tier3 の oscillating と同じ扱い）。決まりの細部は §29.1。
+
 ### §7.5 合成リソースの子への ownership 伝播（managed_by）
 
 合成リソース（§9 render フェーズ2 で下位リソース群を上位1つに束ねる）は、**下位を別 Resource として依存グラフに乗せる**（1つの provider に押し込まない）。子が独立した Resource だからこそ、子 50 個の削除を「1 リソースの変更」ではなく「50 件の削除」として rate limit（§13）で halt できる——合成を単一 Provider にすると安全機構が効かなくなる。

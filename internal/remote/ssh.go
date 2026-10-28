@@ -173,6 +173,28 @@ func (s *SSH) Hold(ctx context.Context, argv []string) (func() error, error) {
 	return func() error { return s.classify(release()) }, nil
 }
 
+// Probe は master に相乗りせず新しい ssh の接続を張り、相手で true を走らせる
+// （Backlog #173：FW を変えた後に、新しい接続で届くかを確かめる）。sudo は
+// 付けない。前の失敗で新しい接続を控えることはせず、この失敗も記録しない
+// （確かめは何度も張り直す。ほかの呼び出しを止めない）。届かない・認証の失敗・
+// ホスト鍵の不一致は *ConnError。
+func (s *SSH) Probe(ctx context.Context) error {
+	ctx, cancel := withTimeout(ctx, s.h.Timeout)
+	defer cancel()
+	keyPath, done, err := s.writeKey(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	args, err := s.baseArgs(keyPath)
+	if err != nil {
+		return err
+	}
+	args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none", "--", s.h.Address, "true")
+	_, err = runCmd(ctx, exec.CommandContext(ctx, s.h.SSH, args...), nil)
+	return connError(s.h.Name, err)
+}
+
 // remoteCommand は argv（sudo なら前に sudo -n --）を引用した 1 本の文字列にする。
 func (s *SSH) remoteCommand(argv []string) (string, error) {
 	if s.h.Sudo {
@@ -387,11 +409,21 @@ func alive(sock string) bool {
 // classify は ssh の終わり方を分ける: 255 で終わったのは ssh 自身の失敗
 // （*ConnError）、それ以外はそのまま（リモートのコマンドの終了）。
 func (s *SSH) classify(err error) error {
+	err = connError(s.h.Name, err)
+	var ce *ConnError
+	if errors.As(err, &ce) {
+		s.noteFailure(ce)
+	}
+	return err
+}
+
+// connError は ssh が 255 で終わったのを *ConnError にする（それ以外はそのまま）。
+func connError(target string, err error) error {
 	var ee *ExitError
 	if !errors.As(err, &ee) || ee.Code != 255 {
 		return err
 	}
-	ce := &ConnError{Target: s.h.Name, Kind: Unreachable, Detail: firstLines(ee.Stderr)}
+	ce := &ConnError{Target: target, Kind: Unreachable, Detail: firstLines(ee.Stderr)}
 	switch msg := ee.Stderr; {
 	case strings.Contains(msg, "Host key verification failed"),
 		strings.Contains(msg, "REMOTE HOST IDENTIFICATION HAS CHANGED"),
@@ -403,7 +435,6 @@ func (s *SSH) classify(err error) error {
 		strings.Contains(msg, "Load key"):
 		ce.Kind = AuthFailed
 	}
-	s.noteFailure(ce)
 	return ce
 }
 

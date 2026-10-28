@@ -22,8 +22,15 @@ package nftables
 //     {family, table, chain}・同じ local id・同じ Ordered の rules を使うので、
 //     intent は対象（--ruleset-target file|live）を変えてもそのまま使える。
 //   - 管理するのは設定で名指しした table（TableRef、必須）の regular chain
-//     だけ。base chain（type/hook を持つ）・set・map・名指ししていない table は
-//     読みもせず書きもしない（§7、Backlog #68 と同じ管理境界）。
+//     と、intent が base chain として宣言した chain（Backlog #173、basechain.go）
+//     だけ。宣言していない base chain（type/hook を持つ）・set・map・名指し
+//     していない table は読みもせず書きもしない（§7、Backlog #68 と同じ管理
+//     境界）。List・BulkObserve は base chain を出さない（宣言したものは Read が
+//     観測する）。
+//   - base chain を変える Apply は締め出しの守り（guard.go）を通す: 写しを取り、
+//     ホストの側に時間切れの巻き戻しを仕掛けてから流し、新しい接続で到達を
+//     確かめてから仕掛けを取り消す。確かめられなければ巻き戻しに任せて
+//     provider.RolledBackError を返す。
 //   - 観測は table ごとに nft を 2 回: `nft -j list table <family> <name>` の
 //     JSON で構造（chain の並び・base かどうか・ルールの handle の並び）を、
 //     `nft -a -s list table <family> <name>` のテキストで handle ごとのルール文を
@@ -55,6 +62,7 @@ package nftables
 //     だけ complete。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,7 +80,7 @@ import (
 
 // liveProviderVersion は live 版の正規化のソースハッシュ。canonRule や読み方を
 // 変えたら増分すること（cause-tag C（ghost diff）検出のため）。
-const liveProviderVersion = "nftables-live-v1.0.0"
+const liveProviderVersion = "nftables-live-v1.1.0" // v1.1.0: base chain の宣言（Backlog #173）
 
 // 対象（config の ruleset_target、CLI の --ruleset-target）。
 const (
@@ -144,6 +152,12 @@ type LiveConfig struct {
 	// Hosts は扱う離れたホスト（Backlog #130）。空なら手元（Runner / NFT）。
 	// 空でなければ Runner と NFT は使わず、id の先頭にホストの名前が付く。
 	Hosts []LiveHost
+	// Guard は手元の締め出しの守り（Backlog #173）。nil なら手元の base chain は
+	// 変えない（Apply は PermanentError。確かめの宛先を設定していない）。
+	Guard Guard
+	// RollbackAfter は base chain を変えた後、確かめられなければ写しに戻すまでの
+	// 時間（0 は DefaultRollbackAfter）。確かめはその半分まで。
+	RollbackAfter time.Duration
 }
 
 // LiveHost は live が扱う 1 つのホスト。
@@ -152,12 +166,16 @@ type LiveHost struct {
 	Name string
 	// Runner はそのホストで nft を走らせる（例 RemoteRunner）。
 	Runner Runner
+	// Guard はそのホストの締め出しの守り（Backlog #173）。nil ならそのホストの
+	// base chain は変えない。
+	Guard Guard
 }
 
 // liveHost は Provider の中の 1 つのホスト（手元なら name ""）。
 type liveHost struct {
 	name   string
 	runner Runner
+	guard  Guard
 }
 
 // LiveProvider manages the regular chains of the named tables in the kernel's
@@ -169,6 +187,8 @@ type LiveProvider struct {
 	multi  bool
 	tables []TableRef
 	scope  core.Scope
+	// rollbackAfter は時間切れの巻き戻しの上限（Backlog #173）。
+	rollbackAfter time.Duration
 }
 
 // NewLive は live の Provider を作る。Tables が空なら error。
@@ -181,13 +201,16 @@ func NewLive(cfg LiveConfig, opts ...Option) (*LiveProvider, error) {
 		opt(&s)
 	}
 	tables := append([]TableRef(nil), cfg.Tables...)
-	p := &LiveProvider{tables: tables, scope: s.scope}
+	p := &LiveProvider{tables: tables, scope: s.scope, rollbackAfter: cfg.RollbackAfter}
+	if p.rollbackAfter <= 0 {
+		p.rollbackAfter = DefaultRollbackAfter
+	}
 	if len(cfg.Hosts) == 0 {
 		r := cfg.Runner
 		if r == nil {
 			r = ExecRunner{Path: cfg.NFT}
 		}
-		p.hosts = []liveHost{{runner: r}}
+		p.hosts = []liveHost{{runner: r, guard: cfg.Guard}}
 		return p, nil
 	}
 	p.multi = true
@@ -200,7 +223,7 @@ func NewLive(cfg LiveConfig, opts ...Option) (*LiveProvider, error) {
 			return nil, fmt.Errorf("nftables: live: host %q is listed twice", h.Name)
 		}
 		seen[h.Name] = true
-		p.hosts = append(p.hosts, liveHost{name: h.Name, runner: h.Runner})
+		p.hosts = append(p.hosts, liveHost{name: h.Name, runner: h.Runner, guard: h.Guard})
 	}
 	return p, nil
 }
@@ -230,8 +253,10 @@ var (
 )
 
 // Read observes one chain.  table が無い・chain が無いのは absent、nft が
-// 走らない・出力が読めないのは unknown（TransientError）、base chain・
-// 管理しない table・読み分けられないルールを持つ chain は PermanentError。
+// 走らない・出力が読めないのは unknown（TransientError）、管理しない table・
+// 読み分けられないルールを持つ chain は PermanentError。base chain は type・
+// hook・priority・policy 付きで返す（Read は宣言したものにだけ呼ばれる。宣言が
+// regular chain なら PlanRefiner が断る、Backlog #173）。
 func (p *LiveProvider) Read(ctx context.Context, localID string) (core.Observation, error) {
 	h, ref, chain, err := p.coords(localID)
 	if err != nil {
@@ -251,7 +276,8 @@ func (p *LiveProvider) Read(ctx context.Context, localID string) (core.Observati
 	return core.Observation{Availability: core.AvailabilityOk, State: c.state(ref), ObservedAt: time.Now()}, nil
 }
 
-// List は管理する table の regular chain をすべて返す。全 table を読めたとき
+// List は管理する table の regular chain をすべて返す（base chain は出さない。
+// 宣言していない base chain を status の宣言外に出さない、Backlog #173）。全 table を読めたとき
 // だけ ListComplete で、1 つでも読めなければ error（complete-or-error、§5.4）。
 func (p *LiveProvider) List(ctx context.Context, _ core.Scope) (core.ListResult, error) {
 	var ids []core.ID
@@ -262,7 +288,7 @@ func (p *LiveProvider) List(ctx context.Context, _ core.Scope) (core.ListResult,
 				return core.ListResult{}, observeErr(fmt.Errorf("nftables: List: %w", err))
 			}
 			for _, c := range tbl.chains {
-				if c.refuse(ref, h.name) == nil {
+				if !c.base && c.refuse(ref, h.name) == nil {
 					ids = append(ids, core.NewID(ProviderName, p.scope, hostLocalID(h.name, ref, c.name)))
 				}
 			}
@@ -310,7 +336,7 @@ func (h liveHost) bulk(ctx context.Context, p *LiveProvider, now time.Time) (map
 			return nil, err
 		}
 		for _, c := range tbl.chains {
-			if c.refuse(ref, h.name) != nil {
+			if c.base || c.refuse(ref, h.name) != nil {
 				continue
 			}
 			obs[core.NewID(ProviderName, p.scope, hostLocalID(h.name, ref, c.name)).Key()] = core.Observation{
@@ -345,12 +371,18 @@ func (p *LiveProvider) ValidateIntent(localID string, fields map[string]string) 
 			return fmt.Errorf("rules[%d]: %w", i, err)
 		}
 	}
-	return nil
+	return validateBase(ref.Family, fields, localID)
 }
 
 // RefinePlan は rules の差分のうち、正規形にすると観測と同じもの（空白や
-// カウンタの値だけの違い）を落とす。I/O はしない。
-func (p *LiveProvider) RefinePlan(_ string, _ core.State, _ map[string]string, ops []core.Op) ([]core.Op, error) {
+// カウンタの値だけの違い）と、priority の差分のうち数に直すと観測と同じもの
+// （"filter" と "0"、Backlog #173）を落とす。現実が base chain なのに宣言が
+// regular chain のものは断る（Backlog #173）。I/O はしない。
+func (p *LiveProvider) RefinePlan(localID string, observed core.State, desired map[string]string, ops []core.Op) ([]core.Op, error) {
+	family := ""
+	if _, ref, _, err := p.coords(localID); err == nil {
+		family = ref.Family
+	}
 	out := make([]core.Op, 0, len(ops))
 	for _, op := range ops {
 		if op.Kind == core.OpKindUpdate {
@@ -365,7 +397,7 @@ func (p *LiveProvider) RefinePlan(_ string, _ core.State, _ map[string]string, o
 		}
 		out = append(out, op)
 	}
-	return out, nil
+	return refineBase(family, localID, observed, desired, out)
 }
 
 // chainCheck は Apply の後に読み戻して確かめる 1 つの chain。
@@ -375,11 +407,15 @@ type chainCheck struct {
 	chain   string
 	rules   []string // 宣言のルール（正規形）
 	deleted bool
+	// def は名指しした base chain の宣言（base のときだけ）。
+	base bool
+	def  baseDef
 }
 
 // Apply は plan の op を 1 つの nft スクリプトにし、`nft -c -f -` で検査して
 // から `nft -f -` で 1 つのトランザクションとして流す。流した後に読み戻し、
-// 宣言の正規形と違えば PermanentError。
+// 宣言の正規形と違えば PermanentError。base chain を変えるときは締め出しの守り
+// （applyGuarded）を通す。
 func (p *LiveProvider) Apply(ctx context.Context, plan core.Plan) error {
 	// One transaction per host, in the order the hosts first appear.
 	var order []string
@@ -411,8 +447,10 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 	defer mu.Unlock()
 
 	tables := map[TableRef]*liveTable{}
+	var touched []TableRef // 変える table（写しを取る順）
 	var script strings.Builder
 	var checks []chainCheck
+	var baseChanged []string // 変える base chain の id
 	for _, op := range ops {
 		_, ref, chain, err := p.coords(op.Target.Local)
 		if err != nil {
@@ -432,18 +470,17 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 			}
 		}
 		target := ref.Family + " " + ref.Name + " " + chain
+		before := script.Len()
 
 		switch op.Kind {
 		case core.OpKindCreate, core.OpKindUpdate:
-			var enc string
-			has := false
+			to := map[string]string{}
 			for _, f := range op.Fields {
-				if f.Field == "rules" {
-					enc, has = f.To, true
-				}
+				to[f.Field] = f.To
 			}
-			if op.Kind == core.OpKindUpdate && !has && cur != nil {
-				continue // rules は変わらない
+			enc, has := to["rules"]
+			if !has && cur != nil {
+				enc = strings.Join(cur.rules, RuleSep) // rules は変わらない
 			}
 			rules := splitRules(enc)
 			for i, r := range rules {
@@ -451,19 +488,58 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 					return provider.NewPermanentError(fmt.Errorf("nftables: Apply: %s rules[%d]: %w", op.Target.Local, i, err))
 				}
 			}
-			if cur == nil {
+			// A base chain: declared as one (the op carries what changed, the
+			// rest is as observed), or one in reality whose declaration the
+			// PlanRefiner let through.
+			named := declaresBase(to) || (cur != nil && cur.base)
+			var def baseDef
+			if named {
+				fields := map[string]string{}
+				if cur != nil && cur.base {
+					fields["type"], fields["hook"], fields["priority"], fields["policy"] = cur.def.typ, cur.def.hook, cur.def.priority, cur.def.policy
+				}
+				for _, f := range baseFields {
+					if v, ok := to[f]; ok {
+						fields[f] = v
+					}
+				}
+				if def, err = checkBaseFields(ref.Family, fields, op.Target.Local); err != nil {
+					return provider.NewPermanentError(fmt.Errorf("nftables: Apply: %w", err))
+				}
+			}
+			fresh := true // 空の chain から（ルールを足し直す）
+			switch {
+			case cur == nil:
 				if !tbl.exists {
 					fmt.Fprintf(&script, "add table %s %s\n", ref.Family, ref.Name)
+					tbl.exists = true
 				}
-				fmt.Fprintf(&script, "add chain %s\n", target)
+				writeAddChain(&script, target, named, def)
+			case named && (!cur.base || !cur.def.sameHook(def)):
+				// type・hook・priority は今ある chain の上では変えられない（regular
+				// から base にもできない）: 同じトランザクションで作り直す。
+				fmt.Fprintf(&script, "flush chain %s\ndelete chain %s\n", target, target)
+				writeAddChain(&script, target, true, def)
+			case named && cur.def.policy != def.policy:
+				writeAddChain(&script, target, true, def) // policy だけを入れ替える
+				fresh = has
+			default:
+				fresh = has
 			}
-			fmt.Fprintf(&script, "flush chain %s\n", target)
 			canon := make([]string, 0, len(rules))
+			if fresh {
+				fmt.Fprintf(&script, "flush chain %s\n", target)
+				for _, r := range rules {
+					fmt.Fprintf(&script, "add rule %s %s\n", target, r)
+				}
+			}
 			for _, r := range rules {
-				fmt.Fprintf(&script, "add rule %s %s\n", target, r)
 				canon = append(canon, canonRule(r))
 			}
-			checks = append(checks, chainCheck{host: h, ref: ref, chain: chain, rules: canon})
+			if script.Len() == before {
+				continue // 何も変わらない
+			}
+			checks = append(checks, chainCheck{host: h, ref: ref, chain: chain, rules: canon, base: named, def: def})
 
 		case core.OpKindDelete:
 			if cur == nil {
@@ -475,12 +551,23 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 		default:
 			return provider.NewPermanentError(fmt.Errorf("nftables: Apply: unknown op kind %v for %s", op.Kind, op.Target.Local))
 		}
+		if script.Len() > before {
+			if !containsRef(touched, ref) {
+				touched = append(touched, ref)
+			}
+			if declaresBase(opFields(op)) || (cur != nil && cur.base) {
+				baseChanged = append(baseChanged, hostLocalID(h.name, ref, chain))
+			}
+		}
 	}
 	if script.Len() == 0 {
 		return nil
 	}
 
 	body := []byte(script.String())
+	if len(baseChanged) > 0 {
+		return p.applyGuarded(ctx, h, touched, baseChanged, body, checks)
+	}
 	if _, err := h.runner.Run(ctx, []string{"-c", "-f", "-"}, body); err != nil {
 		return classifyApplyErr(h.what("nft -c (check)"), err, true)
 	}
@@ -488,6 +575,157 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 		return classifyApplyErr(h.what("nft -f"), err, false)
 	}
 	return p.verify(ctx, checks)
+}
+
+// opFields は op の To を map にする。
+func opFields(op core.Op) map[string]string {
+	m := make(map[string]string, len(op.Fields))
+	for _, f := range op.Fields {
+		m[f.Field] = f.To
+	}
+	return m
+}
+
+// writeAddChain は add chain の行を書く（base chain なら { type ... policy ... ; }）。
+func writeAddChain(w *strings.Builder, target string, base bool, def baseDef) {
+	if base {
+		fmt.Fprintf(w, "add chain %s { %s }\n", target, def.spec())
+		return
+	}
+	fmt.Fprintf(w, "add chain %s\n", target)
+}
+
+func containsRef(refs []TableRef, ref TableRef) bool {
+	for _, r := range refs {
+		if r == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// applyGuarded は base chain を変えるトランザクションを締め出しの守りを通して
+// 流す（guard.go の 1〜6）。確かめられなかった・巻き戻しが先に動いたときは
+// provider.RolledBackError。
+func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []TableRef, changed []string, body []byte, checks []chainCheck) error {
+	if h.guard == nil {
+		what := "set ruleset_confirm_address (--ruleset-confirm-address) to a host:port a new connection must reach after the change"
+		if h.name != "" {
+			what = "the host has no way to confirm reaching it"
+		}
+		return provider.NewPermanentError(fmt.Errorf("nftables: Apply: refusing to change base chain(s) %s without the lockout guard: %s", strings.Join(changed, ", "), what))
+	}
+	// 1. The tables as they are now.
+	var restore bytes.Buffer
+	for _, ref := range touched {
+		fmt.Fprintf(&restore, "add table %s %s\ndelete table %s %s\n", ref.Family, ref.Name, ref.Family, ref.Name)
+		out, err := h.runner.Run(ctx, []string{"list", "table", ref.Family, ref.Name}, nil)
+		if err != nil {
+			if noSuchTable(err) {
+				continue
+			}
+			return observeErr(fmt.Errorf("nftables: Apply: copy table %s before changing it: %w", ref, err))
+		}
+		restore.Write(out)
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			restore.WriteByte('\n')
+		}
+	}
+	// 2. Check.
+	if _, err := h.runner.Run(ctx, []string{"-c", "-f", "-"}, body); err != nil {
+		return classifyApplyErr(h.what("nft -c (check)"), err, true)
+	}
+	// 3. Arm the rollback on the host.
+	token, err := h.guard.Arm(ctx, restore.Bytes(), p.rollbackAfter)
+	if err != nil {
+		return remote.ProviderError(fmt.Errorf("nftables: Apply: %s: %w", h.what("lockout guard"), err))
+	}
+	fireAt := time.Now().Add(p.rollbackAfter)
+	// 4. Apply.
+	if _, err := h.runner.Run(ctx, []string{"-f", "-"}, body); err != nil {
+		if derr := h.guard.Disarm(ctx, token); derr != nil && !errors.Is(derr, ErrRollbackFired) {
+			// The rollback restores what was there (nothing was changed).
+			err = fmt.Errorf("%w (and the rollback could not be cancelled: %v; it restores the tables as they were)", err, derr)
+		}
+		return classifyApplyErr(h.what("nft -f"), err, false)
+	}
+	// 5. Confirm over a new connection, until half the time is gone.
+	confirmErr := p.confirm(ctx, h, fireAt.Add(-p.rollbackAfter/2))
+	tables := refsText(touched)
+	who := "the host"
+	if h.name != "" {
+		who = "host " + h.name
+	}
+	if confirmErr == nil {
+		// 6. Cancel the rollback.
+		derr := h.guard.Disarm(ctx, token)
+		if derr == nil {
+			return p.verify(ctx, checks)
+		}
+		if !errors.Is(derr, ErrRollbackFired) {
+			waitUntil(ctx, fireAt.Add(rollbackGrace(p.rollbackAfter)))
+		}
+		return provider.NewRolledBackError(fmt.Errorf(
+			"nftables: Apply: %s was reached after changing base chain(s) %s, but the rollback could not be cancelled (%v): it restored tables %s as they were before",
+			who, strings.Join(changed, ", "), derr, tables))
+	}
+	// Not confirmed: the rollback armed on the host puts the tables back.
+	waitUntil(ctx, fireAt.Add(rollbackGrace(p.rollbackAfter)))
+	return provider.NewRolledBackError(fmt.Errorf(
+		"nftables: Apply: %s could not be reached over a new connection within %s after changing base chain(s) %s (%v): the rollback armed on the host restored tables %s as they were before, after %s. Declare a rule that keeps the management path open (e.g. jump to the minimal chain kept outside Sakutei) and apply again",
+		who, p.rollbackAfter/2, strings.Join(changed, ", "), confirmErr, tables, p.rollbackAfter))
+}
+
+// confirm は until まで新しい接続での確かめを張り直す。届けば nil、届かなければ
+// 最後の error。
+func (p *LiveProvider) confirm(ctx context.Context, h liveHost, until time.Time) error {
+	interval := p.rollbackAfter / 20
+	if interval > time.Second {
+		interval = time.Second
+	}
+	for {
+		cctx, cancel := context.WithDeadline(ctx, until)
+		err := h.guard.Confirm(cctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil || time.Now().Add(interval).After(until) {
+			return err
+		}
+		waitUntil(ctx, time.Now().Add(interval))
+	}
+}
+
+// rollbackGrace は巻き戻しの上限の後、写しを流し終えるのを待つ余り。
+func rollbackGrace(after time.Duration) time.Duration {
+	g := after / 4
+	if g > 2*time.Second {
+		g = 2 * time.Second
+	}
+	return g
+}
+
+// waitUntil は t まで（ctx が終われば早く）待つ。
+func waitUntil(ctx context.Context, t time.Time) {
+	d := time.Until(t)
+	if d <= 0 {
+		return
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+func refsText(refs []TableRef) string {
+	out := make([]string, len(refs))
+	for i, r := range refs {
+		out[i] = r.String()
+	}
+	return strings.Join(out, ", ")
 }
 
 // verify は Apply の後に読み戻し、各 chain が宣言どおり（正規形で）かを確かめる。
@@ -512,6 +750,9 @@ func (p *LiveProvider) verify(ctx context.Context, checks []chainCheck) error {
 		}
 		if c == nil {
 			return provider.NewTransientError(fmt.Errorf("nftables: Apply: %s is not there after apply", id))
+		}
+		if ck.base && (!c.base || c.def != ck.def) {
+			return provider.NewTransientError(fmt.Errorf("nftables: Apply: %s is %q after apply, not %q", id, c.def.spec(), ck.def.spec()))
 		}
 		for i := 0; i < len(ck.rules) || i < len(c.rules); i++ {
 			var want, got string
@@ -563,6 +804,8 @@ type liveChain struct {
 	name   string
 	handle int
 	base   bool
+	// def は base chain の type・hook・priority・policy（base のときだけ）。
+	def baseDef
 	// opaque は rules を 1 本の文字列に符号化できない（RuleSep を含む）ルールを
 	// 持つかどうか。
 	opaque bool
@@ -578,12 +821,11 @@ func (t *liveTable) find(chain string) *liveChain {
 	return nil
 }
 
-// refuse は chain が管理境界の外なら理由を返す。
+// refuse は chain が管理境界の外なら理由を返す（base chain は宣言したときだけ
+// 扱う。List・BulkObserve が別に除く、Backlog #173）。
 func (c *liveChain) refuse(ref TableRef, host string) error {
 	id := hostLocalID(host, ref, c.name)
 	switch {
-	case c.base:
-		return fmt.Errorf("refusing to manage base chain %q (has type/hook/policy; management boundary)", id)
 	case c.opaque:
 		return fmt.Errorf("refusing to manage chain %q (a rule contains %q)", id, RuleSep)
 	case !identRe.MatchString(c.name):
@@ -593,12 +835,16 @@ func (c *liveChain) refuse(ref TableRef, host string) error {
 }
 
 func (c *liveChain) state(ref TableRef) core.State {
-	return core.State{
+	st := core.State{
 		"family": {Kind: core.FieldKindString, Value: ref.Family},
 		"table":  {Kind: core.FieldKindString, Value: ref.Name},
 		"chain":  {Kind: core.FieldKindString, Value: c.name},
 		"rules":  {Kind: core.FieldKindStringList, Value: strings.Join(c.rules, RuleSep)},
 	}
+	if c.base {
+		c.def.put(st)
+	}
+	return st
 }
 
 // nftDoc は `nft -j list table` の出力。
@@ -613,6 +859,7 @@ type nftChain struct {
 	Handle int    `json:"handle"`
 	Type   string `json:"type"`
 	Hook   string `json:"hook"`
+	Prio   *int   `json:"prio"`
 	Policy string `json:"policy"`
 }
 
@@ -704,11 +951,21 @@ func parseTableJSON(out []byte, ref TableRef) (*liveTable, []nftRule, error) {
 				if tbl.find(c.Name) != nil {
 					return nil, nil, fmt.Errorf("chain %q is listed twice", c.Name)
 				}
-				tbl.chains = append(tbl.chains, liveChain{
+				lc := liveChain{
 					name:   c.Name,
 					handle: c.Handle,
 					base:   c.Type != "" || c.Hook != "" || c.Policy != "",
-				})
+				}
+				if lc.base {
+					lc.def = baseDef{typ: c.Type, hook: c.Hook, policy: c.Policy}
+					if c.Prio != nil {
+						lc.def.priority = strconv.Itoa(*c.Prio)
+					}
+					if lc.def.policy == "" {
+						lc.def.policy = "accept" // nft の既定
+					}
+				}
+				tbl.chains = append(tbl.chains, lc)
 			case "rule":
 				var r nftRule
 				if err := json.Unmarshal(raw, &r); err != nil {

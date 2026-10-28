@@ -14,7 +14,10 @@
 
 package provider
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // TransientError wraps an Apply (or Read) error that is expected to resolve
 // on its own with time.  The controller will retry with exponential back-off
@@ -57,4 +60,39 @@ func NewTransientError(cause error) *TransientError {
 // NewPermanentError constructs a PermanentError from an underlying error.
 func NewPermanentError(cause error) *PermanentError {
 	return &PermanentError{Cause: cause}
+}
+
+// RolledBackError marks an Apply whose change reached the target but was
+// undone there (rolled back) because the change could not be confirmed —
+// e.g. the nftables lockout guard (Backlog #173): a change to a base chain is
+// rolled back by a timer on the host when a new connection to the host fails
+// after it.  The Apply failed, and the same Apply would very likely be undone
+// again, so the core does not repeat it: like an Apply that did not take
+// (§11.1 Tier3, #166), the resource's Apply of the same diff is stopped
+// (oscillating) until the diff changes, reality converges or a person
+// releases it ("sakutei apply-check release").
+//
+// Always build it with NewRolledBackError, which wraps it in a
+// TransientError (the target is back where it was; nothing is stuck).
+type RolledBackError struct {
+	// Cause says what could not be confirmed and what was restored.
+	Cause error
+}
+
+func (e *RolledBackError) Error() string {
+	return fmt.Sprintf("rolled back: %v", e.Cause)
+}
+
+func (e *RolledBackError) Unwrap() error { return e.Cause }
+
+// NewRolledBackError constructs a TransientError wrapping a RolledBackError.
+func NewRolledBackError(cause error) *TransientError {
+	return NewTransientError(&RolledBackError{Cause: cause})
+}
+
+// IsRolledBack reports whether err (or any error in its chain) is a
+// RolledBackError.
+func IsRolledBack(err error) bool {
+	var rb *RolledBackError
+	return errors.As(err, &rb)
 }

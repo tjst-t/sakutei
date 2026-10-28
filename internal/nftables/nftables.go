@@ -34,11 +34,12 @@
 //     として扱われる。これが本 provider の主たる実証点である。
 //   - identity は rules の内容ではなく chain の座標 {table, chain}。ルールを
 //     並べ替えても identity は不変であり、同一 chain の Update として現れる。
-//   - Base chain の除外: `type ... hook ... priority ... policy ...` を宣言
-//     する base chain（NAT/filter hook を持つ）は、hook/priority/policy を
-//     この provider が管理しないため、管理境界外として PermanentError を
-//     返す（dnszone の SOA/NS skip の類推）。regular chain（hook を持たない）
-//     のみを管理する。
+//   - Base chain（`type ... hook ... priority ...; policy ...;` を持つ chain）は
+//     intent が base chain として宣言したとき（type・hook・priority・policy、
+//     Backlog #173、basechain.go）だけ扱う。宣言していない base chain は読みも
+//     書きもせず、List・BulkObserve にも出さない（宣言したものは Read が観測
+//     する）。宣言が regular chain で現実が base chain のものは計画の時点で断る
+//     （PlanRefiner）。
 //   - 管理境界の外は壊さない（§7, Backlog #68）: parse はファイルの各行を
 //     そのまま持ち、Apply は対象の chain の行（中身、または Create/Delete
 //     ならブロック全体）だけを差し替えて書き戻す。base chain の宣言行と中身・
@@ -72,7 +73,8 @@
 //	  - table 行の <family> は "ip"/"ip6"/"inet" 等。table 名・chain 名は識別子。
 //	  - chain ブロック内の各行が 1 ルール（順序保存）。
 //	  - `type ... hook ...`（または `policy ...`）を含む chain は base chain
-//	    （管理対象外）として扱う。
+//	    （宣言したときだけ扱う。type 行は type・hook・priority・policy だけを
+//	    読み、それ以外（device 等）を含めば opaque）として扱う。
 //	  - `#` から始まる行はコメント。空行は無視。
 //	  - table 直下の chain 以外のブロック（set/map/named counter 等）と table の
 //	    外の行は parse せず、Apply でもそのまま残す。
@@ -120,7 +122,7 @@ const ProviderName = "nftables"
 // providerVersion is a hard-coded source hash for this provider version.
 // 正規化/diff ロジック（RuleSep やルール正規化）を変えたら増分すること
 // （cause-tag C（ghost diff）検出のため）。
-const providerVersion = "nftables-v1.0.0"
+const providerVersion = "nftables-v1.1.0" // v1.1.0: base chain の宣言（Backlog #173）
 
 // RuleSep はルール列を 1 本の文字列へ join/split する区切り。
 // intent の fields は string→string なので、順序付き rules をこの区切りで
@@ -137,8 +139,13 @@ type chainRes struct {
 	chain string
 	// rules は chain 内のルール列（宣言順を保存する ordered list）。
 	rules []string
-	// base は base chain（type/hook を持つ）かどうか。base chain は管理対象外。
+	// base は base chain（type/hook を持つ）かどうか。base chain は宣言した
+	// ときだけ扱い、List・BulkObserve には出さない（Backlog #173）。
 	base bool
+	// def は base chain の type・hook・priority・policy（priority は書いたまま）。
+	// defErr は type 行を読み分けられなかったこと（管理しない）。
+	def    baseDef
+	defErr bool
 	// opaque は chain の中に管理サブセット外の構文（複数行の匿名 set 等）を
 	// 含むかどうか。opaque な chain は書き直せないので管理対象外。
 	opaque bool
@@ -146,9 +153,31 @@ type chainRes struct {
 	start, end int
 }
 
-// unmanaged は chain が管理境界の外（base chain か opaque）かどうか。
+// unmanaged は chain が List・BulkObserve に出さないもの（base chain か opaque）
+// かどうか。
 func (c chainRes) unmanaged() bool {
-	return c.base || c.opaque
+	return c.base || c.opaque || c.defErr
+}
+
+// state は観測の State（base chain なら type・hook・priority（数）・policy も）。
+func (c chainRes) state() core.State {
+	st := core.State{
+		"family": {Kind: core.FieldKindString, Value: c.family},
+		"table":  {Kind: core.FieldKindString, Value: c.table},
+		"chain":  {Kind: core.FieldKindString, Value: c.chain},
+		"rules":  {Kind: core.FieldKindStringList, Value: c.rulesEncoded()},
+	}
+	if c.base {
+		d := c.def
+		if n, err := canonPriority(c.family, d.priority); err == nil {
+			d.priority = n
+		}
+		if d.policy == "" {
+			d.policy = "accept" // nft の既定
+		}
+		d.put(st)
+	}
+	return st
 }
 
 // localID は "<family>/<table>/<chain>" を返す。
@@ -215,6 +244,8 @@ func New(rulesetPath string, opts ...Option) *Provider {
 //   - table  (string, identity, required): table 名。
 //   - chain  (string, identity, required): chain 名。
 //   - rules  (string-list, ORDERED, required): ルール列。順序が意味を持つ。
+//   - type・hook・priority・policy (string): base chain の宣言（Backlog
+//     #173）。regular chain には無い。
 //
 // identity は {family, table, chain} = chain の座標。rules は identity では
 // ない（並べ替えても同じ chain の Update として現れる）。rules に
@@ -247,6 +278,12 @@ func (p *Provider) Schema() provider.Schema {
 				// provider の canonical separator を宣言しておく。
 				ListSep: RuleSep,
 			},
+			// base chain の宣言だけが持つ（Backlog #173、basechain.go）。
+			// regular chain の宣言には書かない。
+			"type":     {Kind: core.FieldKindString},
+			"hook":     {Kind: core.FieldKindString},
+			"priority": {Kind: core.FieldKindString},
+			"policy":   {Kind: core.FieldKindString},
 		},
 	}
 }
@@ -277,7 +314,8 @@ func (p *Provider) Capabilities() provider.Capabilities {
 //   - desired を一切参照しない。
 //   - ruleset ファイルが存在しなければ absent（Ok, nil State）。
 //   - parse 不能なら AvailabilityUnknown（transient・unknown≠absent）。
-//   - base chain（type/hook を持つ）は管理境界外で PermanentError。
+//   - base chain（type/hook を持つ）は type・hook・priority（数）・policy 付き
+//     で返す（Backlog #173）。
 func (p *Provider) Read(_ context.Context, localID string) (core.Observation, error) {
 	defer filelock.RLock(p.rulesetPath)()
 	family, table, chain, err := splitLocalID(localID)
@@ -309,30 +347,16 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 		if !sameChain(c, family, table, chain) {
 			continue
 		}
-		if c.base {
-			// base chain は管理境界外。silently 誤管理せず PermanentError。
-			return core.Observation{
-				Availability: core.AvailabilityUnknown,
-				ObservedAt:   time.Now(),
-			}, provider.NewPermanentError(fmt.Errorf(
-				"nftables: Read: refusing to manage base chain %q (has type/hook/policy; management boundary)", localID))
-		}
-		if c.opaque {
+		if c.opaque || c.defErr {
 			return core.Observation{
 				Availability: core.AvailabilityUnknown,
 				ObservedAt:   time.Now(),
 			}, provider.NewPermanentError(fmt.Errorf(
 				"nftables: Read: refusing to manage chain %q (contains syntax outside the managed subset)", localID))
 		}
-		st := core.State{
-			"family": {Kind: core.FieldKindString, Value: c.family},
-			"table":  {Kind: core.FieldKindString, Value: c.table},
-			"chain":  {Kind: core.FieldKindString, Value: c.chain},
-			"rules":  {Kind: core.FieldKindStringList, Value: c.rulesEncoded()},
-		}
 		return core.Observation{
 			Availability: core.AvailabilityOk,
-			State:        st,
+			State:        c.state(),
 			ObservedAt:   time.Now(),
 		}, nil
 	}
@@ -347,8 +371,9 @@ func (p *Provider) Read(_ context.Context, localID string) (core.Observation, er
 
 // Apply converges the chain to the desired state described in plan.
 //
-// Create/Update/Delete を扱う。base chain・opaque な chain は決して変更せず
-// PermanentError を返す。書き直すのは対象の chain の行だけで、他の行は
+// Create/Update/Delete を扱う。opaque な chain は決して変更せず
+// PermanentError を返す。base chain は type 行とルールを書き直す（file は FW を
+// 変えないので締め出しの守りは要らない、Backlog #173）。書き直すのは対象の chain の行だけで、他の行は
 // バイト単位でそのまま残す。書込は atomic（temp + rename）。
 //
 // idempotent: 同一 plan を二度適用しても同じファイル内容になる。
@@ -383,13 +408,13 @@ func (p *Provider) applyOp(op core.Op) error {
 	switch op.Kind {
 	case core.OpKindCreate, core.OpKindUpdate:
 		rulesEnc := desired["rules"]
-		// Update で rules フィールドが FieldDiff に無い場合は現状を保持する
-		// （変わったフィールドだけが FieldDiff に現れるため）。
+		// Update で FieldDiff に無いフィールド（rules・base chain の宣言）は現状を
+		// 保持する（変わったフィールドだけが FieldDiff に現れるため）。
+		var cur *chainRes
 		if op.Kind == core.OpKindUpdate {
-			if _, ok := desired["rules"]; !ok {
-				if cur, rerr := p.readChain(family, table, chain); rerr == nil && cur != nil {
-					rulesEnc = cur.rulesEncoded()
-				}
+			cur, _ = p.readChain(family, table, chain)
+			if _, ok := desired["rules"]; !ok && cur != nil {
+				rulesEnc = cur.rulesEncoded()
 			}
 		}
 		newChain := chainRes{
@@ -397,7 +422,26 @@ func (p *Provider) applyOp(op core.Op) error {
 			table:  table,
 			chain:  chain,
 			rules:  splitRules(rulesEnc),
-			base:   false,
+		}
+		if declaresBase(desired) || (cur != nil && cur.base) {
+			fields := map[string]string{}
+			if cur != nil && cur.base {
+				fields["type"], fields["hook"], fields["priority"], fields["policy"] = cur.def.typ, cur.def.hook, cur.def.priority, cur.def.policy
+				if fields["policy"] == "" {
+					fields["policy"] = "accept"
+				}
+			}
+			for _, f := range baseFields {
+				if v, ok := desired[f]; ok {
+					fields[f] = v
+				}
+			}
+			if _, err := checkBaseFields(family, fields, localID); err != nil {
+				return provider.NewPermanentError(fmt.Errorf("nftables: Apply: %w", err))
+			}
+			// The file keeps the priority as declared (e.g. "filter").
+			newChain.base = true
+			newChain.def = baseDef{typ: fields["type"], hook: fields["hook"], priority: fields["priority"], policy: fields["policy"]}
 		}
 		return p.writeChain(newChain)
 
@@ -437,7 +481,7 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 		}
 		seen[c.localID()] = true
 		if c.unmanaged() {
-			// base chain・opaque な chain は管理対象外 → List にも出さない。
+			// base chain（宣言したものは Read が観測する）・opaque な chain は List にも出さない。
 			continue
 		}
 		ids = append(ids, core.NewID(ProviderName, scope, c.localID()))
@@ -482,23 +526,38 @@ func (p *Provider) BulkObserve(_ context.Context, _ core.Scope) (provider.BulkOb
 		}
 		obs[core.NewID(ProviderName, scope, c.localID()).Key()] = core.Observation{
 			Availability: core.AvailabilityOk,
-			State: core.State{
-				"family": {Kind: core.FieldKindString, Value: c.family},
-				"table":  {Kind: core.FieldKindString, Value: c.table},
-				"chain":  {Kind: core.FieldKindString, Value: c.chain},
-				"rules":  {Kind: core.FieldKindStringList, Value: c.rulesEncoded()},
-			},
-			ObservedAt: now,
+			State:        c.state(),
+			ObservedAt:   now,
 		}
 	}
 	return provider.BulkObservation{Observations: obs}, nil
 }
 
+// ValidateIntent は読み込みの時点で base chain の宣言を見る（Backlog #173）:
+// type・hook・priority・policy のどれかを書いたら 4 つとも要り、値の形を見る。
+func (p *Provider) ValidateIntent(localID string, fields map[string]string) error {
+	family, _, _, err := splitLocalID(localID)
+	if err != nil {
+		return fmt.Errorf("invalid local id %q: %w", localID, err)
+	}
+	return validateBase(family, fields, localID)
+}
+
+// RefinePlan は priority の差分のうち、数に直すと観測と同じもの（"filter" と
+// "0"）を落とし、現実が base chain なのに宣言が regular chain のものを断る
+// （Backlog #173）。I/O はしない。
+func (p *Provider) RefinePlan(localID string, observed core.State, desired map[string]string, ops []core.Op) ([]core.Op, error) {
+	family, _, _, _ := splitLocalID(localID)
+	return refineBase(family, localID, observed, desired, ops)
+}
+
 // Compile-time assertions.
 var (
-	_ provider.Provider     = (*Provider)(nil)
-	_ provider.Lister       = (*Provider)(nil)
-	_ provider.BulkObserver = (*Provider)(nil)
+	_ provider.Provider        = (*Provider)(nil)
+	_ provider.Lister          = (*Provider)(nil)
+	_ provider.BulkObserver    = (*Provider)(nil)
+	_ provider.IntentValidator = (*Provider)(nil)
+	_ provider.PlanRefiner     = (*Provider)(nil)
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -582,7 +641,7 @@ func (p *Provider) writeChain(newChain chainRes) error {
 	if len(matches) > 0 {
 		// 後ろから差し替えて、前のブロックの行番号をずらさない。
 		for i := len(matches) - 1; i >= 0; i-- {
-			lines = spliceLines(lines, matches[i].start, matches[i].end+1, rewriteChain(lines, matches[i], newChain.rules))
+			lines = spliceLines(lines, matches[i].start, matches[i].end+1, rewriteChain(lines, matches[i], newChain))
 		}
 		return p.writeLines(lines)
 	}
@@ -664,11 +723,7 @@ func (d *rulesetDoc) matching(family, table, chain string) ([]chainRes, error) {
 		if !sameChain(c, family, table, chain) {
 			continue
 		}
-		if c.base {
-			return nil, provider.NewPermanentError(fmt.Errorf(
-				"nftables: Apply: refusing to manage base chain %q (management boundary)", c.localID()))
-		}
-		if c.opaque {
+		if c.opaque || c.defErr {
 			return nil, provider.NewPermanentError(fmt.Errorf(
 				"nftables: Apply: refusing to rewrite chain %q (contains syntax outside the managed subset)", c.localID()))
 		}
@@ -795,16 +850,16 @@ func (c *chainRes) addLine(text string) {
 	switch {
 	case line == "" || strings.HasPrefix(line, "#"):
 		// 空行・コメントはルールではない。
-	case strings.HasPrefix(line, "type "):
+	case strings.HasPrefix(line, "type "), strings.HasPrefix(line, "policy "):
 		// base chain の宣言（"type ... hook ... priority ...; policy ...;"）。
-		// hook を持つ chain は base chain として印を付け、管理対象外にする。
-		// type 行自体はルールとして扱わない。
-		if strings.Contains(line, "hook ") {
+		// hook か policy を持つ chain は base chain として印を付ける（宣言した
+		// ときだけ扱う）。type 行自体はルールとして扱わない。
+		if strings.Contains(line, "hook ") || strings.HasPrefix(line, "policy ") {
 			c.base = true
 		}
-	case strings.HasPrefix(line, "policy "):
-		// policy は base chain にしか書けない。
-		c.base = true
+		if !c.def.parseLine(line) {
+			c.defErr = true
+		}
 	default:
 		// chain ブロック内の行 = 1 ルール（順序保存）。
 		c.rules = append(c.rules, line)
@@ -840,7 +895,7 @@ func leadingSpace(s string) string {
 // rewriteChain は既存の chain ブロック c（lines[c.start..c.end]）を rules に
 // 書き直した行を返す。chain 行・閉じ括弧の行は、中身を含まなければ元のまま
 // 残す。ルールのインデントは既存の最初のルール行に揃える。
-func rewriteChain(lines []string, c chainRes, rules []string) []string {
+func rewriteChain(lines []string, c chainRes, nc chainRes) []string {
 	indent := leadingSpace(lines[c.start])
 	header := lines[c.start]
 	if !strings.HasSuffix(strings.TrimSpace(header), "{") {
@@ -858,8 +913,17 @@ func rewriteChain(lines []string, c chainRes, rules []string) []string {
 		}
 	}
 	out := []string{header}
-	out = append(out, ruleLines(rules, ruleIndent)...)
+	out = append(out, defLines(nc, ruleIndent)...)
+	out = append(out, ruleLines(nc.rules, ruleIndent)...)
 	return append(out, closing)
+}
+
+// defLines は base chain の宣言の行（regular chain なら無し）。
+func defLines(c chainRes, indent string) []string {
+	if !c.base {
+		return nil
+	}
+	return []string{fmt.Sprintf("%stype %s hook %s priority %s; policy %s;", indent, c.def.typ, c.def.hook, c.def.priority, c.def.policy)}
 }
 
 // ruleLines はルールを indent 付きの行にする。
@@ -874,6 +938,7 @@ func ruleLines(rules []string, indent string) []string {
 // chainBlock は chain ブロック全体（chain 行・ルール・閉じ括弧）の行を返す。
 func chainBlock(c chainRes, indent string) []string {
 	out := []string{fmt.Sprintf("%schain %s {", indent, c.chain)}
+	out = append(out, defLines(c, indent+"\t")...)
 	out = append(out, ruleLines(c.rules, indent+"\t")...)
 	return append(out, indent+"}")
 }
