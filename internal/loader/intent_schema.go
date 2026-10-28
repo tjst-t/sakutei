@@ -45,7 +45,7 @@ import (
 //     steps / on_failure、§6.3 / §6.4）。書式の詳細と v1.5 で拒否するものは workflow.go。
 //   - 各 resource は provider / id（必須、文字列）、scope（文字列→文字列マップ）、
 //     depends_on（文字列、または { id, ready_condition } の配列）、fields（文字列→スカラーのマップ）、
-//     deletion_policy（enum）、update_policy（strategy / window / rollback_on_fail、§6.2）を持つ。
+//     deletion_policy（enum）、update_policy（strategy / window / rollback_on_fail、manual の procedure / procedure_url / confirm_timeout、§6.2）を持つ。
 //   - version は「文字列必須」の代表例として scope の外側に置ける任意フィールドとして
 //     許容し、型を string に固定する（Norway 問題: 1.10 を float 化させない）。
 //
@@ -205,17 +205,22 @@ func intentSchema() schemaNode {
 						// apply_check はこのリソースの settle と上限（型の宣言より勝つ、#166）。
 						"apply_check": applyCheckSchema(false),
 						// update_policy は差分の直し方（§6.2, §6.5）。strategy: task なら
-						// 直接 Apply せず Task を起動する。window はメンテ窓。
+						// 直接 Apply せず Task を起動する。window はメンテ窓。strategy: manual は
+						// 人の手順で合わせる Task（#150）で、procedure / procedure_url /
+						// confirm_timeout を持つ。
 						"update_policy": schemaNode{
 							"type":                 "object",
 							"additionalProperties": false,
 							"properties": map[string]any{
 								"strategy": schemaNode{
 									"type": "string",
-									"enum": []any{"apply", "task"},
+									"enum": []any{"apply", "task", "manual"},
 								},
 								"window":           schemaNode{"type": "string"},
 								"rollback_on_fail": schemaNode{"type": "boolean"},
+								"procedure":        schemaNode{"type": "string"},
+								"procedure_url":    schemaNode{"type": "string"},
+								"confirm_timeout":  schemaNode{"type": "string"},
 							},
 						},
 						"deletion_policy": schemaNode{

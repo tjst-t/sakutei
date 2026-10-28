@@ -55,6 +55,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/budget"
 	"github.com/tjst-t/sakutei/v2/internal/diff"
@@ -381,8 +382,11 @@ func parseEnsure(m map[string]any) (bool, error) {
 func parseUpdatePolicy(m map[string]any) (core.UpdatePolicy, error) {
 	var pol core.UpdatePolicy
 	strategy, _ := m["strategy"].(string)
-	if strategy == "task" {
+	switch strategy {
+	case "task":
 		pol.Strategy = core.UpdateStrategyTask
+	case "manual":
+		pol.Strategy = core.UpdateStrategyManual
 	}
 	pol.Window, _ = m["window"].(string)
 	pol.Window = strings.TrimSpace(pol.Window)
@@ -390,10 +394,48 @@ func parseUpdatePolicy(m map[string]any) (core.UpdatePolicy, error) {
 	if !pol.IsTask() && (pol.Window != "" || pol.RollbackOnFail) {
 		return core.UpdatePolicy{}, fmt.Errorf("update_policy: window / rollback_on_fail require strategy: task")
 	}
+	if err := parseManualPolicy(m, &pol); err != nil {
+		return core.UpdatePolicy{}, fmt.Errorf("update_policy: %w", err)
+	}
 	if _, err := task.ParseWindow(pol.Window); err != nil {
 		return core.UpdatePolicy{}, fmt.Errorf("update_policy: %w", err)
 	}
 	return pol, nil
+}
+
+// parseManualPolicy reads the keys of strategy: manual (§6.2 人の手順で合わせる
+// Task, Backlog #150).  They are refused on any other strategy (a procedure
+// that nobody is asked to follow would read as a safety that is not there),
+// and strategy: manual needs a procedure or a procedure_url (the approval gate
+// asks a person to do something; it must say what).  rollback_on_fail is
+// refused: Sakutei does nothing to roll back.
+func parseManualPolicy(m map[string]any, pol *core.UpdatePolicy) error {
+	pol.Procedure, _ = m["procedure"].(string)
+	pol.Procedure = strings.TrimSpace(pol.Procedure)
+	pol.ProcedureURL, _ = m["procedure_url"].(string)
+	pol.ProcedureURL = strings.TrimSpace(pol.ProcedureURL)
+	ct, hasCT := m["confirm_timeout"]
+	if !pol.IsManual() {
+		if pol.Procedure != "" || pol.ProcedureURL != "" || hasCT {
+			return fmt.Errorf("procedure / procedure_url / confirm_timeout require strategy: manual")
+		}
+		return nil
+	}
+	if pol.RollbackOnFail {
+		return fmt.Errorf("strategy: manual cannot declare rollback_on_fail (a person does the work; Sakutei has nothing to roll back)")
+	}
+	if pol.Procedure == "" && pol.ProcedureURL == "" {
+		return fmt.Errorf("strategy: manual needs procedure or procedure_url (what the person is asked to do)")
+	}
+	if hasCT {
+		s, _ := ct.(string)
+		d, err := time.ParseDuration(strings.TrimSpace(s))
+		if err != nil || d <= 0 {
+			return fmt.Errorf("confirm_timeout %v: want a positive duration such as \"2h\"", ct)
+		}
+		pol.ConfirmTimeout = d
+	}
+	return nil
 }
 
 // LoadDir reads all JSON files in dir and returns the desired resources and

@@ -288,7 +288,7 @@ func (v *viewBuilder) finish(ctx context.Context, x viewInput) {
 		for _, op := range v.ops[res.ID.Local] {
 			o := planreport.NewOperation(op, false)
 			if res.UpdatePolicy.IsTask() && op.Kind != core.OpKindDelete {
-				o.Task = &planreport.Task{Window: res.UpdatePolicy.Window, RollbackOnFail: res.UpdatePolicy.RollbackOnFail}
+				o.Task = planreport.NewTask(res.UpdatePolicy)
 			}
 			p.Operations = append(p.Operations, o)
 			v.planOps = append(v.planOps, op)

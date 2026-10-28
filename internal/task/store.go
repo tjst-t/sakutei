@@ -99,6 +99,10 @@ type Record struct {
 	// ApprovedStep は承認の要る相のうち、人が承認した相（#148）。その相の入口で
 	// 引き継いだときだけ、承認を待たずに RunStep を呼ぶ。
 	ApprovedStep string `json:"approved_step,omitempty"`
+	// Notice は承認の要る相のゲートが人に頼むこと（StepSpec.Notice、#150。人の
+	// 手順で合わせる Task の手順の文・URL・いまの版と望む版）。ゲートを開くとき
+	// 置き、閉じても残す（sakutei task list で何の Task かが分かる）。
+	Notice string `json:"notice,omitempty"`
 }
 
 // GateApproval は Record.Gate の値: 承認の要る相（StepSpec.Approval）の入口の

@@ -127,7 +127,7 @@ func (m *Manager) gated(ctx context.Context, id core.ID, desired map[string]stri
 	if m.stopped() || rec.DesiredHash != DesiredHash(desired) {
 		return waiting, false, nil
 	}
-	req := Request{TaskID: rec.TaskID, Resource: id, Desired: copyFields(desired), Plan: plan, StartedAt: rec.StartedAt}
+	req := Request{TaskID: rec.TaskID, Resource: id, Desired: copyFields(desired), Plan: plan, StartedAt: rec.StartedAt, Policy: pol}
 	pr, steps, err := m.phasedSteps(ctx, req)
 	if err != nil {
 		return Decision{}, false, err

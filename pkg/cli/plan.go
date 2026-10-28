@@ -36,6 +36,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/remediation"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/internal/revision"
+	"github.com/tjst-t/sakutei/v2/internal/task"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
@@ -599,7 +600,7 @@ func runPlan(args []string) {
 	for i, op := range allOps {
 		o := planreport.NewOperation(op, i >= diffOpCount)
 		if pol, ok := taskPolicies[op.Target.String()]; ok && op.Kind != core.OpKindDelete {
-			o.Task = &planreport.Task{Window: pol.Window, RollbackOnFail: pol.RollbackOnFail}
+			o.Task = planreport.NewTask(pol)
 		}
 		report.Operations = append(report.Operations, o)
 	}
@@ -691,6 +692,12 @@ func printTaskNote(pol core.UpdatePolicy) {
 	window := "any time"
 	if pol.Window != "" {
 		window = pol.Window
+	}
+	if pol.IsManual() {
+		// #150 (§6.2 人の手順で合わせる Task): nothing is written; a person is asked.
+		fmt.Fprintf(logOut, "  task:   asks a person (update_policy.strategy: manual; window: %s) — %s; confirmed by observation, not Applied\n",
+			window, task.ManualNotice(task.Request{Policy: pol}))
+		return
 	}
 	rollback := ""
 	if pol.RollbackOnFail {

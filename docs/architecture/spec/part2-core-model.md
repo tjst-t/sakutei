@@ -412,6 +412,31 @@ update_policy:
   rollback_on_fail: true
 ```
 
+**人の手順で合わせる Task**（v3.40、Backlog #150）:管理 API に更新の口が無い装置（GUI だけで FW を上げるスイッチ・PDU など）も、版を宣言で持つ。Sakutei は版を観測し、人に作業を促し、終わったことを観測で確かめる。書くのは人だけで、Sakutei は装置に何も送らない。試験用の模擬にだけある更新の口には頼らない。
+
+```yaml
+resource: tor-switch-1
+fields:
+  firmware_version: "9.3.12"        # provider が観測する版のフィールド（宣言する版）
+update_policy:
+  strategy: manual                  # 人の手順で合わせる
+  procedure: "管理画面の System > Firmware からイメージを上げ、再起動する"
+  procedure_url: "https://wiki.example/tor-fw"
+  confirm_timeout: 2h               # 承認してから観測で合うのを待つ上限（既定 1h）
+  window: "Sat 02:00-04:00"         # 任意。窓の外では人に頼まない
+```
+
+- **宣言**:`update_policy.strategy: manual` は、provider に依らずどのリソースにも書ける（その provider は観測できればよく、Task の実行体を持たなくてよい）。`procedure`（手順の説明）か `procedure_url`（手順書の在りか）の少なくとも一方が要る（何をしてほしいかを言えないゲートは開かない）。`rollback_on_fail` は書けない（Sakutei は何もしないので戻すものも無い）。`procedure`・`procedure_url`・`confirm_timeout` は `strategy: manual` 以外では読み込みで断る。
+- **収束ループは Apply しない**(§6.5):`strategy: task` と同じく、差分を検知したら Task を起こすだけ。1-outstanding・窓・予算（§13）は `strategy: task` と同じに効く。
+- **Task の形**:相は 1 つ（`manual`）の多相 Task で、「承認の要る相」と「待つ相」を兼ねる。
+  1. 入口で観測する。宣言どおりなら何もせず閉じる。
+  2. 違えば承認ゲート（§6.4）を開き、手順の文・URL・いまの版と望む版（起動を決めた差分）を記録（S2 の `notice`、`sakutei task list`）と RequiresTask の Event（Attrs の `procedure`・`procedure_url`・`current`・`desired`・`state`）に出す。Event は level（§22.3）で、`state`（`launched` → `awaiting_approval` → `confirming` → `stuck` / `halted`）が変われば更新として出し、閉じれば resolved になる。現実が宣言から外れた（cause B）ときは DriftEvent も出る。
+  3. 人が「作業した」と承認したら（`sakutei task approve`、S4 監査に残る）、手順は何もせず、観測で宣言どおりになるのを `confirm_timeout` まで待つ（承認の時刻から数え、デーモンを起こし直しても延びない）。なれば閉じる。
+  4. 承認しても `confirm_timeout` までに宣言どおりに観測できなければ、**stuck** として halt し（Event は severity critical）、**勝手に閉じない**。人の答え（承認）を観測の代わりにはしない。
+  5. 人が答えなくても、観測で宣言どおりになれば閉じる（承認待ちの間も、stuck の後も）。完了を問うのはいつも観測で、人の承認は「待ち始めてよい」という合図にすぎない。
+  6. 却下・ゲートのタイムアウト（`--task-gate-timeout`、既定 24h）は halt（ほかの承認の要る相と同じ）。halt した Task は人が cancel するか、観測で宣言どおりになるまで残る。
+- **観測の仕方**:相の入口と待ちの間の観測は、そのリソースの provider の `Read` と収束ループと同じ Diff（宣言のフィールドがすべて合えば済み）。見えない（unknown・converging・観測のエラー）は「済んでいない」と取らず待つ（unknown ≠ absent）。
+
 - **1-outstanding 制約**:`strategy: task` の起動は、同一リソースにつき未完了の Task/Workflow インスタンスを高々 1 つに制限する。level-triggered な収束は同じ差分を毎周期検知し続けるため、抑止がないと手続きが周期ごとに乱造される（人手対処 Workflow ならチケット乱造・§14.7）。未完了（承認待ち・halt を含む）の間は再起動せず、完了または cancel 後の周期に差分がなお残っていれば改めて起動する。
 
 ### §6.3 Workflow —— 順序 + 不変条件 + 承認ゲート
@@ -566,6 +591,8 @@ rollout:
 **非冪等な操作を毎周回る収束ループに載せてはならない。** 収束ループは冪等性（同じ Apply を何度実行しても同じ結果）を前提に毎周期 Apply を叩くため、非冪等操作（migration・firmware 書込・フェイルオーバー等）を Resource として直接 Apply させると、毎周期の再実行が破壊を招く。
 
 そこで、非冪等操作を要する Resource は **`strategy: task` を宣言**し、収束は「差分を検知したら Task を起動する」というイベント発火だけを担う（§6.2）。収束ループが直接手を下すのは冪等な操作に限り、非冪等な手順は Task/Workflow というイベント駆動の手続きに排除する。これが「いつ = 収束 / どう = 手続き」の分離の型レベルの実装であり、収束の冪等性契約（§5.4 Apply）を非冪等操作から守る仕組みである。
+
+管理 API に更新の口が無く人が手で合わせるもの（§6.2 人の手順で合わせる Task）は **`strategy: manual`** を宣言する。これも収束ループは Apply せず、Task を起こすだけである（Task は装置に何も書かず、人に頼んで観測で確かめる）。
 
 ---
 

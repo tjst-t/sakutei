@@ -106,7 +106,7 @@ plan は reconcile と同じ判定を、何も消費せずに評価する。reco
 | `blocked` | 常に | reconcile なら止まるか |
 | `blocked_by` | `blocked` | 止める仕組み：`budget`（変更予算）/ `capacity`（容量ゲート）/ `alert_only_scope`（`remediation: alert-only` を宣言した scope、§14.3）/ `approval`（`ensure: absent` の削除で、それを覆う planned_change（`kind: delete`）のレーンが開いていない。承認・窓・cooling-off、§13.3・§14.4・§14.5）。デーモンの `GET /plan`（[read-api.md](read-api.md)）では、ほかに `alert_only`（全体の remediation mode が alert-only：`--mode alert-only`・`--freeze`・schedule の窓の外、§14.1〜§14.3）と `prune_halt`（prune の安全装置が止めた宣言外の削除、§12.4）、`apply_stopped`（Apply を止めたリソースの操作：同じ Diff の Apply が成功を返しても現実が変わらないまま上限に達した、§11.1 Tier3、#166）も出る |
 | `block_reason` | `blocked` | 止める理由の文（文の出力の `blocked:` の行） |
-| `task` | `strategy: task` のリソースの CREATE・UPDATE | `{"window", "rollback_on_fail"}`（§6.2）。Apply されず、デーモンが窓の中で Task を起こす |
+| `task` | `strategy: task`・`strategy: manual` のリソースの CREATE・UPDATE | `{"window", "rollback_on_fail"}`（§6.2）。Apply されず、デーモンが窓の中で Task を起こす。`strategy: manual`（人の手順で合わせる Task、#150）なら `"manual": true` と `"procedure"`・`"procedure_url"` も付く |
 
 ## `prune_halts[]`
 

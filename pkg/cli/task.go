@@ -91,7 +91,12 @@ func runTask(args []string) {
 			if r.Step != "" {
 				phase += ":" + r.Step
 			}
-			fmt.Fprintf(os.Stdout, "%-40s %-21s %-11s %-30s %-20s %s\n", r.Resource, phase, rb, r.TaskID, r.StartedAt.Format(time.RFC3339), r.Error)
+			// #150: a manual-procedure Task also says what the person is asked to do.
+			msg := r.Error
+			if r.Notice != "" {
+				msg += " — " + r.Notice
+			}
+			fmt.Fprintf(os.Stdout, "%-40s %-21s %-11s %-30s %-20s %s\n", r.Resource, phase, rb, r.TaskID, r.StartedAt.Format(time.RFC3339), msg)
 		}
 	case "cancel":
 		if fs.NArg() != 1 {

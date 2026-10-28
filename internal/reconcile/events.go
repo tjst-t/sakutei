@@ -22,10 +22,12 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/tjst-t/sakutei/v2/internal/eventlog"
 	"github.com/tjst-t/sakutei/v2/internal/prune"
+	"github.com/tjst-t/sakutei/v2/internal/task"
 	"github.com/tjst-t/sakutei/v2/pkg/allocation"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/sdk"
@@ -89,6 +91,41 @@ func EmitRequiresTask(w io.Writer, prefix string, sev core.Severity, id core.ID,
 	eventlog.Emit(w, core.Event{
 		Kind: core.EventRequiresTask, Severity: sev, Resource: id, Message: msg,
 		Text: fmt.Sprintf("%sRequiresTaskEvent: %s: %s", prefix, id, msg),
+	})
+}
+
+// EmitManualUpdate raises RequiresTask for a strategy: manual resource (§6.2
+// 人の手順で合わせる Task, Backlog #150): what the person is asked to do (the
+// declared procedure and its URL) and the current and desired values from the
+// diff, as attrs a notifier can render.  state is where the Task is: launched,
+// awaiting_approval (the person has not answered), confirming (approved;
+// waiting to observe it), stuck (approved but not observed in time) or
+// halted (rejected, the gate timed out).
+func EmitManualUpdate(w io.Writer, prefix string, sev core.Severity, id core.ID, state string, pol core.UpdatePolicy, plan core.Plan, msg string) {
+	attrs := map[string]string{"update": "manual", "state": state}
+	if pol.Procedure != "" {
+		attrs["procedure"] = pol.Procedure
+	}
+	if pol.ProcedureURL != "" {
+		attrs["procedure_url"] = pol.ProcedureURL
+	}
+	var cur, want []string
+	for _, op := range plan.Ops {
+		for _, f := range op.Fields {
+			cur = append(cur, f.Field+"="+f.From)
+			want = append(want, f.Field+"="+f.To)
+		}
+	}
+	if len(cur) > 0 {
+		attrs["current"], attrs["desired"] = strings.Join(cur, ","), strings.Join(want, ",")
+	}
+	text := fmt.Sprintf("%sRequiresTaskEvent: %s: manual update (%s): %s", prefix, id, state, msg)
+	if d := task.ManualDiff(plan); d != "" && !strings.Contains(msg, d) {
+		text += " [" + d + "]"
+	}
+	eventlog.Emit(w, core.Event{
+		Kind: core.EventRequiresTask, Severity: sev, Resource: id, Message: msg,
+		Attrs: attrs, Text: text,
 	})
 }
 

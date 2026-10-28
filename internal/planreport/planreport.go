@@ -192,6 +192,17 @@ type Field struct {
 type Task struct {
 	Window         string `json:"window"`
 	RollbackOnFail bool   `json:"rollback_on_fail"`
+	// Manual は strategy: manual（人の手順で合わせる Task、#150）のとき true。
+	// Procedure・ProcedureURL は人に頼む手順。
+	Manual       bool   `json:"manual,omitempty"`
+	Procedure    string `json:"procedure,omitempty"`
+	ProcedureURL string `json:"procedure_url,omitempty"`
+}
+
+// NewTask は update_policy の Task の欄。
+func NewTask(pol core.UpdatePolicy) *Task {
+	return &Task{Window: pol.Window, RollbackOnFail: pol.RollbackOnFail,
+		Manual: pol.IsManual(), Procedure: pol.Procedure, ProcedureURL: pol.ProcedureURL}
 }
 
 // NewOperation は op を Operation にする（レーンと止めた理由は呼ぶ側が入れる）。

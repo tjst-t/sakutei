@@ -1081,11 +1081,13 @@ func NewDaemon(cfg Config) *Daemon {
 	if runner == nil {
 		runner = providers.taskRunner()
 	}
+	// #150 (§6.2 人の手順で合わせる Task): a strategy: manual resource's Task
+	// never calls a runner of its provider; it is observed through its
+	// provider and confirmed by a person.  Any provider can carry one.
+	runner = task.WithManual(runner, manualObserver(providers))
 	switch {
 	case cfg.TaskStore == nil:
 		tasksOff = "no task store configured (--task-store); a Task needs S2 to never run twice (§6.2)"
-	case runner == nil:
-		tasksOff = "the provider has no task runner"
 	default:
 		tasks = task.NewManager(cfg.TaskStore, runner, taskHolder(cfg), cfg.Now)
 		tasks.PollInterval, tasks.LeaseTTL = cfg.TaskPollInterval, cfg.TaskLeaseTTL
@@ -2623,6 +2625,56 @@ func runCycleAsync(
 	// #41 (§6.5 RequiresTaskEvent): a strategy: task resource reached by the
 	// wave scheduler with a diff gets a Task, never an Apply.
 	var tasksLaunched, tasksHeld []string
+	// #150 (§6.2 人の手順で合わせる Task): a strategy: manual resource's Task
+	// asks a person, at its approval gate, to do the declared procedure; the
+	// RequiresTask Event (level, every cycle) carries the procedure and the
+	// current and desired values until reality is observed as declared.
+	launchManual := func(r diff.DesiredResource, plan core.Plan, dec task.Decision) {
+		local := r.ID.Local
+		emit := func(w io.Writer, sev core.Severity, state, msg string) {
+			EmitManualUpdate(w, "sakutei: ", sev, r.ID, state, r.UpdatePolicy, plan, msg)
+		}
+		switch dec.Outcome {
+		case task.Launched:
+			tasksLaunched = append(tasksLaunched, local)
+			budgetEngine.ReserveLanes(laneDecision, plan.Ops)
+			budgetEngine.CommitOps(laneDecision.OutsideLanes(plan.Ops))
+			emit(cfg.ErrOut, core.SeverityWarning, "launched",
+				fmt.Sprintf("task %s launched; it asks a person at its approval gate — %s (strategy: manual; not applying)", dec.Record.TaskID, task.ManualNotice(task.Request{Policy: r.UpdatePolicy, Plan: plan})))
+		case task.AwaitingApproval:
+			tasksHeld = append(tasksHeld, local)
+			tasksAwaiting = append(tasksAwaiting, local)
+			emit(cfg.ErrOut, core.SeverityWarning, "awaiting_approval", "awaiting the operator: "+dec.Reason)
+		case task.Running, task.Resumed:
+			tasksHeld = append(tasksHeld, local)
+			if dec.Outcome == task.Resumed {
+				tasksResumed = append(tasksResumed, local)
+			}
+			rec := dec.Record
+			if dec.Outcome == task.Running {
+				rec, _, _ = tasks.Record(ctx, r.ID)
+			}
+			if rec.ApprovedStep == "" {
+				// Not answered yet: the Task is on its way to the approval gate.
+				emit(cfg.Out, core.SeverityInfo, "launched", "the Task is opening its approval gate (strategy: manual; not applying)")
+				return
+			}
+			emit(cfg.Out, core.SeverityInfo, "confirming",
+				fmt.Sprintf("approved by %s; waiting to observe reality as declared (strategy: manual; not applying)", rec.ApprovedBy))
+		default:
+			tasksHeld = append(tasksHeld, local)
+			state, sev := "outstanding", core.SeverityWarning
+			switch {
+			case dec.Outcome == task.OutsideWindow:
+				state = "outside_window"
+			case dec.Record.Phase == task.PhaseFailed && strings.Contains(dec.Record.Error, "stuck:"):
+				state, sev = "stuck", core.SeverityCritical
+			case dec.Record.Phase == task.PhaseFailed:
+				state = "halted"
+			}
+			emit(cfg.ErrOut, sev, state, fmt.Sprintf("no Task launched (%s): %s", dec.Outcome, dec.Reason))
+		}
+	}
 	launchTask := func(r diff.DesiredResource, plan core.Plan) {
 		local := r.ID.Local
 		if tasks == nil {
@@ -2630,7 +2682,7 @@ func runCycleAsync(
 			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("strategy: task, not applying; no Task launched: %s", tasksOff))
 			return
 		}
-		if cfg.TaskRunner == nil && !providers.hasTaskRunner(r.ID) {
+		if cfg.TaskRunner == nil && !r.UpdatePolicy.IsManual() && !providers.hasTaskRunner(r.ID) {
 			// #67: the resource's own provider cannot run Tasks.
 			tasksHeld = append(tasksHeld, local)
 			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("strategy: task, not applying; no Task launched: provider %q has no task runner", r.ID.Provider))
@@ -2645,6 +2697,11 @@ func runCycleAsync(
 			}
 		}
 		dec, err := tasks.Trigger(ctx, r.ID, r.Fields, plan, r.UpdatePolicy)
+		if err == nil && r.UpdatePolicy.IsManual() {
+			// #150 (§6.2 人の手順で合わせる Task): the person is told what to do.
+			launchManual(r, plan, dec)
+			return
+		}
 		if err != nil {
 			tasksHeld = append(tasksHeld, local)
 			EmitRequiresTask(cfg.ErrOut, "sakutei: ", core.SeverityWarning, r.ID, fmt.Sprintf("no Task launched: %v", err))

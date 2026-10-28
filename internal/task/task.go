@@ -69,6 +69,9 @@ type Request struct {
 	// 起動の時刻のまま）。実行体が「この起動より前の現実の残りかす」（例: 前の
 	// 更新の BMC の Task）を見分けるのに使う（#148）。
 	StartedAt time.Time
+	// Policy は起動したリソースの update_policy。strategy: manual（#150）の
+	// Task を人の手順で合わせる実行体（ManualRunner）に回すのに使う。
+	Policy core.UpdatePolicy
 }
 
 // Runner は Task の実行体。
@@ -185,6 +188,11 @@ func (m *Manager) IsRunning(id core.ID) bool {
 	return m.isRunning(id.String())
 }
 
+// Record は id の未完了の記録を返す（S2 を読むだけ）。
+func (m *Manager) Record(ctx context.Context, id core.ID) (Record, bool, error) {
+	return m.store.Get(ctx, id.String())
+}
+
 // Settle は strategy: task のリソースを Observe して差分が無かった（完了印が見えた）
 // ときに呼ぶ。未完了の記録があれば消して返す。このプロセスで Task が走っている間は
 // 消さない（結果の書込と競合させない）。
@@ -245,7 +253,7 @@ func (m *Manager) Trigger(ctx context.Context, id core.ID, desired map[string]st
 		return Decision{Outcome: Outstanding, Reason: "task manager is stopping"}, nil
 	}
 	taskID := fmt.Sprintf("%s-%d-%d", m.holder, now.UnixNano(), m.seq.Add(1))
-	req := Request{TaskID: taskID, Resource: id, Desired: copyFields(desired), Plan: plan, StartedAt: now.UTC()}
+	req := Request{TaskID: taskID, Resource: id, Desired: copyFields(desired), Plan: plan, StartedAt: now.UTC(), Policy: pol}
 	pr, steps, err := m.phasedSteps(ctx, req)
 	if err != nil {
 		return Decision{}, err
@@ -318,6 +326,11 @@ func (m *Manager) outstandingReason(rec Record) string {
 		return fmt.Sprintf("task %s reported success but its completion mark is not observed yet; not re-running — check reality and cancel it if needed", rec.TaskID)
 	case PhaseAwaitingApproval:
 		if rec.Gate == GateApproval {
+			if rec.Notice != "" {
+				// 人の手順で合わせる Task（#150）: 何をしてほしいかを添える。
+				return fmt.Sprintf("task %s needs approval before step %s; awaiting approval until %s — %s; sakutei task approve (the work is done: confirm it by observation) or reject (halt)",
+					rec.TaskID, rec.Step, rec.GateDeadline.UTC().Format(time.RFC3339), rec.Notice)
+			}
 			return fmt.Sprintf("task %s needs approval before step %s; awaiting approval until %s — sakutei task approve (run step %s) or reject (halt)",
 				rec.TaskID, rec.Step, rec.GateDeadline.UTC().Format(time.RFC3339), rec.Step)
 		}

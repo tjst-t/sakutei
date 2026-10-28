@@ -388,3 +388,25 @@ func checkExternalOwners(owners extowner.Set, desired []diff.DesiredResource, pr
 	}
 	return nil
 }
+
+// manualObserver observes a strategy: manual resource for its Task (§6.2
+// 人の手順で合わせる Task, #150): a fresh Read through the resource's own
+// provider and a Diff against the desired fields — done when nothing differs.
+// A resource not seen (unknown, converging, an error) is StepUnknown, never
+// pending: unknown ≠ absent.
+func manualObserver(providers *providerSet) task.ManualObserver {
+	return func(ctx context.Context, req task.Request) (task.StepState, error) {
+		e, err := providers.get(req.Resource.Provider)
+		if err != nil {
+			return task.StepUnknown, err
+		}
+		res := diff.DesiredResource{ID: req.Resource, Fields: req.Desired, UpdatePolicy: req.Policy}
+		switch out, _, _ := verifyOnce(ctx, e.p, e.engine, res); out {
+		case VerifyConverged:
+			return task.StepDone, nil
+		case VerifyIneffective:
+			return task.StepPending, nil
+		}
+		return task.StepUnknown, nil
+	}
+}

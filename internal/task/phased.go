@@ -118,6 +118,13 @@ type StepSpec struct {
 	// 承認すればその相から続け、却下とゲートのタイムアウトは halt。待つ間に
 	// Observe で相が済んだと見えれば、承認なしでゲートを閉じて続ける。
 	Approval bool
+	// Notice は承認の要る相のゲートを開くとき記録（Record.Notice）に置く、人への
+	// 案内（#150。人の手順で合わせる Task の手順の文・URL・いまの版と望む版）。
+	// 空なら何も置かない。
+	Notice string
+	// Stuck は Await の相が上限までに済まなかったときの失敗の説明の頭（#150）。
+	// 空なら一般の説明だけ。
+	Stuck string
 }
 
 func (s StepSpec) timeout() time.Duration {
@@ -259,7 +266,7 @@ func (m *Manager) resume(ctx context.Context, id core.ID, desired map[string]str
 		return outstanding(fmt.Sprintf("task %s stopped in step %s, but the desired state changed since it was launched; not resuming — check reality and cancel it",
 			rec.TaskID, rec.Step))
 	}
-	req := Request{TaskID: rec.TaskID, Resource: id, Desired: copyFields(desired), Plan: plan, StartedAt: rec.StartedAt}
+	req := Request{TaskID: rec.TaskID, Resource: id, Desired: copyFields(desired), Plan: plan, StartedAt: rec.StartedAt, Policy: pol}
 	pr, steps, err := m.phasedSteps(ctx, req)
 	if err != nil {
 		return Decision{}, false, err
@@ -407,6 +414,7 @@ func (m *Manager) runPhased(ctx context.Context, pr PhasedRunner, req Request, s
 				write(func(r *Record) {
 					r.Phase, r.Gate, r.GateOpenedAt, r.GateDeadline = PhaseAwaitingApproval, GateApproval, now, now.Add(m.gateTimeout())
 					r.Error = fmt.Sprintf("step %s needs approval before it runs", s.Name)
+					r.Notice = s.Notice
 				})
 				return
 			}
@@ -441,6 +449,9 @@ func (m *Manager) runPhased(ctx context.Context, pr PhasedRunner, req Request, s
 				return
 			}
 			if err != nil {
+				if s.Stuck != "" {
+					err = fmt.Errorf("%s: %w", s.Stuck, err)
+				}
 				fail(s.Name, err)
 				return
 			}
