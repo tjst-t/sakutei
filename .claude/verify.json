@@ -1,7 +1,7 @@
 {
   "commands": [
-    { "name": "build", "command": "go build ./..." },
-    { "name": "vet", "command": "go vet ./..." },
-    { "name": "unit", "command": "go test ./... -count=1" }
+    { "name": "build", "command": "go build -p 8 ./..." },
+    { "name": "vet", "command": "go vet -p 8 ./..." },
+    { "name": "unit", "command": "go test -p 8 ./... -count=1" }
   ]
 }
