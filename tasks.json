@@ -4451,7 +4451,7 @@
       "number": 191,
       "kind": "task",
       "title": "nftables の締め出しの守り：巻き戻しの仕掛けを sh ではなく決まった道具で動かし、sudo を道具と nft だけに絞れるようにする",
-      "status": "backlog",
+      "status": "ready",
       "parent": "m7",
       "dependsOn": [],
       "milestone": null,
@@ -4467,7 +4467,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T15:40:30.658Z",
-      "updatedAt": "2026-10-28T15:40:30.658Z",
+      "updatedAt": "2026-10-28T15:40:54.012Z",
       "closedAt": null,
       "extra": {}
     },
