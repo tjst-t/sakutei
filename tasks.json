@@ -4289,7 +4289,7 @@
       "number": 184,
       "kind": "task",
       "title": "C：freeze を監査に残す（誰が・なぜ・いつまで）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m7",
       "dependsOn": [
         "c-intent-runtime"
@@ -4303,7 +4303,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T13:07:46.058Z",
+      "updatedAt": "2026-10-28T14:09:05.545Z",
       "closedAt": null,
       "extra": {}
     },
