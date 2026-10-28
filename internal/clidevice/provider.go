@@ -655,7 +655,9 @@ func (p *Provider) applyOp(ctx context.Context, op core.Op) error {
 	}
 	// Op に無いフィールド（変わらないもの）は、いまの値で雛形を埋める（Diff は
 	// 変わるフィールドだけを渡す）。秘密なら、それは宣言と同じ値として観測した
-	// もの（このプロセスが書いた値）。
+	// もの（このプロセスが書いた値）。装置から読んだ値も宣言の値と同じく定義の
+	// 値の形で確かめ、合わなければ観測できない（定義に合わない出力）として何も
+	// 流さない（コマンドへの差し込みを防ぐ。値は文言に出さない）。
 	for _, fn := range sortedKeys(it.Fields) {
 		if _, ok := r.values[fn]; ok || del {
 			continue
@@ -663,6 +665,9 @@ func (p *Provider) applyOp(ctx context.Context, op core.Op) error {
 		v, ok := before.values[fn]
 		if !ok {
 			return provider.NewPermanentError(fmt.Errorf("%s: field %q has no value (the item is absent, and the plan does not carry it)", prefix, fn))
+		}
+		if err := it.Fields[fn].check(v); err != nil {
+			return connError(prefix+": nothing was sent", &mismatch{fmt.Sprintf("the value read from the device for the unchanged field %s does not match the device definition, so it is not put into a command: %v", fn, err)})
 		}
 		r.values[fn] = v
 		if it.Fields[fn].Secret {

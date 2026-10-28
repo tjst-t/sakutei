@@ -364,6 +364,41 @@ func TestApply_FillsUnchangedFieldsFromTheDevice(t *testing.T) {
 	}
 }
 
+func TestApply_UnchangedFieldFromTheDeviceMustMatchThePattern(t *testing.T) {
+	// 読み方が広い（.+）定義で、装置の上の値に別のコマンドになる文字が入っている：
+	// 変わらないフィールドとして雛形に埋めず、観測できないとして何も流さない。
+	def, err := defFrom(t, func(tr map[string]any) {
+		item := tr["items"].(map[string]any)["syslog"].(map[string]any)
+		item["observe"].(map[string]any)["regex"] = `^logging host (?P<host>.+) port (?P<port>[0-9]+)$`
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"192.0.2.10;reload", "$(reboot)", "192.0.2.10&&reload"} {
+		dev := clifake.New("sw1")
+		dev.Set("logging", bad+" 514")
+		p := newProvider(t, dev, def)
+		dev.ResetLog()
+		err := p.Apply(context.Background(), updateOp("sw1/syslog", map[string]string{"port": "1514"}))
+		var te *provider.TransientError
+		if err == nil || !errors.As(err, &te) || !strings.Contains(err.Error(), "nothing was sent") ||
+			!strings.Contains(err.Error(), "unchanged field host does not match the device definition") {
+			t.Fatalf("%q: err = %v, want unknown (transient) and nothing sent", bad, err)
+		}
+		if strings.Contains(err.Error(), bad) {
+			t.Fatalf("%q: the value is echoed: %v", bad, err)
+		}
+		for _, l := range dev.Log() {
+			if l == "configure" || strings.HasPrefix(l, "logging") || strings.Contains(l, "reload") || strings.Contains(l, "reboot") {
+				t.Fatalf("%q: a command was sent: %v", bad, dev.Log())
+			}
+		}
+		if dev.Get("logging") != bad+" 514" {
+			t.Fatalf("%q: the device was changed: %q", bad, dev.Get("logging"))
+		}
+	}
+}
+
 func TestApply_VerifiesAfterwards(t *testing.T) {
 	dev := clifake.New("sw1")
 	// set が効かない定義（別の項目を書く）：流れても宣言どおりにならない。
