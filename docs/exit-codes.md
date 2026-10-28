@@ -29,7 +29,7 @@
 | `sakutei task list / cancel / approve / reject` | した | できない（記録が無い・S4 に書けない等） | 旗の誤り | — | — |
 | `sakutei workflow list / cancel`・`sakutei approve`・`sakutei reject` | した | できない | 旗の誤り | — | — |
 | `sakutei allocator`（サービス） | 止めた | 動かせない（待ち受け・ストア） | 使い方の誤り（`--store` が無い・旗の誤り） | — | — |
-| `sakutei allocator release / list` | した | できない（届かない・記録が無い） | 使い方の誤り | — | — |
+| `sakutei allocator release / list / import` | した | できない（届かない・記録が無い。import はファイルと store が食い違えば書かずに断る、#157） | 使い方の誤り | — | — |
 | `sakutei apply-check list / release`（#166） | した | できない（使い方・ファイルを読めない・解く記録が無い・S4 に書けない） | — | — | — |
 | `sakutei mirror` | 止めた | 動かせない | 旗の誤り | — | — |
 | `sakutei secrets extract` | 書き出した | できない | 旗の誤り | — | — |
