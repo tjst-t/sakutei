@@ -4476,9 +4476,11 @@
       "number": 192,
       "kind": "task",
       "title": "nftables の confirm：先ごとに「変えたあとだけ確かめる」を選べるようにし、変える chain を通る経路の先で空から組めない注意を docs に書く",
-      "status": "backlog",
+      "status": "ready",
       "parent": "m7",
-      "dependsOn": [],
+      "dependsOn": [
+        "nftables-sh-sudo-nft"
+      ],
       "milestone": null,
       "priority": "normal",
       "labels": [
@@ -4491,7 +4493,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T15:40:45.547Z",
-      "updatedAt": "2026-10-28T15:40:45.547Z",
+      "updatedAt": "2026-10-28T15:40:59.144Z",
       "closedAt": null,
       "extra": {}
     }
