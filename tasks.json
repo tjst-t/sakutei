@@ -3781,7 +3781,7 @@
       "number": 158,
       "kind": "task",
       "title": "触らない宣言（§7.3 external_owner）を intent に汎用で入れる。provider の設定の除外は安全の網として残し、食い違えば読み込みで断る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "intent",
       "dependsOn": [],
       "milestone": null,
@@ -3793,7 +3793,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:44:59.126Z",
-      "updatedAt": "2026-10-28T02:44:59.126Z",
+      "updatedAt": "2026-10-28T05:34:54.084Z",
       "closedAt": null,
       "extra": {}
     },
