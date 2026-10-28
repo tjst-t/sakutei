@@ -39,7 +39,7 @@
 ## `reconcile` の 4（#166）
 
 `reconcile` は Apply が成功を返したリソースを、その場で読み直して Diff が消えたかを確かめる（§11.1 Tier2）。型ごとの
-settle（provider の既定。redfish は 15 秒、ほかは 1 回読み直すだけ。intent の `apply_check:` と `--settle` で変える）の
+settle（provider の既定。redfish は 15 秒、proxmox-vm は 30 秒、ほかは 1 回読み直すだけ。intent の `apply_check:` と `--settle` で変える）の
 間は待って読み直す。
 
 - Diff が消えた → 効いた（今までどおり 0）。

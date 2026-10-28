@@ -46,7 +46,7 @@ func addApplyCheckFlags(fs *flag.FlagSet) *applyCheckFlags {
 	return &applyCheckFlags{
 		fs: fs,
 		settle: fs.Duration("settle", 0,
-			"#166 (§11.1 Tier2): how long after an Apply that reported success reality may still differ before the Apply is judged not to have taken (default: the provider's, e.g. redfish-system 15s; others re-read once); with the intent's apply_check: the longer wins"),
+			"#166 (§11.1 Tier2): how long after an Apply that reported success reality may still differ before the Apply is judged not to have taken (default: the provider's, e.g. redfish-system 15s, proxmox-vm 30s; others re-read once); with the intent's apply_check: the longer wins"),
 		maxApplies: fs.Int("max-ineffective-applies", 0,
 			fmt.Sprintf("#166 (§11.1 Tier3): Applies of the same diff that may report success without changing reality before the resource's Apply is stopped (oscillating) (default %d); with the intent's apply_check: the smaller wins", reconcile.DefaultMaxIneffectiveApplies)),
 		maxDuration: fs.Duration("max-ineffective-duration", 0,

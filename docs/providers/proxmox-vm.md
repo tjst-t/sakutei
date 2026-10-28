@@ -193,6 +193,10 @@ Proxmox が書き戻す表記と、宣言の書き方の違いは比べる前に
     設定の `scope` は書かないか、宣言と同じにする。
 - `BulkObserve` はクラスタごとに `/cluster/resources` を 1 回だけ呼び、VM ごとに設定を読む（Read と等価、`sdk.BulkEquivalenceTester` で確かめている）。
 
+### Apply のあとの確かめ（settle）
+
+Apply が成功を返したら、読み直して宣言どおりになったかを確かめる（Backlog #166、§11.1）。proxmox-vm の settle の既定は **30 秒**：電源の操作（start・shutdown・`apply_pending: reboot`）は、Proxmox の仕事が終わってからも VM の status が少しのあいだ前の値を返すことがある（reboot の仕事が終わった直後に `stopped` と読める）ので、その間は読み直して待つ。intent の `apply_check:` か `--settle` で変えられる（食い違えば長い方）。
+
 ### 再起動が要る変更（pending）
 
 走っている VM の設定の一部（hotplug できない `cores`・`memory` など）は、Proxmox が pending に置いて次の起動で効かせる。

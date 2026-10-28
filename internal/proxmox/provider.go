@@ -291,8 +291,16 @@ func (p *Provider) Capabilities() provider.Capabilities {
 		Pruneable:       false,
 		Converging:      true,
 		ProviderVersion: ProviderVersion,
+		Settle:          DefaultSettle,
 	}
 }
+
+// DefaultSettle は Apply のあとの確かめ（#166、§11.1 Tier2）の settle の既定。
+// 電源の操作（start・shutdown・apply_pending の reboot）は Proxmox の仕事が
+// 終わってからも VM の status が少しのあいだ前の値を返すことがある（reboot の
+// 仕事が終わった直後に stopped と読める）ので、その間は読み直して待つ。
+// intent の apply_check: で変えられる。
+const DefaultSettle = 30 * time.Second
 
 // ---- ID ----
 

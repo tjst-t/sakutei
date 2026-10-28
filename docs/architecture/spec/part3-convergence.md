@@ -466,7 +466,7 @@ converging は「収束器の上の収束器」（SDN / VCF / アレイ / k8s �
 204 を返して電源を変えない、など）に配線した。
 
 - **Apply のあとの確かめ（Tier2）**：Apply が成功を返したリソースは、その場で読み直して Diff が消えたかを確かめる。型ごとの
-  `settle`（provider の `Capabilities.Settle`。redfish の電源・起動先は 15 秒、既定は 0＝1 回だけ読み直す）の間は待って読み
+  `settle`（provider の `Capabilities.Settle`。redfish の電源・起動先は 15 秒、proxmox-vm は 30 秒、既定は 0＝1 回だけ読み直す）の間は待って読み
   直す。常駐では Apply の goroutine の中で確かめ、その間リソースは in-flight（converging）のまま（再 Apply しない、下流は
   待つ）。相手が `Converging` と言えば（Tier1）そこで確かめを終え、数えない。観測できないまま settle が過ぎたものも数えない
   （unknown ≠ ineffective）。

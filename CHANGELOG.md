@@ -17,6 +17,10 @@ FW とソフトの更新を宣言で扱う部品を揃えた版。管理 API に
 - **全体を止める型の更新 `disruption:`**（#152）：Workflow に、止める時間の見積もり・影響を受ける下流・止めてよい時間帯・上流の積もりの条件・待つ上限・事前の知らせ・承認ゲートを宣言できる。時間帯の外では起こさず、上流の積もりが多い間は待ち、承認ゲートに見積もりと影響を出し、止める前に Event `Disruption` で知らせ、止める直前にもう一度確かめる（外れていれば知らせを取り下げて待つ）。見積もりを過ぎれば stuck。
 - **proxmox-vm の cloud-init の初回のパッケージ更新 `ciupgrade`**（#170）：真偽値のフィールド。作るとき（作成・複製）に渡し、観測して違えば合わせる（cloud-init のほかのフィールドと同じ扱い）。書かなければ Proxmox に渡さず比べない（既定の振る舞いは変わらない）。外への出口が無い網では `ciupgrade: false` を明示すると、初回の起動がパッケージ更新の時間切れを待たない。`make integration-proxmox` に「ciupgrade: false」段。設計書 v3.43（`docs/architecture/CHANGELOG-v3.43.md`）。
 
+### 修正
+
+- **proxmox-vm の `apply_pending: reboot` の Apply が、効かなかったと数えられることがあった**（v2.4.0 の #166 との組み合わせ）：reboot の仕事が終わった直後は VM の status が少しのあいだ `stopped` と読めるため、Apply のあとの読み直しで Diff が残ったと見て、一回性の reconcile が終了コード 4 で終わることがあった。proxmox-vm に settle の既定 30 秒を入れ、その間は読み直して待つ（intent の `apply_check:` か `--settle` で変えられる）。`make integration-proxmox` の「再起動が要る変更」段で見つけた。
+
 ## v2.4.0（2026-10-28）
 
 正しい状態を宣言の側に置く仕組みと、効かない Apply を止める仕組みを入れた版。採番の結果を宣言の側のファイルへ書き戻してそれを正として読む、触らない宣言を intent に書く、Apply のあとに読み直して効いたかを確かめる。あわせて、List の ID の scope と宣言の scope の突き合わせの修正と、Redfish の FW の更新を BMC の模擬で確かめたこと。設計書は v3.33 → v3.38（`docs/architecture/CHANGELOG-v3.34.md`〜`v3.38.md`）。
