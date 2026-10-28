@@ -1039,15 +1039,15 @@
       "priority": "normal",
       "labels": [
         "v2",
-        "needs-decision"
+        "deferred"
       ],
-      "body": "設計 §22.2・§27.5。「在る ≠ 動いている」の health は収束では捕まらないので、prober を自作せず、監視の設定（blackbox の probe・alert ルール）を通常の Resource として収束する。判定と通知は Prometheus・Alertmanager に委譲する（§22.1）。\n\n- resource に observability（blackbox / alert）を書ける形を loader と JSON Schema に足す。\n- 監視の設定を書き出す provider（Prometheus のルールファイル・blackbox の設定など、まずはファイル系）を作る。\n- 自動 canary ゲート（別タスク）が health を判定材料に読めるよう、health の結果を読む口を決める。\n\n**着手時に決めること**：監視設定の書き出し先の形（Prometheus のファイル SD・ルールファイルか、API か）と、health の結果をどこから読むか。",
+      "body": "設計 §22.2・§27.5。「在る ≠ 動いている」の health は収束では捕まらないので、prober を自作せず、監視の設定（blackbox の probe・alert ルール）を通常の Resource として収束する。判定と通知は Prometheus・Alertmanager に委譲する（§22.1）。\n\n- resource に observability（blackbox / alert）を書ける形を loader と JSON Schema に足す。\n- 監視の設定を書き出す provider（Prometheus のルールファイル・blackbox の設定など、まずはファイル系）を作る。\n- 自動 canary ゲート（別タスク）が health を判定材料に読めるよう、health の結果を読む口を決める。\n\n**後回し（2026-10-28 決定）**：v2.6.0 には入れない。監視の対象（取りに行く先の一覧・ルール）は使う側が宣言から展開して作り、本体に「多くのリソースから1つを集める」仕組みは当面入れない。監視の基盤の設定のファイルは host-file と systemd-unit（quadlet）で配れる見込み。専用の Resource が要るかは、その形で監視の基盤を組んだ運用の例が出てから改めて判断する。",
       "doneWhen": "intent に書いた observability が監視設定として書き出され、消した・手で変えたときに戻ることを、ファイル系の provider と契約テストで示す。make check・make test-race が合格",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T09:57:04.700Z",
-      "updatedAt": "2026-10-21T09:57:25.292Z",
+      "updatedAt": "2026-10-28T09:48:12.823Z",
       "closedAt": null,
       "extra": {}
     },
