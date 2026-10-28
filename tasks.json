@@ -4125,7 +4125,7 @@
       "number": 177,
       "kind": "task",
       "title": "依存先を Apply したあと、観測できなかった依存元を同じ回でもう一度観測する（空から一度で組む）",
-      "status": "backlog",
+      "status": "ready",
       "parent": "m6-netconf-apply-base-chain-2-apply",
       "dependsOn": [],
       "milestone": null,
@@ -4139,7 +4139,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:53:38.608Z",
-      "updatedAt": "2026-10-28T09:53:38.608Z",
+      "updatedAt": "2026-10-28T09:54:09.238Z",
       "closedAt": null,
       "extra": {}
     },
