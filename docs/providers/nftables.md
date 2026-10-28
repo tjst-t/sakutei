@@ -150,7 +150,7 @@ base chain から管理する chain へ飛ばす（`jump web`）のは、base ch
 
 base chain を作る・変える・消す Apply は、NETCONF の commit confirmed と同じ考えの守りを通す（regular chain だけを変える Apply は今までどおり）:
 
-0. **変える前に**、確かめる先（下の「確かめる先を宣言する」。書かなければ `self`）のすべてに新しい接続で 1 回ずつ届くかを確かめる。1 つでも届かなければ**変えない**（一時的な失敗。届かない先を名指しする。前に届かないのに変えると、後の確かめが落ちて戻すだけになるため。Backlog #179）。
+0. **変える前に**、確かめる先（下の「確かめる先を宣言する」。書かなければ `self`）のうち `after:` の印の無いもの（Backlog #192）のすべてに新しい接続で 1 回ずつ届くかを確かめる。1 つでも届かなければ**変えない**（一時的な失敗。届かない先を名指しする。前に届かないのに変えると、後の確かめが落ちて戻すだけになるため。Backlog #179）。
 1. 変える table の写しを取る（`nft list table`。戻しのスクリプトは `add table`・`delete table`・写し。無かった table は消す）。
 2. `nft -c -f -` で検査する。
 3. 対象のホストの側に、`ruleset_rollback_timeout`（既定 30 秒）の後に写しを `nft -f` で流す仕掛けを置く（POSIX の sh で一時のディレクトリ `${TMPDIR:-/tmp}/sakutei-nft-rollback.*` に写しを置き、`setsid`・`nohup` で切り離して眠る。決まった道具を使うホストでは道具の `arm` が写しを自分で取り、root だけが読み書きできる状態のディレクトリに置いて、自分を切り離して起動し直して眠る。下の「決まった道具」）。**ホストの上で時間で動くので、Sakutei との接続が切れても、Sakutei が落ちても戻る。** 戻したときは `logger -t sakutei-nft-rollback` で syslog に残す。
@@ -193,6 +193,7 @@ providers:
 | `self` | Sakutei 自身の管理の接続（書かなければこれだけ）。離れたホストはそのホストへの新しい ssh、手元の live は `ruleset_confirm_address` への TCP |
 | `ssh://[user@]host[:port]` | 別の経路（別のアドレス・ポート）への新しい ssh の接続（`true` を走らせる）。鍵・known_hosts・タイムアウトはそのホストの remote の設定。user・port を書かなければそのホストの設定のまま。ホスト鍵はその経路の名前（`[host]:port`）で known_hosts と照らす。**手元の live には書けない**（ssh の設定が無い） |
 | `tcp://host:port` | Sakutei からその宛先への新しい TCP の接続 |
+| `after:` を前に付けた先（`after:ssh://…`・`after:tcp://…`） | **変えたあとだけ**確かめる（Backlog #192。下の「変える chain を通る経路の先」）。変える前に届かなくても止めないが、変えたあとはほかの先と同じに必ず届くことを確かめ、届かなければ巻き戻す。`self` には付けられない |
 
 ```json
 {
@@ -208,7 +209,21 @@ providers:
 
 - regular chain の宣言には書けない（守りを通さないので）。形の読めないもの・`tcp://` のポート無し・同じ先の二度書き・`ssh://` の password は読み込みで断る。file 版も同じ形を見る（file は守りを通さないので使わない）。
 - `confirm` は現実に無い（観測に出ない）ので、`confirm` だけを変えた宣言は収束のまま（Apply しない）。ほかの差分があるときは Apply に渡り、plan にも `+ confirm (new) → ...` と出る。
-- 同じホストの 1 つのトランザクションで複数の base chain を変えるときは、それぞれの先を合わせたすべてを確かめる。
+- 同じホストの 1 つのトランザクションで複数の base chain を変えるときは、それぞれの先を合わせたすべてを確かめる。同じ先が片方の宣言にだけ `after:` の印つきなら、印の無い方（変える前にも確かめる）に寄せる。
+
+#### 変える chain を通る経路の先（空から組めない注意、Backlog #192）
+
+`confirm` に、**変える対象の chain を通る経路の先**（例: 境界の FW の DNAT・forward を通って後ろのホストへ入る別の経路の ssh）を書くと、空からの初回はその経路がまだ無いので、**変える前の確かめでその先に届かず、一度も変えられない**（毎回「before the change」で止まる）。避け方は 2 つ:
+
+1. その先に **`after:` の印**を付ける（`"confirm": "self, after:ssh://admin@198.51.100.20:2200"`）。変える前は印の無い先（`self` など）だけを確かめ、変えたあとは印の付いた先も含めて**すべて**に届くことを確かめる。届かなければ今までどおり巻き戻す（知らせに `after:` の付いた先を名指しする）。
+2. 初回は `self` だけで確かめて経路を組み、組めてから先を足す（#179 の統合テストの「the other path opened」と同じ順）。
+
+- 変える前に確かめる先が 1 つも無い宣言（`self` を外し、全部に `after:` を付けたもの）は**読み込みで断る**（変える前の確かめが何も守らなくなる）。`after:self`・印の有無だけが違う同じ先の二度書きも断る。
+- plan の `confirm` の行には書いたとおり `after:` が出る。変える前の確かめで止まった知らせ・変えたあとの確かめで巻き戻した知らせの `Confirm targets:` にも印つきで出し、印のある先があれば「after: marks a target confirmed only after the change, not before it」を添える:
+
+  ```
+  nftables: Apply: not changing base chain(s) fw1/inet/filter/forward: host fw1 cannot be reached over a new connection before the change (self: ...); the change would only be rolled back. Confirm targets: self, after:ssh://admin@198.51.100.20:2200 (after: marks a target confirmed only after the change, not before it)
+  ```
 
 ### 承認と予算（壊す変更）
 
@@ -484,7 +499,18 @@ $ make integration-nftables
 | another path declared and shut: rolled back although self is reached | 同じ `confirm` で 2222 を通さない宣言 → 前の確かめは通り、後の確かめで別の経路が届かない → 4 で「rolled back」とその先を名指し、table は前の段のまま、両方の経路が届く |
 | the minimal core was not touched | `mgmt` が最初から最後まで変わらない |
 
-決まった道具（Backlog #191、`guardtool_integration_test.go` の `TestNFTablesGuardToolOverSSH`）：同じイメージの別のコンテナに、CGO なしでビルドした `cmd/sakutei-nft-guard` を `/usr/local/libexec/sakutei-nft-guard`（root・0755）に、`/etc/sakutei/nft-guard.json`（`inet/sk` だけを許す、`max_rollback_seconds: 60`）を置く。**sudoers は上の「sudoers の最小の行」だけ**（書き込み用の `sakutei` に道具だけ、観測用の `sakutei-ro` に道具の `list *` だけ。イメージの `NOPASSWD: ALL` は消す）。sakutei は `ruleset_guard_tool` で道具を使い、対象の一覧の `observe:` は `sakutei-ro`。最小の核（`inet sk mgmt`）と、道具の許さない表 `inet other` を Sakutei の外で入れる。テストの側の ssh は sakutei と別の、新しい接続:
+変える chain を通る経路の先（Backlog #192、`forward_integration_test.go` の `TestNFTablesConfirmAfterForward`）：lockout と同じイメージの FW のコンテナ（`net.ipv4.ip_forward=1`、2200 を手元の空いたポートに出す）の後ろに、sshd の入ったもう 1 つのコンテナ（behind、出さない）を置く。手元から FW の 2200 へ入った接続は、宣言する nat の base chain `inet sk prerouting`（`tcp dport 2200 dnat ip to <behind>:22`）で behind へ DNAT され、宣言した `inet sk forward`（policy drop・`ct state established,related accept ; tcp dport 22 accept`）を通って届く（戻りの masquerade は Sakutei の外の `ip keep`）。この経路は prerouting が現実にできるまで無い。確かめる先は `ssh://127.0.0.1:<2200 の手元のポート>`（known_hosts に behind のホスト鍵）:
+
+| 段 | 内容 |
+| --- | --- |
+| the forward chain (policy drop) applied | forward だけを宣言 → reconcile が 0 |
+| the forwarded path unmarked: stopped before the change | 経路が閉じていることを確かめ、prerouting を `confirm: self, ssh://…`（印なし）で宣言 → reconcile は Apply の失敗（「before the change」とその先を名指し）ですぐ返り、ruleset は変わらない（いまどおり） |
+| plan shows the after: mark | `confirm: self, after:ssh://…` に直す → plan の `confirm` の行に `after:` が出る |
+| the forwarded path marked after: changed from empty at once, confirmed after | reconcile 1 回が 0 で上限を待たずに返り、DNAT ができ、経路が開く。上限を過ぎても開いたまま（仕掛けは取り消された）、仕掛けの残りが無い |
+| the forwarded path marked after: and shut: rolled back | DNAT の先を behind の閉じたポートに変える → 前の確かめ（self）は通り、後の確かめで印の付いた先に届かない → 4 で「rolled back」と `after:ssh://…` を名指し、ruleset は前の段のまま、両方の経路が届く |
+| every target marked after: refused on loading | `confirm: after:ssh://…` だけ → plan が「every target is marked after:」で断り、ruleset は変わらない |
+
+ の `TestNFTablesGuardToolOverSSH`）：同じイメージの別のコンテナに、CGO なしでビルドした `cmd/sakutei-nft-guard` を `/usr/local/libexec/sakutei-nft-guard`（root・0755）に、`/etc/sakutei/nft-guard.json`（`inet/sk` だけを許す、`max_rollback_seconds: 60`）を置く。**sudoers は上の「sudoers の最小の行」だけ**（書き込み用の `sakutei` に道具だけ、観測用の `sakutei-ro` に道具の `list *` だけ。イメージの `NOPASSWD: ALL` は消す）。sakutei は `ruleset_guard_tool` で道具を使い、対象の一覧の `observe:` は `sakutei-ro`。最小の核（`inet sk mgmt`）と、道具の許さない表 `inet other` を Sakutei の外で入れる。テストの側の ssh は sakutei と別の、新しい接続:
 
 | 段 | 内容 |
 | --- | --- |
@@ -511,52 +537,59 @@ $ make integration-nftables
 
 ### 結果
 
-nftables v1.0.9 で回した結果（全段 PASS、Backlog #191 の段を足して）:
+nftables v1.0.9 で回した結果（全段 PASS、Backlog #192 の段を足して）:
 
 ```
---- PASS: TestNFTablesGuardToolOverSSH (63.57s)
-    --- PASS: TestNFTablesGuardToolOverSSH/sudo_runs_the_tool_only (7.72s)
-    --- PASS: TestNFTablesGuardToolOverSSH/the_tool_refuses_and_changes_nothing (6.62s)
-    --- PASS: TestNFTablesGuardToolOverSSH/policy_drop_is_applied_and_confirmed_through_the_tool (16.18s)
-    --- PASS: TestNFTablesGuardToolOverSSH/a_declaration_that_shuts_ssh_out_is_rolled_back_by_the_tool (13.56s)
-    --- PASS: TestNFTablesGuardToolOverSSH/the_host_rolls_back_even_when_sakutei_is_gone (11.34s)
-    --- PASS: TestNFTablesGuardToolOverSSH/a_tool_of_another_protocol:_not_changed (1.28s)
-    --- PASS: TestNFTablesGuardToolOverSSH/no_tool:_not_changed (0.20s)
-    --- PASS: TestNFTablesGuardToolOverSSH/the_tool_back:_the_change_goes_through (2.74s)
-    --- PASS: TestNFTablesGuardToolOverSSH/outside_the_tool's_tables:_not_touched (0.12s)
+--- PASS: TestNFTablesConfirmAfterForward (32.38s)
+    --- PASS: TestNFTablesConfirmAfterForward/the_forward_chain_(policy_drop)_applied (0.91s)
+    --- PASS: TestNFTablesConfirmAfterForward/the_forwarded_path_unmarked:_stopped_before_the_change (0.42s)
+    --- PASS: TestNFTablesConfirmAfterForward/plan_shows_the_after:_mark (0.07s)
+    --- PASS: TestNFTablesConfirmAfterForward/the_forwarded_path_marked_after:_changed_from_empty_at_once,_confirmed_after (14.06s)
+    --- PASS: TestNFTablesConfirmAfterForward/the_forwarded_path_marked_after:_and_shut:_rolled_back (12.52s)
+    --- PASS: TestNFTablesConfirmAfterForward/every_target_marked_after:_refused_on_loading (0.06s)
+--- PASS: TestNFTablesGuardToolOverSSH (63.92s)
+    --- PASS: TestNFTablesGuardToolOverSSH/sudo_runs_the_tool_only (7.54s)
+    --- PASS: TestNFTablesGuardToolOverSSH/the_tool_refuses_and_changes_nothing (6.53s)
+    --- PASS: TestNFTablesGuardToolOverSSH/policy_drop_is_applied_and_confirmed_through_the_tool (16.16s)
+    --- PASS: TestNFTablesGuardToolOverSSH/a_declaration_that_shuts_ssh_out_is_rolled_back_by_the_tool (13.54s)
+    --- PASS: TestNFTablesGuardToolOverSSH/the_host_rolls_back_even_when_sakutei_is_gone (11.52s)
+    --- PASS: TestNFTablesGuardToolOverSSH/a_tool_of_another_protocol:_not_changed (1.27s)
+    --- PASS: TestNFTablesGuardToolOverSSH/no_tool:_not_changed (0.23s)
+    --- PASS: TestNFTablesGuardToolOverSSH/the_tool_back:_the_change_goes_through (2.68s)
+    --- PASS: TestNFTablesGuardToolOverSSH/outside_the_tool's_tables:_not_touched (0.13s)
 --- PASS: TestNFTablesLiveIntentRanges (0.24s)
-    --- PASS: TestNFTablesLiveIntentRanges/tables_only_in_the_intent (0.13s)
+    --- PASS: TestNFTablesLiveIntentRanges/tables_only_in_the_intent (0.12s)
     --- PASS: TestNFTablesLiveIntentRanges/a_disagreement_is_refused_before_nft_runs (0.02s)
     --- PASS: TestNFTablesLiveIntentRanges/the_same_in_both,_and_only_in_the_config (0.06s)
---- PASS: TestNFTablesLockoutOverSSH (58.56s)
-    --- PASS: TestNFTablesLockoutOverSSH/policy_drop_is_applied_and_reaching_the_host_is_confirmed (14.16s)
+--- PASS: TestNFTablesLockoutOverSSH (56.97s)
+    --- PASS: TestNFTablesLockoutOverSSH/policy_drop_is_applied_and_reaching_the_host_is_confirmed (14.14s)
     --- PASS: TestNFTablesLockoutOverSSH/a_declaration_that_shuts_ssh_out_is_rolled_back_on_the_host (12.46s)
     --- PASS: TestNFTablesLockoutOverSSH/the_same_change_is_not_applied_again (0.13s)
-    --- PASS: TestNFTablesLockoutOverSSH/the_host_rolls_back_even_when_sakutei_is_gone (10.63s)
-    --- PASS: TestNFTablesLockoutOverSSH/a_target_not_reached_before_the_change:_not_changed (0.74s)
-    --- PASS: TestNFTablesLockoutOverSSH/the_other_path_opened_(confirmed_over_self) (2.86s)
-    --- PASS: TestNFTablesLockoutOverSSH/another_path_declared_and_kept_open:_confirmed_over_both (1.40s)
-    --- PASS: TestNFTablesLockoutOverSSH/another_path_declared_and_shut:_rolled_back_although_self_is_reached (12.76s)
-    --- PASS: TestNFTablesLockoutOverSSH/the_minimal_core_was_not_touched (0.07s)
---- PASS: TestNFTablesLocalLockout (8.24s)
-    --- PASS: TestNFTablesLocalLockout/confirmed (4.11s)
-    --- PASS: TestNFTablesLocalLockout/not_reached_before_the_change:_not_changed (0.09s)
-    --- PASS: TestNFTablesLocalLockout/declared_tcp_targets_without_ruleset_confirm_address (0.17s)
-    --- PASS: TestNFTablesLocalLockout/one_declared_target_not_reached_after_the_change:_rolled_back (3.87s)
+    --- PASS: TestNFTablesLockoutOverSSH/the_host_rolls_back_even_when_sakutei_is_gone (10.55s)
+    --- PASS: TestNFTablesLockoutOverSSH/a_target_not_reached_before_the_change:_not_changed (0.68s)
+    --- PASS: TestNFTablesLockoutOverSSH/the_other_path_opened_(confirmed_over_self) (2.69s)
+    --- PASS: TestNFTablesLockoutOverSSH/another_path_declared_and_kept_open:_confirmed_over_both (1.21s)
+    --- PASS: TestNFTablesLockoutOverSSH/another_path_declared_and_shut:_rolled_back_although_self_is_reached (12.69s)
+    --- PASS: TestNFTablesLockoutOverSSH/the_minimal_core_was_not_touched (0.06s)
+--- PASS: TestNFTablesLocalLockout (8.20s)
+    --- PASS: TestNFTablesLocalLockout/confirmed (4.12s)
+    --- PASS: TestNFTablesLocalLockout/not_reached_before_the_change:_not_changed (0.08s)
+    --- PASS: TestNFTablesLocalLockout/declared_tcp_targets_without_ruleset_confirm_address (0.14s)
+    --- PASS: TestNFTablesLocalLockout/one_declared_target_not_reached_after_the_change:_rolled_back (3.86s)
 --- PASS: TestNFTablesNetworkPolicy (0.98s)
-    --- PASS: TestNFTablesNetworkPolicy/the_allows_are_applied_with_their_reasons_as_comments (0.25s)
-    --- PASS: TestNFTablesNetworkPolicy/no_drift_however_many_cycles_(comments_read_back_as_written) (0.40s)
+    --- PASS: TestNFTablesNetworkPolicy/the_allows_are_applied_with_their_reasons_as_comments (0.24s)
+    --- PASS: TestNFTablesNetworkPolicy/no_drift_however_many_cycles_(comments_read_back_as_written) (0.41s)
     --- PASS: TestNFTablesNetworkPolicy/changing_the_declaration_changes_the_rules (0.31s)
     --- PASS: TestNFTablesNetworkPolicy/an_exception_without_reason_is_refused_and_nothing_changes (0.02s)
---- PASS: TestNFTablesLiveIntegration (2.24s)
+--- PASS: TestNFTablesLiveIntegration (2.32s)
     --- PASS: TestNFTablesLiveIntegration/create_from_empty (0.23s)
     --- PASS: TestNFTablesLiveIntegration/base_chain_and_set_are_not_touched (0.16s)
     --- PASS: TestNFTablesLiveIntegration/a_rule_deleted_by_hand_is_drift_and_comes_back (0.25s)
-    --- PASS: TestNFTablesLiveIntegration/a_reordering_is_drift_and_is_put_back (0.18s)
+    --- PASS: TestNFTablesLiveIntegration/a_reordering_is_drift_and_is_put_back (0.19s)
     --- PASS: TestNFTablesLiveIntegration/a_rule_nft_-c_refuses_changes_nothing (0.07s)
-    --- PASS: TestNFTablesLiveIntegration/declared_as_listed,_no_drift_however_many_cycles (0.41s)
-    --- PASS: TestNFTablesLiveIntegration/normal_form (0.33s)
-    --- PASS: TestNFTablesLiveIntegration/a_set_nft_merges_is_not_drift (0.59s)
+    --- PASS: TestNFTablesLiveIntegration/declared_as_listed,_no_drift_however_many_cycles (0.43s)
+    --- PASS: TestNFTablesLiveIntegration/normal_form (0.35s)
+    --- PASS: TestNFTablesLiveIntegration/a_set_nft_merges_is_not_drift (0.61s)
     --- PASS: TestNFTablesLiveIntegration/the_unmanaged_table_did_not_change (0.01s)
 PASS
 ```

@@ -56,6 +56,9 @@ type sshLab struct {
 	// container is the docker container; key is a copy of the private key
 	// for a test's own ssh (Backlog #191).
 	container, key string
+	// image and pub are the container image and the public key (Backlog
+	// #192: a second container behind the host).
+	image, pub string
 	// port は sshd の 22、port2 は別の経路（sshd の 2222）の手元のポート。
 	port, port2 int
 }
@@ -122,8 +125,9 @@ func setupSSHLab(t *testing.T) *sshLab {
 	return setupSSHLabIn(t, lockContainer)
 }
 
-// setupSSHLabIn is setupSSHLab in the container name.
-func setupSSHLabIn(t *testing.T, name string) *sshLab {
+// setupSSHLabIn is setupSSHLab in the container name, with more docker run
+// arguments (Backlog #192: a port and a sysctl of the forward lab).
+func setupSSHLabIn(t *testing.T, name string, runArgs ...string) *sshLab {
 	t.Helper()
 	if out, err := docker("version"); err != nil {
 		t.Fatalf("docker through sudo without a password is required: %v\n%s", err, out)
@@ -167,6 +171,7 @@ func setupSSHLabIn(t *testing.T, name string) *sshLab {
 	}
 	pub, _ := os.ReadFile(key + ".pub")
 	priv, _ := os.ReadFile(key)
+	l.image, l.pub = image, strings.TrimSpace(string(pub))
 	os.Remove(key)
 	l.key = filepath.Join(l.dir, "id_direct")
 	if err := os.WriteFile(l.key, priv, 0o600); err != nil {
@@ -175,8 +180,9 @@ func setupSSHLabIn(t *testing.T, name string) *sshLab {
 
 	_, _ = docker("rm", "-f", "-v", name)
 	l.port, l.port2 = freePort(t), freePort(t)
-	if out, err := docker("run", "-d", "--init", "--name", name, "--hostname", "fw",
-		"--cap-add", "NET_ADMIN", "-p", fmt.Sprintf("127.0.0.1:%d:22", l.port), "-p", fmt.Sprintf("127.0.0.1:%d:2222", l.port2), image); err != nil {
+	run := append([]string{"run", "-d", "--init", "--name", name, "--hostname", "fw",
+		"--cap-add", "NET_ADMIN", "-p", fmt.Sprintf("127.0.0.1:%d:22", l.port), "-p", fmt.Sprintf("127.0.0.1:%d:2222", l.port2)}, runArgs...)
+	if out, err := docker(append(run, image)...); err != nil {
 		t.Fatalf("docker run: %v\n%s", err, out)
 	}
 	cshIn(t, name, "ssh-keygen -A >/dev/null && printf '%s\\n' '"+strings.TrimSpace(string(pub))+"' > /home/sakutei/.ssh/authorized_keys && "+

@@ -70,7 +70,7 @@
 | `realizer` | 変換の名前。既定 `nftables`（本体にあるのはこれだけ。下の「別の実現先へ変換する」） |
 | `id`・`scope` | 作る resource の id と scope。nftables は nftables provider の local id（`[<host>/]<family>/<table>/<chain>`、family は `ip`・`ip6`・`inet`） |
 | `before`・`after` | 許可の前と後に置くルール（1 要素に 1 ルール）。nftables なら `ct state established,related accept`・`iif "lo" accept`・最小の核への `jump mgmt` |
-| `settings` | realizer に固有の値。nftables は `hook`（既定 boundary は `forward`、host は `input`）・`priority`（既定 `filter`）・`policy`（既定 `drop`）・`confirm`（base chain の確かめる先、[providers/nftables.md](providers/nftables.md) の「確かめる先を宣言する」） |
+| `settings` | realizer に固有の値。nftables は `hook`（既定 boundary は `forward`、host は `input`）・`priority`（既定 `filter`）・`policy`（既定 `drop`）・`confirm`（base chain の確かめる先、[providers/nftables.md](providers/nftables.md) の「確かめる先を宣言する」。境界の forward を通る経路の先には `after:` の印を付ける。下の「確かめる先の注意」） |
 
 host の実現先で `policy drop` の input を作ると、Sakutei の管理の経路（ssh）も宣言どおりにしか通らない。**到達性の最小の核は Sakutei の外で保守し**、`before` にその chain への `jump` を書く（[providers/nftables.md](providers/nftables.md) の「到達性の最小の核は Sakutei の外で保守する」）。
 
@@ -125,6 +125,21 @@ Network policy (§7.6): 3 network(s), 3 allow(s), 2 target(s)
 - **comment**：nft の comment は 128 バイトまでで、`"` を逃がせない。reason の `"` は `'` に、`\` は `/` に、`;` は `,` に（ルールの区切り ` ; ` を作らない）、改行・タブ・続く空白は 1 つの空白にし、128 バイトを超えれば文字の境目で切って `…` を付ける。reason が空なら comment を付けない。読み戻しでも同じ文字列になる（統合テストで確かめた）。
 - 展開した resource は手で書いた resource と同じに扱う：同じ id を resources にも書く・`external_owners:` が選ぶ・inventory のファイルに `network_policy:` を書くと断る。base chain を作る・policy を変えるのは承認の要る壊す変更（#179）なので、live では planned_change のレーン（`kind: create`・`kind: update`）が要り、締め出しの守り（#173）を通る。ルールだけの変更（許可を足す・reason を変える）は承認は要らず守りを通る。
 - file 版（`--ruleset`）でも同じ宣言が使える（FW は変えない）。
+
+### 確かめる先の注意（空から組めない、Backlog #192）
+
+境界（hook `forward`）の `settings.confirm` に、**その境界の FW を通る経路の先**（例: FW の後ろのホストの ssh、FW の DNAT 越しの管理の経路）を書くと、空からの初回はまだ経路が無い（FW が通さない・DNAT が無い）ので、**変える前の確かめでその先に届かず、一度も変えられない**（毎回「before the change」で止まる）。その先には `after:` の印を付ける:
+
+```json
+{"name": "fw1", "kind": "boundary", "networks": ["office", "dmz", "db"],
+ "id": "fw1/inet/filter/forward", "scope": {"site": "lab"},
+ "before": ["ct state established,related accept"],
+ "settings": {"confirm": "self, after:ssh://admin@192.0.2.20:22"}}
+```
+
+- 印の付いた先は、変える前に届かなくても止めない。変えたあとは印の無い先と同じに必ず届くことを確かめ、届かなければ巻き戻す（締め出しの守り）。
+- 変える前に確かめる先が 1 つも無い宣言（`self` を外し、全部に印を付けたもの）は読み込みで断る。FW 自身への管理の接続（`self`）は印を付けずに残す。
+- plan の `confirm` の行と、前・後の確かめの知らせに印が出る。詳しくは [providers/nftables.md](providers/nftables.md) の「変える chain を通る経路の先」。
 
 ## 別の実現先へ変換する（展開の口）
 

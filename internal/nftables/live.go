@@ -644,10 +644,11 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 		}
 	}
 	// 0. Confirm before the change (Backlog #179): a target not reached now
-	// would only fail the confirmation after it and roll it back.
-	if err := p.preconfirm(ctx, h, targets); err != nil {
-		err = fmt.Errorf("nftables: Apply: not changing base chain(s) %s: %s cannot be reached over a new connection before the change (%w); the change would only be rolled back. Confirm targets: %s",
-			strings.Join(changed, ", "), who, err, targetsText(targets))
+	// would only fail the confirmation after it and roll it back.  A target
+	// marked after: (Backlog #192) is only confirmed after it.
+	if err := p.preconfirm(ctx, h, beforeTargets(targets)); err != nil {
+		err = fmt.Errorf("nftables: Apply: not changing base chain(s) %s: %s cannot be reached over a new connection before the change (%w); the change would only be rolled back. Confirm targets: %s%s",
+			strings.Join(changed, ", "), who, err, targetsText(targets), afterHint(targets))
 		if errors.Is(err, ErrCannotConfirm) {
 			return provider.NewPermanentError(err)
 		}
@@ -722,8 +723,8 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 	// Not confirmed: the rollback armed on the host puts the tables back.
 	waitUntil(ctx, fireAt.Add(rollbackGrace(armedFor)))
 	return provider.NewRolledBackError(fmt.Errorf(
-		"nftables: Apply: %s could not be reached over a new connection within %s after changing base chain(s) %s (%v): the rollback armed on the host restored tables %s as they were before, after %s. Declare a rule that keeps the management path open (e.g. jump to the minimal chain kept outside Sakutei) and apply again",
-		who, p.rollbackAfter/2, strings.Join(changed, ", "), confirmErr, tables, p.rollbackAfter))
+		"nftables: Apply: %s could not be reached over a new connection within %s after changing base chain(s) %s (%v): the rollback armed on the host restored tables %s as they were before, after %s. Declare a rule that keeps the management path open (e.g. jump to the minimal chain kept outside Sakutei) and apply again. Confirm targets: %s%s",
+		who, p.rollbackAfter/2, strings.Join(changed, ", "), confirmErr, tables, p.rollbackAfter, targetsText(targets), afterHint(targets)))
 }
 
 // preconfirm は変更の前に、targets のそれぞれへ新しい接続で 1 回ずつ確かめる
