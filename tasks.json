@@ -4312,7 +4312,7 @@
       "number": 185,
       "kind": "task",
       "title": "鍵の分け 前半：観測用と書き込み用の資格を分ける共通の口と、ssh 越しの provider",
-      "status": "in-progress",
+      "status": "done",
       "parent": "m7",
       "dependsOn": [
         "a3-netconf-ldap-cli-device-guest-os-host"
@@ -4322,12 +4322,12 @@
       "labels": [],
       "body": "provider の設定に、観測用の資格と書き込み用の資格を別に書けるようにする。観測・plan・status・読み取りの口は観測用だけを取り出す。mode が書かない（observe・alert-only・plan）ときは書き込み用の資格を取り出さず、無くても起動できる。書き込み用は Apply の直前にだけ取り出し、使ったら手放す。\n\nssh 越しの provider（nftables・dnszone・host-file・systemd-unit・cli-device・guest-os・netconf）：観測用のユーザー（sudo 無し、または読むだけのコマンドだけ許した sudo）と書き込み用のユーザーを分けられるようにし、読むだけでは観測できない項目は docs に書く。",
       "doneWhen": "観測用の資格だけで observe・plan・status が通り、書き込み用が無くても書かない mode なら起動できる受け入れテストと、ssh 越しの統合試験（読むだけのユーザーで観測が通る）が通る。make check・make test-race が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/ssh-provider）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T14:59:34.929Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-28T15:35:20.011Z",
+      "closedAt": "2026-10-28T15:35:20.011Z",
       "extra": {}
     },
     {
