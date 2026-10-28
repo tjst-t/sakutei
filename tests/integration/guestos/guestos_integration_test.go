@@ -14,7 +14,7 @@
 
 //go:build integration_guestos
 
-// guestos_integration_test.go — #86・#139: qemu-bmc 0.10.0 を 3 台立て、Alpine の
+// guestos_integration_test.go — #86・#139: qemu-bmc 0.11.0 を 3 台立て、Alpine の
 // 自動インストールの ISO で本当に OS を入れる。ISO は 3 台に共通の 1 つで、ホスト名・
 // アドレス・Sakutei の ssh の公開鍵・導入の目印・失敗のさせ方は、sakutei が宣言から
 // 書き出す応答ファイル（template-file、#139）から取る（インストーラがこのテストの

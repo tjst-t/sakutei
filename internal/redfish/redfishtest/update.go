@@ -14,8 +14,10 @@
 
 package redfishtest
 
-// update.go は偽 BMC の FW の更新（#148）。qemu-bmc（0.10.0）は UpdateService を
-// 持たないので、DMTF の Redfish の仕様に沿って次を真似る:
+// update.go は偽 BMC の FW の更新（#148）。DMTF の Redfish の仕様に沿って次を
+// 真似る（qemu-bmc は 0.11.0 から UpdateService の模擬を持ち、統合テストの
+// 10 段目が本物で確かめる。違いは Options の NoTaskPayload と
+// SetImageRejected で寄せる、#168）:
 //
 //   - /redfish/v1/UpdateService: ServiceEnabled・FirmwareInventory・
 //     #UpdateService.SimpleUpdate・MultipartHttpPushUri（Options.NoMultipartPush
@@ -32,9 +34,17 @@ package redfishtest
 //     SetUpdateFails のときは Exception。Immediate なら部品の Version をすぐ
 //     イメージの版に、OnReset なら次の起動（Reset）で効く保留にして Completed。
 //   - Task の Payload の JsonBody は要求の本文（JSON の文字列）から Password を
-//     除いたもの。
+//     除いたもの。Options.NoTaskPayload なら Payload を返さない（qemu-bmc
+//     0.11.0 と同じ）。
+//   - Task の Messages は MessageId・MessageArgs を持つ（DMTF の Update.1.0）:
+//     受けたときに TargetDetermined（部品の URI、イメージ。イメージは
+//     SimpleUpdate なら ImageURI、送信なら UpdateFile のファイル名）、終わる
+//     ときに UpdateSuccessful・AwaitToActivate（OnReset）・ApplyFailed
+//     （Exception）。
 //
-// 試験用の口: AddImage・SetUpdateFails・FirmwareVersion・SetFirmwareVersion・
+// 試験用の口: AddImage・SetUpdateFails・SetImageRejected（受けた要求を 400
+// Update.1.0.VerificationFailed で断り Task を作らない。qemu-bmc の障害
+// firmware-image-rejected と同じ）・FirmwareVersion・SetFirmwareVersion・
 // UpdateRequests（更新の要求を受けた回数）・ClearTasks（BMC の再起動で Task が
 // 消えた、の代役）。
 
@@ -89,6 +99,9 @@ type UpdateOptions struct {
 	// UpdateDuration は更新の Task が Running から終わるまでの時間（既定 0 =
 	// 次に観測したときには終わっている）。
 	UpdateDuration time.Duration
+	// NoTaskPayload は Task に Payload を返さない BMC（qemu-bmc 0.11.0 と同じ。
+	// どの更新の Task かは Messages の TargetDetermined で分かる）。
+	NoTaskPayload bool
 }
 
 // Image は偽 BMC が取りに行ける（送られてくる）イメージ。
@@ -122,8 +135,15 @@ type fwTask struct {
 	content   []byte
 	username  string
 	password  string
+	filename  string // 送信の UpdateFile のファイル名
 	pushed    bool
-	messages  []string
+	messages  []fwMessage
+}
+
+// fwMessage は Task の Messages の 1 つ（DMTF の Update.1.0）。
+type fwMessage struct {
+	id, text string
+	args     []string
 }
 
 type fwState struct {
@@ -132,6 +152,7 @@ type fwState struct {
 	tasks      []*fwTask
 	nextTask   int
 	fail       bool
+	rejected   bool
 	requests   int
 }
 
@@ -157,6 +178,10 @@ func (s *Server) AddImage(img Image) {
 
 // SetUpdateFails は true のあいだ、終わる更新の Task を Exception にする。
 func (s *Server) SetUpdateFails(v bool) { s.mu.Lock(); s.fw.fail = v; s.mu.Unlock() }
+
+// SetImageRejected は true のあいだ、受けた更新の要求を 400
+// （Update.1.0.VerificationFailed）で断り、Task を作らない（数えもしない）。
+func (s *Server) SetImageRejected(v bool) { s.mu.Lock(); s.fw.rejected = v; s.mu.Unlock() }
 
 // FirmwareVersion は部品 id の今の Version を返す。
 func (s *Server) FirmwareVersion(id string) string {
@@ -217,8 +242,13 @@ func (s *Server) advanceUpdates(now time.Time) {
 }
 
 func (s *Server) finishTask(t *fwTask) {
+	image := t.imageURI
+	if t.pushed {
+		image = t.filename
+	}
 	exception := func(msg string) {
-		t.state, t.status, t.messages = "Exception", "Critical", append(t.messages, msg)
+		t.state, t.status = "Exception", "Critical"
+		t.messages = append(t.messages, fwMessage{id: "Update.1.0.ApplyFailed", text: msg, args: []string{image, t.targets[0]}})
 	}
 	if s.fw.fail {
 		exception("The update failed (injected failure).")
@@ -253,9 +283,9 @@ func (s *Server) finishTask(t *fwTask) {
 	}
 	t.state, t.status = "Completed", "OK"
 	if t.applyTime == "OnReset" {
-		t.messages = append(t.messages, "The update is staged and applies at the next reset.")
+		t.messages = append(t.messages, fwMessage{id: "Update.1.0.AwaitToActivate", text: "The update is staged and applies at the next reset.", args: []string{image, t.targets[0]}})
 	} else {
-		t.messages = append(t.messages, "The update completed.")
+		t.messages = append(t.messages, fwMessage{id: "Update.1.0.UpdateSuccessful", text: "The update completed.", args: []string{t.targets[0], image}})
 	}
 }
 
@@ -323,8 +353,12 @@ func (s *Server) postSimpleUpdate(w http.ResponseWriter, body []byte) {
 		writeError(w, http.StatusBadRequest, "Base.1.0.ActionParameterValueError", msg)
 		return
 	}
+	if s.rejectImage(w, p.ImageURI, p.Targets) {
+		return
+	}
 	t := s.newTask(SimpleUpdatePath, body, p)
 	t.imageURI, t.username, t.password = p.ImageURI, p.Username, p.Password
+	t.determined(p.ImageURI)
 	s.accepted(w, t)
 }
 
@@ -337,6 +371,7 @@ func (s *Server) postPush(w http.ResponseWriter, r *http.Request, body []byte) {
 	mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
 	var p updateParamsDoc
 	var paramsRaw, content []byte
+	var filename string
 	for {
 		part, err := mr.NextPart()
 		if err != nil {
@@ -348,7 +383,7 @@ func (s *Server) postPush(w http.ResponseWriter, r *http.Request, body []byte) {
 		case "UpdateParameters":
 			paramsRaw = buf.Bytes()
 		case "UpdateFile":
-			content = buf.Bytes()
+			content, filename = buf.Bytes(), part.FileName()
 		}
 	}
 	if paramsRaw == nil || content == nil {
@@ -363,9 +398,32 @@ func (s *Server) postPush(w http.ResponseWriter, r *http.Request, body []byte) {
 		writeError(w, http.StatusBadRequest, "Base.1.0.ActionParameterValueError", msg)
 		return
 	}
+	if s.rejectImage(w, filename, p.Targets) {
+		return
+	}
 	t := s.newTask(MultipartPushPath, paramsRaw, p)
-	t.pushed, t.content = true, content
+	t.pushed, t.content, t.filename = true, content, filename
+	t.determined(filename)
 	s.accepted(w, t)
+}
+
+// rejectImage は SetImageRejected のあいだ 400（Update.1.0.VerificationFailed）を
+// 返して true。
+func (s *Server) rejectImage(w http.ResponseWriter, image string, targets []string) bool {
+	if !s.fw.rejected {
+		return false
+	}
+	writeError(w, http.StatusBadRequest, "Update.1.0.VerificationFailed",
+		fmt.Sprintf("Verification of image '%s' at '%s' failed.", image, strings.Join(targets, ", ")))
+	return true
+}
+
+// determined は受けたときのメッセージ TargetDetermined（部品の URI、イメージ）を足す。
+func (t *fwTask) determined(image string) {
+	for _, target := range t.targets {
+		t.messages = append(t.messages, fwMessage{id: "Update.1.0.TargetDetermined",
+			text: fmt.Sprintf("The target device '%s' will be updated with image '%s'.", target, image), args: []string{target, image}})
+	}
 }
 
 func (s *Server) newTask(targetURI string, body []byte, p updateParamsDoc) *fwTask {
@@ -393,21 +451,24 @@ func (s *Server) accepted(w http.ResponseWriter, t *fwTask) {
 func (s *Server) taskDoc(t *fwTask) map[string]any {
 	var msgs []any
 	for _, m := range t.messages {
-		msgs = append(msgs, map[string]string{"Message": m})
+		msgs = append(msgs, map[string]any{"MessageId": m.id, "Message": m.text, "MessageArgs": m.args})
 	}
 	pct := 0
 	if t.state != "Running" {
 		pct = 100
 	}
-	return map[string]any{
+	doc := map[string]any{
 		"@odata.id": TasksPath + "/" + strconv.Itoa(t.id), "Id": strconv.Itoa(t.id),
 		"TaskState": t.state, "TaskStatus": t.status, "PercentComplete": pct,
 		"StartTime": t.start.UTC().Format(time.RFC3339Nano),
 		"Messages":  msgs,
-		"Payload": map[string]any{
-			"TargetUri": t.targetURI, "HttpOperation": "POST", "JsonBody": t.body,
-		},
 	}
+	if !s.opts.NoTaskPayload {
+		doc["Payload"] = map[string]any{
+			"TargetUri": t.targetURI, "HttpOperation": "POST", "JsonBody": t.body,
+		}
+	}
+	return doc
 }
 
 // updateDocument は FW の更新の GET の文書を返す。

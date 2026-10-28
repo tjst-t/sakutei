@@ -14,7 +14,7 @@
 
 //go:build integration_redfish
 
-// redfish_integration_test.go — #84: qemu-bmc 0.10.0 を 2 台、containerlab で
+// redfish_integration_test.go — #84: qemu-bmc（#168 から 0.11.0）を 2 台、containerlab で
 // 立て、sakutei の CLI と常駐ループを本物の Redfish に向けて回す（§26.1 の
 // 3 段目、§29.1 の（7））。TestMain が deploy し、終わったら（失敗・中断でも）
 // destroy する。
@@ -48,6 +48,23 @@
 //	           （ApplyIneffective）。--apply-check-state で上限（2 回）に達すると
 //	           Reset を送らずに 4。障害を外して apply-check release で解くと
 //	           reconcile が電源を入れて 0。
+//	[AC-168-10] FW の版の観測（#168、redfish-firmware、firmware_integration_test.go）:
+//	           FirmwareInventory の BMC・BIOS の版（BMC_FIRMWARE_VERSION・
+//	           BIOS_FIRMWARE_VERSION）が宣言どおりなら plan は Converged、違えば
+//	           版の差分を出し、BMC には何も送らない。
+//	[AC-168-11] BMC の更新: 承認ゲートつきの多相 Task。承認の前は送らず（イメージも
+//	           取りに来ない）、承認の後に SimpleUpdate を 1 回送り、BMC の Task
+//	           （Running → Completed）を待って版がすぐ変わる。multipart
+//	           （UpdateService/upload）でも同じ。
+//	[AC-168-12] BIOS の更新: BMC の Task が終わっても保留（StandbyOffline・
+//	           Update.1.0.AwaitToActivate）で版は変わらない。reboot を宣言しないと
+//	           再起動を送らず、reboot_timeout で理由つきで止まり、通知の口に出る。
+//	           cancel して reboot: force を宣言すると、送り直さずに（BMC の Task は
+//	           もう済んでいる）ForceRestart だけを送り、起動したあとに版が変わる。
+//	[AC-168-13] 故障: qemu-bmc の firmware-image-rejected（400 VerificationFailed、
+//	           Task は作られない）と firmware-update-fail（Task が Exception、
+//	           ApplyFailed）。どちらも版は変わらず、Task は理由つきで止まり、通知の
+//	           口（webhook）に出て、二度目を送らない。
 package redfish
 
 import (
@@ -75,7 +92,13 @@ const (
 	labName     = "sakutei-rf84"
 	bmcUser     = "admin"
 	bmcPassword = "password"
-	qemuBMCVer  = "v0.10.0"
+	qemuBMCVer  = "v0.11.0"
+
+	// node1 の初めの FW の版（topology の BMC_FIRMWARE_VERSION・
+	// BIOS_FIRMWARE_VERSION）。node2 は既定のまま（BMC は qemuBMCVer）。
+	node1BMCVer  = "1.0.0"
+	node1BIOSVer = "BIOS-1.0.0"
+	node2BIOSVer = "QBMC-BIOS-1.0.0"
 
 	// 常駐ループの周期と、stuck に上げる連続の周数。
 	daemonInterval = "2s"
@@ -407,9 +430,10 @@ func powerIs(n node, want string) func() (bool, string) {
 // ---- sakutei ----
 
 type resource struct {
-	Provider string            `json:"provider"`
-	ID       string            `json:"id"`
-	Fields   map[string]string `json:"fields"`
+	Provider     string            `json:"provider"`
+	ID           string            `json:"id"`
+	UpdatePolicy map[string]string `json:"update_policy,omitempty"`
+	Fields       map[string]string `json:"fields"`
 }
 
 func systemRes(n node, fields map[string]string) resource {
@@ -524,6 +548,7 @@ func (d *daemon) stop() {
 type event struct {
 	Kind     string `json:"kind"`
 	Severity string `json:"severity"`
+	Message  string `json:"message"`
 	Resource string `json:"resource"`
 	Cause    string `json:"cause"`
 	State    string `json:"state"`
@@ -566,7 +591,7 @@ func systemID(n node) string { return "redfish-system//" + n.name }
 
 // ---- テスト ----
 
-// TestRedfishIntegration は (1)〜(8) を順に回す。前の段が作った現実を次の段が
+// TestRedfishIntegration は (0)〜(13) を順に回す。前の段が作った現実を次の段が
 // 使うので、1 つ失敗したら残りは回さない。
 func TestRedfishIntegration(t *testing.T) {
 	steps := []struct {
@@ -583,6 +608,10 @@ func TestRedfishIntegration(t *testing.T) {
 		{"7_workflow_cd_before_power", stepWorkflowCDBeforePower},
 		{"8_bios_settings", stepBiosSettings},
 		{"9_power_action_ignored", stepPowerActionIgnored},
+		{"10_firmware_observe", stepFirmwareObserve},
+		{"11_firmware_bmc_update", stepFirmwareBMCUpdate},
+		{"12_firmware_bios_pending_reboot", stepFirmwareBIOSPending},
+		{"13_firmware_faults", stepFirmwareFaults},
 	}
 	for _, s := range steps {
 		if !t.Run(s.name, s.fn) {
@@ -593,14 +622,19 @@ func TestRedfishIntegration(t *testing.T) {
 
 // stepLab は立てた lab が想定どおりか（版・固定した値・0.9 の認証）を確かめる。
 func stepLab(t *testing.T) {
-	for _, n := range nodes {
+	// 0.11 から、Managers/1 の FirmwareVersion は FirmwareInventory/BMC の版
+	// （BMC_FIRMWARE_VERSION、既定は qemu-bmc の版）。既定のままの node2 で
+	// qemu-bmc の版を確かめる。
+	for n, want := range map[node]string{node1: node1BMCVer, node2: qemuBMCVer} {
 		var mgr struct{ FirmwareVersion string }
 		if err := getJSON(n, "/redfish/v1/Managers/1", &mgr); err != nil {
 			t.Fatal(err)
 		}
-		if mgr.FirmwareVersion != qemuBMCVer {
-			t.Fatalf("%s: qemu-bmc %q, want %s (the image is pinned)", n.name, mgr.FirmwareVersion, qemuBMCVer)
+		if mgr.FirmwareVersion != want {
+			t.Fatalf("%s: Managers/1 FirmwareVersion %q, want %s (the image is pinned to qemu-bmc %s)", n.name, mgr.FirmwareVersion, want, qemuBMCVer)
 		}
+	}
+	for _, n := range nodes {
 		// 0.9: サービスルートは認証なしで 200、それ以外は 401。
 		if code, _, err := redfishDo(n, "GET", "/redfish/v1", nil, false); err != nil || code != http.StatusOK {
 			t.Fatalf("%s: GET /redfish/v1 without auth: %d %v, want 200", n.name, code, err)

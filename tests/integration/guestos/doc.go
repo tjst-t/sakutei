@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package guestos はゲスト OS の観測（guest-os provider）で OS 導入の完了を
-// 確かめる統合テスト（Backlog #86・#139、§29.1）。qemu-bmc 0.10.0 を containerlab で
+// 確かめる統合テスト（Backlog #86・#139、§29.1）。qemu-bmc 0.11.0 を containerlab で
 // 3 台立て、Alpine の自動インストールの ISO（docs/trial/redfish-os-install/make-iso.sh）
 // で本当に OS を入れ、常駐の sakutei の Workflow が「ゲスト OS が目印つきで起動
 // した」で先へ進む・インストーラが失敗したときは進まないことを示す。#139 で、

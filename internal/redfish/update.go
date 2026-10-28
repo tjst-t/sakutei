@@ -21,7 +21,9 @@ package redfish
 //
 //   - 観測 state レス: UpdateService・TaskService のパスはキャッシュせず、
 //     サービスルートから辿り直す。更新の Task の URI も持たない（provider は
-//     Task の Payload を見て、どの更新の Task かを毎回見つけ直す）。
+//     Task の Payload を見て、どの更新の Task かを毎回見つけ直す。Payload を
+//     返さない BMC（qemu-bmc 0.11.0）では、Update の登録簿のメッセージ
+//     TargetDetermined の MessageArgs を見る、#168）。
 //   - SimpleUpdate の Password（イメージを取りに行く資格）は本文にだけ載せ、
 //     エラーの文言には本文を出さない（Error は Method と Path だけを持つ）。
 //   - SimpleUpdate・送信は 200 / 202 / 204 を受け付ける。202 の Location は
@@ -145,10 +147,52 @@ type Task struct {
 	PercentComplete int
 	// Messages は Messages の Message。
 	Messages []string
+	// MessageDetails は Messages の MessageId・Message・MessageArgs（Messages と
+	// 同じ順。Message の空のものも含む）。
+	MessageDetails []TaskMessage
 	// TargetURI・Body は Payload の TargetUri と JsonBody（JSON の文字列を
 	// 読んだもの。読めなければ nil）。
 	TargetURI string
 	Body      map[string]any
+}
+
+// TaskMessage は Task の Messages の 1 つ。
+type TaskMessage struct {
+	ID      string
+	Message string
+	Args    []string
+}
+
+// Update の登録簿（DMTF Update.1.0）のメッセージの名前（MessageId の
+// "Update.<版>." の後ろ）。
+const (
+	// MsgTargetDetermined の MessageArgs は（更新する部品の URI、イメージ）。
+	MsgTargetDetermined = "TargetDetermined"
+)
+
+// MessageIs は MessageId id が Update の登録簿（版を問わない）の name かを返す。
+func MessageIs(id, name string) bool {
+	return strings.HasPrefix(id, "Update.") && strings.HasSuffix(id, "."+name)
+}
+
+// Reason は Task の Messages を「Message（MessageId）」の形で "; " でつなぐ
+// （失敗の理由を知らせる文言用。無ければ空）。
+func (t *Task) Reason() string {
+	var parts []string
+	for _, m := range t.MessageDetails {
+		switch {
+		case m.Message != "" && m.ID != "":
+			parts = append(parts, m.Message+" ("+m.ID+")")
+		case m.Message != "":
+			parts = append(parts, m.Message)
+		case m.ID != "":
+			parts = append(parts, m.ID)
+		}
+	}
+	if len(parts) == 0 {
+		return strings.Join(t.Messages, "; ")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // UpdateClient は FW の更新の操作（Client に含まれる）。
@@ -209,7 +253,9 @@ type taskDoc struct {
 	StartTime       string `json:"StartTime"`
 	PercentComplete *int   `json:"PercentComplete"`
 	Messages        []struct {
-		Message string `json:"Message"`
+		MessageID   string `json:"MessageId"`
+		Message     string `json:"Message"`
+		MessageArgs []any  `json:"MessageArgs"`
 	} `json:"Messages"`
 	Payload struct {
 		TargetURI string          `json:"TargetUri"`
@@ -427,6 +473,11 @@ func (c *HTTPClient) ListTasks(ctx context.Context) ([]Task, error) {
 			if msg.Message != "" {
 				t.Messages = append(t.Messages, msg.Message)
 			}
+			args := make([]string, 0, len(msg.MessageArgs))
+			for _, a := range msg.MessageArgs {
+				args = append(args, fmt.Sprint(a))
+			}
+			t.MessageDetails = append(t.MessageDetails, TaskMessage{ID: msg.MessageID, Message: msg.Message, Args: args})
 		}
 		t.Body = payloadBody(doc.Payload.JSONBody)
 		out = append(out, t)

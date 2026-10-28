@@ -13,8 +13,9 @@
 // limitations under the License.
 
 // Package redfish は Redfish の BMC provider の統合テスト（#84、設計 §26.1 の
-// 3 段目・§29.1 の（7））。qemu-bmc 0.10.0 を containerlab で 2 台立て、sakutei の
-// CLI と常駐ループを本物の Redfish に向けて回す。
+// 3 段目・§29.1 の（7））。qemu-bmc 0.11.0 を containerlab で 2 台立て、sakutei の
+// CLI と常駐ループを本物の Redfish に向けて回す。10〜13 段目（#168）は FW の更新
+// （redfish-firmware）を qemu-bmc の UpdateService の模擬に向ける。
 //
 // テストは build tag integration_redfish の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-redfish

@@ -19,10 +19,11 @@ vet:
 
 check: build vet test
 
-# Redfish の統合テスト（#84、設計 §26.1 の 3 段目）。qemu-bmc 0.10.0 を containerlab
+# Redfish の統合テスト（#84、設計 §26.1 の 3 段目）。qemu-bmc 0.11.0 を containerlab
 # で 2 台立てて回し、終わったら（失敗しても）消す。KVM・docker・containerlab と
 # sudo（パスワードなし）が要るので、check・test・CI には入れない。
-# BIOS の設定（redfish-bios、#140）の段も含む。手順と結果は docs/providers/redfish.md の「統合テスト」。
+# BIOS の設定（redfish-bios、#140）と FW の更新（redfish-firmware、#168。qemu-bmc の
+# UpdateService の模擬）の段も含む。同じ名前の lab を使うので、同時に 1 つだけ回す。手順と結果は docs/providers/redfish.md の「統合テスト」。
 REDFISH_IT := ./tests/integration/redfish/
 integration-redfish:
 	go vet -tags integration_redfish $(REDFISH_IT)
@@ -128,7 +129,7 @@ integration-remote:
 	fi; \
 	exit $$status
 
-# ゲスト OS の観測で OS 導入の完了を確かめる統合テスト（#86）。qemu-bmc 0.10.0 を
+# ゲスト OS の観測で OS 導入の完了を確かめる統合テスト（#86）。qemu-bmc 0.11.0 を
 # containerlab で 3 台立て、Alpine の自動インストールの ISO（docs/trial/
 # redfish-os-install/make-iso.sh で作る）で本当に OS を入れ、終わったら（失敗しても）
 # lab を消す。#139 で、1 回だけ CD から起動する手順（action boot_once・reset）と、

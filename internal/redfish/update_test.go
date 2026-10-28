@@ -74,6 +74,11 @@ func TestSimpleUpdateTask(t *testing.T) {
 		tk.Body["ImageURI"] != "https://images.example/bmc-2.bin" || tk.Body["Password"] != nil {
 		t.Fatalf("task %+v", tk)
 	}
+	// Messages の MessageId・MessageArgs（#168）。
+	if d := tk.MessageDetails; len(d) != 1 || !redfish.MessageIs(d[0].ID, redfish.MsgTargetDetermined) ||
+		len(d[0].Args) != 2 || d[0].Args[0] != redfishtest.FirmwareInventoryPath+"/BMC" || d[0].Args[1] != "https://images.example/bmc-2.bin" {
+		t.Fatalf("task messages %+v", tk.MessageDetails)
+	}
 	clk.Advance(time.Minute)
 	tasks, _ = c.ListTasks(ctx)
 	if tasks[0].State != redfish.TaskCompleted || srv.FirmwareVersion("BMC") != "2.0.0" {
@@ -90,6 +95,9 @@ func TestSimpleUpdateTask(t *testing.T) {
 	tasks, _ = c.ListTasks(ctx)
 	if tasks[1].State != redfish.TaskException || !redfish.TaskFailed(tasks[1].State) || srv.FirmwareVersion("BIOS") != "1.0.0" {
 		t.Fatalf("task %+v", tasks[1])
+	}
+	if r := tasks[1].Reason(); !strings.Contains(r, "denied. (Update.1.0.ApplyFailed)") {
+		t.Fatalf("reason %q", r)
 	}
 
 	// Updateable でない部品は 400。エラーに Password を出さない。
@@ -127,5 +135,20 @@ func TestPushUpdateOnReset(t *testing.T) {
 	_, nopush := newPair(t, redfishtest.Options{UpdateOptions: redfishtest.UpdateOptions{NoMultipartPush: true}})
 	if _, err := nopush.PushUpdate(ctx, redfish.UpdateRequest{Targets: []string{"x"}}, "a", bytes.NewReader(img)); !redfish.IsRequest(err) {
 		t.Fatalf("no push uri: %v", err)
+	}
+}
+
+// MessageIs は Update の登録簿の版を問わない。
+func TestMessageIs(t *testing.T) {
+	for id, want := range map[string]bool{
+		"Update.1.0.TargetDetermined": true,
+		"Update.1.1.TargetDetermined": true,
+		"Base.1.8.TargetDetermined":   false,
+		"Update.1.0.ApplyFailed":      false,
+		"":                            false,
+	} {
+		if got := redfish.MessageIs(id, redfish.MsgTargetDetermined); got != want {
+			t.Errorf("MessageIs(%q) = %v, want %v", id, got, want)
+		}
 	}
 }

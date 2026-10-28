@@ -46,8 +46,11 @@ package system
 // SimpleUpdate の target（multipart なら MultipartHttpPushUri）で、Payload の
 // JsonBody の Targets にこの部品があり、SimpleUpdate なら ImageURI が宣言と同じ
 // もの。いくつもあれば StartTime の新しいもの。Task の URI は持たない（観測 state
-// レス）。Payload を返さない BMC では、送ったことを観測できないので staging の
-// 後で失敗（halt）する（二重に送らない側）。
+// レス）。Payload を返さない BMC（qemu-bmc 0.11.0、#168）では、DMTF の Update の
+// 登録簿のメッセージ TargetDetermined（MessageArgs が「部品の URI、イメージ」）で
+// 見分ける: 部品が同じで、イメージが SimpleUpdate なら image_uri、multipart なら
+// 送ったファイルの名前（image_uri の最後の要素）のもの。どちらも無い BMC では、
+// 送ったことを観測できないので staging の後で失敗（halt）する（二重に送らない側）。
 //
 // 前の更新の残りかす（同じイメージで前に済んだ Task が TaskService に残ったまま、
 // 人が版を戻した、など）を「もう送った」と取らないために:
@@ -173,15 +176,18 @@ func matchTask(tasks []redfish.Task, s fwSpec, u redfish.UpdateService, compPath
 		if parsed && !since.IsZero() && at.Before(since) {
 			continue // この起動より前の更新の Task
 		}
-		if t.Body == nil || !samePath(t.TargetURI, target) {
-			continue
-		}
-		if !bodyTargets(t.Body, compPath) {
-			continue
-		}
-		if s.transfer == TransferSimpleUpdate {
-			if img, _ := t.Body["ImageURI"].(string); img != s.imageURI {
+		if t.Body == nil {
+			if !determined(t, s, compPath) {
 				continue
+			}
+		} else {
+			if !samePath(t.TargetURI, target) || !bodyTargets(t.Body, compPath) {
+				continue
+			}
+			if s.transfer == TransferSimpleUpdate {
+				if img, _ := t.Body["ImageURI"].(string); img != s.imageURI {
+					continue
+				}
 			}
 		}
 		if best == nil || !at.Before(bestAt) {
@@ -208,6 +214,22 @@ func samePath(a, b string) bool {
 		return strings.TrimSuffix(s, "/")
 	}
 	return b != "" && norm(a) == norm(b)
+}
+
+// determined は Payload の無い Task が、Update の登録簿の TargetDetermined で
+// この更新（部品 compPath・イメージ）を名指しているか。
+func determined(t *redfish.Task, s fwSpec, compPath string) bool {
+	image := s.imageURI
+	if s.transfer == TransferMultipart {
+		image = imageName(s.imageURI)
+	}
+	for _, m := range t.MessageDetails {
+		if redfish.MessageIs(m.ID, redfish.MsgTargetDetermined) && len(m.Args) >= 2 &&
+			samePath(m.Args[0], compPath) && m.Args[1] == image {
+			return true
+		}
+	}
+	return false
 }
 
 func bodyTargets(body map[string]any, compPath string) bool {
@@ -358,7 +380,7 @@ func (p *FirmwareProvider) stage(ctx context.Context, s fwSpec) error {
 		return fmt.Errorf("the BMC accepted the update, but reading it back failed: %w", err)
 	}
 	if r.task == nil && !VersionsMatch(r.version, s.version) {
-		return errors.New("the BMC accepted the update, but no task for it is observed in the TaskService (its Payload must name the target and image); not sending it again")
+		return errors.New("the BMC accepted the update, but no task for it is observed in the TaskService (its Payload, or an Update.TargetDetermined message, must name the target and image); not sending it again")
 	}
 	return nil
 }
@@ -390,7 +412,7 @@ func (p *FirmwareProvider) waitApplied(ctx context.Context, s fwSpec) error {
 		case taskApplied(r.task, s):
 			return nil
 		case redfish.TaskFailed(r.task.State):
-			msg := strings.Join(r.task.Messages, "; ")
+			msg := r.task.Reason()
 			if msg == "" {
 				msg = "no message"
 			}

@@ -1,6 +1,6 @@
 # ゲスト OS の観測で OS 導入の完了を確かめる統合テスト（#86、§29.1）のトポロジ。
 #
-# qemu-bmc 0.10.0 を 3 台。docs/trial/redfish-os-install と同じくディスク（VM_DISK_SIZE）を
+# qemu-bmc 0.11.0 を 3 台。docs/trial/redfish-os-install と同じくディスク（VM_DISK_SIZE）を
 # 付け、そこへ Alpine を入れる。VM の NIC は QEMU の user ネット（slirp）で、ゲストの 22 番を
 # コンテナの 2222 番に出す（hostfwd）。ホストの sakutei は BMC と同じアドレスの 2222 番に
 # ssh でつなぐと、ゲスト OS に届く。
@@ -20,7 +20,7 @@ mgmt:
 topology:
   defaults:
     kind: linux
-    image: ghcr.io/tjst-t/qemu-bmc:0.10.0@sha256:875c9b6490eb444821a5dbcde348716bedfce767563d4c683728b7185022526a
+    image: ghcr.io/tjst-t/qemu-bmc:0.11.0@sha256:3ab6ea901b1ae8a510a2a140113fd1d80ad0f3ad2c26327ab04ef94f95bbdfc9
     devices:
       - /dev/kvm
       - /dev/net/tun

@@ -1,6 +1,6 @@
 # Redfish の統合テスト（#84、設計 §26.1 の 3 段目・§29.1 の（7））のトポロジ。
 #
-# qemu-bmc 0.10.0 を 2 台。BMC（Redfish、HTTPS 443、自己署名、admin/password）は
+# qemu-bmc 0.11.0 を 2 台。BMC（Redfish、HTTPS 443、自己署名、admin/password）は
 # containerlab の管理ネット（eth0）に固定のアドレスで置き、ホストの sakutei から
 # 直に届く。VM の NIC は eth1（2 台を直結）で、VM_MACS で MAC を固定する。
 #
@@ -26,7 +26,7 @@ mgmt:
 topology:
   defaults:
     kind: linux
-    image: ghcr.io/tjst-t/qemu-bmc:0.10.0@sha256:875c9b6490eb444821a5dbcde348716bedfce767563d4c683728b7185022526a
+    image: ghcr.io/tjst-t/qemu-bmc:0.11.0@sha256:3ab6ea901b1ae8a510a2a140113fd1d80ad0f3ad2c26327ab04ef94f95bbdfc9
     devices:
       - /dev/kvm       # accel=kvm
       - /dev/net/tun   # VM の NIC（eth1 を VM に渡す）
@@ -39,6 +39,8 @@ topology:
       IPMI_PASS: "password"
       VM_NETWORKS: "eth1"
       GRACEFUL_TIMEOUT: "10"
+      # FW の更新の模擬（0.11.0、10 段目 #168）の BMC の Task の長さ（秒）。
+      FIRMWARE_UPDATE_SECONDS: "3"
 
   nodes:
     node1:
@@ -46,13 +48,19 @@ topology:
       env:
         SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008401"
         VM_MACS: "52:54:00:84:01:01"
+        # 初めの FW の版（10 段目 #168 が宣言と比べる）。node2 は既定のまま
+        # （BMC は qemu-bmc の版 v0.11.0、BIOS は QBMC-BIOS-1.0.0）で、0 段目が
+        # それで lab の版を確かめる。
+        BMC_FIRMWARE_VERSION: "1.0.0"
+        BIOS_FIRMWARE_VERSION: "BIOS-1.0.0"
     node2:
       mgmt-ipv4: 172.31.84.12
       env:
         SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008402"
         VM_MACS: "52:54:00:84:02:01"
-        # 障害注入の口（qemu-bmc 0.10.0、平文の HTTP）。9 段目（#166）が
-        # power-action-ignored を足す。管理ネットに直に届くので publish しない。
+        # 障害注入の口（qemu-bmc 0.10.0 から、平文の HTTP）。9 段目（#166）が
+        # power-action-ignored を、10 段目（#168）が firmware-image-rejected・
+        # firmware-update-fail を足す。管理ネットに直に届くので publish しない。
         FAULT_API_ADDR: ":8623"
 
   links:

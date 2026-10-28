@@ -3,7 +3,7 @@
 Redfish の BMC provider（[docs/providers/redfish.md](../../providers/redfish.md)）と最小 Workflow（§6.3、`internal/workflow`）を組み合わせて、
 「CD に ISO を差す → 差さったことを確かめる → **次の 1 回だけ** CD から起動 → 再起動 → インストーラが電源を切るのを待つ → 電源を入れる（ディスクから起動）→ 入れた OS が目印つきで起動したのを確かめる → CD を抜く」を 1 台に回す手順。2026-10-22 に qemu-bmc 0.9.0 で試した。
 最後の確かめ（ゲスト OS の観測、[guest-os provider](../../providers/guest-os.md)）は Backlog #86 で、一度きりの操作（1 回だけ CD から起動・再起動、Workflow の `action` 手順）と
-**自動導入の応答ファイルを宣言から作る**（[template-file provider](../../providers/template-file.md)）は Backlog #139 で足した。同じ形を `make integration-guestos`（qemu-bmc 0.10.0 を 3 台、成功・失敗する導入）で確かめている。
+**自動導入の応答ファイルを宣言から作る**（[template-file provider](../../providers/template-file.md)）は Backlog #139 で足した。同じ形を `make integration-guestos`（qemu-bmc 0.11.0 を 3 台、成功・失敗する導入）で確かめている。
 
 ## 線引き：何を Sakutei がして、何を利用者が用意するか
 
@@ -30,7 +30,7 @@ Workflow は電源オフを「インストーラが終わった」の合図に�
 |---|---|
 | `intent/os.yaml` | 最終形の宣言・応答ファイルの宣言と Workflow `os-install`（下の「intent」）。loader で読めることを `internal/loader` のテスト `TestRedfishOSInstallTrialIntentLoads` が確かめる |
 | `templates/alpine-answers.sh.tmpl` | Alpine の自動導入の**応答ファイルの雛形**（text/template。`autoinstall.start` が sh で読む形）。`template-file` が値を入れて `answers/<UUID>` に書き出す。単体・受け入れ・統合のテストもこの雛形を使う |
-| `topology.clab.yml` | qemu-bmc 0.10.0 を 1 台（`VM_DISK_SIZE` 2G・`VM_MEMORY` 512、`SYSTEM_UUID` は応答ファイルの ID）。BMC は `172.31.85.11`、入れた OS の ssh は QEMU の user ネットの hostfwd で `172.31.85.11:2222` |
+| `topology.clab.yml` | qemu-bmc 0.11.0 を 1 台（`VM_DISK_SIZE` 2G・`VM_MEMORY` 512、`SYSTEM_UUID` は応答ファイルの ID）。BMC は `172.31.85.11`、入れた OS の ssh は QEMU の user ネットの hostfwd で `172.31.85.11:2222` |
 | `bmcs.yaml` | BMC の一覧（`insecure_skip_verify: true`、パスワードは SecretRef `file/bmc/node1`） |
 | `hosts.yaml` / `providers.yaml` | 入れた OS を観測する `guest-os` の対象の一覧（鍵は SecretRef `file/ssh/node1`、known_hosts）と `--provider-config`（`guest-os` の目印・`template-file` の雛形と書き出す先） |
 | `make-iso.sh` / `autoinstall.start` | Alpine 3.24 の virt ISO を自動インストールの ISO に作り直すスクリプト（試用で使ったもの。下の「ISO を作る」） |

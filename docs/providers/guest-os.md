@@ -102,7 +102,7 @@ steps:
 
 ## 統合テスト
 
-qemu-bmc 0.10.0 を containerlab で 3 台立て、本当に Alpine を入れる統合テスト（Backlog #86、#139 で広げ、#88 で入れ直しの TestReimage を足した）。build tag `integration_guestos` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
+qemu-bmc 0.11.0（`ghcr.io/tjst-t/qemu-bmc:0.11.0@sha256:3ab6ea901b1ae8a510a2a140113fd1d80ad0f3ad2c26327ab04ef94f95bbdfc9`、#168 で 0.10.0 から上げた）を containerlab で 3 台立て、本当に Alpine を入れる統合テスト（Backlog #86、#139 で広げ、#88 で入れ直しの TestReimage を足した）。build tag `integration_guestos` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
 
 ```console
 $ make integration-guestos
@@ -130,6 +130,19 @@ $ make integration-guestos
 | [AC-86-6] node2 | インストーラが電源を切ったので `power: Off` の待ちは通るが、ゲスト OS に届かない（unobservable）まま待ち、timeout で halt。CD は差さったまま（先へ進まない） |
 | [AC-86-7] node3 | ゲスト OS に届く（unobservable でなく目印を待つ）が目印が無いので待ち、timeout で halt。CD は差さったまま。手で ssh して os-release があり目印が無いことも見る |
 | [AC-139-7] 3 台 | 応答ファイルが宣言から書き出され（秘密鍵を含まない）、インストーラが取りに来た。boot_once・reset を送ったと出る。Continuous の上書きは一度も無く、終わったあと 3 台とも上書きは Disabled。node1 を手で ssh すると、ホスト名とアドレスが応答ファイルの値 |
+
+### 結果（2026-10-28、qemu-bmc 0.11.0、#168）
+
+qemu-bmc を 0.11.0 に上げ、テストを変えずに回した結果（PASS）。TestReimage も合格:
+
+```
+    guestos_integration_test.go:603: all workflows finished in 3m40s
+--- PASS: TestGuestOSInstall (232.64s)
+    reimage_integration_test.go:256: reimage-node1 finished in 40s
+    reimage_integration_test.go:317: second reimage-node1 finished in 45s
+--- PASS: TestReimage (140.55s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/guestos	377.349s
+```
 
 ### 結果（2026-10-27、#139）
 

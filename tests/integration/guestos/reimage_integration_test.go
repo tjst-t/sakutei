@@ -15,7 +15,7 @@
 //go:build integration_guestos
 
 // reimage_integration_test.go — #88: 入れ直し（reimage）を宣言で起こす。同じ lab の
-// node1・node2（qemu-bmc 0.10.0）に、trigger: reimage の OS 導入の Workflow を 1 台
+// node1・node2（qemu-bmc 0.11.0）に、trigger: reimage の OS 導入の Workflow を 1 台
 // 1 つずつ置き（scope rack: r1）、planned_change の kind: reimage の宣言を書いたり
 // 外したりしながら常駐の sakutei を 1 つ回し続ける。応答ファイルは 2 台とも成功する
 // 中身（template-file）。入れ直しの再起動は ForceRestart（ディスクを消して入れ直すので

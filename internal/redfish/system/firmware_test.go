@@ -532,3 +532,74 @@ func TestFirmware_RebootingIsCriticalOnlyWithReboot(t *testing.T) {
 		}
 	}
 }
+
+// Payload を返さない BMC（qemu-bmc 0.11.0）では、Update の登録簿の
+// TargetDetermined で自分の送った Task を見分ける。SimpleUpdate も multipart も
+// 1 回だけ送って版が合い、同じ部品の別のイメージの Task は数えない（#168）。
+func TestFirmware_TaskWithoutPayload(t *testing.T) {
+	ctx := context.Background()
+	img := []byte("QBMC-FW BMC 3.0.0\n")
+	images := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(img) }))
+	defer images.Close()
+	srv, p := newFirmware(t, redfishtest.Options{UpdateOptions: redfishtest.UpdateOptions{NoTaskPayload: true}}, FirmwareOptions{TempDir: t.TempDir()})
+	srv.AddImage(redfishtest.Image{Content: img, Version: "3.0.0"})
+	id := core.NewID(FirmwareName, core.NewScope(nil), fwBMCID)
+
+	simple := task.Request{TaskID: "t", Resource: id, Desired: fwFields()}
+	if err := runSteps(ctx, p, simple); err != nil {
+		t.Fatalf("simple_update without Payload: %v", err)
+	}
+	if srv.FirmwareVersion("BMC") != "2.0.0" || srv.UpdateRequests() != 1 {
+		t.Fatalf("simple_update: version %s, update requests %d", srv.FirmwareVersion("BMC"), srv.UpdateRequests())
+	}
+
+	push := task.Request{TaskID: "t", Resource: id, Desired: fwFields(FieldVersion, "3.0.0", FieldImageURI, images.URL+"/bmc-3.0.0.bin", FieldTransfer, TransferMultipart)}
+	// 前の SimpleUpdate の Task（別のイメージ）は、この送信の Task に数えない。
+	if st, _ := p.CheckStep(ctx, push, task.StepStaging); st != task.StepPending {
+		t.Fatalf("staging with only another image's task = %s, want pending", st)
+	}
+	if err := runSteps(ctx, p, push); err != nil {
+		t.Fatalf("multipart without Payload: %v", err)
+	}
+	if srv.FirmwareVersion("BMC") != "3.0.0" || srv.UpdateRequests() != 2 {
+		t.Fatalf("multipart: version %s, update requests %d", srv.FirmwareVersion("BMC"), srv.UpdateRequests())
+	}
+}
+
+// BMC がイメージを断れば（400 Update.1.0.VerificationFailed、Task は作られない。
+// qemu-bmc の firmware-image-rejected）、staging は理由つきで失敗し、版は変わらず、
+// 二度目は送らない。BMC の Task が ApplyFailed で終われば、その理由を出す（#168）。
+func TestFirmware_ImageRejectedAndApplyFailed(t *testing.T) {
+	ctx := context.Background()
+	srv, p := newFirmware(t, redfishtest.Options{UpdateOptions: redfishtest.UpdateOptions{NoTaskPayload: true}}, FirmwareOptions{})
+	id := core.NewID(FirmwareName, core.NewScope(nil), fwBMCID)
+	req := task.Request{TaskID: "t", Resource: id, Desired: fwFields()}
+
+	srv.SetImageRejected(true)
+	err := runSteps(ctx, p, req)
+	if err == nil || !strings.Contains(err.Error(), "staging") || !strings.Contains(err.Error(), "Verification of image") {
+		t.Fatalf("rejected image: %v", err)
+	}
+	if srv.UpdateRequests() != 0 || srv.FirmwareVersion("BMC") != "1.0.0" {
+		t.Fatalf("rejected image: update requests %d, version %s", srv.UpdateRequests(), srv.FirmwareVersion("BMC"))
+	}
+	n := 0
+	for _, q := range srv.Requests() {
+		if q.Path == redfishtest.SimpleUpdatePath {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("SimpleUpdate sent %d time(s), want 1", n)
+	}
+
+	srv.SetImageRejected(false)
+	srv.SetUpdateFails(true)
+	err = runSteps(ctx, p, req)
+	if err == nil || !strings.Contains(err.Error(), "applying") || !strings.Contains(err.Error(), "(Update.1.0.ApplyFailed)") {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if srv.FirmwareVersion("BMC") != "1.0.0" {
+		t.Fatalf("apply failed: version %s", srv.FirmwareVersion("BMC"))
+	}
+}

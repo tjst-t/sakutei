@@ -228,7 +228,7 @@ UpdateService の `FirmwareInventory` の部品ごとの `Version` を観測し�
 | `rebooting` | `reboot` を宣言していれば再起動し、版が合うまで待つ（再起動を宣言したときは**危険区間**：Reset を送る最中に落ちた Task は人手ゲート。送った後の待ちの間に落ちた Task は、引き継いだデーモンが待つだけで二度目の Reset を送らない） | 版が宣言どおり |
 | `confirming` | 版を確かめる | 版が宣言どおり |
 
-どの相も、版が宣言どおりなら済んでいる（Task は次の周の観測で閉じる）。BMC に届かない間（BMC 自身の更新で再起動している）は unknown で、相のタイムアウトまで待つ。「この更新の BMC の Task」は TaskService の Task のうち、Payload の `TargetUri` が SimpleUpdate の target（`multipart` なら `MultipartHttpPushUri`）で、`JsonBody` の `Targets` にこの部品があり、SimpleUpdate なら `ImageURI` が宣言と同じもの。Task の URI は持たず、毎回見つけ直す。前の更新の残りかすを数えないよう、BMC の Task の `StartTime` を時刻として読み、この Task の起動の時刻から 5 分（BMC とこのホストの時計のずれの許し）を引いた時刻より前に始まったものは数えない（`StartTime` を読めない Task は数える）。
+どの相も、版が宣言どおりなら済んでいる（Task は次の周の観測で閉じる）。BMC に届かない間（BMC 自身の更新で再起動している）は unknown で、相のタイムアウトまで待つ。「この更新の BMC の Task」は TaskService の Task のうち、Payload の `TargetUri` が SimpleUpdate の target（`multipart` なら `MultipartHttpPushUri`）で、`JsonBody` の `Targets` にこの部品があり、SimpleUpdate なら `ImageURI` が宣言と同じもの（Payload を返さない BMC では Update の `TargetDetermined` のメッセージで見分ける。下の「BMC の Task の見分け方」）。Task の URI は持たず、毎回見つけ直す。前の更新の残りかすを数えないよう、BMC の Task の `StartTime` を時刻として読み、この Task の起動の時刻から 5 分（BMC とこのホストの時計のずれの許し）を引いた時刻より前に始まったものは数えない（`StartTime` を読めない Task は数える）。
 
 承認ゲートで止まった Task は `sakutei task list` に `awaiting_approval:verifying` と出て、デーモンは周ごとに RequiresTask（warning）で知らせる。
 
@@ -247,13 +247,33 @@ $ sakutei task reject  --store tasks.json --audit-log audit.log --approver alice
 
 - BMC の時計がこのホストより 5 分を超えて遅れていると、自分の送った Task を前のものと見て数えない。送った直後に見えなければ halt するので送り直しは重ねないが、送ってから次の相を記録する前にデーモンが落ちると、引き継いだデーモンがもう一度送る。BMC の時計を合わせておく。
 - `StartTime` を読めない BMC では前の更新の残りかすを数えてしまい、`staging`・`applying` を飛ばして `reboot_timeout` で halt する（承認は飛ばさない）。
-- Task の Payload を返さない BMC では、送ったことを観測できないので `staging` の後で halt する。
+- Task の Payload も Update の `TargetDetermined` のメッセージも返さない BMC では、送ったことを観測できないので `staging` の後で halt する（下の「BMC の Task の見分け方」）。
 - `sha256` の確認は Sakutei が取りに行った中身についてで、SimpleUpdate で BMC が取りに行く中身と同じとは保証しない（同じにしたいなら `multipart`）。
 - 承認は Task（1 台の 1 部品）ごとの単一承認。
 
-### 確かめ方（統合テストは偽のサーバまで）
+### qemu-bmc で分かったこと（0.11.0、FW の更新）
 
-qemu-bmc 0.10.0 は UpdateService・TaskService を持たない（`/redfish/v1` に `UpdateService`・`Tasks` のリンクが無い）ので、`make integration-redfish` には段を足していない。**統合テストは偽のサーバまで**。偽 BMC（`internal/redfish/redfishtest`）は DMTF の Redfish の仕様に沿って UpdateService・FirmwareInventory・SimpleUpdate・multipart の送信・TaskService を持つ。契約テストと単体は `internal/redfish/system/firmware_test.go`（`[AC-148-1]`〜`[AC-148-6]`・`[AC-148-12]`）、常駐ループの受け入れテストは `tests/acceptance/redfish_firmware_test.go`（`[AC-148-7]`〜`[AC-148-11]`・`[AC-148-13]`・`[AC-148-14]`）。
+- サービスルートに `UpdateService` と `Tasks` のリンクがある。`FirmwareInventory` は `BMC` と `BIOS`（`Updateable: true`）。初めの版は `BMC_FIRMWARE_VERSION`（既定は qemu-bmc の版、`v0.11.0`）・`BIOS_FIRMWARE_VERSION`（既定 `QBMC-BIOS-1.0.0`）。`Managers/1` の `FirmwareVersion`・`Systems/1` の `BiosVersion` は部品の版と同じ値を出す（0.11 から `FirmwareVersion` は qemu-bmc の版ではなく BMC の部品の版）。
+- イメージは 1 行目が `QBMC-FW <BMC|BIOS> <version>` のファイル（その後は何でもよい）。形が違う・`Targets` と合わないイメージは 400（`Update.1.0.VerificationFailed`）で、Task を作らない。SimpleUpdate は `ImageURI` と `Targets`（`TransferProtocol` は省ける）、`UpdateService/upload` は multipart の `UpdateParameters`・`UpdateFile`。どちらも 202 と `Location`（TaskMonitor）。`@Redfish.OperationApplyTimeSupport` は報告しない（`apply_time` は既定の `Immediate` だけ使える）。
+- Task は `New` → `Running` → `Completed` / `Exception`（`PercentComplete` は `FIRMWARE_UPDATE_SECONDS`、既定 10 秒で 0 → 100）。**`Payload` を返さない**。Messages は MessageId・MessageArgs つき（`Update.1.0.TargetDetermined`（部品、イメージ）・`InstallingOnComponent`・`UpdateSuccessful`・`AwaitToActivate`・`ApplyFailed`）。multipart の Task のイメージはファイルの名前。
+- BMC の更新はすぐ効く（BMC は再起動しない）。BIOS の更新は次の起動（電源 On・`ForceRestart`・`PowerCycle`・`GracefulRestart`）まで保留で、その間 BIOS の部品は `StandbyOffline`、Task は `Completed` で最後のメッセージが `Update.1.0.AwaitToActivate`。
+- 障害注入（`FAULT_API_ADDR` に `POST /faults`）: `{"kind":"firmware-image-rejected","target":"BIOS"}` は届いたイメージを壊れたものとして 400 で断る。`{"kind":"firmware-update-fail","target":"BMC","atPercent":30}` は Task を 30% で `Exception`（`Update.1.0.ApplyFailed`）にし、版を変えない。どちらも `DELETE /faults` まで続く。
+
+### 再起動を宣言しない BIOS の更新
+
+BIOS のように**起動したときに効く**部品は、BMC の Task が `Completed` で終わっても版が変わらない（qemu-bmc 0.11.0 では、部品の `Status.State` が `StandbyOffline`、Task の最後のメッセージが `Update.1.0.AwaitToActivate`）。
+
+- `reboot: none`（既定）では Sakutei は再起動を送らない。`rebooting` の相で版が合うのを `reboot_timeout` まで待ち、合わなければ `step rebooting: the step did not complete (pending) within …` で **halt** する。デーモンは RequiresTask（warning、続いた周数が `--stuck-after` に達すれば critical）で知らせ、通知の口（`--event-webhook`・`--event-alertmanager`）にも出る。待つ間に誰かが再起動すれば、版が合って閉じる。
+- 再起動を任せるなら、人が BMC を確かめてから `sakutei task cancel` し、`reboot: graceful` か `force` を宣言し直す。新しい Task も承認ゲートで止まる。承認すると、BMC の Task はもう済んでいる（起動の時刻から 5 分の許しの中）ので**更新を送り直さず**、再起動だけを送って、起動したあと版が合えば閉じる。
+
+### BMC の Task の見分け方（Payload を返さない BMC）
+
+「この更新の BMC の Task」は、Task の `Payload` があればそれで（上の「相と承認」）、**無ければ Task の `Messages` の DMTF の Update の登録簿のメッセージ `TargetDetermined`**（`MessageArgs` が「部品の URI、イメージ」、登録簿の版は問わない）で見分ける。部品が同じで、イメージが SimpleUpdate なら `image_uri`、`multipart` なら送ったファイルの名前（`image_uri` の最後の要素）のもの。qemu-bmc 0.11.0 は Payload を返さず、こちらで見分ける（#168）。どちらも無い BMC では送ったことを観測できないので `staging` の後で halt する。BMC の Task が失敗で終われば、halt の理由にメッセージの文と MessageId（`Update.1.0.ApplyFailed` など）を出す。
+
+### 確かめ方
+
+- 偽 BMC（`internal/redfish/redfishtest`）は DMTF の Redfish の仕様に沿って UpdateService・FirmwareInventory・SimpleUpdate・multipart の送信・TaskService を持ち、qemu-bmc に寄せて Task の Messages に MessageId・MessageArgs を持つ。`UpdateOptions.NoTaskPayload` で Payload を返さない形、`SetImageRejected` でイメージを断る（400 `Update.1.0.VerificationFailed`、Task を作らない）形になる。契約テストと単体は `internal/redfish/system/firmware_test.go`（`[AC-148-1]`〜`[AC-148-6]`・`[AC-148-12]`、Payload の無い形と故障は `TestFirmware_TaskWithoutPayload`・`TestFirmware_ImageRejectedAndApplyFailed`）、常駐ループの受け入れテストは `tests/acceptance/redfish_firmware_test.go`（`[AC-148-7]`〜`[AC-148-11]`・`[AC-148-13]`・`[AC-148-14]`）。
+- 本物（qemu-bmc 0.11.0 の UpdateService の模擬）は `make integration-redfish` の 10〜13 段目（`[AC-168-10]`〜`[AC-168-13]`、下の「統合テスト」）。
 
 ## 一度きりの操作（Workflow の action 手順、#139）
 
@@ -303,7 +323,7 @@ $ sakutei           --intent intent/ --redfish-config bmcs.yaml --interval 30s
 
 ## 統合テスト（qemu-bmc + containerlab、`make integration-redfish`）
 
-設計 §26.1 の 3 段目（§29.1 の（7））。本物の Redfish（[qemu-bmc](https://github.com/tjst-t/qemu-bmc) **0.10.0**、イメージ `ghcr.io/tjst-t/qemu-bmc:0.10.0@sha256:875c9b6490eb444821a5dbcde348716bedfce767563d4c683728b7185022526a` に tag と digest で固定）を containerlab で 2 台立て、sakutei の CLI と常駐ループを向ける。KVM・docker・containerlab と sudo が要るので、`make check`・`make test`・CI には入れない（テストは build tag `integration_redfish` の付いたファイルにあり、`go test ./...` では空のパッケージになる）。
+設計 §26.1 の 3 段目（§29.1 の（7））。本物の Redfish（[qemu-bmc](https://github.com/tjst-t/qemu-bmc) **0.11.0**、イメージ `ghcr.io/tjst-t/qemu-bmc:0.11.0@sha256:3ab6ea901b1ae8a510a2a140113fd1d80ad0f3ad2c26327ab04ef94f95bbdfc9` に tag と digest で固定。#168 で 0.10.0 から上げた）を containerlab で 2 台立て、sakutei の CLI と常駐ループを向ける。KVM・docker・containerlab と sudo が要るので、`make check`・`make test`・CI には入れない（テストは build tag `integration_redfish` の付いたファイルにあり、`go test ./...` では空のパッケージになる）。
 
 ### 要るもの
 
@@ -322,10 +342,10 @@ $ make integration-redfish
 
 1. 一時ディレクトリにトポロジ（`tests/integration/redfish/topology.clab.yml`）を写し、小さな ISO 9660 を 2 つ（`iso/sakutei-a.iso`・`iso/sakutei-b.iso`、テストがその場で書く）と sakutei のバイナリ、BMC の一覧（`insecure_skip_verify: true`、パスワードは file SecretBackend の SecretRef）を置く。
 2. 同じ名前の lab の残りを消してから `sudo containerlab deploy` する。lab 名と管理ネットは `sakutei-rf84`（`172.31.84.0/24`、BMC は node1 = `172.31.84.11`・node2 = `172.31.84.12`、Redfish は HTTPS 443・自己署名・`admin`/`password`）。
-3. (1)〜(8) を順に回す（前の段の現実を次の段が使うので、1 つ落ちたら残りは回さない）。
+3. (0)〜(13) を順に回す（前の段の現実を次の段が使うので、1 つ落ちたら残りは回さない）。10〜13 段目は、FW のイメージを配る HTTP（管理ネットのゲートウェイ、既定 `172.31.84.1` の空いたポート。BMC が取りに来る）と、通知を受ける webhook（`127.0.0.1`、常駐の `--event-webhook`）をテストの中に立てる。
 4. **終わったら必ず `containerlab destroy --cleanup`**（失敗しても・Ctrl-C で止めても）。テストのプロセスごと落ちた（`-timeout` など）ときは、Makefile が lab の残りを見つけて消す。
 
-トポロジの要点: 2 台とも `/dev/kvm`・`/dev/net/tun` を渡し、`SYSTEM_UUID`・`VM_MACS` を固定、VM の NIC は eth1（2 台を直結）、`GRACEFUL_TIMEOUT` は 10 秒。**`VM_DISK_SIZE` は付けない**——ディスクの無い VM は BIOS のまま ACPI の電源ボタンに応えないので、GracefulShutdown は PoweringOff のあと `GRACEFUL_TIMEOUT` 秒で On に戻る。これを既定停止の stuck と graceful_then_force の確かめに使う。`POWER_ON_AT_START` の既定（false）で VM は Off から始まる。
+トポロジの要点: 2 台とも `/dev/kvm`・`/dev/net/tun` を渡し、`SYSTEM_UUID`・`VM_MACS` を固定、VM の NIC は eth1（2 台を直結）、`GRACEFUL_TIMEOUT` は 10 秒、FW の更新の Task は `FIRMWARE_UPDATE_SECONDS` 3 秒。node1 だけ初めの FW の版を `BMC_FIRMWARE_VERSION: "1.0.0"`・`BIOS_FIRMWARE_VERSION: "BIOS-1.0.0"` にし、node2 は既定のまま（BMC は `v0.11.0`）。障害注入の口（`FAULT_API_ADDR: ":8623"`）は node2 だけ。**`VM_DISK_SIZE` は付けない**——ディスクの無い VM は BIOS のまま ACPI の電源ボタンに応えないので、GracefulShutdown は PoweringOff のあと `GRACEFUL_TIMEOUT` 秒で On に戻る。これを既定停止の stuck と graceful_then_force の確かめに使う。`POWER_ON_AT_START` の既定（false）で VM は Off から始まる。
 
 手で lab を立てて触るとき（後で必ず消す）:
 
@@ -342,7 +362,7 @@ $ sudo containerlab destroy -t topology.clab.yml --cleanup && rm -rf iso
 
 | | 内容 | 確かめ方 |
 | --- | --- | --- |
-| (0) | lab が想定どおり | Managers/1 の FirmwareVersion が `v0.10.0`。0.9 以降、サービスルート（`/redfish/v1`）は認証なしで 200、`Systems/1` は認証なしで 401。UUID は `SYSTEM_UUID` のとおり、最初は Off。 |
+| (0) | lab が想定どおり | Managers/1 の FirmwareVersion が node2（既定のまま）で `v0.11.0`、node1 で `BMC_FIRMWARE_VERSION` の `1.0.0`。0.9 以降、サービスルート（`/redfish/v1`）は認証なしで 200、`Systems/1` は認証なしで 401。UUID は `SYSTEM_UUID` のとおり、最初は Off。 |
 | (1) `[AC-84-1]` | plan → reconcile で宣言に収束 | node1 = On・Continuous の Pxe・CD に `sakutei-a.iso`、node2 = On・Disabled・CD は空。plan は差分を出して BMC に書かない。reconcile のあと Redfish の GET が宣言どおりで、QEMU が `accel=kvm` で動いている（`docker top`）。続く plan は `Converged (no changes)`。image を `sakutei-b.iso` に変えると同じ Apply の中で Eject → Insert して収束。 |
 | (2) `[AC-84-2]` | 手で変えたものを次の周で戻す | 常駐の sakutei（`--interval 2s`）を回したまま、curl 相当の要求で node2 を ForceOff、node1 の起動先の上書きを Disabled、node1 の CD を Eject。次の周で 3 つとも cause B の Drift として出て、On・Continuous/Pxe・`sakutei-b.iso` に戻る。 |
 | (3) `[AC-84-3]` | 既定の停止（graceful）は ForceOff しない | node1 を `power: "Off"`（power_off は既定）にして常駐（`--stuck-after 3`）。電源は On → PoweringOff → On を繰り返し、一度も Off にならない。BMC のログに「guest did not power off」が 2 回以上（GracefulShutdown を送り直している）。Drift が `class: stuck`・`severity: critical` に上がる（`--event-log`）。plan はまだ Off を求める。 |
@@ -352,6 +372,44 @@ $ sudo containerlab destroy -t topology.clab.yml --cleanup && rm -rf iso
 | (7) `[AC-87-7]` | OS 導入の Workflow | CD を差して差さったことを確かめてから電源を入れる（[OS を入れる](#os-を入れるworkflow-と組み合わせる)）。 |
 | (9) `[AC-166-9]` | Apply が効かない BMC（#166） | node2 だけ qemu-bmc の障害注入の口（`FAULT_API_ADDR: ":8623"`、管理ネットに直に届く）を開け、node2 を手で ForceOff してから `power-action-ignored` を足す。`power: "On"` の reconcile（`--settle 5s --apply-check-state … --max-ineffective-applies 2`）は 5 秒読み直して終了コード 4・`ApplyIneffective`・「Reconcile: not converged」。2 回目で上限に達し、3 回目は Reset を送らずに 4（`Apply stopped (oscillating`）、電源は Off のまま。障害を外して `sakutei apply-check release` で解くと、reconcile が電源を入れて 0。 |
 | (8) `[AC-140-8]` | BIOS の設定（redfish-bios） | node1 のシステムと `node1/bios`（`ProcVirtualization: Disabled`・`PowerProfile: Balanced`・`AssetTag`）を並べて宣言。plan は差分を出して `Bios/Settings` に書かない。reconcile は Settings に保留中として書き、今の値は変わらず電源も On のまま。2 回目の reconcile は converging で、qemu-bmc のログの「pending until the next boot」は 1 回だけ（PATCH を重ねない）。node2 に読み取り専用（`BootMode`）・選べない値・登録簿に無い名前を宣言すると plan がエラーで、保留中は空のまま。`ForceRestart` で効いたあと plan は Converged で、宣言していない属性は元のまま。 |
+| (10) `[AC-168-10]` | FW の版の観測（redfish-firmware、#168） | node1・node2 の BMC・BIOS の部品を観測した版のまま宣言すると plan は Converged。node1 の BMC を `2.0.0`、node2 の BIOS を `QBMC-BIOS-2.0.0` にすると、plan はその 2 つだけ `"1.0.0" → "2.0.0"` の形で版の差分を出し、BMC の Task も増えず、イメージも取りに来ない。 |
+| (11) `[AC-168-11]` | BMC の即時の更新 | 常駐（`--task-store`・`--event-webhook`）で node1 の BMC を `2.0.0`（SimpleUpdate）にすると、Task は承認ゲート（`awaiting_approval:verifying`）で止まり、3 周回しても BMC の Task は増えず、イメージも取りに来ない。webhook に RequiresTask（awaiting approval）。`sakutei task approve` のあと BMC の Task が 1 つ増えて Running → Completed（`TargetDetermined` の MessageArgs が部品とイメージの URI、`UpdateSuccessful`）、イメージを取りに来たのは 1 回、部品と Managers/1 の版が `2.0.0` になって Task が閉じる。続けて `2.1.0` を `transfer: multipart` で宣言すると、同じく承認の後に 1 回だけ送り、BMC の Task のイメージは送ったファイルの名前（`bmc-2.1.0.bin`）で、版が `2.1.0` になる。plan は Converged。 |
+| (12) `[AC-168-12]` | BIOS の保留と再起動 | node1 の BIOS を `BIOS-2.0.0`（`reboot` を書かず、`reboot_timeout: 20s`）にして承認すると、BMC の Task は Completed で最後のメッセージが `Update.1.0.AwaitToActivate`、BIOS の部品は `StandbyOffline` で版は `BIOS-1.0.0` のまま。Sakutei は再起動を送らず（電源はずっと On）、Task は `rebooting` の相で halt し、webhook に RequiresTask（rebooting の理由つき）。`sakutei task cancel` して `reboot: force` を宣言し直して承認すると、更新は送り直さず（BMC の Task もイメージの取得も 1 回のまま）、再起動のあと BIOS が `BIOS-2.0.0`・`Enabled`、Systems/1 の `BiosVersion` も同じ。plan は Converged。 |
+| (13) `[AC-168-13]` | 故障 | node2 に `firmware-image-rejected`（BIOS）と `firmware-update-fail`（BMC、`atPercent: 30`）を足し、BIOS と BMC の版を宣言して両方承認する。BIOS は `staging` で halt（理由は BMC の 400 の文「Verification of image … failed」）、BMC の Task は作られない。BMC は BMC の Task が 30% で `Exception`（`Update.1.0.ApplyFailed`）になり、`applying` で halt（理由に `Update.1.0.ApplyFailed`）。どちらも版は変わらず、webhook に理由つきの RequiresTask。さらに 3 周回しても二度目は送らない（BMC の Task は 1 つ、イメージの取得は 1 回のまま）、Task は halt のまま（人が確かめて cancel する）。 |
+
+### 結果（2026-10-28、qemu-bmc 0.11.0、FW の更新を足して、#168）
+
+qemu-bmc を 0.11.0（上の digest）に上げ、(10)〜(13) を足して `make integration-redfish` が合格した（docker 29.1.3・containerlab 0.81.1）。(0) の版の確かめを 0.11 の FirmwareVersion に合わせた（node1 は `BMC_FIRMWARE_VERSION`、node2 は既定の `v0.11.0`）ほかは、(1)〜(9) を変えていない。
+本物で分かった違いは、BMC の Task が `Payload` を返さないこと。provider に Update の `TargetDetermined` で見分ける口を足し、偽 BMC にも同じ形（`NoTaskPayload`）を足した（上の「BMC の Task の見分け方」）。
+
+```
+--- PASS: TestRedfishIntegration (191.99s)
+    --- PASS: TestRedfishIntegration/0_lab (0.00s)
+    --- PASS: TestRedfishIntegration/1_plan_reconcile (0.34s)
+    --- PASS: TestRedfishIntegration/2_daemon_restores_drift (2.54s)
+    --- PASS: TestRedfishIntegration/3_graceful_stuck (31.59s)
+    --- PASS: TestRedfishIntegration/4_graceful_then_force (11.03s)
+    --- PASS: TestRedfishIntegration/5_bmc_paused_unknown (30.78s)
+    --- PASS: TestRedfishIntegration/6_once_rejected (0.01s)
+    --- PASS: TestRedfishIntegration/7_workflow_cd_before_power (9.06s)
+    --- PASS: TestRedfishIntegration/8_bios_settings (0.11s)
+    --- PASS: TestRedfishIntegration/9_power_action_ignored (10.18s)
+    --- PASS: TestRedfishIntegration/10_firmware_observe (0.05s)
+    --- PASS: TestRedfishIntegration/11_firmware_bmc_update (35.61s)
+    --- PASS: TestRedfishIntegration/12_firmware_bios_pending_reboot (41.13s)
+    --- PASS: TestRedfishIntegration/13_firmware_faults (19.56s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/redfish	196.361s
+```
+
+止まったときの理由（ログから）:
+
+```
+BIOS（reboot なし）: step rebooting: the step did not complete (pending) within 20s (unknown ≠ absent: waited, never treated as gone)
+BIOS（イメージを断る）: step staging: redfish-firmware "node2/firmware/BIOS": staging: SimpleUpdate: redfish: POST /redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate: request rejected (HTTP 400): Verification of image 'http://172.31.84.1:…/n2-bios-9.0.0.bin' at '/redfish/v1/UpdateService/FirmwareInventory/BIOS' failed. invalid firmware image: rejected (injected fault); …
+BMC（更新が落ちる）: step applying: redfish-firmware "node2/firmware/BMC": applying: the BMC task /redfish/v1/TaskService/Tasks/1 ended Exception (… ; Installation of image '…/n2-bmc-9.0.0.bin' to '/redfish/v1/UpdateService/FirmwareInventory/BMC' failed. (Update.1.0.ApplyFailed))
+```
+
+同じ機械の別の作業場所で同じ名前の lab（`sakutei-rf84`）を同時に立てると、互いに deploy・destroy し合って落ちる（1 回目の 3 段目がそれで落ちた。BMC が 2 台とも同時に届かなくなる）。統合テストは同時に 1 つだけ回す。
 
 ### 結果（2026-10-28、qemu-bmc 0.10.0、Apply の確かめを足して、#166）
 
