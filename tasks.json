@@ -3443,6 +3443,30 @@
       "updatedAt": "2026-10-27T17:57:23.179Z",
       "closedAt": "2026-10-27T17:57:23.179Z",
       "extra": {}
+    },
+    {
+      "id": "fw-redfish-updateservice",
+      "number": 147,
+      "kind": "story",
+      "title": "FW の更新と入れ直しを宣言で扱う：Redfish の UpdateService・人の手順で合わせる版・互換の表・全体を止める更新",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "firmware",
+        "v2"
+      ],
+      "body": "物理の装置の FW・ソフトの版を宣言で持ち、更新を多相 Task（§6.2、#51）と承認ゲート（§6.4）で安全に流す。一般の形で次を入れる。\n\n1. 管理 API（Redfish の UpdateService）で更新できる部品は、版を観測し、宣言と違えば多相 Task で更新する。\n2. 管理 API に更新の口が無い装置は、観測と人の手順の組み合わせで扱う：版を観測 → 宣言と違えば知らせる → 承認ゲートつきの Task で人に作業を促す → 版が宣言どおりになったことを観測で確かめて閉じる。試験用の模擬にだけある更新の口には頼らない。\n3. 部品の版の互換の表を宣言として持ち、合わない組み合わせへの更新は計画の時点で止める。\n4. 全体を止める型の更新（止めている間、下流が使えない）は、止まる時間帯・下流への影響・止める時間の見積もりを宣言でき、remediation schedule・承認ゲートと組み合わせられる。止める前に上流の積もり（キューの長さなど）を観測し、上限を超えそうなら止めない／待つ（require で書ける）。止める前に通知の口から知らせる。観測の元は /metrics や管理 API を provider で出す。\n\n設計の原則：正しい状態（宣言する版・互換の表）は宣言に置き、ツールの中だけに持たない。",
+      "doneWhen": "子タスクがすべて done、make check・make test-race と関わる統合テストが通り、設計書と CHANGELOG に反映して main に push 済み",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T02:40:29.557Z",
+      "updatedAt": "2026-10-28T02:40:29.557Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
