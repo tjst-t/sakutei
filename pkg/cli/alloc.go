@@ -100,6 +100,9 @@ func pendingLine(verb string, pa render.PendingAllocation) string {
 		if errors.Is(pa.Err, allocwriteback.ErrAwaitingReview) {
 			what = "書き戻しの取り込み待ち (awaiting review of the write-back)"
 		}
+		if errors.Is(pa.Err, allocwriteback.ErrReleaseAwaitingReview) {
+			what = "解放の取り込み待ち (the release awaits review of the write-back)"
+		}
 		return fmt.Sprintf("sakutei %s: allocation %s: %s field %q from pool %q: %v", verb, what, pa.ID, pa.Field, pa.Pool, pa.Err)
 	}
 	what := "allocated by reconcile"

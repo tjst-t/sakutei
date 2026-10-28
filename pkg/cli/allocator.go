@@ -311,7 +311,7 @@ func cooldownUntil(ctx context.Context, auth allocAdmin, pool, value string) tim
 		return time.Time{}
 	}
 	for _, r := range recs {
-		if r.State == "cooldown" && fmt.Sprint(r.Value) == value && r.Until != nil {
+		if r.State == allocator.StateCooldown && fmt.Sprint(r.Value) == value && r.Until != nil {
 			return *r.Until
 		}
 	}

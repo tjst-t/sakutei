@@ -91,6 +91,7 @@ committer_email: sakutei-sync@localhost
 | ある | 同じ値 | そのまま使う |
 | ある | 違う値 | その owner を使う Apply を止めて知らせる（`AllocationHeld`）。どちらにも勝手に寄せない。人がどちらかを直す |
 | ある | 無い | Apply を止め、`sakutei allocator import` を案内する |
+| ある | 無い（その値が cooldown 中＝解放済み） | Apply を止め、「解放の取り込み待ち」と知らせる。import は案内しない（下の「解放」） |
 | 無い | 配った（または今配る） | `commit`・`file` は書き戻してから使う。`review` は取り込まれるまで止める |
 
 - ファイルの割当のうち 1 つでも store に無い・store と食い違うあいだは、そのプールから**新しい値を配らない**
@@ -117,3 +118,9 @@ pool vm-ids: imported 2 allocation(s) from generated/allocations/vm-ids.yaml (0 
 ことによる解放も、authority の Release を通る限り同じ道でファイルから消える（v1 には自動の解放の経路は無い、§19.5）。
 `--intent` を付けずに解放すると、ファイルにはその owner が残り、そのプールは「store に無い」として止まる（import は
 cooldown 中の値を断るので、誤って戻ることはない）。
+
+`review` の仕方では、解放（ファイルから owner を消すこと）もレビュー用のブランチにコミットされ、人が取り込むまで作業
+ツリーのファイルにはその owner が残る。そのあいだ store ではその値が cooldown 中（解放済み）なので、照合はこれを
+「store を失った」ではなく **解放の取り込み待ち**（`ErrReleaseAwaitingReview`）として止め、そのプールから新しい値を
+配らない。知らせは取り込みを促し、`sakutei allocator import` は勧めない（import は cooldown 中の値を断る）。取り込めば
+解ける（#167）。`commit`・`file` で同じ形が出たら（ファイルの書き換えに失敗した・手で戻した）、その行を手で消す。

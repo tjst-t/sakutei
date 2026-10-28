@@ -18,7 +18,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tjst-t/sakutei/v2/internal/allocator"
@@ -87,6 +89,86 @@ func TestStoreMissingEntryBlocksPool(t *testing.T) {
 	// q is not declared to the store: the store's own error passes through.
 	if _, err := a.Allocate(ctx, "q", "x"); !errors.Is(err, allocation.ErrUnknownPool) {
 		t.Fatalf("pool q must pass through to the store, got %v", err)
+	}
+}
+
+func gitT(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// #167: with review, a release leaves the owner in the work tree's file until
+// people take the removal in, while the store has released it (cooldown).
+// The hold says 解放の取り込み待ち and does not send people to `sakutei
+// allocator import` (which would refuse the cooling value); taking the
+// removal in lifts it.
+func TestReleaseAwaitingReviewIsNotALostStore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	gitT(t, root, "init", "-q", "-b", "main")
+	store := allocator.New(filepath.Join(t.TempDir(), "alloc.json"))
+	a := New(allocator.NewCache(store), Config{Mode: ModeReview}, filepath.Join(root, "intent"))
+	pools := []loader.Pool{{Name: "p", Lo: 1, Hi: 5, WriteBack: true}}
+	if err := a.EnsurePool("p", 1, 5); err != nil {
+		t.Fatal(err)
+	}
+	// o1 holds 1 in the store and in the file people have taken in.
+	if _, err := store.Allocate(ctx, "p", "o1"); err != nil {
+		t.Fatal(err)
+	}
+	f := loader.AllocationFile{Pool: "p", Allocations: []loader.AllocationEntry{{Owner: "o1", Value: 1}}}
+	if err := os.MkdirAll(filepath.Dir(a.FilePath("p")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(a.FilePath("p"), loader.EmitAllocationFile(f), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, root, "add", "-A")
+	gitT(t, root, "commit", "-q", "-m", "o1")
+
+	a.SetIntentPools(pools)
+	if err := a.Release(ctx, "p", "o1"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if got, _, _ := a.ReadFile("p"); len(got.Allocations) != 1 {
+		t.Fatalf("review must leave the work tree's file alone until taken in: %+v", got)
+	}
+
+	notImport := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, allocation.ErrWriteBackHeld) || !errors.Is(err, ErrReleaseAwaitingReview) || errors.Is(err, ErrNotInStore) {
+			t.Fatalf("%s: must be held as 解放の取り込み待ち, got %v", what, err)
+		}
+		if msg := err.Error(); strings.Contains(msg, "allocator import") || !strings.Contains(msg, "解放の取り込み待ち") || !strings.Contains(msg, DefaultBranch) {
+			t.Fatalf("%s: must point at taking the release in, not at import: %v", what, err)
+		}
+	}
+	a.SetIntentPools(pools)
+	_, err := a.Allocate(ctx, "p", "new")
+	notImport("a new owner of the pool", err)
+	_, ok, err := a.Lookup(ctx, "p", "new")
+	if ok {
+		t.Fatal("Lookup must not hand out while held")
+	}
+	notImport("Lookup of a new owner", err)
+	_, err = a.Allocate(ctx, "p", "o1")
+	notImport("the released owner", err)
+
+	// People take the removal in: the hold is lifted (the new value then
+	// goes through review as usual).
+	gitT(t, root, "merge", "-q", "--ff-only", DefaultBranch)
+	a.SetIntentPools(pools)
+	if _, err := a.Allocate(ctx, "p", "new"); errors.Is(err, ErrReleaseAwaitingReview) || errors.Is(err, ErrNotInStore) || !errors.Is(err, ErrAwaitingReview) {
+		t.Fatalf("after taking the release in the pool must hand out again (awaiting review of the new value), got %v", err)
 	}
 }
 

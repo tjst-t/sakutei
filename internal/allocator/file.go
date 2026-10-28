@@ -567,9 +567,9 @@ func (a *FileAuthority) Import(_ context.Context, poolName string, lo, hi int, e
 	return added, nil
 }
 
-// Record states besides stateAllocated and stateReserved: a released value
-// cooling down (§19.5 (b)).  It has no owner any more.
-const stateCooldown = "cooldown"
+// StateCooldown is the Record state besides allocated and reserved: a
+// released value cooling down (§19.5 (b)).  It has no owner any more.
+const StateCooldown = "cooldown"
 
 // Record is one row of List: a value in use (allocated or reserved, with its
 // owner) or cooling down.  Until is when a reservation expires or a cooldown
@@ -626,7 +626,7 @@ func (a *FileAuthority) List(_ context.Context, poolName string) ([]Record, erro
 				continue
 			}
 			u := until
-			rows = append(rows, Record{Pool: n, Value: n2, State: stateCooldown, Until: &u})
+			rows = append(rows, Record{Pool: n, Value: n2, State: StateCooldown, Until: &u})
 		}
 		sort.Slice(rows, func(i, j int) bool {
 			if rows[i].Value != rows[j].Value {

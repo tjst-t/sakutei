@@ -16,6 +16,7 @@ package allocator
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -220,6 +221,21 @@ func (c *Cache) Lookup(ctx context.Context, pool, owner string) (string, bool, e
 	}
 	c.calls.Add(1)
 	return c.inner.Lookup(ctx, pool, owner)
+}
+
+// List passes through to the wrapped authority when it can list its records
+// (the file authority and the service client do).  The write-back (#167) asks
+// it only when the store lacks an allocation its file holds, to tell a
+// released value (cooldown) from a lost one.
+func (c *Cache) List(ctx context.Context, pool string) ([]Record, error) {
+	l, ok := c.inner.(interface {
+		List(ctx context.Context, pool string) ([]Record, error)
+	})
+	if !ok {
+		return nil, errors.New("allocator: the wrapped authority cannot list its records")
+	}
+	c.calls.Add(1)
+	return l.List(ctx, pool)
 }
 
 // EnsurePool declares the pool to the wrapped authority when it accepts pool

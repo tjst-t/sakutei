@@ -32,7 +32,12 @@
 //     branch and holds the resource until people take it into the intent and
 //     the value appears in the file.  The value stays allocated in the store
 //     meanwhile, so it is not handed out to anyone else;
-//   - a Release removes the owner from the file the same way.
+//   - a Release removes the owner from the file the same way.  Until review
+//     takes the removal in, the file still holds an owner the store has
+//     released (its value cools down): the pool is held as 解放の取り込み待ち
+//     (ErrReleaseAwaitingReview), lifted by taking the removal in — not as a
+//     lost store, which `sakutei allocator import` would rebuild (the import
+//     would refuse the cooling value anyway, #167).
 //
 // The decisions are taken from the file and the store every time — nothing
 // of them is kept here — so one-shot runs and the daemon behave the same.
@@ -50,6 +55,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/allocator"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/syncmode"
 	"github.com/tjst-t/sakutei/v2/pkg/allocation"
@@ -65,6 +71,11 @@ var (
 	// ErrAwaitingReview: the value is allocated and committed to the review
 	// branch, and is not in the intent's file yet (書き戻しの取り込み待ち).
 	ErrAwaitingReview = errors.New("書き戻しの取り込み待ち (the write-back awaits review)")
+	// ErrReleaseAwaitingReview: the store released the owner (its value cools
+	// down) and the file still holds it, because the removal is not taken in
+	// yet (解放の取り込み待ち, #167).  Taking it in lifts the hold; import
+	// does not (it refuses a value cooling down).
+	ErrReleaseAwaitingReview = errors.New("解放の取り込み待ち (the release awaits review of the write-back)")
 	// ErrUnreadable: the file cannot be read for sure.
 	ErrUnreadable = errors.New("the write-back file cannot be read")
 )
@@ -181,7 +192,8 @@ func (a *Authority) verify(ctx context.Context, pool string, f loader.Allocation
 	if err, done := a.verified[pool]; done {
 		return err
 	}
-	var missing, differ []string
+	var missing, released, differ []string
+	var cooling map[int]bool
 	for _, e := range f.Allocations {
 		v, ok, err := a.inner.Lookup(ctx, pool, e.Owner)
 		if err != nil && !errors.Is(err, allocation.ErrUnknownPool) {
@@ -189,7 +201,14 @@ func (a *Authority) verify(ctx context.Context, pool string, f loader.Allocation
 		}
 		switch {
 		case !ok:
-			missing = append(missing, fmt.Sprintf("%s=%d", e.Owner, e.Value))
+			if cooling == nil {
+				cooling = a.cooling(ctx, pool)
+			}
+			if cooling[e.Value] {
+				released = append(released, fmt.Sprintf("%s=%d", e.Owner, e.Value))
+			} else {
+				missing = append(missing, fmt.Sprintf("%s=%d", e.Owner, e.Value))
+			}
 		case v != strconv.Itoa(e.Value):
 			differ = append(differ, fmt.Sprintf("%s=%d (store: %s)", e.Owner, e.Value, v))
 		}
@@ -197,8 +216,16 @@ func (a *Authority) verify(ctx context.Context, pool string, f loader.Allocation
 	var err error
 	switch {
 	case len(missing) > 0:
-		err = held(ErrNotInStore, "pool %q: the store lacks %d allocation(s) of %s (%s); no value is handed out from this pool until `sakutei allocator import` rebuilds the store from the file (§19.7)",
-			pool, len(missing), a.FilePath(pool), strings.Join(missing, ", "))
+		also := ""
+		if len(released) > 0 {
+			also = fmt.Sprintf("; %s were released in the store and still wait for the removal to be %s — do that first, the import refuses a value cooling down",
+				strings.Join(released, ", "), a.releaseRemedy())
+		}
+		err = held(ErrNotInStore, "pool %q: the store lacks %d allocation(s) of %s (%s); no value is handed out from this pool until `sakutei allocator import` rebuilds the store from the file (§19.7)%s",
+			pool, len(missing), a.FilePath(pool), strings.Join(missing, ", "), also)
+	case len(released) > 0:
+		err = held(ErrReleaseAwaitingReview, "pool %q: %s still holds %s, released in the store (cooling down); no value is handed out from this pool until the removal is %s, which lifts the hold (the store needs no rebuilding, §19.7)",
+			pool, a.FilePath(pool), strings.Join(released, ", "), a.releaseRemedy())
 	case len(differ) > 0:
 		err = held(ErrConflict, "pool %q: the store disagrees with %s on %s; no value is handed out from this pool until they agree (neither side is preferred; fix the file or the store by hand)",
 			pool, a.FilePath(pool), strings.Join(differ, ", "))
@@ -216,6 +243,10 @@ func (a *Authority) check(ctx context.Context, pool, owner string, e loader.Allo
 	if err != nil {
 		return "", err
 	}
+	if !ok && a.cooling(ctx, pool)[e.Value] {
+		return "", held(ErrReleaseAwaitingReview, "%s still holds %d for %s, which the store has released (cooling down): Apply of this resource is stopped until the removal is %s (the store needs no rebuilding, §19.7)",
+			a.FilePath(pool), e.Value, owner, a.releaseRemedy())
+	}
 	if !ok {
 		return "", held(ErrNotInStore, "%s holds %d for %s but the store has no record of it: Apply of this resource is stopped; run `sakutei allocator import` to rebuild the store from the file (§19.7)",
 			a.FilePath(pool), e.Value, owner)
@@ -224,6 +255,40 @@ func (a *Authority) check(ctx context.Context, pool, owner string, e loader.Allo
 		return "", conflict(a.FilePath(pool), owner, e.Value, v)
 	}
 	return v, nil
+}
+
+// cooling returns the values of pool cooling down in the store, i.e. released
+// (§19.5 (b)).  A store that cannot list them, or fails to, gives none: the
+// entry is then reported as lost, as before #167.
+func (a *Authority) cooling(ctx context.Context, pool string) map[int]bool {
+	l, ok := a.inner.(interface {
+		List(ctx context.Context, pool string) ([]allocator.Record, error)
+	})
+	if !ok {
+		return map[int]bool{}
+	}
+	recs, err := l.List(ctx, pool)
+	if err != nil {
+		return map[int]bool{}
+	}
+	out := map[int]bool{}
+	for _, r := range recs {
+		if r.State == allocator.StateCooldown {
+			out[r.Value] = true
+		}
+	}
+	return out
+}
+
+// releaseRemedy says what lifts a hold on a released owner the file still
+// holds: review waits for people to take the removal in; commit and file
+// remove it at release, so the entry is left over (a failed write, or put
+// back by hand) and is removed by hand.
+func (a *Authority) releaseRemedy() string {
+	if a.cfg.Mode == ModeReview {
+		return fmt.Sprintf("taken into the intent from review branch %s (解放の書き戻しの取り込み待ち)", a.cfg.Branch)
+	}
+	return "removed from the file (by hand: the store released it)"
 }
 
 func conflict(path, owner string, file int, store string) error {
