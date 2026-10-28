@@ -75,6 +75,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/nftrule"
 	"github.com/tjst-t/sakutei/v2/internal/remote"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
@@ -1132,42 +1133,10 @@ func afterQuota(out []string) bool {
 	return false
 }
 
-// ruleTokens は引用符の外の空白でルール文を区切る（引用符の中はそのまま）。
-func ruleTokens(s string) []string {
-	var toks []string
-	var b strings.Builder
-	inQuote := false
-	for _, r := range s {
-		switch {
-		case r == '"':
-			inQuote = !inQuote
-			b.WriteRune(r)
-		case !inQuote && (r == ' ' || r == '\t' || r == '\n' || r == '\r'):
-			if b.Len() > 0 {
-				toks = append(toks, b.String())
-				b.Reset()
-			}
-		default:
-			b.WriteRune(r)
-		}
-	}
-	if b.Len() > 0 {
-		toks = append(toks, b.String())
-	}
-	return toks
-}
+// ruleTokens は引用符の外の空白でルール文を区切る（nftrule.Tokens）。
+func ruleTokens(s string) []string { return nftrule.Tokens(s) }
 
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
+func isDigits(s string) bool { return nftrule.IsDigits(s) }
 
 // checkRuleText は nft のスクリプトに 1 行として埋め込めるルール文かを見る。
 // 引用符の外の ';'・'#'（コマンドの区切り・コメント）と改行、閉じない引用符は

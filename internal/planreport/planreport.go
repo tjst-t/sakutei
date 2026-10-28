@@ -132,6 +132,50 @@ type Report struct {
 	PendingAllocations []PendingAllocation `json:"pending_allocations"`
 	Unobservable       []Unobservable      `json:"unobservable"`
 	Composites         []Composite         `json:"composites"`
+	// NetworkPolicy は網の間の許可（network_policy:、§7.6・#174）の検査と展開。
+	// intent が宣言したときだけ。
+	NetworkPolicy *NetworkPolicy `json:"network_policy,omitempty"`
+}
+
+// NetworkPolicy は網の間の許可の検査（warning。error なら読み込みで断る）と、
+// 実現先ごとの展開（§7.6・#174）。
+type NetworkPolicy struct {
+	Networks int                    `json:"networks"`
+	Allows   int                    `json:"allows"`
+	Findings []NetworkPolicyFinding `json:"findings"`
+	Targets  []NetworkPolicyTarget  `json:"targets"`
+}
+
+// NetworkPolicyFinding は検査の結果の 1 つ。許可の行に関わるものはその行の
+// reason と tags を添える。
+type NetworkPolicyFinding struct {
+	Severity string   `json:"severity"`
+	Kind     string   `json:"kind"`
+	Allow    string   `json:"allow,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
+	Message  string   `json:"message"`
+}
+
+// NetworkPolicyTarget は 1 つの実現先と、そこを通る許可と、作った resource。
+type NetworkPolicyTarget struct {
+	Name      string               `json:"name"`
+	Realizer  string               `json:"realizer"`
+	Kind      string               `json:"kind"`
+	Resources []string             `json:"resources"`
+	Allows    []NetworkPolicyAllow `json:"allows"`
+}
+
+// NetworkPolicyAllow は実現先を通る 1 つの許可と、それが何の規則になったか。
+type NetworkPolicyAllow struct {
+	Allow  string   `json:"allow"`
+	From   string   `json:"from"`
+	To     string   `json:"to"`
+	Proto  string   `json:"proto"`
+	Ports  []string `json:"ports,omitempty"`
+	Reason string   `json:"reason,omitempty"`
+	Tags   []string `json:"tags,omitempty"`
+	Rules  []string `json:"rules"`
 }
 
 // Claim は --claim で絞った計画の範囲（§17.1）。

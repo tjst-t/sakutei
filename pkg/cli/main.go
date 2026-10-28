@@ -76,6 +76,10 @@ func Main(opts ...Option) {
 		os.Exit(1)
 	}
 	baseRegistry = reg
+	if err := registerRealizers(o.realizers); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Route to the daemon loop when:
 	//   (a) no arguments at all, or

@@ -231,6 +231,9 @@ func runReconcile(args []string) {
 		fmt.Fprintf(logErr, "sakutei reconcile: load intent: %v\n", err)
 		exitAfterEvents(1)
 	}
+	// §7.6 (#174): the warnings of the network allow check (its errors
+	// refused the load above).
+	warnNetPolicy(logErr, "sakutei reconcile", in.NetworkPolicy)
 	// §13.3 / §14.5: one-shot reconcile builds a fresh budget engine every
 	// invocation, so it opens the planned_change lanes only with the S4 audit
 	// log: S4 holds when each declaration was first seen (the cooling-off is a

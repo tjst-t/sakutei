@@ -36,6 +36,8 @@ type Option func(*options)
 
 type options struct {
 	extra []*registry.ProviderRegistry
+	// realizers are the network_policy realizers WithRealizer adds (#174).
+	realizers []namedRealizer
 }
 
 // WithRegistry adds every provider registered in reg to the built-in ones

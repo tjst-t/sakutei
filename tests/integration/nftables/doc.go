@@ -26,6 +26,10 @@
 // 手元の live（確かめは TCP の宛先。設定の宛先と宣言の tcp://）も namespace で
 // 確かめる。
 //
+// 網の間の許可（network_policy:、Backlog #174）から展開した base chain を
+// namespace の nft に流し、reason の comment が読み戻しで drift にならないことを
+// 確かめる（netpolicy_integration_test.go）。
+//
 // テストは build tag integration_nftables の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-nftables
 // （nft・unshare・nsenter・docker・ssh・ssh-keygen と sudo（パスワードなし）が要る）。手順と結果は

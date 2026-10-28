@@ -1,6 +1,6 @@
 # nftables provider（nftables）
 
-firewall の chain（順序付きのルール列）を収束させる provider。Schema の `ordered`（並び順が意味を持つ list フィールド）を end-to-end で使う最初の provider でもある。決まりの正は設計書 §29.1「nftables の実の ruleset 版（live）」（Backlog #121）・「nftables の base chain の policy と締め出しの守り」（Backlog #173）・「nftables の base chain の変更：確かめる先の宣言・変更の前の確かめ・承認と予算」（Backlog #179）と §7.4・§27（FW〈順序付き〉）。ここは使い方の説明で、矛盾したら spec/ が優先する。
+firewall の chain（順序付きのルール列）を収束させる provider。Schema の `ordered`（並び順が意味を持つ list フィールド）を end-to-end で使う最初の provider でもある。決まりの正は設計書 §29.1「nftables の実の ruleset 版（live）」（Backlog #121）・「nftables の base chain の policy と締め出しの守り」（Backlog #173）・「nftables の base chain の変更：確かめる先の宣言・変更の前の確かめ・承認と予算」（Backlog #179）・「網の間の許可を抽象のリソースにする」（Backlog #174、§7.6）と §7.4・§27（FW〈順序付き〉）。ここは使い方の説明で、矛盾したら spec/ が優先する。
 
 | provider 名 | ID | 扱うもの |
 | --- | --- | --- |
@@ -202,6 +202,10 @@ base chain を**作る**・**type・hook・priority・policy を変える**（re
 }
 ```
 
+## 網の間の許可から作る
+
+base chain の宣言は、intent の `network_policy:`（網と許可と行ごとの理由、Backlog #174）から展開して作れる。実現先（境界の FW・各ホスト）ごとに、そこを通る許可だけを 1 つの base chain（境界は hook `forward`、ホストは `input`、既定 `policy drop`）のルールにし、許可の `reason` をルールの comment に出す。展開した宣言はここに書いた base chain の宣言と同じに扱われる（承認と予算・締め出しの守り・確かめる先の `confirm`）。書き方・検査・comment の決まりは [../network-policy.md](../network-policy.md)。
+
 ## 離れたホスト（live）
 
 live は、手元の nft の代わりに離れたホストの nft を ssh 越しに呼べる（Backlog #130）。1 つのデーモンが複数のホストの FW を扱う。設定・鍵とホスト鍵の扱い・権限は [../remote.md](../remote.md)。
@@ -273,7 +277,7 @@ nft は interval の集合（アドレス・CIDR・範囲・ポートの範囲�
 - 正規化しても違うもの（`{ 10.0.0.0/24, 10.0.2.0/24 }` と `{ 10.0.0.0/23 }`、`{ 22, 24 }` と `{ 22-24 }`）は今までどおり差分になる。
 - 観測（state の `rules`）は nft が書き戻した形のまま持つ。正規形は比べるときだけ使う。
 - 名前の付いた set・map は今までどおり管理の外（§29.1、Backlog #121）。
-- ルールを作る側（網の間の許可の変換、Backlog #174）も `NormalizeSets` を通した形で出せば、nft がまとめても同じ比べ方で適合になる。
+- ルールを作る側（網の間の許可の変換、Backlog #174、[../network-policy.md](../network-policy.md)）もこの正規形（`internal/nftrule.NormalizeSets`）で作るので、nft がまとめても同じ比べ方で適合になる。
 
 これ以外の違いは drift になる。nft は宣言を**自分の形に書き換える**ことがある（例: `ct state new,established` → `ct state established,new`、`meta l4proto tcp tcp dport 22` → `tcp dport 22`）。そのような宣言は Apply の後の読み戻しで次のエラーになる（永久に drift が出続けないように、黙って受けない）:
 
@@ -330,11 +334,20 @@ $ make integration-nftables
 | another path declared and shut: rolled back although self is reached | 同じ `confirm` で 2222 を通さない宣言 → 前の確かめは通り、後の確かめで別の経路が届かない → 4 で「rolled back」とその先を名指し、table は前の段のまま、両方の経路が届く |
 | the minimal core was not touched | `mgmt` が最初から最後まで変わらない |
 
+網の間の許可（Backlog #174、`netpolicy_integration_test.go` の `TestNFTablesNetworkPolicy`）：上の network namespace の nft に、`network_policy:` の境界（`inet np forward`）とホスト（`inet np input`）を展開して流す（確かめる先は宣言の `tcp://` のテストの待ち受け、承認した planned_change のレーンを置く）:
+
+| 段 | 内容 |
+| --- | --- |
+| the allows are applied with their reasons as comments | 網 3 つ・許可 5 つ（`"`・`;`・`#`・`\`・日本語を含む reason、128 バイトを超える reason、icmpv6、reason の無い許可、同じ網の中の許可）→ reconcile → 2 つの base chain が policy drop で、ルールの comment に置き換え・切った reason が出る。status は適合 2・drift 0 |
+| no drift however many cycles | reconcile と status を 3 周 → drift 0、table（handle 込み）が変わらない（Apply が走らない）。plan は「Converged」 |
+| changing the declaration changes the rules | 許可を変える・外す・足す → reconcile → ルールが宣言どおりに変わり、drift 0 |
+| an exception without reason is refused | `exception` の印で reason の無い許可 → reconcile が終了コード 1（`exception_without_reason`）、table は変わらない |
+
 手元の live（`TestNFTablesLocalLockout`、上の network namespace の nft、`ruleset_rollback_timeout: 3s`）: 確かめの宛先（`ruleset_confirm_address`）がテストの待ち受けなら policy drop が残る。閉じたポートなら前の確かめで止まり、変えない。設定の宛先を持たず、宣言の `confirm` に `tcp://` の待ち受けを 2 つ書けば確かめられて変わる。2 つのうち 1 つが前の確かめの 1 度だけ受けて閉じる待ち受けなら、後の確かめで届かず 4 で「rolled back」とその先を名指し、table が元に戻る（仕掛けは手元の sh がラッパー越しの nft で流す。手元の TCP は namespace の FW を通らないので、「変えた後に届かない」は待ち受けの側で作る）。
 
 ### 結果
 
-nftables v1.0.9 で回した結果（全段 PASS、Backlog #179 の段を足して）:
+nftables v1.0.9 で回した結果（全段 PASS、Backlog #174 の段を足して）:
 
 ```
 --- PASS: TestNFTablesLockoutOverSSH (57.60s)
@@ -352,6 +365,11 @@ nftables v1.0.9 で回した結果（全段 PASS、Backlog #179 の段を足し�
     --- PASS: TestNFTablesLocalLockout/not_reached_before_the_change:_not_changed (0.08s)
     --- PASS: TestNFTablesLocalLockout/declared_tcp_targets_without_ruleset_confirm_address (0.17s)
     --- PASS: TestNFTablesLocalLockout/one_declared_target_not_reached_after_the_change:_rolled_back (3.86s)
+--- PASS: TestNFTablesNetworkPolicy (0.94s)
+    --- PASS: TestNFTablesNetworkPolicy/the_allows_are_applied_with_their_reasons_as_comments (0.24s)
+    --- PASS: TestNFTablesNetworkPolicy/no_drift_however_many_cycles_(comments_read_back_as_written) (0.39s)
+    --- PASS: TestNFTablesNetworkPolicy/changing_the_declaration_changes_the_rules (0.29s)
+    --- PASS: TestNFTablesNetworkPolicy/an_exception_without_reason_is_refused_and_nothing_changes (0.02s)
 --- PASS: TestNFTablesLiveIntegration (2.41s)
     --- PASS: TestNFTablesLiveIntegration/create_from_empty (0.25s)
     --- PASS: TestNFTablesLiveIntegration/base_chain_and_set_are_not_touched (0.17s)

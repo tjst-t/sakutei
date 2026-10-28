@@ -104,6 +104,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/filelock"
+	"github.com/tjst-t/sakutei/v2/internal/nftrule"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
@@ -127,7 +128,7 @@ const providerVersion = "nftables-v1.3.0" // v1.3.0: 確かめる先の宣言 co
 // RuleSep はルール列を 1 本の文字列へ join/split する区切り。
 // intent の fields は string→string なので、順序付き rules をこの区切りで
 // エンコードする。ルール本文に含まれない安全な区切りとして " ; " を用いる。
-const RuleSep = " ; "
+const RuleSep = nftrule.RuleSep
 
 // chainRes は ruleset ファイルから parse した 1 つの chain。
 type chainRes struct {

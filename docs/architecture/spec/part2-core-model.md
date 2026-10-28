@@ -808,3 +808,14 @@ regular chain なのに現実が base chain のものは計画の時点で断る
 これにより、合成リソースは「見せる面は1つ」でありながら、内部では所有・安全・粒度が親から子へ一貫して伝播する。
 
 
+### §7.6 網の間の許可 —— 機器に依らない抽象のリソースと実現先への展開
+
+網の間の通信の許可は、機器（境界の FW・ホストの nftables・スイッチの ACL）ごとの規則として書くと、同じ許可が機器の数だけ散らばり、「なぜ許したか」が規則の外（チケット・人の頭）に残る。正しい状態は宣言に置く（§1.7）ので、**許可そのものを機器に依らない宣言として intent に書き、機器の規則はそこから展開する**（v3.51、Backlog #174）。
+
+- **書式**：intent のトップレベルの `network_policy:` に、`networks`（網の名前と CIDR の一覧）・`allows`（`from` の網・`to` の網・`proto`〈`tcp`・`udp`・`icmp`・`icmpv6`・`any`、既定 `any`〉・`ports`〈数か `"lo-hi"` の一覧。tcp・udp だけ〉・`reason`・`tags`）・`targets`（実現先）を書く。複数のファイルに分けて書け、許可の順はファイルの名前の順・ファイルの中の順。**既定は拒否で、書いた許可だけが通る**（実現先の base chain の policy は既定 `drop`）。
+- **許可の 1 行ごとの理由と印**：`reason`（なぜ許すかの文）と、任意の印 `tags`（例 `exception`＝弱い方式をその機器だけ例外として許す行）。**`exception` の印の付いた許可に reason が無ければ読み込みで断る**（例外は必ず理由つきで宣言する）。印の無い許可の reason は任意。reason は検査の結果・plan の展開・実現先の規則（nftables の comment）に、tags は plan と検査の結果に出す。
+- **検査**（読み込み・plan の時点）：断る（読み込みのエラー、全部を並べる）のは **網の CIDR の重なり**（網の中も網の間も。アドレスがどちらの網か決まらず、片方への許可がもう片方に漏れる）・**宣言に無い網を指す許可・実現先**・**理由の無い例外**・**同じ許可の重複**・網と実現先の名前の二度書き・網が 2 つ未満の境界。知らせる（warning。plan の展開と `--json`、一回性の reconcile の標準エラー）のは **前の許可に覆われて効かない許可**（隠れた許可。同じ from・to で、前の許可の proto とポートが全部を含む）と、**どの実現先も通らない許可**。結果にはその行の場所（`<ファイル>: network_policy.allows[i]`）と reason・tags を添える。
+- **展開**（§9.1 フェーズ 2 と同じ決定的な展開。読み込みで行う）：実現先は `kind: boundary`（網と網の間。`networks` のうちの違う 2 つを from・to とする許可が通る）か `kind: host`（そのホストに入る通信。to が `networks` にある許可が通る）。**実現先ごとに、そこを通る許可だけ**を realizer（変換）に渡し、realizer が resource の宣言を作る。作った resource は intent の resources と同じに収束し（予算・承認・締め出しの守り・external_owners・重複の id の検査もそのまま効く）、`sakutei plan` は実現先ごとの通る許可・reason・tags・なった規則を出す。
+- **本体の realizer は nftables だけ**：実現先 1 つを nftables の base chain 1 つ（#173 の形、§7.4・§29.1。id は nftables の local id `[<host>/]<family>/<table>/<chain>`）にし、`type filter`・hook（boundary は `forward`、host は `input`）・`priority filter`・`policy drop` を既定に、`settings`（`hook`・`priority`・`policy`・`confirm`）で変えられる。ルールは `before`・許可・`after` の順で、許可 1 つをアドレスの族ごとに 1 ルール（`ip saddr … ip daddr … tcp dport … accept comment "<reason>"`）にする。nft の comment は 128 バイトまでで `"` を逃がせないので、`"` → `'`・`\` → `/`・`;` → `,`・空白と制御文字を 1 つの空白にし、超えれば文字の境目で切って `…` を付ける（読み戻しで同じ文字列になり drift にならない）。集合は #178 の正規形で作る。
+- **展開の口**：使う側は `pkg/cli` の `WithRealizer(name, r)`（§28.9 の `WithProviders` と同じ口）で別の実現先（スイッチの ACL など）への変換を足し、target の `realizer:` にその名前を書く。realizer にはそこを通る許可が from・to の網と reason・tags 付きで渡る。本体はスイッチの ACL への変換を持たない。すでにある名前（本体の `nftables` を含む）は起動のエラー。
+- **provider の設定はつなぎ方だけ**（§1.7、#158）：どの許可をどの実現先に出すか・既定の拒否・最小の核の `jump` は intent（`network_policy:` と `before`）に書き、provider の設定（`ruleset_target`・`ruleset_hosts`・鍵・時間）はつなぎ方だけを持つ。

@@ -41,7 +41,8 @@ plan は reconcile と同じ判定を、何も消費せずに評価する。reco
   "workflow": [ … ],
   "pending_allocations": [ … ],
   "unobservable": [ … ],
-  "composites": [ … ]
+  "composites": [ … ],
+  "network_policy": { … }
 }
 ```
 
@@ -63,6 +64,7 @@ plan は reconcile と同じ判定を、何も消費せずに評価する。reco
 | `pending_allocations` | 配列 | 採番待ち（下記） |
 | `unobservable` | 配列 | 観測できず計画に入らなかったリソース（下記） |
 | `composites` | 配列 | 合成リソースの集約状態 `{"id", "status"}`（§9.7）。文の出力の `composite <id>: <status>` の行 |
+| `network_policy` | オブジェクト | intent に `network_policy:` があるときだけ（下記、§7.6・Backlog #174）。文の出力の `Network policy (§7.6): …` の節 |
 
 ## `remediation`
 
@@ -144,3 +146,33 @@ plan は reconcile と同じ判定を、何も消費せずに評価する。reco
 ## `unobservable[]`
 
 `id`・`provider`・`scope`・`local_id` に加えて `availability`（`unknown` / `converging`）。観測できないものは「無い」とみなさず（§3）、計画にも prune の候補にも入れない。
+
+## `network_policy`
+
+網の間の許可（[network-policy.md](network-policy.md)）の検査と、実現先ごとの展開。検査で断るもの（error）があれば読み込みで止まるので（終了コード 1、`error` に入る）、ここに出る `findings` は知らせるもの（warning）だけ。
+
+```json
+"network_policy": {
+  "networks": 3,
+  "allows": 3,
+  "findings": [
+    {"severity": "warning", "kind": "shadowed", "allow": "net.json: network_policy.allows[1]",
+     "reason": "web の https", "message": "warning: shadowed: net.json: network_policy.allows[1] (office → dmz tcp 443): has no effect: …"}
+  ],
+  "targets": [
+    {"name": "fw1", "realizer": "nftables", "kind": "boundary",
+     "resources": ["nftables/fw1/inet/filter/forward"],
+     "allows": [
+       {"allow": "net.json: network_policy.allows[2]", "from": "office", "to": "db", "proto": "tcp", "ports": ["23"],
+        "reason": "古い装置は telnet しか話さない", "tags": ["exception"],
+        "rules": ["ip saddr 10.1.0.0/24 ip daddr 10.2.0.10/31 tcp dport 23 accept comment \"古い装置は telnet しか話さない\""]}
+     ]}
+  ]
+}
+```
+
+| フィールド | 意味 |
+| --- | --- |
+| `networks`・`allows` | 宣言した網と許可の数 |
+| `findings` | 検査の結果（warning）。`severity`・`kind`（`shadowed`・`unreached`）・`allow`（行の場所）・`reason`・`tags`（その行のもの）・`message`（文の出力と同じ 1 行） |
+| `targets` | 実現先ごとに `name`・`realizer`・`kind`・`resources`（作った resource の `<provider>/<id>`）・`allows`（そこを通る許可。`allow`・`from`・`to`・`proto`・`ports`・`reason`・`tags`・`rules`〈その許可がなった規則。族ごとに 1 つ、どの族も合わなければ空〉） |

@@ -162,6 +162,10 @@ func intentSchema() schemaNode {
 					},
 				},
 			},
+			// network_policy は網の間の許可（§7.6、#174）。網（名前と CIDR）・許可
+			// （from・to・proto・ports・reason・tags）・実現先。中身の意味は
+			// netpolicy.Parse と netpolicy.Check が確かめる。
+			"network_policy": networkPolicySchema(),
 			// compatibility は部品の版の互換の表（§29.1、#151）。部品（id と版の
 			// field）と、許す版の組み合わせの行。行の値が文字列かは compat.Parse。
 			"compatibility": schemaNode{
@@ -262,6 +266,65 @@ func intentSchema() schemaNode {
 
 // workflowsSchema は workflows（§6.3 / §6.4）のスキーマ。step の中身・v1.5 で
 // 未対応のキーの拒否は parseWorkflow が行う。
+// networkPolicySchema は network_policy:（§7.6、#174）の形。
+func networkPolicySchema() schemaNode {
+	strList := schemaNode{"type": "array", "items": schemaNode{"type": "string"}}
+	return schemaNode{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"networks": schemaNode{
+				"type": "array",
+				"items": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"name", "cidrs"},
+					"properties": map[string]any{
+						"name":  schemaNode{"type": "string"},
+						"cidrs": schemaNode{"type": "array", "minItems": 1, "items": schemaNode{"type": "string"}},
+					},
+				},
+			},
+			"allows": schemaNode{
+				"type": "array",
+				"items": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"from", "to"},
+					"properties": map[string]any{
+						"from":   schemaNode{"type": "string"},
+						"to":     schemaNode{"type": "string"},
+						"proto":  schemaNode{"type": "string", "enum": []any{"any", "tcp", "udp", "icmp", "icmpv6"}},
+						"ports":  schemaNode{"type": "array", "items": schemaNode{"type": []any{"string", "integer"}}},
+						"reason": schemaNode{"type": "string"},
+						"tags":   strList,
+					},
+				},
+			},
+			"targets": schemaNode{
+				"type": "array",
+				"items": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"name", "kind", "networks", "id"},
+					"properties": map[string]any{
+						"name":     schemaNode{"type": "string"},
+						"realizer": schemaNode{"type": "string"},
+						"kind":     schemaNode{"type": "string", "enum": []any{"boundary", "host"}},
+						"networks": strList,
+						"id":       schemaNode{"type": "string"},
+						"scope":    schemaNode{"type": "object", "additionalProperties": true},
+						"before":   strList,
+						"after":    strList,
+						// realizer に固有の値（nftables は hook・priority・policy・confirm）。
+						"settings": schemaNode{"type": "object", "additionalProperties": true},
+					},
+				},
+			},
+		},
+	}
+}
+
 func workflowsSchema() schemaNode {
 	stringMap := schemaNode{"type": "object", "additionalProperties": true}
 	return schemaNode{

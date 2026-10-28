@@ -66,6 +66,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/task"
 	"github.com/tjst-t/sakutei/v2/internal/workflow"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/netpolicy"
 )
 
 // parseDeletionPolicy converts the string form used in intent files to the
@@ -84,7 +85,7 @@ func parseDeletionPolicy(s string) core.DeletionPolicy {
 // treeToIntentFile はフォーマット非依存の in-memory 木（JSON Schema 検証済み）を
 // intentFile へ変換する。scope/fields の値は provisional 形式に合わせて文字列化する
 // （int/bool を含む YAML スカラーも決定的に文字列表現へ寄せ、JSON と等価にする）。
-func treeToIntentFile(tree map[string]any) (intentFile, error) {
+func treeToIntentFile(tree map[string]any, file string) (intentFile, error) {
 	var out intentFile
 	rawResources, _ := tree["resources"].([]any)
 	out.Resources = make([]intentResource, 0, len(rawResources))
@@ -197,6 +198,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.Compatibility = tables
+	np, err := netpolicy.Parse(tree["network_policy"], file)
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.NetworkPolicy = np
 	return out, nil
 }
 
@@ -300,6 +306,8 @@ type intentFile struct {
 	ExternalOwners extowner.Set `json:"-"`
 	// Compatibility is the top-level compatibility (§29.1, #151).
 	Compatibility compat.Set `json:"-"`
+	// NetworkPolicy is the top-level network_policy (§7.6, #174).
+	NetworkPolicy netpolicy.Policy `json:"-"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -502,6 +510,11 @@ type Intent struct {
 	// combination, and so must every combination met while updating them
 	// one at a time.
 	Compatibility compat.Set
+	// NetworkPolicy is the network allow declarations (§7.6, Backlog #174),
+	// checked and expanded: its realized resources (nftables base chains, or
+	// what an added realizer makes) are already in Resources.  Nil when no
+	// file declares network_policy:.
+	NetworkPolicy *netpolicy.Result
 	Revision      core.RevisionInfo
 }
 
@@ -553,6 +566,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	var workflows []workflow.Definition
 	var owners extowner.Set
 	var tables compat.Set
+	var policy netpolicy.Policy
 	for _, name := range names {
 		path := filepath.Join(dir, filepath.FromSlash(name))
 		loaded, file, err := loadFile(path)
@@ -575,6 +589,23 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		workflows = append(workflows, file.Workflows...)
 		owners = append(owners, file.ExternalOwners...)
 		tables = append(tables, file.Compatibility...)
+		policy.Merge(file.NetworkPolicy)
+	}
+
+	// §7.6 (#174): check the network allows and expand them into the
+	// resources of their targets (render phase 2, deterministic).  They join
+	// the declared resources before every check below, so a realized id that
+	// is also declared by hand, or selected by external_owners, is refused.
+	var netResult *netpolicy.Result
+	if !policy.Empty() {
+		res, err := netpolicy.Compile(policy)
+		if err != nil {
+			return Intent{}, fmt.Errorf("loader: %w", err)
+		}
+		netResult = res
+		for _, r := range res.Resources() {
+			resources = append(resources, realizedResource(r))
+		}
 	}
 
 	// D-2: reject duplicate Local IDs.  Two resources sharing a Local ID would
@@ -647,7 +678,26 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, ApplyChecks: applyChecks, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, ExternalOwners: owners, Compatibility: tables, Revision: ri}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, ApplyChecks: applyChecks, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, ExternalOwners: owners, Compatibility: tables, NetworkPolicy: netResult, Revision: ri}, nil
+}
+
+// realizedResource is the desired resource a network_policy target expands
+// into (§7.6, #174).
+func realizedResource(r netpolicy.Resource) diff.DesiredResource {
+	fields := r.Fields
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	deps := r.DependsOn
+	if deps == nil {
+		deps = []string{}
+	}
+	return diff.DesiredResource{
+		ID:             core.NewID(r.Provider, core.NewScope(r.Scope), r.ID),
+		Fields:         fields,
+		DependsOn:      deps,
+		DeletionPolicy: core.ExplicitAbsentOnly,
+	}
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the
@@ -782,7 +832,7 @@ func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 		return nil, intentFile{}, fmt.Errorf("intent file %s: %w", path, err)
 	}
 
-	intent, err := treeToIntentFile(tree)
+	intent, err := treeToIntentFile(tree, filepath.Base(path))
 	if err != nil {
 		return nil, intentFile{}, fmt.Errorf("intent file %s: %w", path, err)
 	}
@@ -839,8 +889,8 @@ func LoadResourcesFile(path string) ([]diff.DesiredResource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loader: %w", err)
 	}
-	if len(file.Pools) > 0 || len(file.Scopes) > 0 || len(file.ExternalOwners) > 0 || len(file.Compatibility) > 0 {
-		return nil, fmt.Errorf("loader: %s: an inventory file declares resources only (pools/scopes/external_owners/compatibility belong in intent)", path)
+	if len(file.Pools) > 0 || len(file.Scopes) > 0 || len(file.ExternalOwners) > 0 || len(file.Compatibility) > 0 || !file.NetworkPolicy.Empty() {
+		return nil, fmt.Errorf("loader: %s: an inventory file declares resources only (pools/scopes/external_owners/compatibility/network_policy belong in intent)", path)
 	}
 	if err := detectDuplicateLocalIDs(resources); err != nil {
 		return nil, fmt.Errorf("loader: %s: %w", path, err)

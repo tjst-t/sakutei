@@ -348,6 +348,10 @@ func runPlan(args []string) {
 	// §22.3: the Events of this run carry its revision.
 	logOut = eventlog.Stamp(logOut, 0, rev)
 	logErr = eventlog.Stamp(logErr, 0, rev)
+	// §7.6 (#174): what the network allows expanded into, with their reasons
+	// and tags, and the warnings of the check (its errors refused the load).
+	report.NetworkPolicy = netPolicyReport(in.NetworkPolicy)
+	printNetPolicy(logOut, report.NetworkPolicy)
 
 	// S62dbba-2: resolve providers via registry based on intent resource declarations.
 	// The --state flag is passed as the "state" config key for the "fake" provider;
