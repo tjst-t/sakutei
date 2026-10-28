@@ -3758,7 +3758,7 @@
       "number": 168,
       "kind": "task",
       "title": "Redfish の統合試験を qemu-bmc 0.11.0 に上げ、redfish-firmware の段を足す（UpdateService の模擬で版の観測・更新・故障を確かめる）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -3772,7 +3772,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T05:32:45.047Z",
-      "updatedAt": "2026-10-28T05:32:45.047Z",
+      "updatedAt": "2026-10-28T06:06:35.525Z",
       "closedAt": null,
       "extra": {}
     },
