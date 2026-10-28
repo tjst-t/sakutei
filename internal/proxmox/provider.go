@@ -222,6 +222,10 @@ var (
 	_ provider.AbsentValidator = (*Provider)(nil)
 	_ provider.PlanRefiner     = (*Provider)(nil)
 	_ provider.Actioner        = (*Provider)(nil)
+	// §7.3 (#158): intent の external_owners から vmid などで選べ、設定の
+	// protected_vmids・protected_names を intent と突き合わせられる。
+	_ provider.OwnerFieldSelector = (*Provider)(nil)
+	_ provider.ConfigExcluder     = (*Provider)(nil)
 )
 
 // New は clusters（名前 → Cluster）を使う Provider を返す。
@@ -676,6 +680,39 @@ func (p *Provider) BulkObserve(ctx context.Context, _ core.Scope) (provider.Bulk
 }
 
 // ---- 計画の時点の検査 ----
+
+// OwnerSelectFields は intent の external_owners（触らない宣言、§7.3・
+// Backlog #158）が観測の値で選べるフィールド：vmid・node・pool。
+func (p *Provider) OwnerSelectFields() []string {
+	return []string{FieldVMID, FieldNode, FieldPool}
+}
+
+// ConfigExclusions は設定の触らない VM（protected_vmids・protected_names）を
+// external_owners と同じ選び方で申告する。コアはこれを最後の安全の網として
+// intent と突き合わせる：intent がこれを管理すれば読み込みで断り、intent の
+// external_owners に無ければ書くように知らせる（§7.3・§29.1）。
+func (p *Provider) ConfigExclusions() []provider.ConfigExclusion {
+	var out []provider.ConfigExclusion
+	for _, name := range p.clusterNames() {
+		c := p.clusters[name]
+		for _, vmid := range c.ProtectedVMIDs {
+			out = append(out, provider.ConfigExclusion{
+				Setting:  fmt.Sprintf("clusters.%s.protected_vmids", name),
+				Scope:    c.Scope,
+				IDPrefix: name + "/",
+				Fields:   map[string]string{FieldVMID: strconv.Itoa(vmid)},
+			})
+		}
+		for _, vm := range c.ProtectedNames {
+			out = append(out, provider.ConfigExclusion{
+				Setting: fmt.Sprintf("clusters.%s.protected_names", name),
+				Scope:   c.Scope,
+				ID:      name + "/" + vm,
+			})
+		}
+	}
+	return out
+}
 
 // ValidateAbsent は ensure: absent（宣言で消す、§12.2・Backlog #163）の誤りを、
 // 読み込みの時点で断る：ID の形と、触らない VM（protected_names。Sakutei 自身が

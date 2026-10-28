@@ -53,6 +53,7 @@ import (
 	"io"
 
 	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
@@ -103,6 +104,11 @@ type Engine struct {
 	// cycle by SetExcludedScopes.
 	excluded []core.Scope
 
+	// owners are the "never touch" declarations (external_owners, §7.3,
+	// #158): an orphan they select is observed but never pruned.  Set per
+	// cycle by SetExternalOwners.
+	owners extowner.Set
+
 	// ownGone are the IDs the daemon itself removed since the baseline was
 	// last recorded — in a planned_change lane (§13.3) or by its own prune
 	// (§12.4b, v3.13, #75): their absence from the next List is intended, not
@@ -139,6 +145,13 @@ func (e *Engine) noteOwnRemoval(id core.ID) {
 // scope (§24.5) is never desired, and must never look like an orphan.
 func (e *Engine) SetExcludedScopes(scopes []core.Scope) {
 	e.excluded = scopes
+}
+
+// SetExternalOwners sets the external_owners declarations (§7.3, #158).  An
+// orphan they select — by its id, or by the values its Read observed — is
+// left alone: reported (ExternalOwned), never a Delete op.
+func (e *Engine) SetExternalOwners(owners extowner.Set) {
+	e.owners = owners
 }
 
 func (e *Engine) isExcluded(s core.Scope) bool {
@@ -184,6 +197,9 @@ type PruneResult struct {
 	// kept from being deleted (#73).  Known only when the List itself was
 	// usable (the drop-rate halt); 0 when the List failed or was incomplete.
 	HeldOrphans int
+	// ExternalOwned are the orphans an external_owners entry selects (§7.3,
+	// #158): observed, never pruned.
+	ExternalOwned []core.ID
 }
 
 // HaltLine is the text-form line of the count-drop guard ("sakutei: prune
@@ -392,11 +408,27 @@ func (e *Engine) ComputePrune(
 		//
 		// This is the core of "unknown ≠ absent": an unreachable target is not
 		// evidence of absence; it may simply be temporarily unreachable.
+		// §7.3 (#158): an orphan an external_owners entry selects by its id
+		// belongs to someone else — never a deletion candidate, not even Read.
+		if sel, ok := e.owners.ByID(realID); ok {
+			fmt.Fprintf(errOut, "sakutei: prune skip %s: %s: observed, not a prune candidate (§7.3)\n", realID, sel.Describe())
+			result.ExternalOwned = append(result.ExternalOwned, realID)
+			continue
+		}
+
 		candidateUnobservable := unobservable[local]
 		if !candidateUnobservable {
 			// The resource was not observed in the desired loop (it is only in
 			// reality, not in desired).  Observe it now to check availability.
 			obs, readErr := observer.Read(ctx, local)
+			if readErr == nil && obs.Availability == core.AvailabilityOk {
+				// §7.3 (#158): selected by an observed value (e.g. vmid).
+				if sel, ok := e.owners.ByState(realID, obs.State); ok {
+					fmt.Fprintf(errOut, "sakutei: prune skip %s: %s: observed, not a prune candidate (§7.3)\n", realID, sel.Describe())
+					result.ExternalOwned = append(result.ExternalOwned, realID)
+					continue
+				}
+			}
 			if readErr != nil || obs.Availability != core.AvailabilityOk {
 				candidateUnobservable = true
 				if readErr != nil {

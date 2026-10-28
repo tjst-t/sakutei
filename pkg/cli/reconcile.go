@@ -30,6 +30,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/eventlog"
 	"github.com/tjst-t/sakutei/v2/internal/executor"
+	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/internal/lastseen"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/prune"
@@ -425,6 +426,9 @@ func runReconcile(args []string) {
 		providerConfig["ansible_config"] = *ansibleConfig
 	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
+	if resolveErr == nil {
+		resolveErr = checkExternalOwners(in.ExternalOwners, desired, providers, "sakutei reconcile", logErr)
+	}
 	if resolveErr != nil {
 		fmt.Fprintln(logErr, resolveErr)
 		exitAfterEvents(1)
@@ -590,6 +594,15 @@ func runReconcile(args []string) {
 		}
 		ready.Record(res.ID.Local, obs)
 
+		// §7.3 (#158): selected by an external_owners entry by an observed
+		// value the intent did not declare (e.g. an allocated vmid): observed
+		// (its ready conditions still gate), never applied; downstream waits.
+		if sel, ok := in.ExternalOwners.ByState(res.ID, obs.State); ok {
+			fmt.Fprintf(logErr, "sakutei reconcile: %s: %s: observed, not applied (§7.3)\n", res.ID, sel.Describe())
+			unobservable[res.ID.Local] = true
+			continue
+		}
+
 		// Convert observed State to string map for last-seen ring storage.
 		// Secret fields stay in their ref form (§20.2): this map is quoted in
 		// drift Events.
@@ -740,7 +753,7 @@ func runReconcile(args []string) {
 	}
 	for name, fp := range providers {
 		if _, isLister := fp.(provider.Lister); isLister {
-			ops, halted := computePruneForProvider(ctx, fp, claimSelector, byProvider[name], unobservable, syncScopeList(in))
+			ops, halted := computePruneForProvider(ctx, fp, claimSelector, byProvider[name], unobservable, syncScopeList(in), in.ExternalOwners)
 			precomputedPruneOps = append(precomputedPruneOps, ops...)
 			if halted {
 				pruneWasHaltedBySafetyGuard = true
@@ -1234,6 +1247,7 @@ func computePruneForProvider(
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 	syncScopes []core.Scope,
+	owners extowner.Set,
 ) (approvedOps []core.Op, halted bool) {
 	lister, ok := fp.(provider.Lister)
 	if !ok {
@@ -1256,6 +1270,7 @@ func computePruneForProvider(
 	// An empty selector matches everything → unchanged single-shard behaviour.
 	engine := prune.New()
 	engine.SetExcludedScopes(syncScopes) // #23: sync scopes are never pruned (§24.5)
+	engine.SetExternalOwners(owners)     // §7.3 (#158): never pruned
 	result, err := engine.ComputePrune(ctx, lister, fp, scope, claim, desired, unobservable, logErr)
 	if err != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: prune compute error: %v\n", err)

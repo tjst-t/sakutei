@@ -123,6 +123,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/eventlog"
 	"github.com/tjst-t/sakutei/v2/internal/executor"
+	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/internal/fencing"
 	"github.com/tjst-t/sakutei/v2/internal/lastseen"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
@@ -1780,6 +1781,14 @@ func runCycleAsync(
 		}
 	}
 
+	// §7.3 (#158): the intent's external_owners against the desired (after
+	// render) and the providers' own config exclusions: a disagreement skips
+	// the cycle; an exclusion only in a provider config is reported once.
+	if err := checkExternalOwners(in.ExternalOwners, desired, providers, cfg.ErrOut); err != nil {
+		return CycleResult{ExcludedByClaim: excludedByClaim},
+			fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): %w", err)
+	}
+
 	// §15.2 / §17.1: double-claim detection.  Fenced scopes leave the cycle
 	// entirely: not Observed, not Applied, and their reality is excluded from
 	// prune (dropping them from desired must not turn them into orphans).
@@ -2161,6 +2170,17 @@ func runCycleAsync(
 		}
 		ready.Record(local, obs)
 
+		// §7.3 (#158): selected by an external_owners entry by an observed
+		// value the intent did not declare (e.g. an allocated vmid): observed
+		// (its ready conditions still gate), never applied; its downstream waits.
+		if sel, ok := in.ExternalOwners.ByState(res.ID, obs.State); ok {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: %s: %s: observed, not applied (§7.3)\n", res.ID, sel.Describe())
+			unobservable[local] = true
+			view.unobservable(res.ID, obs.Availability.String(), sel.Describe()+": not Sakutei's to apply (§7.3)")
+			sched.Observed(res, false)
+			continue
+		}
+
 		// Scb0ecd-3: convert observed State to string map for last-seen ring.
 		// Secret fields stay in their ref form (§20.2): this map is quoted in
 		// drift Events.
@@ -2396,7 +2416,7 @@ func runCycleAsync(
 	//
 	// #67: each Lister provider prunes its own reality against its own
 	// resources, with its own count baseline.
-	pruneResult, pruneHalts := computeDaemonPruneAll(ctx, providers, cycleProviders, pruneExcluded, cfg.Claim, desired, unobservable, cfg.ErrOut)
+	pruneResult, pruneHalts := computeDaemonPruneAll(ctx, providers, cycleProviders, pruneExcluded, in.ExternalOwners, cfg.Claim, desired, unobservable, cfg.ErrOut)
 	cov.pruneRan, cov.pruneHalted = true, pruneResult.Halted
 	cov.orphans = make(map[string]bool, len(pruneResult.DeleteOps)+len(pruneResult.Deferred))
 	for _, op := range pruneResult.DeleteOps {
@@ -2843,6 +2863,7 @@ func computeDaemonPruneAll(
 	providers *providerSet,
 	entries []*providerEntry,
 	excluded []core.Scope,
+	owners extowner.Set,
 	claim core.Scope,
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
@@ -2856,6 +2877,7 @@ func computeDaemonPruneAll(
 			continue
 		}
 		e.prune.SetExcludedScopes(excluded)
+		e.prune.SetExternalOwners(owners) // §7.3 (#158)
 		own := desired
 		name := ""
 		if providers.single == nil {
@@ -2871,6 +2893,7 @@ func computeDaemonPruneAll(
 		merged.DeleteOps = append(merged.DeleteOps, r.DeleteOps...)
 		merged.Deferred = append(merged.Deferred, r.Deferred...)
 		merged.HeldOrphans += r.HeldOrphans
+		merged.ExternalOwned = append(merged.ExternalOwned, r.ExternalOwned...)
 		if r.Halted {
 			merged.Halted = true
 			reasons = append(reasons, r.HaltReason)

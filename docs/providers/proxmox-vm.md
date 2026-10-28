@@ -5,7 +5,7 @@ REST API（`/api2/json`）を Go の標準ライブラリの net/http で叩く�
 
 - 完全の階級：Read・Apply・List・BulkObserve（`/cluster/resources` を 1 回と VM ごとの設定）。
 - VM は破壊的な型なので **prune しない**（`Pruneable: false`、§12.3）。宣言から外しても消えない。消すのは intent の **`ensure: absent`**（宣言で消す、§12.2、Backlog #163。下の「宣言で消す」）だけで、Delete は破壊的として予算（§13）に数え、planned_change（`kind: delete`）のレーンが開いているときだけ走る（承認）。
-- **触らない VM**（Sakutei 自身が動く VM など段0 のもの、§23）を設定に書け、それらは List に出さず、Read・Apply もしない。宣言すれば計画のエラー。
+- **触らない VM**（Sakutei 自身が動く VM など段0 のもの、§23）は intent の `external_owners:`（§7.3、Backlog #158。下の「触らない VM を intent に書く」）に書く。設定の `protected_vmids`・`protected_names` は最後の安全の網として残り、それらは List に出さず、Read・Apply もしない。宣言すれば計画のエラー。
 - コンテナ（LXC）・ストレージ・ネットワーク（ブリッジ）・HA・バックアップの設定は扱わない。ゲスト OS の中は離れたホストの層（[docs/remote.md](../remote.md)）と [Ansible provider](ansible.md) で合わせる。
 
 ## クラスタの一覧（proxmox_config）
@@ -42,6 +42,31 @@ clusters:
 - `token_secret` は SecretRef でしか書けない（生の文字列はエラー。値は文言にも出さない）。値は要求の直前に解決し（JIT、§20.2）、provider にも持たない。読み込みの時点では store にその path があることだけを確かめる。
 - 未知のキーはエラー。YAML はリポジトリのサブセットで、`[a, b]` の流れの書き方は使えない（`- a` の形で書く）。
 - トークンに要る権限は下の「トークンの権限」。
+
+### 触らない VM を intent に書く（external_owners、Backlog #158）
+
+設定はつなぎ方（宛先・鍵・時間）だけにし、管理の範囲と除外は intent に書く（§1.7・§29.1）。触らない VM は intent のトップレベルの `external_owners:`（§7.3（c））に書く。proxmox-vm は観測の値で選べるフィールドとして `vmid`・`node`・`pool` を申告している。
+
+```yaml
+# intent/stage0.yaml
+external_owners:
+  - owner: stage0                     # 持ち主（知らせの文言に出る）
+    provider: proxmox-vm
+    id: lab/sakutei-ctl               # protected_names の sakutei-ctl と同じもの
+  - owner: stage0
+    provider: proxmox-vm
+    id_prefix: lab/                   # クラスタ lab の
+    fields: { vmid: 100 }             # vmid 100（protected_vmids の 100 と同じもの）
+  - owner: legacy-team
+    provider: proxmox-vm
+    id_prefix: lab/legacy-            # 名前で前方一致
+```
+
+- 選ばれた VM は観測するが、Apply・Delete・prune をしない。`resources:` に宣言する（`ensure: absent` を含む）と読み込みで断る。`vmid` で選ぶ宣言は、`resources:` が同じ `vmid` を宣言したときに断り、`vmid` を宣言しない（採番で配る）VM は観測した `vmid` が合えば Apply せずに知らせる（下流は待つ）。
+- 設定の `protected_vmids`・`protected_names` は今までどおり効く（List に出さず、Read・Apply もしない）。そのうえでコアが intent と突き合わせる：
+  - intent が設定で除外した VM を管理すると宣言すれば、読み込みで断る（intent の `external_owners:` に書いてあっても。弱い側に寄せない）。
+  - 設定にだけある除外は、`plan`・`reconcile`・`status`・常駐が「write it in the intent too」と警告する（常駐では一度だけ）。上の書き方で intent にも書けば消える。
+- 移し方：まず intent に `external_owners:` を書き（警告が消える）、設定の除外は網として残す。
 
 ## トークンの権限
 

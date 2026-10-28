@@ -201,6 +201,12 @@ func (p *Provider) Schema() provider.Schema {
 	}
 }
 
+// OwnerSelectFields lets an intent's external_owners select the fake's
+// resources by the observed size (§7.3, Backlog #158; provider.OwnerFieldSelector).
+func (p *Provider) OwnerSelectFields() []string { return []string{"size"} }
+
+var _ provider.OwnerFieldSelector = (*Provider)(nil)
+
 // Capabilities declares the fake's capabilities for testing.
 //
 // TrueObserve and List are always true (the fake fully observes and enumerates

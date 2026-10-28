@@ -610,12 +610,53 @@ external_owner: drs            # DRS が所有。Sakutei は Observe するが A
 
 `ready_condition` の連携は、provider が `Observation.Ready` に名前付き condition の充足状況を返し、コントローラの依存解決（`canApply`）が上流の `Ready[condition]` が真になるまで下流を skip し続けることで成立する。これは失敗伝播・下流 skip と同じ機構であり、外部リソースにも張れる。
 
+**（c） intent の書き方と効き方（v3.36、Backlog #158）。** 除外宣言は intent のトップレベルの `external_owners:` に書く。1 件が 1 つの範囲で、
+provider に依らない選び方（scope・provider・ID の完全一致か前方一致）と、観測したフィールドの値での選び方を持つ。項目はみな AND で、
+空の項目は「何でもよい」。
+
+```yaml
+external_owners:
+  - owner: drs                    # 持ち主（必須）。知らせの文言に出る
+    scope: { cluster: prod }      # その scope と、その下の scope
+  - owner: legacy-team
+    provider: proxmox-vm
+    id_prefix: lab/legacy-        # id（完全一致）か id_prefix（前方一致）のどちらか
+  - owner: stage0                 # 段0 の VM（§23）。provider の設定の protected_vmids と同じもの
+    provider: proxmox-vm
+    id_prefix: lab/
+    fields: { vmid: 100 }         # 観測した値。provider が申告したフィールドだけ
+```
+
+- **書き方の決まり**：`owner` は必須。provider も空でない scope も無い 1 件は世界の全部を渡してしまうので断る。`id`・`id_prefix`・
+  `fields` は provider の中の名前なので provider と一緒に書く。`id` と `id_prefix` は同時に書けない。`fields` で選べるのは、provider が
+  `OwnerFieldSelector`（`OwnerSelectFields()`）で申告したフィールドだけ（proxmox-vm は `vmid`・`node`・`pool`）。値は観測した値を
+  文字列にして（diff と同じ形）完全一致で比べる。
+- **効き方**：選ばれたものは観測するが、Apply・Delete・prune をしない。
+  - prune：集合差の候補から外す。ID で選ぶ宣言は候補を Read する前に、`fields` で選ぶ宣言は候補を Read して値を見てから外す
+    （「prune skip … external_owner …: observed, not a prune candidate」と知らせる）。status の宣言外（unmanaged、§12.2）にも
+    出さない（ID で選ぶ宣言のもの。宣言されたものだから）。
+  - Apply：intent が宣言したものの観測した値が `fields` の宣言に合えば（例：vmid を宣言せず採番か外の持ち主が決めた）、Apply せず
+    知らせ、そのリソースは収束していないものとして下流を待たせる。観測と ready の記録はするので、（b）の「観測して待つ」は
+    そのまま張れる。
+- **読み込みで断る**：intent が同じものを管理する（`resources:` に宣言する・`ensure: absent` で消す）と宣言したら断る。ID で選ぶ
+  宣言は ID が合えば、`fields` で選ぶ宣言は intent がそのフィールドを同じ値で宣言していれば断る（宣言しない値・採番で決まる値は
+  観測まで分からないので、上の Apply の止め方で守る）。inventory・採番・合成を足したあとの desired でも、各経路（plan・
+  reconcile・status・常駐）の provider を組み立てた入口で同じ検査をする。inventory のファイルには `external_owners:` を書けない。
+- **provider の設定の除外は最後の安全の網として残す**：provider は設定の除外（proxmox-vm の `protected_vmids`・`protected_names`）を
+  `ConfigExcluder`（`ConfigExclusions()`）で同じ選び方の形に直して申告し、コアが intent と突き合わせる。
+  - intent が、provider の設定で除外したものを管理すると宣言していれば読み込みで断る（**弱い側に寄せない**。intent の
+    `external_owners:` に書いてあっても、`resources:` の宣言とは食い違うので断る）。
+  - provider の設定にだけある除外は、intent の `external_owners:` にも書くように知らせる（警告。常駐では同じ警告は一度だけ）。
+    intent の 1 件がその除外の選ぶものを全部選ぶ（同じか広い scope・同じ ID か前方一致・同じ値で絞る）なら書いてあるとみる。
+  - intent にだけある除外はそれで足りる（intent が正、§1.7）。provider の設定は網として、Read・Apply・List の側でも触らない。
+
 ### §7.4 scope + managed による境界宣言
 
 境界の宣言は2つの粒度を持つ。**scope**（§4.2）がリソース種別・所有単位の境界を切り、**managed**（§7.2）がフィールド単位で「触らない欄」を切る。両者を組み合わせることで、「この scope は DRS が所有（`external_owner`）、その中でこのフィールドは runtime（`managed`）」というように、外部世界との境界を宣言的に固定できる。prune・循環検出・境界検証はすべて理想状態ロード時の同一入口で行う。
 
 **明示の absent と境界（v3.32、Backlog #163）**：リソースを宣言で消す `ensure: absent`（§12.2）も境界の内側でだけ効く。Sakutei が
-触らないと決めているもの（provider の設定の「触らない」宣言。proxmox-vm の `protected_names` など Sakutei 自身が動く段0 のもの、§23）・
+触らないと決めているもの（intent の `external_owners:`（§7.3（c）、v3.36）と provider の設定の「触らない」宣言。proxmox-vm の
+`protected_names` など Sakutei 自身が動く段0 のもの、§23）・
 観測だけの provider（§23.4）のものは absent にできず、ほかのリソースが `depends_on` で依るものも absent にできない。どれも
 理想状態ロード時の同じ入口で断る。
 

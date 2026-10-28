@@ -32,6 +32,7 @@ import (
 	"sync"
 
 	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/internal/prune"
 	"github.com/tjst-t/sakutei/v2/internal/task"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -76,6 +77,8 @@ type providerSet struct {
 
 	mu     sync.Mutex
 	byName map[string]*providerEntry
+	// warned are the external_owners warnings already written (§7.3, #158).
+	warned map[string]bool
 }
 
 func newProviderSet(cfg Config) *providerSet {
@@ -351,4 +354,37 @@ func (r routedTaskRunner) RunStep(ctx context.Context, req task.Request, step st
 		return err
 	}
 	return pr.RunStep(ctx, req, step)
+}
+
+// checkExternalOwners runs the load-time external_owners check (§7.3, #158,
+// extowner.Check) against the providers the desired resources route to.  A
+// warning (an exclusion only in a provider config) is written once per
+// daemon, not every cycle.
+func checkExternalOwners(owners extowner.Set, desired []diff.DesiredResource, providers *providerSet, errOut io.Writer) error {
+	byName := map[string]provider.Provider{}
+	for _, r := range desired {
+		if _, ok := byName[r.ID.Provider]; ok {
+			continue
+		}
+		if p := providers.provider(r); p != nil {
+			byName[r.ID.Provider] = p
+		}
+	}
+	warnings, err := extowner.Check(owners, desired, byName)
+	if err != nil {
+		return err
+	}
+	providers.mu.Lock()
+	defer providers.mu.Unlock()
+	for _, w := range warnings {
+		if providers.warned[w] {
+			continue
+		}
+		if providers.warned == nil {
+			providers.warned = map[string]bool{}
+		}
+		providers.warned[w] = true
+		fmt.Fprintf(errOut, "sakutei: warn: %s\n", w)
+	}
+	return nil
 }

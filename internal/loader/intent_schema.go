@@ -29,6 +29,7 @@ import (
 // intentSchema は理想状態木のルートスキーマ。
 //
 //   - resources は配列（pools / scopes だけのファイルも書けるよう任意）。
+//   - external_owners は触らない宣言（owner / provider / scope / id / id_prefix / fields、§7.3・#158）。
 //   - pools は採番プールの宣言（name / range / claim / space、§19.8）。
 //   - scopes は scope ごとの mode（converge / sync）と sync.target_path（§24.5）、
 //     scope 明示の remediation（auto / alert-only、§14.3）。
@@ -142,6 +143,24 @@ func intentSchema() schemaNode {
 			},
 			// workflows は最小 Workflow（§6.3）。直列 + invariant + 手動承認ゲート。
 			"workflows": workflowsSchema(),
+			// external_owners は触らない宣言（§7.3、#158）。owner と、選び方
+			// （provider / scope / id か id_prefix / fields）。
+			"external_owners": schemaNode{
+				"type": "array",
+				"items": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"owner"},
+					"properties": map[string]any{
+						"owner":     schemaNode{"type": "string"},
+						"provider":  schemaNode{"type": "string"},
+						"scope":     stringMap,
+						"id":        schemaNode{"type": "string"},
+						"id_prefix": schemaNode{"type": "string"},
+						"fields":    stringMap,
+					},
+				},
+			},
 			// pools は採番プールの宣言（§19.8）。range は "下限-上限"（整数）。
 			"pools": schemaNode{
 				"type": "array",

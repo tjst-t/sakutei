@@ -28,6 +28,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/cause"
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/eventlog"
+	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/planreport"
 	"github.com/tjst-t/sakutei/v2/internal/prune"
@@ -380,6 +381,9 @@ func runPlan(args []string) {
 		providerConfig["ansible_config"] = *ansibleConfig
 	}
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei plan")
+	if resolveErr == nil {
+		resolveErr = checkExternalOwners(in.ExternalOwners, desired, providers, "sakutei plan", logErr)
+	}
 	if resolveErr != nil {
 		fail("%v", resolveErr)
 	}
@@ -478,6 +482,15 @@ func runPlan(args []string) {
 		if err != nil {
 			fail("sakutei plan: observe %s: %v", res.ID, err)
 		}
+		if obs.Availability == core.AvailabilityOk {
+			// §7.3 (#158): selected by an external_owners entry by an observed
+			// value the intent did not declare: observed, never applied.
+			if sel, ok := in.ExternalOwners.ByState(res.ID, obs.State); ok {
+				unobservable[res.ID.Local] = true
+				fmt.Fprintf(logErr, "sakutei plan: %s: %s: observed, not planned (§7.3)\n", res.ID, sel.Describe())
+				continue
+			}
+		}
 		if obs.Availability != core.AvailabilityOk {
 			unobservable[res.ID.Local] = true
 			// #135: say so, instead of leaving it out of the plan silently.
@@ -536,7 +549,7 @@ func runPlan(args []string) {
 	// S62dbba-2: prune is computed per provider so each provider's Lister is
 	// used for the resources it manages.
 	diffOpCount := len(allOps)
-	pruneOps := planPruneOpsMulti(ctx, providers, claimSelector, desired, unobservable, syncScopeList(in), report)
+	pruneOps := planPruneOpsMulti(ctx, providers, claimSelector, desired, unobservable, syncScopeList(in), in.ExternalOwners, report)
 	allOps = append(allOps, pruneOps...)
 
 	// S072a14-3: compute composite status aggregation (§9.7) for reporting.
@@ -714,6 +727,7 @@ func planPruneOpsMulti(
 	desired []diff.DesiredResource,
 	unobservable map[string]bool,
 	syncScopes []core.Scope,
+	owners extowner.Set,
 	report *planreport.Report,
 ) []core.Op {
 	var allDeleteOps []core.Op
@@ -739,6 +753,7 @@ func planPruneOpsMulti(
 		scope := core.NewScope(nil)
 		engine := prune.New()
 		engine.SetExcludedScopes(syncScopes) // #23: sync scopes are never pruned (§24.5)
+		engine.SetExternalOwners(owners)     // §7.3 (#158): never pruned
 		provDesired := byProvider[name]
 		// FIX #6 / #111: the --claim selector scopes the prune preview to the
 		// claim (empty = whole world), as in reconcile.

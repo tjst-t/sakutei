@@ -31,10 +31,12 @@ package cli
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/dnszone"
+	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/internal/nftables"
 	"github.com/tjst-t/sakutei/v2/internal/postgresql"
 	"github.com/tjst-t/sakutei/v2/internal/prune"
@@ -107,6 +109,21 @@ func resolveProviders(
 		}
 	}
 	return result, nil
+}
+
+// checkExternalOwners runs the load-time external_owners check (§7.3, #158):
+// the intent's external_owners against the desired resources (after render)
+// and against the providers' own config exclusions.  A disagreement is an
+// error; an exclusion only in a provider config is a warning on w.
+func checkExternalOwners(owners extowner.Set, desired []diff.DesiredResource, providers map[string]provider.Provider, commandName string, w io.Writer) error {
+	warnings, err := extowner.Check(owners, desired, providers)
+	if err != nil {
+		return fmt.Errorf("%s: %w", commandName, err)
+	}
+	for _, msg := range warnings {
+		fmt.Fprintf(w, "%s: warn: %s\n", commandName, msg)
+	}
+	return nil
 }
 
 // configKeysOf names, per List-capable built-in provider, the keys of the

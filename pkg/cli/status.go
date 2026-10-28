@@ -24,6 +24,7 @@ import (
 
 	"github.com/tjst-t/sakutei/v2/internal/cause"
 	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/internal/lastseen"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/render"
@@ -250,6 +251,9 @@ Exit codes:
 	providerConfig["ruleset_scope"] = rScope
 	rulesetTarget.put(providerConfig)
 	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei status")
+	if resolveErr == nil {
+		resolveErr = checkExternalOwners(in.ExternalOwners, desired, providers, "sakutei status", os.Stderr)
+	}
 	if resolveErr != nil {
 		fmt.Fprintln(os.Stderr, resolveErr)
 		os.Exit(1)
@@ -438,7 +442,7 @@ Exit codes:
 	//
 	// #164: Pruneable かどうかに関わらない（unmanaged は見せるだけで消さない）。
 	// 宣言が 0 件の provider も、設定されていれば List する（listOnly）。
-	detectUnmanaged(ctx, providers, listOnly, listOnlyErrs, claimSelector, desired, builder)
+	detectUnmanaged(ctx, providers, listOnly, listOnlyErrs, claimSelector, desired, in.ExternalOwners, builder)
 
 	// #15 (§9.2): デーモンの連続スキップ回数（デーモンが書いたファイルを READ するだけ）。
 	if *daemonStatus != "" {
@@ -499,6 +503,7 @@ func detectUnmanaged(
 	listOnlyErrs map[string]error,
 	claim core.Scope,
 	desired []diff.DesiredResource,
+	owners extowner.Set,
 	builder *statusreport.Builder,
 ) {
 	// Declared set, keyed by collision-free ID key.
@@ -548,6 +553,11 @@ func detectUnmanaged(
 			continue
 		}
 		for _, realID := range result.IDs {
+			// §7.3 (#158): what external_owners selects by its id is declared
+			// (as someone else's), so it is not unmanaged.
+			if _, ext := owners.ByID(realID); ext {
+				continue
+			}
 			if !declared[realID.Key()] && realID.Scope.Matches(claim) {
 				builder.AddUnmanaged(realID)
 			}
