@@ -182,8 +182,6 @@ func runReconcile(args []string) {
 		// flag package already printed the error.
 		os.Exit(1)
 	}
-	acFlags := applyCheck.flags("sakutei reconcile")
-	reobserveLimits := reobserve.limits("sakutei reconcile")
 	setLogFormat("sakutei reconcile", *logFormat)
 	routeEventLog("sakutei reconcile", *eventLog, eventNotify)
 	soaSerial := checkZoneSOASerial("sakutei reconcile", *zoneSOASerial)
@@ -196,6 +194,21 @@ func runReconcile(args []string) {
 		fs.Usage()
 		exitAfterEvents(1)
 	}
+
+	// Load desired resources from intent directory.
+	// loader.LoadDir also performs cycle detection (S94f1f9-2): cyclic
+	// depends_on is rejected here with a non-zero exit before any Apply.
+	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
+	in, err := loader.LoadIntent(*intentDir)
+	if err != nil {
+		fmt.Fprintf(logErr, "sakutei reconcile: load intent: %v\n", err)
+		exitAfterEvents(1)
+	}
+	// #183 (§26.7): the flags are checked against the intent's runtime:
+	// before any of them is read below.
+	runtimeTightened := applyRuntime("sakutei reconcile", fs, in.Runtime, runtimeReconcileKeys)
+	acFlags := applyCheck.flags("sakutei reconcile")
+	reobserveLimits := reobserve.limits("sakutei reconcile")
 
 	// Parse remediation configuration (Scf7762-3, §14.1).
 	remMode, remModeErr := remediation.ParseMode(*modeStr)
@@ -222,15 +235,6 @@ func runReconcile(args []string) {
 		genDir = filepath.Join(filepath.Dir(*intentDir), "generated")
 	}
 
-	// Load desired resources from intent directory.
-	// loader.LoadDir also performs cycle detection (S94f1f9-2): cyclic
-	// depends_on is rejected here with a non-zero exit before any Apply.
-	// Scb0ecd-1: LoadDir now also returns RevisionInfo.
-	in, err := loader.LoadIntent(*intentDir)
-	if err != nil {
-		fmt.Fprintf(logErr, "sakutei reconcile: load intent: %v\n", err)
-		exitAfterEvents(1)
-	}
 	// §7.6 (#174): the warnings of the network allow check (its errors
 	// refused the load above).
 	warnNetPolicy(logErr, "sakutei reconcile", in.NetworkPolicy)
@@ -399,6 +403,9 @@ func runReconcile(args []string) {
 	// §22.3: the Events of this run carry its revision.
 	logOut = eventlog.Stamp(logOut, 0, rev)
 	logErr = eventlog.Stamp(logErr, 0, rev)
+	// #183: a flag tightening the intent's runtime: is reported with both
+	// values (the run uses the flag's).
+	reconcile.EmitRuntimeTightened(logErr, "sakutei reconcile: ", runtimeTightened)
 
 	// S62dbba-2: resolve providers via registry based on intent resource declarations.
 	// The --state flag is passed as the "state" config key for the "fake" provider;

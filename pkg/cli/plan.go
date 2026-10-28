@@ -168,10 +168,6 @@ func runPlan(args []string) {
 		}
 		os.Exit(1)
 	}
-	budgetCfg, budgetCfgErr := budgetFl.config()
-	if budgetCfgErr != nil {
-		fail("sakutei plan: %v", budgetCfgErr)
-	}
 	claimSelector, claimErr := parseClaimSelector(*claim)
 	if claimErr != nil {
 		fail("sakutei plan: invalid --claim %q: %v", *claim, claimErr)
@@ -197,6 +193,20 @@ func runPlan(args []string) {
 	in, err := loader.LoadIntent(*intentDir)
 	if err != nil {
 		fail("sakutei plan: load intent: %v", err)
+	}
+	// #183 (§26.7): the budget flags are checked against the intent's
+	// runtime: (a reconcile with the same flags would be refused, or run
+	// tightened).
+	runtimeTightened, rtErr := checkRuntime("sakutei plan", fs, in.Runtime, runtimeBudgetKeys)
+	if rtErr != nil {
+		fail("%v", rtErr)
+	}
+	for _, t := range runtimeTightened {
+		fmt.Fprintf(logErr, "sakutei plan: %s\n", t)
+	}
+	budgetCfg, budgetCfgErr := budgetFl.config()
+	if budgetCfgErr != nil {
+		fail("sakutei plan: %v", budgetCfgErr)
 	}
 	var externalInputs []string
 	recomputeRendered := false

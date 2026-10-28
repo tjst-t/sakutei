@@ -584,6 +584,48 @@ POST /workflows/{id}/gates/{gate}/approve   # ボディに承認者 ID + 署名
 
 ステージ完了 → `StageAwaitingApproval` Event 発火 → sink 経由で人へ通知 → Workflow は「待ち」フェーズで停止（S2 の永続化により留まる）→ 承認 API で通過（却下 = halt）→ 次ステージ、という流れである（タイムアウトで halt）。承認 API 自体は認可を持たない（誰が叩けるかは上位 IdP・§7）が、**承認された事実は監査（S4）に記録**する。N-of-M・役割制約・申請者≠承認者（separation）などの承認者要件はゲート定義の `requirements` に載せ（§14）、全承認者を S4 に append することで「どの承認ゲートを誰が通したか」が原因タグの帰属（§26.3）と一体で追える。
 
+### §26.7 長く効く起動の引数を intent の `runtime:` に書く（v3.52）
+
+予算・既定の mode・settle・効かない Apply の上限・観測し直しの上限・stuck の周数・周期のように、**起動のたびに同じ値を
+渡し続ける引数は「どう回るべきか」の正**であり、起動の旗（systemd のユニットや手で打つコマンド）の中だけに置くと、
+宣言の外に正が残る（§1.7）。そこで intent のトップレベルの `runtime:` に書けるようにし、旗は「その場の締め」にとどめる
+（Backlog #183）。
+
+```yaml
+runtime:
+  interval: 30s                    # --interval（常駐だけ）
+  mode: auto                       # --mode（auto | alert-only）
+  max_changes_per_cycle: 20        # --max-changes-per-cycle（0 = 上限なし）
+  max_destructive_per_cycle: 3     # --max-destructive-per-cycle
+  max_destructive_per_window: 10   # --max-destructive-per-window
+  window_duration: 24h             # --window-duration
+  on_exceed: halt-all              # --on-exceed（halt-destructive-only | halt-all）
+  settle: 10s                      # --settle
+  max_ineffective_applies: 3       # --max-ineffective-applies
+  max_ineffective_duration: 30m    # --max-ineffective-duration（0 = 上限なし）
+  reobserve_max: 2                 # --reobserve-max
+  reobserve_time: 30s              # --reobserve-time
+  stuck_after: 5                   # --stuck-after（常駐だけ）
+```
+
+- **書く場所**：intent のファイルのどれか 1 つに 1 回だけ（2 つのファイルに書けば読み込みで断る）。inventory のファイルには書けない。
+  知らないキー・形や範囲の外の値は読み込みで断る。`--freeze`・`--approve-large-change` はその場の操作なので `runtime:` に置かない。
+- **旗と宣言の突き合わせ**（起動のとき。`plan` は予算の引数、一回性の `reconcile` は `interval` と `stuck_after` を除く引数を見る）：
+  - 旗だけ・宣言だけなら、それを使う（宣言だけの値は旗で渡したのと同じに効く）。
+  - **大小のある引数**（予算の上限の 3 つと `max_ineffective_*`）と **`mode`・`on_exceed`**：旗が宣言より**締める向き**（予算・上限が
+    小さい、`mode` が `alert-only`、`on_exceed` が `halt-all`）なら旗を使い、**一時的な締め**として報告する。上限の `0` は上限なしで、
+    いちばん緩い。**緩める向きなら起動を断る**。
+  - **向きの無い引数**（`interval`・`settle`・`window_duration`・`reobserve_*`・`stuck_after`）：食い違えば起動を断る。settle は長くても
+    短くても安全の向きが決まらず、観測し直しの上限と stuck の周数は手間と知らせの早さの釣り合いで、どれも締めの向きを持たない。
+  - 断るときは、運用者がその場で直せるよう、引数ごとに **1 行**で、引数の名前・旗の値と宣言の値・直し方（旗を外すか、`runtime:` を
+    書いたファイルの宣言を変えるか）を出し、終了コード 1 で終わる。
+- **締めている間の報告**：level の Event `RuntimeTightened`（warning。attrs の `keys` に締めている引数、`<key>.flag` と `<key>.intent` に
+  旗の値と宣言の値）と、常駐の status（`--daemon-status` の `runtime_tightened`・`sakutei status` の表示・読み取りの口の /status）に
+  旗の値と宣言の値を両方載せる。締めは運用者が選んだものなので、続いても stuck に上げない。一回性の `reconcile` も同じ Event を出す。
+- **常駐の途中で `runtime:` が変わったとき**：起動の引数は起動のときに決まり、常駐は起動したときの値で回り続ける。宣言が起動した
+  ときと違う間は level の Event `RuntimeDeclarationChanged`（attrs の `<key>.started` と `<key>.intent`）と status の `runtime_changed`
+  で「起こし直すと取り込む」と知らせ、宣言が戻れば resolved にする。`--intent-repo` の常駐は起動のときに 1 回取得して `runtime:` を
+  読む（その取得は最初の周がそのまま使う）。取得できない・intent が読めないまま起動したときは旗だけで回り、あとで読めた `runtime:` を
+  変わったものとして知らせる。
+
 ---
-
-

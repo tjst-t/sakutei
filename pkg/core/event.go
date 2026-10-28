@@ -90,6 +90,16 @@ const (
 	// 止める前の承認ゲートの Event に載せる。止める前の周に firing で出し、その対象の手順を終えた周、または止める直前の確かめ（時間帯・
 	// 上流）が外れて知らせを取り下げた周に resolved になる。
 	EventDisruption EventKind = "Disruption"
+	// EventRuntimeTightened は起動の旗が intent の runtime:（§26.7、Backlog
+	// #183）より締めている（予算が小さい・mode が弱い）一時的な締め。attrs の
+	// keys に締めている引数、<key>.flag と <key>.intent に旗の値と宣言の値。
+	// 締めは運用者が選んだものなので、続いても stuck に上げない。
+	EventRuntimeTightened EventKind = "RuntimeTightened"
+	// EventRuntimeDeclarationChanged は常駐が起動したあとに intent の runtime:
+	// が変わった（起動の引数は起動のときに決まり、この常駐は起動したときの値で
+	// 回り続ける。起こし直すと宣言を取り込む）。attrs の <key>.started と
+	// <key>.intent に起動したときの値といまの宣言の値。
+	EventRuntimeDeclarationChanged EventKind = "RuntimeDeclarationChanged"
 
 	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。
 	EventWorkflowStarted       EventKind = "WorkflowStarted"
@@ -134,7 +144,11 @@ func (k EventKind) IsLevel() bool {
 		EventVersionIncompatible,
 		// Backlog #152: a disruptive update's outage notice fires before the
 		// target is stopped and resolves when its steps are done.
-		EventDisruption:
+		EventDisruption,
+		// Backlog #183: a flag tightening the intent's runtime:, and a
+		// runtime: changed since the daemon started, last as long as the
+		// process (or the declaration) does.
+		EventRuntimeTightened, EventRuntimeDeclarationChanged:
 		return true
 	}
 	return false

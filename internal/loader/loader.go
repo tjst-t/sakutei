@@ -63,6 +63,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/internal/remediation"
 	"github.com/tjst-t/sakutei/v2/internal/revision"
+	"github.com/tjst-t/sakutei/v2/internal/runtimeargs"
 	"github.com/tjst-t/sakutei/v2/internal/task"
 	"github.com/tjst-t/sakutei/v2/internal/workflow"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -203,6 +204,11 @@ func treeToIntentFile(tree map[string]any, file string) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.NetworkPolicy = np
+	rt, err := runtimeargs.Parse(tree["runtime"], file)
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.Runtime = rt
 	return out, nil
 }
 
@@ -308,6 +314,8 @@ type intentFile struct {
 	Compatibility compat.Set `json:"-"`
 	// NetworkPolicy is the top-level network_policy (§7.6, #174).
 	NetworkPolicy netpolicy.Policy `json:"-"`
+	// Runtime is the top-level runtime: (§26.7, #183); nil when undeclared.
+	Runtime *runtimeargs.Declaration `json:"-"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -515,7 +523,11 @@ type Intent struct {
 	// what an added realizer makes) are already in Resources.  Nil when no
 	// file declares network_policy:.
 	NetworkPolicy *netpolicy.Result
-	Revision      core.RevisionInfo
+	// Runtime is the long-lived start arguments (§26.7, Backlog #183),
+	// declared in at most one intent file; the CLI checks the flags against
+	// them.  Nil when no file declares runtime:.
+	Runtime  *runtimeargs.Declaration
+	Revision core.RevisionInfo
 }
 
 // LoadIntent reads every intent file in dir (same rules as LoadDir) and also
@@ -567,6 +579,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	var owners extowner.Set
 	var tables compat.Set
 	var policy netpolicy.Policy
+	var rt *runtimeargs.Declaration
 	for _, name := range names {
 		path := filepath.Join(dir, filepath.FromSlash(name))
 		loaded, file, err := loadFile(path)
@@ -590,6 +603,13 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		owners = append(owners, file.ExternalOwners...)
 		tables = append(tables, file.Compatibility...)
 		policy.Merge(file.NetworkPolicy)
+		if file.Runtime != nil {
+			if rt != nil {
+				return Intent{}, fmt.Errorf("loader: runtime: declared in both %s and %s; declare the start arguments once (§26.7)", rt.File, name)
+			}
+			rt = file.Runtime
+			rt.File = name
+		}
 	}
 
 	// §7.6 (#174): check the network allows and expand them into the
@@ -678,7 +698,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, ApplyChecks: applyChecks, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, ExternalOwners: owners, Compatibility: tables, NetworkPolicy: netResult, Revision: ri}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, ApplyChecks: applyChecks, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, ExternalOwners: owners, Compatibility: tables, NetworkPolicy: netResult, Runtime: rt, Revision: ri}, nil
 }
 
 // realizedResource is the desired resource a network_policy target expands
@@ -889,8 +909,8 @@ func LoadResourcesFile(path string) ([]diff.DesiredResource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loader: %w", err)
 	}
-	if len(file.Pools) > 0 || len(file.Scopes) > 0 || len(file.ExternalOwners) > 0 || len(file.Compatibility) > 0 || !file.NetworkPolicy.Empty() {
-		return nil, fmt.Errorf("loader: %s: an inventory file declares resources only (pools/scopes/external_owners/compatibility/network_policy belong in intent)", path)
+	if len(file.Pools) > 0 || len(file.Scopes) > 0 || len(file.ExternalOwners) > 0 || len(file.Compatibility) > 0 || !file.NetworkPolicy.Empty() || file.Runtime != nil {
+		return nil, fmt.Errorf("loader: %s: an inventory file declares resources only (pools/scopes/external_owners/compatibility/runtime/network_policy belong in intent)", path)
 	}
 	if err := detectDuplicateLocalIDs(resources); err != nil {
 		return nil, fmt.Errorf("loader: %s: %w", path, err)

@@ -628,6 +628,15 @@ func writeDaemonPlacement(sb *strings.Builder, h DaemonHealth) {
 			fmt.Fprintf(sb, "    OSCILLATING %s: %s — %s（%s から）\n", a.Resource, a.Diff, a.Note, a.Since.UTC().Format(time.RFC3339))
 		}
 	}
+	if len(h.RuntimeTightened) > 0 {
+		fmt.Fprintf(sb, "  注意: 起動の旗が intent の runtime: を一時的に締めている（§26.7）: %d 引数\n", len(h.RuntimeTightened))
+		for _, t := range h.RuntimeTightened {
+			fmt.Fprintf(sb, "    TIGHTENED %s: 旗 --%s=%s / intent runtime.%s=%s — 旗を外すと宣言に戻る\n", t.Key, t.Flag, t.FlagValue, t.Key, t.IntentValue)
+		}
+	}
+	if h.RuntimeChanged != "" {
+		fmt.Fprintf(sb, "  警告: 起動したあとに intent の runtime: が変わった — 起動したときの値で回っている。起こし直すと取り込む（§26.7）: %s\n", h.RuntimeChanged)
+	}
 	for _, n := range h.Notify {
 		fmt.Fprintf(sb, "  notify: %s %s delivered=%d failed=%d rejected=%d dropped=%d pending=%d", n.Sink, n.URL,
 			n.Delivered, n.Failed, n.Rejected, n.Dropped, n.Pending)

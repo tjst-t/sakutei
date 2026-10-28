@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/tjst-t/sakutei/v2/internal/runtimeargs"
 )
 
 // DaemonHealth は常駐デーモン（reconcile.Run）が周期ごとに書き出す健全性の要約で
@@ -70,6 +72,15 @@ type DaemonHealth struct {
 	// Apply が成功を返しても現実が変わらないまま上限に達した。止めているものが
 	// あるときだけ。
 	ApplyStopped []ApplyStoppedHealth `json:"apply_stopped,omitempty"`
+
+	// RuntimeTightened は起動の旗が intent の runtime: より締めている引数
+	// （一時的な締め、#183、§26.7）: 引数ごとに旗の値と宣言の値。締めている
+	// ものがあるときだけ。
+	RuntimeTightened []runtimeargs.Tightening `json:"runtime_tightened,omitempty"`
+	// RuntimeChanged は起動したあとに intent の runtime: が変わったこと（この
+	// デーモンは起動したときの値で回る。起こし直すと取り込む）。変わっていない
+	// ときは空。
+	RuntimeChanged string `json:"runtime_changed,omitempty"`
 }
 
 // ApplyStoppedHealth は Apply を止めているリソース 1 つ（#166）。

@@ -361,6 +361,12 @@ type Config struct {
 	// graph (#136): the daemon serves them read-only on --read-listen.
 	View ViewSink
 
+	// Runtime, when set, is the account of the intent's runtime: (§26.7,
+	// Backlog #183): every cycle raises RuntimeTightened while a start flag
+	// tightens it and RuntimeDeclarationChanged while it differs from the
+	// one the daemon started with.  Nil means no report.
+	Runtime *RuntimeReport
+
 	// cycleBase is the number of cycles run by earlier daemons of this Run
 	// (claim handoffs), so Events carry the cycle number Run prints.
 	cycleBase int
@@ -529,6 +535,10 @@ func Run(ctx context.Context, cfg Config) error {
 		if d != nil {
 			// #166: the resources whose Apply is stopped (oscillating).
 			h.ApplyStopped = ApplyStoppedHealth(d.checker.Stopped())
+		}
+		if cfg.Runtime != nil {
+			h.RuntimeTightened = cfg.Runtime.Tightened
+			h.RuntimeChanged = cfg.Runtime.changed
 		}
 		return h
 	}
@@ -1200,6 +1210,12 @@ func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 func (d *Daemon) EndCycle(res CycleResult, cycleErr error) {
 	w := eventlog.Stamp(d.cfg.ErrOut, d.cfg.cycleBase+d.cycle, d.prevRev)
 	d.level.EndCycle(w, d.cfg.cycleBase+d.cycle, func(ev core.Event) bool {
+		switch ev.Kind {
+		case core.EventRuntimeTightened, core.EventRuntimeDeclarationChanged:
+			// #183: gone when the cycle compared the runtime: and did not
+			// raise it again.
+			return d.cfg.Runtime.resolves(d.cycle)
+		}
 		return res.level.resolves(ev, res, cycleErr)
 	})
 }
@@ -1707,6 +1723,9 @@ func runCycleAsync(
 		return CycleResult{}, fmt.Errorf("load intent: %w", loadErr)
 	}
 	rev := in.Revision
+	if cfg.Runtime != nil {
+		cfg.Runtime.observe(eventlog.Stamp(cfg.ErrOut, cfg.cycleBase+cycle, rev), in.Runtime, cycle)
+	}
 
 	// #31 render phase 1: inventory composition (§9.1) with the
 	// incomplete≠empty guard (§9.2).  An inventory that suddenly shrank is

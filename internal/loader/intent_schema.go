@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/runtimeargs"
 )
 
 // intentSchema は理想状態木のルートスキーマ。
@@ -166,6 +167,9 @@ func intentSchema() schemaNode {
 			// （from・to・proto・ports・reason・tags）・実現先。中身の意味は
 			// netpolicy.Parse と netpolicy.Check が確かめる。
 			"network_policy": networkPolicySchema(),
+			// runtime は長く効く起動の引数（§26.7、#183）。値の形と範囲は
+			// runtimeargs.Parse が確かめる。
+			"runtime": runtimeSchema(),
 			// compatibility は部品の版の互換の表（§29.1、#151）。部品（id と版の
 			// field）と、許す版の組み合わせの行。行の値が文字列かは compat.Parse。
 			"compatibility": schemaNode{
@@ -503,4 +507,13 @@ func applyCheckSchema(top bool) schemaNode {
 		n["required"] = []any{"provider"}
 	}
 	return n
+}
+
+// runtimeSchema は runtime:（§26.7、#183）の形。キーは runtimeargs.Args。
+func runtimeSchema() schemaNode {
+	props := map[string]any{}
+	for _, a := range runtimeargs.Args {
+		props[a.Key] = schemaNode{"type": []any{"string", "integer"}}
+	}
+	return schemaNode{"type": "object", "additionalProperties": false, "properties": props}
 }

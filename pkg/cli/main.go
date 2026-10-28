@@ -168,6 +168,12 @@ func Main(opts ...Option) {
 //	--max-ineffective-duration <dur>  stop applying it once its first Apply that did not take is this long ago
 //	--apply-check-state <f>  working record of the Applies that did not take; takes in `sakutei apply-check release`
 //
+// The long-lived ones (budget, --mode, --settle, --max-ineffective-*,
+// --reobserve-*, --stuck-after, --interval) may be declared in the intent's
+// runtime: instead (§26.7, #183): a flag may only tighten it (reported as
+// RuntimeTightened and in the daemon status); a loosening flag, or a
+// differing one without a direction, refuses the start in one line.
+//
 // --cause-state is refused (#165): the daemon keeps the previous cycle's
 // revisions in memory (Daemon.prevRev), so the file that carries them between
 // one-shot plan / reconcile / status runs is not needed.
@@ -324,6 +330,10 @@ func runDaemon() {
 		fs.Usage()
 		os.Exit(1)
 	}
+	// #183 (§26.7): the long-lived start arguments may be declared in the
+	// intent's runtime:; the flags are checked against it here, before any
+	// of them is read below.
+	runtimeReport, primedSrc := daemonRuntime(fs, *intentDir, src)
 
 	interval := reconcile.DefaultInterval
 	if *intervalStr != "" {
@@ -516,6 +526,7 @@ func runDaemon() {
 		ErrOut:                logErr,
 		EventSinks:            eventSinks,
 		NotifyStatus:          eventNotify.notifyStatus(),
+		Runtime:               runtimeReport,
 	}
 	if *taskStore != "" {
 		cfg.TaskStore = task.NewFileStore(*taskStore)
@@ -560,7 +571,7 @@ func runDaemon() {
 		}
 	}
 	if src != nil {
-		cfg.Source = src
+		cfg.Source = primedSrc
 		cfg.IntentDir = src.IntentDir()
 		cfg.IntentTree = true
 	}
