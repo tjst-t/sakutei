@@ -137,6 +137,7 @@ func runAllocatorAdmin(verb string, args []string) {
 	pool := fs.String("pool", "", "pool name (required for release; list shows every pool when omitted)")
 	owner := fs.String("owner", "", "owner to release (release only, required)")
 	auditLog := fs.String("audit-log", "", "S4 audit log file to record the release / import in (optional)")
+	auditSink := addAuditSinkFlags(fs)
 	intentDir := fs.String("intent", "", "#157: intent directory, to find the pools declared write_back: true (import: required; release: removes the owner from the write-back file)")
 	writeBack := fs.String("alloc-write-back", "", allocWriteBackUsage)
 	if err := fs.Parse(args); err != nil {
@@ -178,7 +179,7 @@ func runAllocatorAdmin(verb string, args []string) {
 	}
 	switch verb {
 	case "import":
-		os.Exit(runAllocatorImport(ctx, prefix, auth, wb, *pool, *auditLog))
+		os.Exit(runAllocatorImport(ctx, prefix, auth, wb, *pool, auditSink.mustOpen("sakutei allocator "+verb, *auditLog)))
 	case "release":
 		value, ok, err := auth.ReleaseOwner(ctx, *pool, *owner)
 		if errors.Is(err, allocation.ErrFenced) {
@@ -208,7 +209,7 @@ func runAllocatorAdmin(verb string, args []string) {
 			if !until.IsZero() {
 				detail += " (cooldown until " + until.UTC().Format(time.RFC3339) + ")"
 			}
-			if err := audit.NewLog(*auditLog).Append(audit.Record{Kind: audit.KindAllocationReleased, Detail: detail}); err != nil {
+			if err := auditSink.mustOpen("sakutei allocator "+verb, *auditLog).Append(audit.Record{Kind: audit.KindAllocationReleased, Detail: detail}); err != nil {
 				fmt.Fprintf(os.Stderr, "%s: %v\n", prefix, err)
 				os.Exit(1)
 			}
@@ -247,7 +248,7 @@ func runAllocatorAdmin(verb string, args []string) {
 // §19.7) and returns the exit code.  Each pool is all or nothing: an entry
 // that disagrees with the store makes the pool refused, nothing written to
 // it, and the exit code 1.  Every pool imported is recorded in S4.
-func runAllocatorImport(ctx context.Context, prefix string, auth allocAdmin, wb *allocwriteback.Authority, only, auditLog string) int {
+func runAllocatorImport(ctx context.Context, prefix string, auth allocAdmin, wb *allocwriteback.Authority, only string, auditLog *audit.Log) int {
 	pools := wb.WriteBackPools()
 	if only != "" {
 		var sel []loader.Pool
@@ -291,9 +292,9 @@ func runAllocatorImport(ctx context.Context, prefix string, auth allocAdmin, wb 
 			code = 1
 			continue
 		}
-		if auditLog != "" {
+		if auditLog != nil {
 			detail := fmt.Sprintf("imported pool %s from %s: %d added, %d already in the store", p.Name, wb.FilePath(p.Name), added, len(entries)-added)
-			if err := audit.NewLog(auditLog).Append(audit.Record{Kind: audit.KindAllocationImported, Detail: detail, Count: added}); err != nil {
+			if err := auditLog.Append(audit.Record{Kind: audit.KindAllocationImported, Detail: detail, Count: added}); err != nil {
 				fmt.Fprintf(os.Stderr, "%s: %v\n", prefix, err)
 				return 1
 			}

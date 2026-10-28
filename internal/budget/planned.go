@@ -496,6 +496,29 @@ func (d CycleDecision) LaneOf(op core.Op) string {
 	return d.lane[opKey(op)].decl
 }
 
+// ApprovalOf returns the Key of the planned_change lane that admitted op under
+// d and who approved that declaration (its approvers, else the applicant when
+// the profile needs no approval), for the S4 record of the Apply (#187).  Both
+// are "" when op is outside the lanes.
+func (e *Engine) ApprovalOf(d CycleDecision, op core.Op) (key, approvers string) {
+	key = d.LaneOf(op)
+	if key == "" {
+		return "", ""
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, p := range e.planned {
+		if p.Key() != key {
+			continue
+		}
+		if len(p.Approval.Approvers) > 0 {
+			return key, strings.Join(p.Approval.Approvers, ",")
+		}
+		return key, p.Applicant
+	}
+	return key, ""
+}
+
 // OutsideLanes returns the ops that were not admitted to a planned_change lane
 // — the ones the normal budget's window counter must record (CommitOps) — and
 // the lane ops that require approval, which the normal budget counts as well.

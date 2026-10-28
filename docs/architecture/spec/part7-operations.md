@@ -450,6 +450,35 @@ Event を永続化（S4・§4）し、**append-only + 連鎖ハッシュ**で改
 - **アンカー間隔を短縮し即時 push する**：日次アンカーは「最後のアンカーから今日まで」の最大 24h 分を検知されずに改竄できる窓を残す。→ **監査を外部 SIEM / WORM / append-only 専用サービスへ即時（毎周 or 毎時）push** し、head アンカー間隔を短縮する。append-only の enforcement を「アプリの規律」でなく**ストレージ層（WORM / 外部即時 push）**で担保する（侵害されたホストが自分の犯行ログを書き換えられないように）。監査書き込みは reconciler と別権限・別プロセスとする。
 - **S4 の永続化先**：S4 は **WORM ストレージ or 外部即時 push を正式な永続化先とする**。選択肢は排他でなく、どちらか一方（または併用）で「侵害ホストが自分の犯行ログを改竄できない」を満たせば足りる——WORM（write-once ストレージ）なら書込み後の改竄が物理的に不可能、外部即時 push なら侵害ホストの外に記録が出た後の改竄が不可能である。
 - **帰属**：収束は自律動作なので「誰が」が問題になるが、**変更の原因タグ（A/B/C/D/E・§10）がそのまま監査の帰属になる**（自己修復か / 誰の commit 由来か / どの承認ゲートを誰が通したか）。原因区別の設計が監査で再利用される。
+- **v1 の記録の形（v3.57、#187）**：S4 は `--audit-log` のファイル（JSON Lines）である。
+  - **何を残すか**：承認ゲートの承認・却下・timeout（§6.4）、planned_change の宣言・開き・使用量（§14.5）、freeze（§14.3）、
+    break-glass（§25.1）に加え、**ふつうの Apply と prune も Op ごとに 1 件**残す（`resource.apply`・`resource.prune`）。
+    常駐の周・早期収束の経路・一回性の `reconcile`・Workflow の apply の段のどれでも、Apply は同じ Executor を通るので、そこで
+    記録する（fencing で断られた Apply も失敗として残る）。1 件は resource・op（create / update / delete）・変えた欄の**名前**
+    （値は書かない。秘密が混ざらないように）・cause（§10、帰属）・結果（`ok` / `failed` と理由）・planned_change のレーンで通った
+    Op はその宣言と、宣言を承認した人。記録は Apply のあとに書く（結果を書くため）。書けなかったときは知らせるが、Apply の結果は
+    変えない（起きた変更を失敗と偽ると同じ変更を繰り返すだけになる）。
+  - **鎖**：各行は通し番号 `seq`（ファイルをまたいで 1 から）と、前の行（書かれたとおりのバイト列）の SHA-256 である `prev` を
+    持つ。行の書き換え・抜き取り・差し込みは次の行の `prev` か `seq` で分かる。`sakutei audit verify` がたどり、見つければ終了コード
+    3（`--json` でも出す）。鎖より前の版で書いた先頭の行は legacy として受け、鎖が始まったあとの `seq` の無い行は差し込みとして
+    扱う。複数のプロセス（常駐と CLI）が同じファイルへ書くので、追記は `<file>.lock` の flock で順に並べる。書いている途中で
+    切れた行は切り詰めずに改行で閉じ、verify が読めない行として知らせる。
+  - **書き換え・切り詰めをしない**：回すとき（`--audit-rotate-bytes`）は今のファイルをそのままにして新しいファイル
+    （`<file>.000001`, `.000002` …）へ続け、鎖はファイルをまたいでつながる。回したファイルが抜ければ verify が見つける。
+    だから WORM の置き場（書いたものを変えられない）に置いても成り立つ。
+  - **外へすぐ送る**（外部アンカー）：`--audit-syslog tcp://host[:514]` / `tls://host[:6514]` で、記録を 1 件ずつ syslog の
+    受け手へ送る（RFC 5424。TCP の上は RFC 6587 の octet-counting、TLS は RFC 5425。facility は log audit、失敗した Apply・prune
+    は warning、ほかは notice。MSGID は種別、`[meta sequenceId]` に seq、MSG は書いた行そのもの＝受け手でも鎖をたどれる）。
+    送り終えた所は `--audit-syslog-state`（既定 `<file>.syslog-state`。書き換える小さなファイルなので WORM の外に置く）に
+    残す。**貯め場はログそのもの**で、受け手が止まっている間に書いた記録は手元のログに残り、常駐は Append で起こされるたび・
+    `--audit-syslog-retry`（既定 30s）ごとに、一回性のコマンドは次の Append のときに、送り終えた所の続きから順に送り直す
+    （`sakutei audit forward` でその場で送れる）。送れなくてもコマンドは止めない。届けるのは少なくとも 1 回（落ちれば同じ行を
+    もう一度送る。受け手は sequenceId で見分ける）。TCP には受け取りの確認が無いので、書けたことを届いたことと見なす。
+  - **末尾の切り詰め**は鎖だけでは分からない（最後の数行を消しても残りは鎖のまま）。verify は送り終えた所（seq とその行の
+    ハッシュ）を外の控えとして突き合わせ、ログがそこまで無い・その行が違えば切り詰め・書き換えとする。送ったあとの記録は
+    受け手の側にあるので、手元が書き換えられても分かる。
+  - 監査を書くプロセスを reconciler と分けること（別権限・別プロセス）は v1 では行わない（同じプロセスが書き、外へ送ることで
+    侵害後の改ざんを分かるようにする）。
 - **秘密の監査は SecretBackend 側の機能を使う**（自前実装しない）：Vault KV v2 は更新のたびに version history を自動保持し、audit log は全 read/write を誰が行ったかを記録する。→ git（理想が誰にどう変更されたか）+ SecretBackend（秘密が何回更新され誰に読まれたか）+ Event（S4・この2つを繋ぐ収束側の記録）の三者で監査が完結する。
 
 ### §26.4 適合レポート（status）
@@ -561,7 +590,7 @@ sakutei secrets extract --from <file> --claim <selector> --out <file>  # 1 拠�
 |---|---|---|
 | 常駐（`sakutei`） | `--alloc-store <file>` / `--alloc-url <url,url>`（排他）・`--claim <selector>`・`--fencing-store <file>`・`--shard-id <名前>`（既定 `<hostname>-<pid>`）・`--capacity-gate <宣言>`（繰り返し可）・`--inventory-file <file>`・`--inventory-min-ratio`（既定 0.5）・`--inventory-expected-min`（既定 0 = 無効）・`--intent-repo <url>`・`--workdir <dir>`・`--shard <名前>`・`--git-branch`（既定 `main`）・`--git-poll`（既定 60s + 最大 50% の jitter）・`--s2-free`・`--secret-store <file>` | 採番は Allocate（Lookup キャッシュ付き・§19.6）。`--claim` 外の scope は Observe しない（§17.1）。`--intent-repo` は `--intent` と排他で、`--workdir` と、`--shard` か `--claim` のどちらか一方を要する（§17.4）。`--s2-free` は `--intent-repo` を必須にし `--alloc-store` を拒否する（§17.5） |
 | `plan` | `--alloc-store` / `--alloc-url`・`--inventory-file` / `--inventory-min-ratio` / `--inventory-expected-min`（#115） | 採番は Lookup のみ（払い出さない）。未割当は「割り当て待ち」と表示。inventory は常駐と同じ合成（§9.2） |
-| `reconcile` | `--alloc-store` / `--alloc-url`・`--capacity-gate`・`--audit-log <file>`（v1.5）・`--expect-revision <rev>`（#46）・`--inventory-file` / `--inventory-min-ratio` / `--inventory-expected-min`（#115） | 採番は Allocate。`--claim` は v1a から持つ。`--audit-log` を付けると planned_change のレーンを開く（S4 が実行をまたいで `max_count` と cooling-off を持つ・§13.3）。`--expect-revision` は rendered_revision がずれていれば何も Apply せず 0 以外で終わる |
+| `reconcile` | `--alloc-store` / `--alloc-url`・`--capacity-gate`・`--audit-log <file>`（v1.5。`--audit-syslog`・`--audit-rotate-bytes` は #187、§26.3）・`--expect-revision <rev>`（#46）・`--inventory-file` / `--inventory-min-ratio` / `--inventory-expected-min`（#115） | 採番は Allocate。`--claim` は v1a から持つ。`--audit-log` を付けると planned_change のレーンを開く（S4 が実行をまたいで `max_count` と cooling-off を持つ・§13.3）。`--expect-revision` は rendered_revision がずれていれば何も Apply せず 0 以外で終わる |
 | `status` | `--alloc-store` / `--alloc-url`・`--inventory-file` / `--inventory-min-ratio` / `--inventory-expected-min`（#115） | 採番は Lookup のみ。read-only |
 | `import` | `--provider <名前,...>`（必須）・`--out <dir>`（必須）・`--scope k=v,...`・`--samples N`（既定 3）・`--sample-interval`（既定 2s）・`--force` | §24.4 |
 | `sync` | `--intent <dir>`（必須）・`--provider <名前,...>`（必須）・`--interval <d>`（既定は 1 回で終了） | §24.5 |
@@ -569,6 +598,8 @@ sakutei secrets extract --from <file> --claim <selector> --out <file>  # 1 拠�
 | `allocator release` | `--pool`・`--owner`（共に必須）・`--store <file>` / `--url <url,url>`（どちらか一方）・`--audit-log <file>` | `Release` を呼ぶ（#116）。値は cooldown に入る（§19.5（b））。記録の無い owner・未知の pool は終了コード 1。`--audit-log` で S4 に `allocation.released` を記録（§19.3） |
 | `allocator list` | `--store <file>` / `--url <url,url>`（どちらか一方）・`--pool` | pool・owner・値・状態・残り時間の表。read-only |
 | `fence` | `--store <file>`（常駐の `--fencing-store` と同じファイル） | read-only |
+| `audit verify` | `--audit-log <file>`（必須）・`--audit-syslog-state <file>`・`--json` | 監査の鎖をたどる（#187、§26.3）。無傷は exit 0、書き換え・抜き取り・差し込み・回したファイルの抜け・送った所を超える切り詰めは exit 3。read-only |
+| `audit forward` | `--audit-log <file>`・`--audit-syslog <url>`（共に必須）・`--audit-syslog-ca` / `-cert` / `-key` / `-server-name`・`--audit-syslog-state` | 送り残しをその場で syslog へ送る（#187） |
 | `mirror` | `--upstream <url>`・`--dir <dir>`（共に必須）・`--interval`（既定 30s）・`--once` | 状態を持たない中継（§17.4） |
 | `secrets extract` | `--from <file>`・`--claim <selector>`・`--out <file>`（すべて必須） | 出力はモード 0600（§20.5） |
 

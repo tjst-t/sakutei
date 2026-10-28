@@ -8,7 +8,11 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 - **観測用と書き込み用の資格を分ける**（#185）：ssh の対象の一覧（`remote_config`）のホストに `observe:`・`write:`（`user`・`private_key`・`sudo`）を書け、観測（`plan`・`status`・読み取りの口・毎周の観測）は観測用だけ、Apply・action は書き込み用だけを使う（nftables の live・dnszone・host-file・systemd-unit・cli-device・guest-os・netconf）。書き込み用の鍵は Apply の直前に取り出し、接続を使い回さない。書かない回（`plan`・`status`・`import`・`sync`・`graph`、`--mode alert-only`・`--freeze` の `reconcile`・常駐）は書き込み用の鍵を確かめず、無くても起動する。公開の口 `provider.WithWrite`・`provider.Writing`・設定のキー `access`（`provider.ConfigAccess`、`--provider-config` には書けない）。読むだけのユーザーで観測するときの要るものと観測できない項目は docs/remote.md。
 
+- **監査の記録を固める**（#187）：監査のログ（`--audit-log`）にふつうの Apply と prune も Op ごとに残す（種別 `resource.apply`・`resource.prune`。resource・変えた欄の名前・cause・結果・レーンの承認者）。各行に通し番号 `seq` と前の行のハッシュ `prev` を持たせて鎖にし、`sakutei audit verify`（exit 3）が書き換え・抜き取り・差し込み・回したファイルの抜け・送った所を超える切り詰めを見つける。`--audit-rotate-bytes` で書き換え・切り詰めをせず新しいファイルへ回す。`--audit-syslog tcp://…`／`tls://…` で RFC 5424 の syslog へ 1 件ずつ送り、届かない間は手元に貯めて送り直す（`sakutei audit forward`）。
+
 > **振る舞いの変化**（#185）：host-file・systemd-unit・guest-os を root でない利用者で動かすとき、覗けないディレクトリの中のパスを「無い」でなく「観測できない」とするようになった（そのリソースは何もされない。これまでは在るファイルを作り直す計画を出していた）。
+
+> **振る舞いの変化**（#187）：監査のログに Apply・prune の行と、各行の `seq`・`prev` が増える。既存のログにはそのまま続けて書ける。種別で絞らずに行を数えている道具は直す必要がある。
 
 ## v2.7.0（2026-10-28）
 

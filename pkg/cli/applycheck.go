@@ -143,11 +143,13 @@ func runApplyCheck(args []string) {
 	state := fs.String("state", "", "the --apply-check-state file of the daemon / the one-shot reconcile (required)")
 	var asJSON *bool
 	var auditLog, approver *string
+	var auditSink *auditSinkFlags
 	switch verb {
 	case "list":
 		asJSON = fs.Bool("json", false, "print the records as one JSON object")
 	case "release":
 		auditLog = fs.String("audit-log", "", "S4 audit log file (required; the release is recorded there first)")
+		auditSink = addAuditSinkFlags(fs)
 		approver = fs.String("approver", "", "who releases it (required; recorded)")
 	default:
 		usage()
@@ -211,7 +213,7 @@ func runApplyCheck(args []string) {
 			if !found {
 				return fmt.Errorf("%s is not recorded in %s (see sakutei apply-check list)", resource, *state)
 			}
-			if err := audit.NewLog(*auditLog).Append(audit.Record{
+			if err := auditSink.mustOpen("sakutei apply-check "+verb, *auditLog).Append(audit.Record{
 				Time: now, Kind: audit.KindApplyCheckReleased, Resource: resource, Actor: *approver,
 				Detail: "the stop of the resource's Apply (oscillating, §11.1 Tier3) is lifted; it is applied again",
 			}); err != nil {

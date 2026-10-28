@@ -21,7 +21,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/tjst-t/sakutei/v2/internal/audit"
 	"github.com/tjst-t/sakutei/v2/internal/task"
 )
 
@@ -54,9 +53,11 @@ func runTask(args []string) {
 	// #52: approve / reject the approval gate of a phased Task stopped inside
 	// its critical section (§29.1).  Recorded in S4 first, like `sakutei approve`.
 	var auditLog, approver, signature *string
+	var auditSink *auditSinkFlags
 	var roles stringList
 	if verb == "approve" || verb == "reject" {
 		auditLog = fs.String("audit-log", "", "S4 audit log file (required; same as the daemon's --audit-log)")
+		auditSink = addAuditSinkFlags(fs)
 		approver = fs.String("approver", "", "approver ID (required)")
 		signature = fs.String("signature", "", "signature of the approver (recorded, not checked: §7)")
 		fs.Var(&roles, "role", "role the approver holds (repeatable or comma-separated; recorded)")
@@ -118,7 +119,7 @@ func runTask(args []string) {
 			fmt.Fprintf(os.Stderr, "usage: sakutei task %s --store <file> --audit-log <file> --approver <id> [--role <role>]... [--signature <sig>] <resource>\n", verb)
 			os.Exit(1)
 		}
-		rec, err := task.Decide(ctx, st, audit.NewLog(*auditLog), fs.Arg(0),
+		rec, err := task.Decide(ctx, st, auditSink.mustOpen("sakutei task "+verb, *auditLog), fs.Arg(0),
 			task.Approval{Approver: *approver, Roles: roles, Signature: *signature, Reject: verb == "reject"}, time.Now())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "sakutei task %s: %v\n", verb, err)

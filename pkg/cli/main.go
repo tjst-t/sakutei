@@ -40,7 +40,6 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/allocator"
-	"github.com/tjst-t/sakutei/v2/internal/audit"
 	"github.com/tjst-t/sakutei/v2/internal/budget"
 	"github.com/tjst-t/sakutei/v2/internal/fencing"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
@@ -117,6 +116,8 @@ func Main(opts ...Option) {
 		runApplyCheck(os.Args[2:])
 	case "freeze":
 		runFreeze(os.Args[2:])
+	case "audit":
+		runAudit(os.Args[2:])
 	case "allocator":
 		runAllocator(os.Args[2:])
 	case "mirror":
@@ -269,7 +270,8 @@ func runDaemon() {
 	workflowStore := fs.String("workflow-store", "",
 		"S2 store file of the Workflows' progress (§6.3); empty=no Workflow advances (their targets are held)")
 	auditLog := fs.String("audit-log", "",
-		"S4 audit log file (append-only JSON lines) of gate approvals, rejections and timeouts (§6.4), and of planned_change declarations, openings and lane executions (§14.5; needed by a cooling-off)")
+		"S4 audit log file (append-only, hash-chained JSON lines) of every Apply and prune (#187), gate approvals, rejections and timeouts (§6.4), freezes (§14.3), and planned_change declarations, openings and lane executions (§14.5; needed by a cooling-off)")
+	auditSink := addAuditSinkFlags(fs)
 	daemonStatus := fs.String("daemon-status", "",
 		"#15: file rewritten after every cycle with the daemon's health (consecutive cycles skipped because an external input was unreachable); read by `sakutei status --daemon-status`")
 	unreachableSkipLimit := fs.Int("unreachable-skip-limit", 0,
@@ -384,7 +386,8 @@ func runDaemon() {
 	// started only once the daemon is about to run (startFlagFreeze, below),
 	// so a start that fails leaves no freeze in the audit log.
 	// --freeze-state is read every cycle.
-	freezeControl := freezeFl.control("sakutei", *auditLog)
+	auditLg := auditSink.mustOpen("sakutei", *auditLog)
+	freezeControl := freezeFl.control("sakutei", auditLg)
 	remCfg.Freeze = freezeControl != nil && freezeControl.Flag != nil
 
 	claimSelector, claimErr := parseClaimSelector(*claim)
@@ -550,9 +553,7 @@ func runDaemon() {
 	if *workflowStore != "" {
 		cfg.WorkflowStore = workflow.NewFileStore(*workflowStore)
 	}
-	if *auditLog != "" {
-		cfg.Audit = audit.NewLog(*auditLog)
-	}
+	cfg.Audit = auditLg
 	if *approvalListen != "" {
 		if cfg.WorkflowStore == nil || cfg.Audit == nil {
 			fmt.Fprintln(os.Stderr, "sakutei: --approval-listen requires --workflow-store and --audit-log")
@@ -594,6 +595,11 @@ func runDaemon() {
 	// #184: every start check and listen has passed; the --freeze is in
 	// effect from here (its end is recorded when the daemon exits).
 	startFlagFreeze("sakutei", freezeControl)
+	if auditLg != nil && auditLg.Forwarder != nil {
+		// #187: send every audit record to syslog at once; while the receiver
+		// is down the records wait in the audit log and are sent again.
+		go auditLg.Forwarder.Run(context.Background(), auditLg.Path)
+	}
 	if err := reconcile.Run(context.Background(), cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 		exitAfterEvents(1)
@@ -623,6 +629,8 @@ Usage:
                        success but reality did not change (oscillating, §11.1, #166)
   sakutei freeze       start / end / status a global freeze of a running daemon without
                        stopping it (who, why, until when; recorded in the audit log, §14.3, #184)
+  sakutei audit        verify the hash chain of the audit log (exit 3: rewritten, removed or
+                       truncated) / forward it to syslog now (#187, §26.3)
   sakutei allocator    serve the allocation authority (active/standby, §19.8);
                        allocator release / list: give a value back, show allocations (#116)
                        allocator import: rebuild the store from the write-back files (#157)

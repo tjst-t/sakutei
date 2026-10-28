@@ -88,7 +88,7 @@ func freezeActor(by string) string {
 // stop the run from starting, so a run that fails to start leaves no freeze
 // in the audit log.  It exits 1 on a freeze without a reason, without an
 // audit log, or with a flag that belongs to --freeze given alone.
-func (f *freezeFlags) control(verb, auditLog string) *reconcile.FreezeControl {
+func (f *freezeFlags) control(verb string, lg *audit.Log) *reconcile.FreezeControl {
 	fail := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, verb+": "+format+"\n", args...)
 		os.Exit(1)
@@ -99,13 +99,13 @@ func (f *freezeFlags) control(verb, auditLog string) *reconcile.FreezeControl {
 	if !*f.freeze && *f.state == "" {
 		return nil
 	}
-	if auditLog == "" {
+	if lg == nil {
 		if *f.freeze {
 			fail("--freeze needs --audit-log: the freeze's start and end, with who and why, are recorded there (§14.3, #184)")
 		}
 		fail("--freeze-state needs --audit-log: a freeze's expiry is recorded there (#184)")
 	}
-	c := &reconcile.FreezeControl{StatePath: *f.state, Audit: audit.NewLog(auditLog)}
+	c := &reconcile.FreezeControl{StatePath: *f.state, Audit: lg}
 	if !*f.freeze {
 		return c
 	}
@@ -178,6 +178,7 @@ func runFreeze(args []string) {
 	fs.SetOutput(os.Stderr)
 	state := fs.String("state", "", "the --freeze-state file of the daemon / the one-shot reconcile (required)")
 	auditLog := fs.String("audit-log", "", "S4 audit log file (the start, end and expiry are recorded there)")
+	auditSink := addAuditSinkFlags(fs)
 	var reason, by, until *string
 	var asJSON *bool
 	switch verb {
@@ -206,6 +207,7 @@ func runFreeze(args []string) {
 		fmt.Fprintf(os.Stderr, "sakutei freeze %s: %v\n", verb, err)
 		os.Exit(1)
 	}
+	lg := auditSink.mustOpen("sakutei freeze "+verb, *auditLog)
 	now := time.Now().UTC()
 	switch verb {
 	case "start":
@@ -214,13 +216,13 @@ func runFreeze(args []string) {
 			fail(fmt.Errorf("invalid --until: %v", err))
 		}
 		f := freeze.Freeze{By: freezeActor(*by), Reason: strings.TrimSpace(*reason), Since: now, Until: u}
-		if err := freeze.Start(*state, audit.NewLog(*auditLog), f); err != nil {
+		if err := freeze.Start(*state, lg, f); err != nil {
 			fail(err)
 		}
 		f.Source = freeze.SourceCommand
 		fmt.Printf("%s\nthe next cycle of the daemon (or the next reconcile) with --freeze-state %s is alert-only\n", f.Text(), *state)
 	case "end":
-		f, err := freeze.End(*state, audit.NewLog(*auditLog), freezeActor(*by), strings.TrimSpace(*reason), now)
+		f, err := freeze.End(*state, lg, freezeActor(*by), strings.TrimSpace(*reason), now)
 		if err != nil {
 			fail(err)
 		}
@@ -231,7 +233,7 @@ func runFreeze(args []string) {
 		if *auditLog != "" {
 			// With the audit log a freeze past its deadline is lifted here.
 			var expired *freeze.Freeze
-			f, expired, err = freeze.Check(*state, audit.NewLog(*auditLog), now)
+			f, expired, err = freeze.Check(*state, lg, now)
 			if err == nil && expired != nil && !*asJSON {
 				fmt.Printf("the freeze by %s expired at %s (recorded as expired)\n", expired.By, expired.Until.UTC().Format(time.RFC3339))
 			}

@@ -12,23 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package audit は S4 監査ログの最小形（§4.9 S4, §6.4, §26）。
+// Package audit は S4 監査ログ（§4.9 S4, §6.4, §26.3）。
 //
 // 1 行 1 件の JSON（JSON Lines）をファイルに追記するだけの append-only ログ。
 // 既存の行を書き換える API は持たない。追記は O_APPEND で開いて 1 回の write で
-// 行を書き、fsync してから返す（返ったら記録は残っている）。WORM・外部への即時
-// push は最小形の外（§29）。
+// 行を書き、fsync してから返す（返ったら記録は残っている）。
+//
+// 改ざんしにくい形（#187、§26.3）：各行は通し番号 seq と、前の行（書かれたとおりの
+// バイト列）の SHA-256 である prev を持ち、鎖になる。どこかの行を書き換える・抜く・
+// 差し込むと次の行の prev か seq が合わなくなり、Verify（sakutei audit verify）が
+// 見つける。書き換え・切り詰めはしない。回す（MaxBytes）ときは今のファイルを
+// そのままにして新しいファイル（<path>.000001, .000002 …）へ続け、鎖はファイルを
+// またいでつながる。だから WORM の置き場（書いたものを変えられない）でも成り立つ。
+// 末尾を切り詰められたことは鎖だけでは分からないので、外へすぐ送る（Forwarder、
+// syslog）写しと、送った所まで（送り先の状態）で突き合わせる。
 package audit
 
 import (
-	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/tjst-t/sakutei/v2/internal/filelock"
 )
 
 // Kind は監査記録の種別。
@@ -99,10 +106,28 @@ const (
 	KindFreezeEnded Kind = "freeze.ended"
 	// KindFreezeExpired は期限（--freeze-until・--until）を過ぎて解けたこと。
 	KindFreezeExpired Kind = "freeze.expired"
+
+	// KindApply はふつうの Apply（収束ループ・一回性の reconcile・Workflow の apply の段、
+	// #187）。1 つの Op ごとに 1 件。Resource・Op（create / update / delete）・Fields
+	// （変えた欄）・Cause・Result（ok / failed）・Error を書く。planned_change のレーンで
+	// 通った Op は PlannedChange にその宣言を、Actor にレーンを承認した人を書く。
+	KindApply Kind = "resource.apply"
+	// KindPrune は prune（reality − desired、§12）の Delete。書くものは KindApply と同じ。
+	KindPrune Kind = "resource.prune"
+)
+
+// Result の値（KindApply・KindPrune）。
+const (
+	ResultOK     = "ok"
+	ResultFailed = "failed"
 )
 
 // Record は監査の 1 件。
 type Record struct {
+	// Seq は通し番号（ファイルをまたいで 1 から）、Prev は前の行の SHA-256（16 進、
+	// 最初の行は空）。Append が入れる（#187）。鎖より前の版で書いた行は Seq が 0。
+	Seq      int64     `json:"seq,omitempty"`
+	Prev     string    `json:"prev,omitempty"`
 	Time     time.Time `json:"time"`
 	Kind     Kind      `json:"kind"`
 	Workflow string    `json:"workflow,omitempty"`
@@ -123,70 +148,114 @@ type Record struct {
 	// PlannedChange・Count は planned_change の記録（宣言の Key と件数）。
 	PlannedChange string `json:"planned_change,omitempty"`
 	Count         int    `json:"count,omitempty"`
-	Detail        string `json:"detail,omitempty"`
+	// Op・Fields・Cause・Result・Error は Apply と prune の記録（#187）。Fields は
+	// 変えた欄の名前だけ（値は書かない。秘密が混ざらないように）。
+	Op     string   `json:"op,omitempty"`
+	Fields []string `json:"fields,omitempty"`
+	Cause  string   `json:"cause,omitempty"`
+	Result string   `json:"result,omitempty"`
+	Error  string   `json:"error,omitempty"`
+	Detail string   `json:"detail,omitempty"`
 }
 
-// Log は1つのファイルへの append-only ログ。複数プロセスから追記してよい
-// （O_APPEND の 1 回の write は行単位で混ざらない）。
+// Log は1つのファイル（回したあとは続きのファイル）への append-only ログ。
+// 複数プロセスから追記してよい（追記は <path>.lock の flock で順に並ぶ）。
 type Log struct {
 	Path string
-	mu   sync.Mutex
+	// MaxBytes を超えるなら新しいファイルへ回す（0 は回さない）。今のファイルは
+	// 書き換えも切り詰めもしない。
+	MaxBytes int64
+	// Forwarder は書いた記録を外（syslog）へ送る（nil は送らない）。
+	Forwarder *Forwarder
+	mu        sync.Mutex
 }
 
 // NewLog は path に追記する Log を返す。
 func NewLog(path string) *Log { return &Log{Path: path} }
 
-// Append は rec を 1 行追記し、fsync してから返す。Time が零なら今の時刻を入れる。
+// Append は rec に seq と prev を入れて 1 行追記し、fsync してから返す。Time が
+// 零なら今の時刻を入れる。Forwarder があれば送る（送れなくても Append は失敗に
+// しない。送り残しは手元のログにあり、次に送る）。
 func (l *Log) Append(rec Record) error {
 	if rec.Time.IsZero() {
 		rec.Time = time.Now()
 	}
 	rec.Time = rec.Time.UTC()
+	if err := l.append(rec); err != nil {
+		return err
+	}
+	if l.Forwarder != nil {
+		l.Forwarder.notify(l)
+	}
+	return nil
+}
+
+func (l *Log) append(rec Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	unlock, err := filelock.Lock(l.Path)
+	if err != nil {
+		return fmt.Errorf("audit: %w", err)
+	}
+	defer unlock()
+	t, err := readTail(l.Path)
+	if err != nil {
+		return err
+	}
+	rec.Seq = t.seq + 1
+	rec.Prev = t.hash
 	line, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("audit: %w", err)
 	}
-	line = append(line, '\n')
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	f, err := os.OpenFile(l.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("audit: open %s: %w", l.Path, err)
+	var buf []byte
+	if t.torn {
+		// 前の書き込みが行の途中で切れていた。切り詰めずに改行で閉じ、切れた行は
+		// verify が読めない行として知らせる（prev はその切れたバイト列のハッシュ）。
+		buf = append(buf, '\n')
 	}
-	if _, err := f.Write(line); err != nil {
+	buf = append(append(buf, line...), '\n')
+	path := segmentPath(l.Path, t.segment)
+	if l.MaxBytes > 0 && t.size > 0 && t.size+int64(len(buf)) > l.MaxBytes {
+		// 回す：新しいファイルを作る（O_EXCL。既にあるファイルには書かない）。
+		// 切れた行の閉じは前のファイルの話なので新しいファイルには要らない。
+		path = segmentPath(l.Path, t.segment+1)
+		buf = append(line, '\n')
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return fmt.Errorf("audit: rotate to %s: %w", path, err)
+		}
+		return writeSync(f, path, buf)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("audit: open %s: %w", path, err)
+	}
+	return writeSync(f, path, buf)
+}
+
+func writeSync(f *os.File, path string, buf []byte) error {
+	if _, err := f.Write(buf); err != nil {
 		f.Close()
-		return fmt.Errorf("audit: append %s: %w", l.Path, err)
+		return fmt.Errorf("audit: append %s: %w", path, err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
-		return fmt.Errorf("audit: sync %s: %w", l.Path, err)
+		return fmt.Errorf("audit: sync %s: %w", path, err)
 	}
 	return f.Close()
 }
 
-// ReadAll は path の全記録を書かれた順に返す。ファイルが無ければ空。
+// ReadAll は path（回したあとの続きのファイルを含む）の全記録を書かれた順に返す。
+// ファイルが無ければ空。
 func ReadAll(path string) ([]Record, error) {
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("audit: %w", err)
-	}
-	defer f.Close()
 	var out []Record
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for n := 1; sc.Scan(); n++ {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
+	err := scan(path, 0, 0, func(l rawLine) error {
+		if l.err != nil {
+			return fmt.Errorf("audit: %s line %d: %w", l.file, l.n, l.err)
 		}
-		var rec Record
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			return nil, fmt.Errorf("audit: %s line %d: %w", path, n, err)
-		}
-		out = append(out, rec)
-	}
-	return out, sc.Err()
+		out = append(out, l.rec)
+		return nil
+	})
+	return out, err
 }

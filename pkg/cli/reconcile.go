@@ -23,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/sakutei/v2/internal/audit"
 	"github.com/tjst-t/sakutei/v2/internal/budget"
 	"github.com/tjst-t/sakutei/v2/internal/capacity"
 	"github.com/tjst-t/sakutei/v2/internal/cause"
@@ -126,7 +125,8 @@ func runReconcile(args []string) {
 	allocWriteBack := fs.String("alloc-write-back", "", allocWriteBackUsage)
 	// #44 (§14.5, §23.7): S4 audit log; with it the planned_change lanes open.
 	auditLog := fs.String("audit-log", "",
-		"S4 audit log file (append-only JSON lines); with it planned_change lanes open, holding max_count and the cooling-off across runs (§14.5, §23.7)")
+		"S4 audit log file (append-only, hash-chained JSON lines); every Apply and prune is recorded there (#187), and with it planned_change lanes open, holding max_count and the cooling-off across runs (§14.5, §23.7)")
+	auditSink := addAuditSinkFlags(fs)
 	generatedDir := fs.String("generated", "",
 		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
 	// S072a14-2: render phase 1 — external input resolver flags.
@@ -220,7 +220,8 @@ func runReconcile(args []string) {
 	}
 	// #184: a --freeze is recorded as started here (and as ended when the
 	// run exits); the freeze is checked once the run's revision is known.
-	freezeControl := freezeFl.control("sakutei reconcile", *auditLog)
+	auditLg := auditSink.mustOpen("sakutei reconcile", *auditLog)
+	freezeControl := freezeFl.control("sakutei reconcile", auditLg)
 	// Every exit from here on goes through exitAfterEvents, which records
 	// the end.
 	startFlagFreeze("sakutei reconcile", freezeControl)
@@ -249,7 +250,7 @@ func runReconcile(args []string) {
 	// used (max_count across runs).  Without it every change is evaluated by the
 	// normal budget (conservative).
 	if *auditLog != "" {
-		if err := budgetEngine.AttachAudit(audit.NewLog(*auditLog)); err != nil {
+		if err := budgetEngine.AttachAudit(auditLg); err != nil {
 			fmt.Fprintf(logErr, "sakutei reconcile: read audit log: %v\n", err)
 			exitAfterEvents(1)
 		}
@@ -500,6 +501,10 @@ func runReconcile(args []string) {
 	// so later Stories can swap in other implementations without touching this
 	// call site (§6 seam principle).
 	var exec executor.Executor = executor.New()
+	if auditLg != nil {
+		// #187: every Apply and prune Delete is recorded in S4 with its result.
+		exec = &executor.Audited{Inner: exec, Log: auditLg, ErrOut: logErr}
+	}
 
 	// Scb0ecd-2: load cause state (previous-cycle revision + provider_version).
 	prevState, csErr := loadCauseState(*causeStatePath)
@@ -1030,7 +1035,11 @@ func runReconcile(args []string) {
 			heldReason[local] = "Apply stopped (oscillating, §11.1 Tier3): its Applies of this diff did not take or were rolled back on the target (see ApplyIneffective)"
 		}
 	}
-	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, heldReason, ready, logErr)
+	// #187: the S4 record of each Apply names the lane that admitted it.
+	applyCtx := executor.WithApproval(ctx, func(op core.Op) (string, string) {
+		return budgetEngine.ApprovalOf(budgetDecision, op)
+	})
+	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(applyCtx, applyProvider, exec, desired, filteredPlans, unobservable, heldReason, ready, logErr)
 	if waveErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: wave apply: %v\n", waveErr)
 		exitAfterEvents(1)
@@ -1308,7 +1317,7 @@ func runReconcile(args []string) {
 				}
 			}
 
-			_, ids, skippedK, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, sub, filteredPlans, unobservable, heldReason, ready, logErr)
+			_, ids, skippedK, waveErr := reconcile.ApplyWaves(applyCtx, applyProvider, exec, sub, filteredPlans, unobservable, heldReason, ready, logErr)
 			if waveErr != nil {
 				fmt.Fprintf(logErr, "sakutei reconcile: wave apply: %v\n", waveErr)
 				exitAfterEvents(1)
@@ -1454,7 +1463,7 @@ func runReconcile(args []string) {
 		fmt.Fprintf(logErr, "sakutei reconcile: budget: blocked destructive op DELETE %s (budget limit)\n", op.Target)
 	}
 
-	pruneOps, pruneHalted := runPruneWithPrecomputed(ctx, applyProvider, exec, precomputedPruneOps, allowedPruneOps, pruneWasHaltedBySafetyGuard)
+	pruneOps, pruneHalted := runPruneWithPrecomputed(executor.WithPrune(applyCtx), applyProvider, exec, precomputedPruneOps, allowedPruneOps, pruneWasHaltedBySafetyGuard)
 	for _, op := range pruneOps {
 		printOp(op)
 		budgetEngine.CommitOps(budgetDecision.OutsideLanes([]core.Op{op}))

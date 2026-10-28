@@ -1060,6 +1060,12 @@ func NewDaemon(cfg Config) *Daemon {
 		// §15.2: every Apply/Delete passes the token check first.
 		exec = &fencing.Executor{Inner: exec, Guard: cfg.Fencing}
 	}
+	if cfg.Audit != nil {
+		// #187: every Apply and prune Delete (and a Workflow's apply step) is
+		// recorded in S4 with its result — outermost, so a fenced-off Apply is
+		// recorded as failed too.
+		exec = &executor.Audited{Inner: exec, Log: cfg.Audit, ErrOut: cfg.ErrOut}
+	}
 
 	// Scf7762-1: the prune Engine is created ONCE per provider (providerEntry,
 	// #67: each provider's List has its own count baseline), not per cycle, so
@@ -2986,8 +2992,13 @@ func runCycleAsync(
 		EmitApplyIneffective(cfg.ErrOut, "sakutei: ", rec)
 	}
 
+	// #187: the S4 record of each Apply names the planned_change lane that
+	// admitted it and who approved that lane.
+	applyCtx := executor.WithApproval(ctx, func(op core.Op) (string, string) {
+		return budgetEngine.ApprovalOf(laneDecision, op)
+	})
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
-		ctx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, quietHeld, waitingHeld, ready, cfg.ErrOut,
+		applyCtx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, quietHeld, waitingHeld, ready, cfg.ErrOut,
 		dispatch, commit, launchTask, verify, rolledBack)
 	backedOff = backedOffList
 	if waveErr != nil {
@@ -3002,7 +3013,10 @@ func runCycleAsync(
 	//
 	// CommitOps is called for each successfully applied Delete to advance the
 	// cumulative window counter (S3, §13.2).
-	pruned, pruneHalted := executePruneOps(ctx, pruneResult, allowedPruneOps, providers, exec, budgetEngine, budgetDecision, cfg.ErrOut)
+	pruneCtx := executor.WithPrune(executor.WithApproval(ctx, func(op core.Op) (string, string) {
+		return budgetEngine.ApprovalOf(budgetDecision, op)
+	}))
+	pruned, pruneHalted := executePruneOps(pruneCtx, pruneResult, allowedPruneOps, providers, exec, budgetEngine, budgetDecision, cfg.ErrOut)
 
 	// #44 (§14.5): record this cycle's lane executions in S4.
 	if err := budgetEngine.FlushLaneAudit(); err != nil {

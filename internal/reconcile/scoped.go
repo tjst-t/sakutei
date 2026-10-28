@@ -464,8 +464,12 @@ func ScopedReconcile(
 	//
 	// 影響サブ DAG のみに対して通常の wave/skip セマンティクス（ApplyWaves）を再利用。
 	// A/E の plans だけが渡るので B/C/D は適用されない（安全柵 1）。
+	// #187: the S4 record of each Apply names the lane that admitted it.
+	applyCtx := executor.WithApproval(ctx, func(op core.Op) (string, string) {
+		return budgetEngine.ApprovalOf(decision, op)
+	})
 	applied, appliedIDs, skipped, applyErr := applyWaves(
-		ctx, fp, exec, desired, plans, unobservable, nil, ready, errOut)
+		applyCtx, fp, exec, desired, plans, unobservable, nil, ready, errOut)
 	if applyErr != nil {
 		fmt.Fprintf(errOut, "sakutei: scoped: wave error: %v\n", applyErr)
 	}

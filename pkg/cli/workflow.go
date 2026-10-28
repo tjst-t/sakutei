@@ -44,6 +44,7 @@ func runApprove(decision workflow.Decision, args []string) {
 	fs := flag.NewFlagSet("sakutei "+verb, flag.ExitOnError)
 	store := fs.String("store", "", "workflow store file (required; same as the daemon's --workflow-store)")
 	auditLog := fs.String("audit-log", "", "S4 audit log file (required; same as the daemon's --audit-log)")
+	auditSink := addAuditSinkFlags(fs)
 	approver := fs.String("approver", "", "approver ID (required)")
 	signature := fs.String("signature", "", "signature of the approver (required)")
 	var roles stringList
@@ -53,7 +54,7 @@ func runApprove(decision workflow.Decision, args []string) {
 		fmt.Fprintf(os.Stderr, "usage: sakutei %s --store <file> --audit-log <file> --approver <id> [--role <role>]... --signature <sig> <workflow> <gate>\n", verb)
 		os.Exit(1)
 	}
-	run, err := workflow.Decide(context.Background(), workflow.NewFileStore(*store), audit.NewLog(*auditLog),
+	run, err := workflow.Decide(context.Background(), workflow.NewFileStore(*store), auditSink.mustOpen("sakutei "+verb, *auditLog),
 		fs.Arg(0), fs.Arg(1), workflow.Approval{Approver: *approver, Roles: roles, Signature: *signature, Decision: decision}, time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei %s: %v\n", verb, err)
@@ -103,6 +104,7 @@ func runWorkflow(args []string) {
 	fs := flag.NewFlagSet("sakutei workflow "+verb, flag.ExitOnError)
 	store := fs.String("store", "", "workflow store file (required; same as the daemon's --workflow-store)")
 	auditLog := fs.String("audit-log", "", "S4 audit log file to record the cancel in (optional)")
+	auditSink := addAuditSinkFlags(fs)
 	_ = fs.Parse(args[1:])
 	if *store == "" {
 		fmt.Fprintf(os.Stderr, "sakutei workflow %s: --store <file> is required\n", verb)
@@ -153,7 +155,7 @@ func runWorkflow(args []string) {
 			os.Exit(1)
 		}
 		if *auditLog != "" {
-			if err := audit.NewLog(*auditLog).Append(audit.Record{Kind: audit.KindWorkflowCancelled,
+			if err := auditSink.mustOpen("sakutei workflow "+verb, *auditLog).Append(audit.Record{Kind: audit.KindWorkflowCancelled,
 				Workflow: run.Workflow, RunID: run.RunID, Detail: fmt.Sprintf("cancelled at phase %s", run.Phase)}); err != nil {
 				fmt.Fprintf(os.Stderr, "sakutei workflow cancel: %v\n", err)
 				os.Exit(1)

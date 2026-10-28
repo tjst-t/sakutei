@@ -215,13 +215,22 @@ func (r *wfRig) setActive(local, v string) {
 	r.seed(local, map[string]any{"name": local, "size": r.field(local, "size"), "active": v})
 }
 
+// audit returns the gate and run records of the S4 log; the Apply records of
+// the Workflow's apply steps (#187) are left out (audit_chain_test.go checks
+// them).
 func (r *wfRig) audit() []audit.Record {
 	r.t.Helper()
 	recs, err := audit.ReadAll(r.auditPath)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return recs
+	var out []audit.Record
+	for _, rec := range recs {
+		if rec.Kind != audit.KindApply && rec.Kind != audit.KindPrune {
+			out = append(out, rec)
+		}
+	}
+	return out
 }
 
 func (r *wfRig) api() *httptest.Server {
