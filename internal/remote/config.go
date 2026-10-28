@@ -62,6 +62,9 @@ import (
 // Config は対象の一覧。
 type Config struct {
 	Hosts map[string]SSHHost
+	// SecretStore は file SecretBackend のパス（無ければ ""）。ssh の鍵のほか、
+	// この一覧を使う provider が SecretRef を解決するのにも使う（host-file、#155）。
+	SecretStore string
 }
 
 var (
@@ -125,7 +128,7 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 
 	var secrets *render.FileSecretBackend
 	var have map[string]bool
-	cfg := Config{Hosts: map[string]SSHHost{}}
+	cfg := Config{Hosts: map[string]SSHHost{}, SecretStore: top.store}
 	for _, name := range names {
 		p := "hosts." + name
 		if !hostName.MatchString(name) {

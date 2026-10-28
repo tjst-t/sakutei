@@ -139,6 +139,8 @@ resources:
 
 ## 例：podman と systemd の quadlet でサービスを配る
 
+> **quadlet と systemd のユニットは [systemd-unit](systemd-unit.md) と [host-file](host-file.md)（#155）で扱うのがよい。** フィールドごとの差分（中身は hash、状態・enabled）が出て、元のファイルを書き換えたら daemon-reload を 1 回流し、`restart_on` に書いた設定ファイルを書き換えるとユニットを 1 回だけ入れ替える（下の例の「定義を変えても入れ替わらない」が無い）。下は ansible provider だけで書く場合の例。
+
 VM の中のサービス（コンテナ）を、podman の quadlet（`/etc/containers/systemd/*.container` を systemd が unit に変える仕組み）で配る例。呼び出しを 3 つに分け、`depends_on` で順に流す。
 
 ```yaml
@@ -172,7 +174,7 @@ resources:
 
 - quadlet が作る unit は `enabled` にできない（生成された unit のため）。起動時に立ち上げるのは `.container` の `[Install]` で書く。
 - イメージは tag でなく digest で固定する。版を上げるのは宣言の digest を変えることで行う。
-- **定義を変えても、動いているコンテナは入れ替わらない**。ansible provider は playbook の handler を借りないので、「ファイルが変わったら再起動」を自動では流さない。入れ替えは、Workflow の手順で `state: restarted` の呼び出しを流すか、podman の auto-update など相手側の仕組みに任せる。
+- **定義を変えても、動いているコンテナは入れ替わらない**。ansible provider は playbook の handler を借りないので、「ファイルが変わったら再起動」を自動では流さない。入れ替えは、Workflow の手順で `state: restarted` の呼び出しを流すか、podman の auto-update など相手側の仕組みに任せる（[systemd-unit](systemd-unit.md) の `restart_on` ならこれを宣言で書ける）。
 - `daemon_reload` だけの呼び出しが check mode でどう答えるかは確かめていない。毎回 changed と答えるなら観測のたびに drift として見えるので、`observe_tiers` で間引くか、手順 2 を省いて手順 3 の `daemon_reload: true` に寄せる。
 - この例は書き方の例で、統合テスト（下）では確かめていない。
 

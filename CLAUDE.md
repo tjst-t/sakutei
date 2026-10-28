@@ -8,7 +8,7 @@
 
 Kubernetes からは *収束原理*（level-triggered な収束ループ）だけを借り、実装機構（apiserver・etcd・scheduler・admission・CRD）は意図的に捨てている。位置づけは「**Ansible の冪等性 + k8s のループ**」。最大の特徴は **観測 state レス**（キャッシュした「現在状態」を持たず毎周期リアルを再観測する）で、これにより Terraform の three-way-diff / state ドリフト問題を構造的に排除する。名称は平安期の作庭書『作庭記』に由来する。
 
-> **現状:** 設計は v3.27（v3.4〜v3.11 は v1b・v1.5 の実装に設計書を追いつかせた改訂、v3.12〜v3.14 は v1 の試用で出た決定（SOA シリアル・自分の prune を急減判定から差し引く・level 報告の既定値）、v3.15・v3.16 は Redfish BMC provider（#48）の決まり、v3.17 は単純 Task の実 provider（sqlmigrate、#92）、v3.18 は sqlmigrate の試用で見つけた strategy: task の level 報告の穴を直した決まり（#112）、v3.19 は allocator Lookup キャッシュの cooldown 衝突バグ（#105）と dnszone / nftables の scope 固定（#106）の決まり、v3.20 は外部 provider の組み込み方（`pkg/cli`・`--provider-config`、§28.9）と CLI の直し（一回性コマンドの `--inventory-file`・`status` の観測できないものの報告と `--json`・`allocator release`／`list`、#114〜#119）、v3.21 は nftables の実の ruleset 版（live）と S3 互換のバケット provider（#121〜#123）、v3.22 は PostgreSQL・sqlmigrate の PostgreSQL 版・Ansible の provider と Workflow の複数 provider（#87、#125〜#127）、v3.23 は ssh 越しに離れたホストを扱う層・通知の口・ゲスト OS の観測・/metrics（#130・#131・#86・#54）と s3-bucket・postgresql の直し（#132・#133）。v3.24 は Workflow の一度きりの操作（action：Redfish の boot_once・reset）と応答ファイルを書く template-file（#139）。v3.25 は planned_change の reimage で入れ直しの Workflow を起こす `trigger: reimage`（#88）。v3.26 は採番の値を文字列に埋め込むテンプレート（`template: "192.0.2.{n}"`、#145）。v3.27 は Redfish の FW の版の観測と多相 Task での更新（`redfish-firmware`・承認の要る相、#148）。経緯は `docs/architecture/CHANGELOG-v3.*.md`）。実装は **v1（v1a・v1b・v1.5）が完成**（タグ `v1.0.0`。試用での修正と Redfish BMC provider を足した `v1.1.0`、外の provider の口・nftables の live 版・s3-bucket・sqlmigrate を足した `v1.2.0`、PostgreSQL・Ansible の provider と Workflow の複数 provider を足した `v1.3.0`、離れたホスト・通知・ゲスト OS の観測・metrics を足した `v1.4.0`、多相 Task・OS の導入と入れ直し・BIOS・NETCONF の観測・読み取り専用の口を足した `v2.0.0`。変更点は `CHANGELOG.md`）。次は v1 を実際に使って確かめること（手順は `docs/trial/README.md`）。v2（Backlog #20）は v1 を試してから人が着手を決める。Redfish BMC provider（#48）は v1.1.0 で完了。
+> **現状:** 設計は v3.28（v3.4〜v3.11 は v1b・v1.5 の実装に設計書を追いつかせた改訂、v3.12〜v3.14 は v1 の試用で出た決定（SOA シリアル・自分の prune を急減判定から差し引く・level 報告の既定値）、v3.15・v3.16 は Redfish BMC provider（#48）の決まり、v3.17 は単純 Task の実 provider（sqlmigrate、#92）、v3.18 は sqlmigrate の試用で見つけた strategy: task の level 報告の穴を直した決まり（#112）、v3.19 は allocator Lookup キャッシュの cooldown 衝突バグ（#105）と dnszone / nftables の scope 固定（#106）の決まり、v3.20 は外部 provider の組み込み方（`pkg/cli`・`--provider-config`、§28.9）と CLI の直し（一回性コマンドの `--inventory-file`・`status` の観測できないものの報告と `--json`・`allocator release`／`list`、#114〜#119）、v3.21 は nftables の実の ruleset 版（live）と S3 互換のバケット provider（#121〜#123）、v3.22 は PostgreSQL・sqlmigrate の PostgreSQL 版・Ansible の provider と Workflow の複数 provider（#87、#125〜#127）、v3.23 は ssh 越しに離れたホストを扱う層・通知の口・ゲスト OS の観測・/metrics（#130・#131・#86・#54）と s3-bucket・postgresql の直し（#132・#133）。v3.24 は Workflow の一度きりの操作（action：Redfish の boot_once・reset）と応答ファイルを書く template-file（#139）。v3.25 は planned_change の reimage で入れ直しの Workflow を起こす `trigger: reimage`（#88）。v3.26 は採番の値を文字列に埋め込むテンプレート（`template: "192.0.2.{n}"`、#145）。v3.27 は Redfish の FW の版の観測と多相 Task での更新（`redfish-firmware`・承認の要る相、#148）。v3.28 は離れたホストのファイルと systemd のユニット（quadlet を含む）を保つ provider と、依って立つファイルを書き換えたら入れ替える口（#155）。経緯は `docs/architecture/CHANGELOG-v3.*.md`）。実装は **v1（v1a・v1b・v1.5）が完成**（タグ `v1.0.0`。試用での修正と Redfish BMC provider を足した `v1.1.0`、外の provider の口・nftables の live 版・s3-bucket・sqlmigrate を足した `v1.2.0`、PostgreSQL・Ansible の provider と Workflow の複数 provider を足した `v1.3.0`、離れたホスト・通知・ゲスト OS の観測・metrics を足した `v1.4.0`、多相 Task・OS の導入と入れ直し・BIOS・NETCONF の観測・読み取り専用の口を足した `v2.0.0`。変更点は `CHANGELOG.md`）。次は v1 を実際に使って確かめること（手順は `docs/trial/README.md`）。v2（Backlog #20）は v1 を試してから人が着手を決める。Redfish BMC provider（#48）は v1.1.0 で完了。
 
 ## 仕事の管理（Backlog）
 
@@ -49,7 +49,7 @@ Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflo
 └── docs/
     ├── README.md                              # ドキュメント索引（まずここを見る）
     ├── architecture/
-    │   ├── spec/                              # ★設計の正（source of truth）v3.27 分冊
+    │   ├── spec/                              # ★設計の正（source of truth）v3.28 分冊
     │   │   ├── README.md                      #   索引（版・改訂規約・目次・§→ファイル対応）
     │   │   └── part1〜part8-*.md              #   8部29節の本文（§番号は全部で一意）
     │   ├── CHANGELOG-v3.0.md                  # v2.6→v3.0 構成対応マップ+分冊化の記録
@@ -68,7 +68,7 @@ Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflo
         └── sakutei.html                       # ビジュアルなランディングページ
 ```
 
-**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」（現行 v3.27。骨格は v2.6 と内容等価の全面再構成 v3.0 で、v3.1〜v3.27 は分冊を直接改訂）。`old/` は旧版（編集しない）、矛盾時は **spec/ が優先**。すべて日本語で書かれている。
+**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」（現行 v3.28。骨格は v2.6 と内容等価の全面再構成 v3.0 で、v3.1〜v3.28 は分冊を直接改訂）。`old/` は旧版（編集しない）、矛盾時は **spec/ が優先**。すべて日本語で書かれている。
 
 ## v3.0 の構成（8部29節・分冊）
 

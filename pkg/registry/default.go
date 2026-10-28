@@ -24,6 +24,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/dnszone"
 	"github.com/tjst-t/sakutei/v2/internal/fakeprovider"
 	"github.com/tjst-t/sakutei/v2/internal/guestos"
+	"github.com/tjst-t/sakutei/v2/internal/hostconf"
 	"github.com/tjst-t/sakutei/v2/internal/ldap"
 	"github.com/tjst-t/sakutei/v2/internal/netconf"
 	"github.com/tjst-t/sakutei/v2/internal/nftables"
@@ -33,6 +34,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/redfish/bmcconfig"
 	"github.com/tjst-t/sakutei/v2/internal/redfish/system"
 	"github.com/tjst-t/sakutei/v2/internal/remote"
+	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/internal/s3bucket"
 	"github.com/tjst-t/sakutei/v2/internal/sqlmigrate"
 	"github.com/tjst-t/sakutei/v2/internal/templatefile"
@@ -94,6 +96,15 @@ import (
 //     answer files of an automated OS install (Backlog #139).  Minimal tier:
 //     observed by comparing the file with the template rendered from the
 //     desired.
+//
+//   - "host-file" / "systemd-unit": files and systemd units (incl. podman
+//     quadlet) on the hosts config["file_hosts"] / config["unit_hosts"]
+//     ("web1,web2" from config["remote_config"]; "local" is this machine)
+//     (Backlog #155).  The local ids are "<host>/<absolute path>" and
+//     "<host>/<unit file name>".  config["stamp_dir"] is where the stamps live
+//     on the hosts (default /var/lib/sakutei); config["unit_dir"] /
+//     config["quadlet_dir"] where the unit files are; config["secret_store"]
+//     (or the remote config's secret_store) resolves content_secret.
 //
 //   - "proxmox-vm": the VMs of Proxmox VE clusters through the REST API
 //     (Backlog #143).  config["proxmox_config"] is the cluster list
@@ -361,6 +372,37 @@ func DefaultRegistry() *ProviderRegistry {
 		return templatefile.New(config["template_dir"], config["output_dir"])
 	})
 
+	// "host-file" — 離れたホスト（または手元）のファイル（§29.1、#155）。
+	// config["file_hosts"] のホストを config["remote_config"] の対象の一覧から
+	// ssh 越しに扱う（"local" は手元）。
+	r.Register(hostconf.FileName, func(config map[string]string) (provider.Provider, error) {
+		execs, cfg, err := hostExecutors(config, "file_hosts")
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", hostconf.FileName, err)
+		}
+		opts := hostconf.FileOptions{StampDir: config["stamp_dir"]}
+		store := config["secret_store"]
+		if store == "" {
+			store = cfg.SecretStore
+		}
+		if store != "" {
+			opts.Secrets = render.NewFileSecretBackend(store)
+		}
+		return hostconf.NewFile(execs, opts)
+	})
+
+	// "systemd-unit" — 離れたホスト（または手元）の systemd のユニットと podman の
+	// quadlet（§29.1、#155）。config["unit_hosts"] のホストを同じく扱う。
+	r.Register(hostconf.UnitName, func(config map[string]string) (provider.Provider, error) {
+		execs, _, err := hostExecutors(config, "unit_hosts")
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", hostconf.UnitName, err)
+		}
+		return hostconf.NewUnit(execs, hostconf.UnitOptions{
+			StampDir: config["stamp_dir"], UnitDir: config["unit_dir"], QuadletDir: config["quadlet_dir"],
+		})
+	})
+
 	// "proxmox-vm" — Proxmox VE の VM（§29.1、#143）。config["proxmox_config"] は
 	// クラスタの一覧（--provider-config の proxmox-vm の proxmox_config）。--state
 	// は代わりにならない（endpoint と資格は推測しない）。
@@ -391,6 +433,54 @@ func remoteHosts(config map[string]string, key string) (map[string]remote.Execut
 		return nil, nil, fmt.Errorf("%s: %w", key, err)
 	}
 	return execs, order, nil
+}
+
+// hostExecutors は config[key]（"a,b,..."）の対象の Executor を作る。名前
+// "local"（hostconf.LocalHost）は手元で、remote_config に無くてよい（remote_config に
+// 同じ名前があればそちらを使う）。ほかの名前は remote_config から（#130）。
+func hostExecutors(config map[string]string, key string) (hostconf.Hosts, remote.Config, error) {
+	var names []string
+	for _, n := range strings.Split(config[key], ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return nil, remote.Config{}, fmt.Errorf("the hosts are not set: %s (and remote_config) in --provider-config; %q is this machine", key, hostconf.LocalHost)
+	}
+	var cfg remote.Config
+	if path := config["remote_config"]; path != "" {
+		var err error
+		if cfg, err = remote.LoadConfig(path); err != nil {
+			return nil, cfg, err
+		}
+	}
+	out := hostconf.Hosts{}
+	var remoteNames []string
+	for _, n := range names {
+		if _, dup := out[n]; dup {
+			return nil, cfg, fmt.Errorf("%s: host %q is listed twice", key, n)
+		}
+		if _, ok := cfg.Hosts[n]; n == hostconf.LocalHost && !ok {
+			out[n] = remote.Local{}
+			continue
+		}
+		out[n] = nil
+		remoteNames = append(remoteNames, n)
+	}
+	if len(remoteNames) > 0 {
+		if config["remote_config"] == "" {
+			return nil, cfg, fmt.Errorf("%s needs remote_config: the host list (address, user, private_key, known_hosts, ...)", key)
+		}
+		execs, _, err := cfg.Executors(strings.Join(remoteNames, ","))
+		if err != nil {
+			return nil, cfg, fmt.Errorf("%s: %w", key, err)
+		}
+		for n, e := range execs {
+			out[n] = e
+		}
+	}
+	return out, cfg, nil
 }
 
 // redfishClients は config["redfish_config"] の BMC の一覧からノードごとの

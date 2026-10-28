@@ -10,7 +10,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 
 - **ライセンス:** Apache-2.0
 - **言語:** Go（1.22・標準ライブラリのみ、外部依存なし）
-- **状態:** 設計 v3.27／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.1`、変更点は [CHANGELOG.md](CHANGELOG.md)）
+- **状態:** 設計 v3.28／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.1`、変更点は [CHANGELOG.md](CHANGELOG.md)）
 
 ---
 
@@ -135,6 +135,8 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 | `proxmox-vm` | 実 | Proxmox VE の VM を REST API（API トークン、secret は SecretRef）で宣言どおりに作り、CPU・メモリ・ディスク（大きくするだけ）・NIC・cloud-init・電源を合わせる。vmid は採番から配れる。再起動が要る変更は pending として重ねず、再起動は `apply_pending: reboot` か Workflow の action のときだけ。触らない VM（段0）を設定でき、宣言すれば計画のエラー。prune しない。#143、[docs/providers/proxmox-vm.md](docs/providers/proxmox-vm.md) |
 | `sqlmigrate` | 実 | SQLite（または `engine: postgresql` で PostgreSQL）のデータベースに版つきのマイグレーション（`NNNN_<名前>.up.sql` / `.down.sql`）を流す。宣言は `version`、観測は `schema_migrations` の最大の版。`strategy: task` 専用で、常駐の sakutei（`--task-store`）が起動する Task だけが変える（一回性の reconcile は Apply しない）。`sqlite3`（PostgreSQL は `psql`。接続の設定は postgresql provider のサーバの一覧を使い、流す間は `pg_advisory_xact_lock` を取る）の CLI を呼ぶ。設定は `--sqlmigrate-config`、[docs/providers/sqlmigrate.md](docs/providers/sqlmigrate.md) |
 | `ansible` | 実 | Ansible のモジュールを 1 つのホストに流す最小の階級の provider（§28.7）。観測は `--check --diff` の changed だけ（State を返さない）、適用は通常の実行。原因タグ・差分は粗く、prune しない。破壊的かは `destructive` で宣言する。設定は `--ansible-config`、[docs/providers/ansible.md](docs/providers/ansible.md) |
+| `host-file` | 実 | 離れたホスト（ssh 越し、または手元）のファイルの中身（平文か SecretRef）・mode・owner・group を保つ。観測は中身の hash と stat だけ。prune しない。[docs/providers/host-file.md](docs/providers/host-file.md) |
+| `systemd-unit` | 実 | 離れたホスト（または手元）の systemd のユニットと podman の quadlet の元のファイル・active / inactive・enabled を保つ。`restart_on` に書いたファイルを書き換えるとユニットを 1 回だけ入れ替える（ホストの側の印で判定）。[docs/providers/systemd-unit.md](docs/providers/systemd-unit.md) |
 | `fake` | テスト | fault-injection 可能な検証用 provider（chaos テストの主戦場） |
 
 ---
@@ -163,7 +165,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 コードは設計仕様の**射影**です。設計に関する記述は `docs/` を正とします。
 
 - **[docs/README.md](docs/README.md)** — ドキュメント索引（まずここ）
-- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.27（8 部 29 節・分冊）。§番号は全体で一意
+- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.28（8 部 29 節・分冊）。§番号は全体で一意
 - **[docs/web/sakutei.html](docs/web/sakutei.html)** — 設計思想を庭園メタファで表したランディングページ
 - **[docs/web/buildout.html](docs/web/buildout.html)** — 段0だけがある状態から、20台規模のポッド(リーフスイッチ→BMC→ハイパーバイザー導入→クラスタ構築)を1つの intent PR から積み上げる様子を追う構築ウォークスルー
 - **[docs/web/scenarios.html](docs/web/scenarios.html)** — 稼働中の仮想基盤を題材に、増設/物理交換/FW更新/HVローリング更新が実際どう実行されるかを追う運用シナリオ集

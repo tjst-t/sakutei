@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -165,6 +165,26 @@ integration-netconf:
 	if [ -n "$$left" ]; then \
 	  echo "integration-netconf: containers were left behind; removing: $$left"; \
 	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	exit $$status
+
+# host-file と systemd-unit の統合テスト（#155）。docker で systemd を PID 1 で動かす
+# 使い捨てのコンテナ（ベースは tag と digest で固定。sshd・sudo・podman。--privileged）
+# を立て、sakutei の CLI から ssh 越しにファイル・通常のユニット・podman の quadlet で
+# 動くコンテナを収束させ、依って立つファイルを書き換えるとユニットが 1 回だけ入れ
+# 替わること、sudo が通らない・sshd が止まると何もしないことを確かめ、終わったら
+# （失敗しても）コンテナを消す。quadlet が動かすイメージは手元の docker の alpine
+# （tag と digest で固定）を podman load で入れる。docker・ssh・ssh-keygen と sudo
+# （パスワードなし）が要るので、check・test・CI には入れない。手順と結果は
+# docs/providers/systemd-unit.md の「統合テスト」。
+HOSTCONF_IT := ./tests/integration/hostconf/
+integration-hostconf:
+	go vet -tags integration_hostconf $(HOSTCONF_IT)
+	@status=0; \
+	go test -tags integration_hostconf -count=1 -v -timeout 20m $(HOSTCONF_IT) || status=$$?; \
+	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^sakutei-hcit-'; then \
+	  echo 'integration-hostconf: the container was left behind; removing it'; \
+	  sudo -n docker rm -f -v sakutei-hcit-h1 >/dev/null || status=1; \
 	fi; \
 	exit $$status
 
