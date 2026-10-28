@@ -33,6 +33,7 @@ const (
 	StateUnobservable = "unobservable" // UNOBSERVABLE
 	StateUnmanaged    = "unmanaged"    // UNMANAGED
 	StateWorkflow     = "workflow"     // WORKFLOW（Workflow に任せている）
+	StateOscillating  = "oscillating"  // OSCILLATING（Apply を止めた、#166）
 )
 
 // JSONReport は "sakutei status --json" の標準出力 1 つ分である（#118）。
@@ -64,6 +65,8 @@ type JSONSummary struct {
 	Unobservable int `json:"unobservable"`
 	Unmanaged    int `json:"unmanaged"`
 	Workflow     int `json:"workflow"`
+	// Oscillating は Apply を止めたリソース（#166）。常駐の GET /status だけが出す。
+	Oscillating int `json:"oscillating"`
 	// ListErrors は List がエラーだった provider の数（観測できない側に数える）。
 	ListErrors int `json:"list_errors"`
 	// Total は conformant + drift + unobservable + unmanaged + workflow。
@@ -89,6 +92,8 @@ type JSONResource struct {
 	// workflow のときだけ。
 	Workflow      string `json:"workflow,omitempty"`
 	WorkflowStage string `json:"workflow_stage,omitempty"`
+	// oscillating のとき（#166）。
+	ApplyStopped *JSONApplyStopped `json:"apply_stopped,omitempty"`
 }
 
 // JSONField はずれたフィールド 1 つ（from=現実、to=宣言。無いときは空文字）。
@@ -96,6 +101,17 @@ type JSONField struct {
 	Field string `json:"field"`
 	From  string `json:"from"`
 	To    string `json:"to"`
+}
+
+// JSONApplyStopped は Apply を止めたわけ（#166、§11.1 Tier3）。
+type JSONApplyStopped struct {
+	Diff               string `json:"diff"`
+	IneffectiveApplies int    `json:"ineffective_applies"`
+	MaxApplies         int    `json:"max_applies"`
+	Settle             string `json:"settle"`
+	Reason             string `json:"reason"`
+	Note               string `json:"note"`
+	Since              string `json:"since,omitempty"`
 }
 
 // JSONTier は provider の Capabilities 階級。
@@ -142,8 +158,9 @@ func (r Report) ToJSON(now time.Time) JSONReport {
 		Workflow:     len(r.WorkflowHeld),
 		ListErrors:   r.ListErrorCount,
 	}
+	out.Summary.Oscillating = len(r.Oscillating)
 	out.Summary.Total = out.Summary.Conformant + out.Summary.Drift +
-		out.Summary.Unobservable + out.Summary.Unmanaged + out.Summary.Workflow
+		out.Summary.Unobservable + out.Summary.Unmanaged + out.Summary.Workflow + out.Summary.Oscillating
 
 	for _, it := range r.Drifted {
 		jr := newJSONResource(it.ID, StateDrift)
@@ -178,6 +195,15 @@ func (r Report) ToJSON(now time.Time) JSONReport {
 		jr := newJSONResource(it.ID, StateWorkflow)
 		jr.Workflow = it.Workflow
 		jr.WorkflowStage = it.Stage
+		out.Resources = append(out.Resources, jr)
+	}
+	for _, it := range r.Oscillating {
+		jr := newJSONResource(it.ID, StateOscillating)
+		jr.ApplyStopped = &JSONApplyStopped{Diff: it.Diff, IneffectiveApplies: it.IneffectiveApplies,
+			MaxApplies: it.MaxApplies, Settle: it.Settle, Reason: it.Reason, Note: it.Note}
+		if !it.Since.IsZero() {
+			jr.ApplyStopped.Since = it.Since.UTC().Format(time.RFC3339)
+		}
 		out.Resources = append(out.Resources, jr)
 	}
 	for _, id := range r.Unmanaged {

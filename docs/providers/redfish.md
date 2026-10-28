@@ -101,6 +101,25 @@ YAML の `On` / `Off` は文字列のまま読まれる（bool になるのは `
 
 観測だけの値（宣言できない）: `uuid`・`macs`・`cpu_count`・`memory_gib`・`boot_mode`・`power_state`。
 
+### Apply が効いたかの確かめ（settle、#166）
+
+BMC は Reset に 204 を返してから PowerState を変える。Sakutei は Apply が成功を返したリソースを読み直して Diff が消えたかを
+確かめ、`redfish-system` では既定で **15 秒**（settle）まで待って読み直す（PoweringOn・PoweringOff の間は Converging なので、
+そこで確かめを終えて数えない）。settle を過ぎても電源が変わらない（BMC が命令を受けて何もしない故障。qemu-bmc の障害注入
+`power-action-ignored`）と、`ApplyIneffective` を出し、一回性の `reconcile` は終了コード 4（[exit-codes](../exit-codes.md)）。
+同じ Diff で 3 回（既定）効かなければ、常駐はそのノードへの Reset を止めて `oscillating` として status・/metrics・通知に出す
+（設計 §11.1 の「v1 の実装」）。settle と上限は intent の `apply_check:` か旗で変える：
+
+```yaml
+apply_check:
+  - provider: redfish-system
+    settle: 60s                    # 遅い BMC
+    max_ineffective_applies: 2
+```
+
+止めたノードは、電源が宣言どおりになるか・宣言を変えるか・`sakutei apply-check release --state <file> --audit-log <file>
+--approver <id> redfish-system//<node>`（常駐は `--apply-check-state <file>` を渡しておく）で、また Reset を送る。
+
 ### 仮想メディアのフィールド
 
 | フィールド | 値 | 意味 |
@@ -331,7 +350,28 @@ $ sudo containerlab destroy -t topology.clab.yml --cleanup && rm -rf iso
 | (5) `[AC-84-5]` | BMC を止めると Unknown で何も操作しない | node2 を手で ForceOff・node1 の起動先を手で外してから、node2 のコンテナを `docker pause`。plan は node2 の観測が unreachable でエラー。常駐は node2 を毎周「unobservable」として飛ばし（3 周以上）、node1 は収束を続ける（起動先が戻る）。node2 には Apply を出さない。unpause して 5 秒待っても node2 は Off のまま（止まっている間に送った要求が受信待ちに溜まっていれば、ここで実行されてしまう）。reconcile で On に戻る。 |
 | (6) `[AC-84-6]` | Once は計画の時点でエラー | node2 を `boot_enabled: Once` にすると、plan も reconcile も `boot_enabled "Once" cannot be declared` で失敗し、node2 は変わらない。 |
 | (7) `[AC-87-7]` | OS 導入の Workflow | CD を差して差さったことを確かめてから電源を入れる（[OS を入れる](#os-を入れるworkflow-と組み合わせる)）。 |
+| (9) `[AC-166-9]` | Apply が効かない BMC（#166） | node2 だけ qemu-bmc の障害注入の口（`FAULT_API_ADDR: ":8623"`、管理ネットに直に届く）を開け、node2 を手で ForceOff してから `power-action-ignored` を足す。`power: "On"` の reconcile（`--settle 5s --apply-check-state … --max-ineffective-applies 2`）は 5 秒読み直して終了コード 4・`ApplyIneffective`・「Reconcile: not converged」。2 回目で上限に達し、3 回目は Reset を送らずに 4（`Apply stopped (oscillating`）、電源は Off のまま。障害を外して `sakutei apply-check release` で解くと、reconcile が電源を入れて 0。 |
 | (8) `[AC-140-8]` | BIOS の設定（redfish-bios） | node1 のシステムと `node1/bios`（`ProcVirtualization: Disabled`・`PowerProfile: Balanced`・`AssetTag`）を並べて宣言。plan は差分を出して `Bios/Settings` に書かない。reconcile は Settings に保留中として書き、今の値は変わらず電源も On のまま。2 回目の reconcile は converging で、qemu-bmc のログの「pending until the next boot」は 1 回だけ（PATCH を重ねない）。node2 に読み取り専用（`BootMode`）・選べない値・登録簿に無い名前を宣言すると plan がエラーで、保留中は空のまま。`ForceRestart` で効いたあと plan は Converged で、宣言していない属性は元のまま。 |
+
+### 結果（2026-10-28、qemu-bmc 0.10.0、Apply の確かめを足して、#166）
+
+(9) を足し、Apply のあとの確かめ（redfish-system の settle 15 秒）を入れた状態で `make integration-redfish` が合格した。
+(1)〜(8) は変えていない（電源の Reset のあと PoweringOn・PoweringOff の間は Converging で、確かめをそこで終える）。
+
+```
+--- PASS: TestRedfishIntegration (95.24s)
+    --- PASS: TestRedfishIntegration/0_lab (0.00s)
+    --- PASS: TestRedfishIntegration/1_plan_reconcile (0.36s)
+    --- PASS: TestRedfishIntegration/2_daemon_restores_drift (2.56s)
+    --- PASS: TestRedfishIntegration/3_graceful_stuck (31.10s)
+    --- PASS: TestRedfishIntegration/4_graceful_then_force (11.03s)
+    --- PASS: TestRedfishIntegration/5_bmc_paused_unknown (30.82s)
+    --- PASS: TestRedfishIntegration/6_once_rejected (0.01s)
+    --- PASS: TestRedfishIntegration/7_workflow_cd_before_power (9.07s)
+    --- PASS: TestRedfishIntegration/8_bios_settings (0.12s)
+    --- PASS: TestRedfishIntegration/9_power_action_ignored (10.18s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/redfish	99.534s
+```
 
 ### 結果（2026-10-27、qemu-bmc 0.10.0、BIOS の設定を足して、#140）
 

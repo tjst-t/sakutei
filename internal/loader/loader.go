@@ -101,6 +101,16 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 			return intentFile{}, fmt.Errorf("resource[%d] (%v): %w", i, m["id"], err)
 		}
 		r.Absent = absent
+		if ac, ok := m["apply_check"].(map[string]any); ok {
+			parsed, err := parseApplyCheck(ac, "apply_check")
+			if err != nil {
+				return intentFile{}, fmt.Errorf("resource[%d] (%v): %w", i, m["id"], err)
+			}
+			if _, has := ac["provider"]; has {
+				return intentFile{}, fmt.Errorf("resource[%d] (%v): apply_check: provider is for the top-level apply_check (the resource's provider is its own)", i, m["id"])
+			}
+			r.ApplyCheck = &parsed
+		}
 		if up, ok := m["update_policy"].(map[string]any); ok {
 			pol, err := parseUpdatePolicy(up)
 			if err != nil {
@@ -149,6 +159,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.ObserveTiers = tiers
+	acs, err := parseApplyChecks(tree["apply_check"])
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.ApplyChecks = acs
 	rem, err := parseRemediation(tree["remediation"])
 	if err != nil {
 		return intentFile{}, err
@@ -258,6 +273,8 @@ type intentFile struct {
 	Pools        []Pool           `json:"pools"`
 	Scopes       []ScopePolicy    `json:"scopes"`
 	ObserveTiers []ObserveTier    `json:"observe_tiers"`
+	// ApplyChecks is the top-level apply_check (§11.1, Backlog #166).
+	ApplyChecks []ProviderApplyCheck `json:"-"`
 	// Remediation is the remediation schedule (§14.2); nil when undeclared.
 	Remediation *remediation.Schedule `json:"-"`
 	// PlannedChanges is the top-level planned_change (§13.3).
@@ -313,11 +330,14 @@ type intentResource struct {
 
 	// Absent is `ensure: absent` (§12.2, Backlog #163).
 	Absent bool `json:"-"`
+
+	// ApplyCheck is the resource's `apply_check:` (§11.1, Backlog #166).
+	ApplyCheck *diff.ApplyCheck `json:"-"`
 }
 
 // absentKeys are the only keys a resource declared `ensure: absent` may carry:
 // its identity, and how often it is observed.
-var absentKeys = map[string]bool{"provider": true, "scope": true, "id": true, "ensure": true, "observe_tier": true}
+var absentKeys = map[string]bool{"provider": true, "scope": true, "id": true, "ensure": true, "observe_tier": true, "apply_check": true}
 
 // parseEnsure reads `ensure:` (§12.2, Backlog #163): present (the default) or
 // absent.  An absent resource declares nothing else but its identity and
@@ -402,6 +422,9 @@ type Intent struct {
 	Pools        []Pool
 	Scopes       []ScopePolicy
 	ObserveTiers []ObserveTier
+	// ApplyChecks are the top-level apply_check declarations: the settle
+	// and the stop limits per provider type (§11.1, Backlog #166).
+	ApplyChecks []ProviderApplyCheck
 	// Remediation is the remediation schedule (§14.2), declared in at most
 	// one intent file.  Nil when no file declares remediation:.
 	Remediation *remediation.Schedule
@@ -455,6 +478,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	var pools []Pool
 	var scopes []ScopePolicy
 	var tiers []ObserveTier
+	var applyChecks []ProviderApplyCheck
 	var rem *remediation.Schedule
 	remFrom := ""
 	var decls []plannedDecl
@@ -470,6 +494,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		pools = append(pools, file.Pools...)
 		scopes = append(scopes, file.Scopes...)
 		tiers = append(tiers, file.ObserveTiers...)
+		applyChecks = append(applyChecks, file.ApplyChecks...)
 		if file.Remediation != nil {
 			if rem != nil {
 				return Intent{}, fmt.Errorf("loader: remediation: declared in both %s and %s; declare the schedule once (§14.2)", remFrom, name)
@@ -508,6 +533,9 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	if err := validateObserveTiers(tiers, resources); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
+	if err := validateApplyChecks(applyChecks); err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
 	prof, err := mergeProfiles(profiles, names)
 	if err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
@@ -537,7 +565,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, Revision: ri}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, ApplyChecks: applyChecks, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, Revision: ri}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the
@@ -710,6 +738,7 @@ func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 			ObserveTier:         strings.TrimSpace(r.ObserveTier),
 			UpdatePolicy:        r.UpdatePolicy,
 			Absent:              r.Absent,
+			ApplyCheck:          r.ApplyCheck,
 		})
 	}
 	return resources, intent, nil

@@ -65,6 +65,23 @@ type DaemonHealth struct {
 	// Notify は通知の口（--event-webhook・--event-alertmanager）の宛先ごとの送りの
 	// 状態（#154、§22.3）。通知の口があるときだけ。
 	Notify []NotifyHealth `json:"notify,omitempty"`
+
+	// ApplyStopped は Apply を止めているリソース（#166、§11.1 Tier3）: 同じ Diff の
+	// Apply が成功を返しても現実が変わらないまま上限に達した。止めているものが
+	// あるときだけ。
+	ApplyStopped []ApplyStoppedHealth `json:"apply_stopped,omitempty"`
+}
+
+// ApplyStoppedHealth は Apply を止めているリソース 1 つ（#166）。
+type ApplyStoppedHealth struct {
+	Resource           string    `json:"resource"`
+	Diff               string    `json:"diff"`
+	IneffectiveApplies int       `json:"ineffective_applies"`
+	MaxApplies         int       `json:"max_applies"`
+	Settle             string    `json:"settle"`
+	Reason             string    `json:"reason"`
+	Note               string    `json:"note"`
+	Since              time.Time `json:"since"`
 }
 
 // NotifyHealth は通知の口の 1 つの宛先への送りの状態（#154、§22.3）。宛先ごとに

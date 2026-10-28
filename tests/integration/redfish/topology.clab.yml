@@ -51,6 +51,9 @@ topology:
       env:
         SYSTEM_UUID: "6f1b7c52-0e1a-4d2b-9c11-000000008402"
         VM_MACS: "52:54:00:84:02:01"
+        # 障害注入の口（qemu-bmc 0.10.0、平文の HTTP）。9 段目（#166）が
+        # power-action-ignored を足す。管理ネットに直に届くので publish しない。
+        FAULT_API_ADDR: ":8623"
 
   links:
     - endpoints: ["node1:eth1", "node2:eth1"]

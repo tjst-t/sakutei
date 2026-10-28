@@ -39,7 +39,8 @@ sakutei: metrics listening on http://127.0.0.1:9470/metrics (Prometheus text for
 | `sakutei_last_observe_cycle` | gauge | Observe まで届いた最後の周の番号。下の 2 つはこの周の値 |
 | `sakutei_last_observe_end_timestamp_seconds` | gauge | Observe まで届いた最後の周が終わった時刻（Unix 秒） |
 | `sakutei_observe_duration_seconds` | gauge | Observe まで届いた最後の周の Observe の所要時間（期日の来たリソースの Observe と Diff）。単一デーモンの天井の早期警戒線（§16） |
-| `sakutei_resources{state=…}` | gauge | Observe まで届いた最後の周のリソースの数。`desired`（claim と fencing の後）・`observed`・`drifted`（desired との差分がある。作るべきものも含む）・`unknown`（観測できない：読めない・availability unknown・provider が解決できない）・`converging`（Apply の途中・対象が収束中と答えた） |
+| `sakutei_resources{state=…}` | gauge | Observe まで届いた最後の周のリソースの数。`desired`（claim と fencing の後）・`observed`・`drifted`（desired との差分がある。作るべきものも含む）・`unknown`（観測できない：読めない・availability unknown・provider が解決できない）・`converging`（Apply の途中・対象が収束中と答えた。Apply のあとの確かめの settle の間を含む、#166）・`oscillating`（drifted のうち Apply を止めたもの：同じ Diff の Apply が成功を返しても現実が変わらないまま上限に達した、§11.1 Tier3、#166） |
+| `sakutei_apply_ineffective_total` | counter | Apply が成功を返したのに、settle まで読み直しても Diff が Apply したときと同じまま残った回数（#166）。`increase(...)` が続けて上がる・`sakutei_resources{state="oscillating"}` が 0 でないときは、BMC などが命令を受けて何もしていない |
 | `sakutei_halted{gate=…}` | gauge | 最後の周を止めた gate に 1。`budget`（§13.1）・`capacity`（§13.4）・`prune`（§12.4）・`inventory`（§9.2）・`external_input`（外部入力に届かず前回値も無いので周を飛ばした、§9.2） |
 | `sakutei_held_ops` | gauge | 最後の周で gate が止めた op の数 |
 | `sakutei_alert_only` | gauge | 最後の周が alert-only か freeze なら 1（§14.1） |

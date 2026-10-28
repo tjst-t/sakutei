@@ -37,6 +37,8 @@ import (
 //     所属を書く（tier: は §8 の DAG 優先度帯 `tier: foundation` の予約名なので使わない）。
 //   - planned_change は大量正当作業の宣言（scope / kind / max_count / window / applicant / approval /
 //     requirements / cooling_off、§13.3 / §14.4 / §14.5）。1 件ならオブジェクト、複数なら配列で書く。
+//   - apply_check は provider の型ごとの Apply の効きの確かめ（provider / settle / max_ineffective_applies /
+//     max_ineffective_duration、§11.1、Backlog #166）。resource も apply_check（provider を除く同じ鍵）を書ける。
 //   - profile は運用プロファイル（solo / team / enterprise、§14.5）、solo はその設定（cooling_off）。
 //   - workflows は最小 Workflow の宣言（workflow / applicant / trigger / target / invariant / strategy / stages /
 //     steps / on_failure、§6.3 / §6.4）。書式の詳細と v1.5 で拒否するものは workflow.go。
@@ -121,6 +123,12 @@ func intentSchema() schemaNode {
 					},
 				},
 			},
+			// apply_check は型（provider）ごとの Apply の効きの確かめ（§11.1 Tier2・Tier3、
+			// Backlog #166）: settle と、効かない Apply を止める上限（回数・時間）。
+			"apply_check": schemaNode{
+				"type":  "array",
+				"items": applyCheckSchema(true),
+			},
 			// planned_change は専用予算レーンの宣言（§13.3）。1 件はオブジェクト、複数は配列。
 			"planned_change": plannedChangeSchema(),
 			// profile は運用プロファイル（§14.5）。solo は solo の設定（cooling_off）。
@@ -175,6 +183,8 @@ func intentSchema() schemaNode {
 						}},
 						"fields":       stringMap,
 						"observe_tier": schemaNode{"type": "string"},
+						// apply_check はこのリソースの settle と上限（型の宣言より勝つ、#166）。
+						"apply_check": applyCheckSchema(false),
 						// update_policy は差分の直し方（§6.2, §6.5）。strategy: task なら
 						// 直接 Apply せず Task を起動する。window はメンテ窓。
 						"update_policy": schemaNode{
@@ -368,4 +378,20 @@ func normalizeJSONNumbers(v any) any {
 //	emit は決定的である。数値は int で保持され、再ロード時も int へ寄る。
 func emitCanonicalJSON(tree map[string]any) ([]byte, error) {
 	return json.MarshalIndent(tree, "", "  ")
+}
+
+// applyCheckSchema は apply_check の宣言 1 つの形（§11.1、Backlog #166）。
+// top-level の要素は provider を必須にする。
+func applyCheckSchema(top bool) schemaNode {
+	props := map[string]any{
+		"settle":                   schemaNode{"type": "string"},
+		"max_ineffective_applies":  schemaNode{"type": "integer"},
+		"max_ineffective_duration": schemaNode{"type": "string"},
+	}
+	n := schemaNode{"type": "object", "additionalProperties": false, "properties": props}
+	if top {
+		props["provider"] = schemaNode{"type": "string"}
+		n["required"] = []any{"provider"}
+	}
+	return n
 }

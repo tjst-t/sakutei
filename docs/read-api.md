@@ -55,7 +55,7 @@ sakutei: read-only API listening on http://127.0.0.1:9471 (GET /status /plan /ev
 
 `sakutei plan --json` と同じ形（[plan-json.md](plan-json.md)）。一回性の plan が「いま reconcile したら」の見込みを評価するのに対し、`/plan` は**その周に収束ループが実際に下した判定**である。
 
-- `operations`：その周の差分（原因タグ C の ghost diff を含む）と、prune で消す宣言外の削除。止めたものは `blocked: true` と `blocked_by`・`block_reason`：`budget`（変更予算。累積の窓はデーモンが数えているもの）/ `capacity`（容量ゲート）/ `alert_only_scope`（`remediation: alert-only` の scope）/ `alert_only`（全体の remediation mode が alert-only）/ `prune_halt`（prune の安全装置、§12.4）。planned_change のレーンに入る操作は `lane: "planned_change"`。
+- `operations`：その周の差分（原因タグ C の ghost diff を含む）と、prune で消す宣言外の削除。止めたものは `blocked: true` と `blocked_by`・`block_reason`：`budget`（変更予算。累積の窓はデーモンが数えているもの）/ `capacity`（容量ゲート）/ `alert_only_scope`（`remediation: alert-only` の scope）/ `alert_only`（全体の remediation mode が alert-only）/ `prune_halt`（prune の安全装置、§12.4）/ `apply_stopped`（Apply を止めたリソース、oscillating、#166）。planned_change のレーンに入る操作は `lane: "planned_change"`。
 - `remediation` は常に出る：その周の mode（`--mode`・`--freeze`・intent の schedule を most-restrictive-wins で決めたもの、§14.3）と理由。
 - 保留：`workflow`（Workflow に任せている対象と段階）、`pending_allocations`（採番待ち）、`unobservable`（観測できなかったもの。`availability` が `converging` ならデーモンの Apply が進行中）、`prune_halts`・`prune_deferred`。
 - `budget`・`capacity`・`planned_change_events` はその周の判定。

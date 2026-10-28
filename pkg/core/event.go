@@ -67,6 +67,11 @@ const (
 	// 止めた（ファイルと store の食い違い・store に無い・書き戻しの取り込み待ち）。
 	// そのリソースは Apply しない。
 	EventAllocationHeld EventKind = "AllocationHeld"
+	// EventApplyIneffective は Apply が成功を返したのに、settle を過ぎても現実が
+	// 宣言どおりにならなかった（Diff が同じまま残った）。上限に達したらそのリソース
+	// への Apply を止め（oscillating、§11.1 Tier3・§15.3）、attrs の stopped=true
+	// で知らせる（Backlog #166）。
+	EventApplyIneffective EventKind = "ApplyIneffective"
 
 	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。
 	EventWorkflowStarted       EventKind = "WorkflowStarted"
@@ -99,7 +104,11 @@ func (k EventKind) IsLevel() bool {
 		EventAbsentAwaitingApproval,
 		// #157: a write-back hold continues until the file and the store agree
 		// or the review is taken in.
-		EventAllocationHeld:
+		EventAllocationHeld,
+		// Backlog #166: an Apply that does not take, and the stop of a
+		// resource's Apply, is a continuing condition, resolved when the
+		// resource is no longer stopped.
+		EventApplyIneffective:
 		return true
 	}
 	return false

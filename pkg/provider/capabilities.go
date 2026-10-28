@@ -14,7 +14,10 @@
 
 package provider
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Capabilities declares what a Provider can do (§5.3).
 //
@@ -106,6 +109,15 @@ type Capabilities struct {
 	// misclassified as drift B and auto-applied — the very safety hole this
 	// field exists to close.
 	ProviderVersion string
+
+	// Settle is the type's settle (§11.1 Tier2, Backlog #166): how long after
+	// an Apply that returned success the target may still show the old state
+	// before the core judges that the Apply did not take.  The core re-reads
+	// the resource after every successful Apply until its diff is gone or the
+	// settle has passed (a resource the provider reports Converging is not
+	// judged).  Zero means one re-read right after the Apply.  The intent's
+	// `apply_check:` and the --settle flag override it.
+	Settle time.Duration
 }
 
 // ValidateProvider checks whether p satisfies the startup invariants that the

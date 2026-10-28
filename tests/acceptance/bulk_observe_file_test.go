@@ -434,8 +434,12 @@ func TestBulkObserve_DaemonCreatesWhatBulkDidNotReturn(t *testing.T) {
 	if res.Observed != 3 || res.Launched != 1 {
 		t.Fatalf("[#27-3] Observed=%d Launched=%d, want 3 and 1", res.Observed, res.Launched)
 	}
-	if reads != 2 || r.cp.reads != 1 {
-		t.Errorf("[#27-3] want one bulk call and one Read for the missing record; got %d file reads (%d Read)", reads, r.cp.reads)
+	// #166: the Create that reported success is read back once to confirm it
+	// took (§11.1 Tier2), so one more Read than the Observe needs.  reads is
+	// counted when RunCycle returns: the async Create's confirming Read may
+	// or may not be in it yet.
+	if (reads != 2 && reads != 3) || r.cp.reads != 2 {
+		t.Errorf("[#27-3] want one bulk call, one Read for the missing record and one Read confirming its Create (#166); got %d file reads (%d Read)", reads, r.cp.reads)
 	}
 	if !strings.Contains(readZoneFile(t, path), "h3.example.com. 300 IN A 192.0.2.3") {
 		t.Errorf("[#27-3] the missing record was not created:\n%s", readZoneFile(t, path))

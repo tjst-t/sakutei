@@ -47,8 +47,9 @@
 | `unobservable` | 観測できない（Read のエラー、または Availability が `ok` でない）。drift とも適合とも数えない（§3） | `unobservable=` |
 | `unmanaged` | 宣言外・実在（見せるだけで消さない）。provider の型が prune する型かどうかに関わらず、宣言が 1 つも無くても設定されている provider（`--provider-config` に節がある、またはその provider だけのフラグ）の現実を含む（#164） | `unmanaged=` |
 | `workflow` | Workflow に任せている（収束ループは触らない、§6.3） | `workflow=` |
+| `oscillating` | Apply を止めたリソース（同じ Diff の Apply が成功を返しても現実が変わらないまま上限に達した、§11.1 Tier3、#166）。デーモンの `GET /status` だけが数える（一回性の `status` は常に 0） | `oscillating=`（あるときだけ） |
 | `list_errors` | List がエラーだった provider の数（観測できない側に数える） | — |
-| `total` | `conformant + drift + unobservable + unmanaged + workflow`。`resources` の要素数と同じ | — |
+| `total` | `conformant + drift + unobservable + unmanaged + workflow + oscillating`。`resources` の要素数と同じ | — |
 
 ## `resources[]`
 
@@ -58,7 +59,7 @@
 | `provider` | 常に | provider 名 |
 | `scope` | 常に | scope のラベル（無ければ `{}`） |
 | `local_id` | 常に | provider 内の ID |
-| `state` | 常に | `conformant` / `drift` / `unobservable` / `unmanaged` / `workflow`。文の出力の converged / `DRIFTED` / `UNOBSERVABLE` / `UNMANAGED` / `WORKFLOW` に当たる |
+| `state` | 常に | `conformant` / `drift` / `unobservable` / `unmanaged` / `workflow` / `oscillating`。文の出力の converged / `DRIFTED` / `UNOBSERVABLE` / `UNMANAGED` / `WORKFLOW` / `OSCILLATING` に当たる。`oscillating`（#166）はデーモンの `GET /status` だけに出る |
 | `missing` | `drift` で現実に無いとき | `true`（文の出力では `DRIFTED` のまま） |
 | `cause` | `drift` | 原因タグ `A`〜`E`（§10.2） |
 | `fields` | `drift` | ずれたフィールドの配列。`{"field", "from", "to"}`、`from` が現実・`to` が宣言（無いときは空文字）。secret は参照の形（§20.2） |
@@ -67,6 +68,7 @@
 | `tier` | `drift` | provider 階級 `{"true_observe", "list", "bulk_observe", "pruneable", "provider_version"}` |
 | `observe_error` | `unobservable` | Read のエラー文（`observe error: …`）、または `availability=…` |
 | `workflow` / `workflow_stage` | `workflow` | 任せている Workflow の名前と run の段階 |
+| `apply_stopped` | `oscillating` | Apply を止めたわけ（#166）`{"diff", "ineffective_applies", "max_applies", "settle", "reason", "note", "since"}`。`diff` は止めたときの Diff（`power: "Off" → "On"` など）、`reason` は `max_ineffective_applies` か `max_ineffective_duration`、`since` は止めた時刻。解くのは Diff の中身が変わる・現実が宣言どおりになる・`sakutei apply-check release` |
 
 ## `unmanaged_undetectable[]`
 
@@ -97,4 +99,5 @@
 | `shard` | `--fencing-store` のとき | fencing の holder（`--shard-id`） |
 | `fencing` | `--fencing-store` のとき | scope ごとの世代 `{"scope", "generation", "holder", "fenced"}`（scope の順）。`fenced: true` は別のシャードが新しい世代を持っていて、このデーモンはその scope に書かない（§15.2）。そのときの `generation`・`holder` はストアの現在の世代 |
 | `mirror` | git の配布（`--intent-repo`）のとき | intent の取得の状態 `{"remote", "revision", "fetched_at", "reachable", "error"}`。`revision` は最後に取れた（手元の写しにある）コミット、`fetched_at` は最後に取得が成功した時刻（まだ無ければ出ない）、`reachable` は直近の取得が届いたか（中央・ミラーに届いているか）。`false` のあいだは手元の写しで収束を続ける（§17.4）。`remote` の URL に埋め込まれた資格は伏せる |
+| `apply_stopped` | Apply を止めたリソースがあるとき（#166） | `[{"resource", "diff", "ineffective_applies", "max_applies", "settle", "reason", "note", "since"}]`（ID の順）。同じ Diff の Apply が成功を返しても現実が変わらないまま上限に達し、デーモンが Apply を止めているリソース（oscillating、§11.1 Tier3）。文の出力ではデーモンの行の下に `警告: Apply を止めている` と `OSCILLATING` の行で出る。status の終了コードは変えない |
 | `notify` | 通知の口（`--event-webhook`・`--event-alertmanager`）があるとき | 宛先ごとの送りの状態（#154、開いた順）`{"sink", "url", "delivered", "failed", "rejected", "dropped", "pending", "active", "consecutive_failures", "last_success", "last_failure", "last_error"}`。数は要求（POST）の単位でデーモンが起きてからのもの（`delivered` 届いた・`failed` 届かず送り直した・`rejected` 4xx で捨てた・`dropped` 待ち行列が溢れて捨てた）。`active` は Alertmanager に送り直している firing の alert の数（webhook では出ない）。`consecutive_failures` が 0 でなければ、その宛先に今届いていない（他の宛先へは送り続けている）。文の出力では `notify:` の行と、届いていない宛先の警告の行で出る。`url` の資格と query は伏せる |

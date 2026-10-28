@@ -63,6 +63,10 @@ const (
 	// BlockedByApproval は ensure: absent の削除（§12.2）で、planned_change
 	// （kind: delete）のレーンが開いていないもの（承認待ち、§13.3・§14.4、#163）。
 	BlockedByApproval = "approval"
+	// BlockedByApplyStopped は Apply を止めたリソース（oscillating、§11.1 Tier3、
+	// #166）の操作: 同じ Diff の Apply が成功を返しても現実が変わらないまま上限に
+	// 達した。デーモンの GET /plan と、一回性の reconcile の状態のファイルが使う。
+	BlockedByApplyStopped = "apply_stopped"
 )
 
 // AbsentApprovalReason は承認待ちで止めた ensure: absent の削除の理由（#163）。

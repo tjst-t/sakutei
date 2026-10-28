@@ -135,6 +135,26 @@ type WorkflowHeldItem struct {
 	Stage string
 }
 
+// OscillatingItem は Apply を止めたリソース 1 つ（§11.1 Tier3・§15.3、Backlog
+// #166）: 同じ Diff の Apply が成功を返しても現実が変わらないまま上限に達した。
+// 常駐の読み取り専用の口（GET /status）と --daemon-status に出る。
+type OscillatingItem struct {
+	ID core.ID
+	// Diff は止めたときの Diff（`power: "Off" → "On"` など）。
+	Diff string
+	// IneffectiveApplies は効かなかった Apply の回数、MaxApplies はその上限、
+	// Settle は 1 回ごとに待った時間。
+	IneffectiveApplies int
+	MaxApplies         int
+	Settle             string
+	// Reason は止めたわけ（max_ineffective_applies / max_ineffective_duration）、
+	// Note はその文。
+	Reason string
+	Note   string
+	// Since は止めた時刻。
+	Since time.Time
+}
+
 // Report は status の 1 回分の適合レポートである。
 type Report struct {
 	// IntentRevision / RenderedRevision はヘッダに出す版情報。
@@ -173,6 +193,9 @@ type Report struct {
 	// これを Observe も Apply もしないので、drifted にも converged にも数えない。
 	// Local ID 昇順で整列済み。
 	WorkflowHeld []WorkflowHeldItem
+	// Oscillating は Apply を止めたリソース（#166、§11.1 Tier3）。drifted には
+	// 数えない（ずれてはいるが、収束ループは Apply しない）。ID 文字列の昇順。
+	Oscillating []OscillatingItem
 	// Daemon は常駐デーモンの健全性（#15）。status に --daemon-status が無ければ nil。
 	Daemon *DaemonHealth
 	// DaemonNote はデーモン健全性を読めなかったときの注記（読めないことを隠さない）。
@@ -207,6 +230,7 @@ type Builder struct {
 	unmanaged        []core.ID
 	undetectable     []UndetectableItem
 	workflowHeld     []WorkflowHeldItem
+	oscillating      []OscillatingItem
 	daemon           *DaemonHealth
 	daemonNote       string
 	daemonStale      bool
@@ -315,6 +339,9 @@ func (b *Builder) AddWorkflowHeld(id core.ID, workflow, stage string) {
 // 読み取り専用の口が、前の周の項目を持ち越すのに使う、#136）。
 func (b *Builder) AddDriftedItem(it DriftedItem) { b.drifted = append(b.drifted, it) }
 
+// AddOscillating は Apply を止めたリソースを 1 つ記録する（#166）。
+func (b *Builder) AddOscillating(it OscillatingItem) { b.oscillating = append(b.oscillating, it) }
+
 // SetDaemonHealth は常駐デーモンが書いた健全性（#15）をレポートに載せる。
 func (b *Builder) SetDaemonHealth(h DaemonHealth) { b.daemon = &h }
 
@@ -354,7 +381,11 @@ func (b *Builder) Build() Report {
 	unobs := make([]UnobservableItem, len(b.unobservableList))
 	copy(unobs, b.unobservableList)
 	sort.Slice(unobs, func(i, j int) bool { return unobs[i].ID.String() < unobs[j].ID.String() })
+	osc := make([]OscillatingItem, len(b.oscillating))
+	copy(osc, b.oscillating)
+	sort.Slice(osc, func(i, j int) bool { return osc[i].ID.String() < osc[j].ID.String() })
 	return Report{
+		Oscillating:       osc,
 		Unobservable:      unobs,
 		ListErrorCount:    b.listErrors,
 		WorkflowHeld:      held,
@@ -453,6 +484,15 @@ func (r Report) String() string {
 		}
 	}
 
+	// #166 (§11.1 Tier3): Apply を止めたリソース。drifted としては出さない。
+	if len(r.Oscillating) > 0 {
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "Apply を止めた（oscillating: Apply は成功を返したが現実が変わらない）: %d リソース\n", len(r.Oscillating))
+		for _, it := range r.Oscillating {
+			writeOscillating(&sb, "  ", it)
+		}
+	}
+
 	// FIX #2 (Sc7a647-3): unmanaged（宣言外・実在）セクション。現実に在るが intent に
 	// 無いリソースを列挙する。既定 DeletionPolicy（ExplicitAbsentOnly）では prune 対象外
 	// ＝ status では削除しない（read-only；「確信なき減算はしない」§12.2, ADR-0005）。
@@ -502,8 +542,22 @@ func (r Report) String() string {
 	if len(r.WorkflowHeld) > 0 {
 		fmt.Fprintf(&sb, " workflow=%d", len(r.WorkflowHeld))
 	}
+	if len(r.Oscillating) > 0 {
+		fmt.Fprintf(&sb, " oscillating=%d", len(r.Oscillating))
+	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// writeOscillating は Apply を止めたリソース 1 つを書く（#166）。
+func writeOscillating(sb *strings.Builder, indent string, it OscillatingItem) {
+	fmt.Fprintf(sb, "%sOSCILLATING %s\n", indent, it.ID)
+	fmt.Fprintf(sb, "%s  ずれ: %s\n", indent, it.Diff)
+	fmt.Fprintf(sb, "%s  止めたわけ: %s\n", indent, it.Note)
+	if !it.Since.IsZero() {
+		fmt.Fprintf(sb, "%s  止めた時刻: %s\n", indent, it.Since.UTC().Format(time.RFC3339))
+	}
+	fmt.Fprintf(sb, "%s  解く: desired か現実が変わる・現実が宣言どおりになる・sakutei apply-check release\n", indent)
 }
 
 // writeDaemonPlacement はデーモンの担当（claim）・fencing の世代・git の配布の
@@ -537,6 +591,12 @@ func writeDaemonPlacement(sb *strings.Builder, h DaemonHealth) {
 		fmt.Fprintf(sb, "  mirror: %s revision=%s 最後に取れた時刻=%s\n", m.Remote, rev, fetched)
 		if !m.Reachable {
 			fmt.Fprintf(sb, "  警告: intent の取得先に届いていない — 手元の写しで収束を続けている（§17.4）: %s\n", m.Error)
+		}
+	}
+	if len(h.ApplyStopped) > 0 {
+		fmt.Fprintf(sb, "  警告: Apply を止めている（oscillating: Apply は成功を返したが現実が変わらない、§11.1）: %d リソース\n", len(h.ApplyStopped))
+		for _, a := range h.ApplyStopped {
+			fmt.Fprintf(sb, "    OSCILLATING %s: %s — %s（%s から）\n", a.Resource, a.Diff, a.Note, a.Since.UTC().Format(time.RFC3339))
 		}
 	}
 	for _, n := range h.Notify {

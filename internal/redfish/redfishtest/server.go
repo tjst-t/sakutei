@@ -49,8 +49,9 @@
 // その時刻で進めるので、goroutine を持たない）。
 //
 // 試験用の口: SetUnreachable（接続を切って到達不能にする）・SetFailStatus
-// （すべての要求に 5xx などを返す）・SetDelay（応答を遅らせる）・Requests
-// （受けた要求の記録）。
+// （すべての要求に 5xx などを返す）・SetDelay（応答を遅らせる）・
+// SetIgnorePowerActions（電源の Reset に 204 を返すが電源を変えない。qemu-bmc
+// の障害注入 power-action-ignored を真似る、#166）・Requests（受けた要求の記録）。
 package redfishtest
 
 import (
@@ -185,6 +186,7 @@ type Server struct {
 	fw fwState
 	// 試験用の口。
 	ignoreGraceful bool
+	ignorePower    bool
 	unreachable    bool
 	failStatus     int
 	delay          time.Duration
@@ -272,6 +274,11 @@ func (s *Server) SetDelay(d time.Duration) { s.mu.Lock(); s.delay = d; s.mu.Unlo
 
 // SetIgnoreGraceful は OS が GracefulShutdown に応えないかを決める。
 func (s *Server) SetIgnoreGraceful(v bool) { s.mu.Lock(); s.ignoreGraceful = v; s.mu.Unlock() }
+
+// SetIgnorePowerActions は電源の Reset（On・ForceOff・GracefulShutdown・
+// 再起動）を 204 で受けて何もしないかを決める（#166: Apply は成功を返すが
+// 現実が変わらない故障）。
+func (s *Server) SetIgnorePowerActions(v bool) { s.mu.Lock(); s.ignorePower = v; s.mu.Unlock() }
 
 // SetMediaFetchFails は以後の InsertMedia で image の取得に失敗するかを決める。
 func (s *Server) SetMediaFetchFails(v bool) { s.mu.Lock(); s.mediaFetchFail = v; s.mu.Unlock() }
@@ -550,7 +557,9 @@ func (s *Server) postReset(w http.ResponseWriter, body []byte) {
 			fmt.Sprintf("ResetType %q is not supported", req.ResetType))
 		return
 	}
-	s.reset(req.ResetType)
+	if !s.ignorePower {
+		s.reset(req.ResetType)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

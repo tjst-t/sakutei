@@ -462,6 +462,39 @@ converging は「収束器の上の収束器」（SDN / VCF / アレイ / k8s �
 
 三層いずれも報告用ステータスは §9.7 の全順序に載る（`oscillating > drifted > converging`）。
 
+**v1 の実装（v3.35、Backlog #166）**：Tier2 と Tier3 を「Apply が成功を返しても現実が変わらない」故障（BMC が電源の命令に
+204 を返して電源を変えない、など）に配線した。
+
+- **Apply のあとの確かめ（Tier2）**：Apply が成功を返したリソースは、その場で読み直して Diff が消えたかを確かめる。型ごとの
+  `settle`（provider の `Capabilities.Settle`。redfish の電源・起動先は 15 秒、既定は 0＝1 回だけ読み直す）の間は待って読み
+  直す。常駐では Apply の goroutine の中で確かめ、その間リソースは in-flight（converging）のまま（再 Apply しない、下流は
+  待つ）。相手が `Converging` と言えば（Tier1）そこで確かめを終え、数えない。観測できないまま settle が過ぎたものも数えない
+  （unknown ≠ ineffective）。
+- **効かない Apply の数え方（Tier3）**：settle を過ぎても Diff が **Apply したときと同じ**（Diff の指紋＝desired の値と、各 op の
+  種類・破壊性・欄ごとの現実の値と宣言の値。cause tag と理由の文は含めない）なら、効かなかった Apply として数える。Diff が
+  変わった（縮んだ）なら進んだので数え直す。上限（同じ Diff で `max_ineffective_applies` 回、既定 3、または最初の効かない
+  Apply から `max_ineffective_duration`、既定は時間の上限なし）に達したら、**そのリソースへの Apply を止める**（`oscillating`。
+  そのリソースだけ alert-only と同じに扱い、下流は待つ）。
+- **解く**：Diff の中身（desired か現実の値）が変わったとき・現実が宣言どおりになったとき・人が `sakutei apply-check release`
+  （S4 監査に記録してから状態のファイルに書く。`sakutei task approve` と同じ形）で解いたとき。
+- **知らせ**：`ApplyIneffective`（level の Event、§22.3）。常駐ではリソースに効かない Apply の記録がある間 firing（回数が
+  進むたびに更新）、止めたら stuck・critical、記録が消えたら resolved。止めたリソースは `status`（読み取り専用の口の
+  `GET /status` の `oscillating`・`--daemon-status` の `apply_stopped`）・`GET /plan`（`blocked_by: apply_stopped`）・
+  `/metrics`（`sakutei_resources{state="oscillating"}`・`sakutei_apply_ineffective_total`）に出る。
+- **一回性の `reconcile`**：Apply が成功を返したのに現実が宣言どおりにならなかった（または Apply を止めたリソースがある）とき
+  終了コード **4**（0・1 の意味は変えない。1 の条件と同時なら 1。表は `docs/exit-codes.md`）。回をまたぐ回数は状態のファイル
+  `--apply-check-state`（作業の記録で、正しい状態ではない。失っても数え直すだけ）で持つ。ファイルが無ければ 1 回の中だけ
+  数え、止めることはない（毎回 4 で終わる）。
+- **設定**：`settle`・`max_ineffective_applies`・`max_ineffective_duration` は旗（`--settle`・`--max-ineffective-applies`・
+  `--max-ineffective-duration`）と intent の `apply_check:`（top-level は provider の型ごと、リソースは自分の分。リソースの
+  宣言が型の宣言に勝つ）に書ける。旗と intent が食い違うときは **厳しい方**（most-restrictive-wins、§14.3）：settle は長い方、
+  回数は少ない方、時間は短い方。旗で intent を緩めることはできない（長く効く値はレビューを通る intent が正）。
+- **数えないもの**：strategy: task のリソース（Apply しない、#112 の Task 実行中の決まりのとおり）、cause C の ghost diff（Apply
+  しない、§10.4）、予算・容量・alert-only で止めた op（Apply していない）。stuck への昇格（`--stuck-after`、§22.3）は Drift の
+  level の決まりのまま（止めたリソースの Drift も firing を続け、しきい値で stuck に上がる）。
+- **deadline**（converging の timeout）は v1 では Tier1 の provider が自分で持つ（redfish の GracefulShutdown の待ちなど）。
+  コアの汎用の deadline は未配線（§29.2）。
+
 ### §11.2 ready_condition（観測可能条件への依存）
 
 依存は「存在するか」ではなく「**特定の観測可能な状態に達したか**」を条件にできる（§8.3）。provider は
@@ -494,6 +527,10 @@ ready を待つ場合も、この ready_condition の意味論をシャード境
 
 - Diff 縮小の履歴は S3（インメモリ）に保持する。喪失しても検知が数周鈍るだけ（安全側）。
 - 発振と判定したリソースは §11.1 Tier3 に従い自動で alert-only に隔離する。
+- **v1 の実装（v3.35、Backlog #166）**：「Diff が縮まない」を、Apply が成功を返したあと settle まで読み直しても Diff が
+  Apply したときと同じまま、で判定する（§11.1 の v1 の実装）。そのため、自分の Apply が一度は効いた（確かめで Diff が消えた）
+  あとで相手が戻す綱引きは数えない（それは Drift の level が続いて stuck に上がる、§22.3）。相手が settle の内に戻す綱引きは
+  数える。
 - ベースライン（平常時の変更量）も同じ時系列から導出し、§13 の異常検知が参照する。
 
 ### §11.4 capacity gate

@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/cause"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -98,6 +99,28 @@ type DesiredResource struct {
 	// runs only in an open planned_change lane (§13.3, §14.4): see
 	// reconcile.HoldUnapprovedAbsent.
 	Absent bool
+	// ApplyCheck is the resource's own `apply_check:` (§11.1, Backlog #166):
+	// how long to wait for its Apply to show in reality (settle) and how many
+	// Applies of the same diff that do not take before the loop stops
+	// applying it.  Nil when the resource declares none (the type's
+	// declaration, the flags and the defaults decide, reconcile.ResolveApplyCheck).
+	ApplyCheck *ApplyCheck
+}
+
+// ApplyCheck is an `apply_check:` declaration of the intent (§11.1 Tier2 /
+// Tier3, Backlog #166), for a provider type (top-level `apply_check:`) or a
+// resource.  A nil field is not declared here.
+type ApplyCheck struct {
+	// Settle is how long after an Apply that reported success the reality may
+	// still differ before the Apply is judged not to have taken.
+	Settle *time.Duration
+	// MaxIneffectiveApplies is how many Applies of the same diff may report
+	// success without the diff going away before the loop stops applying
+	// the resource (>= 1).
+	MaxIneffectiveApplies *int
+	// MaxIneffectiveDuration stops applying it once the first such Apply is
+	// this long ago (0: no time limit).
+	MaxIneffectiveDuration *time.Duration
 }
 
 // AllocationTemplate is how an allocated integer is written into its field

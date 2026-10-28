@@ -116,8 +116,12 @@ type storedResource struct {
 // to simulate a long-running bring-up that finishes several cycles later.
 // This is a test-only mechanism; production providers do not use this field.
 type stateFile struct {
-	Resources           map[string]storedResource    `json:"resources"`
-	FailInject          map[string]string            `json:"fail_inject,omitempty"`
+	Resources  map[string]storedResource `json:"resources"`
+	FailInject map[string]string         `json:"fail_inject,omitempty"`
+	// ApplyIgnore is a set of Local IDs whose Apply returns success without
+	// changing anything (test-only, #166: an Apply that reports success but
+	// does not take).  ApplyCount still counts the call.
+	ApplyIgnore         map[string]bool              `json:"apply_ignore,omitempty"`
 	ObserveUnknown      map[string]string            `json:"observe_unknown,omitempty"`
 	ApplyDelay          map[string]string            `json:"apply_delay,omitempty"`
 	ApplyCount          map[string]int               `json:"apply_count,omitempty"`
@@ -408,6 +412,10 @@ func (p *Provider) Apply(_ context.Context, plan core.Plan) error {
 
 	for _, op := range plan.Ops {
 		key := op.Target.Local
+		if sf.ApplyIgnore[key] {
+			// #166: reports success, changes nothing.
+			continue
+		}
 
 		switch op.Kind {
 		case core.OpKindCreate:
@@ -557,6 +565,19 @@ func (p *Provider) SetFailInject(failMap map[string]string) error {
 		return fmt.Errorf("fakeprovider: load state for fail inject: %w", err)
 	}
 	sf.FailInject = failMap
+	return p.save(sf)
+}
+
+// SetApplyIgnore makes Apply of the given resources return success without
+// changing anything (#166).  Pass nil to clear.  Test-only.
+func (p *Provider) SetApplyIgnore(ignore map[string]bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sf, err := p.load()
+	if err != nil {
+		return fmt.Errorf("fakeprovider: load state for apply ignore: %w", err)
+	}
+	sf.ApplyIgnore = ignore
 	return p.save(sf)
 }
 

@@ -109,6 +109,8 @@ func Main(opts ...Option) {
 		runApprove(workflow.DecisionApprove, os.Args[2:])
 	case "reject":
 		runApprove(workflow.DecisionReject, os.Args[2:])
+	case "apply-check":
+		runApplyCheck(os.Args[2:])
 	case "allocator":
 		runAllocator(os.Args[2:])
 	case "mirror":
@@ -155,6 +157,10 @@ func Main(opts ...Option) {
 //	--daemon-status <f>  rewritten every cycle with the daemon health (consecutive unreachable skips, #15)
 //	--unreachable-skip-limit <n>  consecutive unreachable skips before the Prolonged alert (default 3)
 //	--stuck-after <n>    consecutive cycles after which a level Event is promoted transient → stuck (default 5, §22.3)
+//	--settle <dur>       how long an Apply that reported success may take to show in reality (§11.1 Tier2, #166)
+//	--max-ineffective-applies <n>   Applies of the same diff that do not take before the resource's Apply is stopped (default 3)
+//	--max-ineffective-duration <dur>  stop applying it once its first Apply that did not take is this long ago
+//	--apply-check-state <f>  working record of the Applies that did not take; takes in `sakutei apply-check release`
 //
 // --cause-state is refused (#165): the daemon keeps the previous cycle's
 // revisions in memory (Daemon.prevRev), so the file that carries them between
@@ -255,6 +261,7 @@ func runDaemon() {
 		"#15: file rewritten after every cycle with the daemon's health (consecutive cycles skipped because an external input was unreachable); read by `sakutei status --daemon-status`")
 	unreachableSkipLimit := fs.Int("unreachable-skip-limit", 0,
 		"#15: consecutive unreachable-skipped cycles after which ExternalInputUnreachableProlonged fires (once, level-reported: firing / resolved, §22.3) (default 3)")
+	applyCheck := addApplyCheckFlags(fs)
 	stuckAfter := fs.Int("stuck-after", 0,
 		"§22.3: consecutive cycles a level Event (drift, convergence failure, halt) stays firing before it is promoted transient → stuck (default 5)")
 	approvalListen := fs.String("approval-listen", "",
@@ -493,6 +500,8 @@ func runDaemon() {
 		DaemonStatusPath:      *daemonStatus,
 		UnreachableSkipLimit:  *unreachableSkipLimit,
 		StuckAfter:            *stuckAfter,
+		ApplyCheck:            applyCheck.flags("sakutei"),
+		ApplyCheckState:       *applyCheck.state,
 		Out:                   logOut,
 		ErrOut:                logErr,
 		EventSinks:            eventSinks,
@@ -571,6 +580,8 @@ Usage:
   sakutei workflow     list / cancel Workflow runs (§6.3)
   sakutei approve      approve a Workflow gate (§6.4)
   sakutei reject       reject a Workflow gate: the Workflow halts (§6.4)
+  sakutei apply-check  list / release the resources whose Apply is stopped: it reported
+                       success but reality did not change (oscillating, §11.1, #166)
   sakutei allocator    serve the allocation authority (active/standby, §19.8);
                        allocator release / list: give a value back, show allocations (#116)
                        allocator import: rebuild the store from the write-back files (#157)

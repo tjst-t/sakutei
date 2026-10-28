@@ -74,6 +74,7 @@ const (
 	itemDrift
 	itemUnobservable
 	itemWorkflow
+	itemOscillating
 )
 
 // statusItem はリソース 1 つの status の項目。
@@ -85,6 +86,8 @@ type statusItem struct {
 	reason, availability string
 	// workflow のとき。
 	workflow, stage string
+	// oscillating のとき（#166）。
+	osc statusreport.OscillatingItem
 }
 
 // viewState は周をまたいで持つ表示だけの状態（S3）。
@@ -108,6 +111,8 @@ type viewBuilder struct {
 	plan   *planreport.Report
 	// planOps は plan.Operations と同じ順の元の op（ゲートの判定に使う）。
 	planOps []core.Op
+	// stopped は Apply を止めたリソース（Local ID → 理由、#166）。
+	stopped map[string]string
 	graph   *graphreport.Report
 }
 
@@ -135,6 +140,39 @@ func (v *viewBuilder) drifted(it statusreport.DriftedItem) {
 // （"unknown" / "converging" など）。
 func (v *viewBuilder) unobservable(id core.ID, availability, reason string) {
 	v.add(statusItem{kind: itemUnobservable, id: id, availability: availability, reason: reason})
+}
+
+// oscillating は Apply を止めたリソース（#166、§11.1 Tier3）。
+func (v *viewBuilder) oscillating(id core.ID, r ApplyRecord) {
+	if v == nil {
+		return
+	}
+	v.add(statusItem{kind: itemOscillating, id: id, osc: OscillatingItemOf(r)})
+	if v.stopped == nil {
+		v.stopped = map[string]string{}
+	}
+	v.stopped[id.Local] = "Apply stopped (oscillating, §11.1 Tier3): " + r.StopReasonText()
+}
+
+// OscillatingItemOf は止めた記録を status の項目にする。
+func OscillatingItemOf(r ApplyRecord) statusreport.OscillatingItem {
+	return statusreport.OscillatingItem{
+		ID: r.ID, Diff: r.Diff, IneffectiveApplies: r.Applies, MaxApplies: r.Limits.MaxApplies,
+		Settle: r.Limits.Settle.String(), Reason: r.Reason, Note: r.StopReasonText(), Since: r.StoppedAt,
+	}
+}
+
+// ApplyStoppedHealth は止めた記録をデーモンの健全性の形にする。
+func ApplyStoppedHealth(rs []ApplyRecord) []statusreport.ApplyStoppedHealth {
+	var out []statusreport.ApplyStoppedHealth
+	for _, r := range rs {
+		it := OscillatingItemOf(r)
+		out = append(out, statusreport.ApplyStoppedHealth{
+			Resource: r.ID.String(), Diff: it.Diff, IneffectiveApplies: it.IneffectiveApplies, MaxApplies: it.MaxApplies,
+			Settle: it.Settle, Reason: it.Reason, Note: it.Note, Since: it.Since.UTC(),
+		})
+	}
+	return out
 }
 
 func (v *viewBuilder) workflowHeld(id core.ID, wf string) {
@@ -229,6 +267,9 @@ func (v *viewBuilder) finish(ctx context.Context, x viewInput) {
 		case itemWorkflow:
 			b.AddWorkflowHeld(it.id, it.workflow, it.stage)
 			resourceStatus[it.id.Local] = core.StatusConverging
+		case itemOscillating:
+			b.AddOscillating(it.osc)
+			resourceStatus[it.id.Local] = core.StatusOscillating
 		}
 	}
 	// 持ち越しは、今の desired に在るものだけ（消えたものは忘れる）。
@@ -352,6 +393,9 @@ func (v *viewBuilder) gates(observeOnly func(string) bool, alertScopes []core.Sc
 			continue
 		case inScopes(op.Target.Scope, alertScopes):
 			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByAlertOnlyScope, planreport.AlertOnlyScopeReason
+			continue
+		case v.stopped[op.Target.Local] != "" && !o.Prune:
+			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByApplyStopped, v.stopped[op.Target.Local]
 			continue
 		case o.Task != nil || op.Cause == core.CauseTagC:
 			// Apply しない（Task を起こす / ghost diff は見直しを待つ）ので予算を使わない。

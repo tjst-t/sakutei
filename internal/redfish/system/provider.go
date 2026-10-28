@@ -185,7 +185,10 @@ func (p *Provider) Schema() provider.Schema {
 }
 
 // Capabilities は標準階級: Read は値を返すが List と BulkObserve は無く、
-// サーバは消さない（Pruneable:false）。
+// サーバは消さない（Pruneable:false）。Settle（#166、§11.1 Tier2）: BMC は
+// Reset に 204 を返してから PowerState を変えるので、Apply のあと
+// DefaultSettle まで読み直して確かめる（PoweringOn / PoweringOff の間は
+// Converging なので数えない）。
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
 		TrueObserve:     true,
@@ -193,8 +196,13 @@ func (p *Provider) Capabilities() provider.Capabilities {
 		BulkObserve:     false,
 		Pruneable:       false,
 		ProviderVersion: ProviderVersion,
+		Settle:          DefaultSettle,
 	}
 }
+
+// DefaultSettle は電源・起動先の Apply の settle の既定（#166）。intent の
+// apply_check: と --settle で変えられる。
+const DefaultSettle = 15 * time.Second
 
 // ---- Read ----
 

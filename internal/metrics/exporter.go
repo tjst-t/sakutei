@@ -54,6 +54,12 @@ type Cycle struct {
 	// Observed with a diff (drifted), not observable (unknown ≠ absent),
 	// and converging (in-flight Apply, or the target says it converges).
 	Desired, Observed, Drifted, Unknown, Converging int
+	// Oscillating were Observed with a diff whose Apply is stopped (§11.1
+	// Tier3, #166).
+	Oscillating int
+	// IneffectiveApplies are the Applies verified since the previous cycle
+	// that reported success but did not change reality (#166).
+	IneffectiveApplies int
 
 	// Held is the number of ops a gate held this cycle.
 	Held int
@@ -96,7 +102,9 @@ type Exporter struct {
 	mu     sync.Mutex
 	cycles int
 	errors int
-	last   *Cycle
+	// ineffective counts the Applies that did not take (#166).
+	ineffective int
+	last        *Cycle
 	// lastObserve is the last cycle that reached the Observe phase.
 	lastObserve *Cycle
 	// notify reports the notification sinks per destination (SetNotify).
@@ -186,6 +194,7 @@ func (e *Exporter) Record(c Cycle) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cycles++
+	e.ineffective += c.IneffectiveApplies
 	if c.Err {
 		e.errors++
 	}
@@ -211,6 +220,9 @@ func (e *Exporter) Families() []Family {
 	fams := []Family{
 		{Name: "sakutei_cycles_total", Type: Counter, Help: "Convergence cycles the daemon has run.", Samples: one(float64(e.cycles))},
 		{Name: "sakutei_cycle_errors_total", Type: Counter, Help: "Convergence cycles that ended in an error.", Samples: one(float64(e.errors))},
+		{Name: "sakutei_apply_ineffective_total", Type: Counter,
+			Help:    "Applies that reported success but did not change reality after the settle: the diff they applied was still observed (§11.1, #166).",
+			Samples: one(float64(e.ineffective))},
 	}
 	if e.notify != nil {
 		fams = append(fams, notifyFamilies(e.notify())...)
@@ -276,13 +288,14 @@ func (e *Exporter) Families() []Family {
 				Help:    "Duration of the Observe phase (Observe and Diff of the due resources) of the last cycle that observed; the early-warning line of the single daemon (§16).",
 				Samples: one(o.ObserveDuration.Seconds())},
 			Family{Name: "sakutei_resources", Type: Gauge,
-				Help: "Resources of the last cycle that observed, by state: desired (after the claim), observed, drifted (diff against desired), unknown (not observable, unknown is not absent), converging.",
+				Help: "Resources of the last cycle that observed, by state: desired (after the claim), observed, drifted (diff against desired), unknown (not observable, unknown is not absent), converging, oscillating (drifted, Apply stopped: Applies of the same diff reported success without changing reality, §11.1).",
 				Samples: []Sample{
 					{Labels: []Label{{"state", "desired"}}, Value: float64(o.Desired)},
 					{Labels: []Label{{"state", "observed"}}, Value: float64(o.Observed)},
 					{Labels: []Label{{"state", "drifted"}}, Value: float64(o.Drifted)},
 					{Labels: []Label{{"state", "unknown"}}, Value: float64(o.Unknown)},
 					{Labels: []Label{{"state", "converging"}}, Value: float64(o.Converging)},
+					{Labels: []Label{{"state", "oscillating"}}, Value: float64(o.Oscillating)},
 				}},
 		)
 	}

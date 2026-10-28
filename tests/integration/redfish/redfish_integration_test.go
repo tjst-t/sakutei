@@ -42,6 +42,12 @@
 //	           converging で PATCH を重ねない。登録簿に合わない属性（読み取り
 //	           専用・選べない値）は計画の時点でエラー。再起動で効けば plan は
 //	           Converged で、宣言していない属性は変わらない。
+//	[AC-166-9] Apply が効かない BMC（#166）: qemu-bmc の障害注入
+//	           power-action-ignored（電源の Reset に 204 を返して何もしない）を
+//	           node2 に足すと、reconcile は settle のあいだ読み直して終了コード 4
+//	           （ApplyIneffective）。--apply-check-state で上限（2 回）に達すると
+//	           Reset を送らずに 4。障害を外して apply-check release で解くと
+//	           reconcile が電源を入れて 0。
 package redfish
 
 import (
@@ -576,6 +582,7 @@ func TestRedfishIntegration(t *testing.T) {
 		{"6_once_rejected", stepOnceRejected},
 		{"7_workflow_cd_before_power", stepWorkflowCDBeforePower},
 		{"8_bios_settings", stepBiosSettings},
+		{"9_power_action_ignored", stepPowerActionIgnored},
 	}
 	for _, s := range steps {
 		if !t.Run(s.name, s.fn) {
@@ -1198,4 +1205,76 @@ func indexOf(xs []string, x string) int {
 		}
 	}
 	return -1
+}
+
+// ---- 9 段目（#166）----
+
+// faultAPI は node2 の障害注入の口（topology の FAULT_API_ADDR）。
+func faultAPI(n node) string { return "http://" + n.addr + ":8623/faults" }
+
+func faultDo(t *testing.T, n node, method string, body any) {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, faultAPI(n), rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("%s: %s %s: %v", n.name, method, faultAPI(n), err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("%s: %s %s: %d %s", n.name, method, faultAPI(n), resp.StatusCode, b)
+	}
+}
+
+// [AC-166-9]
+func stepPowerActionIgnored(t *testing.T) {
+	handReset(t, node2, "ForceOff")
+	waitFor(t, 30*time.Second, "node2 Off", powerIs(node2, "Off"))
+	faultDo(t, node2, "POST", map[string]string{"kind": "power-action-ignored"})
+	defer faultDo(t, node2, "DELETE", nil)
+	writeIntent(t, systemRes(node2, map[string]string{"power": "On"}))
+
+	state := filepath.Join(lab.dir, "apply-check.json")
+	_ = os.Remove(state)
+	args := []string{"--settle", "5s", "--apply-check-state", state, "--max-ineffective-applies", "2"}
+	for i := 1; i <= 2; i++ {
+		out, code := sakutei(t, "reconcile", args...)
+		if code != 4 || !strings.Contains(out, "ApplyIneffective: "+systemID(node2)) || !strings.Contains(out, "Reconcile: not converged") {
+			t.Fatalf("[AC-166-9] reconcile %d with power-action-ignored: exit %d, want 4 and ApplyIneffective:\n%s", i, code, out)
+		}
+	}
+	out, code := sakutei(t, "reconcile", args...)
+	if code != 4 || !strings.Contains(out, "Apply stopped (oscillating") {
+		t.Fatalf("[AC-166-9] reconcile at the limit: exit %d, want 4 and the stop:\n%s", code, out)
+	}
+	if s := mustSystem(t, node2); s.PowerState != "Off" {
+		t.Fatalf("[AC-166-9] node2 is %s; the fault keeps it Off", s.PowerState)
+	}
+
+	// 障害を外し、人が解く。
+	faultDo(t, node2, "DELETE", nil)
+	rel := exec.Command(lab.bin, "apply-check", "release", "--state", state,
+		"--audit-log", filepath.Join(lab.dir, "audit-166.jsonl"), "--approver", "integration", systemID(node2))
+	if b, err := rel.CombinedOutput(); err != nil {
+		t.Fatalf("[AC-166-9] apply-check release: %v\n%s", err, b)
+	}
+	out, code = sakutei(t, "reconcile", "--settle", "60s", "--apply-check-state", state)
+	if code != 0 {
+		t.Fatalf("[AC-166-9] reconcile after the release: exit %d, want 0:\n%s", code, out)
+	}
+	waitFor(t, time.Minute, "node2 On", powerIs(node2, "On"))
 }

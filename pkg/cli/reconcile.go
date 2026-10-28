@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/audit"
@@ -82,6 +83,13 @@ import (
 //	1 — error (flag parse, intent load, apply error) OR one or more resources
 //	    were skipped this cycle (unobservable upstream / upstream Apply failure)
 //	    OR --expect-revision did not match rendered_revision (nothing applied)
+//	4 — #166: an Apply reported success but reality did not become what is
+//	    declared (re-read after the settle, the diff remains), or a resource
+//	    was not applied because its Apply is stopped (oscillating, counted
+//	    across runs with --apply-check-state).  When a condition of 1 holds as
+//	    well, 1 wins.  (2 is not used: Go exits 2 on a panic.)
+//
+// The full table of the exit codes of every verb is docs/exit-codes.md.
 func runReconcile(args []string) {
 	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -158,6 +166,10 @@ func runReconcile(args []string) {
 	expectRevision := fs.String("expect-revision", "",
 		"rendered_revision confirmed by plan; if this run's rendered_revision differs, abort before any Apply (§26.6); empty=no check")
 
+	// #166 (§11.1): re-read after every Apply that reported success; the
+	// settle and the stop limits.
+	applyCheck := addApplyCheckFlags(fs)
+
 	logFormat := addLogFormatFlag(fs)
 	eventLog := addEventLogFlag(fs)
 	eventNotify := addEventNotifyFlags(fs)
@@ -166,6 +178,7 @@ func runReconcile(args []string) {
 		// flag package already printed the error.
 		os.Exit(1)
 	}
+	acFlags := applyCheck.flags("sakutei reconcile")
 	setLogFormat("sakutei reconcile", *logFormat)
 	routeEventLog("sakutei reconcile", *eventLog, eventNotify)
 	soaSerial := checkZoneSOASerial("sakutei reconcile", *zoneSOASerial)
@@ -426,6 +439,30 @@ func runReconcile(args []string) {
 	// Scb0ecd-2: compute curProviderVersion for cause-state tracking.
 	curProviderVersion := joinedProviderVersions(providers)
 
+	// #166 (§11.1): the Applies that did not take, counted across runs in the
+	// --apply-check-state file (a working record, not state: losing it only
+	// restarts the count).  The release requests left there by "sakutei
+	// apply-check release" are taken in now.
+	checker, acErr := reconcile.LoadApplyChecker(*applyCheck.state)
+	if acErr != nil {
+		fmt.Fprintf(logErr, "sakutei reconcile: warn: apply-check state: %v (counting from zero)\n", acErr)
+		checker = reconcile.NewApplyChecker()
+	}
+	intentKeys := make(map[core.IDKey]bool, len(expanded))
+	for _, r := range expanded {
+		intentKeys[r.DesiredResource.ID.Key()] = true
+	}
+	checker.Retain(func(id core.ID) bool { return intentKeys[id.Key()] })
+	saveApplyCheck := func() {
+		if _, _, err := checker.Sync(*applyCheck.state); err != nil {
+			fmt.Fprintf(logErr, "sakutei reconcile: warn: save apply-check state: %v\n", err)
+		}
+	}
+	saveApplyCheck()
+	applyTypes := in.ApplyCheckByProvider()
+	// stoppedHeld are the resources not applied because their Apply is stopped.
+	stoppedHeld := map[string]bool{}
+
 	// Depend on the Executor seam (interface), not the concrete LocalExecutor,
 	// so later Stories can swap in other implementations without touching this
 	// call site (§6 seam principle).
@@ -584,6 +621,12 @@ func runReconcile(args []string) {
 			fmt.Fprintf(logErr, "sakutei reconcile: %v\n", planErr)
 			exitAfterEvents(1)
 		}
+		// #166: a resource observed with no diff is no longer stopped.
+		if len(resourcePlan.Ops) == 0 {
+			if was := checker.Settled(res.ID); was != nil {
+				fmt.Fprintf(logErr, "sakutei reconcile: apply-check: %s: reality converged; no longer stopped (was: %s)\n", res.ID, was.StopReasonText())
+			}
+		}
 		// Scb0ecd-2: log ProviderUpgradeDiff event for cause-C ops (ghost diff),
 		// and filter them out of the Apply set (§10.4, task Scb0ecd-2-2).
 		// C ops are shown in plan output but NOT applied; the operator must
@@ -617,7 +660,22 @@ func runReconcile(args []string) {
 			unobservable[res.ID.Local] = true
 			taskHeld[res.ID.Local] = true
 		} else if len(nonCOps) > 0 {
-			plans[res.ID.Local] = core.Plan{Ops: nonCOps}
+			// #166 (§11.1 Tier3): a resource whose Applies of this same diff
+			// reported success without changing reality up to its limit is
+			// not applied again until the diff changes, reality converges or
+			// a person releases it.
+			rec, stopped, released := checker.Gate(res.ID, reconcile.ApplyFingerprint(res, nonCOps))
+			if released != nil {
+				fmt.Fprintf(logErr, "sakutei reconcile: apply-check: %s: the diff changed (desired or reality); Apply resumes (was stopped: %s)\n",
+					res.ID, released.StopReasonText())
+			}
+			if stopped {
+				reconcile.EmitApplyIneffective(logErr, "sakutei reconcile: ", rec)
+				unobservable[res.ID.Local] = true
+				stoppedHeld[res.ID.Local] = true
+			} else {
+				plans[res.ID.Local] = core.Plan{Ops: nonCOps}
+			}
 		} else if len(resourcePlan.Ops) > 0 && len(nonCOps) == 0 {
 			// All ops were C (ghost diff); store an empty plan so that the
 			// resource is not treated as "no diff" (it is drifted, just not
@@ -630,6 +688,8 @@ func runReconcile(args []string) {
 			// scheduler (do not attempt Apply, do not skip downstream).
 		}
 	}
+
+	saveApplyCheck()
 
 	// §8.3: observe ready_condition upstreams that are outside the desired set
 	// through the dependent's provider, so they can still gate it.
@@ -878,6 +938,8 @@ func runReconcile(args []string) {
 			heldReason[local] = "strategy: task — awaits its Task (launched by the daemon, §6.5)"
 		case workflowHeld[local]:
 			heldReason[local] = "target of a Workflow (driven by the daemon, §6.3)"
+		case stoppedHeld[local]:
+			heldReason[local] = "Apply stopped (oscillating, §11.1 Tier3): its Applies of this diff reported success without changing reality (see ApplyIneffective)"
 		}
 	}
 	_, appliedIDs, skipped, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, desired, filteredPlans, unobservable, heldReason, ready, logErr)
@@ -911,6 +973,63 @@ func runReconcile(args []string) {
 		}
 		fmt.Fprintf(logErr, "sakutei reconcile: skip %s (unobservable, upstream failure, or upstream not ready; not converged this cycle)\n", sk)
 	}
+
+	// #166 (§11.1 Tier2): every Apply that reported success is re-read until
+	// its diff is gone or its settle has passed (in parallel).  An Apply whose
+	// diff is still the one it applied did not take: it is counted (and the
+	// resource's Apply stopped at the limit); a diff that moved is progress.
+	type verified struct {
+		out    reconcile.VerifyOutcome
+		ops    []core.Op
+		limits reconcile.ApplyCheckLimits
+	}
+	verifiedBy := map[string]verified{}
+	var verifyMu sync.Mutex
+	var verifyWG sync.WaitGroup
+	for _, res := range desired {
+		local := res.ID.Local
+		if !appliedIDs[local] || len(filteredPlans[local].Ops) == 0 {
+			continue
+		}
+		p := providers[res.ID.Provider]
+		lim := reconcile.ResolveApplyCheck(res, applyTypes, acFlags, p.Capabilities().Settle)
+		verifyWG.Add(1)
+		go func(res diff.DesiredResource, p provider.Provider, engine *diff.Engine, lim reconcile.ApplyCheckLimits) {
+			defer verifyWG.Done()
+			out, ops := reconcile.VerifyApply(ctx, p, engine, res, lim.Settle)
+			verifyMu.Lock()
+			verifiedBy[res.ID.Local] = verified{out: out, ops: ops, limits: lim}
+			verifyMu.Unlock()
+		}(res, p, engines[res.ID.Provider], lim)
+	}
+	verifyWG.Wait()
+	var notConverged, unconfirmed []string
+	for _, res := range desired {
+		v, ok := verifiedBy[res.ID.Local]
+		if !ok {
+			continue
+		}
+		switch v.out {
+		case reconcile.VerifyConverged:
+			checker.Effective(res.ID)
+		case reconcile.VerifyIneffective:
+			notConverged = append(notConverged, res.ID.Local)
+			applied := reconcile.ApplyFingerprint(res, filteredPlans[res.ID.Local].Ops)
+			if reconcile.ApplyFingerprint(res, v.ops) != applied {
+				checker.Effective(res.ID)
+				fmt.Fprintf(logErr, "sakutei reconcile: apply %s: reported success; reality changed but still differs after the settle (%s): %s\n",
+					res.ID, v.limits.Settle, reconcile.DiffText(v.ops))
+				continue
+			}
+			rec := checker.Ineffective(res.ID, applied, reconcile.DiffText(v.ops), v.limits, time.Now())
+			reconcile.EmitApplyIneffective(logErr, "sakutei reconcile: ", rec)
+		default:
+			unconfirmed = append(unconfirmed, res.ID.Local)
+			fmt.Fprintf(logErr, "sakutei reconcile: apply %s: reported success; reality could not be confirmed within the settle (%s): unobservable or converging\n",
+				res.ID, v.limits.Settle)
+		}
+	}
+	saveApplyCheck()
 
 	// Advance the cumulative window counter for applied ops.
 	for _, res := range desired {
@@ -973,6 +1092,15 @@ func runReconcile(args []string) {
 		// NOT repeat it here — only the stdout summary belongs in this switch.
 		runSummary(fmt.Sprintf("Reconcile: BUDGET HALTED (no changes applied): %s", budgetDecision.Reason))
 		exitAfterEvents(1)
+	case appliedOps > 0 && len(notConverged) > 0:
+		// #166: the provider said yes; reality did not follow.  Do not call
+		// it applied.
+		failedText := ""
+		if applyFailed > 0 {
+			failedText = fmt.Sprintf("; %d resource(s) failed to apply", applyFailed)
+		}
+		runSummary(fmt.Sprintf("Reconcile: not converged: %d change(s) reported applied, but %d resource(s) still differ from desired after the settle — the provider returned success and reality did not change: %v%s",
+			appliedOps, len(notConverged), notConverged, failedText))
 	case appliedOps > 0:
 		failedText := ""
 		if applyFailed > 0 {
@@ -1000,8 +1128,15 @@ func runReconcile(args []string) {
 	case obsHeld.DriftCount > 0:
 		runSummary(fmt.Sprintf("Reconcile: no changes applied; %d drifted resource(s) of observe-only provider(s) reported (§23.4)", obsHeld.DriftCount))
 	case len(awaitingApproval) > 0:
+	case len(stoppedHeld) > 0:
 	default:
 		runSummary("Converged (no changes)")
+	}
+	if n := len(stoppedHeld); n > 0 {
+		runSummary(fmt.Sprintf("Reconcile: not converged: %d resource(s) not applied: Apply stopped (oscillating, §11.1 Tier3) — their Applies of the same diff reported success without changing reality; they are applied again when the diff changes, reality converges, or after `sakutei apply-check release`", n))
+	}
+	if n := len(unconfirmed); n > 0 {
+		runSummary(fmt.Sprintf("Reconcile: %d applied resource(s) not yet confirmed: unobservable or converging at the end of the settle: %v", n, unconfirmed))
 	}
 
 	// D-1 exit policy: an *unobservable* upstream is a safety failure — the
@@ -1021,6 +1156,9 @@ func runReconcile(args []string) {
 	for local := range unobservable {
 		if waitingAlloc[local] {
 			waitingCount++
+		} else if stoppedHeld[local] {
+			// #166: observed fine; held by the stop (exit 4 below).
+			heldCount++
 		} else if scopeHeld.Locals[local] || obsHeld.Locals[local] {
 			heldCount++
 		} else if taskHeld[local] {
@@ -1050,6 +1188,10 @@ func runReconcile(args []string) {
 	}
 	if budgetHalted || capacityHalted {
 		exitAfterEvents(1)
+	}
+	if len(notConverged) > 0 || len(stoppedHeld) > 0 {
+		// #166: an Apply reported success but reality is not what is declared.
+		exitAfterEvents(exitApplyIneffective)
 	}
 	exitAfterEvents(0)
 }

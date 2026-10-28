@@ -323,6 +323,18 @@ type Config struct {
 	// no file.
 	DaemonStatusPath string
 
+	// ApplyCheck is what the flags say about the settle and the stop limits
+	// of an Apply that reports success but does not take (§11.1 Tier2 /
+	// Tier3, Backlog #166); the intent's apply_check: and the providers'
+	// Capabilities.Settle complete it (ResolveApplyCheck).
+	ApplyCheck ApplyCheckFlags
+	// ApplyCheckState, when set, is the working record of the Applies that
+	// did not take (--apply-check-state): read when the daemon starts, and
+	// rewritten at the start of every cycle after taking in the release
+	// requests "sakutei apply-check release" left there.  Empty keeps the
+	// record in memory only (S3).
+	ApplyCheckState string
+
 	// StuckAfter is the number of consecutive cycles a level Event (drift,
 	// convergence failure, halt) stays firing before it is promoted
 	// transient → stuck (§22.3).  A permanent failure (sdk.IsPermanent) and a
@@ -506,6 +518,10 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		if cfg.NotifyStatus != nil {
 			h.Notify = cfg.NotifyStatus()
+		}
+		if d != nil {
+			// #166: the resources whose Apply is stopped (oscillating).
+			h.ApplyStopped = ApplyStoppedHealth(d.checker.Stopped())
 		}
 		return h
 	}
@@ -750,6 +766,19 @@ func Run(ctx context.Context, cfg Config) error {
 			fmt.Fprintf(out, "sakutei: cycle %d: %d resource(s) in backoff (will retry later): %v\n",
 				cycleNum, len(res.BackedOff), res.BackedOff)
 		}
+		if len(res.Ineffective) > 0 {
+			// #166 (§11.1 Tier2): Applies that reported success but did not
+			// change reality after the settle (each was logged when verified).
+			var ids []string
+			for _, r := range res.Ineffective {
+				ids = append(ids, r.ID.Local)
+			}
+			summary(errOut, fmt.Sprintf("%d Apply(s) reported success but reality did not change after the settle (not converged): %v", len(res.Ineffective), ids))
+		}
+		if len(res.Oscillating) > 0 {
+			// #166 (§11.1 Tier3): each is its own ApplyIneffective Event (level).
+			summary(errOut, fmt.Sprintf("%d resource(s) not applied: Apply stopped (oscillating — Applies of the same diff reported success without changing reality): %v", len(res.Oscillating), res.Oscillating))
+		}
 		if res.Pruned > 0 {
 			// Scf7762-1: orphans deleted by the prune phase this cycle.  Each
 			// deleted orphan was its own Pruned Event; this is the cycle's count.
@@ -817,6 +846,8 @@ func Run(ctx context.Context, cfg Config) error {
 				Drifted:                     res.Observe.Drifted,
 				Unknown:                     res.Observe.Unknown,
 				Converging:                  res.Observe.Converging,
+				Oscillating:                 res.Observe.Oscillating,
+				IneffectiveApplies:          len(res.Ineffective),
 				Held:                        res.Held,
 				BudgetHalted:                res.BudgetHalted,
 				CapacityHalted:              res.CapacityHalted,
@@ -929,6 +960,9 @@ type Daemon struct {
 	// view is the display-only state of the read-only API (#136, S3); nil
 	// when Config.View is not set.
 	view *viewState
+	// checker counts the Applies that report success but do not take and
+	// stops applying a resource at its limit (§11.1, Backlog #166, S3).
+	checker *ApplyChecker
 }
 
 // routeEvents defaults cfg.Out / cfg.ErrOut and routes the Events emitted
@@ -1099,7 +1133,15 @@ func NewDaemon(cfg Config) *Daemon {
 	if cfg.View != nil {
 		view = &viewState{}
 	}
+	// #166: the working record of the Applies that did not take survives a
+	// restart when it has a file; an unreadable one starts empty (counting
+	// again is the safe side).
+	checker, err := LoadApplyChecker(cfg.ApplyCheckState)
+	if err != nil {
+		fmt.Fprintf(cfg.ErrOut, "sakutei: warn: apply-check state: %v; starting with an empty record\n", err)
+	}
 	return &Daemon{
+		checker:      checker,
 		view:         view,
 		level:        level,
 		workflows:    workflows,
@@ -1122,7 +1164,7 @@ func NewDaemon(cfg Config) *Daemon {
 func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 	d.cycle++
 	return runCycleAsync(ctx, d.providers, d.budgetEngine, d.exec, d.ifl, d.lsRing,
-		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows, d.view)
+		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows, d.view, d.checker)
 }
 
 // EndCycle closes the level report of the cycle that returned res and
@@ -1204,12 +1246,25 @@ func cycleSummary(res CycleResult) string {
 	if len(res.AwaitingApproval) > 0 {
 		extra += fmt.Sprintf(" awaiting_approval=%d", len(res.AwaitingApproval))
 	}
+	if len(res.Oscillating) > 0 {
+		extra += fmt.Sprintf(" oscillating=%d", len(res.Oscillating))
+	}
+	if len(res.Ineffective) > 0 {
+		extra += fmt.Sprintf(" ineffective=%d", len(res.Ineffective))
+	}
 	switch {
 	case res.Held > 0 || res.PruneHalted:
 		return fmt.Sprintf("halted (%d op(s) held) applied=%d launched=%d%s",
 			res.Held, res.Applied, res.Launched, extra)
 	case res.Applied == 0 && res.Launched == 0 && res.Pruned == 0 && len(res.Waiting) == 0 && res.DriftCount == 0 &&
 		len(res.TasksLaunched) == 0 && len(res.TasksHeld) == 0 && len(res.WorkflowHeld) == 0:
+		if n := len(res.Oscillating); n > 0 {
+			// #166: a stopped resource is drifted and not applied.
+			return fmt.Sprintf("not converged: %d resource(s) with Apply stopped (oscillating)%s", n, extra)
+		}
+		if len(res.Ineffective) > 0 {
+			return fmt.Sprintf("not converged: %d Apply(s) did not take%s", len(res.Ineffective), extra)
+		}
 		if len(res.Skipped) > 0 {
 			return fmt.Sprintf("not converged: %d resource(s) skipped (no changes)", len(res.Skipped))
 		}
@@ -1367,6 +1422,16 @@ type CycleResult struct {
 	// cycle (their Workflow is not done).
 	WorkflowHeld []string
 
+	// Apply check fields (§11.1, Backlog #166):
+
+	// Oscillating lists the resources whose Apply is stopped (Applies of the
+	// same diff reported success without changing reality up to the limit).
+	// They were not applied this cycle; their downstream waited.
+	Oscillating []string
+	// Ineffective are the Applies verified since the previous cycle that
+	// reported success but did not change reality after the settle.
+	Ineffective []ApplyRecord
+
 	// Observe is what the Observe phase found, for the metrics (#54).
 	Observe ObserveStats
 
@@ -1393,6 +1458,9 @@ type ObserveStats struct {
 	// unresolved or invalid, unknown ≠ absent); Converging have an in-flight
 	// Apply or were observed with availability converging.
 	Desired, Drifted, Unknown, Converging int
+	// Oscillating were Observed with a diff whose Apply is stopped (§11.1
+	// Tier3, #166); they are also Drifted.
+	Oscillating int
 	// Duration is the Observe phase: Observe and Diff of the due resources.
 	Duration time.Duration
 }
@@ -1415,6 +1483,10 @@ type levelCoverage struct {
 	orphans     map[string]bool
 	// gates: the budget and capacity gates were evaluated (not in alert-only).
 	gates bool
+	// applyRecorded: the resources (ID.String()) with a record of Applies
+	// that did not take (counting or stopped) at the end of the Observe phase
+	// (#166).
+	applyRecorded map[string]bool
 }
 
 // resolves reports whether a level Event ev that did not recur this cycle is
@@ -1432,6 +1504,11 @@ func (c levelCoverage) resolves(ev core.Event, res CycleResult, cycleErr error) 
 		return c.gates
 	case core.EventPruneHalted:
 		return c.pruneRan
+	case core.EventApplyIneffective:
+		// #166: gone when the resource has no record of Applies that did not
+		// take any more (an Apply took, the diff changed, reality converged,
+		// a person released it, or it left desired) — the daemon's own record.
+		return c.observed && ev.HasResource() && !c.applyRecorded[ev.Resource.String()]
 	}
 	if !ev.HasResource() || !c.observed {
 		return false
@@ -1501,6 +1578,7 @@ func runCycleAsync(
 	tasksOff string,
 	workflows *workflow.Engine,
 	vs *viewState,
+	checker *ApplyChecker,
 ) (CycleResult, error) {
 	// #136: what this cycle sees, for the read-only API (nil without one).
 	view := newViewBuilder(cfg, vs)
@@ -1889,6 +1967,46 @@ func runCycleAsync(
 	*prevRev = rev
 	*prevParentRevs = curParentRevs
 
+	// #166 (§11.1): the Applies verified since the previous cycle that did
+	// not take, the release requests "sakutei apply-check release" left in
+	// the state file, and the records of resources no longer desired.
+	ineffective := checker.TakeIneffective()
+	if cfg.ApplyCheckState != "" {
+		released, requests, err := checker.Sync(cfg.ApplyCheckState)
+		if err != nil {
+			fmt.Fprintf(cfg.ErrOut, "sakutei: warn: apply-check state: %v (release requests are taken in next cycle)\n", err)
+		}
+		for _, rq := range requests {
+			fmt.Fprintf(cfg.Out, "sakutei: apply-check: release of %s requested by %q at %s (sakutei apply-check release)\n",
+				rq.Resource, rq.Approver, rq.RequestedAt.UTC().Format(time.RFC3339))
+		}
+		for _, r := range released {
+			fmt.Fprintf(cfg.Out, "sakutei: apply-check: %s released by a person; Apply resumes (was: %s)\n", r.ID, r.StopReasonText())
+		}
+	}
+	desiredKeys := make(map[core.IDKey]bool, len(desired))
+	for _, r := range desired {
+		desiredKeys[r.ID.Key()] = true
+	}
+	checker.Retain(func(id core.ID) bool { return desiredKeys[id.Key()] })
+	applyTypes := in.ApplyCheckByProvider()
+	// applyLimits are the settle and stop limits of r (ResolveApplyCheck).
+	applyLimits := func(r diff.DesiredResource) ApplyCheckLimits {
+		var settle time.Duration
+		if pe, err := providers.get(r.ID.Provider); err == nil {
+			settle = pe.p.Capabilities().Settle
+		}
+		return ResolveApplyCheck(r, applyTypes, cfg.ApplyCheck, settle)
+	}
+	var oscillating []string
+	// quietHeld are the resources held this cycle that applyWavesAsync must
+	// not report as skipped: Workflow targets and stopped resources (each
+	// said why already).
+	quietHeld := make(map[string]string, len(wfHeld))
+	for k, v := range wfHeld {
+		quietHeld[k] = v
+	}
+
 	// #30 (§16.5): the Observe scheduler sees this cycle's desired and tiers.
 	sched.BeginCycle(cycle, desired, in.ObserveTierIntervals())
 	var notDue []string
@@ -2167,7 +2285,34 @@ func runCycleAsync(
 		// the wave scheduler treats it as converged for this cycle: it is NOT
 		// applied and its downstream is NOT skipped (the ghost diff is not a real
 		// unconverged upstream).
-		if len(nonCOps) > 0 {
+		// #166 (§11.1 Tier3): a resource whose Applies of this same diff
+		// reported success without changing reality up to its limit is not
+		// applied again — it is held like an alert-only resource (its
+		// downstream waits) until the diff changes, reality converges or a
+		// person releases it.  A strategy: task resource never reaches Apply.
+		stopped := false
+		if len(nonCOps) > 0 && !res.UpdatePolicy.IsTask() {
+			rec, isStopped, released := checker.Gate(res.ID, ApplyFingerprint(res, nonCOps))
+			if released != nil {
+				fmt.Fprintf(cfg.Out, "sakutei: apply-check: %s: the diff changed (desired or reality); Apply resumes (was stopped: %s)\n",
+					res.ID, released.StopReasonText())
+			}
+			if isStopped {
+				stopped = true
+				oscillating = append(oscillating, local)
+				unobservable[local] = true
+				quietHeld[local] = "stopped"
+				obsStats.Oscillating++
+				EmitApplyIneffective(cfg.ErrOut, "sakutei: ", rec)
+				view.oscillating(res.ID, rec)
+			}
+		}
+		if len(plan.Ops) == 0 {
+			if was := checker.Settled(res.ID); was != nil {
+				fmt.Fprintf(cfg.Out, "sakutei: apply-check: %s: reality converged; no longer stopped (was: %s)\n", res.ID, was.StopReasonText())
+			}
+		}
+		if len(nonCOps) > 0 && !stopped {
 			plans[local] = core.Plan{Ops: nonCOps}
 		}
 		// #41 (§6.2): completion of a Task is asked of reality.  No diff means
@@ -2191,6 +2336,10 @@ func runCycleAsync(
 		}
 	}
 	obsStats.Duration = time.Since(observeStart)
+	cov.applyRecorded = map[string]bool{}
+	for _, r := range checker.Records() {
+		cov.applyRecorded[r.ID.String()] = true
+	}
 
 	// §8.3: ready_condition upstreams outside the desired set (external owner,
 	// §7) are observed here so they can still gate their dependents.
@@ -2295,6 +2444,9 @@ func runCycleAsync(
 
 			WorkflowEvents: wfEvents,
 			WorkflowHeld:   wfHeldThisCycle,
+
+			Oscillating: oscillating,
+			Ineffective: ineffective,
 
 			Observe: obsStats,
 			level:   cov,
@@ -2503,12 +2655,37 @@ func runCycleAsync(
 		}
 	}
 
+	// #166 (§11.1 Tier2): an Apply that reported success is re-read in its
+	// own goroutine (the resource stays in flight — converging — through the
+	// settle) and counted when its diff is still the one it applied.
+	verify := func(ctx context.Context, r diff.DesiredResource, plan core.Plan) {
+		pe, err := providers.get(r.ID.Provider)
+		if err != nil {
+			return
+		}
+		lim := applyLimits(r)
+		out, ops := VerifyApply(ctx, pe.p, pe.engine, r, lim.Settle)
+		switch out {
+		case VerifyConverged:
+			checker.Effective(r.ID)
+		case VerifyIneffective:
+			applied := ApplyFingerprint(r, plan.Ops)
+			if ApplyFingerprint(r, ops) != applied {
+				// The diff moved: progress, not an Apply that did not take.
+				checker.Effective(r.ID)
+				return
+			}
+			rec := checker.Ineffective(r.ID, applied, DiffText(ops), lim, time.Now())
+			EmitApplyIneffective(cfg.ErrOut, "sakutei: ", rec)
+		}
+	}
+
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
-		ctx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, wfHeld, waitingHeld, ready, cfg.ErrOut,
-		dispatch, commit, launchTask)
+		ctx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, quietHeld, waitingHeld, ready, cfg.ErrOut,
+		dispatch, commit, launchTask, verify)
 	backedOff = backedOffList
 	if waveErr != nil {
-		return CycleResult{Observed: observed, Observe: obsStats}, waveErr
+		return CycleResult{Observed: observed, Observe: obsStats, Ineffective: ineffective}, waveErr
 	}
 
 	// Phase 3: Execute approved prune Delete ops.
@@ -2567,6 +2744,9 @@ func runCycleAsync(
 
 		WorkflowEvents: wfEvents,
 		WorkflowHeld:   wfHeldThisCycle,
+
+		Oscillating: oscillating,
+		Ineffective: ineffective,
 
 		Observe: obsStats,
 		level:   cov,
@@ -2817,6 +2997,7 @@ func applyWavesAsync(
 	dispatchFn func(local string, ops []core.Op),
 	commitFn func([]core.Op),
 	taskFn func(diff.DesiredResource, core.Plan),
+	verifyFn func(context.Context, diff.DesiredResource, core.Plan),
 ) (applied, launched int, backedOff, skipped []string, err error) {
 	n := len(desired)
 	if n == 0 {
@@ -2965,6 +3146,7 @@ func applyWavesAsync(
 			localCopy := local
 			planCopy := plan
 			idCopy := r.ID
+			resCopy := r
 
 			go func() {
 				defer ifl.Remove(localCopy)
@@ -2978,6 +3160,10 @@ func applyWavesAsync(
 					// Scf7762-2: advance the cumulative window counter for committed ops.
 					if commitFn != nil {
 						commitFn(planCopy.Ops)
+					}
+					// #166: did it take?  Still in flight while verified.
+					if verifyFn != nil {
+						verifyFn(ctx, resCopy, planCopy)
 					}
 				}
 			}()

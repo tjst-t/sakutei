@@ -86,6 +86,9 @@ const (
 	// 作り直したこと（sakutei allocator import、#157、§19.7）。Detail に pool・
 	// ファイル・足した件数を、Count に足した件数を書く。
 	KindAllocationImported Kind = "allocation.imported"
+	// KindApplyCheckReleased は人が Apply の止め（oscillating、§11.1 Tier3）を解いた
+	// こと（sakutei apply-check release、#166）。Resource に解いたリソースを書く。
+	KindApplyCheckReleased Kind = "apply_check.released"
 )
 
 // Record は監査の 1 件。
