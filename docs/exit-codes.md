@@ -19,8 +19,8 @@
 | コマンド | 0 | 1 | 2 | 3 | 4 |
 | --- | --- | --- | --- | --- | --- |
 | `sakutei`（常駐） | SIGTERM / SIGINT で止まった（周の切れ目で止め、in-flight の Apply を待つ） | 起動できない（旗・intent の provider の検証・`--cause-state` を渡した、#165）・ループの致命的なエラー | — | — | — |
-| `sakutei plan` | 計画を出した（差分の有無によらない。`--json` も同じ） | 計画を出せない（旗・intent・観測のエラー・計画の時点のエラー） | — | — | — |
-| `sakutei reconcile` | 1 回の収束を終え、skip したものも効かない Apply も無い（変更の有無によらない。Apply の失敗だけなら 0 のまま、要約が「not converged」と言う、#110。alert-only も 0） | エラー（旗・intent・`--expect-revision` の不一致・予算 / 容量の halt があった・S4 に書けない）、または観測できない・skip したリソースがある（収束していない） | — | — | **#166**：Apply は成功を返したが現実が宣言どおりにならなかった（settle まで読み直しても Diff が残る）、または Apply を止めたリソース（oscillating）がある。1 の条件と同時なら 1 |
+| `sakutei plan` | 計画を出した（差分の有無によらない。`--json` も同じ） | 計画を出せない（旗・intent・観測のエラー・計画の時点のエラー。互換の表に合わない版の組み合わせ・更新の順序、#151） | — | — | — |
+| `sakutei reconcile` | 1 回の収束を終え、skip したものも効かない Apply も無い（変更の有無によらない。Apply の失敗だけなら 0 のまま、要約が「not converged」と言う、#110。alert-only も 0） | エラー（旗・intent・`--expect-revision` の不一致・予算 / 容量の halt があった・S4 に書けない・互換の表に合わない版の組み合わせ・更新の順序〈何もしない〉、#151）、または観測できない・skip したリソースがある（収束していない） | — | — | **#166**：Apply は成功を返したが現実が宣言どおりにならなかった（settle まで読み直しても Diff が残る）、または Apply を止めたリソース（oscillating）がある。1 の条件と同時なら 1 |
 | `sakutei status` | 報告を出し、すべて観測できた（drift があっても 0） | 報告を出せない（旗・intent・provider の解決） | — | 報告は出したが観測できないもの（Read のエラー・availability ≠ ok・計画のエラー）か、List が失敗した provider がある（#117） | — |
 | `sakutei graph` | DAG を出した | 出せない（旗・intent） | — | — | — |
 | `sakutei import` | intent を書き出した | 書き出せない | — | — | — |

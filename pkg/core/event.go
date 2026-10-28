@@ -72,6 +72,11 @@ const (
 	// への Apply を止め（oscillating、§11.1 Tier3・§15.3）、attrs の stopped=true
 	// で知らせる（Backlog #166）。
 	EventApplyIneffective EventKind = "ApplyIneffective"
+	// EventVersionIncompatible は部品の版の互換の表（§29.1、Backlog #151）に
+	// 合わない途中の組み合わせを通る更新の順序、または確かめられない組（部品が
+	// 観測できない）があって、その組の変わる部品を止めた（Apply も Task も
+	// 起こさない）。
+	EventVersionIncompatible EventKind = "VersionIncompatible"
 
 	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。
 	EventWorkflowStarted       EventKind = "WorkflowStarted"
@@ -108,7 +113,10 @@ func (k EventKind) IsLevel() bool {
 		// Backlog #166: an Apply that does not take, and the stop of a
 		// resource's Apply, is a continuing condition, resolved when the
 		// resource is no longer stopped.
-		EventApplyIneffective:
+		EventApplyIneffective,
+		// Backlog #151: a group held by the compatibility table stays held
+		// until its update order (or the table) is fixed.
+		EventVersionIncompatible:
 		return true
 	}
 	return false

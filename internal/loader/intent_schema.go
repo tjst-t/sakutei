@@ -30,6 +30,7 @@ import (
 //
 //   - resources は配列（pools / scopes だけのファイルも書けるよう任意）。
 //   - external_owners は触らない宣言（owner / provider / scope / id / id_prefix / fields、§7.3・#158）。
+//   - compatibility は部品の版の互換の表（name / components / allow、§29.1・#151）。
 //   - pools は採番プールの宣言（name / range / claim / space、§19.8）。
 //   - scopes は scope ごとの mode（converge / sync）と sync.target_path（§24.5）、
 //     scope 明示の remediation（auto / alert-only、§14.3）。
@@ -158,6 +159,25 @@ func intentSchema() schemaNode {
 						"id":        schemaNode{"type": "string"},
 						"id_prefix": schemaNode{"type": "string"},
 						"fields":    stringMap,
+					},
+				},
+			},
+			// compatibility は部品の版の互換の表（§29.1、#151）。部品（id と版の
+			// field）と、許す版の組み合わせの行。行の値が文字列かは compat.Parse。
+			"compatibility": schemaNode{
+				"type": "array",
+				"items": schemaNode{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"name", "components", "allow"},
+					"properties": map[string]any{
+						"name": schemaNode{"type": "string"},
+						// 部品の名前 → { id, field }。中身は compat.Parse が確かめる。
+						"components": schemaNode{"type": "object", "additionalProperties": true},
+						"allow": schemaNode{
+							"type":  "array",
+							"items": schemaNode{"type": "object", "additionalProperties": true},
+						},
 					},
 				},
 			},

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/tjst-t/sakutei/v2/internal/compat"
 	"github.com/tjst-t/sakutei/v2/internal/eventlog"
 	"github.com/tjst-t/sakutei/v2/internal/prune"
 	"github.com/tjst-t/sakutei/v2/internal/task"
@@ -73,6 +74,29 @@ func EmitAllocationHeld(w io.Writer, prefix string, id core.ID, field, pool stri
 		Text:  fmt.Sprintf("%sallocation held: %s field %q from pool %q: %v (not applied until the hold is lifted; others continue, §19.7)", prefix, id, field, pool, err),
 	})
 	return true
+}
+
+// EmitVersionIncompatible raises VersionIncompatible for each member a
+// compatibility finding holds (§29.1, Backlog #151): neither Applied nor
+// given a Task while held.  An order through a combination the table does not
+// allow says state=incompatible; a group that cannot be verified says
+// state=unverified.
+func EmitVersionIncompatible(w io.Writer, prefix string, f compat.Finding) {
+	state := "incompatible"
+	if f.Unverified {
+		state = "unverified"
+	}
+	attrs := map[string]string{"table": f.Group.Table.Name, "state": state}
+	if f.Group.Key != "" {
+		attrs["group"] = f.Group.Key
+	}
+	for _, id := range f.Hold {
+		eventlog.Emit(w, core.Event{
+			Kind: core.EventVersionIncompatible, Severity: core.SeverityWarning,
+			Resource: id, Message: f.Message(), Attrs: attrs,
+			Text: fmt.Sprintf("%sVersionIncompatible: %s: %s", prefix, id, f.Message()),
+		})
+	}
 }
 
 // emitPruned raises Pruned for an orphan deleted by prune; how is the path

@@ -429,6 +429,9 @@ func runReconcile(args []string) {
 	if resolveErr == nil {
 		resolveErr = checkExternalOwners(in.ExternalOwners, desired, providers, "sakutei reconcile", logErr)
 	}
+	if resolveErr == nil {
+		resolveErr = checkCompatibility(in.Compatibility, desired, "sakutei reconcile")
+	}
 	if resolveErr != nil {
 		fmt.Fprintln(logErr, resolveErr)
 		exitAfterEvents(1)
@@ -547,6 +550,9 @@ func runReconcile(args []string) {
 	// provider that declares BulkObserve is observed with one bulk call, any
 	// other with one Read per resource.
 	cycleObs := make(map[string]*sdk.CycleObserver, len(providers))
+	// §29.1 (#151): the observed fields, for the compatibility check of the
+	// combinations met while updating one at a time.
+	compatObserved := make(map[string]map[string]string)
 	for _, res := range desired {
 		// S62dbba-2: route Read and Diff to the provider for this resource.
 		fp, ok := providers[res.ID.Provider]
@@ -593,6 +599,7 @@ func runReconcile(args []string) {
 			continue
 		}
 		ready.Record(res.ID.Local, obs)
+		compatObserved[res.ID.Local] = engine.SnapshotFields(obs.State)
 
 		// §7.3 (#158): selected by an external_owners entry by an observed
 		// value the intent did not declare (e.g. an allocated vmid): observed
@@ -709,6 +716,32 @@ func runReconcile(args []string) {
 	reconcile.ObserveExternalUpstreams(ctx, func(r diff.DesiredResource) provider.Provider {
 		return providers[r.ID.Provider]
 	}, desired, ready, logErr)
+
+	// §29.1 (#151): an update order that passes through a combination the
+	// compatibility table does not allow stops the run before anything is
+	// done; a group that cannot be verified (a member not observed) has its
+	// changing members held (not applied; downstream waits).
+	findings, compatErr := compatFindings(in.Compatibility, desired, compatObserved)
+	if compatErr != nil {
+		fmt.Fprintf(logErr, "sakutei reconcile: %v\n", compatErr)
+		exitAfterEvents(1)
+	}
+	incompatible := false
+	for _, f := range findings {
+		reconcile.EmitVersionIncompatible(logErr, "sakutei reconcile: ", f)
+		if !f.Unverified {
+			incompatible = true
+			continue
+		}
+		for _, id := range f.Hold {
+			delete(plans, id.Local)
+			unobservable[id.Local] = true
+		}
+	}
+	if incompatible {
+		fmt.Fprintln(logErr, "sakutei reconcile: the update order passes through a version combination the compatibility table does not allow (§29.1); nothing was done")
+		exitAfterEvents(1)
+	}
 
 	// Scb0ecd-3: populate the last-seen ring AFTER Diff so the ring records
 	// the current cycle's observations.  The ring is read on the NEXT cycle

@@ -34,6 +34,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/tjst-t/sakutei/v2/internal/compat"
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/dnszone"
 	"github.com/tjst-t/sakutei/v2/internal/extowner"
@@ -124,6 +125,30 @@ func checkExternalOwners(owners extowner.Set, desired []diff.DesiredResource, pr
 		fmt.Fprintf(w, "%s: warn: %s\n", commandName, msg)
 	}
 	return nil
+}
+
+// checkCompatibility runs the version compatibility check of the desired
+// versions (§29.1, #151): each group's desired versions must be an allowed
+// combination of its table.  It needs no observation.
+func checkCompatibility(tables compat.Set, desired []diff.DesiredResource, commandName string) error {
+	if err := tables.CheckDesired(desired); err != nil {
+		return fmt.Errorf("%s: %w; nothing was done", commandName, err)
+	}
+	return nil
+}
+
+// compatFindings checks the combinations met while updating each group one at
+// a time (§29.1, #151) against what this run observed: observed holds the
+// observed fields of each resource observed Ok (nil fields: absent in
+// reality); a resource missing from it was not observed.
+func compatFindings(tables compat.Set, desired []diff.DesiredResource, observed map[string]map[string]string) ([]compat.Finding, error) {
+	if len(tables) == 0 {
+		return nil, nil
+	}
+	return tables.CheckPath(desired, func(local string) (map[string]string, bool) {
+		f, ok := observed[local]
+		return f, ok
+	})
 }
 
 // configKeysOf names, per List-capable built-in provider, the keys of the

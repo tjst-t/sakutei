@@ -385,6 +385,9 @@ func runPlan(args []string) {
 	if resolveErr == nil {
 		resolveErr = checkExternalOwners(in.ExternalOwners, desired, providers, "sakutei plan", logErr)
 	}
+	if resolveErr == nil {
+		resolveErr = checkCompatibility(in.Compatibility, desired, "sakutei plan")
+	}
 	if resolveErr != nil {
 		fail("%v", resolveErr)
 	}
@@ -446,6 +449,9 @@ func runPlan(args []string) {
 
 	// Track unobservable resources for the prune phase (unknown ≠ absent).
 	unobservable := make(map[string]bool)
+	// §29.1 (#151): the observed fields, for the compatibility check of the
+	// combinations met while updating one at a time.
+	observedFields := make(map[string]map[string]string)
 
 	// #89 (§6.3): the targets of a Workflow that is not done are driven by the
 	// Workflow; the daemon's loop neither Observes nor Applies them, so plan
@@ -484,6 +490,7 @@ func runPlan(args []string) {
 			fail("sakutei plan: observe %s: %v", res.ID, err)
 		}
 		if obs.Availability == core.AvailabilityOk {
+			observedFields[res.ID.Local] = engine.SnapshotFields(obs.State)
 			// §7.3 (#158): selected by an external_owners entry by an observed
 			// value the intent did not declare: observed, never applied.
 			if sel, ok := in.ExternalOwners.ByState(res.ID, obs.State); ok {
@@ -532,6 +539,25 @@ func runPlan(args []string) {
 			}
 		}
 		allOps = append(allOps, plan.Ops...)
+	}
+
+	// §29.1 (#151): an update order that passes through a combination the
+	// compatibility table does not allow stops the plan; a group that cannot
+	// be verified (a member not observed) is held by reconcile and the daemon.
+	findings, compatErr := compatFindings(in.Compatibility, desired, observedFields)
+	if compatErr != nil {
+		fail("sakutei plan: %v", compatErr)
+	}
+	var incompatible []string
+	for _, f := range findings {
+		if f.Unverified {
+			fmt.Fprintf(logErr, "sakutei plan: %s\n", f.Message())
+			continue
+		}
+		incompatible = append(incompatible, f.Message())
+	}
+	if len(incompatible) > 0 {
+		fail("sakutei plan: %s (§29.1 compatibility); nothing was done", strings.Join(incompatible, "; "))
 	}
 
 	// Scb0ecd-2: persist current revision + provider_version as "previous" for

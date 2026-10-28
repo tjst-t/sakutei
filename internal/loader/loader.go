@@ -58,6 +58,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/budget"
+	"github.com/tjst-t/sakutei/v2/internal/compat"
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/internal/remediation"
@@ -191,6 +192,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.ExternalOwners = owners
+	tables, err := compat.Parse(tree["compatibility"])
+	if err != nil {
+		return intentFile{}, err
+	}
+	out.Compatibility = tables
 	return out, nil
 }
 
@@ -292,6 +298,8 @@ type intentFile struct {
 	Workflows []workflow.Definition `json:"-"`
 	// ExternalOwners is the top-level external_owners (§7.3, #158).
 	ExternalOwners extowner.Set `json:"-"`
+	// Compatibility is the top-level compatibility (§29.1, #151).
+	Compatibility compat.Set `json:"-"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -489,7 +497,12 @@ type Intent struct {
 	// #158): what they select is observed but never applied, deleted or
 	// pruned, and the intent cannot also manage it.
 	ExternalOwners extowner.Set
-	Revision       core.RevisionInfo
+	// Compatibility are the version compatibility tables (§29.1, Backlog
+	// #151): the desired versions of a group must be an allowed
+	// combination, and so must every combination met while updating them
+	// one at a time.
+	Compatibility compat.Set
+	Revision      core.RevisionInfo
 }
 
 // LoadIntent reads every intent file in dir (same rules as LoadDir) and also
@@ -539,6 +552,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	var profiles []profileDecl
 	var workflows []workflow.Definition
 	var owners extowner.Set
+	var tables compat.Set
 	for _, name := range names {
 		path := filepath.Join(dir, filepath.FromSlash(name))
 		loaded, file, err := loadFile(path)
@@ -560,6 +574,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		profiles = append(profiles, file.Profile)
 		workflows = append(workflows, file.Workflows...)
 		owners = append(owners, file.ExternalOwners...)
+		tables = append(tables, file.Compatibility...)
 	}
 
 	// D-2: reject duplicate Local IDs.  Two resources sharing a Local ID would
@@ -583,6 +598,11 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	// §7.3 (#158): what an external_owners entry selects is not the intent's
 	// to manage (nor to declare absent).
 	if err := extowner.ValidateDesired(owners, resources); err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
+
+	// §29.1 (#151): a table is named once across the intent files.
+	if err := validateCompatibility(tables); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
 
@@ -627,7 +647,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, ApplyChecks: applyChecks, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, ExternalOwners: owners, Revision: ri}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, ApplyChecks: applyChecks, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, ExternalOwners: owners, Compatibility: tables, Revision: ri}, nil
 }
 
 // detectDuplicateLocalIDs returns an error if two loaded resources share the
@@ -819,8 +839,8 @@ func LoadResourcesFile(path string) ([]diff.DesiredResource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loader: %w", err)
 	}
-	if len(file.Pools) > 0 || len(file.Scopes) > 0 || len(file.ExternalOwners) > 0 {
-		return nil, fmt.Errorf("loader: %s: an inventory file declares resources only (pools/scopes/external_owners belong in intent)", path)
+	if len(file.Pools) > 0 || len(file.Scopes) > 0 || len(file.ExternalOwners) > 0 || len(file.Compatibility) > 0 {
+		return nil, fmt.Errorf("loader: %s: an inventory file declares resources only (pools/scopes/external_owners/compatibility belong in intent)", path)
 	}
 	if err := detectDuplicateLocalIDs(resources); err != nil {
 		return nil, fmt.Errorf("loader: %s: %w", path, err)

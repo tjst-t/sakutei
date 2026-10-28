@@ -780,6 +780,10 @@ func Run(ctx context.Context, cfg Config) error {
 			// #166 (§11.1 Tier3): each is its own ApplyIneffective Event (level).
 			summary(errOut, fmt.Sprintf("%d resource(s) not applied: Apply stopped (oscillating — Applies of the same diff reported success without changing reality): %v", len(res.Oscillating), res.Oscillating))
 		}
+		if len(res.Incompatible) > 0 {
+			// #151 (§29.1): each is its own VersionIncompatible Event (level).
+			summary(errOut, fmt.Sprintf("%d resource(s) not updated: held by the compatibility table (§29.1): %v", len(res.Incompatible), res.Incompatible))
+		}
 		if res.Pruned > 0 {
 			// Scf7762-1: orphans deleted by the prune phase this cycle.  Each
 			// deleted orphan was its own Pruned Event; this is the cycle's count.
@@ -1252,6 +1256,9 @@ func cycleSummary(res CycleResult) string {
 	if len(res.Oscillating) > 0 {
 		extra += fmt.Sprintf(" oscillating=%d", len(res.Oscillating))
 	}
+	if len(res.Incompatible) > 0 {
+		extra += fmt.Sprintf(" incompatible=%d", len(res.Incompatible))
+	}
 	if len(res.Ineffective) > 0 {
 		extra += fmt.Sprintf(" ineffective=%d", len(res.Ineffective))
 	}
@@ -1431,6 +1438,11 @@ type CycleResult struct {
 	// same diff reported success without changing reality up to the limit).
 	// They were not applied this cycle; their downstream waited.
 	Oscillating []string
+	// Incompatible lists the resources held by the compatibility table
+	// (§29.1, #151): their update order passes through a combination the
+	// table does not allow, or their group cannot be verified this cycle.
+	// Neither Applied nor given a Task; their downstream waited.
+	Incompatible []string
 	// Ineffective are the Applies verified since the previous cycle that
 	// reported success but did not change reality after the settle.
 	Ineffective []ApplyRecord
@@ -1490,6 +1502,9 @@ type levelCoverage struct {
 	// that did not take (counting or stopped) at the end of the Observe phase
 	// (#166).
 	applyRecorded map[string]bool
+	// compatHeld: the resources (ID.String()) held by the compatibility
+	// table this cycle (#151).
+	compatHeld map[string]bool
 }
 
 // resolves reports whether a level Event ev that did not recur this cycle is
@@ -1512,6 +1527,10 @@ func (c levelCoverage) resolves(ev core.Event, res CycleResult, cycleErr error) 
 		// take any more (an Apply took, the diff changed, reality converged,
 		// a person released it, or it left desired) — the daemon's own record.
 		return c.observed && ev.HasResource() && !c.applyRecorded[ev.Resource.String()]
+	case core.EventVersionIncompatible:
+		// #151: gone when the compatibility check no longer holds it (the
+		// order or the table was fixed, or the group converged).
+		return c.observed && ev.HasResource() && !c.compatHeld[ev.Resource.String()]
 	}
 	if !ev.HasResource() || !c.observed {
 		return false
@@ -1787,6 +1806,12 @@ func runCycleAsync(
 	// render) and the providers' own config exclusions: a disagreement skips
 	// the cycle; an exclusion only in a provider config is reported once.
 	if err := checkExternalOwners(in.ExternalOwners, desired, providers, cfg.ErrOut); err != nil {
+		return CycleResult{ExcludedByClaim: excludedByClaim},
+			fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): %w", err)
+	}
+	// §29.1 (#151): the desired versions of each compatibility group must be
+	// an allowed combination of its table.
+	if err := in.Compatibility.CheckDesired(desired); err != nil {
 		return CycleResult{ExcludedByClaim: excludedByClaim},
 			fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): %w", err)
 	}
@@ -2078,6 +2103,9 @@ func runCycleAsync(
 
 	// #54: what the Observe phase found, for the metrics.
 	obsStats := ObserveStats{Ran: true, Desired: len(desired)}
+	// §29.1 (#151): the fields observed this cycle, for the compatibility
+	// check of the combinations met while updating one at a time.
+	compatObserved := map[string]map[string]string{}
 	observeStart := time.Now()
 	for _, res := range desired {
 		local := res.ID.Local
@@ -2187,6 +2215,7 @@ func runCycleAsync(
 		// Secret fields stay in their ref form (§20.2): this map is quoted in
 		// drift Events.
 		curFields := pe.engine.SnapshotFields(obs.State)
+		compatObserved[local] = curFields
 
 		// S072a14-3: build per-resource CauseContext, setting UpstreamChanged=true
 		// for children of composite parents that changed this cycle (cause D).
@@ -2358,6 +2387,36 @@ func runCycleAsync(
 		}
 	}
 	obsStats.Duration = time.Since(observeStart)
+
+	// §29.1 (#151): a compatibility group whose update order passes through a
+	// combination its table does not allow — or that cannot be verified this
+	// cycle (a member not observed) — has its changing members held: no Apply,
+	// no Task; their downstream waits.  Reported every cycle (level) until the
+	// order or the table is fixed.
+	var incompatible []string
+	cov.compatHeld = map[string]bool{}
+	if len(in.Compatibility) > 0 {
+		findings, err := in.Compatibility.CheckPath(desired, func(local string) (map[string]string, bool) {
+			f, ok := compatObserved[local]
+			return f, ok
+		})
+		if err != nil {
+			return CycleResult{ExcludedByClaim: excludedByClaim, Observed: observed, Observe: obsStats},
+				fmt.Errorf("invalid intent; cycle skipped (no Apply/prune): %w", err)
+		}
+		for _, f := range findings {
+			EmitVersionIncompatible(cfg.ErrOut, "sakutei: ", f)
+			for _, id := range f.Hold {
+				delete(plans, id.Local)
+				if !unobservable[id.Local] {
+					incompatible = append(incompatible, id.Local)
+				}
+				unobservable[id.Local] = true
+				quietHeld[id.Local] = "compatibility"
+				cov.compatHeld[id.String()] = true
+			}
+		}
+	}
 	cov.applyRecorded = map[string]bool{}
 	for _, r := range checker.Records() {
 		cov.applyRecorded[r.ID.String()] = true
@@ -2468,7 +2527,9 @@ func runCycleAsync(
 			WorkflowHeld:   wfHeldThisCycle,
 
 			Oscillating: oscillating,
-			Ineffective: ineffective,
+
+			Incompatible: incompatible,
+			Ineffective:  ineffective,
 
 			Observe: obsStats,
 			level:   cov,
@@ -2823,7 +2884,9 @@ func runCycleAsync(
 		WorkflowHeld:   wfHeldThisCycle,
 
 		Oscillating: oscillating,
-		Ineffective: ineffective,
+
+		Incompatible: incompatible,
+		Ineffective:  ineffective,
 
 		Observe: obsStats,
 		level:   cov,

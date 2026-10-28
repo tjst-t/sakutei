@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tjst-t/sakutei/v2/internal/compat"
 	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
@@ -62,4 +63,17 @@ func parseExternalOwners(v any) (extowner.Set, error) {
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// validateCompatibility は互換の表（§29.1、#151）の名前が intent のファイルを
+// またいで一意かを確かめる。
+func validateCompatibility(tables compat.Set) error {
+	seen := map[string]bool{}
+	for _, t := range tables {
+		if seen[t.Name] {
+			return fmt.Errorf("compatibility: name %q is declared twice", t.Name)
+		}
+		seen[t.Name] = true
+	}
+	return nil
 }
