@@ -264,8 +264,6 @@ func intentSchema() schemaNode {
 	}
 }
 
-// workflowsSchema は workflows（§6.3 / §6.4）のスキーマ。step の中身・v1.5 で
-// 未対応のキーの拒否は parseWorkflow が行う。
 // networkPolicySchema は network_policy:（§7.6、#174）の形。
 func networkPolicySchema() schemaNode {
 	strList := schemaNode{"type": "array", "items": schemaNode{"type": "string"}}
@@ -325,6 +323,8 @@ func networkPolicySchema() schemaNode {
 	}
 }
 
+// workflowsSchema は workflows（§6.3 / §6.4）のスキーマ。step の中身・v1.5 で
+// 未対応のキーの拒否は parseWorkflow が行う。
 func workflowsSchema() schemaNode {
 	stringMap := schemaNode{"type": "object", "additionalProperties": true}
 	return schemaNode{

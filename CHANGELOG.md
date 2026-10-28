@@ -2,6 +2,26 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## v2.6.0（2026-10-28）
+
+網の設定を宣言で扱う版。網の間の許可を機器に依らない抽象のリソースとして書き、nftables の既定の拒否（base chain の policy）を締め出しの守りつきで保ち、NETCONF の機器に commit confirmed の 2 段で設定を当てる。あわせて、空から 1 回で組めるよう依存先の Apply のあとに観測し直す。設計書は v3.44 → v3.51（`docs/architecture/CHANGELOG-v3.45.md`〜`v3.51.md`）。
+
+> **振る舞いの変化**：一回性の `reconcile` は、依存先の Apply が効いたあとに、周の頭で観測できなかった依存元を同じ回でもう一度観測するようになった（#177）。これまで 2 回目で収束していた構成が 1 回で収束する（終了コード 0）。観測し直さないなら `--reobserve-max 0`。終了コードの意味は変わらない。
+
+### 追加
+
+- **網の間の許可 `network_policy:`**（#174）：intent に網（名前と CIDR）・許可（from の網・to の網・proto・ports）・実現先（`kind: boundary` か `host`）を書く。既定は拒否で、書いた許可だけが通る。許可の行ごとに理由 `reason` と印 `tags` を書け、`exception` の印の付いた許可に reason が無ければ読み込みで断る。網の重なり・宣言に無い網・同じ許可の重複も読み込みで断り、前の許可に隠れて効かない許可・どの実現先も通らない許可は warning として plan と reconcile に出す。実現先ごとに、そこを通る許可だけを nftables の base chain の宣言へ展開し、reason をルールの comment に出す（予算・承認・締め出しの守りがそのまま効く）。`sakutei plan` は展開と warning を出す。別の実現先（スイッチの ACL など）への変換は `pkg/cli` の `WithRealizer` で足せる（本体は持たない）。使い方は `docs/network-policy.md`。
+- **nftables の base chain（既定の拒否）を宣言で保つ**（#173・#179）：intent が `type`・`hook`・`priority`・`policy` を書いた chain を base chain として扱い、作るときもずれを直すときも 4 つとルールを宣言どおりにする（宣言していない base chain は今どおり触らない）。live で base chain を変える Apply は締め出しの守りを通す：確かめる先（宣言の `confirm`：`self`・`ssh://…`・`tcp://…`）に変更の前に届くかを確かめ、届かなければ変えない → table の写しを取り、ホストの側に時間切れ（`ruleset_rollback_timeout`、既定 30 秒）で写しへ原子的に戻す仕掛けを置く → 1 つのトランザクションで流す → 新しい接続で全部の先に届くことを確かめてから仕掛けを取り消す。届かなければホストが戻し（Sakutei との接続が切れても戻る）、同じ差分の Apply を止める（終了コード 4）。base chain を作る・type/hook/priority/policy を変える・消す変更は壊す変更として予算に数え、承認ゲート（planned_change のレーン。kind に `create` を足した）を通す。到達性の最小の核は `external_owners:` か scope で外し、Sakutei の外で保守する。使い方は `docs/providers/nftables.md`。
+- **NETCONF の 2 段の Apply**（#175）：`netconf` provider は `netconf_apply: "true"` を明示したときだけ Apply する（明示しなければ観測だけのまま）。`:confirmed-commit:1.0` だけの機器を主に、candidate へ部分木を置き換え → validate → 同じセッションで commit confirmed → 新しい ssh 接続で届くこと・宣言どおりなことを confirm-timeout の半分までに確かめる → 同じセッションで確定。確かめられなければ確定せず、機器の時間切れの巻き戻しに任せる。確定の成否が分からなければ unknown。1.1 を持つ機器には persist の流れ（`netconf_commit_flow: "1.1"`）もある。`:candidate` か `:confirmed-commit` を持たない機器には何も送らない。統合試験は netopeer2。
+- **NETCONF を部分木だけに絞ったユーザーで動かす**（#176）：送る rpc は get-config・lock・unlock・edit-config・validate・commit・discard-changes・close-session だけで、宣言した部分木の外を読み書きしない。機器の側（NACM）で権限を絞ったユーザーで観測と Apply が動く。access-denied は理由つきで知らせ、何も確定しない。NACM の設定の例は `docs/providers/netconf.md`。
+- **依存先の Apply のあとに、観測できなかった依存元を同じ回で観測し直す**（#177）：依存先の Apply が効いたことを確かめたあと、それに直接・間接に依存していて周の頭で観測できなかったものだけを観測し直し、届けばその回のうちに予算・承認・順序を通して Apply まで進める。上限は 1 つあたりの回数（`--reobserve-max`、既定 3）と回の全体の時間（`--reobserve-time`、既定 30 秒）。届かない・上限に当たればいまどおり skip。常駐は届けば次の周を待たずに始める。
+- **HTTP の管理 API のパスの前置きを設定で変える `api_base_path`**（#160）：proxmox-vm（既定 `/api2/json`）と s3-bucket（既定は前置き無し）の provider の設定。
+
+### 修正
+
+- **nftables の無名の集合で、差分が消えなかった**（#178）：nft は集合の隣り合う・重なる範囲をまとめて書き戻す（例 `{ 10.0.0.0/24, 10.0.1.0/24 }` → `10.0.0.0/23`）ので、live の Apply の読み戻しが宣言と合わず止まっていた。アドレス・範囲・CIDR・ポートの集合を、範囲に展開してまとめた形どうしで比べる。
+- **採番の書き戻しを review の仕方で使うとき、解放のあとの案内が誤っていた**（#167）：解放の書き戻しが取り込まれるまでの間、照合の知らせが `sakutei allocator import` を勧めていた（import すると cooldown と食い違って断られる）。「解放の書き戻しの取り込み待ち」と知らせ、import を勧めない。
+
 ## v2.5.0（2026-10-28）
 
 FW とソフトの更新を宣言で扱う部品を揃えた版。管理 API に更新の口が無い装置の版を人の手順で合わせる、部品の版の互換の表、CLI でしか設定できない装置の汎用の provider、全体を止める型の更新。あわせて、/metrics と読み取りの口の TLS と認可。設計書は v3.38 → v3.44（`docs/architecture/CHANGELOG-v3.39.md`〜`v3.44.md`）。
