@@ -6,13 +6,19 @@ DEMODIR := .demo
 build:
 	go build -o $(BIN) ./cmd/sakutei
 
+# 同時に回すパッケージの数（go test -p）。既定（CPU の数）だと CPU の多いホストで
+# テストのバイナリとそのスレッドが一度に千を超え、ほかのジョブと task の上限
+# （cgroup の pids.max）を分け合う環境では fork/exec が EAGAIN で落ちて
+# 「[build failed]」になる。時間はほぼ受け入れテストで決まるので 8 で足りる。
+TEST_P ?= 8
+
 test:
-	go test ./...
+	go test -p $(TEST_P) ./...
 
 # race detector 付きのテスト。cgo が要るので gcc（C コンパイラ）が必要。
 # -count=1 で結果のキャッシュを使わず、毎回実際に回す。
 test-race:
-	CGO_ENABLED=1 go test -race -count=1 ./...
+	CGO_ENABLED=1 go test -race -p $(TEST_P) -count=1 ./...
 
 vet:
 	go vet ./...
