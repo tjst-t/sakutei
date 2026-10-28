@@ -26,6 +26,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -233,10 +234,42 @@ chown ` + strconv.Itoa(os.Getuid()) + `:` + strconv.Itoa(os.Getgid()) + ` /work/
 	t.Logf("preparing the automated installer ISO (%s)", assistantImage)
 	run(t, exec.Command("sudo", "-n", "docker", "run", "--rm", "-e", "DEBIAN_FRONTEND=noninteractive",
 		"-v", work+":/work", "-v", filepath.Dir(iso)+":/iso:ro", assistantImage, "sh", "-c", script))
-	if err := os.Rename(filepath.Join(work, "auto.iso"), out); err != nil {
+	if err := moveFile(filepath.Join(work, "auto.iso"), out); err != nil {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// moveFile は src を dst に移す。t.TempDir とキャッシュが別のファイルシステムに
+// あると os.Rename は EXDEV（invalid cross-device link）で断るので、そのときは
+// dst と同じディレクトリの一時ファイルへ写してから rename する。
+func moveFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil || !errors.Is(err, syscall.EXDEV) {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".part-*")
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), dst); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return os.Remove(src)
 }
 
 // ensureBase は自動導入の ISO で Proxmox VE を入れたディスクを作る（無ければ）。
