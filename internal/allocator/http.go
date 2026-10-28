@@ -44,6 +44,7 @@ const (
 	codeNoReservation = "no_reservation"
 	codeFenced        = "fenced"
 	codeStandby       = "standby"
+	codeImport        = "import_conflict"
 	codeInternal      = "internal"
 )
 
@@ -53,6 +54,8 @@ type request struct {
 	TTLSeconds float64 `json:"ttl_seconds,omitempty"`
 	Lo         int     `json:"lo,omitempty"`
 	Hi         int     `json:"hi,omitempty"`
+	// Entries is the "import" request (#157).
+	Entries []ImportEntry `json:"entries,omitempty"`
 }
 
 type response struct {
@@ -64,6 +67,8 @@ type response struct {
 	Code       string `json:"code,omitempty"`
 	// Records answers "list" (#116).
 	Records []Record `json:"records,omitempty"`
+	// Imported answers "import" (#157): how many entries were added.
+	Imported int `json:"imported,omitempty"`
 }
 
 // Server serves a FileAuthority over HTTP as one member of an active/standby
@@ -162,6 +167,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp.Value, resp.OK, err = s.auth.Lookup(ctx, req.Pool, req.Owner)
 	case "ensure-pool":
 		err = s.auth.EnsurePool(req.Pool, req.Lo, req.Hi)
+	case "import":
+		// #157: rebuild a pool from its write-back file; all or nothing.
+		resp.Imported, err = s.auth.Import(ctx, req.Pool, req.Lo, req.Hi, req.Entries)
 	default:
 		writeJSON(w, http.StatusNotFound, response{Error: "unknown operation " + op, Code: codeInternal})
 		return
@@ -195,6 +203,8 @@ func writeErr(w http.ResponseWriter, err error) {
 		code, status = codeNoReservation, http.StatusConflict
 	case errors.Is(err, allocation.ErrFenced):
 		code, status = codeFenced, http.StatusServiceUnavailable
+	case errors.Is(err, ErrImportConflict):
+		code, status = codeImport, http.StatusConflict
 	}
 	writeJSON(w, status, response{Error: err.Error(), Code: code})
 }
@@ -269,6 +279,8 @@ func (c *Client) call(ctx context.Context, op string, req request) (response, er
 			return resp, fmt.Errorf("%w: %s", allocation.ErrPoolExhausted, resp.Error)
 		case codeNoReservation:
 			return resp, fmt.Errorf("%w: %s", allocation.ErrNoReservation, resp.Error)
+		case codeImport:
+			return resp, fmt.Errorf("%w: %s", ErrImportConflict, resp.Error)
 		default:
 			return resp, fmt.Errorf("allocator %s: %s", c.endpoints[idx], resp.Error)
 		}
@@ -352,4 +364,11 @@ func (c *Client) Lookup(ctx context.Context, pool, owner string) (string, bool, 
 func (c *Client) EnsurePool(name string, lo, hi int) error {
 	_, err := c.call(context.Background(), "ensure-pool", request{Pool: name, Lo: lo, Hi: hi})
 	return err
+}
+
+// Import calls `POST /v1/import` (#157): FileAuthority.Import on the active
+// allocator.
+func (c *Client) Import(ctx context.Context, pool string, lo, hi int, entries []ImportEntry) (int, error) {
+	resp, err := c.call(ctx, "import", request{Pool: pool, Lo: lo, Hi: hi, Entries: entries})
+	return resp.Imported, err
 }

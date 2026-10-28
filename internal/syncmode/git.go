@@ -84,7 +84,27 @@ func checkCommitted(ctx context.Context, root, path string) error {
 // commit by the system.  Only these paths go in, whatever else is staged.
 // subjects name each (scope, provider) and become the commit's trailers.
 func commitSnapshots(ctx context.Context, root string, paths, subjects []string, c Committer) (string, error) {
-	var rels, trailers []string
+	trailers := make([]string, len(subjects))
+	for i, s := range subjects {
+		trailers[i] = Trailer + ": " + s
+	}
+	return CommitPaths(ctx, root, paths, trailers, c,
+		func(n int) string { return fmt.Sprintf("sakutei sync: record reality (%d snapshot(s))", n) },
+		"Sync Mode（§24.5）が現実から自動で記録したコミットです。generated/ を手で編集・コミットしないでください。")
+}
+
+// CommitPaths commits those of paths that differ from HEAD as one commit by
+// the system c (§26.3), unsigned (§29.1).  Only these paths go in, whatever
+// else is staged.  trailers[i] is the trailer line of paths[i]; the commit
+// carries those of the paths that changed.  subject is given how many paths
+// went in.  It returns the new commit, or "" when no path differed from HEAD
+// (commits are thinned: nothing meaningful, nothing committed, §24.5).  The
+// allocation write-back (#157) rides on this with its own trailer.
+func CommitPaths(ctx context.Context, root string, paths, trailers []string, c Committer, subject func(n int) string, body string) (string, error) {
+	if c == (Committer{}) {
+		c = DefaultCommitter
+	}
+	var rels, used []string
 	for i, p := range paths {
 		rel, err := relPath(root, p)
 		if err != nil {
@@ -96,27 +116,42 @@ func commitSnapshots(ctx context.Context, root string, paths, subjects []string,
 		}
 		if st != "" {
 			rels = append(rels, rel)
-			trailers = append(trailers, Trailer+": "+subjects[i])
+			used = append(used, trailers[i])
 		}
 	}
 	if len(rels) == 0 {
 		return "", nil
 	}
-	if _, err := git(ctx, root, nil, append([]string{"add", "--"}, rels...)...); err != nil {
+	// A path deleted from the work tree is staged as a deletion by add.
+	if _, err := git(ctx, root, nil, append([]string{"add", "-A", "--"}, rels...)...); err != nil {
 		return "", err
 	}
-	env := []string{
-		"GIT_AUTHOR_NAME=" + c.Name, "GIT_AUTHOR_EMAIL=" + c.Email,
-		"GIT_COMMITTER_NAME=" + c.Name, "GIT_COMMITTER_EMAIL=" + c.Email,
-	}
-	subject := fmt.Sprintf("sakutei sync: record reality (%d snapshot(s))", len(rels))
-	body := "Sync Mode（§24.5）が現実から自動で記録したコミットです。generated/ を手で編集・コミットしないでください。"
-	// Unsigned by default (§29.1).  Signing goes here (-S<key>) when added.
-	args := []string{"commit", "-q", "--no-gpg-sign", "--only", "-m", subject, "-m", body, "-m", strings.Join(trailers, "\n"), "--"}
-	if _, err := git(ctx, root, env, append(args, rels...)...); err != nil {
+	// Signing goes here (-S<key>) when added.
+	args := []string{"commit", "-q", "--no-gpg-sign", "--only", "-m", subject(len(rels)), "-m", body, "-m", strings.Join(used, "\n"), "--"}
+	if _, err := git(ctx, root, CommitterEnv(c), append(args, rels...)...); err != nil {
 		return "", err
 	}
 	return git(ctx, root, nil, "rev-parse", "HEAD")
+}
+
+// CommitterEnv is the environment that makes git author and commit as c.
+func CommitterEnv(c Committer) []string {
+	return []string{
+		"GIT_AUTHOR_NAME=" + c.Name, "GIT_AUTHOR_EMAIL=" + c.Email,
+		"GIT_COMMITTER_NAME=" + c.Name, "GIT_COMMITTER_EMAIL=" + c.Email,
+	}
+}
+
+// FindRepo returns the top of the git work tree containing dir, or "" when
+// dir is not in one.
+func FindRepo(ctx context.Context, dir string) string { return findRepo(ctx, dir) }
+
+// RelPath returns path relative to the work tree top root (see relPath).
+func RelPath(root, path string) (string, error) { return relPath(root, path) }
+
+// Git runs git in dir with env added and returns its trimmed standard output.
+func Git(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	return git(ctx, dir, env, args...)
 }
 
 // relPath returns path relative to the work tree top root.  git reports root

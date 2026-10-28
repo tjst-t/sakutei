@@ -17,6 +17,7 @@ package reconcile
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/tjst-t/sakutei/v2/internal/eventlog"
 	"github.com/tjst-t/sakutei/v2/internal/prune"
+	"github.com/tjst-t/sakutei/v2/pkg/allocation"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
@@ -51,6 +53,24 @@ func EmitApplyFailed(w io.Writer, prefix, what string, id core.ID, err error) {
 		Attrs: attrs,
 		Text:  fmt.Sprintf("%s%s %s: %v", prefix, what, id, err),
 	})
+}
+
+// EmitAllocationHeld raises AllocationHeld for a request the pool's
+// write-back file holds (#157, §19.7) and reports true; for any other
+// waiting-allocation it does nothing and reports false.  The resource is not
+// Applied while held; the Event is level (it continues until the file and
+// the store agree, or the review is taken in).
+func EmitAllocationHeld(w io.Writer, prefix string, id core.ID, field, pool string, err error) bool {
+	if !errors.Is(err, allocation.ErrWriteBackHeld) {
+		return false
+	}
+	eventlog.Emit(w, core.Event{
+		Kind: core.EventAllocationHeld, Severity: core.SeverityWarning,
+		Resource: id, Message: err.Error(),
+		Attrs: map[string]string{"field": field, "pool": pool},
+		Text:  fmt.Sprintf("%sallocation held: %s field %q from pool %q: %v (not applied until the hold is lifted; others continue, §19.7)", prefix, id, field, pool, err),
+	})
+	return true
 }
 
 // emitPruned raises Pruned for an orphan deleted by prune; how is the path

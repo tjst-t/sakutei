@@ -111,6 +111,7 @@ func runPlan(args []string) {
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	allocURL := fs.String("alloc-url", "", allocURLUsage)
+	allocWriteBack := fs.String("alloc-write-back", "", allocWriteBackUsage)
 	devenv := fs.Bool("devenv", false,
 		"S33266e-3: devenv（坪庭）mode — render external inputs (inventory/allocation/secret) are substituted with fakes; no production pool/secret is touched (§26.2)")
 
@@ -261,6 +262,9 @@ func runPlan(args []string) {
 	// only LOOKS UP existing allocations; a request with none yet is shown as
 	// pending and is allocated by reconcile.
 	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
+	if allocErr == nil {
+		allocAuth, allocErr = wrapWriteBack(allocAuth, *intentDir, *allocWriteBack)
+	}
 	if allocErr != nil {
 		fail("sakutei plan: %v", allocErr)
 	}

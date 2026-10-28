@@ -26,11 +26,13 @@ package allocator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -485,6 +487,84 @@ func (p *pool) used(now time.Time) map[int]bool {
 		}
 	}
 	return used
+}
+
+// ImportEntry is one allocation handed to Import: owner holds value.
+type ImportEntry struct {
+	Owner string `json:"owner"`
+	Value int    `json:"value"`
+}
+
+// ErrImportConflict is returned (wrapped) by Import when an entry disagrees
+// with a record the store already has.
+var ErrImportConflict = errors.New("allocator: import conflicts with the store")
+
+// Import rebuilds pool's allocations from entries — the pool's write-back
+// file, the source of truth (`sakutei allocator import`, #157, §19.7).  The
+// pool is declared with the range lo-hi first (created if missing).  An entry
+// the store already holds as it is is left alone; an entry that disagrees
+// with the store — the owner holds another value, the value is held by
+// another owner or cools down (it was released), or it is outside the range —
+// is a conflict.  On any conflict nothing is written and every conflict is
+// reported: the store is never made to agree by guessing which side is right.
+// It returns how many entries were added.
+func (a *FileAuthority) Import(_ context.Context, poolName string, lo, hi int, entries []ImportEntry) (int, error) {
+	added := 0
+	err := a.update(func(s *store) error {
+		p, ok := s.Pools[poolName]
+		if !ok {
+			p = &pool{Lo: lo, Hi: hi, Allocations: map[string]entry{}, Cooldown: map[string]time.Time{}}
+		}
+		now := a.now()
+		p.expire(now)
+		holder := make(map[int]string, len(p.Allocations))
+		for owner, e := range p.Allocations {
+			holder[e.Value] = owner
+		}
+		var conflicts []string
+		var add []ImportEntry
+		for _, in := range entries {
+			if in.Value < lo || in.Value > hi {
+				conflicts = append(conflicts, fmt.Sprintf("%s: value %d is outside the range %d-%d", in.Owner, in.Value, lo, hi))
+				continue
+			}
+			if e, ok := p.Allocations[in.Owner]; ok {
+				if e.Value != in.Value {
+					conflicts = append(conflicts, fmt.Sprintf("%s: the file says %d, the store says %d", in.Owner, in.Value, e.Value))
+				}
+				continue
+			}
+			if other, ok := holder[in.Value]; ok {
+				conflicts = append(conflicts, fmt.Sprintf("%s: value %d is held by %s in the store", in.Owner, in.Value, other))
+				continue
+			}
+			if until, ok := p.Cooldown[strconv.Itoa(in.Value)]; ok {
+				conflicts = append(conflicts, fmt.Sprintf("%s: value %d was released and cools down until %s in the store", in.Owner, in.Value, until.UTC().Format(time.RFC3339)))
+				continue
+			}
+			add = append(add, in)
+		}
+		if len(conflicts) > 0 {
+			sort.Strings(conflicts)
+			return fmt.Errorf("%w: pool %q: %s", ErrImportConflict, poolName, strings.Join(conflicts, "; "))
+		}
+		for owner, e := range p.Allocations {
+			if e.Value < lo || e.Value > hi {
+				return fmt.Errorf("allocator: pool %q: range %d-%d would exclude %d, allocated to %q", poolName, lo, hi, e.Value, owner)
+			}
+		}
+		p.Lo, p.Hi = lo, hi
+		for _, in := range add {
+			p.Allocations[in.Owner] = entry{Value: in.Value, State: stateAllocated}
+		}
+		s.Pools[poolName] = p
+		added = len(add)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return added, nil
 }
 
 // Record states besides stateAllocated and stateReserved: a released value

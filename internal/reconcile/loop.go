@@ -1606,6 +1606,9 @@ func runCycleAsync(
 		fmt.Fprintf(cfg.ErrOut, "sakutei: warn: allocation: %s\n", w)
 	}
 	for _, w := range allocRes.Waiting {
+		if EmitAllocationHeld(cfg.ErrOut, "sakutei: ", w.ID, w.Field, w.Pool, w.Err) {
+			continue
+		}
 		fmt.Fprintf(cfg.ErrOut, "sakutei: waiting-allocation: %s field %q from pool %q: %v (not converged until allocated; others continue, §19.9)\n",
 			w.ID, w.Field, w.Pool, w.Err)
 	}

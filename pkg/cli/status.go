@@ -122,6 +122,7 @@ Exit codes:
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file; status only looks allocations up, never allocates")
 	allocURL := fs.String("alloc-url", "", allocURLUsage)
+	allocWriteBack := fs.String("alloc-write-back", "", allocWriteBackUsage)
 	causeStatePath := fs.String("cause-state", "",
 		"OPTIONAL path to a cause-state JSON file to READ previous-cycle revisions for consistent cause tags (Sc7a647); status never writes it (read-only)")
 
@@ -180,6 +181,9 @@ Exit codes:
 	// #24: render phase 1 — allocation.  status is read-only: it only looks
 	// up existing allocations (a request without one shows as pending).
 	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
+	if allocErr == nil {
+		allocAuth, allocErr = wrapWriteBack(allocAuth, *intentDir, *allocWriteBack)
+	}
 	if allocErr != nil {
 		fmt.Fprintf(os.Stderr, "sakutei status: %v\n", allocErr)
 		os.Exit(1)

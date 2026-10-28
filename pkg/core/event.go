@@ -63,6 +63,10 @@ const (
 	// planned_change（kind: delete）のレーンが開いていないので消さずに待っている
 	// （§12.2・§13.3・§14.4、Backlog #163）。
 	EventAbsentAwaitingApproval EventKind = "AbsentAwaitingApproval"
+	// EventAllocationHeld は採番の書き戻しのファイル（§19.7、#157）がその要求を
+	// 止めた（ファイルと store の食い違い・store に無い・書き戻しの取り込み待ち）。
+	// そのリソースは Apply しない。
+	EventAllocationHeld EventKind = "AllocationHeld"
 
 	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。
 	EventWorkflowStarted       EventKind = "WorkflowStarted"
@@ -92,7 +96,10 @@ func (k EventKind) IsLevel() bool {
 		EventRequiresTask,
 		// Backlog #163: an absent resource waiting for its lane is a
 		// continuing condition, resolved when it is observed gone.
-		EventAbsentAwaitingApproval:
+		EventAbsentAwaitingApproval,
+		// #157: a write-back hold continues until the file and the store agree
+		// or the review is taken in.
+		EventAllocationHeld:
 		return true
 	}
 	return false

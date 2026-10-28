@@ -40,6 +40,7 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 | [remote.md](remote.md) | 離れたホストを扱う口（ssh 越しの実行の層、Backlog #130）。対象の一覧（`remote_config`：address・user・秘密鍵の SecretRef・known_hosts・sudo・タイムアウト）、ID にホストの名前が付くこと、鍵とホスト鍵の扱い、接続の使い回し、権限、届かないときの答え、dnszone の再読み込み（`zone_reload`）。docker の sshd 2 台での統合テスト（`make integration-remote`）の回し方と結果。 |
 | [status-json.md](status-json.md) | `sakutei status --json` の出力の形（schema_version 1）。要約・リソースごとの状態・宣言外の検出ができなかった provider。 |
 | [plan-json.md](plan-json.md) | `sakutei plan --json` の出力の形（schema_version 1、Backlog #135）。操作ごとの種類・フィールドの前と後・原因タグ・使う予算のレーン、予算・容量・alert-only の scope で止まる見込みとその理由、Workflow に任せている対象、採番待ち、直してよい時間帯の外か、計画のエラー。 |
+| [allocation-file.md](allocation-file.md) | 採番の書き戻しのファイルの書式（schema_version 1、Backlog #157）。プールの `write_back: true`・owner の書き方・置き場とコミットの仕方（`commit` / `review` / `file`、`--alloc-write-back`）・ファイルと store が食い違うとき／取り込み待ちに Apply を止める決まり・`sakutei allocator import` で store を作り直す手順。 |
 | [metrics.md](metrics.md) | デーモンの `/metrics`（Prometheus の text format、Backlog #54・§27.5）。`--metrics-listen` で明示したときだけ待ち受ける。出す値（drifted・unknown の件数、予算の残り、halt の有無、cycle と Observe の所要時間）と意味。 |
 | [read-api.md](read-api.md) | デーモンの読み取り専用の口（Backlog #136）。`--read-listen` で明示したときだけ待ち受ける。`GET /status`・`/plan`（一回性の `--json` と同じ形に周の番号と時刻を足したもの）・`/events`（Server-Sent Events）・`/graph`（依存の DAG。`sakutei graph --json` と同じ形）。認証を持たないので外に出すときの守り方。 |
 | [trial/redfish-os-install/README.md](trial/redfish-os-install/README.md) | Redfish と Workflow で OS を入れる手順（自動インストールの ISO は利用者が用意する）。intent と Workflow の例、試用の結果、限界。 |

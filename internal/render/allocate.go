@@ -164,8 +164,10 @@ func ResolveAllocations(ctx context.Context, auth allocation.AllocationAuthority
 				switch {
 				case errors.Is(err, allocation.ErrUnknownPool):
 					ok, err = false, nil // pool not created yet: nothing allocated
-				case errors.Is(err, allocation.ErrUnavailable):
-					ok, err, reason = false, nil, err // read-only verbs degrade too
+				case errors.Is(err, allocation.ErrUnavailable), errors.Is(err, allocation.ErrWriteBackHeld):
+					// read-only verbs degrade too; a write-back hold (#157)
+					// shows as pending with its reason, as reconcile holds it.
+					ok, err, reason = false, nil, err
 				}
 				if err != nil {
 					return AllocationResult{}, fmt.Errorf("render: look up %s in pool %q: %w", owner, pool, err)
@@ -222,6 +224,20 @@ type FreeCounter interface {
 	FreeCount(ctx context.Context, pool string, lo, hi int) (int, error)
 }
 
+// IntentPoolsSetter is implemented by authorities that need the intent's
+// pool declarations for the pass — the write-back (internal/allocwriteback,
+// #157) learns which pools are `write_back: true`.
+type IntentPoolsSetter interface {
+	SetIntentPools(pools []loader.Pool)
+}
+
+// WriteBackFlusher is implemented by authorities that finish a pass after
+// the requests are resolved (the write-back commits what it wrote, #157).
+// Its failures are warnings.
+type WriteBackFlusher interface {
+	Flush(ctx context.Context) []string
+}
+
 // RenderAllocations is the allocation step of render phase 1 for a loaded
 // intent.  In AllocAllocate mode it first declares the intent's pools to the
 // authority (when it is a PoolEnsurer), then resolves every request.  In
@@ -239,6 +255,9 @@ type FreeCounter interface {
 // warning, not an error: requests from it simply wait (§19.9).
 func RenderAllocations(ctx context.Context, auth allocation.AllocationAuthority, mode AllocMode, in loader.Intent, claim core.Scope) (AllocationResult, error) {
 	var warnings []string
+	if ps, ok := auth.(IntentPoolsSetter); ok {
+		ps.SetIntentPools(in.Pools)
+	}
 	if auth != nil && mode == AllocAllocate {
 		if pe, ok := auth.(PoolEnsurer); ok {
 			for _, p := range in.Pools {
@@ -266,6 +285,9 @@ func RenderAllocations(ctx context.Context, auth allocation.AllocationAuthority,
 	res, err := ResolveAllocations(ctx, auth, mode, inClaim)
 	if err != nil {
 		return AllocationResult{}, err
+	}
+	if fl, ok := auth.(WriteBackFlusher); ok && mode == AllocAllocate {
+		warnings = append(warnings, fl.Flush(ctx)...)
 	}
 	res.Resources = append(res.Resources, outside...)
 	res.Warnings = warnings

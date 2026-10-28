@@ -29,15 +29,35 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/tjst-t/sakutei/v2/internal/allocator"
+	"github.com/tjst-t/sakutei/v2/internal/allocwriteback"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/pkg/allocation"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
+
+// allocWriteBackUsage is the help text of --alloc-write-back (#157).
+const allocWriteBackUsage = "#157: write-back settings file (JSON / YAML) for the pools declared write_back: true — path (default generated/allocations, relative to the intent's parent), mode commit|review|file (default commit), repo, branch (review), remote, ssh_key, committer_name / committer_email (§19.7, §24.5)"
+
+// wrapWriteBack puts the allocation write-back (#157) in front of auth: the
+// pools the intent declares write_back: true are read from their file on the
+// intent side first.  Pools without it pass straight through, so the wrapper
+// is always there when an authority is.
+func wrapWriteBack(auth allocation.AllocationAuthority, intentDir, cfgPath string) (allocation.AllocationAuthority, error) {
+	cfg, err := allocwriteback.LoadConfig(cfgPath)
+	if err != nil {
+		return nil, fmt.Errorf("--alloc-write-back: %w", err)
+	}
+	if auth == nil {
+		return nil, nil
+	}
+	return allocwriteback.New(auth, cfg, intentDir), nil
+}
 
 // allocURLUsage is the help text of --alloc-url, shared by every verb.
 const allocURLUsage = "#25: comma-separated base URLs of the allocator service (`sakutei allocator`), active/standby; fails over between them (§19.8)"
@@ -73,6 +93,15 @@ func syncScopeList(in loader.Intent) []core.Scope {
 // waiting-allocation because the pool is exhausted (#111) — and, when it could
 // not even be looked up, why (allocator unavailable).
 func pendingLine(verb string, pa render.PendingAllocation) string {
+	if errors.Is(pa.Err, allocation.ErrWriteBackHeld) {
+		// #157: held by the pool's write-back file — reconcile does not
+		// Apply the resource either until the hold is lifted.
+		what := "held"
+		if errors.Is(pa.Err, allocwriteback.ErrAwaitingReview) {
+			what = "書き戻しの取り込み待ち (awaiting review of the write-back)"
+		}
+		return fmt.Sprintf("sakutei %s: allocation %s: %s field %q from pool %q: %v", verb, what, pa.ID, pa.Field, pa.Pool, pa.Err)
+	}
 	what := "allocated by reconcile"
 	if pa.FreeKnown {
 		switch {

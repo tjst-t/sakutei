@@ -36,13 +36,20 @@ import (
 // claims must be disjoint — 1 value, 1 authority (§19.7).  v1b uses integer
 // pools only (VLAN IDs and the like); a request writes the integer into a
 // string through its template ("192.0.2.{n}", #145).
+//
+// WriteBack (`write_back: true`, #157) writes what the pool hands out back
+// to a file on the intent side (allocfile.go), which is then read as the
+// source of truth: the store becomes its copy plus the working records
+// (cooldowns), so losing the store loses nothing that cannot be rebuilt from
+// the intent (§19.7).
 type Pool struct {
-	Name  string
-	Range string
-	Lo    int
-	Hi    int
-	Claim map[string]string
-	Space string
+	Name      string
+	Range     string
+	Lo        int
+	Hi        int
+	Claim     map[string]string
+	Space     string
+	WriteBack bool
 }
 
 func parsePools(v any) ([]Pool, error) {
@@ -60,8 +67,9 @@ func parsePools(v any) ([]Pool, error) {
 			return nil, fmt.Errorf("pools[%d] (%s): %w", i, name, err)
 		}
 		space, _ := m["space"].(string)
+		writeBack, _ := m["write_back"].(bool)
 		out = append(out, Pool{Name: strings.TrimSpace(name), Range: rng, Lo: lo, Hi: hi,
-			Claim: stringifyStringMap(m["claim"]), Space: strings.TrimSpace(space)})
+			Claim: stringifyStringMap(m["claim"]), Space: strings.TrimSpace(space), WriteBack: writeBack})
 	}
 	return out, nil
 }

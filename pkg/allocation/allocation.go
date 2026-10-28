@@ -73,4 +73,11 @@ var (
 	// ErrFenced: this authority instance has been superseded by a promoted
 	// standby (its fencing generation is stale, §19.8); it must not write.
 	ErrFenced = errors.New("allocation: authority fenced (a newer generation is active)")
+	// ErrWriteBackHeld: the request's value is held back by the pool's
+	// write-back file (`write_back: true`, §19.7): the file and the store
+	// disagree, the store lacks an allocation the file holds, or the value
+	// awaits review before it appears in the file.  Like ErrUnavailable it
+	// makes only the requesting resource waiting-allocation — its Apply is
+	// stopped and reported, never resolved by preferring either side.
+	ErrWriteBackHeld = errors.New("allocation: held by the write-back file")
 )

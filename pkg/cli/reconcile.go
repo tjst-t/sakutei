@@ -114,6 +114,7 @@ func runReconcile(args []string) {
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	allocURL := fs.String("alloc-url", "", allocURLUsage)
+	allocWriteBack := fs.String("alloc-write-back", "", allocWriteBackUsage)
 	// #44 (§14.5, §23.7): S4 audit log; with it the planned_change lanes open.
 	auditLog := fs.String("audit-log", "",
 		"S4 audit log file (append-only JSON lines); with it planned_change lanes open, holding max_count and the cooling-off across runs (§14.5, §23.7)")
@@ -282,6 +283,9 @@ func runReconcile(args []string) {
 	// request the authority cannot serve (allocator down, pool exhausted)
 	// makes only its resource waiting-allocation; the rest converges (§19.9).
 	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
+	if allocErr == nil {
+		allocAuth, allocErr = wrapWriteBack(allocAuth, *intentDir, *allocWriteBack)
+	}
 	if allocErr != nil {
 		fmt.Fprintf(logErr, "sakutei reconcile: %v\n", allocErr)
 		exitAfterEvents(1)
@@ -295,6 +299,9 @@ func runReconcile(args []string) {
 		fmt.Fprintf(logErr, "sakutei reconcile: warn: allocation: %s\n", w)
 	}
 	for _, w := range allocRes.Waiting {
+		if reconcile.EmitAllocationHeld(logErr, "sakutei reconcile: ", w.ID, w.Field, w.Pool, w.Err) {
+			continue
+		}
 		fmt.Fprintf(logErr, "sakutei reconcile: waiting-allocation: %s field %q from pool %q: %v (not converged until allocated; others continue, §19.9)\n",
 			w.ID, w.Field, w.Pool, w.Err)
 	}

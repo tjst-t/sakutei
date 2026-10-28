@@ -82,6 +82,10 @@ const (
 	// 自動の解放の経路（§19.5）は v1 に無いので、解放はすべて人の判断である。
 	// Detail に pool・owner・値・cooldown の明けを書く。
 	KindAllocationReleased Kind = "allocation.released"
+	// KindAllocationImported は採番の store を宣言の側の書き戻しのファイルから
+	// 作り直したこと（sakutei allocator import、#157、§19.7）。Detail に pool・
+	// ファイル・足した件数を、Count に足した件数を書く。
+	KindAllocationImported Kind = "allocation.imported"
 )
 
 // Record は監査の 1 件。

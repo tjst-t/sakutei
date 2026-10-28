@@ -201,6 +201,7 @@ func runDaemon() {
 	allocStore := fs.String("alloc-store", "",
 		"#24: path to the allocation store file (file AllocationAuthority, §19.9); required when the intent uses from_pool")
 	allocURL := fs.String("alloc-url", "", allocURLUsage)
+	allocWriteBack := fs.String("alloc-write-back", "", allocWriteBackUsage)
 	allocLookupTTL := fs.String("alloc-lookup-ttl", "",
 		"#105: how long the shard-local Lookup cache (§19.6) trusts a cached allocation before revalidating it with one Lookup, e.g. 5m or 1h (default: 15m, allocator.DefaultLookupTTL; must stay well under the 24h cooldown)")
 	inventoryUnreachable := fs.Bool("inventory-unreachable", false,
@@ -463,6 +464,14 @@ func runDaemon() {
 		}
 		allocAuth = cache
 	}
+	// #157: the write-back goes in front of the cache, so the file is read
+	// every cycle (it is local) while the store is still asked only on churn.
+	if a, err := wrapWriteBack(allocAuth, *intentDir, *allocWriteBack); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
+		os.Exit(1)
+	} else {
+		allocAuth = a
+	}
 
 	cfg := reconcile.Config{
 		IntentDir:     *intentDir,
@@ -564,6 +573,7 @@ Usage:
   sakutei reject       reject a Workflow gate: the Workflow halts (§6.4)
   sakutei allocator    serve the allocation authority (active/standby, §19.8);
                        allocator release / list: give a value back, show allocations (#116)
+                       allocator import: rebuild the store from the write-back files (#157)
   sakutei mirror       keep a read-only git mirror of the intent repository (§17.4)
   sakutei secrets      build a site-local secret store: secrets extract (§20.5)
   sakutei breakglass   DR write break-glass: keygen / commit / verify / status (§25.1)

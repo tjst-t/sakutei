@@ -280,6 +280,25 @@ scopes:                   # intent のトップレベル（v1b の書式）
 - **prune との関係**：sync の scope の現実は、`--claim` の外と同じく**集合差の前に落とす**（`plan`・`reconcile`・
   常駐ループ）。`mode: sync` の宣言を外すと、その scope の現実は通常の prune の規律（§12）に戻る。
 
+**採番の書き戻し（v3.34、Backlog #157）**：Sync Mode のコミットの仕組みは、採番の結果を宣言の側へ書き戻すこと（§19.7）
+にも使う。現実ではなく**ツールが決めた値**を宣言へ記録する点が違うが、システムとして書き、人の intent のコミットと
+混ぜない点は同じである。書き戻し先のパス（既定 `generated/allocations/<pool>.yaml`。リポジトリの根からの相対）・
+仕方・つなぎ方（リポジトリ・push の宛先と鍵）は宣言のリポジトリの事情で決まるので設定（`--alloc-write-back`）に、
+書き戻すプールは intent（`pools:` の `write_back: true`）に書く。仕方は 3 つ：
+
+- `commit`（既定）：ファイルに書いてから値を使い、その周の終わりに intent のブランチ（作業ツリーの今のブランチ）へ直接
+  コミットする。**Sync Mode のコミットに相乗りする**——コミッター（既定 `sakutei-sync`・署名なし、§29.1）、書いた
+  パスだけを入れる、中身が変わらなければコミットしない（間引き）。trailer は `Sakutei-Allocation: <pool>`。
+  作業ツリーでなければ書くだけ。
+- `review`：別のブランチ（既定 `sakutei/allocation-write-back`）に更新したファイルをコミットし、人のレビューを通す
+  （作業ツリーには触らない。取り込みは人）。取り込まれて intent の側のファイルに値が現れるまで、その値を使う Apply を
+  止める（`plan`・`status` に「書き戻しの取り込み待ち」と出る）。
+- `file`：書くだけで git は使わない。
+
+Sync Mode のスナップショットと違い、書き戻しのファイルは**正**なので本文のハッシュで人の編集を拒まない。人が直した
+内容は store と照らされ、食い違えば Apply を止める（§19.7）。書き戻しは Apply に接続するが、書き戻しループにはならない：
+書くのは store が払い出した値だけで、ファイルの値を store へ戻すのは人の `sakutei allocator import` だけである。
+
 Sync Mode は `import` / `prune` / `closed-world` と同じく `Capabilities.List` に束ねられる（§5）。List できないプロバイダの scope は Sync Mode の対象にできない。
 
 **切替（cutover）：Sync Mode → Converge Mode**。数ヶ月の同期期間を経て準備が整った時点で、離散的な1ステップとして切り替える。このタイミングのみ人のレビューが要る——理由は正当性判断ではなく、**§24.4 で指摘した managed fields の切り分け**（DRS が動かす配置・動的 IP 等の runtime 値を intent に取り込まない）が生スナップショットのままではできないためである。

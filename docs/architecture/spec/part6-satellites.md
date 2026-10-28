@@ -143,7 +143,25 @@ secret も同型である（§20）：割当事実に対する Lookup キャッ�
 
 authority は state を持つ（§19.1）ゆえに **喪失と分断の設計が要る**。
 
-- **state 喪失時の再構築（逆引き）**：割当記録（§19.9。v1b はファイル版）が失われたとき、**現実から逆引きして再構築する手順**を持つ。`owner → value` は現実側（機器に設定された VLAN/IP）を Observe / List すれば多くが復元でき、復元できない分は cooldown 中の未使用として保守側に倒す。喪失＝即再払い出し衝突を防ぐ。
+- **state 喪失時の再構築（宣言から作り直す、v3.34 で改訂・Backlog #157）**：割当の事実（どの owner に何を配ったか）は、
+  **宣言の側（intent のリポジトリ）に書き戻し、それを正とする**（§1.7「正しい状態は宣言に置き、ツールの中だけに持たない」）。
+  プールに `write_back: true` を書くと、払い出した結果をプールごとの素の YAML のファイル（`schema_version`・`pool`・
+  `allocations`（owner・value・allocated_at）。書式は `docs/allocation-file.md`）に書き戻し、render のフェーズ1 はそれを
+  正として読む。**store は宣言の写しと作業の記録**（cooldown・仮予約）に下がる。store を失ったら、
+  `sakutei allocator import` で**宣言から作り直す**（既にある記録と食い違えば書かずに断る。S4 の監査に残す）。
+  - ファイルと store が合う → そのまま使う。
+  - 値が食い違う → その owner を使う Apply を止めて知らせる（level の Event `AllocationHeld`）。**どちらにも勝手に寄せない**。
+  - ファイルにあり store に無い → Apply を止め、import を案内する。
+  - store で配ったがファイルにまだ無い → 書き戻してから使う（書き戻しの仕方 `review` では、取り込まれて intent の側の
+    ファイルに現れるまでその値を使う Apply を止める。値は store で配ったままなので、その間に同じ値を他に配らない）。
+  - ファイルの割当のうち 1 つでも store に無い・食い違うあいだは、そのプールから新しい値を配らない（store がファイルの値を
+    空きと思って再払い出しするのを防ぐ。喪失＝即再払い出し衝突を防ぐ、の実装）。
+  - 解放（人の `sakutei allocator release`・宣言から消えたことによる Release）も同じ仕方でファイルから消す。store は
+    cooldown を持ち続ける。
+  - 止めた要求は waiting-allocation（§19.9）と同じく、そのリソースと下流だけを skip する。
+  - 旧版（v3.31 まで）の「**現実から逆引きして再構築する手順**」（Backlog #108 の 3）は、この書き戻しで**置き換えた**。
+    逆引きは機器ごとに読み方が要り、復元できない分が残るが、書き戻しは宣言を読むだけで同じ値に戻り、付け替わらない。
+    `write_back` の無いプールは今までどおり store が正で、喪失は事故のまま（§25.3）。
 - **1 プールにつき 1 権威**：地理分散で 2 権威が同一プールから独立払い出しすると復帰時に採番衝突（§19.5 が最悪級と呼ぶ事故）になる。→ **プールをサイトごとに静的分割**（サイト A = VLAN 1–500、B = 501–1000）し、**そもそも 2 権威が同一プールに触れない**ようにする（shared-nothing を採番プールにも適用）。分断中も各サイトは自分のプール範囲内で独立に払い出せる。
 
 ### §19.8 HA 最小形とプール分割 by claim
@@ -247,6 +265,13 @@ pools:
 ので、二重払い出しは起きない（同時払い出しの受け入れテストで、ロックを外すと失敗することも確かめた）。割当記録には
 fencing 世代（§19.8）も持たせる。SQLite を採らなかった理由は、**リポジトリを stdlib のみ（外部依存なし）に保つ**ため
 である。SQLite 版（または NetBox 等の外部権威）は v1 の範囲に含めず、v2 以降に `AllocationAuthority` seam の裏で別実装として足す（Backlog #36。初めての外部依存を入れてよいかは着手時に決める）。上の SQLite + `BEGIN IMMEDIATE` は、その時点での最小実装の候補として残す。
+
+**store の位置づけ（v3.34、Backlog #157）**：`write_back: true` のプールでは、store（ファイル版・サービス版とも）は
+**宣言の写しと作業の記録**である。割当の正は宣言の側のファイル（§19.7）にあり、store を失っても宣言から作り直せる
+（`sakutei allocator import`）。store が持ち続ける作業の記録は、cooldown（§19.5 (b)）・仮予約（§19.4）・fencing 世代
+（§19.8）で、これらは失っても安全側に倒れる（cooldown の代わりに import が解放済みの値を断る、など）。書き戻しの層は
+`AllocationAuthority` の前に置く包み（store の前の Lookup キャッシュ（§19.6）のさらに前）で、ファイルは毎周読む（手元の
+ファイルなので allocator のコールは増えない。定常収束は衛星コールゼロのまま、§3.8）。
 
 **守る2規律**：（1） `AllocationAuthority` interface の裏に隠して差し替え可能に保つ。（2） スコープを**採番に限定**し、CMDB 全体に育てない。
 
@@ -515,7 +540,7 @@ vm:
 
 **v1 の level 報告の決まり（v3.14、Backlog #79）**：
 
-- **level の Event**：drift（`Drift`・alert-only で持ち越した `DriftWouldApply`）・Apply の失敗（`ApplyFailed`、prune の Delete を含む）・halt（`BudgetHalted`・`CapacityHalted`・`PruneHalted`・`InventoryHalted`・外部入力不達の `CycleSkipped` と `ExternalInputUnreachableProlonged`）・ghost diff の hold（`ProviderUpgradeDiff`）。これ以外（`Pruned`・Workflow の Event・break-glass・DR plan・fencing・RequiresTask など）は edge のまま、起きた周に 1 回出す。
+- **level の Event**：drift（`Drift`・alert-only で持ち越した `DriftWouldApply`）・Apply の失敗（`ApplyFailed`、prune の Delete を含む）・halt（`BudgetHalted`・`CapacityHalted`・`PruneHalted`・`InventoryHalted`・外部入力不達の `CycleSkipped` と `ExternalInputUnreachableProlonged`）・ghost diff の hold（`ProviderUpgradeDiff`）・採番の書き戻しによる hold（`AllocationHeld`、v3.34、§19.7）。これ以外（`Pruned`・Workflow の Event・break-glass・DR plan・fencing・RequiresTask など）は edge のまま、起きた周に 1 回出す。
 - **キー**：kind + resource（資源に紐づかないものは scope、prune の halt は provider）。同じキーの Event は続く間 1 つの level として扱う。
 - **firing / 更新 / resolved**：初めて出た周に `state: firing`・`count: 1`・`since`（その時刻）で出す。続く周は count を 1 つ上げるだけで出さない。内容（severity・cause・Message・Attrs）が変わった周と stuck に上がった周だけ、firing の更新として出す（毎周変わる値——前の周との比較の文・連続スキップの回数——は内容に数えない。drift は観測値の digest で比べる）。その周に上がらず、**その周に対象を確かめられて消えていた**とき、`state: resolved` を 1 回出して忘れる。確かめられなかった周（観測していない・in-flight・tier で間引いた・周を飛ばした・周がエラー）は消えたとみなさず firing のまま（確信が持てないときは報告を減らさない）。資源の Event は「Observe して差分が無い」か「desired に無く、prune の List が止まらずに回って orphan の候補にも無い」で消えたとする。予算・容量の halt は関門を評価した周、prune の halt は prune の List を回した周、外部入力・inventory の halt は周が回った周に、上がらなければ消えたとする。
 - **transient → stuck の自動昇格**：既定で**連続 5 周**続いたら stuck に上げる（`--stuck-after <n>`、`Config.StuckAfter`）。permanent な失敗（provider が `PermanentError` を返した Apply。権限・欠損など）と容量の halt は初めから stuck。stuck の Event は `severity: critical`。続く間は stuck から下げない。

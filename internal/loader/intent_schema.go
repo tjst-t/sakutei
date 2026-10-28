@@ -146,6 +146,9 @@ func intentSchema() schemaNode {
 						"range": schemaNode{"type": "string"},
 						"claim": stringMap,
 						"space": schemaNode{"type": "string"},
+						// write_back は払い出した結果を宣言の側のファイルへ書き戻し、
+						// それを正として読むか（§19.7、#157）。
+						"write_back": schemaNode{"type": "boolean"},
 					},
 				},
 			},

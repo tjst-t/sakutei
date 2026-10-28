@@ -72,6 +72,7 @@ func runGraph(args []string) {
 	allocStore := fs.String("alloc-store", "",
 		"path to the allocation store file; graph only looks allocations up, never allocates")
 	allocURL := fs.String("alloc-url", "", allocURLUsage)
+	allocWriteBack := fs.String("alloc-write-back", "", allocWriteBackUsage)
 	claim := fs.String("claim", "",
 		"scope-selector restricting the graph to a claim, e.g. site=tokyo,cluster=prod (§17.1); empty=whole world")
 	invFlags := addInventoryFlags(fs, true)
@@ -114,6 +115,9 @@ func runGraph(args []string) {
 	}
 	rev := in.Revision
 	allocAuth, allocErr := openAllocStore(*allocStore, *allocURL)
+	if allocErr == nil {
+		allocAuth, allocErr = wrapWriteBack(allocAuth, *intentDir, *allocWriteBack)
+	}
 	if allocErr != nil {
 		fail("sakutei graph: %v", allocErr)
 	}
