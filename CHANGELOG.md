@@ -2,6 +2,21 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## v2.3.0（2026-10-28）
+
+宣言から外したもの・宣言で消すものを扱いやすくした版。宣言で消す口（`ensure: absent`）、宣言の外にあるものを status に出す、Proxmox の VM を pool に入れる。あわせて、/metrics の値を観測する provider。設計書は v3.29 → v3.33（`docs/architecture/CHANGELOG-v3.30.md`〜`v3.33.md`、と §29.1）。
+
+### 追加
+
+- **宣言で消す `ensure: absent`**（#163）：intent のリソースに `ensure: absent` と書くと、在れば消し、無ければ適合とする。provider に依らない汎用の口で、prune しない型（proxmox-vm の VM など）にも効く。消すのは必ず承認（そのリソースを覆う `planned_change` の `kind: delete`）を通り、予算にも数える。承認が無い間は消さず、Event `AbsentAwaitingApproval` を出し、plan では `blocked_by: approval`（`--json` の `absent: true`）。absent に中身のフィールドや依存を書く・absent に依るリソースがある・触らない宣言（proxmox-vm の protected）を absent にする、は読み込みで断る。proxmox-vm は走っている VM を止めてからディスクごと消す。`make integration-proxmox` に「absent で消す」段（PASS）。
+- **Proxmox の VM を pool に入れる**（#165）：proxmox-vm のフィールド `pool`。作るとき（複製・作成）に渡し、違えば移す。pool は作らない。無い pool・権限の不足はそう言って止まる。pool に絞った API トークンに要る最小の権限を `docs/providers/proxmox-vm.md` に書いた。`make integration-proxmox` に「pool に入れて作る・pool に絞ったトークン」段（PASS）。
+- **/metrics の値を観測する provider `metrics-probe`**（#149）：HTTP(S) の /metrics（Prometheus の text 形式）から、宣言したメトリクス（名前・ラベルの一致・sum / max）の値を観測し、比べ方（`"< 1000"` など）の結果を Workflow の `require` や `ready_condition` から待てる。観測だけ。届かない・形が壊れている・メトリクスが無いは unknown。使い方は `docs/providers/metrics-probe.md`。
+
+### 修正
+
+- **宣言の外にあるものが status に出なかった**（#164）：ある provider の宣言をすべて外すと、その provider は List されず、宣言の外のもの（unmanaged）が 1 つも出なかった。status は、宣言の無い provider も設定されていれば List し、宣言に無いものを unmanaged に出す（見せるだけで消さない）。設定されているのに組み立てられない provider は `unmanaged_undetectable`（終了コード 3）。`make integration-proxmox` に「宣言の外の VM が unmanaged に出て、消されない」段（PASS）。
+- 常駐のデーモンに `--cause-state` を渡すと、旗の解析のエラーではなく、理由（常駐は前の周をメモリに持つので要らない）を言って終了コード 1 で断る。
+
 ## v2.2.0（2026-10-28）
 
 離れたホストのファイルと systemd のユニットを宣言で保てるようにし、通知を複数の宛先へ送れるようにした版。あわせて、Redfish の FW の版の観測と承認ゲートつきの更新。設計書は v3.26 → v3.29（`docs/architecture/CHANGELOG-v3.27.md`・`v3.28.md`・`v3.29.md`、と §29.1）。
