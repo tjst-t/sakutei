@@ -3584,7 +3584,7 @@
       "number": 152,
       "kind": "task",
       "title": "全体を止める型の更新：止まる時間帯・下流への影響・見積もりの宣言と、止める前の確かめと知らせ",
-      "status": "in-progress",
+      "status": "done",
       "parent": "fw-redfish-updateservice",
       "dependsOn": [
         "redfish-firmware",
@@ -3595,12 +3595,12 @@
       "labels": [],
       "body": "## なぜ\n止めている間は下流が使えない更新（ゲートウェイのソフト更新など）は、いつ止めるか・どれだけ止めるか・誰が影響を受けるかを人に見せ、上流が溢れない時にだけ止めたい。\n\n## やること\n- 更新の Task・Workflow に `disruption`（書き方は実装で決める）を宣言できるようにする：止める時間の見積もり・影響を受ける下流のリソース・止めてよい時間帯（remediation schedule §14.2 と組み合わせる）。\n- 承認ゲート（§6.4）に、見積もり・影響を受ける下流・いまの上流の積もり（require の観測値）を出す。\n- 止める前の確かめ：require（#87）と /metrics を観測する provider（#metrics-probe-provider）で、上流の積もりが上限を超えそうなら止めない／待つ（待つ上限を超えたら知らせて止まる）。\n- 止める前に通知の口（#131、webhook・Alertmanager）から知らせる（Event の kind を足す）。終わったら resolved。\n- 時間帯の外では起こさない。\n- 設計書 §6.3・§14.2・§22.3 に決まりを書く。\n\n## 確かめ方\n- 受け入れテスト：時間帯の外では起きない・上流の積もりが多い間は待つ・下がれば承認ゲートに見積もりと影響が出る・承認で進み、止める前に知らせが出る・終わると resolved。\n- CHANGELOG-v3.x、docs。\n\n## 決まり\nGo は stdlib のみ。make check・make test-race を通す。",
       "doneWhen": "全体を止める更新が時間帯・上流の積もり・承認・事前の知らせを通って流れることを受け入れテストで示す。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/disruptive-update-window）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:41:13.586Z",
-      "updatedAt": "2026-10-28T08:37:34.021Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-28T09:14:12.079Z",
+      "closedAt": "2026-10-28T09:14:12.079Z",
       "extra": {}
     },
     {
