@@ -174,6 +174,20 @@ func (r *wfRig) cycleUntil(n int, cond func(workflow.Run) bool) reconcile.CycleR
 	return res
 }
 
+// cycleUntilLogged は cycleUntil と同じで、条件に届かなかったときに extra() の
+// 文も出す。
+func (r *wfRig) cycleUntilLogged(n int, cond func(workflow.Run) bool, extra func() string) {
+	r.t.Helper()
+	for i := 0; i < n; i++ {
+		r.cycle()
+		if run, ok := r.run(); ok && cond(run) {
+			return
+		}
+	}
+	run, _ := r.run()
+	r.t.Fatalf("condition not reached after %d cycles; run=%+v\nper cycle:\n%s\nlog:\n%s", n, run, extra(), r.out.String())
+}
+
 func (r *wfRig) run() (workflow.Run, bool) {
 	r.t.Helper()
 	run, ok, err := workflow.NewFileStore(r.storePath).Get(context.Background(), "rolling")
@@ -442,7 +456,14 @@ func TestWorkflowInvariantBrokenAfterStepHalts(t *testing.T) {
 	r.setActive("n2", "false")
 	release()
 	r.d.Wait(5 * time.Second)
-	r.cycleUntil(10, func(run workflow.Run) bool { return run.Phase == workflow.PhaseHalted })
+	// 落ちたとき（CI でまれに halt せず先へ進んだ）に、外した n2 が現実に残って
+	// いたかを見分けられるように、周ごとの n1〜n3 の active を記録する。
+	var seen []string
+	r.cycleUntilLogged(10, func(run workflow.Run) bool {
+		seen = append(seen, fmt.Sprintf("phase=%s stage=%d target=%d step=%d n1=%s n2=%s n3=%s",
+			run.Phase, run.Stage, run.Target, run.Step, r.field("n1", "active"), r.field("n2", "active"), r.field("n3", "active")))
+		return run.Phase == workflow.PhaseHalted
+	}, func() string { return strings.Join(seen, "\n") })
 	run, _ := r.run()
 	if !strings.Contains(run.Reason, "invariant min_active 2") {
 		t.Fatalf("halt reason = %q, want an invariant violation", run.Reason)
