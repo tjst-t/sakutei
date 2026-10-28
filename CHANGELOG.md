@@ -2,10 +2,19 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
-## 未リリース
+## v2.5.0（2026-10-28）
+
+FW とソフトの更新を宣言で扱う部品を揃えた版。管理 API に更新の口が無い装置の版を人の手順で合わせる、部品の版の互換の表、CLI でしか設定できない装置の汎用の provider、全体を止める型の更新。あわせて、/metrics と読み取りの口の TLS と認可。設計書は v3.38 → v3.44（`docs/architecture/CHANGELOG-v3.39.md`〜`v3.44.md`）。
+
+> **互換の注意**：loopback 以外のアドレスで `--metrics-listen`・`--read-listen` を TLS なし・認可なしで待ち受けていた構成は、起動で断られる（#161）。`--listen-auth-config` で TLS と認可を設定するか、平文のままでよい場合は `--metrics-insecure-listen`・`--read-insecure-listen` を明示する。loopback で待ち受ける使い方はそのまま動く。
 
 ### 追加
 
+- **/metrics と読み取りの口の TLS と認可**（#161）：`--listen-auth-config <file>` に口ごと（`metrics:`・`read:`）に、サーバの証明書と鍵（SecretRef）・TLS の版（1.2 以上）・認可を書く。認可は読むだけのトークン（`Authorization: Bearer`、SecretRef、定数時間で比べる）とクライアント証明書（CA で確かめ、任意で subject・SAN で絞る）のどちらか、または両方。証明書・鍵・トークンは再起動なしで読み直す。断ったら 401／403 で理由を外に出さず、`sakutei_listen_rejected_total` に数える。承認の書き込みの口とは同じアドレスを共有できない。使い方は `docs/metrics.md`・`docs/read-api.md`。
+- **管理 API に更新の口が無い装置の版を、人の手順で合わせる**（#150）：どのリソースにも `update_policy.strategy: manual`（`procedure` か `procedure_url`、`confirm_timeout`〈既定 1h〉、`window`）を書ける。版が違えば承認ゲートつきの Task が手順の文・いまの版・望む版を知らせ、人が作業して承認すると、観測で宣言どおりになるのを待って閉じる。ならなければ stuck で知らせ、勝手に閉じない。承認しなくても観測で合えば閉じる。Sakutei は装置に何も書かない。
+- **部品の版の互換の表**（#151）：intent の `compatibility:` に、部品（ID と版のフィールド）と許す版の組み合わせを書く。望む組み合わせが合わなければ plan・一回性の reconcile は観測の前に終了コード 1、常駐はその周を飛ばす。1 つずつ更新する途中の組み合わせも depends_on の順で照らし、合わなければ止めて（Event `VersionIncompatible`）、合う順序があれば depends_on の書き方を案内する。
+- **CLI でしか設定できない装置を扱う汎用の provider `cli-device`**（#159）：ssh で装置の CLI を打って観測し、コマンド列で変える。機種ごとの中身（観測のコマンドと読み方・変えるコマンドの雛形・エラーの印・確定と取り消し・一度きりの操作）は使う側が持つ定義のファイルで与え、本体は機種を知らない。exec と対話（pty・プロンプト・ページ送り）の両方。値の形は必須で、差し込みになる値は読み込みで断る。出力が定義に合わなければ unknown で何もしない。Apply はエラーの印で止まり、どこまで流れたかを知らせ、取り消しを持つ定義では取り消す。定義の操作は Workflow の `action` としても流せる。使い方は `docs/providers/cli-device.md`。
+- **全体を止める型の更新 `disruption:`**（#152）：Workflow に、止める時間の見積もり・影響を受ける下流・止めてよい時間帯・上流の積もりの条件・待つ上限・事前の知らせ・承認ゲートを宣言できる。時間帯の外では起こさず、上流の積もりが多い間は待ち、承認ゲートに見積もりと影響を出し、止める前に Event `Disruption` で知らせ、止める直前にもう一度確かめる（外れていれば知らせを取り下げて待つ）。見積もりを過ぎれば stuck。
 - **proxmox-vm の cloud-init の初回のパッケージ更新 `ciupgrade`**（#170）：真偽値のフィールド。作るとき（作成・複製）に渡し、観測して違えば合わせる（cloud-init のほかのフィールドと同じ扱い）。書かなければ Proxmox に渡さず比べない（既定の振る舞いは変わらない）。外への出口が無い網では `ciupgrade: false` を明示すると、初回の起動がパッケージ更新の時間切れを待たない。`make integration-proxmox` に「ciupgrade: false」段。設計書 v3.43（`docs/architecture/CHANGELOG-v3.43.md`）。
 
 ## v2.4.0（2026-10-28）
