@@ -4129,7 +4129,7 @@
       "number": 176,
       "kind": "task",
       "title": "NETCONF：部分木だけに絞ったユーザーで観測と Apply が動く",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m6-netconf-apply-base-chain-2-apply",
       "dependsOn": [
         "netconf-2-apply-confirmed-commit-1-0-1-1"
@@ -4143,7 +4143,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:49:00.946Z",
-      "updatedAt": "2026-10-28T09:49:00.946Z",
+      "updatedAt": "2026-10-28T11:07:32.355Z",
       "closedAt": null,
       "extra": {}
     },
