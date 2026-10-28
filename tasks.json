@@ -4224,7 +4224,7 @@
       "number": 181,
       "kind": "task",
       "title": "A3 前半：provider の範囲を intent に書く共通の口と、proxmox-vm・dnszone・nftables の移し",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "m7",
       "dependsOn": [],
       "milestone": null,
@@ -4236,7 +4236,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T13:07:58.997Z",
+      "updatedAt": "2026-10-28T14:08:49.761Z",
       "closedAt": null,
       "extra": {}
     },
