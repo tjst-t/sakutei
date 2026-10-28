@@ -135,13 +135,26 @@ func applyError(name, id string, err error) error {
 	return provider.NewTransientError(fmt.Errorf("%s: Apply %q: %w", name, id, err))
 }
 
+// knownAbsent はスクリプトの頭に付ける関数: known_absent <パス> は、無い
+// パスの上で最も近い在るディレクトリを辿れる（-x）ときだけ 0。辿れなければ
+// 「在るかどうか分からない」を標準エラーに書いて 3 で終わる（読むだけの観測用の
+// ユーザーが覗けないディレクトリの中を absent と読まない、§3・§20.7、#185）。
+const knownAbsent = `known_absent() {
+  d=$1
+  while d=$(dirname -- "$d"); [ ! -d "$d" ] && [ "$d" != / ] && [ "$d" != . ]; do :; done
+  [ -x "$d" ] && return 0
+  echo "cannot tell whether $1 exists: $d cannot be searched by this user" >&2
+  exit 3
+}
+`
+
 // hashScript は引数のパスごとに "<sha256|absent|notfile> <パス>" を書く。
-const hashScript = `for p in "$@"; do
+const hashScript = knownAbsent + `for p in "$@"; do
   if [ -f "$p" ]; then
     h=$(sha256sum < "$p") || exit 3
     echo "${h%% *} $p"
   elif [ -e "$p" ]; then echo "notfile $p"
-  else echo "absent $p"
+  else known_absent "$p"; echo "absent $p"
   fi
 done
 echo end

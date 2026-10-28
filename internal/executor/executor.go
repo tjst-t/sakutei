@@ -77,5 +77,6 @@ func (e *LocalExecutor) Execute(ctx context.Context, p provider.Provider, plan c
 	if len(plan.Ops) > 0 && p.Capabilities().ObserveOnly {
 		return provider.NewPermanentError(fmt.Errorf("the provider observes only (§23.4); refusing to apply %s", plan.Ops[0].Target))
 	}
-	return p.Apply(ctx, plan)
+	// §20.7 (#185): the provider takes out its write credential for this call.
+	return p.Apply(provider.WithWrite(ctx), plan)
 }

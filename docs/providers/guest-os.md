@@ -90,6 +90,12 @@ ID はホストの名前（`node1`）。
 
 「まだ起動していない」と「壊れた（ディスクに何も入っていない・起動しない）」は観測からは見分けられない。**見分けるのは Workflow の待ちの `timeout`**で、過ぎれば halt する（§3：確信が持てないとき、進めない）。
 
+## 観測用の資格（Backlog #185）
+
+guest-os は観測だけなので、対象の一覧のホストの観測用（`observe:`）の資格だけを使う（`write:` は使われない。[../remote.md の「観測用と書き込み用の資格」](../remote.md#観測用と書き込み用の資格)）。観測は `sh -c` のスクリプト（os-release・ホスト名・boot_id・目印の先頭を読む）で、sudo は要らない。
+
+- **読むだけでは観測できないもの**：観測用のユーザーが読めない目印、覗けないディレクトリの中の目印（`/root/...` など）。「無い」とは読まず観測できない（unknown）とする（Workflow の wait は待ち続ける）。目印は誰でも辿れる場所（`/etc/sakutei-installed` など）に置く。
+
 ## OS 導入の Workflow
 
 [docs/trial/redfish-os-install](../trial/redfish-os-install/README.md) の Workflow の、電源オフを待ってディスクから起動したあとに、ゲスト OS の確かめを足す。

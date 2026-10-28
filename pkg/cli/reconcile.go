@@ -420,6 +420,11 @@ func runReconcile(args []string) {
 	// dnszone / nftables providers so a mixed intent can keep each provider's
 	// backing file separate.
 	reg := openProviderSet("sakutei reconcile", *providerConfigFile)
+	if remCfg.IsAlertOnly() {
+		// §20.7 (#185): --mode alert-only / --freeze never writes, so the
+		// providers neither need nor take out their write credentials.
+		reg.observeOnly()
+	}
 	providerConfig := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		providerConfig["zone"] = *zonePath
@@ -1840,7 +1845,7 @@ func (m *multiProviderApply) Apply(ctx context.Context, plan core.Plan) error {
 			// §23.4: never, even if an op got this far.
 			return provider.NewPermanentError(fmt.Errorf("provider %q observes only (§23.4); refusing to apply %s", name, ops[0].Target))
 		}
-		if err := p.Apply(ctx, core.Plan{Ops: ops}); err != nil {
+		if err := p.Apply(provider.WithWrite(ctx), core.Plan{Ops: ops}); err != nil {
 			if provider.IsRolledBack(err) {
 				m.mu.Lock()
 				if m.rolledBack == nil {

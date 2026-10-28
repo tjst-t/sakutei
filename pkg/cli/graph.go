@@ -142,7 +142,7 @@ func runGraph(args []string) {
 	report.IntentRevision, report.RenderedRevision = rev.IntentRevision, rev.RenderedRevision
 	report.Claim = claimSelector.String()
 
-	reg := openProviderSet("sakutei graph", *providerConfigFile)
+	reg := openProviderSet("sakutei graph", *providerConfigFile).observeOnly()
 	providerConfig := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		providerConfig["zone"] = *zonePath

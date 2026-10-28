@@ -83,7 +83,7 @@ func runImport(args []string) {
 		os.Exit(1)
 	}
 
-	reg := openProviderSet("sakutei import", *providerConfigFile)
+	reg := openProviderSet("sakutei import", *providerConfigFile).observeOnly()
 	cfg := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		cfg["zone"] = *zonePath

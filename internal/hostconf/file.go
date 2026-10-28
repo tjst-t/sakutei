@@ -164,9 +164,9 @@ func (p *FileProvider) stampPath(file string) string {
 }
 
 // fileReadScript は $1 のファイルを stat し、中身の hash と印 $2 を書く。
-const fileReadScript = `p=$1; s=$2
+const fileReadScript = knownAbsent + `p=$1; s=$2
 if [ -L "$p" ]; then echo "file symlink"
-elif [ ! -e "$p" ]; then echo "file absent"
+elif [ ! -e "$p" ]; then known_absent "$p"; echo "file absent"
 elif [ ! -f "$p" ]; then echo "file notfile"
 else
   st=$(stat -c '%a %u %g %U %G %s' "$p") || exit 3
@@ -176,6 +176,7 @@ fi
 if [ -f "$s" ]; then
   l=$(cat "$s") || exit 3
   echo "stamp $l"
+elif [ ! -e "$s" ]; then known_absent "$s"
 fi
 echo end
 `
@@ -412,6 +413,8 @@ rm -f "$p" "$2"
 
 // Apply は plan を適用する。
 func (p *FileProvider) Apply(ctx context.Context, plan core.Plan) error {
+	// §20.7 (#185): what this Apply runs uses the write credential.
+	ctx = provider.WithWrite(ctx)
 	for _, op := range plan.Ops {
 		if err := p.applyOp(ctx, op); err != nil {
 			return err

@@ -104,6 +104,48 @@ $ sakutei status --intent intent/ --provider-config providers.yaml
 - nft は CAP_NET_ADMIN（ふつうは root）が要る。ゾーンファイルはディレクトリへの書き込み（一時ファイルと rename）と `<zone>.lock` の作成ができること。
 - sudo を絞るなら、許すコマンドは `nft`、`sh`（ゾーンファイルの読み書きの小さなスクリプト）と再読み込みのコマンド。`sh` を許すのは root を与えるのとほぼ同じなので、ゾーンファイルの持ち主の利用者で直に入る（`sudo: false`）方が狭くできる。
 
+## 観測用と書き込み用の資格
+
+ホストごとに、観測に使う資格（`observe:`）と書き込みに使う資格（`write:`）を分けて書ける（Backlog #185、設計書 §20.7）。どちらも `user`・`private_key`（SecretRef）・`sudo` だけを持ち、書かないキーはホストの値を受け継ぐ。どちらも書かなければ今までどおり 1 本の資格を両方に使う。
+
+```yaml
+hosts:
+  fw1:
+    address: 192.0.2.11
+    known_hosts: known_hosts
+    observe:                        # 観測（Read・List・plan・status・読み取りの口）
+      user: sakutei-ro
+      private_key: secretref:file/ssh/fw1-ro
+      sudo: true                    # nft の観測のコマンドだけを sudoers で許す
+    write:                          # 書き込み（Apply・Workflow の action）だけ
+      user: sakutei
+      private_key: secretref:file/ssh/fw1-rw
+      sudo: true
+```
+
+- **観測は観測用だけ**を使う：`plan`・`status`・読み取りの口・常駐の毎周の観測・Apply のあとの効いたかの読み直し。**書き込み用は Apply（と action）の中だけ**で、使う直前に store から取り出し、コマンドが終われば鍵の一時ファイルを消す。書き込み用の接続は使い回さない（master を残さない）。観測用は今までどおり使い回す。
+- **書かない回は書き込み用の資格を取り出さない**：`plan`・`status`・`import`・`sync`・`graph` と、`--mode alert-only`・`--freeze` の `reconcile`・常駐（freeze は、一回性の `reconcile` ではその回に効いている freeze（`--freeze`・`--freeze-state`）、常駐では期限（`--freeze-until`）の無い `--freeze` だけ。期限つきの `--freeze` と `--freeze-state` の freeze は常駐の途中で解けるので、常駐は書く回）は、書き込み用の鍵を store にあるか確かめず、無くても起動する（観測用の鍵だけを置いたクライアント PC から `status` を回せる）。その回に書こうとすれば断る。書く回（`reconcile`・常駐の既定）は、書き込み用の鍵が store に無ければ起動しない（何もしない）。remediation schedule で時間帯により alert-only になる構成は書く回として扱う。
+- これは本体が命令と mode から決める（provider の設定の `access`）。`--provider-config` には書けない。
+- provider によって観測用の sudo の要り方が違う（下の表）。同じホストを nftables と dnszone で扱い、観測用の sudo を変えたいときは、`remote_config` を provider ごとに分ける（同じホストの名前で 2 つのファイルに書く）。
+
+### 読むだけのユーザーで観測するとき
+
+| provider | 観測で流すもの | 観測用のユーザーに要るもの | 読むだけでは観測できないもの |
+| --- | --- | --- | --- |
+| nftables（live） | `nft -j list table <family> <name>`・`nft -a -s list table <family> <name>`（管理するテーブルごと） | CAP_NET_ADMIN。sudoers でこの 2 つだけを許す（下の例）。sudo 無しでは観測できない | 無い（2 つのコマンドを許せば全部観測できる） |
+| dnszone | `sh -c`（ゾーンファイルの `cat`。`<zone>.lock` を開けるときだけ共有の flock） | ゾーンファイルの読み・ディレクトリを辿る権限。sudo 無し（`sh` を sudo で許すのは root を与えるのと同じ） | ゾーンファイルを読めない・ディレクトリを辿れないときは観測できない（unknown）。`<zone>.lock` を開けなければ flock 無しで読む（書き込みは一時ファイルからの rename なので、読むのはいつも書き終わったファイル） |
+| host-file | `sh -c`（`stat`・`sha256sum`・印の `cat`） | 管理するファイルの読み・そのディレクトリを辿る権限。sudo 無し | 観測用のユーザーが読めないファイル（0600 の root のファイル、`content_secret` で書く秘密のファイルなど）は観測できない。覗けないディレクトリの中のファイルは「無い」でなく観測できない。グループか ACL（`setfacl -m u:sakutei-ro:r`）で読みを渡す |
+| systemd-unit | `systemctl show`・`sh -c`（元のファイルと印と依って立つファイルの `sha256sum`） | `systemctl show` は root でなくてよい。元のファイル・依って立つファイルの読み。sudo 無し | 依って立つファイルのうち読めないもの（0600 の環境ファイルなど）は、そのユニットを観測できない |
+| guest-os | `sh -c`（os-release・ホスト名・boot_id・目印の先頭を読む） | 目印のファイルの読み・ディレクトリを辿る権限。sudo 無し | 読めない・覗けないディレクトリの中の目印（`/root/...` など）は観測できない（「無い」とは読まない）。目印は誰でも辿れる場所（`/etc/sakutei-installed` など）に置く。guest-os は書かないので `write:` は使われない |
+| cli-device | 機種の定義の各項目の観測のコマンド（exec の 1 行か対話の殻） | 装置の側の読むだけの権限の段（`show` だけを許すユーザー）。sudo は無い | 観測のコマンドに高い権限の段が要る項目（機種によっては `show running-config`）は、読むだけのユーザーでは観測できない。機種の定義で読むだけの段で答えるコマンドを使う |
+| netconf | `get-config`（宣言した部分木の filter だけ） | 機器の NACM で、宣言した部分木の読みと `get-config` を許した規則 | 部分木の外は読まない（#176）。読みを許していない部分木は access-denied（PermanentError）で知らせる。2 段の Apply の後の確かめの読みは書き込み用のユーザーで行う |
+
+nftables の観測用のユーザーの sudoers の例（管理するテーブルが `inet filter` のとき。テーブルは `*` でなく名指しする）:
+
+```
+sakutei-ro ALL=(root) NOPASSWD: /usr/sbin/nft -j list table inet filter, /usr/sbin/nft -a -s list table inet filter
+```
+
 ## 届かないとき
 
 | 起きたこと | provider の答え |
@@ -158,6 +200,7 @@ $ make integration-remote
 | sshd stopped | h1 と h2 を手で変えてから h2 の sshd を止める → h2 の 2 つは unobservable（`remote h2: unreachable`）、h1 は drift → reconcile で h1 だけ戻り、h2 は何も変わらない → sshd を戻すと 5 つ適合 |
 | key removed | h2 の authorized_keys を外して既存の接続を切る → h2 は unobservable（`authentication failed`）、reconcile で h2 は何も変わらない → 鍵を戻すと適合 |
 | host key changed | h2 のホスト鍵を作り直す → h2 は unobservable（`permanent: … host key verification failed`）、h1 は適合のまま、reconcile で h2 は何も変わらない → known_hosts を新しい鍵に直すと適合 |
+| 観測用と書き込み用の資格（#185、`TestObserveWithReadOnlyUser`） | 2 台に読むだけのユーザー `sakutei-ro` を足す（sudo は `nft -j list table inet sk`・`nft -a -s list table inet sk` だけ。ゾーンは sudo 無しで読む。nftables と dnszone で `remote_config` を分ける）。書き込み用は今までの `sakutei`。h1 を手で変え、`sakutei` の authorized_keys を外した上で、観測用の鍵だけの store で `status --json`（2 つ drift・観測できないもの 0）・`plan`・`reconcile --mode alert-only` が通り、何も変わらない。同じ store の `reconcile`（書く回）は `write.private_key` が無いと断って何もしない。両方の鍵の store の `reconcile` で収束し（ゾーンは root の 0644 のまま）、残る master は観測用のホストごとに 1 つ、鍵の一時ファイルは残らない |
 
 ### 結果
 
@@ -173,6 +216,15 @@ OpenSSH 9.6p1（手元の ssh）、コンテナは Debian bookworm の openssh-s
     --- PASS: TestRemoteIntegration/key_removed:_unknown,_nothing_done (2.15s)
     --- PASS: TestRemoteIntegration/host_key_changed:_unknown_(permanent),_nothing_done (1.93s)
 PASS
+```
+
+#185 の段を足して回した結果（2026-10-28、全段 PASS）:
+
+```
+--- PASS: TestObserveWithReadOnlyUser (5.56s)
+    --- PASS: TestObserveWithReadOnlyUser/observe,_plan_and_status_with_the_observe_credential_only (1.13s)
+    --- PASS: TestObserveWithReadOnlyUser/a_run_that_writes_needs_the_write_key (0.12s)
+    --- PASS: TestObserveWithReadOnlyUser/the_write_credential_applies,_and_is_let_go (2.99s)
 ```
 
 - 1 周（2 台 × nftables と dnszone の観測、List）は接続の使い回しのおかげで 0.2 秒前後。

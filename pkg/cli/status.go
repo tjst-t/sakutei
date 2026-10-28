@@ -227,7 +227,7 @@ Exit codes:
 	}
 
 	// provider を registry 経由で解決（plan と同一の resolveProviders 配管）。
-	reg := openProviderSet("sakutei status", *providerConfigFile)
+	reg := openProviderSet("sakutei status", *providerConfigFile).observeOnly()
 	providerConfig := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		providerConfig["zone"] = *zonePath

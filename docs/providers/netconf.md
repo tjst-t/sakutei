@@ -241,6 +241,13 @@ NETCONF のユーザーは、機器の側の NACM（RFC 8341）で**宣言する
 | Apply の `<lock>`・`<edit-config>`・`<commit>` などが `access-denied`（部分木の外を変える宣言・許されていない rpc） | 何も確定しない（edit-config の後なら candidate を discard し、unlock する）。Apply は permanent で、error-path と要る権限（部分木の読み書き・上の rpc の実行）を理由に書く。同じ宣言は変わるまで当て直さない |
 | **読むのを許されていない部分木** | NACM は読めないデータを**黙って省く**（RFC 8341 §3.4.5）ので、機器に無い（absent）と**見分けられない**（既知の限界）。plan には `CREATE` と出る。観測だけなら当てない。Apply を許していれば、機器が `access-denied` で断る（上の行。何も書かない）。部分木の一覧には、ユーザーに読むのを許した部分木だけを書く |
 
+## 観測用と書き込み用の資格（Backlog #185）
+
+対象の一覧の機器に観測用（`observe:`）と書き込み用（`write:`）の資格を分けて書ける（[../remote.md の「観測用と書き込み用の資格」](../remote.md#観測用と書き込み用の資格)）。観測（`get-config`）は観測用のユーザーのセッションで、2 段の Apply（lock・edit-config・validate・commit、新しい接続での確かめの読みと確定）は書き込み用のユーザーの新しいセッションで行う。
+
+- 観測用のユーザーには、NACM で宣言した部分木の読みと `get-config` だけを許す（上の「部分木だけに絞ったユーザー」の読みの規則）。部分木の外は読まないので、読むだけでは観測できない項目は無い。
+- `netconf_apply` を `true` にしない（観測だけの）構成では、書き込み用の資格は使われない。
+
 ## 統合テスト
 
 公開の NETCONF サーバ（netopeer2 のコンテナ）を相手に回す（Backlog #141・#175・#176）。build tag `integration_netconf` の付いたファイルにあり、`make check`・`make test`・CI には入らない。

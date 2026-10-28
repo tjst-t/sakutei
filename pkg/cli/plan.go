@@ -368,7 +368,7 @@ func runPlan(args []string) {
 	// --zone / --ruleset (when set) are passed as "zone" / "ruleset" for the
 	// dnszone / nftables providers so a mixed intent can keep each provider's
 	// backing file separate.
-	reg := openProviderSet("sakutei plan", *providerConfigFile)
+	reg := openProviderSet("sakutei plan", *providerConfigFile).observeOnly()
 	providerConfig := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		providerConfig["zone"] = *zonePath

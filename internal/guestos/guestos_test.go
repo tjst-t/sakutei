@@ -231,6 +231,28 @@ func TestReadUnreadableMarkerIsUnknown(t *testing.T) {
 		if obs.Availability != core.AvailabilityUnknown || err == nil {
 			t.Fatalf("unreadable: obs %+v err %v", obs, err)
 		}
+		// [AC-185-1-4] A marker in a directory the user cannot search is not
+		// absent (a read-only observe user cannot tell, §20.7).
+		closed := filepath.Join(h.Root, "etc/closed")
+		if err := os.MkdirAll(filepath.Join(closed, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(closed, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(closed, 0o755) })
+		for _, m := range []string{"c=/etc/closed/installed", "c=/etc/closed/sub/installed"} {
+			p = newProvider(t, map[string]remote.Executor{"g": h}, m)
+			obs, err = p.Read(context.Background(), "g")
+			if obs.Availability != core.AvailabilityUnknown || err == nil || !strings.Contains(err.Error(), "cannot be read") {
+				t.Fatalf("[AC-185-1-4] %s: obs %+v err %v", m, obs, err)
+			}
+		}
+		// A missing marker in a directory that can be searched is absent.
+		p = newProvider(t, map[string]remote.Executor{"g": h}, "n=/etc/nothere/installed")
+		if obs, err := p.Read(context.Background(), "g"); err != nil || obs.Availability != core.AvailabilityOk {
+			t.Fatalf("[AC-185-1-4] absent marker: obs %+v err %v", obs, err)
+		}
 	}
 }
 

@@ -396,6 +396,17 @@ type CredentialProvider interface {
 - **rotate** = **自動 rotate は危険**（緊急対応中に資格が変わると対応者を締め出す）。**事態収束後に人が明示キック**する。中身は既存の rotation Workflow で、トリガが「手動」なだけ。
 - **分担**：保管はオフライン（システム外）、更新 / rotate はシステム。
 
+### §20.7 観測用と書き込み用の資格を分ける（役目ごとの鍵）
+
+エンジンが現実に到達する資格（§20.4）は、**観測と書き込みで役目が違う**。観測（`Read`・`List`・`BulkObserve`。`plan`・`status`・読み取りの口・常駐の毎周の観測）は回数が多く、どこからでも走る（非常駐のクライアント PC・段0-zero、§23.7）。書き込み（`Apply`・Workflow の `action`）は稀で、承認・予算の門を通ったあとにだけ走る。**同じ 1 本の資格で両方を回すと、最も多く・最も広く使われる観測の経路に、最も強い書き込みの権限が常に乗る**。これを分ける（Backlog #185）。
+
+- **共通の口（`pkg/provider`）**：
+  - **書き込みの文脈**——コアは `Apply`・`Action` を `provider.WithWrite(ctx)` で呼ぶ。provider は `provider.Writing(ctx)` が真の呼び出し（自分の `Apply` の中で行う読み直しを含む）にだけ書き込み用の資格を使い、ほかはすべて観測用の資格だけを使う。**書き込み用の資格はその呼び出しの直前に取り出し、終われば手放す**（JIT、§20.2）。
+  - **この回が書くか**——factory の設定のキー `access`（`provider.ConfigAccess`）。書かない回（`plan`・`status`・`import`・`sync`・`graph`、`--mode alert-only`・`--freeze` の `reconcile` と常駐（freeze は、一回性の `reconcile` ではその回に効いている freeze（`--freeze`・`--freeze-state`）、常駐では期限（`--freeze-until`）の無い `--freeze` だけ。期限つきの `--freeze` と `--freeze-state` の freeze は常駐の途中で解けるので、常駐は書く回））は CLI が `observe` を入れる。provider は**書き込み用の資格を確かめず・取り出さず**（secret store に無くてよく、起動できる）、書き込みを `provider.ErrNoWriteAccess` で断る。書く回（既定）は、設定した書き込み用の資格が store にあることを読み込みで確かめる（無ければ起動しない。何もしない）。`access` は命令と mode から決まり、`--provider-config` には書けない（書けば読み込みで断る）。remediation schedule（§14.2）で時間帯によって alert-only になる構成は書く回として扱う（その時間帯の外では書くので）。
+- **ssh 越しの provider**（nftables の live・dnszone・host-file・systemd-unit・cli-device・guest-os・netconf。実行の層は §29.1）：対象の一覧のホストに `observe:`・`write:` を書け、どちらも `user`・`private_key`（SecretRef）・`sudo` だけを持つ（書かないキーはホストの値を受け継ぐ。どちらも書かなければ今までどおり 1 本の資格）。観測用のユーザーは **sudo 無し、または観測のコマンドだけを許した sudo** で動かす。書き込み用の資格の ssh は**接続を使い回さない**（master を残さない。鍵の一時ファイルはコマンドごとに消す）。観測用は今までどおり使い回す。
+- **読むだけでは観測できない項目は unknown（absent にしない）**：観測用のユーザーが覗けないディレクトリの中のパスは「在るかどうか分からない」であり、在るものを無いと読まない（§3 第3原則）。host-file・systemd-unit・guest-os の観測は、無いパスの上で最も近い在るディレクトリを辿れるときだけ absent と答え、辿れなければ観測できないとする（dnszone は前から同じ）。どの provider で何が読むだけでは観測できないかは各 provider の文書に書く（`docs/remote.md` の「観測用と書き込み用の資格」）。
+- **見送り**：HTTP の管理 API の provider（proxmox-vm・s3-bucket・postgresql・redfish・ldap・metrics-probe）の資格の分けは同じ口で次の段で行う。credential-broker（§20.4）導入後は、観測用・書き込み用をそれぞれ別の `Identity` として発行させる（書き込み用だけを短命の JIT 発行にできる）。
+
 ---
 
 ## §21 DesiredSource と catalog（図面）

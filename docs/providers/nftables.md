@@ -314,6 +314,14 @@ permanent: nftables: Apply: nft lists rule 0 of inet/filter/ssh as "ct state est
 
 ルール文は nft のスクリプトにそのまま 1 行で埋め込むので、引用符の外の `;`・`#` と改行は受けない（読み込みの時点でエラー）。` ; ` を含むルール（引用符の中でも）は 1 本の `rules` に符号化できないので、そのルールを持つ chain は管理の外（Read は PermanentError）。
 
+## 観測用と書き込み用の資格（Backlog #185）
+
+離れたホスト（live）では、対象の一覧のホストに観測用（`observe:`）と書き込み用（`write:`）の資格を分けて書ける（[../remote.md の「観測用と書き込み用の資格」](../remote.md#観測用と書き込み用の資格)）。
+
+- 観測（`Read`・`List`・`BulkObserve`）が流すのは、管理するテーブルごとの `nft -j list table <family> <name>` と `nft -a -s list table <family> <name>` だけ。観測用のユーザーは sudoers でこの 2 つだけを許せば、全部の項目を観測できる（sudo 無しでは CAP_NET_ADMIN が無く観測できない）。
+- 書き込み用のユーザーは Apply の中だけで使う：`nft -f -`・`nft -c -f -`、base chain の締め出しの守り（ホストの側の時間切れの巻き戻しを仕掛ける・外す `sh -c` のスクリプト）、新しい接続での到達の確かめ。sudo には `nft` と `sh` が要る。
+- `plan`・`status`・`--mode alert-only` の `reconcile` は書き込み用の鍵が無くても動く。
+
 ## 権限
 
 live の Read も Apply も netlink で ruleset を読み書きするので、CAP_NET_ADMIN が要る（ふつうは root で動かす）。権限が無いと Read は観測できない（unknown）になり、drift とも適合とも数えない。network namespace の中の ruleset を扱うときは、その namespace に入った nft を `--ruleset-nft` に渡す（下の統合テストのラッパーと同じ形）。

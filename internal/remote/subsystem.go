@@ -56,6 +56,10 @@ const closeWait = 5 * time.Second
 
 // OpenSubsystem implements SubsystemOpener.
 func (s *SSH) OpenSubsystem(ctx context.Context, name string) (io.ReadWriteCloser, error) {
+	s, err := s.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !subsystemName.MatchString(name) {
 		return nil, fmt.Errorf("remote %s: subsystem %q: not a subsystem name", s.h.Name, name)
 	}

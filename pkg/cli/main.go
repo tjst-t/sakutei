@@ -414,6 +414,13 @@ func runDaemon() {
 	// provider; --zone / --ruleset (when set) keep the dnszone / nftables
 	// files apart from it.
 	reg := openProviderSet("sakutei", *providerConfigFile)
+	if remCfg.Mode == remediation.ModeAlertOnly || (freezeControl != nil && freezeControl.Flag != nil && freezeControl.Flag.Until.IsZero()) {
+		// §20.7 (#185): a daemon started with --mode alert-only, or with a
+		// --freeze without a deadline, never writes: no write credential is
+		// needed or taken out.  A --freeze-until lifts and then writes, and a
+		// freeze through --freeze-state can end at any cycle: those need it.
+		reg.observeOnly()
+	}
 	providerConfig := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		providerConfig["zone"] = *zonePath

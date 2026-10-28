@@ -308,7 +308,7 @@ func (r *routedProvider) Apply(ctx context.Context, plan core.Plan) error {
 			// §23.4: never, even if an op got this far.
 			return provider.NewPermanentError(fmt.Errorf("provider %q observes only (§23.4); refusing to apply %s", name, byName[name][0].Target))
 		}
-		if err := e.p.Apply(ctx, core.Plan{Ops: byName[name]}); err != nil {
+		if err := e.p.Apply(provider.WithWrite(ctx), core.Plan{Ops: byName[name]}); err != nil {
 			return err
 		}
 	}

@@ -13,7 +13,8 @@ provider の設定は**つなぎ方**（宛先・鍵・時間・どう話すか�
   - 観測の**目印**（guest-os の導入の目印。何を読むかを宣言の側で決める）。
 - **つなぎ方**：どこに・どの鍵で・どれだけ待って・どう話すか。宛先（アドレス・URI・endpoint・ファイルのパス）、資格と secret store、
   時間、コマンドのパス、機種の定義（どのコマンドで観測し変えるか）、実装の能力（S3 の endpoint が持つ API）、ホストの上の置き場、
-  書き込みを許すか（`netconf_apply`）。
+  書き込みを許すか（`netconf_apply`）。観測用と書き込み用の資格の分け（対象の一覧のホストの `observe:`・`write:`、§20.7、#185）も
+  つなぎ方。この回が書くか（`access`）は本体が命令と mode から決め、設定にも intent にも書かない。
 - **対象の集合**と**配る先**は分ける。host-file・systemd-unit・cli-device・netconf・guest-os のホストは ID の頭で、どの ID を管理するかを
   決めるので範囲。dnszone の `zone_hosts`・nftables の `ruleset_hosts` は同じ 1 つのゾーン・ruleset を写す先（ID に現れない）で、
   つなぎ方として設定に残す。

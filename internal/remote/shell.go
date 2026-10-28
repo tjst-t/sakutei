@@ -64,6 +64,10 @@ func CheckLine(line string) error {
 
 // RunLine implements ShellOpener.
 func (s *SSH) RunLine(ctx context.Context, line string) ([]byte, error) {
+	s, err := s.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if err := CheckLine(line); err != nil {
 		return nil, fmt.Errorf("remote %s: %w", s.h.Name, err)
 	}
@@ -88,5 +92,9 @@ func (s *SSH) RunLine(ctx context.Context, line string) ([]byte, error) {
 
 // OpenShell implements ShellOpener.
 func (s *SSH) OpenShell(ctx context.Context) (io.ReadWriteCloser, error) {
+	s, err := s.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return s.openStream(ctx, true, "--", s.h.Address)
 }

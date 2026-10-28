@@ -108,6 +108,8 @@ func (p *Provider) ApplyAllowed() bool { return p.apply != nil }
 
 // Apply は plan の操作を 1 つずつ 2 段で当てる。
 func (p *Provider) Apply(ctx context.Context, plan core.Plan) error {
+	// §20.7 (#185): what this Apply runs uses the write credential.
+	ctx = provider.WithWrite(ctx)
 	if len(plan.Ops) == 0 {
 		return nil
 	}

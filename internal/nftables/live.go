@@ -419,6 +419,8 @@ type chainCheck struct {
 // 宣言の正規形と違えば PermanentError。base chain を変えるときは締め出しの守り
 // （applyGuarded）を通す。
 func (p *LiveProvider) Apply(ctx context.Context, plan core.Plan) error {
+	// §20.7 (#185): what this Apply runs uses the write credential.
+	ctx = provider.WithWrite(ctx)
 	// One transaction per host, in the order the hosts first appear.
 	var order []string
 	byHost := map[string][]core.Op{}

@@ -275,15 +275,16 @@ func (o unitObs) isActive() bool {
 }
 
 // unitReadScript は元のファイル $1 の hash と印 $2 の行を書く。
-const unitReadScript = `src=$1; st=$2
+const unitReadScript = knownAbsent + `src=$1; st=$2
 if [ -f "$src" ]; then
   h=$(sha256sum < "$src") || exit 3
   echo "source ${h%% *}"
 elif [ -e "$src" ] || [ -L "$src" ]; then echo "source notfile"
-else echo "source absent"
+else known_absent "$src"; echo "source absent"
 fi
 if [ -f "$st" ]; then
   while IFS= read -r l || [ -n "$l" ]; do echo "stamp $l"; done < "$st" || exit 3
+elif [ ! -e "$st" ]; then known_absent "$st"
 fi
 echo end
 `
@@ -548,6 +549,8 @@ func describeHash(obs string) string {
 
 // Apply は plan を適用する。
 func (p *UnitProvider) Apply(ctx context.Context, plan core.Plan) error {
+	// §20.7 (#185): what this Apply runs uses the write credential.
+	ctx = provider.WithWrite(ctx)
 	for _, op := range plan.Ops {
 		if err := p.applyOp(ctx, op); err != nil {
 			return err

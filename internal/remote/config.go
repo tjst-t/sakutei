@@ -33,6 +33,14 @@ package remote
 //	    connect_timeout: 10s              # 省略可（既定 10s）
 //	    timeout: 60s                      # 省略可（コマンド 1 回の上限。既定 60s）
 //	    control_persist: 60s              # 省略可（接続の使い回し。0s で使い回さない）
+//	    observe:                          # 省略可。観測用の資格（§20.7、#185）
+//	      user: sakutei-ro                #   無いキーは上（user・private_key・sudo）のまま
+//	      private_key: secretref:file/ssh/fw1-ro
+//	      sudo: false
+//	    write:                            # 省略可。書き込み用の資格（Apply・Action だけが使う）
+//	      user: sakutei
+//	      private_key: secretref:file/ssh/fw1-rw
+//	      sudo: true
 //
 // 決まり（postgresql のサーバの一覧と同じ）:
 //
@@ -42,6 +50,12 @@ package remote
 //   - 相対パス（secret_store・known_hosts・control_dir、"/" を含む ssh）は
 //     設定ファイルのあるディレクトリから。
 //   - 未知のキーはエラー（書き間違いを黙って無視しない）。
+//   - 観測用と書き込み用（#185）: observe・write はどちらも user・private_key・
+//     sudo だけを持ち、書かないキーはホストの上の値を受け継ぐ。観測（Read・List・
+//     plan・status・読み取りの口）は observe の資格だけを、書き込み（Apply・
+//     Action、provider.Writing の ctx）は write の資格だけを使う。この回が書かない
+//     （LoadOptions.ObserveOnly、provider.AccessObserve）なら write の鍵は
+//     store にあるかを確かめず（無くてよい）、取り出さず、書き込みを断る。
 
 import (
 	"context"
@@ -72,7 +86,10 @@ var (
 	hostKeys = map[string]bool{
 		"address": true, "port": true, "user": true, "private_key": true, "known_hosts": true,
 		"trust_on_first_use": true, "sudo": true, "connect_timeout": true, "timeout": true, "control_persist": true,
+		"observe": true, "write": true,
 	}
+	// identityKeys は observe・write の中のキー（#185）。
+	identityKeys = map[string]bool{"user": true, "private_key": true, "sudo": true}
 	// hostName は対象の名前（ID の先頭。"/" を含まない）。
 	hostName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 )
@@ -80,20 +97,32 @@ var (
 // ValidHostName は name が対象の名前として使えるかどうか。
 func ValidHostName(name string) bool { return hostName.MatchString(name) }
 
-// LoadConfig は path の対象の一覧を読み、検査する。
+// LoadOptions は対象の一覧の読み方。
+type LoadOptions struct {
+	// ObserveOnly はこの回が書かない（provider.AccessObserve、#185）: 書き込み用の
+	// 資格は確かめず・取り出さず、書き込みのコマンドを断る。
+	ObserveOnly bool
+}
+
+// LoadConfig は path の対象の一覧を読み、検査する（書く回として）。
 func LoadConfig(path string) (Config, error) {
+	return LoadConfigWith(path, LoadOptions{})
+}
+
+// LoadConfigWith は LoadConfig を opts の読み方で行う。
+func LoadConfigWith(path string, opts LoadOptions) (Config, error) {
 	tree, err := loader.ReadTree(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("remote config: %w", err)
 	}
-	cfg, err := parseConfig(tree, filepath.Dir(path))
+	cfg, err := parseConfig(tree, filepath.Dir(path), opts)
 	if err != nil {
 		return Config{}, fmt.Errorf("remote config %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
-func parseConfig(tree map[string]any, dir string) (Config, error) {
+func parseConfig(tree map[string]any, dir string, opts LoadOptions) (Config, error) {
 	if err := unknownKeys("", tree, topKeys); err != nil {
 		return Config{}, err
 	}
@@ -128,6 +157,43 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 
 	var secrets *render.FileSecretBackend
 	var have map[string]bool
+	// key reads a private_key value at p: its SecretRef, and (when check) that
+	// the store has it.  The value itself is resolved only when used (JIT).
+	key := func(p string, v any, check bool) (string, func(context.Context) ([]byte, error), error) {
+		ref, err := parseSecretRef(v)
+		if err != nil {
+			return "", nil, fmt.Errorf("%s: %w", p, err)
+		}
+		if top.store == "" {
+			return "", nil, fmt.Errorf("%s: \"secret_store\" is required to resolve the SecretRef", p)
+		}
+		if secrets == nil {
+			secrets = render.NewFileSecretBackend(top.store)
+		}
+		if check {
+			if have == nil {
+				paths, err := secrets.Paths()
+				if err != nil {
+					return "", nil, err
+				}
+				have = map[string]bool{}
+				for _, sp := range paths {
+					have[sp] = true
+				}
+			}
+			if !have[ref.Path()] {
+				return "", nil, fmt.Errorf("%s: %s is not in the secret store %s", p, ref, top.store)
+			}
+		}
+		backend := secrets
+		return ref.String(), func(ctx context.Context) ([]byte, error) {
+			v, err := backend.ResolveValue(ctx, ref.Backend(), ref.Path(), ref.Generation())
+			if err != nil {
+				return nil, err
+			}
+			return []byte(v), nil
+		}, nil
+	}
 	cfg := Config{Hosts: map[string]SSHHost{}, SecretStore: top.store}
 	for _, name := range names {
 		p := "hosts." + name
@@ -200,37 +266,67 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 			}
 			*f.dst = d
 		}
+		// The host's own user / private_key / sudo are the default of both
+		// credentials; observe and write each override them (#185).
+		shared := Identity{User: h.User, Sudo: h.Sudo}
+		_, hasObserve := m["observe"]
+		_, hasWrite := m["write"]
 		if v, ok := m["private_key"]; ok {
-			ref, err := parseSecretRef(v)
-			if err != nil {
-				return Config{}, fmt.Errorf("%s.private_key: %w", p, err)
+			// Checked only when a credential this run uses inherits it.
+			if shared.KeyID, shared.Key, err = key(p+".private_key", v, needsShared(m, opts)); err != nil {
+				return Config{}, err
 			}
-			if top.store == "" {
-				return Config{}, fmt.Errorf("%s.private_key: \"secret_store\" is required to resolve the SecretRef", p)
+		}
+		ident := func(sec string, check bool) (Identity, error) {
+			id := shared
+			raw, ok := m[sec]
+			if !ok {
+				return id, nil
 			}
-			if secrets == nil {
-				secrets = render.NewFileSecretBackend(top.store)
-				paths, err := secrets.Paths()
+			sm, ok := raw.(map[string]any)
+			sp := p + "." + sec
+			if !ok {
+				return id, fmt.Errorf("%s: must be a map (user, private_key, sudo)", sp)
+			}
+			if err := unknownKeys(sp+".", sm, identityKeys); err != nil {
+				return id, err
+			}
+			if _, ok := sm["user"]; ok {
+				u, err := str(sm, "user", sp+".")
 				if err != nil {
-					return Config{}, err
+					return id, err
 				}
-				have = map[string]bool{}
-				for _, sp := range paths {
-					have[sp] = true
+				id.User = u
+			}
+			if v, ok := sm["sudo"]; ok {
+				b, isBool := v.(bool)
+				if !isBool {
+					return id, fmt.Errorf("%s.sudo: want true or false", sp)
+				}
+				id.Sudo = b
+			}
+			if v, ok := sm["private_key"]; ok {
+				var err error
+				if id.KeyID, id.Key, err = key(sp+".private_key", v, check); err != nil {
+					return id, err
 				}
 			}
-			if !have[ref.Path()] {
-				return Config{}, fmt.Errorf("%s.private_key: %s is not in the secret store %s", p, ref, top.store)
-			}
-			backend := secrets
-			h.KeyID = ref.String()
-			h.Key = func(ctx context.Context) ([]byte, error) {
-				v, err := backend.ResolveValue(ctx, ref.Backend(), ref.Path(), ref.Generation())
-				if err != nil {
-					return nil, err
-				}
-				return []byte(v), nil
-			}
+			return id, nil
+		}
+		obs, err := ident("observe", true)
+		if err != nil {
+			return Config{}, err
+		}
+		h.User, h.Key, h.KeyID, h.Sudo = obs.User, obs.Key, obs.KeyID, obs.Sudo
+		w, err := ident("write", !opts.ObserveOnly)
+		if err != nil {
+			return Config{}, err
+		}
+		switch {
+		case opts.ObserveOnly:
+			h.NoWrite = true
+		case hasObserve || hasWrite:
+			h.Write = &w
 		}
 		if _, err := NewSSH(h); err != nil {
 			return Config{}, err
@@ -238,6 +334,21 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 		cfg.Hosts[name] = h
 	}
 	return cfg, nil
+}
+
+// needsShared は、ホストの上の private_key をこの回の資格のどれかが受け継ぐか
+// （observe・write が自分の private_key を書いていない。書かない回の write は
+// 数えない）。
+func needsShared(m map[string]any, opts LoadOptions) bool {
+	own := func(sec string) bool {
+		sm, ok := m[sec].(map[string]any)
+		if !ok {
+			return false
+		}
+		_, has := sm["private_key"]
+		return has
+	}
+	return !own("observe") || (!opts.ObserveOnly && !own("write"))
 }
 
 // Executors は names（"a,b,..."、空白は無視）の対象の Executor を作る。1 つも

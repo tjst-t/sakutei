@@ -521,6 +521,8 @@ func (p *Provider) Read(ctx context.Context, localID string) (core.Observation, 
 //
 // MUST be idempotent: Apply(same plan) twice yields the same file content.
 func (p *Provider) Apply(ctx context.Context, plan core.Plan) error {
+	// §20.7 (#185): what this Apply runs uses the write credential.
+	ctx = provider.WithWrite(ctx)
 	// The ops of each zone (host) in the order the zones first appear.
 	var order []*zone
 	byZone := map[*zone][]core.Op{}

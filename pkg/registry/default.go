@@ -77,6 +77,9 @@ import (
 //     config["zone_hosts"] manages config["zone"] (absolute) on those hosts.
 //     The local ids then start with "<host>/".  config["zone_reload"] is the
 //     command run after an Apply changed the zone (here, or on the host).
+//     A host can have an observe and a write credential (observe: / write:,
+//     §20.7, Backlog #185); with config[provider.ConfigAccess] "observe" (a
+//     run that does not write) the write one is neither checked nor used.
 //
 //   - "guest-os": observes the guest OS of the hosts config["guest_hosts"]
 //     ("node1,node2", from config["remote_config"]) over ssh: reachability,
@@ -519,7 +522,7 @@ func DefaultRegistry() *ProviderRegistry {
 		opts := clidevice.Options{}
 		store := config["secret_store"]
 		if store == "" && config["remote_config"] != "" {
-			cfg, err := remote.LoadConfig(config["remote_config"])
+			cfg, err := loadRemoteConfig(config, config["remote_config"])
 			if err != nil {
 				return nil, err
 			}
@@ -555,6 +558,16 @@ func DefaultRegistry() *ProviderRegistry {
 	return r
 }
 
+// loadRemoteConfig は対象の一覧（remote_config）を読む。この回が書かない
+// （config の provider.ConfigAccess が observe、§20.7、#185）なら書き込み用の
+// 資格を確かめず・取り出さない。
+func loadRemoteConfig(config map[string]string, path string) (remote.Config, error) {
+	if err := provider.CheckAccess(config); err != nil {
+		return remote.Config{}, err
+	}
+	return remote.LoadConfigWith(path, remote.LoadOptions{ObserveOnly: provider.ObserveOnlyRun(config)})
+}
+
 // remoteHosts は config[key]（"a,b,..."）の対象の Executor を
 // config["remote_config"]（対象の一覧、Backlog #130）から作る。
 func remoteHosts(config map[string]string, key string) (map[string]remote.Executor, []string, error) {
@@ -562,7 +575,7 @@ func remoteHosts(config map[string]string, key string) (map[string]remote.Execut
 	if path == "" {
 		return nil, nil, fmt.Errorf("%s needs remote_config: the host list (address, user, private_key, known_hosts, ...)", key)
 	}
-	cfg, err := remote.LoadConfig(path)
+	cfg, err := loadRemoteConfig(config, path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -589,7 +602,7 @@ func hostExecutors(config map[string]string, key string) (hostconf.Hosts, remote
 	var cfg remote.Config
 	if path := config["remote_config"]; path != "" {
 		var err error
-		if cfg, err = remote.LoadConfig(path); err != nil {
+		if cfg, err = loadRemoteConfig(config, path); err != nil {
 			return nil, cfg, err
 		}
 	}

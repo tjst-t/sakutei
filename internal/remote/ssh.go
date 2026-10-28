@@ -45,6 +45,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // SSH の既定。
@@ -74,6 +76,13 @@ type SSHHost struct {
 	KeyID string
 	// Sudo なら argv の前に "sudo -n --" を付ける。
 	Sudo bool
+	// User・Key・KeyID・Sudo は観測（provider.Writing でない ctx）に使う資格。
+	// Write は書き込み（provider.Writing の ctx。Apply・Action）に使う資格
+	// （§20.7、#185）。nil なら上の資格を書き込みにも使う。
+	Write *Identity
+	// NoWrite なら書き込みのコマンドを断る（この回は書かない。書き込み用の
+	// 資格は取り出さない、provider.ErrNoWriteAccess）。
+	NoWrite bool
 	// ConnectTimeout（0 は DefaultConnectTimeout）・Timeout（コマンド 1 回の
 	// 上限、0 は DefaultTimeout）・ControlPersist（0 は DefaultControlPersist、
 	// 負なら使い回さない）。
@@ -87,9 +96,21 @@ type SSHHost struct {
 	ControlDir string
 }
 
+// Identity は ssh で入る資格（ユーザー・鍵・sudo）。観測用と書き込み用を
+// 分けるときの書き込み用（SSHHost.Write、#185）。
+type Identity struct {
+	User  string
+	Key   func(ctx context.Context) ([]byte, error)
+	KeyID string
+	Sudo  bool
+}
+
 // SSH は ssh 越しにコマンドを流す Executor。
 type SSH struct {
 	h SSHHost
+	// write は書き込み用の資格の Executor（SSHHost.Write。nil なら s 自身）。
+	write   *SSH
+	noWrite bool
 
 	failMu   sync.Mutex
 	failErr  error
@@ -125,7 +146,37 @@ func NewSSH(h SSHHost) (*SSH, error) {
 	if h.SSH == "" {
 		h.SSH = "ssh"
 	}
-	return &SSH{h: h}, nil
+	s := &SSH{h: h, noWrite: h.NoWrite}
+	if w := h.Write; w != nil && !h.NoWrite {
+		wh := h
+		wh.User, wh.Key, wh.KeyID, wh.Sudo = w.User, w.Key, w.KeyID, w.Sudo
+		wh.Write, wh.NoWrite = nil, false
+		// The write credential is let go after each command: no master is
+		// kept for it (§20.7, #185).
+		wh.ControlPersist = -1
+		ws, err := NewSSH(wh)
+		if err != nil {
+			return nil, fmt.Errorf("%w (write)", err)
+		}
+		s.write = ws
+	}
+	s.h.Write = nil
+	return s, nil
+}
+
+// pick は ctx に合う資格の Executor: 書き込み（provider.Writing）なら書き込み用
+// （この回が書かないなら provider.ErrNoWriteAccess）、ほかは観測用。
+func (s *SSH) pick(ctx context.Context) (*SSH, error) {
+	if !provider.Writing(ctx) {
+		return s, nil
+	}
+	if s.noWrite {
+		return nil, fmt.Errorf("remote %s: %w", s.h.Name, provider.ErrNoWriteAccess)
+	}
+	if s.write != nil {
+		return s.write, nil
+	}
+	return s, nil
 }
 
 // Target implements Executor.
@@ -133,6 +184,10 @@ func (s *SSH) Target() string { return s.h.Name }
 
 // Run implements Executor.
 func (s *SSH) Run(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
+	s, err := s.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
 	line, err := s.remoteCommand(argv)
 	if err != nil {
 		return nil, err
@@ -154,6 +209,10 @@ func (s *SSH) Run(ctx context.Context, argv []string, stdin []byte) ([]byte, err
 
 // Hold implements Executor.
 func (s *SSH) Hold(ctx context.Context, argv []string) (func() error, error) {
+	s, err := s.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
 	line, err := s.remoteCommand(argv)
 	if err != nil {
 		return nil, err
@@ -179,6 +238,10 @@ func (s *SSH) Hold(ctx context.Context, argv []string) (func() error, error) {
 // （確かめは何度も張り直す。ほかの呼び出しを止めない）。届かない・認証の失敗・
 // ホスト鍵の不一致は *ConnError。
 func (s *SSH) Probe(ctx context.Context) error {
+	s, err := s.pick(ctx)
+	if err != nil {
+		return err
+	}
 	return s.probe(ctx, s)
 }
 
@@ -187,6 +250,10 @@ func (s *SSH) Probe(ctx context.Context) error {
 // 確かめる）。鍵・known_hosts・タイムアウトはこの対象の設定を使う（ホスト鍵は
 // その経路の名前で known_hosts と照らす）。
 func (s *SSH) ProbeVia(ctx context.Context, user, address string, port int) error {
+	s, err := s.pick(ctx)
+	if err != nil {
+		return err
+	}
 	h := s.h
 	if address != "" {
 		h.Address = address
@@ -504,6 +571,9 @@ func firstLines(s string) string {
 
 // Close は master を止める（立っていなければ何もしない）。
 func (s *SSH) Close() error {
+	if s.write != nil {
+		_ = s.write.Close()
+	}
 	if s.h.ControlPersist <= 0 {
 		return nil
 	}

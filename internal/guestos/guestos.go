@@ -221,8 +221,14 @@ func (p *Provider) Read(ctx context.Context, id string) (core.Observation, error
 
 // script はホストの上で走る観測のスクリプト。引数は os-release の 2 つの
 // パス・ホスト名・boot_id、そのあと目印の名前とパスの組。
+// A path that does not exist is absent only when the nearest existing
+// directory above it can be searched: a user without the right to look
+// (a read-only observe user, §20.7) cannot tell, so it is unreadable.
 const script = `emit() {
-  if [ ! -e "$2" ]; then echo "$1 absent"
+  if [ ! -e "$2" ]; then
+    d=$2
+    while d=$(dirname -- "$d"); [ ! -d "$d" ] && [ "$d" != / ] && [ "$d" != . ]; do :; done
+    if [ -x "$d" ]; then echo "$1 absent"; else echo "$1 unreadable"; fi
   elif [ -d "$2" ] || [ ! -r "$2" ]; then echo "$1 unreadable"
   else
     echo "$1 ok"

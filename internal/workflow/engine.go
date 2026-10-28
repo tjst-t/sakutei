@@ -701,7 +701,7 @@ func (s *stepper) action(ctx context.Context, step Step, target core.ID) (stepSt
 	if !s.save() {
 		return stepStopped, ""
 	}
-	if err := a.Action(ctx, target.Local, step.Op, step.Args); err != nil {
+	if err := a.Action(provider.WithWrite(ctx), target.Local, step.Op, step.Args); err != nil {
 		if errors.Is(err, provider.ErrActionNotSent) {
 			s.run.ActionSending = false
 			if !s.save() {
@@ -727,7 +727,7 @@ func (e *Engine) execute(ctx context.Context, plan core.Plan) error {
 	if e.Exec != nil {
 		return e.Exec(ctx, plan)
 	}
-	return e.Provider.Apply(ctx, plan)
+	return e.Provider.Apply(provider.WithWrite(ctx), plan)
 }
 
 // satisfied は obs が fields を満たすか（Schema に従う Diff に差分が無いか）。

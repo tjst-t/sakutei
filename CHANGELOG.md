@@ -2,6 +2,14 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## 未リリース
+
+### 追加
+
+- **観測用と書き込み用の資格を分ける**（#185）：ssh の対象の一覧（`remote_config`）のホストに `observe:`・`write:`（`user`・`private_key`・`sudo`）を書け、観測（`plan`・`status`・読み取りの口・毎周の観測）は観測用だけ、Apply・action は書き込み用だけを使う（nftables の live・dnszone・host-file・systemd-unit・cli-device・guest-os・netconf）。書き込み用の鍵は Apply の直前に取り出し、接続を使い回さない。書かない回（`plan`・`status`・`import`・`sync`・`graph`、`--mode alert-only`・`--freeze` の `reconcile`・常駐）は書き込み用の鍵を確かめず、無くても起動する。公開の口 `provider.WithWrite`・`provider.Writing`・設定のキー `access`（`provider.ConfigAccess`、`--provider-config` には書けない）。読むだけのユーザーで観測するときの要るものと観測できない項目は docs/remote.md。
+
+> **振る舞いの変化**（#185）：host-file・systemd-unit・guest-os を root でない利用者で動かすとき、覗けないディレクトリの中のパスを「無い」でなく「観測できない」とするようになった（そのリソースは何もされない。これまでは在るファイルを作り直す計画を出していた）。
+
 ## v2.7.0（2026-10-28）
 
 正しい状態を宣言に置く原則を仕上げる版。provider の設定に残っていた管理の範囲と、長く効く起動の引数を intent に書けるようにし、freeze を誰が・なぜ・いつまでつきで監査に残す。設計書は v3.51 → v3.55（`docs/architecture/CHANGELOG-v3.52.md`〜`v3.55.md`）。

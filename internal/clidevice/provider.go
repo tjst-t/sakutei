@@ -430,6 +430,8 @@ func (p *Provider) RefinePlan(localID string, _ core.State, _ map[string]string,
 
 // Apply は plan を適用する。
 func (p *Provider) Apply(ctx context.Context, plan core.Plan) error {
+	// §20.7 (#185): what this Apply runs uses the write credential.
+	ctx = provider.WithWrite(ctx)
 	for _, op := range plan.Ops {
 		if err := p.applyOp(ctx, op); err != nil {
 			return err

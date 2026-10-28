@@ -99,7 +99,7 @@ func runSync(args []string) {
 		os.Exit(1)
 	}
 
-	reg := openProviderSet("sakutei sync", *providerConfigFile)
+	reg := openProviderSet("sakutei sync", *providerConfigFile).observeOnly()
 	cfg := map[string]string{"state": *statePath}
 	if *zonePath != "" {
 		cfg["zone"] = *zonePath

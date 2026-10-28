@@ -378,6 +378,40 @@ func TestFile_Local(t *testing.T) {
 	}
 }
 
+func TestFile_UnsearchableDirectoryIsNotAbsent(t *testing.T) {
+	// [AC-185-1-5] a file in a directory the observing user cannot search is
+	// unknown, not absent (a read-only observe user, §20.7).
+	if os.Geteuid() == 0 {
+		t.Skip("root can search every directory")
+	}
+	dir := t.TempDir()
+	p, err := hostconf.NewFile(hostconf.Hosts{hostconf.LocalHost: remote.Local{}}, hostconf.FileOptions{StampDir: filepath.Join(dir, "stamps")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := filepath.Join(dir, "closed")
+	if err := os.MkdirAll(filepath.Join(closed, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(closed, "sub", "a.conf"), []byte("x=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(closed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(closed, 0o755) })
+	for _, f := range []string{"sub/a.conf", "sub/none.conf", "none/a.conf"} {
+		obs, err := p.Read(context.Background(), "local"+filepath.Join(closed, f))
+		if err == nil || obs.Availability != core.AvailabilityUnknown || !strings.Contains(err.Error(), "cannot be searched") {
+			t.Errorf("[AC-185-1-5] %s: obs %+v err %v; want unknown", f, obs, err)
+		}
+	}
+	obs, err := p.Read(context.Background(), "local"+filepath.Join(dir, "open", "a.conf"))
+	if err != nil || obs.Availability != core.AvailabilityOk || obs.State != nil {
+		t.Errorf("[AC-185-1-5] a missing file in a searchable directory is absent: %+v %v", obs, err)
+	}
+}
+
 // ── systemd-unit ────────────────────────────────────────────────────────────
 
 const quadlet = "[Container]\nImage=docker.io/library/nginx:1.27\nEnvironmentFile=/etc/app/app.env\n[Install]\nWantedBy=multi-user.target\n"

@@ -99,6 +99,19 @@ type providerSet struct {
 	warnTo        io.Writer
 	warnName      string
 	warned        map[string]bool
+
+	// access is the run's provider.ConfigAccess (§20.7, #185): set to
+	// provider.AccessObserve by observeOnly for a run that never writes, so
+	// the providers neither check nor take out their write credentials.
+	access string
+}
+
+// observeOnly marks the run as one that never writes (plan, status, a
+// reconcile with --mode alert-only or --freeze, ...): every provider is built
+// with provider.ConfigAccess = provider.AccessObserve (§20.7, #185).
+func (s *providerSet) observeOnly() *providerSet {
+	s.access = provider.AccessObserve
+	return s
 }
 
 // useIntent makes Get take the range settings of the intent's providers:
@@ -162,15 +175,18 @@ func (s *providerSet) configured(name string, base map[string]string) bool {
 
 func (s *providerSet) configFor(name string, base map[string]string) map[string]string {
 	over := s.overrides[name]
-	if len(over) == 0 {
+	if len(over) == 0 && s.access == "" {
 		return base
 	}
-	cfg := make(map[string]string, len(base)+len(over))
+	cfg := make(map[string]string, len(base)+len(over)+1)
 	for k, v := range base {
 		cfg[k] = v
 	}
 	for k, v := range over {
 		cfg[k] = v
+	}
+	if s.access != "" {
+		cfg[provider.ConfigAccess] = s.access
 	}
 	return cfg
 }
@@ -235,6 +251,11 @@ func loadProviderConfig(path string, reg *registry.ProviderRegistry) (map[string
 		}
 		m := make(map[string]string, len(settings))
 		for k, v := range settings {
+			if k == provider.ConfigAccess {
+				// §20.7 (#185): whether the run writes follows from the
+				// command and its mode, never from the file.
+				return nil, fmt.Errorf("%s: providers.%s.%s: set by the run (observe for plan, status and --mode alert-only / --freeze), not in --provider-config", path, name, k)
+			}
 			switch x := v.(type) {
 			case map[string]any, []any, nil:
 				return nil, fmt.Errorf("%s: providers.%s.%s must be a string, number or boolean", path, name, k)
