@@ -284,34 +284,34 @@ func TestScopedReconcile_NoSetDifferencePrune_OrphanSurvives(t *testing.T) {
 	}
 }
 
-// [AC-Sf6a62f-2-3] a PruneWithinScope resource that disappeared from desired is
-// NOT turned into a scoped tombstone (that is List-based prune territory);
-// an ExplicitAbsentOnly disappearance IS an allowed individual delete.
+// [AC-Sf6a62f-2-3] a resource that only disappeared from desired is NOT turned
+// into a scoped tombstone, whatever its DeletionPolicy (a PruneWithinScope one
+// is List-based prune territory; an ExplicitAbsentOnly one is open-world and
+// stays, #163); a resource that became `ensure: absent` IS an allowed
+// individual delete.
 func TestScopedPlan_TombstoneOnlyForExplicitAbsent(t *testing.T) {
 	explicit := dres(scopeX(), "e", "1")
 	explicit.DeletionPolicy = core.ExplicitAbsentOnly
 	pruneScoped := dres(scopeX(), "p", "1")
 	pruneScoped.DeletionPolicy = core.PruneWithinScope
 
-	oldDesired := []diff.DesiredResource{explicit, pruneScoped, dres(scopeX(), "a", "1")}
-	newDesired := []diff.DesiredResource{dres(scopeX(), "a", "1")} // e and p removed.
+	oldDesired := []diff.DesiredResource{explicit, pruneScoped, dres(scopeX(), "a", "1"), dres(scopeX(), "g", "1")}
+	newDesired := []diff.DesiredResource{dres(scopeX(), "a", "1"), absentRes(scopeX(), "g")} // e and p removed, g absent.
 	hint := core.ChangeHint{IntentRevision: "rev-new", TouchedScopes: []core.Scope{scopeX()}}
 
 	spr := reconcile.ScopedPlan(hint, oldDesired, newDesired)
 
-	var gotE, gotP bool
+	got := map[string]bool{}
 	for _, id := range spr.RemovedTombstones {
-		if id.Local == "e" {
-			gotE = true
-		}
-		if id.Local == "p" {
-			gotP = true
-		}
+		got[id.Local] = true
 	}
-	if !gotE {
-		t.Errorf("[AC-Sf6a62f-2-3] ExplicitAbsentOnly removal 'e' must be an allowed scoped tombstone")
+	if !got["g"] {
+		t.Errorf("[AC-Sf6a62f-2-3] ensure: absent 'g' must be an allowed scoped tombstone")
 	}
-	if gotP {
+	if got["e"] {
+		t.Errorf("[AC-Sf6a62f-2-3] ExplicitAbsentOnly removal 'e' must NOT be a scoped tombstone (removal from desired is not an explicit absent, #163)")
+	}
+	if got["p"] {
 		t.Errorf("[AC-Sf6a62f-2-3] PruneWithinScope removal 'p' must NOT be a scoped tombstone (set-diff prune forbidden)")
 	}
 }
@@ -331,14 +331,14 @@ func TestScopedReconcile_SharesBudgetCounter(t *testing.T) {
 	// destructive op through the SAME engine to simulate the periodic loop
 	// having already spent the window budget.
 	shared := budget.New(budget.Config{MaxDestructivePerWindow: 1})
+	shared.SetPlannedChanges([]budget.PlannedChange{deleteLane(scopeX())})
 	shared.CommitOps([]core.Op{{Kind: core.OpKindDelete, Destructive: true}})
 
 	// A scoped tombstone (destructive individual delete) would need budget, but
-	// the window is already exhausted by the periodic loop's committed op.
-	explicit := dres(scopeX(), "a", "1")
-	explicit.DeletionPolicy = core.ExplicitAbsentOnly
-	oldDesired := []diff.DesiredResource{explicit}
-	newDesired := []diff.DesiredResource{} // a removed → explicit absent tombstone.
+	// the window is already exhausted by the periodic loop's committed op.  The
+	// open delete lane approves it; it does not exempt it from the budget (#163).
+	oldDesired := []diff.DesiredResource{dres(scopeX(), "a", "1")}
+	newDesired := []diff.DesiredResource{absentRes(scopeX(), "a")} // a → ensure: absent tombstone.
 	hint := core.ChangeHint{IntentRevision: "rev-new", TouchedScopes: []core.Scope{scopeX()}}
 
 	spr := reconcile.ScopedPlan(hint, oldDesired, newDesired)
@@ -363,12 +363,11 @@ func TestScopedReconcile_AdvancesSharedWindowCounter(t *testing.T) {
 	mustSeed(t, fp, "a", 1)
 
 	shared := budget.New(budget.Config{MaxDestructivePerWindow: 5})
+	shared.SetPlannedChanges([]budget.PlannedChange{deleteLane(scopeX())})
 	before := shared.WindowTotal()
 
-	explicit := dres(scopeX(), "a", "1")
-	explicit.DeletionPolicy = core.ExplicitAbsentOnly
-	oldDesired := []diff.DesiredResource{explicit}
-	newDesired := []diff.DesiredResource{}
+	oldDesired := []diff.DesiredResource{dres(scopeX(), "a", "1")}
+	newDesired := []diff.DesiredResource{absentRes(scopeX(), "a")}
 	hint := core.ChangeHint{IntentRevision: "rev-new", TouchedScopes: []core.Scope{scopeX()}}
 
 	spr := reconcile.ScopedPlan(hint, oldDesired, newDesired)
@@ -460,6 +459,19 @@ func TestScopedRunner_DrainsWatcherHintAndReconciles(t *testing.T) {
 func runScoped(t *testing.T, fp *fakeprovider.Provider, spr reconcile.ScopedPlanResult, cc cause.CauseContext) reconcile.ScopedReconcileResult {
 	t.Helper()
 	return runScopedWithBudget(t, fp, spr, cc, budget.New(budget.Config{}))
+}
+
+// absentRes is an `ensure: absent` declaration of local (#163).
+func absentRes(scope core.Scope, local string) diff.DesiredResource {
+	return diff.DesiredResource{ID: core.NewID("fake", scope, local), Absent: true}
+}
+
+// deleteLane is an open planned_change of kind delete over scope, without a
+// gate: the approval an explicit absent's Delete needs (#163).
+func deleteLane(scope core.Scope) budget.PlannedChange {
+	now := time.Now()
+	return budget.PlannedChange{Scope: scope, Kind: budget.PlannedDelete, MaxCount: 10,
+		Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
 }
 
 func runScopedWithBudget(t *testing.T, fp *fakeprovider.Provider, spr reconcile.ScopedPlanResult, cc cause.CauseContext, be *budget.Engine) reconcile.ScopedReconcileResult {

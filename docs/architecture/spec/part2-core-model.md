@@ -614,6 +614,11 @@ external_owner: drs            # DRS が所有。Sakutei は Observe するが A
 
 境界の宣言は2つの粒度を持つ。**scope**（§4.2）がリソース種別・所有単位の境界を切り、**managed**（§7.2）がフィールド単位で「触らない欄」を切る。両者を組み合わせることで、「この scope は DRS が所有（`external_owner`）、その中でこのフィールドは runtime（`managed`）」というように、外部世界との境界を宣言的に固定できる。prune・循環検出・境界検証はすべて理想状態ロード時の同一入口で行う。
 
+**明示の absent と境界（v3.32、Backlog #163）**：リソースを宣言で消す `ensure: absent`（§12.2）も境界の内側でだけ効く。Sakutei が
+触らないと決めているもの（provider の設定の「触らない」宣言。proxmox-vm の `protected_names` など Sakutei 自身が動く段0 のもの、§23）・
+観測だけの provider（§23.4）のものは absent にできず、ほかのリソースが `depends_on` で依るものも absent にできない。どれも
+理想状態ロード時の同じ入口で断る。
+
 ### §7.5 合成リソースの子への ownership 伝播（managed_by）
 
 合成リソース（§9 render フェーズ2 で下位リソース群を上位1つに束ねる）は、**下位を別 Resource として依存グラフに乗せる**（1つの provider に押し込まない）。子が独立した Resource だからこそ、子 50 個の削除を「1 リソースの変更」ではなく「50 件の削除」として rate limit（§13）で halt できる——合成を単一 Provider にすると安全機構が効かなくなる。

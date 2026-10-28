@@ -59,6 +59,10 @@ const (
 	EventRequiresTask EventKind = "RequiresTask"
 	// EventPlannedChange は planned_change のレーンの知らせ（§13.3）。
 	EventPlannedChange EventKind = "PlannedChange"
+	// EventAbsentAwaitingApproval は ensure: absent の資源が現実に在るのに、
+	// planned_change（kind: delete）のレーンが開いていないので消さずに待っている
+	// （§12.2・§13.3・§14.4、Backlog #163）。
+	EventAbsentAwaitingApproval EventKind = "AbsentAwaitingApproval"
 
 	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。
 	EventWorkflowStarted       EventKind = "WorkflowStarted"
@@ -85,7 +89,10 @@ func (k EventKind) IsLevel() bool {
 		// its "task launched" notice are a continuing condition about the same
 		// resource; level-reporting them stops the edge spam of one warning
 		// per cycle while waiting.
-		EventRequiresTask:
+		EventRequiresTask,
+		// Backlog #163: an absent resource waiting for its lane is a
+		// continuing condition, resolved when it is observed gone.
+		EventAbsentAwaitingApproval:
 		return true
 	}
 	return false

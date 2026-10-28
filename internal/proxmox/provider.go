@@ -18,8 +18,10 @@
 //
 // 完全の階級：Read・Apply・List・BulkObserve（/cluster/resources を 1 回と、
 // VM ごとの設定。Read と等価）。VM は破壊的な型なので Pruneable:false
-// （§12.3、ADR-0005）。消すのは "state: absent" の明示だけで、Delete は破壊的
-// として予算（§13）に数える。
+// （§12.3、ADR-0005）。消すのは intent の "ensure: absent" の明示だけで
+// （§12.2、Backlog #163）、Delete は破壊的として予算（§13）に数え、planned_change
+// （kind: delete）のレーンが開いているときだけ走る（承認、§13.3・§14.4）。走って
+// いる VM は止めて（stop。ディスクごと消すので正常停止は待たない）から消す。
 //
 // ID は "<クラスタ>/<VM 名>"（クラスタは設定ファイルの名前付きの一覧、
 // config.go）。VM は名前で引く（vmid は ID にしない：採番から配れるように）。
@@ -208,6 +210,7 @@ var (
 	_ provider.Lister          = (*Provider)(nil)
 	_ provider.BulkObserver    = (*Provider)(nil)
 	_ provider.IntentValidator = (*Provider)(nil)
+	_ provider.AbsentValidator = (*Provider)(nil)
 	_ provider.PlanRefiner     = (*Provider)(nil)
 	_ provider.Actioner        = (*Provider)(nil)
 )
@@ -662,6 +665,21 @@ func (p *Provider) BulkObserve(ctx context.Context, _ core.Scope) (provider.Bulk
 }
 
 // ---- 計画の時点の検査 ----
+
+// ValidateAbsent は ensure: absent（宣言で消す、§12.2・Backlog #163）の誤りを、
+// 読み込みの時点で断る：ID の形と、触らない VM（protected_names。Sakutei 自身が
+// 動く VM など段0 のもの、§23）を消す宣言。protected_vmids の VM は名前では
+// 分からないので、Read・Apply が触らないことで守る（消さずに Unknown）。
+func (p *Provider) ValidateAbsent(localID string) error {
+	name, c, vm, err := p.coords(localID)
+	if err != nil {
+		return fmt.Errorf("%s: %w", Name, err)
+	}
+	if contains(c.ProtectedNames, vm) {
+		return fmt.Errorf("%s %q: VM %s is protected in cluster %s (protected_names): Sakutei never touches it, so it cannot be declared absent (§23)", Name, localID, vm, name)
+	}
+	return nil
+}
 
 // ValidateIntent は現実を見ずに決まる誤りを、読み込みの時点で断る（§28.4）。
 func (p *Provider) ValidateIntent(localID string, fields map[string]string) error {

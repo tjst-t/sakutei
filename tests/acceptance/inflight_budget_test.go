@@ -47,10 +47,8 @@ func runScopedTombstoneWithInFlight(t *testing.T, fp *fakeprovider.Provider, inF
 	t.Helper()
 	mustSeed(t, fp, "a", 1)
 
-	explicit := dres(scopeX(), "a", "1")
-	explicit.DeletionPolicy = core.ExplicitAbsentOnly
-	oldDesired := []diff.DesiredResource{explicit}
-	var newDesired []diff.DesiredResource
+	oldDesired := []diff.DesiredResource{dres(scopeX(), "a", "1")}
+	newDesired := []diff.DesiredResource{absentRes(scopeX(), "a")} // a → ensure: absent (#163)
 	ifl := reconcile.NewInFlightSet()
 	for local, destructive := range inFlight {
 		newDesired = append(newDesired, dres(scopeX(), local, "1"))
@@ -60,6 +58,7 @@ func runScopedTombstoneWithInFlight(t *testing.T, fp *fakeprovider.Provider, inF
 	spr := reconcile.ScopedPlan(hint, oldDesired, newDesired)
 
 	be := budget.New(budget.Config{MaxDestructivePerCycle: 1})
+	be.SetPlannedChanges([]budget.PlannedChange{deleteLane(scopeX())})
 	var errBuf bytes.Buffer
 	res := reconcile.ScopedReconcile(context.Background(), spr, fp, executor.New(),
 		diff.New(fp.Schema()), be, ifl, causeA(), &errBuf)

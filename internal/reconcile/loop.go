@@ -1201,6 +1201,9 @@ func cycleSummary(res CycleResult) string {
 	if len(res.Skipped) > 0 {
 		extra += fmt.Sprintf(" skipped=%d", len(res.Skipped))
 	}
+	if len(res.AwaitingApproval) > 0 {
+		extra += fmt.Sprintf(" awaiting_approval=%d", len(res.AwaitingApproval))
+	}
 	switch {
 	case res.Held > 0 || res.PruneHalted:
 		return fmt.Sprintf("halted (%d op(s) held) applied=%d launched=%d%s",
@@ -1257,6 +1260,10 @@ type CycleResult struct {
 	// PlannedChangeEvents are the planned_change lane notices of the cycle
 	// (§13.3): admissions, exhaustion, kind mismatches, expiry.
 	PlannedChangeEvents []string
+	// AwaitingApproval lists the explicit absents (`ensure: absent`, §12.2,
+	// Backlog #163) present in reality whose Delete was held this cycle for
+	// want of an open planned_change lane (also counted in Held).
+	AwaitingApproval []string
 
 	// Scf7762-3 remediation mode fields:
 
@@ -1664,6 +1671,15 @@ func runCycleAsync(
 	for _, r := range desired {
 		p := providers.provider(r)
 		if p == nil {
+			continue
+		}
+		if r.Absent {
+			// §12.2 (#163): an explicit absent has no fields to validate;
+			// the provider must be able to Delete it.
+			if err := provider.ValidateAbsent(p, r.ID.Local); err != nil {
+				return CycleResult{ExcludedByClaim: excludedByClaim},
+					fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): resource %s: %w", r.ID, err)
+			}
 			continue
 		}
 		if err := provider.ValidateIntent(p, r.ID.Local, r.Fields); err != nil {
@@ -2365,6 +2381,14 @@ func runCycleAsync(
 	// second, number-less line here was pure duplication and made the daemon log
 	// report each halt twice.
 
+	// §12.2 (#163): the Delete of an explicit absent runs only in an open
+	// planned_change lane; outside every lane the decision holds it.
+	var awaitingApproval []string
+	for _, op := range UnapprovedOps(plans, budgetDecision) {
+		awaitingApproval = append(awaitingApproval, op.Target.Local)
+		EmitAbsentAwaitingApproval(cfg.ErrOut, "sakutei: ", op.Target)
+	}
+
 	// Filter prune ops through the budget decision.
 	var allowedPruneOps []core.Op
 	held := 0
@@ -2398,9 +2422,22 @@ func runCycleAsync(
 	dispatch := func(local string, ops []core.Op) {
 		budgetEngine.ReserveLanes(laneDecision, ops)
 		for _, op := range ops {
-			if laneDecision.InLane(op) {
+			// An explicit absent's Delete (RequiresApproval) stays in the
+			// normal in-flight count: the normal budget counts it (#163).
+			if laneDecision.InLane(op) && !op.RequiresApproval {
 				ifl.MarkLane(local)
 				break
+			}
+		}
+		// §12.4b (#163): the Delete of an explicit absent is our own removal,
+		// so the next List drop does not count it (noted at dispatch: the
+		// prune engine is not shared with the Apply goroutine; a Delete that
+		// fails leaves the resource in the List, and nothing is discounted).
+		for _, op := range ops {
+			if op.Kind == core.OpKindDelete {
+				if e, err := providers.get(op.Target.Provider); err == nil && e.prune != nil {
+					e.prune.NotePlannedRemoval(op.Target)
+				}
 			}
 		}
 	}
@@ -2510,6 +2547,7 @@ func runCycleAsync(
 		ObserveOnlyEvents: obsHeld.Events,
 
 		PlannedChangeEvents: budgetDecision.Events,
+		AwaitingApproval:    awaitingApproval,
 
 		CapacityHalted: capacityHalted,
 		CapacityReason: capacityDecision.Reason,
@@ -2539,7 +2577,7 @@ func runCycleAsync(
 // When halt-destructive-only: returns plans with destructive ops removed.
 // When no halt: returns the original plans unchanged.
 func filterPlansByBudget(plans map[string]core.Plan, decision budget.CycleDecision) map[string]core.Plan {
-	if !decision.HaltAll && !decision.HaltDestructive {
+	if !decision.Holds() {
 		return plans
 	}
 	filtered := make(map[string]core.Plan, len(plans))

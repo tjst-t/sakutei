@@ -121,7 +121,7 @@ func desiredHash(res diff.DesiredResource) string {
 			h.Write([]byte{0})
 		}
 	}
-	write(res.ID.String(), res.ObserveTier, fmt.Sprint(res.DeletionPolicy), strings.Join(res.DependsOn, ","))
+	write(res.ID.String(), res.ObserveTier, fmt.Sprint(res.DeletionPolicy), strings.Join(res.DependsOn, ","), fmt.Sprint(res.Absent))
 	keys := make([]string, 0, len(res.Fields))
 	for k := range res.Fields {
 		keys = append(keys, k)

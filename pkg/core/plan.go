@@ -109,6 +109,15 @@ type Op struct {
 	// Fields lists the individual field-level diffs for Update operations.
 	// May be nil for Create and Delete.
 	Fields []FieldDiff
+	// RequiresApproval is set by the core on the Delete of an explicit absent
+	// (`ensure: absent`, §12.2, Backlog #163).  Such an op runs only when it
+	// is admitted to an open planned_change lane: the lane's gate (approval,
+	// cooling-off, window, §13.3 / §14.4 / §14.5) is its approval, and it
+	// uses the lane's max_count.  Unlike other lane ops it is still counted —
+	// and halted — by the normal budget (§13.1 / §13.2): the lane approves it,
+	// it does not exempt it.  Outside every lane it is held (and, never
+	// running, not counted).
+	RequiresApproval bool
 }
 
 // Plan is the output of the Diff phase (§4.4).  It is an ephemeral,

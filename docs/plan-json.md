@@ -97,13 +97,14 @@ plan は reconcile と同じ判定を、何も消費せずに評価する。reco
 | `kind` | 常に | `CREATE` / `UPDATE` / `DELETE` |
 | `destructive` | 常に | 破壊的か（予算の破壊的な変更に数える。文の出力の `[DESTRUCTIVE]`） |
 | `prune` | 常に | 宣言外の削除（集合差 prune、§12）なら `true` |
+| `absent` | `ensure: absent` の削除のとき | 宣言で消す（明示の absent、§12.2、Backlog #163）の削除なら `true`。planned_change（`kind: delete`）のレーンが開いているときだけ走り、外なら `blocked_by: approval` |
 | `cause` | 原因が分かるとき | 原因タグ `A`〜`E`（§10.2） |
 | `diagnostic` | あるとき | diff エンジンの理由の文（文の出力の `reason:`） |
 | `fields` | 差分があるとき | `{"field", "from", "to"}` の配列。`from` が現実（無いときは空文字）、`to` が宣言（消すときは空文字）。secret は参照の形。採番待ちのフィールドは `<pending allocation from pool …>` |
 | `lane` | 常に | 使う予算のレーン：`normal`（通常予算）/ `planned_change`（§13.3） |
 | `planned_change` | `lane` が `planned_change` | どの宣言のレーンか（`planned_change(scope=… kind=… window=…)`） |
 | `blocked` | 常に | reconcile なら止まるか |
-| `blocked_by` | `blocked` | 止める仕組み：`budget`（変更予算）/ `capacity`（容量ゲート）/ `alert_only_scope`（`remediation: alert-only` を宣言した scope、§14.3）。デーモンの `GET /plan`（[read-api.md](read-api.md)）では、ほかに `alert_only`（全体の remediation mode が alert-only：`--mode alert-only`・`--freeze`・schedule の窓の外、§14.1〜§14.3）と `prune_halt`（prune の安全装置が止めた宣言外の削除、§12.4）も出る |
+| `blocked_by` | `blocked` | 止める仕組み：`budget`（変更予算）/ `capacity`（容量ゲート）/ `alert_only_scope`（`remediation: alert-only` を宣言した scope、§14.3）/ `approval`（`ensure: absent` の削除で、それを覆う planned_change（`kind: delete`）のレーンが開いていない。承認・窓・cooling-off、§13.3・§14.4・§14.5）。デーモンの `GET /plan`（[read-api.md](read-api.md)）では、ほかに `alert_only`（全体の remediation mode が alert-only：`--mode alert-only`・`--freeze`・schedule の窓の外、§14.1〜§14.3）と `prune_halt`（prune の安全装置が止めた宣言外の削除、§12.4）も出る |
 | `block_reason` | `blocked` | 止める理由の文（文の出力の `blocked:` の行） |
 | `task` | `strategy: task` のリソースの CREATE・UPDATE | `{"window", "rollback_on_fail"}`（§6.2）。Apply されず、デーモンが窓の中で Task を起こす |
 

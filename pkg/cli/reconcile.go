@@ -795,14 +795,28 @@ func runReconcile(args []string) {
 	}
 	budgetDecision = budget.Merge(budgetDecision, capacityDecision)
 
+	// §12.2 (#163): the Delete of an explicit absent runs only in an open
+	// planned_change lane (which a one-shot reconcile opens only with
+	// --audit-log); outside every lane it waits for its approval.
+	awaitingApproval := reconcile.UnapprovedOps(plans, budgetDecision)
+	for _, op := range awaitingApproval {
+		reconcile.EmitAbsentAwaitingApproval(logErr, "sakutei reconcile: ", op.Target)
+	}
+	if len(awaitingApproval) > 0 && *auditLog == "" {
+		fmt.Fprintf(logErr, "sakutei reconcile: note: ensure: absent needs an open planned_change lane, and a one-shot reconcile opens lanes only with --audit-log (§13.3)\n")
+	}
+
 	// Filter per-resource plans through the budget decision.
 	filteredPlans := make(map[string]core.Plan, len(plans))
 	for local, plan := range plans {
 		var allowed []core.Op
 		for _, op := range plan.Ops {
-			if !budgetDecision.IsHalted(op) {
+			switch {
+			case !budgetDecision.IsHalted(op):
 				allowed = append(allowed, op)
-			} else {
+			case budgetDecision.Unapproved(op):
+				// Said above (AbsentAwaitingApproval).
+			default:
 				fmt.Fprintf(logErr, "sakutei reconcile: budget: blocked %v op for %s\n", op.Kind, op.Target)
 			}
 		}
@@ -978,6 +992,7 @@ func runReconcile(args []string) {
 		runSummary(fmt.Sprintf("Reconcile: no changes applied; %d drifted resource(s) held by alert-only scope(s)", scopeHeld.DriftCount))
 	case obsHeld.DriftCount > 0:
 		runSummary(fmt.Sprintf("Reconcile: no changes applied; %d drifted resource(s) of observe-only provider(s) reported (§23.4)", obsHeld.DriftCount))
+	case len(awaitingApproval) > 0:
 	default:
 		runSummary("Converged (no changes)")
 	}
@@ -1006,6 +1021,10 @@ func runReconcile(args []string) {
 		} else if workflowHeld[local] {
 			workflowCount++
 		}
+	}
+	if n := len(awaitingApproval); n > 0 {
+		// #163: not converged — the absent resources still exist.
+		runSummary(fmt.Sprintf("Reconcile: %d ensure: absent resource(s) not deleted: awaiting approval (an open planned_change lane of kind delete, §13.3)", n))
 	}
 	if waitingCount > 0 {
 		runSummary(fmt.Sprintf("Reconcile: %d resource(s) waiting-allocation (retry once the allocator can allocate)", waitingCount))

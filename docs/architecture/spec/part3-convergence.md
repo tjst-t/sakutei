@@ -171,6 +171,9 @@ ChangeHint 受信:
 - **集合差 prune は速い経路で禁止**。prune の正しさは List 完全性（§12）に依存し、部分観測とは相容れない。
   テナントの即時削除は **DBSource 側の tombstone = 明示 absent**（`ExplicitAbsentOnly` の型・§12）で表現し、
   個別リソースの削除として扱う（集合差ではなく）。tombstone は個別リソース削除として速い経路で即時に処理できる。
+  v3.32（Backlog #163）で tombstone は「新 desired で `ensure: absent`（§12.2）になったリソース」に改めた（desired から
+  消えただけのものは tombstone にしない＝open-world。v1a の実装は消えたものを tombstone にしていたので、prune しない型も
+  宣言から外すだけで消えた）。その Delete は Diff が計画し、定期経路と同じく planned_change のレーン（承認、§13.3）と予算を通す。
 - **rate limit・累積破壊予算のカウンタは定期経路と共有**する（§13）。速い経路がバイパスになってはならない——
   両経路は同一の予算・同一の per-resource in-flight 排他（§8.4）を共有する。
 - **同一 scope へのヒントは合流（coalesce）する**。実行時に **最新の desired を読む**ことで level 意味論を保つ

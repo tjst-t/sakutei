@@ -42,7 +42,6 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/proxmox"
-	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
 // 固定する版。
@@ -811,23 +810,47 @@ qm list`); err != nil {
 		}
 	})
 
-	t.Run("delete", func(t *testing.T) {
-		p, err := proxmox.NewFromConfig(l.cfg)
-		if err != nil {
-			t.Fatal(err)
+	t.Run("absent で消す", func(t *testing.T) {
+		// 宣言から外しただけでは消えない（VM は prune しない型、open-world）。
+		if out, code := l.sakutei(t, `{"resources": []}`, "reconcile"); code != 0 || l.status(t, 500) != "running" {
+			t.Fatalf("reconcile with the VM left out of the intent: exit %d, status %s:\n%s", code, l.status(t, 500), out)
 		}
-		del := core.Plan{Ops: []core.Op{{Kind: core.OpKindDelete, Target: core.NewID(proxmox.Name, core.NewScope(nil), "it/it-vm1"), Destructive: true}}}
+
+		// ensure: absent（#163）。承認（planned_change kind: delete のレーン）が無ければ消さない。
+		audit := filepath.Join(l.dir, "audit.jsonl")
+		absent := `{"provider": "proxmox-vm", "scope": {"site": "it"}, "id": "it/it-vm1", "ensure": "absent"}`
+		noLane := `{"resources": [` + absent + `]}`
+		if out, code := l.sakutei(t, noLane, "plan"); code != 0 || !strings.Contains(out, "DELETE proxmox-vm/site=it/it/it-vm1") || !strings.Contains(out, "blocked: approval") {
+			t.Fatalf("plan with ensure: absent and no lane: exit %d:\n%s", code, out)
+		}
+		if out, code := l.sakutei(t, noLane, "reconcile", "--audit-log", audit); code != 0 || !strings.Contains(out, "AbsentAwaitingApproval") || l.status(t, 500) != "running" {
+			t.Fatalf("reconcile with ensure: absent and no lane: exit %d, status %s:\n%s", code, l.status(t, 500), out)
+		}
+
+		// 承認のあるレーンで、走っている VM を止めてから消す（task_wait を越えれば次の回で続く）。
+		now := time.Now().UTC()
+		lane := fmt.Sprintf(`"planned_change": {"scope": {"site": "it"}, "kind": "delete", "max_count": 1, "window": "%s .. %s", "approval": {"pr": 163, "approvers": ["alice"]}}, `,
+			now.Add(-time.Hour).Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339))
+		withLane := `{` + lane + `"resources": [` + absent + `]}`
 		for i := 0; i < 10 && !strings.HasPrefix(l.status(t, 500), "absent"); i++ {
-			if err := p.Apply(ctx, del); err != nil {
-				t.Logf("delete: %v", err)
-			}
+			out, code := l.sakutei(t, withLane, "reconcile", "--audit-log", audit)
+			t.Logf("reconcile %d with the approved lane: exit %d\n%s", i, code, out)
 			time.Sleep(3 * time.Second)
 		}
 		if s := l.status(t, 500); !strings.HasPrefix(s, "absent") {
-			t.Errorf("after delete: %s", s)
+			t.Fatalf("after the approved ensure: absent: %s", s)
+		}
+		if out, code := l.sakutei(t, withLane, "reconcile", "--audit-log", audit); code != 0 || !strings.Contains(out, "Converged (no changes)") {
+			t.Errorf("reconcile after the delete: exit %d, want converged:\n%s", code, out)
 		}
 		if l.status(t, 100) != "running" || strings.HasPrefix(l.status(t, 9000), "absent") {
 			t.Error("the delete touched another VM")
+		}
+
+		// 触らない VM（protected_names）は absent にできない。
+		prot := `{` + lane + `"resources": [{"provider": "proxmox-vm", "scope": {"site": "it"}, "id": "it/sakutei-ctl", "ensure": "absent"}]}`
+		if out, code := l.sakutei(t, prot, "reconcile", "--audit-log", audit); code == 0 || !strings.Contains(out, "protected") || l.status(t, 100) != "running" {
+			t.Errorf("reconcile with the protected VM declared absent: exit %d:\n%s", code, out)
 		}
 	})
 }

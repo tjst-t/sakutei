@@ -279,6 +279,31 @@ type laneAdmission struct {
 	lane   map[string]laneSlot
 	normal []core.Op
 	events []string
+	// unapproved are the ops that require approval (core.Op.RequiresApproval)
+	// and were not admitted to a lane: held, and not in normal.
+	unapproved map[string]bool
+}
+
+// split moves the ops not admitted to a lane into normal, except those that
+// require approval, which are held as unapproved.  An op that requires
+// approval and was admitted goes to normal as well: the lane is its approval
+// gate, and the normal budget still counts it (core.Op.RequiresApproval).
+func (a *laneAdmission) split(ops []core.Op, inLane func(i int) bool) {
+	for i, op := range ops {
+		switch {
+		case inLane(i):
+			if op.RequiresApproval {
+				a.normal = append(a.normal, op)
+			}
+		case op.RequiresApproval:
+			if a.unapproved == nil {
+				a.unapproved = map[string]bool{}
+			}
+			a.unapproved[opKey(op)] = true
+		default:
+			a.normal = append(a.normal, op)
+		}
+	}
 }
 
 // admitLanes splits ops into lane-admitted ops and normal ops.  It does not
@@ -310,7 +335,7 @@ func (e *Engine) admitLanes(ops []core.Op) laneAdmission {
 		}
 	}
 	if len(active) == 0 {
-		out.normal = ops
+		out.split(ops, func(int) bool { return false })
 		return out
 	}
 
@@ -328,6 +353,9 @@ func (e *Engine) admitLanes(ops []core.Op) laneAdmission {
 		remaining[j] = p.MaxCount - e.laneUsed[p.Key()]
 	}
 	admitted := make([]int, len(active))
+	// counted are the admitted ops that require approval: the normal budget
+	// still counts them (core.Op.RequiresApproval).
+	counted := make([]int, len(active))
 	exhausted := make([]int, len(active))
 	mismatched := make([][]string, len(active))
 	inLane := make(map[int]bool)
@@ -366,6 +394,9 @@ func (e *Engine) admitLanes(ops []core.Op) laneAdmission {
 			}
 			remaining[j]--
 			admitted[j]++
+			if op.RequiresApproval {
+				counted[j]++
+			}
 			inLane[i] = true
 			out.lane[opKey(op)] = laneSlot{decl: p.Key(), weight: 1}
 			if paired {
@@ -374,21 +405,21 @@ func (e *Engine) admitLanes(ops []core.Op) laneAdmission {
 			}
 			break
 		}
-		if !inLane[i] && !capped && mismatchDecl >= 0 && op.Destructive {
+		if !inLane[i] && !capped && mismatchDecl >= 0 && op.Destructive && !op.RequiresApproval {
 			mismatched[mismatchDecl] = append(mismatched[mismatchDecl], op.Target.String())
 		}
 	}
-	for i, op := range ops {
-		if !inLane[i] {
-			out.normal = append(out.normal, op)
-		}
-	}
+	out.split(ops, func(i int) bool { return inLane[i] })
 
 	for j, p := range active {
 		if admitted[j] > 0 {
+			budgetNote := "not counted in the normal budget"
+			if counted[j] > 0 {
+				budgetNote = fmt.Sprintf("%d ensure: absent delete(s) among them still counted in the normal budget, the rest not", counted[j])
+			}
 			out.events = append(out.events, fmt.Sprintf(
-				"PlannedChange: %s: %d change(s) admitted to the planned_change lane (used %d of max_count %d before this cycle); not counted in the normal budget",
-				p, admitted[j], e.laneUsed[p.Key()], p.MaxCount))
+				"PlannedChange: %s: %d change(s) admitted to the planned_change lane (used %d of max_count %d before this cycle); %s",
+				p, admitted[j], e.laneUsed[p.Key()], p.MaxCount, budgetNote))
 		}
 		if exhausted[j] > 0 {
 			out.events = append(out.events, fmt.Sprintf(
@@ -445,6 +476,13 @@ func (d CycleDecision) InLane(op core.Op) bool {
 	return ok
 }
 
+// Unapproved reports whether op requires approval (core.Op.RequiresApproval,
+// the Delete of an explicit absent) and was not admitted to an open
+// planned_change lane: it is held (IsHalted) whatever the budget says.
+func (d CycleDecision) Unapproved(op core.Op) bool {
+	return d.unapproved[opKey(op)]
+}
+
 // LaneOf returns the Key of the planned_change declaration whose lane admitted
 // op ("" when op is outside the lanes).
 func (d CycleDecision) LaneOf(op core.Op) string {
@@ -452,14 +490,15 @@ func (d CycleDecision) LaneOf(op core.Op) string {
 }
 
 // OutsideLanes returns the ops that were not admitted to a planned_change lane
-// — the ones the normal budget's window counter must record (CommitOps).
+// — the ones the normal budget's window counter must record (CommitOps) — and
+// the lane ops that require approval, which the normal budget counts as well.
 func (d CycleDecision) OutsideLanes(ops []core.Op) []core.Op {
 	if len(d.lane) == 0 {
 		return ops
 	}
 	var out []core.Op
 	for _, op := range ops {
-		if !d.InLane(op) {
+		if !d.InLane(op) || op.RequiresApproval {
 			out = append(out, op)
 		}
 	}

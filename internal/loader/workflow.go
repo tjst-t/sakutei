@@ -350,6 +350,11 @@ func validateWorkflows(defs []workflow.Definition, resources []diff.DesiredResou
 		if name, ok := owner[r.ID.Key()]; ok && r.UpdatePolicy.IsTask() {
 			return fmt.Errorf("resource %s is a target of workflow %s and also declares strategy: task; drive it with one of them", r.ID.Local, name)
 		}
+		if name, ok := owner[r.ID.Key()]; ok && r.Absent {
+			// #163: a Workflow drives a resource that stays; one that is
+			// being deleted is driven by nothing but its Delete.
+			return fmt.Errorf("resource %s is a target of workflow %s and also declares ensure: absent", r.ID.Local, name)
+		}
 	}
 	return nil
 }

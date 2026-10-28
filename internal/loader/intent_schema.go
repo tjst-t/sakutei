@@ -190,6 +190,12 @@ func intentSchema() schemaNode {
 							"type": "string",
 							"enum": []any{"ExplicitAbsentOnly", "PruneWithinScope"},
 						},
+						// ensure: absent は宣言で消す（明示の absent、§12.2・Backlog #163）。
+						// 既定は present。
+						"ensure": schemaNode{
+							"type": "string",
+							"enum": []any{"present", "absent"},
+						},
 					},
 				},
 			},

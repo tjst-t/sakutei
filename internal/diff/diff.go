@@ -89,6 +89,15 @@ type DesiredResource struct {
 	// a diff never reaches Apply: the daemon launches a Task instead (§6.5).
 	// The zero value is the default Apply strategy.
 	UpdatePolicy core.UpdatePolicy
+	// Absent is the explicit absent of the intent (`ensure: absent`, §12.2,
+	// Backlog #163): the resource must not exist.  Diff plans a Delete when
+	// it is observed present and nothing when it is not, whatever the type's
+	// Pruneable (the operator names it).  An absent resource carries no
+	// Fields, Allocations, DependsOn or UpdatePolicy (the loader refuses
+	// them), and no resource may depend on it.  Its Delete is destructive and
+	// runs only in an open planned_change lane (§13.3, §14.4): see
+	// reconcile.HoldUnapprovedAbsent.
+	Absent bool
 }
 
 // AllocationTemplate is how an allocated integer is written into its field
@@ -137,7 +146,9 @@ func ForProvider(p provider.Provider) *Engine {
 // this cycle.
 func (e *Engine) Plan(obs core.Observation, desired DesiredResource, ctx cause.CauseContext) (core.Plan, error) {
 	plan := e.Diff(obs, desired, ctx)
-	if e.refiner == nil || obs.Availability != core.AvailabilityOk || (obs.State == nil && obs.Check == nil) {
+	// An explicit absent has no desired fields to refine against: its Delete
+	// is the core's alone.
+	if e.refiner == nil || desired.Absent || obs.Availability != core.AvailabilityOk || (obs.State == nil && obs.Check == nil) {
 		return plan, nil
 	}
 	refined, err := e.refiner.RefinePlan(desired.ID.Local, obs.State, desired.Fields, plan.Ops)
@@ -246,6 +257,8 @@ func (e *Engine) ValidateDesired(desired DesiredResource) error {
 //   - If obs.State is non-nil and fields differ: OpKindUpdate.
 //   - If obs.Check is set (minimal tier, §28.7): no Op when the target's dry
 //     run reports no change, otherwise OpKindUpdate (see diffCheck).
+//   - If desired.Absent (`ensure: absent`, §12.2): OpKindDelete when obs.State
+//     is non-nil, no Op when it is nil (see diffAbsent).
 //
 // CauseTag is determined by cause.Classify(ctx) per-resource (§10.3).
 func (e *Engine) Diff(obs core.Observation, desired DesiredResource, ctx cause.CauseContext) core.Plan {
@@ -253,6 +266,10 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource, ctx cause.C
 	// unknown ≠ absent (ADR-0002; §3 asymmetry principle).
 	if obs.Availability != core.AvailabilityOk {
 		return core.Plan{}
+	}
+
+	if desired.Absent {
+		return diffAbsent(obs, desired, ctx)
 	}
 
 	// Minimal tier (§5.6, §28.7): the target answered a dry run of the
@@ -301,6 +318,31 @@ func (e *Engine) Diff(obs core.Observation, desired DesiredResource, ctx cause.C
 			},
 		},
 	}
+}
+
+// diffAbsent is the diff of an explicit absent (`ensure: absent`, §12.2,
+// Backlog #163): present in reality → one destructive Delete, absent → nothing
+// (conformant).  A minimal-tier observation (Check, no State) cannot say
+// whether the resource exists, so it plans nothing (the loader refuses an
+// absent on a provider without TrueObserve anyway).
+//
+// The cause is classified as for a Create: the intent states the resource's
+// existence, so a cold start is A like a cold-start Create, and a resource
+// that reappears under an unchanged intent is B (drift) — the Delete is the
+// remediation either way.
+func diffAbsent(obs core.Observation, desired DesiredResource, ctx cause.CauseContext) core.Plan {
+	if obs.State == nil {
+		return core.Plan{}
+	}
+	ctx.ResourceObservedAbsent = true
+	return core.Plan{Ops: []core.Op{{
+		Kind:             core.OpKindDelete,
+		Target:           desired.ID,
+		Destructive:      true,
+		RequiresApproval: true,
+		Cause:            cause.Classify(true, ctx),
+		Diagnostic:       fmt.Sprintf("resource %s is declared ensure: absent but exists in reality; will delete", desired.ID),
+	}}}
 }
 
 // diffCheck is the degraded diff of a minimal-tier observation (§5.6, §28.7):

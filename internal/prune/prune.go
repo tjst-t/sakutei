@@ -281,6 +281,7 @@ func (e *Engine) ComputePrune(
 	// is not taken off — it is still counted in currentCount, so it is no drop.
 	currentCount := len(listResult.IDs)
 	baseline := e.lastListCount
+	var stillListed map[core.IDKey]bool
 	if len(e.ownGone) > 0 {
 		present := make(map[core.IDKey]bool, len(listResult.IDs))
 		for _, id := range listResult.IDs {
@@ -289,6 +290,14 @@ func (e *Engine) ComputePrune(
 		for k := range e.ownGone {
 			if !present[k] {
 				baseline--
+			} else {
+				// #163: an async Delete (an explicit absent's, dispatched to
+				// an Apply goroutine) may finish after this List; keep it
+				// noted so its later disappearance is not a drop either.
+				if stillListed == nil {
+					stillListed = map[core.IDKey]bool{}
+				}
+				stillListed[k] = true
 			}
 		}
 		if baseline < 0 {
@@ -318,7 +327,7 @@ func (e *Engine) ComputePrune(
 
 	// Update last count for the next cycle.
 	e.lastListCount = currentCount
-	e.ownGone = nil
+	e.ownGone = stillListed
 
 	// (2) Pruneable gate — TYPE level (§12.3, ADR-0005).
 	//

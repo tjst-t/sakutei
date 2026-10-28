@@ -58,7 +58,14 @@ scope・§24.2）。v1a の実装は簡略化のため provider 全体の List �
 `plan`・`reconcile`・常駐ループのすべてに効く）。`--claim` の外の scope（§17.1）と `mode: sync` の scope（§24.5）は、
 これとは別に集合差の前に落とす。
 
-**モード2 open-world（explicit absent）** — 網羅 List が非現実的な種別（パッケージ / ファイル / 個別設定エントリ）。個別宣言し、消すには明示 `state: absent` を要求する。この層は Ansible 方式が正しい。
+**モード2 open-world（explicit absent）** — 網羅 List が非現実的な種別（パッケージ / ファイル / 個別設定エントリ）。個別宣言し、消すには明示の absent（`ensure: absent`） を要求する。この層は Ansible 方式が正しい。
+
+**明示の absent（v3.32、Backlog #163）**：リソースに `ensure: absent` を書くと（既定は `present`）、在れば Delete、無ければ適合とする。
+provider に依らない汎用の口で、`pruneable`（§12.3）に関わらず効く——prune は「理想に無い」から推して消すので二段構えの opt-in を
+要るが、明示の absent は利用者が名指しで消すので要らない。宣言から外しただけでは（open-world なので）消えない。absent のリソースに
+中身（`fields`・`depends_on`・`update_policy`・`deletion_policy`）は書かせず、これに依るリソースがあればロードで断る。その Delete は
+破壊的で、planned_change（`kind: delete`）のレーンが開いているときだけ走り（承認、§13.3・§14.4）、通常の予算にも数える（§13.1・§13.2）。
+具体は §29.1「宣言で消す」。
 
 削除判定は共有リソースの種別で3種に分かれる。
 
@@ -197,6 +204,7 @@ planned_change:
 - **one-shot `reconcile`**：`--audit-log` を付けたときだけレーンを開く（S4 が実行をまたいで `max_count` と cooling-off の時計を持つ）。レーンの枠は発射前にまとめて取り、`executed` を S4 に書けてから発射する（書けなければ何も発射しない）。cooling-off は「**この回の reconcile の時点で N 経っていれば通す**」ゲートとして評価する（§23.7）。`--audit-log` が無ければ従来どおりレーンを開かず通常予算で評価する。
 - **レーンの計上**：レーンに入った op は通常の rate limit・累積時間窓予算の計算から外し、通常予算の halt でも止めない（capacity gate など予算以外のゲートは止める）。枠は op を provider へ発射する直前に消費する（halt や skip で発射しなかった op は枠を減らさない。発射して失敗した op の枠は戻さない＝保守側）。枠を超えた分は `PlannedChangeExhausted` を出して通常予算で評価する。窓を過ぎた宣言は `PlannedChangeExpired` を一度出して失効する。レーンで in-flight の Apply は通常予算の in-flight 計上に入れない。
 - **List 急減 halt との連動**：常駐ループがレーンで削除した ID は prune engine に記録し、次の List でそれが消えていれば、その件数を前周の基準件数から引いてから急減を測る。数えないのは**自分が宣言の下で消したもの**だけで、それ以外の減少は従来どおり halt する。
+- **明示の absent の削除（v3.32、Backlog #163）**：`ensure: absent`（§12.2）の Delete は、そのリソースを覆う `kind: delete` のレーンが開いているときだけ走る（レーンの門が承認ゲート）。ほかのレーンの op と違い、**通常予算からは外さない**（rate limit・累積時間窓予算・in-flight に数え、通常予算の halt で止まる）。レーンは消すことを承認するが、予算の除外はしない。レーンの外では消さずに `AbsentAwaitingApproval` を出し、通常予算にも数えない。
 - **経路**：レーンを開くのは常駐ループ（と同じ予算を共有する早期収束の scoped run）と、`--audit-log` を付けた one-shot の `sakutei reconcile` である。one-shot は呼び出しごとに予算エンジンを作り直すが、S4 が実行をまたいで `max_count` の消費と cooling-off の時計を持つ（下記「承認と運用プロファイル」、Backlog #44）。`--audit-log` を付けなければ、宣言があっても全変更を通常予算で評価する（その旨を表示する）。
 - **既知の限界**：レーンの使用量はメモリ（S3）に持つが、`--audit-log`（S4）を付けていれば、常駐の再起動や次の `reconcile` は `planned_change.executed` から使用量を引き継ぐ（下記「承認と運用プロファイル」、Backlog #44）。使用量が戻るのは S4 が無いとき（あるいは S4 から読めないとき）だけである。常駐は使用量を周の終わりに S4 へ書くので、周の途中で落ちるとその周の分は数えられない。通常予算の累積カウンタは S3 のままで、再起動で戻る（§13.2 の S2 永続化は未実装・§29.6）。
 

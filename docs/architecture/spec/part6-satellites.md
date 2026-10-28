@@ -452,6 +452,7 @@ JSON Schema の `additionalProperties: false` で閉じており、未知のキ�
 | `fields` | フィールド値。値に `{ from_pool: <プール> }` と書くと採番の要求 | §19.1 |
 | `depends_on` | Local ID の文字列、または `{ id, ready_condition }` の配列（循環はロード時に拒否） | §8.3・§11.2 |
 | `deletion_policy` | `ExplicitAbsentOnly` / `PruneWithinScope` | §12.2 |
+| `ensure` | `present`（既定）/ `absent`（宣言で消す。`absent` に書けるのは `provider`・`scope`・`id`・`observe_tier` だけ、v3.32） | §12.2・§29.1 |
 | `observe_tier` | 所属する Observe 頻度の tier（`tier:` ではない） | §16.5 |
 
 **YAML サブセット**：外部依存を持たないため、YAML は自前の最小サブセットだけを受け付ける。ブロックスタイルのマップ・

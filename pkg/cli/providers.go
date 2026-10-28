@@ -86,6 +86,14 @@ func resolveProviders(
 	// name) is rejected before the first Read, so it can neither be Created a
 	// second time nor turn the real resource into a prune orphan.
 	for _, r := range resources {
+		if r.Absent {
+			// §12.2 (#163): an explicit absent has no fields to validate;
+			// the provider must be able to Delete it.
+			if err := provider.ValidateAbsent(result[r.ID.Provider], r.ID.Local); err != nil {
+				return nil, fmt.Errorf("%s: resource %s: %w", commandName, r.ID, err)
+			}
+			continue
+		}
 		if err := provider.ValidateIntent(result[r.ID.Provider], r.ID.Local, r.Fields); err != nil {
 			return nil, fmt.Errorf("%s: resource %s: %w", commandName, r.ID, err)
 		}

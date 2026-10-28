@@ -361,6 +361,9 @@ func (v *viewBuilder) gates(observeOnly func(string) bool, alertScopes []core.Sc
 			o.Lane, o.PlannedChange = planreport.LanePlannedChange, declName[key]
 		}
 		switch {
+		case bd.Unapproved(op):
+			// §12.2 (#163): an explicit absent's Delete outside every lane.
+			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByApproval, planreport.AbsentApprovalReason
 		case bd.IsHalted(op):
 			o.Blocked, o.BlockedBy, o.BlockReason = true, planreport.BlockedByBudget, bd.Reason
 		case merged.IsHalted(op):

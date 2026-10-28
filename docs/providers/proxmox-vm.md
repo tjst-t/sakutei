@@ -4,7 +4,7 @@ Proxmox VE のクラスタの VM（qemu）を宣言で作り、CPU・メモリ�
 REST API（`/api2/json`）を Go の標準ライブラリの net/http で叩く。認証は API トークン（`Authorization: PVEAPIToken=<user>@<realm>!<tokenname>=<secret>`）。
 
 - 完全の階級：Read・Apply・List・BulkObserve（`/cluster/resources` を 1 回と VM ごとの設定）。
-- VM は破壊的な型なので **prune しない**（`Pruneable: false`、§12.3）。消すのは明示の削除だけで、Delete は破壊的として予算（§13）に数える。
+- VM は破壊的な型なので **prune しない**（`Pruneable: false`、§12.3）。宣言から外しても消えない。消すのは intent の **`ensure: absent`**（宣言で消す、§12.2、Backlog #163。下の「宣言で消す」）だけで、Delete は破壊的として予算（§13）に数え、planned_change（`kind: delete`）のレーンが開いているときだけ走る（承認）。
 - **触らない VM**（Sakutei 自身が動く VM など段0 のもの、§23）を設定に書け、それらは List に出さず、Read・Apply もしない。宣言すれば計画のエラー。
 - コンテナ（LXC）・ストレージ・ネットワーク（ブリッジ）・HA・バックアップの設定は扱わない。ゲスト OS の中は離れたホストの層（[docs/remote.md](../remote.md)）と [Ansible provider](ansible.md) で合わせる。
 
@@ -140,7 +140,33 @@ Proxmox が書き戻す表記と、宣言の書き方の違いは比べる前に
 ### 作る・消す
 
 - 作る：`template` があれば full clone（`/nodes/<テンプレートのノード>/qemu/<vmid>/clone`、`target` はこの VM のノード）、無ければ空から（`POST /nodes/<node>/qemu`。scsi のディスクがあれば `scsihw: virtio-scsi-single`）。終わったら同じ Apply で残りを合わせて、`power: running` なら起動する。
-- 消す（明示の削除、Delete は破壊的）：走っていれば止めて（stop）から、ディスクごと消す（`purge=1`・`destroy-unreferenced-disks=1`）。触らない VM・テンプレートは消さない。
+- 消す（`ensure: absent` の Delete、破壊的）：走っていれば止めて（stop）から、ディスクごと消す（`purge=1`・`destroy-unreferenced-disks=1`）。触らない VM・テンプレートは消さない。
+
+### 宣言で消す（`ensure: absent`、Backlog #163）
+
+VM を消すことも宣言に書く（§12.2 の明示の absent。provider に依らない汎用の口）。
+
+```yaml
+planned_change:                        # 消すことの承認（§13.3・§14.4）
+  scope: { site: lab }
+  kind: delete
+  max_count: 1
+  window: "2026-10-28 00:00 .. 2026-10-29 00:00"
+  approval: { pr: 163, approvers: [alice] }
+resources:
+  - provider: proxmox-vm
+    scope: { site: lab }
+    id: lab/old-app
+    ensure: absent                      # 既定は present
+```
+
+- 在れば Delete、無ければ適合（何もしない）。`Pruneable` に関わらず効く（利用者が名指しで消すので）。
+- `ensure: absent` のリソースに書けるのは `provider`・`scope`・`id`・`observe_tier` だけ。`fields`（`power_off` も）・`depends_on`・`update_policy`・`deletion_policy` は読み込みで断る。これに `depends_on` で依るリソースがあっても断る。
+- **承認**：Delete はそのリソースを覆う planned_change（`kind: delete`）のレーンが開いているとき（窓の中・承認・cooling-off が揃った、§13.3・§14.5）だけ走り、レーンの `max_count` を 1 使う。レーンが無い・閉じている間は消さずに `AbsentAwaitingApproval`（level の Event）を出し、`plan` は `blocked: approval` を出す。一回性の `reconcile` がレーンを開くのは `--audit-log` を付けたときだけ。
+- **予算**：レーンは承認であって除外ではない。Delete は通常の予算（rate limit・累積時間窓予算、§13.1・§13.2）にも数え、超えれば止まる。
+- **電源**：走っている VM は stop（強制の停止）で止めてから消す。ディスクごと消すので正常停止は待たない（`power_off` の決まりはここには効かない）。中のサービスを正常に止めてから消したいときは、先に `power: stopped`（要れば `power_off`）を宣言して止め、そのあとで `ensure: absent` にする。
+- 触らない VM（`protected_names`）を `ensure: absent` にすると読み込みで断る。`protected_vmids` の VM は名前では分からないので、Read・Apply が触らないことで守る（Unknown のまま消さない）。
+- 採番（`vmid: { from_pool: … }`）の owner だった VM を消しても、値は自動では返さない。返すのは今の決まりどおり `sakutei allocator release`（cooldown のあと再び配る、§19.5）。
 
 ### 一度きりの操作（Workflow の action）
 
@@ -179,7 +205,25 @@ $ make integration-proxmox
 | 触らない VM に触れない | 名前でも vmid でも、宣言すれば `plan`・`reconcile` が protected と言って断り、VM 100 の設定の digest は変わらず、走ったまま |
 | 届かないと unknown | qemu を SIGSTOP で止めると `status --json` が unobservable=1・drifted=0。SIGCONT で戻せば適合に戻る |
 | 宣言の外の VM は unmanaged | 宣言を 0 件にすると `status --json` は it-vm1 だけを unmanaged に出し（total 1）、文の出力も `unmanaged=1`。触らない VM（100）とテンプレート（9000）は出ない。`reconcile` しても VM は消えず走ったまま。宣言に戻すと unmanaged は 0（#164） |
-| 消す | Delete で止めて消える。ほかの VM（100・9000）は残る |
+| absent で消す | 宣言から外しただけでは消えない（走ったまま）。`ensure: absent` にすると `plan` が DELETE を `blocked: approval` で出し、レーンが無い `reconcile` は消さない（`AbsentAwaitingApproval`）。承認のある planned_change（`kind: delete`）を足した `reconcile --audit-log` で走っている VM が止まって消え、次の `reconcile` は `Converged (no changes)`。ほかの VM（100・9000）は残る。触らない VM を `ensure: absent` にすると protected と言って断る |
+
+### 結果（2026-10-28、Backlog #163 の「absent で消す」）
+
+同じ開発機・同じキャッシュ（Proxmox VE 9.2-1、Debian 13 のクラウドイメージ 20261021-2638）で、`make integration-proxmox` が PASS（直接の Delete の段を「absent で消す」に置き換えた）:
+
+```
+=== RUN   TestProxmoxVM/absent_で消す
+    proxmox_integration_test.go:795: reconcile 0 with the approved lane: exit 0
+        sakutei reconcile: PlannedChangeOpened: planned_change(scope=site=it kind=delete ...): lane opened (profile team; approval 1 of 1 approver(s) [alice] required by the team profile)
+        - DELETE proxmox-vm/site=it/it/it-vm1 [DESTRUCTIVE]
+          reason: resource proxmox-vm/site=it/it/it-vm1 is declared ensure: absent but exists in reality; will delete
+          cause:  A
+        Reconcile: 1 change(s) applied
+    --- PASS: TestProxmoxVM/absent_で消す (5.27s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/proxmox	157.051s
+```
+
+走っている VM は 1 回の `reconcile` で止まって消え（stop と destroy が `task_wait` のうちに終わった）、次の `reconcile` は `Converged (no changes)`。この回のあとで、レーンの知らせ（`PlannedChange: … admitted`）の文言だけを直した（absent の削除は通常の予算にも数えると書く）。動きは変えていない。
 
 ### 結果（2026-10-27）
 
@@ -209,7 +253,7 @@ KVM の使える開発機（入れ子の KVM が有効、QEMU 8.2.2、docker 29.
     --- PASS: TestProxmoxVM/a_change_needing_a_restart_waits_as_pending,_and_apply_pending_reboots (82.60s)
     --- PASS: TestProxmoxVM/the_protected_VM_is_never_touched (0.03s)
     --- PASS: TestProxmoxVM/unreachable_is_unknown (5.08s)
-    --- PASS: TestProxmoxVM/delete (5.14s)
+    --- PASS: TestProxmoxVM/delete (5.14s)   ← 2026-10-28（#163）に「absent で消す」へ置き換えた
 ok  	github.com/tjst-t/sakutei/tests/integration/proxmox	156.570s
 ```
 

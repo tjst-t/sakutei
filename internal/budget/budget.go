@@ -182,6 +182,15 @@ type CycleDecision struct {
 	// as capacity) do.
 	lane                             map[string]laneSlot
 	laneHaltAll, laneHaltDestructive bool
+	// unapproved holds the ops that require approval and are outside every
+	// lane (Unapproved); they are halted whatever the limits say.
+	unapproved map[string]bool
+}
+
+// Holds reports whether the decision holds back any op: a halt, or an op that
+// requires approval and is outside every lane (Unapproved).
+func (d CycleDecision) Holds() bool {
+	return d.HaltAll || d.HaltDestructive || len(d.unapproved) > 0
 }
 
 // CheckCycle evaluates whether the planned ops in this cycle breach any budget
@@ -213,6 +222,7 @@ func (e *Engine) CheckCycle(ops []core.Op, inFlight InFlight, totalDesired int) 
 	adm := e.admitLanes(ops)
 	d := e.checkNormal(adm.normal, inFlight, totalDesired)
 	d.lane = adm.lane
+	d.unapproved = adm.unapproved
 	d.Events = adm.events
 	return d
 }
@@ -401,8 +411,17 @@ func countOps(ops []core.Op) (destructive, additive int) {
 // A planned_change lane op is blocked only by the gates merged in from outside
 // the change budget (capacity), never by the normal budget's halt.
 func (d CycleDecision) IsHalted(op core.Op) bool {
+	if d.Unapproved(op) {
+		return true
+	}
 	if d.InLane(op) {
-		return d.laneHaltAll || (d.laneHaltDestructive && op.Destructive)
+		if d.laneHaltAll || (d.laneHaltDestructive && op.Destructive) {
+			return true
+		}
+		if !op.RequiresApproval {
+			return false
+		}
+		// The lane was its approval; the normal budget still applies.
 	}
 	if d.HaltAll {
 		return true
@@ -448,6 +467,12 @@ func Merge(a, b CycleDecision) CycleDecision {
 				out.lane = map[string]laneSlot{}
 			}
 			out.lane[k] = s
+		}
+		for k := range d.unapproved {
+			if out.unapproved == nil {
+				out.unapproved = map[string]bool{}
+			}
+			out.unapproved[k] = true
 		}
 	}
 	switch {

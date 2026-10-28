@@ -207,6 +207,10 @@ func ComposeInventory(ctx context.Context, g *InventoryGuard, intent []diff.Desi
 		}
 	}
 	merged = append(append([]diff.DesiredResource(nil), intent...), res.Resources...)
+	// §12.2 (#163): an inventory resource may not depend on an absent one either.
+	if err := diff.ValidateAbsent(merged); err != nil {
+		return nil, res, fmt.Errorf("render phase 1 (inventory): %w", err)
+	}
 	return merged, res, nil
 }
 

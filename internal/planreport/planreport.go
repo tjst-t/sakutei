@@ -60,7 +60,13 @@ const (
 	// BlockedByObserveOnly は観測だけの provider（Capabilities.ObserveOnly、
 	// §23.4。netconf など）の操作。どの mode でも Apply しない（知らせるだけ）。
 	BlockedByObserveOnly = "observe_only"
+	// BlockedByApproval は ensure: absent の削除（§12.2）で、planned_change
+	// （kind: delete）のレーンが開いていないもの（承認待ち、§13.3・§14.4、#163）。
+	BlockedByApproval = "approval"
 )
+
+// AbsentApprovalReason は承認待ちで止めた ensure: absent の削除の理由（#163）。
+const AbsentApprovalReason = "ensure: absent — the Delete runs only in an open planned_change lane of kind delete covering the resource (approval, window, cooling-off: §13.3, §14.4, §14.5)"
 
 // ObserveOnlyReason は観測だけの provider（§23.4）で止めた操作の理由。
 const ObserveOnlyReason = "the provider observes only (Capabilities.ObserveOnly, §23.4) — reported as drift, never applied"
@@ -150,12 +156,15 @@ func NewTarget(id core.ID) Target {
 // Operation は計画の操作 1 つ。
 type Operation struct {
 	Target
-	Kind        string  `json:"kind"`
-	Destructive bool    `json:"destructive"`
-	Prune       bool    `json:"prune"` // 宣言外の削除（集合差 prune、§12）
-	Cause       string  `json:"cause,omitempty"`
-	Diagnostic  string  `json:"diagnostic,omitempty"`
-	Fields      []Field `json:"fields,omitempty"`
+	Kind        string `json:"kind"`
+	Destructive bool   `json:"destructive"`
+	Prune       bool   `json:"prune"` // 宣言外の削除（集合差 prune、§12）
+	// Absent は ensure: absent の削除（明示の absent、§12.2、#163）。planned_change
+	// のレーンが開いているときだけ走る（外なら blocked_by: approval）。
+	Absent     bool    `json:"absent,omitempty"`
+	Cause      string  `json:"cause,omitempty"`
+	Diagnostic string  `json:"diagnostic,omitempty"`
+	Fields     []Field `json:"fields,omitempty"`
 
 	Lane          string `json:"lane"`
 	PlannedChange string `json:"planned_change,omitempty"`
@@ -188,6 +197,7 @@ func NewOperation(op core.Op, prune bool) Operation {
 		Kind:        KindName(op.Kind),
 		Destructive: op.Destructive,
 		Prune:       prune,
+		Absent:      op.RequiresApproval,
 		Cause:       string(op.Cause),
 		Diagnostic:  op.Diagnostic,
 		Lane:        LaneNormal,

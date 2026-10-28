@@ -53,6 +53,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/tjst-t/sakutei/v2/internal/budget"
@@ -95,6 +96,11 @@ func treeToIntentFile(tree map[string]any) (intentFile, error) {
 		r.DeletionPolicy, _ = m["deletion_policy"].(string)
 		r.ObserveTier, _ = m["observe_tier"].(string)
 		r.Scope = stringifyStringMap(m["scope"])
+		absent, err := parseEnsure(m)
+		if err != nil {
+			return intentFile{}, fmt.Errorf("resource[%d] (%v): %w", i, m["id"], err)
+		}
+		r.Absent = absent
 		if up, ok := m["update_policy"].(map[string]any); ok {
 			pol, err := parseUpdatePolicy(up)
 			if err != nil {
@@ -304,6 +310,40 @@ type intentResource struct {
 	// UpdatePolicy is the update_policy (§6.2): strategy / window /
 	// rollback_on_fail.
 	UpdatePolicy core.UpdatePolicy `json:"-"`
+
+	// Absent is `ensure: absent` (§12.2, Backlog #163).
+	Absent bool `json:"-"`
+}
+
+// absentKeys are the only keys a resource declared `ensure: absent` may carry:
+// its identity, and how often it is observed.
+var absentKeys = map[string]bool{"provider": true, "scope": true, "id": true, "ensure": true, "observe_tier": true}
+
+// parseEnsure reads `ensure:` (§12.2, Backlog #163): present (the default) or
+// absent.  An absent resource declares nothing else but its identity and
+// observe_tier: fields, depends_on, update_policy and deletion_policy are
+// refused rather than ignored (a field would read as a state the resource is
+// kept in; a deletion_policy as a scope it closes).
+func parseEnsure(m map[string]any) (bool, error) {
+	e, _ := m["ensure"].(string)
+	switch strings.TrimSpace(e) {
+	case "", "present":
+		return false, nil
+	case "absent":
+	default:
+		return false, fmt.Errorf("ensure %q: want present or absent", e)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !absentKeys[k] {
+			return false, fmt.Errorf("ensure: absent cannot be declared with %s (an absent resource declares only provider, scope, id and observe_tier)", k)
+		}
+	}
+	return true, nil
 }
 
 // parseUpdatePolicy reads update_policy (§6.2).  window and rollback_on_fail
@@ -451,6 +491,11 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 
 	// S94f1f9-2: reject cyclic depends_on graphs at load time.
 	if err := detectCycles(resources); err != nil {
+		return Intent{}, fmt.Errorf("loader: %w", err)
+	}
+
+	// §12.2 (#163): nothing depends on an explicit absent.
+	if err := diff.ValidateAbsent(resources); err != nil {
 		return Intent{}, fmt.Errorf("loader: %w", err)
 	}
 
@@ -664,6 +709,7 @@ func loadFile(path string) ([]diff.DesiredResource, intentFile, error) {
 			AllocationTemplates: r.AllocationTemplates,
 			ObserveTier:         strings.TrimSpace(r.ObserveTier),
 			UpdatePolicy:        r.UpdatePolicy,
+			Absent:              r.Absent,
 		})
 	}
 	return resources, intent, nil

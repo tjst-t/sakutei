@@ -36,8 +36,9 @@
 //
 //  2. 集合差 prune 禁止 — scoped 経路は full-scope List をしないので orphan を検出
 //     できず、してはならない。集合差 prune（PruneWithinScope）は経路上で決して呼ば
-//     れない（prune.Engine を import すらしない）。desired から明示的に absent へ
-//     移った個別リソース（ExplicitAbsentOnly の tombstone 個別削除）だけを許容する。
+//     れない（prune.Engine を import すらしない）。desired で明示的に absent へ
+//     移った個別リソース（`ensure: absent` の tombstone 個別削除、§12.2・#163）だけを
+//     許容する。desired から消えただけのリソースは消さない（open-world）。
 //
 //  3. 予算共有（バイパスではない）— scoped run は定期経路と同一の budget.Engine を
 //     消費する。独立カウンタは作らない。予算超過時は halt して当該作業を次の定期
@@ -93,12 +94,13 @@ import (
 //
 // # 個別削除（tombstone）の扱い（安全柵 2）
 //
-// oldDesired にあり newDesired から消えたリソースのうち、DeletionPolicy が
-// ExplicitAbsentOnly かつ新 desired で明示 absent 宣言（本 v1a では「desired から
-// 消えた＝個別削除意図」を tombstone とみなす）のものだけを RemovedTombstones として
-// 返す。集合差 prune（PruneWithinScope の List 由来 orphan）は scoped 経路では
-// 一切扱わない。PruneWithinScope 宣言のリソースが消えた場合は、それは full-List
-// でしか安全に検出できない orphan なので scoped 経路では無視し、定期周期へ委ねる。
+// 新 desired で `ensure: absent`（明示の absent、§12.2・#163）になった影響集合の
+// リソースだけを RemovedTombstones として返す（その Delete は Diff が計画し、
+// planned_change のレーンが開いているときだけ走る）。v1a は「desired から消えた＝
+// 個別削除意図」を tombstone とみなしていたが、それでは prune しない型
+// （Pruneable:false の VM など）も宣言から外しただけで消えてしまうので、#163 で
+// 明示の absent だけに改めた。desired から消えただけのリソースは scoped 経路でも
+// 定期周期でも消さない（PruneWithinScope の orphan は full-List の定期周期だけが扱う）。
 //
 // 返り値の Impacted は newDesired の出現順を保った決定的なスライスである。
 func ScopedPlan(hint core.ChangeHint, oldDesired, newDesired []diff.DesiredResource) ScopedPlanResult {
@@ -164,23 +166,13 @@ func ScopedPlan(hint core.ChangeHint, oldDesired, newDesired []diff.DesiredResou
 		}
 	}
 
-	// 個別削除 tombstone: old にあり new から消えたリソースのうち、
-	// ExplicitAbsentOnly のものだけ（集合差 prune 対象＝PruneWithinScope は除外）。
+	// 個別削除 tombstone: 影響集合のうち、新 desired で ensure: absent のもの（#163）。
+	// desired から消えただけのものは含めない（安全柵 2・open-world）。
 	var tombstones []core.ID
-	for _, r := range oldDesired {
-		local := r.ID.Local
-		if _, stillPresent := newByLocal[local]; stillPresent {
-			continue
+	for _, r := range impacted {
+		if r.Absent {
+			tombstones = append(tombstones, r.ID)
 		}
-		// scope 外の消失は scoped 経路の関心外。
-		if !scopeTouched(r.ID.Scope, hint.TouchedScopes) {
-			continue
-		}
-		// 安全柵 2: 集合差 prune 対象は scoped 経路で扱わない。
-		if r.DeletionPolicy == core.PruneWithinScope {
-			continue
-		}
-		tombstones = append(tombstones, r.ID)
 	}
 	// 決定的順序。
 	sort.Slice(tombstones, func(i, j int) bool {
@@ -201,8 +193,9 @@ type ScopedPlanResult struct {
 	// Impacted は影響を受けたリソース（seed + 下流閉包）を newDesired 出現順で
 	// 並べたスライス。これが scoped Observe→Diff→Apply の対象。
 	Impacted []diff.DesiredResource
-	// RemovedTombstones は新 desired から消えた ExplicitAbsentOnly リソースの ID。
-	// scoped 経路で許容される唯一の削除（個別・明示 absent）。集合差 prune ではない。
+	// RemovedTombstones は影響集合のうち新 desired で ensure: absent のリソースの ID
+	// （§12.2・#163）。scoped 経路で許容される唯一の削除（個別・明示 absent）で、
+	// 集合差 prune ではない。Delete は Impacted の Diff が計画する。
 	RemovedTombstones []core.ID
 }
 
@@ -219,8 +212,11 @@ type ScopedReconcileResult struct {
 	// DeferredCauseB は「scoped 経路で見つかったが cause B と分類され、修復せず
 	// 定期周期へ委ねた」リソースの Local ID 群（安全柵 1）。
 	DeferredCauseB []string
-	// Tombstoned は個別削除（ExplicitAbsentOnly）した ID 群。
+	// Tombstoned は個別削除（ensure: absent）した ID 群。
 	Tombstoned []core.ID
+	// AwaitingApproval は ensure: absent で現実に在るのに、planned_change のレーンが
+	// 開いていないので消さなかった ID 群（§13.3・§14.4、#163）。
+	AwaitingApproval []core.ID
 	// BudgetHalted は予算超過で halt し、当該作業を次の定期周期へ縮退させたとき true。
 	BudgetHalted bool
 	// BudgetReason は halt 理由（BudgetHalted のとき非空）。
@@ -393,31 +389,17 @@ func ScopedReconcile(
 	// import すらしていない（このファイルの import 群を参照）ことが最終的な保証。
 	assertNoSetDifferencePrune(spr)
 
-	// 個別削除（tombstone）op を組み立てる。ExplicitAbsentOnly の明示 absent のみ。
-	// これらは destructive なので予算対象。
-	var tombstoneOps []core.Op
-	for _, id := range spr.RemovedTombstones {
-		tombstoneOps = append(tombstoneOps, core.Op{
-			Kind:        core.OpKindDelete,
-			Target:      id,
-			Destructive: true,
-			Cause:       core.CauseTagA, // 個別削除は意図的（desired から明示 absent）。
-			Diagnostic:  "scoped: explicit absent (ExplicitAbsentOnly) 個別削除",
-		})
-	}
-
 	// ---- 安全柵 3: 予算共有（バイパスではない） ----------------------------
 	//
 	// 定期経路と同一の budget.Engine を消費する。独立カウンタは作らない。scoped run の
-	// 全 op（Apply plans + tombstone delete）を CheckCycle に通し、halt したら適用せず
-	// 次の定期周期へ縮退する（バイパスしない）。
+	// 全 op（Apply plans。ensure: absent の tombstone delete を含む）を CheckCycle に
+	// 通し、halt したら適用せず次の定期周期へ縮退する（バイパスしない）。
 	var allPlannedOps []core.Op
 	for _, r := range desired {
 		if p, ok := plans[r.ID.Local]; ok {
 			allPlannedOps = append(allPlannedOps, p.Ops...)
 		}
 	}
-	allPlannedOps = append(allPlannedOps, tombstoneOps...)
 
 	// in-flight（定期経路 or 先の scoped run 由来）も cycle 予算に数える（loop.go と同じ
 	// 数え方）。ここでは影響サブ DAG 内の in-flight を数える。破壊的上限には破壊的な
@@ -456,6 +438,20 @@ func ScopedReconcile(
 		})
 	}
 
+	// ensure: absent の Delete（§12.2・#163）は planned_change のレーンに入ったときだけ
+	// 走る。レーンの外のものは消さずに知らせ、この run の plans から落とす。
+	for _, op := range UnapprovedOps(plans, decision) {
+		res.AwaitingApproval = append(res.AwaitingApproval, op.Target)
+		EmitAbsentAwaitingApproval(errOut, "sakutei: scoped: ", op.Target)
+		delete(plans, op.Target.Local)
+	}
+	allPlannedOps = allPlannedOps[:0]
+	for _, r := range desired {
+		if p, ok := plans[r.ID.Local]; ok {
+			allPlannedOps = append(allPlannedOps, p.Ops...)
+		}
+	}
+
 	// planned_change のレーン（§13.3）に入った op は、発射前にレーンの枠を消費する
 	// （同期 wave なので、ここで全 op 分を先に取る。skip された op の枠は戻さない＝保守側）。
 	budgetEngine.ReserveLanes(decision, allPlannedOps)
@@ -483,20 +479,12 @@ func ScopedReconcile(
 		}
 		if p, ok := plans[r.ID.Local]; ok {
 			committed = append(committed, p.Ops...)
+			if r.Absent {
+				// 個別削除 tombstone（ensure: absent）を適用した。
+				fmt.Fprintf(errOut, "sakutei: scoped: deleted %s (ensure: absent; 個別削除)\n", r.ID)
+				res.Tombstoned = append(res.Tombstoned, r.ID)
+			}
 		}
-	}
-
-	// 個別削除 tombstone を適用（予算 halt していないのでここまで来る）。
-	for _, op := range tombstoneOps {
-		plan := core.Plan{Ops: []core.Op{op}}
-		if err := exec.Execute(ctx, fp, plan); err != nil {
-			EmitApplyFailed(errOut, "sakutei: scoped: ", "tombstone delete", op.Target, err)
-			continue
-		}
-		fmt.Fprintf(errOut, "sakutei: scoped: deleted %s (explicit absent; 個別削除)\n", op.Target)
-		res.Tombstoned = append(res.Tombstoned, op.Target)
-		committed = append(committed, op)
-		res.Applied += len(plan.Ops)
 	}
 
 	// レーンの op は通常予算の window に記録しない（§13.3: 別枠）。
@@ -573,15 +561,15 @@ drain:
 
 // assertNoSetDifferencePrune は安全柵 2 の防御的アサーションである。
 //
-// scoped 経路で許容される削除は ExplicitAbsentOnly の個別 tombstone のみ。ここに
-// 到達する RemovedTombstones は ScopedPlan が PruneWithinScope を除外済みのはずだが、
+// scoped 経路で許容される削除は ensure: absent の個別 tombstone のみ。ここに
+// 到達する RemovedTombstones は ScopedPlan が明示の absent だけから作っているが、
 // 将来の改変で集合差 prune が紛れ込む回帰を型/実行時で塞ぐため二重に保証する。
 //
 // このパッケージは internal/prune を import しない（scoped.go の import 群を参照）。
 // つまり集合差 prune エンジンは scoped 経路から到達不能である。
 func assertNoSetDifferencePrune(spr ScopedPlanResult) {
-	// RemovedTombstones は ID のみ（DeletionPolicy を運ばない）。ScopedPlan で
-	// PruneWithinScope を除外しているので、ここでは経路上に List 由来 orphan が
+	// RemovedTombstones は ID のみ。ScopedPlan は ensure: absent の影響集合だけから
+	// 作るので、ここでは経路上に List 由来 orphan が
 	// 一切入り込まないことを設計不変条件として明示するだけでよい。ノーオペ。
 	_ = spr
 }
@@ -604,7 +592,7 @@ func desiredEqual(a, b diff.DesiredResource) bool {
 	if !a.ID.Equal(b.ID) {
 		return false
 	}
-	if a.DeletionPolicy != b.DeletionPolicy {
+	if a.DeletionPolicy != b.DeletionPolicy || a.Absent != b.Absent {
 		return false
 	}
 	if len(a.Fields) != len(b.Fields) {
