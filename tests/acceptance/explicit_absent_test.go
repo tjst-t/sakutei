@@ -248,14 +248,16 @@ func TestExplicitAbsent_Daemon(t *testing.T) {
 	if r.oldExists() {
 		t.Fatalf("[AC-163-4] the approved lane did not delete the absent resource; log:\n%s", readFileString(r.logPath))
 	}
-	waitForMoreCycles(t, r.logPath, 3)
+	// The delete is an async Apply: wait for a later cycle that observes it
+	// gone and says so (a cycle prints several "cycle N:" lines, so counting
+	// lines is not counting cycles).
+	converged := waitForLogFileCount(r.logPath, "converged (no changes)", 1, 10*time.Second)
 	stop()
 	if !stateHasResource(t, r.statePath, "keep") {
 		t.Error("[AC-163-4] the kept resource was deleted")
 	}
-	log := readFileString(r.logPath)
-	if !strings.Contains(log, "converged (no changes)") {
-		t.Errorf("[AC-163-4] want the daemon converged after the delete; log:\n%s", log)
+	if !converged {
+		t.Errorf("[AC-163-4] want the daemon converged after the delete; log:\n%s", readFileString(r.logPath))
 	}
 }
 
