@@ -4087,7 +4087,8 @@
       "parent": "m6-netconf-apply-base-chain-2-apply",
       "dependsOn": [
         "nftables-base-chain-policy",
-        "nftables-nft"
+        "nftables-nft",
+        "nftables-base-chain"
       ],
       "milestone": null,
       "priority": "normal",
@@ -4098,7 +4099,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:49:00.946Z",
-      "updatedAt": "2026-10-28T09:54:19.130Z",
+      "updatedAt": "2026-10-28T10:42:01.436Z",
       "closedAt": null,
       "extra": {}
     },
