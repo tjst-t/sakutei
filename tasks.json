@@ -4268,7 +4268,7 @@
       "number": 183,
       "kind": "task",
       "title": "C：長く効く起動の引数を intent の runtime: に書けるようにする",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "m7",
       "dependsOn": [],
       "milestone": null,
@@ -4280,7 +4280,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T13:09:01.399Z",
+      "updatedAt": "2026-10-28T14:08:48.040Z",
       "closedAt": null,
       "extra": {}
     },
