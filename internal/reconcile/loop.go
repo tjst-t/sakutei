@@ -135,6 +135,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/revision"
 	"github.com/tjst-t/sakutei/v2/internal/statusreport"
 	"github.com/tjst-t/sakutei/v2/internal/task"
+	"github.com/tjst-t/sakutei/v2/internal/tracing"
 	"github.com/tjst-t/sakutei/v2/internal/workflow"
 	"github.com/tjst-t/sakutei/v2/pkg/allocation"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -690,8 +691,12 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 
 		cycleStart := time.Now()
-		res, cycleErr := d.RunCycle(ctx)
+		// #189 (§26.8): each cycle is the root of one trace (sakutei.cycle);
+		// its phases, Reads, Applies and Workflow steps are under it.
+		cycleCtx, cycleSpan := tracing.Start(ctx, tracing.SpanCycle, tracing.Int(tracing.AttrCycle, cycleBase+d.cycle+1))
+		res, cycleErr := d.RunCycle(cycleCtx)
 		cycleDuration := time.Since(cycleStart)
+		endCycleSpan(cycleSpan, res, cycleErr)
 		// The cycle's reports go through the daemon's writers, so the level
 		// Events among them are reported as firing / resolved (§22.3).
 		out, errOut := d.cfg.Out, d.cfg.ErrOut
@@ -959,6 +964,29 @@ func Run(ctx context.Context, cfg Config) error {
 			return nil
 		}
 	}
+}
+
+// endCycleSpan closes the cycle's span with what the cycle did (#189): the
+// counts and the halts, never a field value.
+func endCycleSpan(span *tracing.Span, res CycleResult, cycleErr error) {
+	if span == nil {
+		return
+	}
+	span.SetAttributes(
+		tracing.Int("sakutei.observed", res.Observed),
+		tracing.Int("sakutei.drifted", res.Observe.Drifted),
+		tracing.Int("sakutei.unknown", res.Observe.Unknown),
+		tracing.Int("sakutei.applied", res.Applied),
+		tracing.Int("sakutei.pruned", res.Pruned),
+		tracing.Int("sakutei.held", res.Held),
+		tracing.Bool("sakutei.budget_halted", res.BudgetHalted),
+		tracing.Bool("sakutei.prune_halted", res.PruneHalted),
+		tracing.Bool("sakutei.alert_only", res.AlertOnly),
+		tracing.Bool("sakutei.skipped_unreachable", res.SkippedDueToUnreachable),
+		tracing.Bool("sakutei.inventory_halted", res.InventoryHalted),
+	)
+	span.Fail(cycleErr)
+	span.End()
 }
 
 // shortRev abbreviates a source revision (git commit) for log lines.
@@ -2250,6 +2278,10 @@ func runCycleAsync(
 	// check of the combinations met while updating one at a time.
 	compatObserved := map[string]map[string]string{}
 	observeStart := time.Now()
+	// #189 (§26.8): the Observe phase is a sakutei.observe span; each Read
+	// under it is a sakutei.read span (sdk.CycleObserver).
+	obsCtx, obsSpan := tracing.Start(ctx, tracing.SpanObserve, tracing.Int(tracing.AttrResources, len(desired)))
+	defer obsSpan.End()
 	for _, res := range desired {
 		local := res.ID.Local
 
@@ -2323,7 +2355,7 @@ func runCycleAsync(
 
 		// ADR-0002: fresh observation per resource per cycle (from this
 		// cycle's bulk call when the provider declares BulkObserve).
-		obs, readErr := co.ObserveDesired(ctx, res.ID, res.Fields)
+		obs, readErr := co.ObserveDesired(obsCtx, res.ID, res.Fields)
 		if readErr != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
 			unobservable[local] = true
@@ -2539,6 +2571,13 @@ func runCycleAsync(
 		}
 	}
 	obsStats.Duration = time.Since(observeStart)
+	obsSpan.SetAttributes(tracing.Int("sakutei.observed", observed), tracing.Int("sakutei.drifted", obsStats.Drifted),
+		tracing.Int("sakutei.unknown", obsStats.Unknown), tracing.Int("sakutei.converging", obsStats.Converging))
+	obsSpan.End()
+	// #189: Diff, prune's List, the gates and the budget are the sakutei.plan
+	// span; it ends where the Applies are dispatched.
+	planCtx, planSpan := tracing.Start(ctx, tracing.SpanPlan)
+	defer planSpan.End()
 
 	// §29.1 (#151): a compatibility group whose update order passes through a
 	// combination its table does not allow — or that cannot be verified this
@@ -2629,7 +2668,7 @@ func runCycleAsync(
 	//
 	// #67: each Lister provider prunes its own reality against its own
 	// resources, with its own count baseline.
-	pruneResult, pruneHalts := computeDaemonPruneAll(ctx, providers, cycleProviders, pruneExcluded, in.ExternalOwners, cfg.Claim, desired, unobservable, cfg.ErrOut)
+	pruneResult, pruneHalts := computeDaemonPruneAll(planCtx, providers, cycleProviders, pruneExcluded, in.ExternalOwners, cfg.Claim, desired, unobservable, cfg.ErrOut)
 	cov.pruneRan, cov.pruneHalted = true, pruneResult.Halted
 	cov.orphans = make(map[string]bool, len(pruneResult.DeleteOps)+len(pruneResult.Deferred))
 	for _, op := range pruneResult.DeleteOps {
@@ -3016,6 +3055,15 @@ func runCycleAsync(
 	applyCtx := executor.WithApproval(ctx, func(op core.Op) (string, string) {
 		return budgetEngine.ApprovalOf(laneDecision, op)
 	})
+	planOps := 0
+	for _, p := range filteredPlans {
+		planOps += len(p.Ops)
+	}
+	planSpan.SetAttributes(tracing.Int("sakutei.plans", len(filteredPlans)), tracing.Int(tracing.AttrOps, planOps),
+		tracing.Int("sakutei.prune_ops", len(allowedPruneOps)), tracing.Int("sakutei.held", held),
+		tracing.Bool("sakutei.budget_halted", budgetHalted), tracing.Bool("sakutei.capacity_halted", capacityHalted),
+		tracing.String("sakutei.mode", decision.Mode.String()))
+	planSpan.End()
 	appliedCount, launched, backedOffList, skipped, waveErr := applyWavesAsync(
 		applyCtx, providers.router(), exec, ifl, desired, filteredPlans, unobservable, quietHeld, waitingHeld, ready, cfg.ErrOut,
 		dispatch, commit, launchTask, verify, rolledBack)

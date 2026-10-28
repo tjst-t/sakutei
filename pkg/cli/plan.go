@@ -37,6 +37,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/internal/revision"
 	"github.com/tjst-t/sakutei/v2/internal/task"
+	"github.com/tjst-t/sakutei/v2/internal/tracing"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
@@ -142,12 +143,15 @@ func runPlan(args []string) {
 		"print the plan as one JSON object on stdout (schema_version 1, see docs/plan-json.md); exit codes are unchanged")
 
 	logFormat := addLogFormatFlag(fs)
+	traceFl := addTraceFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
 		// flag package already printed the error.
 		os.Exit(1)
 	}
 	setLogFormat("sakutei plan", *logFormat)
+	// #189: with --otlp-endpoint the plan is one trace (sakutei.plan).
+	traceCtx := traceFl.start("sakutei plan", "plan", tracing.SpanPlan)
 
 	// #135: the text and the JSON are made from one report.  With --json the
 	// text lines of stdout are dropped and the report is printed instead; the
@@ -166,7 +170,7 @@ func runPlan(args []string) {
 			report.Summarize()
 			writePlanJSON(report)
 		}
-		os.Exit(1)
+		exitAfterEvents(1)
 	}
 	claimSelector, claimErr := parseClaimSelector(*claim)
 	if claimErr != nil {
@@ -467,7 +471,7 @@ func runPlan(args []string) {
 		// UpstreamChanged is set per-resource below.
 	}
 
-	ctx := context.Background()
+	ctx := traceCtx
 	var allOps []core.Op
 
 	// Track unobservable resources for the prune phase (unknown ≠ absent).
@@ -516,7 +520,9 @@ func runPlan(args []string) {
 
 		// ADR-0002: Observe independently for each resource.  Each call to
 		// Read is fresh; no observation is carried across resources or cycles.
-		obs, err := provider.ReadFor(ctx, fp, res.ID.Local, res.Fields)
+		obs, err := tracedRead(ctx, res.ID, func(ctx context.Context) (core.Observation, error) {
+			return provider.ReadFor(ctx, fp, res.ID.Local, res.Fields)
+		})
 		if err != nil {
 			fail("sakutei plan: observe %s: %v", res.ID, err)
 		}
@@ -729,7 +735,7 @@ func finishPlan(report *planreport.Report, jsonOut bool) {
 	if jsonOut {
 		writePlanJSON(report)
 	}
-	os.Exit(0)
+	exitAfterEvents(0)
 }
 
 // writePlanJSON prints the report as one JSON object on stdout (#135).

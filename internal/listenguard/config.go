@@ -183,7 +183,7 @@ func parseListener(p string, m map[string]any, dir string) (Listener, error) {
 			if !ok {
 				return Listener{}, fmt.Errorf("%s.tls.%s: required", p, k.key)
 			}
-			ref, err := parseSecretRef(x)
+			ref, err := ParseSecretRef(x)
 			if err != nil {
 				return Listener{}, fmt.Errorf("%s.tls.%s: %w", p, k.key, err)
 			}
@@ -203,7 +203,7 @@ func parseListener(p string, m map[string]any, dir string) (Listener, error) {
 		l.TLS = t
 	}
 	if x, ok := m["bearer_token"]; ok {
-		ref, err := parseSecretRef(x)
+		ref, err := ParseSecretRef(x)
 		if err != nil {
 			return Listener{}, fmt.Errorf("%s.bearer_token: %w", p, err)
 		}
@@ -295,8 +295,9 @@ func loadCAPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// parseSecretRef は SecretRef を読む。生の値は（エラーの文言にも）出さない。
-func parseSecretRef(v any) (core.SecretRef, error) {
+// ParseSecretRef は SecretRef（file SecretBackend）を読む。生の値は（エラーの
+// 文言にも）出さない。トレースの出口の設定（internal/tracing、#189）も使う。
+func ParseSecretRef(v any) (core.SecretRef, error) {
 	notRef := errors.New(`must be a SecretRef ("secretref:file/<path>" or {"$secret": "<path>", "backend": "file"}); a certificate, key or token is never written in the config (§20)`)
 	var ref core.SecretRef
 	switch t := v.(type) {

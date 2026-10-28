@@ -37,6 +37,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/remediation"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/internal/revision"
+	"github.com/tjst-t/sakutei/v2/internal/tracing"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 	"github.com/tjst-t/sakutei/v2/pkg/sdk"
@@ -174,6 +175,7 @@ func runReconcile(args []string) {
 	reobserve := addReobserveFlags(fs)
 
 	logFormat := addLogFormatFlag(fs)
+	traceFl := addTraceFlags(fs)
 	eventLog := addEventLogFlag(fs)
 	eventNotify := addEventNotifyFlags(fs)
 
@@ -182,6 +184,8 @@ func runReconcile(args []string) {
 		os.Exit(1)
 	}
 	setLogFormat("sakutei reconcile", *logFormat)
+	// #189: with --otlp-endpoint the run is one trace (sakutei.reconcile).
+	traceCtx := traceFl.start("sakutei reconcile", "reconcile", tracing.SpanReconcile)
 	routeEventLog("sakutei reconcile", *eventLog, eventNotify)
 	soaSerial := checkZoneSOASerial("sakutei reconcile", *zoneSOASerial)
 	zScope := checkScope("sakutei reconcile", "zone-scope", *zoneScope)
@@ -552,7 +556,7 @@ func runReconcile(args []string) {
 		// UpstreamChanged is set per-resource below.
 	}
 
-	ctx := context.Background()
+	ctx := traceCtx
 
 	// Scb0ecd-3: last-seen ring for one-shot reconcile.
 	//

@@ -167,6 +167,8 @@ func Main(opts ...Option) {
 //	--read-listen <addr>      serve the read-only API: GET /status, /plan, /events (SSE), /graph (#136)
 //	--listen-auth-config <f>  TLS and authorization (bearer token, client certificate) of --metrics-listen and --read-listen (#161)
 //	--metrics-insecure-listen / --read-insecure-listen  allow a non-loopback address without TLS and authorization
+//	--otlp-endpoint <url>     send traces over OTLP/HTTP (cycle, Observe, plan, Apply, Workflow steps; #189); none by default
+//	--otlp-config <f> / --otlp-insecure  TLS and authorization of --otlp-endpoint; a non-loopback one without them only with --otlp-insecure
 //	--daemon-status <f>  rewritten every cycle with the daemon health (consecutive unreachable skips, #15)
 //	--unreachable-skip-limit <n>  consecutive unreachable skips before the Prolonged alert (default 3)
 //	--stuck-after <n>    consecutive cycles after which a level Event is promoted transient → stuck (default 5, §22.3)
@@ -298,6 +300,7 @@ func runDaemon() {
 	logFormat := addLogFormatFlag(fs)
 	eventLog := addEventLogFlag(fs)
 	eventNotify := addEventNotifyFlags(fs)
+	traceFl := addTraceFlags(fs)
 	// #165: --cause-state は一回性の動詞（plan・reconcile・status）が前の回の
 	// revision を持ち越すためのもの。常駐は前の周をメモリに持つので受けず、
 	// 黙って無視もしない（そう言って断る）。
@@ -320,6 +323,8 @@ func runDaemon() {
 
 	listenAuth.check("sakutei", *metricsListen, *readListen, *approvalListen)
 	setLogFormat("sakutei", *logFormat)
+	// #189: traces only to an explicit --otlp-endpoint; every cycle is a trace.
+	traceCtx := traceFl.start("sakutei", "daemon", "")
 	eventSinks := append(openEventLog("sakutei", *eventLog), eventNotify.open("sakutei")...)
 	var readAPI *readapi.Server
 	if *readListen != "" {
@@ -606,7 +611,7 @@ func runDaemon() {
 		// is down the records wait in the audit log and are sent again.
 		go auditLg.Forwarder.Run(context.Background(), auditLg.Path)
 	}
-	if err := reconcile.Run(context.Background(), cfg); err != nil {
+	if err := reconcile.Run(traceCtx, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 		exitAfterEvents(1)
 	}

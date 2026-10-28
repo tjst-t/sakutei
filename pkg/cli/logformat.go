@@ -212,9 +212,14 @@ func flushNotify() {
 // a --freeze is recorded in the audit log when the run ends).
 var exitHooks []func()
 
+// exitCode is the code exitAfterEvents exits with, for the exit hooks (#189:
+// the root span of a one-shot run carries it).
+var exitCode int
+
 // exitAfterEvents runs the exit hooks, flushes the notification sinks, then
 // exits with code.
 func exitAfterEvents(code int) {
+	exitCode = code
 	hooks := exitHooks
 	exitHooks = nil
 	for _, h := range hooks {

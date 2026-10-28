@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/tjst-t/sakutei/v2/internal/tracing"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
@@ -73,10 +74,55 @@ func New() *LocalExecutor {
 //
 // An observe-only provider (Capabilities.ObserveOnly, §23.4) is never applied:
 // the loop holds its ops before this point, and this refusal is the last line.
+//
+// #189: the call is a sakutei.apply span when tracing is on (§26.8).
 func (e *LocalExecutor) Execute(ctx context.Context, p provider.Provider, plan core.Plan) error {
+	ctx, span := tracing.Start(ctx, tracing.SpanApply, applyAttrs(ctx, plan)...)
+	defer span.End()
 	if len(plan.Ops) > 0 && p.Capabilities().ObserveOnly {
-		return provider.NewPermanentError(fmt.Errorf("the provider observes only (§23.4); refusing to apply %s", plan.Ops[0].Target))
+		err := provider.NewPermanentError(fmt.Errorf("the provider observes only (§23.4); refusing to apply %s", plan.Ops[0].Target))
+		span.Fail(err)
+		return err
 	}
 	// §20.7 (#185): the provider takes out its write credential for this call.
-	return p.Apply(provider.WithWrite(ctx), plan)
+	err := p.Apply(provider.WithWrite(ctx), plan)
+	span.Fail(err)
+	return err
+}
+
+// applyAttrs は Apply の span の属性：provider・リソース・Op の数と種類・cause・
+// prune か（欄の値は載せない）。
+func applyAttrs(ctx context.Context, plan core.Plan) []tracing.Attr {
+	if !tracing.Enabled(ctx) {
+		return nil
+	}
+	var provs, ids, kinds, causes []string
+	seen := map[string]bool{}
+	add := func(list *[]string, prefix, v string) {
+		if v != "" && !seen[prefix+v] {
+			seen[prefix+v] = true
+			*list = append(*list, v)
+		}
+	}
+	for _, op := range plan.Ops {
+		add(&provs, "p:", op.Target.Provider)
+		add(&ids, "r:", op.Target.String())
+		add(&kinds, "k:", op.Kind.String())
+		add(&causes, "c:", string(op.Cause))
+	}
+	prune, _ := ctx.Value(pruneKey).(bool)
+	attrs := []tracing.Attr{
+		tracing.Strings(tracing.AttrResources, ids),
+		tracing.Int(tracing.AttrOps, len(plan.Ops)),
+		tracing.Strings(tracing.AttrOpKinds, kinds),
+		tracing.Strings(tracing.AttrCauses, causes),
+		tracing.Bool(tracing.AttrPrune, prune),
+	}
+	if len(provs) == 1 {
+		attrs = append(attrs, tracing.String(tracing.AttrProvider, provs[0]))
+	}
+	if len(ids) == 1 {
+		attrs = append(attrs, tracing.String(tracing.AttrResource, ids[0]))
+	}
+	return attrs
 }

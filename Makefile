@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -215,6 +215,24 @@ integration-vault:
 	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^sakutei-vaultit-'; then \
 	  echo 'integration-vault: the container was left behind; removing it'; \
 	  sudo -n docker rm -f -v sakutei-vaultit-openbao >/dev/null || status=1; \
+	fi; \
+	exit $$status
+
+# トレースの出口（OTLP/HTTP）の統合テスト（#189）。docker で OpenTelemetry Collector
+# （contrib の配布。tag と digest で固定）を立て、平文の受け口と TLS・クライアント証明書・
+# bearer トークンを求める受け口に、常駐・plan・reconcile の span が届くこと、資格が違えば
+# 断られて収束は止めないこと、--otlp-endpoint が無ければ何も届かないことを確かめ、
+# 終わったら（失敗しても）コンテナを消す。docker と sudo（パスワードなし）が要るので、
+# check・test・CI には入れない。イメージは SAKUTEI_IT_OTELCOL_IMAGE で差し替えられる。
+# 手順と結果は docs/tracing.md の「統合テスト」。
+OTLP_IT := ./tests/integration/otlp/
+integration-otlp:
+	go vet -tags integration_otlp $(OTLP_IT)
+	@status=0; \
+	go test -tags integration_otlp -count=1 -v -timeout 10m $(OTLP_IT) || status=$$?; \
+	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^sakutei-otlpit-'; then \
+	  echo 'integration-otlp: the container was left behind; removing it'; \
+	  sudo -n docker rm -f -v sakutei-otlpit-collector >/dev/null || status=1; \
 	fi; \
 	exit $$status
 

@@ -26,6 +26,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/cause"
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/task"
+	"github.com/tjst-t/sakutei/v2/internal/tracing"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
@@ -256,7 +257,27 @@ func (e *Engine) Tick(ctx context.Context, defs []Definition) []Event {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	var events []Event
 	for _, def := range sorted {
-		events = append(events, e.tick(ctx, def)...)
+		events = append(events, e.traced(ctx, def)...)
+	}
+	return events
+}
+
+// traced は tick を sakutei.workflow の span で包む（#189、§26.8）。属性は
+// Workflow・run・周の終わりの phase と、出来事の種類。
+func (e *Engine) traced(ctx context.Context, def Definition) []Event {
+	ctx, span := tracing.Start(ctx, tracing.SpanWorkflow, tracing.String(tracing.AttrWorkflow, def.Name))
+	defer span.End()
+	events := e.tick(ctx, def)
+	if !tracing.Enabled(ctx) {
+		return events
+	}
+	if run, ok, err := e.Store.Get(ctx, def.Name); err == nil && ok {
+		span.SetAttributes(tracing.String(tracing.AttrRun, run.RunID), tracing.String(tracing.AttrOutcome, string(run.Phase)))
+	}
+	for _, ev := range events {
+		if ev.Kind == EventError || ev.Kind == EventHalted {
+			span.Fail(errors.New(ev.Message))
+		}
 	}
 	return events
 }
@@ -448,6 +469,19 @@ const (
 	stepStopped
 )
 
+// String は span の outcome に出す名前（#189）。
+func (s stepStatus) String() string {
+	switch s {
+	case stepDone:
+		return "done"
+	case stepPending:
+		return "pending"
+	case stepFailed:
+		return "failed"
+	}
+	return "stopped"
+}
+
 // advance は running の Workflow を進められるところまで進める。
 func (s *stepper) advance(ctx context.Context) {
 	for i := 0; i < maxStepsPerTick; i++ {
@@ -504,7 +538,17 @@ func (s *stepper) advance(ctx context.Context) {
 			}
 		}
 
-		status, msg := s.exec(ctx, step, res, resObs)
+		stepCtx, span := tracing.Start(ctx, tracing.SpanWorkflowStep,
+			tracing.String(tracing.AttrWorkflow, s.def.Name), tracing.String(tracing.AttrRun, s.run.RunID),
+			tracing.String(tracing.AttrStage, stage.Name), tracing.String(tracing.AttrTarget, target.String()),
+			tracing.Int(tracing.AttrStep, s.run.Step+1), tracing.String(tracing.AttrStepKind, string(step.Kind)),
+			tracing.String(tracing.AttrResource, res.String()))
+		status, msg := s.exec(stepCtx, step, res, resObs)
+		span.SetAttributes(tracing.String(tracing.AttrOutcome, status.String()))
+		if status == stepFailed {
+			span.Fail(errors.New(msg))
+		}
+		span.End()
 		switch status {
 		case stepPending:
 			s.wait(EventWaiting, "%s: %s", where, msg)
@@ -764,11 +808,16 @@ func (s *stepper) observe(ctx context.Context, id core.ID) core.Observation {
 		s.obsErr[id.Key()] = fmt.Errorf("provider %s is unavailable", id.Provider)
 		return core.Observation{Availability: core.AvailabilityUnknown}
 	}
+	ctx, span := tracing.Start(ctx, tracing.SpanRead,
+		tracing.String(tracing.AttrProvider, id.Provider), tracing.String(tracing.AttrResource, id.String()))
+	defer span.End()
 	obs, err := p.Read(ctx, id.Local)
+	span.Fail(err)
 	if err != nil {
 		s.obsErr[id.Key()] = err
 		return core.Observation{Availability: core.AvailabilityUnknown}
 	}
+	span.SetAttributes(tracing.String(tracing.AttrOutcome, obs.Availability.String()))
 	return obs
 }
 

@@ -659,4 +659,45 @@ runtime:
   読む（その取得は最初の周がそのまま使う）。取得できない・intent が読めないまま起動したときは旗だけで回り、あとで読めた `runtime:` を
   変わったものとして知らせる。
 
+### §26.8 トレースの出口（OTLP/HTTP、v3.62）
+
+`/metrics`（§27.5）は「いまどうなっているか」の数を出すが、**1 つの周の中で何にどれだけ時間がかかったか**（どの provider の
+観測が遅いか・どの Apply が失敗したか・Workflow のどの手順で待っているか）は分からない。そこで周・観測・plan・Apply・
+Workflow の段を span にし、OTLP/HTTP で OpenTelemetry の Collector へ出す（Backlog #189）。
+
+- **既定は出さない**：`--otlp-endpoint <url>` を明示したときだけ出す（常駐・`plan`・`reconcile`）。`OTEL_EXPORTER_OTLP_*` などの
+  環境変数は読まない（黙って外へ出さない。宛先は宣言した 1 つだけで、環境の proxy も通さず、転送にも従わない）。
+- **形**：OTLP/HTTP の JSON の写像（`POST <url>/v1/traces`、`Content-Type: application/json`）。protobuf も OpenTelemetry の SDK も
+  使わない（外の依存を入れない、§28）。
+- **span**（名前は種類だけ、どれかは属性で言う）：
+
+  | span | どこ | 主な属性 |
+  |---|---|---|
+  | `sakutei.cycle` | 常駐の 1 周（**周ごとに 1 つのトレースの根**） | 周の番号・observed・drifted・unknown・applied・pruned・held・止まり（予算・prune・inventory・届かない外部入力）・alert-only |
+  | `sakutei.plan` | 一回性の `plan` の根、と周の中の Diff・prune の List・ゲート・予算の段 | 計画の数・Op の数・prune の Op の数・held・予算と容量の止まり・mode |
+  | `sakutei.reconcile` | 一回性の `reconcile` の根 | 終了コード |
+  | `sakutei.observe` | 周の中の観測の段 | 対象の数・observed・drifted・unknown・converging |
+  | `sakutei.read` | 1 つのリソースの観測（Read・最小の階級の ReadFor・Workflow の観測） | provider・resource・結果（ok・absent・unknown・converging） |
+  | `sakutei.bulk_observe` | provider の BulkObserve の 1 回（§5.7） | scope・返った数 |
+  | `sakutei.apply` | provider の Apply の 1 回（prune の Delete を含む。Workflow の手順の Apply はその手順の下） | provider・resource（の一覧）・Op の数と種類・cause・prune か |
+  | `sakutei.workflow` | 1 つの Workflow のその周の進み | Workflow・run・周の終わりの phase |
+  | `sakutei.workflow.step` | Workflow の手順の 1 つ | stage・対象・手順の番号と種類・結果（done・pending・failed） |
+
+  一回性の `plan`・`reconcile` は 1 回が 1 つのトレースで、根に終了コードを載せ、終わる前に送り終える（時間切れ 5 秒）。
+  失敗（provider の誤り・Workflow の halt）は span の status を ERROR にして誤りの文を載せる。
+- **値は載せない**：span には名前・ID・数・結果だけを載せ、欄の値（Diff の中身・SecretRef の値）は載せない（§20 の決まりと同じ）。
+- **送れなくても収束を止めない・待たない**：span は上限つきの列（4096）に積み、1 つの goroutine が束（最大 512・1 秒ごと）に
+  して送る。届かない・429・5xx は 2 度まで送り直し、それでも駄目なら捨てて数える。送れない間は 1 度だけ知らせ、戻れば 1 度だけ
+  知らせる。トレースは観測の補助であって正しさに関与しない（§3 原則 8 と同じ向き：外への出口が止まっても収束は止めない）。
+- **宛先の TLS と認可は読み取りの口（§22.4、#161）と同じ考え**（`--otlp-config <file>`）：
+  - TLS は 1.2 以上（1.3 も選べる）。宛先の証明書は `tls.ca_file`（無ければシステムのルート）と `tls.server_name` で確かめ、
+    確かめを外す設定は持たない。
+  - 認可は bearer トークン（`bearer_token`）とクライアント証明書（`tls.client_cert`・`tls.client_key`）。どちらも SecretRef
+    （file SecretBackend）でしか書けず、値は誤りの文にも出さない。30 秒ごとに金庫を読み直し、再起動なしで入れ替える（読めなければ
+    前のまま）。URL に資格を書くと断る。
+  - **loopback 以外の宛先へ、TLS（https）と認可のどちらかを欠いて送るのは `--otlp-insecure` を付けたときだけ**。付けずに指定すると
+    起動で断る。
+- **Collector との分担**：標本化・属性の加工・ほかの形への変換・保管は Collector と後段に委ねる（§2、持たない・委譲する）。
+  Sakutei は全部の span を出し、どれを残すかを持たない。
+
 ---

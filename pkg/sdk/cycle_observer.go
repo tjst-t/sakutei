@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/tracing"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
@@ -91,7 +92,24 @@ func (o *CycleObserver) Observe(ctx context.Context, id core.ID) (core.Observati
 // (provider.CheckReader, §28.7) is observed by its dry run of desired
 // (provider.ReadFor); every other provider exactly as by Observe — desired is
 // not passed to it.
+//
+// #189: each call is a sakutei.read span (when tracing is on, §26.8), and the
+// bulk call a sakutei.bulk_observe span.
 func (o *CycleObserver) ObserveDesired(ctx context.Context, id core.ID, desired map[string]string) (core.Observation, error) {
+	ctx, span := tracing.Start(ctx, tracing.SpanRead,
+		tracing.String(tracing.AttrProvider, id.Provider), tracing.String(tracing.AttrResource, id.String()))
+	obs, err := o.observeDesired(ctx, id, desired)
+	outcome := obs.Availability.String()
+	if obs.Availability == core.AvailabilityOk && obs.State == nil {
+		outcome = "absent"
+	}
+	span.SetAttributes(tracing.String(tracing.AttrOutcome, outcome))
+	span.Fail(err)
+	span.End()
+	return obs, err
+}
+
+func (o *CycleObserver) observeDesired(ctx context.Context, id core.ID, desired map[string]string) (core.Observation, error) {
 	if _, ok := o.p.(provider.CheckReader); ok {
 		return provider.ReadFor(ctx, o.p, id.Local, desired)
 	}
@@ -120,7 +138,10 @@ func (o *CycleObserver) take(ctx context.Context) (map[core.IDKey]core.Observati
 		return o.bulk, o.bulkErr
 	}
 	o.taken = true
+	ctx, span := tracing.Start(ctx, tracing.SpanBulkObserve, tracing.String(tracing.AttrScope, o.scope.String()))
+	defer span.End()
 	res, err := o.bo.BulkObserve(ctx, o.scope)
+	span.Fail(err)
 	if err != nil {
 		o.bulkErr = fmt.Errorf("bulk observe (complete-or-error, §5.7): %w", err)
 		return nil, o.bulkErr
@@ -133,5 +154,6 @@ func (o *CycleObserver) take(ctx context.Context) (map[core.IDKey]core.Observati
 		}
 	}
 	o.bulk = res.Observations
+	span.SetAttributes(tracing.Int(tracing.AttrResources, len(o.bulk)))
 	return o.bulk, nil
 }
