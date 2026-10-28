@@ -3561,7 +3561,7 @@
       "number": 151,
       "kind": "task",
       "title": "部品の版の互換の表を宣言で持ち、合わない組み合わせへの更新を計画の時点で止める",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "fw-redfish-updateservice",
       "dependsOn": [
         "redfish-firmware"
@@ -3575,7 +3575,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:41:13.586Z",
-      "updatedAt": "2026-10-28T02:41:13.586Z",
+      "updatedAt": "2026-10-28T07:47:44.844Z",
       "closedAt": null,
       "extra": {}
     },
