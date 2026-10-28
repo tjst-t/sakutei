@@ -4335,7 +4335,7 @@
       "number": 186,
       "kind": "task",
       "title": "鍵の分け 後半：API の provider（proxmox-vm・redfish・ldap・postgresql・s3-bucket・metrics-probe）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m7",
       "dependsOn": [
         "ssh-provider"
@@ -4349,7 +4349,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T13:07:46.058Z",
+      "updatedAt": "2026-10-28T15:35:38.901Z",
       "closedAt": null,
       "extra": {}
     },
