@@ -3473,7 +3473,7 @@
       "number": 148,
       "kind": "task",
       "title": "Redfish の FW の版の観測と更新（UpdateService、多相 Task）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "fw-redfish-updateservice",
       "dependsOn": [],
       "milestone": null,
@@ -3485,7 +3485,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:41:13.586Z",
-      "updatedAt": "2026-10-28T02:41:13.586Z",
+      "updatedAt": "2026-10-28T02:41:23.224Z",
       "closedAt": null,
       "extra": {}
     },
