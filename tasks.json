@@ -4188,11 +4188,11 @@
       ],
       "body": "#173 で base chain（type・hook・priority・policy とルール）を宣言で管理し、変えた後に新しい接続で到達を確かめ、だめならホストの側の仕掛けで写しに原子的に戻すようにした。残る 2 点を足す。\n\n1. **到達を確かめる先を宣言に書ける**：いまの確かめは、離れたホストなら同じホストへの新しい ssh（`ControlPath=none`）、手元の live なら provider の設定の `ruleset_confirm_address` だけ。宣言（intent の base chain の宣言）に、確かめる先の一覧を書けるようにする——例：Sakutei 自身の管理の接続（いまの既定）、別の経路の ssh（別のアドレス・ポート）、TCP の宛先。全部に届いたときだけ確かめられたとする。書かなければいまの既定。\n2. **変更の前にも確かめる**：base chain を変える Apply は、流す前に同じ確かめの先に届くかを確かめ、前で届かなければ変更しない（一時的な失敗、理由を知らせる）。前に届かないのに変えると、後の確かめが落ちて戻すだけになるため。\n3. **壊す変更として扱う**：base chain を作る・type/hook/priority/policy を変える（消して作り直すものを含む）・消す Apply を、壊す変更（destructive）として予算に数え、承認ゲート（remediation の承認）を通す。regular chain だけを変える Apply はいまどおり。plan にそのことが出る。\n- 単体・受け入れテスト（偽の nft と偽の守り）で、前の確かめで止まる・宣言した複数の先の 1 つが届かなければ戻す・予算が尽きると流さない・承認が無ければ流さない、を示す。統合テスト（make integration-nftables の締め出しの試験）に、宣言した別の経路の確かめと前の確かめを足す。\n- 設計書 §29.1（#173 の節）と docs/providers/nftables.md を改める。",
       "doneWhen": "確かめの先を intent に書け、前と後の両方で確かめ、前で届かなければ変えないこと、base chain の変更が予算と承認ゲートを通ることを単体・受け入れ・統合テストで示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/nftables-base-chain）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T10:41:48.582Z",
-      "updatedAt": "2026-10-28T11:47:25.658Z",
+      "updatedAt": "2026-10-28T11:47:34.243Z",
       "closedAt": "2026-10-28T11:47:25.658Z",
       "extra": {}
     }
