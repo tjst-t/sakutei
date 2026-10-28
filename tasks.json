@@ -4432,7 +4432,7 @@
       "number": 188,
       "kind": "task",
       "title": "秘密の取り出し先を足す口と、Vault 形（KV v2）の取り出し先",
-      "status": "ready",
+      "status": "done",
       "parent": "m7",
       "dependsOn": [
         "apply-2"
@@ -4442,12 +4442,12 @@
       "labels": [],
       "body": "SecretRef の取り出し先（SecretBackend）を足す口を pkg/sdk に用意し、いまのスタブを置き換える。\n\n取り出し先：Vault 形の KV v2（OpenBao で試験。token のファイルと AppRole、generation は KV の版）と、外のコマンドに聞く汎用の取り出し先。取り出した値はこれまでどおり記録にも Diff にも出さない。",
       "doneWhen": "OpenBao（tag と digest で固定）で、取り出し・版が上がったときの Apply・届かないときは unknown になる統合試験が通る。外のコマンドの取り出し先の受け入れテストが通る。make check・make test-race が通る",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T16:57:08.174Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-28T16:57:10.143Z",
+      "closedAt": "2026-10-28T16:57:10.143Z",
       "extra": {}
     },
     {
