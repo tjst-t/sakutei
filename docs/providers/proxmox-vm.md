@@ -178,6 +178,7 @@ $ make integration-proxmox
 | pending を重ねない・apply_pending | `cores` を変えると pending で止まり、次の `reconcile` は `Converged (no changes)`。`apply_pending: reboot` を足すと 1 回再起動して効き、VM の中の `nproc` が 3 になる |
 | 触らない VM に触れない | 名前でも vmid でも、宣言すれば `plan`・`reconcile` が protected と言って断り、VM 100 の設定の digest は変わらず、走ったまま |
 | 届かないと unknown | qemu を SIGSTOP で止めると `status --json` が unobservable=1・drifted=0。SIGCONT で戻せば適合に戻る |
+| 宣言の外の VM は unmanaged | 宣言を 0 件にすると `status --json` は it-vm1 だけを unmanaged に出し（total 1）、文の出力も `unmanaged=1`。触らない VM（100）とテンプレート（9000）は出ない。`reconcile` しても VM は消えず走ったまま。宣言に戻すと unmanaged は 0（#164） |
 | 消す | Delete で止めて消える。ほかの VM（100・9000）は残る |
 
 ### 結果（2026-10-27）

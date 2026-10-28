@@ -97,6 +97,21 @@ func (s *providerSet) Get(name string, base map[string]string) (provider.Provide
 	return s.reg.Get(name, s.configFor(name, base))
 }
 
+// configured reports whether the run sets up the named provider: it has a
+// section in --provider-config, or one of its own flags (configKeysOf) is
+// set in base (#164).
+func (s *providerSet) configured(name string, base map[string]string) bool {
+	if _, ok := s.overrides[name]; ok {
+		return true
+	}
+	for _, k := range configKeysOf[name] {
+		if base[k] != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *providerSet) configFor(name string, base map[string]string) map[string]string {
 	over := s.overrides[name]
 	if len(over) == 0 {

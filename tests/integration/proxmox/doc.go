@@ -20,7 +20,8 @@
 // cloud-init の鍵とアドレスで ssh で入れる、手でメモリを変える → 戻る（走って
 // いる VM なので pending を経る）、再起動が要る変更は pending で止まり重ねて出ない（apply_pending: reboot で効く）、
 // 触らない VM に触れない（宣言すれば計画のエラー）、何周しても drift が出ない、
-// 届かない（qemu を止める）と unknown、消す。
+// 届かない（qemu を止める）と unknown、宣言から外した VM が status の unmanaged に
+// 出て（宣言が 0 件でも。触らない VM とテンプレートは出ない）消されない、消す。
 //
 // テストは build tag integration_proxmox の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-proxmox

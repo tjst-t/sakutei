@@ -251,6 +251,10 @@ Exit codes:
 		os.Exit(1)
 	}
 
+	// #164: 宣言が 1 つも無いが設定はされている provider も、宣言外の検出の
+	// ためだけに組み立てる（List するだけで、Read・Diff・cause には加えない）。
+	listOnly, listOnlyErrs := undeclaredListers(reg, providers, providerConfig)
+
 	// provider ごとの diff エンジンを用意（各 provider は固有 Schema を持つ）。
 	engines := make(map[string]*diff.Engine, len(providers))
 	for name, p := range providers {
@@ -427,7 +431,10 @@ Exit codes:
 	//     unmanaged 判定を控え、注記に留める（安全側）。
 	//
 	// #111: --claim があれば claim の中の現実だけを宣言外の候補にする（prune と同じ境界）。
-	detectUnmanaged(ctx, providers, claimSelector, desired, builder)
+	//
+	// #164: Pruneable かどうかに関わらない（unmanaged は見せるだけで消さない）。
+	// 宣言が 0 件の provider も、設定されていれば List する（listOnly）。
+	detectUnmanaged(ctx, providers, listOnly, listOnlyErrs, claimSelector, desired, builder)
 
 	// #15 (§9.2): デーモンの連続スキップ回数（デーモンが書いたファイルを READ するだけ）。
 	if *daemonStatus != "" {
@@ -469,6 +476,12 @@ Exit codes:
 // Matching uses core.ID.Key() (collision-free) so a reality ID counts as
 // declared only when Provider+Scope+Local all match a declared resource.
 //
+// Whether the provider's type is pruneable does not matter: unmanaged is only
+// shown, never deleted (#164).  Besides the providers of the declared
+// resources it Lists listOnly, the providers set up for this run with no
+// declared resource (undeclaredListers); one that could not be built
+// (listOnlyErrs) is noted like a List error.
+//
 // Graceful degradation (never crash, never under-report):
 //   - provider without Lister → "検出不可（List 非対応 provider）" note, skipped.
 //   - List returns error       → "検出不可（List エラー）" note (a failed List is
@@ -478,6 +491,8 @@ Exit codes:
 func detectUnmanaged(
 	ctx context.Context,
 	providers map[string]provider.Provider,
+	listOnly map[string]provider.Lister,
+	listOnlyErrs map[string]error,
 	claim core.Scope,
 	desired []diff.DesiredResource,
 	builder *statusreport.Builder,
@@ -489,15 +504,28 @@ func detectUnmanaged(
 	}
 
 	// Deterministic provider iteration order for stable notes/output.
-	names := make([]string, 0, len(providers))
+	names := make([]string, 0, len(providers)+len(listOnly)+len(listOnlyErrs))
 	for name := range providers {
+		names = append(names, name)
+	}
+	for name := range listOnly {
+		names = append(names, name)
+	}
+	for name := range listOnlyErrs {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	for _, name := range names {
-		fp := providers[name]
-		lister, ok := fp.(provider.Lister)
+		if err, ok := listOnlyErrs[name]; ok {
+			fmt.Fprintf(os.Stderr, "sakutei status: build %s: %v\n", name, err)
+			builder.NoteListError(name, err)
+			continue
+		}
+		lister, ok := listOnly[name]
+		if !ok {
+			lister, ok = providers[name].(provider.Lister)
+		}
 		if !ok {
 			builder.NoteListUnsupported(name)
 			continue

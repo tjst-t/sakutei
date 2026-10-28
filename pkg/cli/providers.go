@@ -36,7 +36,9 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/dnszone"
 	"github.com/tjst-t/sakutei/v2/internal/nftables"
+	"github.com/tjst-t/sakutei/v2/internal/postgresql"
 	"github.com/tjst-t/sakutei/v2/internal/prune"
+	"github.com/tjst-t/sakutei/v2/internal/s3bucket"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 	"github.com/tjst-t/sakutei/v2/pkg/sdk"
@@ -97,6 +99,54 @@ func resolveProviders(
 		}
 	}
 	return result, nil
+}
+
+// configKeysOf names, per List-capable built-in provider, the keys of the
+// flag-built config that only that provider's own flags set (--zone,
+// --ruleset, --s3-config, ...).  One of them being set means the operator set
+// the provider up for this run, even when the intent declares none of its
+// resources (#164).  --state is not one: it is the fake provider's default
+// and a fallback of the others, so it says nothing about which is meant.
+var configKeysOf = map[string][]string{
+	dnszone.ProviderName:  {"zone"},
+	nftables.ProviderName: {"ruleset", "ruleset_tables"},
+	s3bucket.Name:         {"s3_config"},
+	postgresql.Name:       {"postgresql_config"},
+}
+
+// undeclaredListers builds, for status's unmanaged detection (#164, §12.2),
+// the List-capable providers that are set up for this run (named in
+// --provider-config, or given their own flag, see configKeysOf) but have no
+// resource in the intent, so are not in declared.  Without them a provider
+// whose resources were all taken out of the intent would never be Listed and
+// what is left in reality would not show as unmanaged.  A provider that
+// cannot be built or validated is returned in errs (its unmanaged cannot be
+// detected; never read as "none").  A provider without List is skipped: it
+// has nothing to report.
+func undeclaredListers(
+	reg *providerSet,
+	declared map[string]provider.Provider,
+	baseConfig map[string]string,
+) (listers map[string]provider.Lister, errs map[string]error) {
+	listers = map[string]provider.Lister{}
+	errs = map[string]error{}
+	for _, name := range reg.reg.Names() {
+		if _, ok := declared[name]; ok || !reg.configured(name, baseConfig) {
+			continue
+		}
+		p, err := reg.Get(name, baseConfig)
+		if err == nil {
+			err = sdk.ValidateProvider(p)
+		}
+		if err != nil {
+			errs[name] = err
+			continue
+		}
+		if l, ok := p.(provider.Lister); ok {
+			listers[name] = l
+		}
+	}
+	return listers, errs
 }
 
 // zoneSOASerialFlag registers --zone-soa-serial, the dnszone provider's

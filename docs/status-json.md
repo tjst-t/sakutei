@@ -45,7 +45,7 @@
 | `drift` | drift（現実に無いものを含む） | `drifted=` |
 | `missing` | drift のうち、宣言されているのに現実に無いもの（`drift` に含む） | — |
 | `unobservable` | 観測できない（Read のエラー、または Availability が `ok` でない）。drift とも適合とも数えない（§3） | `unobservable=` |
-| `unmanaged` | 宣言外・実在（prune 対象外） | `unmanaged=` |
+| `unmanaged` | 宣言外・実在（見せるだけで消さない）。provider の型が prune する型かどうかに関わらず、宣言が 1 つも無くても設定されている provider（`--provider-config` に節がある、またはその provider だけのフラグ）の現実を含む（#164） | `unmanaged=` |
 | `workflow` | Workflow に任せている（収束ループは触らない、§6.3） | `workflow=` |
 | `list_errors` | List がエラーだった provider の数（観測できない側に数える） | — |
 | `total` | `conformant + drift + unobservable + unmanaged + workflow`。`resources` の要素数と同じ | — |
@@ -70,7 +70,7 @@
 
 ## `unmanaged_undetectable[]`
 
-宣言外の検出ができなかった provider（provider 名の昇順）。検出できないことを「宣言外ゼロ」と読まないためにある。
+宣言外の検出ができなかった provider（provider 名の昇順）。検出できないことを「宣言外ゼロ」と読まないためにある。設定されているが宣言の無い provider が組み立てられなかったとき（設定のファイルが読めないなど）も `list_error` で出る（#164）。
 
 | フィールド | 意味 |
 | --- | --- |

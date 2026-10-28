@@ -31,9 +31,15 @@
 //	          and nothing is sent to the cluster
 //	AC-143-4  a VM is not pruneable (a destructive type, §12.3): an orphan VM
 //	          is never deleted by prune
+//	AC-164-1  sakutei status (text and --json) shows a VM that is not
+//	          declared as unmanaged, also when the intent declares no VM at
+//	          all (the provider is set up by --provider-config only); the
+//	          protected VM and the template are not shown; a declared VM is
+//	          not unmanaged; reconcile leaves the unmanaged VM alone
 package acceptance
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,5 +205,73 @@ func TestProxmoxVM_NotPruneableAndDeleteIsDestructive(t *testing.T) {
 	}
 	if p.Capabilities().Pruneable {
 		t.Error("[AC-143-4] proxmox-vm is pruneable; a VM is a destructive type (§12.3)")
+	}
+}
+
+func TestProxmoxVM_UndeclaredVMIsUnmanaged(t *testing.T) {
+	// [AC-164-1]
+	srv, cfg := pveRig(t)
+	srv.AddVM(pvetest.VM{VMID: 300, Node: "pve1", Name: "left-over", Status: "running", Config: map[string]string{
+		"cores": "1", "memory": "512", "scsi0": "local-lvm:vm-300-disk-0,size=4G",
+	}})
+	srv.AddVM(pvetest.VM{VMID: 301, Node: "pve1", Name: "kept", Status: "stopped", Config: map[string]string{
+		"cores": "1", "memory": "512", "scsi0": "local-lvm:vm-301-disk-0,size=4G",
+	}})
+	bin := buildBinary(t)
+
+	type entry struct {
+		ID, State string
+		LocalID   string `json:"local_id"`
+	}
+	statusJSON := func(common []string) (map[string]string, int) {
+		t.Helper()
+		o, code := runBin(t, bin, append([]string{"status", "--json"}, common...)...)
+		var rep struct {
+			Summary   struct{ Unmanaged, Total int }
+			Resources []entry
+		}
+		if i := strings.Index(o, "{"); i < 0 || json.Unmarshal([]byte(o[i:]), &rep) != nil {
+			t.Fatalf("[AC-164-1] status --json exit %d, not JSON:\n%s", code, o)
+		}
+		states := map[string]string{}
+		for _, r := range rep.Resources {
+			states[r.LocalID] = r.State
+		}
+		if rep.Summary.Total != len(rep.Resources) {
+			t.Errorf("[AC-164-1] summary.total = %d, resources = %d", rep.Summary.Total, len(rep.Resources))
+		}
+		return states, code
+	}
+
+	// 宣言が 0 件：provider は --provider-config で設定されているだけ。
+	none := pveIntent(t, cfg, ``)
+	states, code := statusJSON(none)
+	if code != 0 || len(states) != 2 || states["lab/left-over"] != "unmanaged" || states["lab/kept"] != "unmanaged" {
+		t.Errorf("[AC-164-1] status with no VM declared: exit %d, states %v; want left-over and kept unmanaged, nothing else", code, states)
+	}
+	if o, _ := runBin(t, bin, append([]string{"status"}, none...)...); !strings.Contains(o, "lab/left-over") || !strings.Contains(o, "unmanaged=2") {
+		t.Errorf("[AC-164-1] status (text) with no VM declared does not show left-over as unmanaged:\n%s", o)
+	}
+
+	// kept を宣言する：kept は宣言のもの、left-over だけが unmanaged。
+	one := pveIntent(t, cfg, `{"provider": "proxmox-vm", "id": "lab/kept", "fields": {"vmid": "301", "cores": "1", "memory": "512", "power": "stopped"}}`)
+	states, code = statusJSON(one)
+	if code != 0 || states["lab/left-over"] != "unmanaged" || states["lab/kept"] != "conformant" || len(states) != 2 {
+		t.Errorf("[AC-164-1] status with kept declared: exit %d, states %v; want left-over unmanaged and kept conformant", code, states)
+	}
+
+	// unmanaged は見せるだけ：reconcile は消さない（VM は prune しない型）。
+	for _, common := range [][]string{none, one} {
+		if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 {
+			t.Fatalf("[AC-164-1] reconcile exit %d:\n%s", code, o)
+		}
+	}
+	for _, id := range []int{100, 300, 301, 9000} {
+		if _, ok := srv.VM(id); !ok {
+			t.Errorf("[AC-164-1] VM %d was deleted", id)
+		}
+	}
+	if srv.Calls("destroy") != 0 {
+		t.Errorf("[AC-164-1] a VM was destroyed (%d destroy calls)", srv.Calls("destroy"))
 	}
 }

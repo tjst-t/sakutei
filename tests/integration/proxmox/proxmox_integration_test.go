@@ -769,6 +769,48 @@ qm list`); err != nil {
 		l.converge(t, vmIntent(fields), 3)
 	})
 
+	t.Run("a VM out of the intent is unmanaged, and is not deleted", func(t *testing.T) {
+		// #164: 宣言が 0 件でも provider は --provider-config で設定されているので
+		// List され、宣言の外の VM が unmanaged に出る。触らない VM とテンプレートは出ない。
+		type report struct {
+			Summary struct {
+				Unmanaged int `json:"unmanaged"`
+				Total     int `json:"total"`
+			} `json:"summary"`
+			Resources []struct {
+				LocalID string `json:"local_id"`
+				State   string `json:"state"`
+			} `json:"resources"`
+		}
+		statusOf := func(intent string) (report, string, int) {
+			out, code := l.sakutei(t, intent, "status", "--json")
+			var doc report
+			if i := strings.Index(out, "{"); i >= 0 {
+				_ = json.Unmarshal([]byte(out[i:]), &doc)
+			}
+			return doc, out, code
+		}
+		const empty = `{"resources": []}`
+		doc, out, code := statusOf(empty)
+		if code != 0 || doc.Summary.Unmanaged != 1 || doc.Summary.Total != 1 || len(doc.Resources) != 1 ||
+			doc.Resources[0].LocalID != "it/it-vm1" || doc.Resources[0].State != "unmanaged" {
+			t.Errorf("status with no VM declared: exit %d, want it-vm1 as the only unmanaged:\n%s", code, out)
+		}
+		if out, code := l.sakutei(t, empty, "status"); code != 0 || !strings.Contains(out, "unmanaged=1") ||
+			strings.Contains(out, "sakutei-ctl") || strings.Contains(out, "it-tmpl") {
+			t.Errorf("status (text) with no VM declared: exit %d:\n%s", code, out)
+		}
+		if out, code := l.sakutei(t, empty, "reconcile"); code != 0 {
+			t.Errorf("reconcile with no VM declared exit %d:\n%s", code, out)
+		}
+		if s := l.status(t, 500); s != "running" {
+			t.Errorf("the unmanaged VM after reconcile: %s, want running (unmanaged is never deleted)", s)
+		}
+		if doc, out, code := statusOf(vmIntent(fields)); code != 0 || doc.Summary.Unmanaged != 0 {
+			t.Errorf("status with it-vm1 declared: exit %d, want no unmanaged:\n%s", code, out)
+		}
+	})
+
 	t.Run("delete", func(t *testing.T) {
 		p, err := proxmox.NewFromConfig(l.cfg)
 		if err != nil {

@@ -431,6 +431,8 @@ sakutei status       # drifted 一覧（適合レポート）
 
 **観測できないリソースがあっても報告は止めない**（#117）。あるリソースの Read がエラーになった、または Availability が `ok` でなかったときは、そのリソースを**観測できない（unobservable）**として数え、drifted にも適合にも数えない（unknown ≠ absent・§3、§5.4）。provider の List がエラーのときも同じく「観測できない」側に数え、宣言外の検出ができなかったことを注記する（エラーを「宣言外ゼロ」と読まない）。どちらも残りのリソースの評価は最後まで続け、エラーの文はリソースごと（List なら provider ごと）にレポートと標準エラーへ出す。BMC が1台落ちただけで status 全体が使えなくなると、障害のときの見え方そのものが測れないからである。
 
+**宣言外（unmanaged）の検出**（#164）。status は List を持つ provider ごとに現実を列挙し、宣言に無いものを**宣言外（unmanaged）**として出す。見せるだけで消さない（削除は §12 の規律にだけ従う）ので、provider の型が prune する型（`Pruneable`、§12.3）かどうかに関わらない——VM のような破壊的型こそ、宣言から外したものが残っていることを見えなくしてはならない。List する provider は、intent に宣言のある provider に加えて、**宣言が 1 つも無くてもその回に設定されている provider**（`--provider-config` に節がある、または `--zone`・`--ruleset`・`--s3-config`・`--postgresql-config` のようにその provider だけの設定が与えられた）である。宣言を全部外すとその provider が組み立てられず、外したものがどこにも出なかったためである。`--state` は fake provider の既定で他の provider の代わりにもなるので、それだけでは設定されたと見ない。provider が触らないと決めているもの（proxmox-vm の `protected_vmids`・`protected_names`・テンプレート、nftables の base chain など）は List に出ないので宣言外にも出ない。設定されているのに組み立てられない provider は、List のエラーと同じく検出できなかったものとして出す（終了コード 3、「宣言外ゼロ」と読まない）。`--claim` があれば claim の中の現実だけを候補にする。常駐の `/status`・`/metrics` は今までどおり宣言外を出さない（口のための List を増やさない。下の「読み取り専用の口」）。
+
 終了コードは次のとおり。
 
 | 終了コード | 意味 |
