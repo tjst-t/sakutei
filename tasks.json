@@ -3753,6 +3753,30 @@
       "updatedAt": "2026-10-28T02:44:59.126Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "metrics-tls",
+      "number": 161,
+      "kind": "task",
+      "title": "/metrics と読み取りの口の TLS と認可（読むだけのトークン・クライアント証明書）、平文の外向き待ち受けは明示したときだけ",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "security",
+        "observability"
+      ],
+      "body": "## なぜ\nデーモンを固い区画に置き、監視のコレクターが別の区画から FW を越えて /metrics と読み取りの口を読みに来る構成では、その口が区画へ入る口になる。いまの `--metrics-listen` と `--read-listen` は平文で認可が無い。\n\n## やること\n- 対象：`--metrics-listen` の /metrics と `--read-listen` の読み取り専用の口（GET /status・/plan・/events・/graph）。承認などの書き込みの口（`--approval-listen`）とは、これまでどおり分ける（同じポート・同じ資格を共有しない）。\n- **TLS**：サーバの証明書と鍵を SecretRef で渡す（設定のファイルで。書き方は実装で決める）。最小の TLS の版は 1.2 以上。証明書の入れ替えは再起動なしで読み直せると良い（任意。やらないならそう書く）。\n- **認可**（どちらか、または両方を選べる）：\n  - 読むだけのトークン（`Authorization: Bearer`。値は SecretRef、比べるのは定数時間）。\n  - クライアント証明書（CA を指定して確かめる。任意で許す subject・SAN の一覧）。\n- **待ち受けを絞る**：アドレスとポートを指定できる（今どおり）。既定は手元（loopback）だけ。loopback 以外を TLS なし・認可なしで待ち受けるのは、明示の旗（例 `--metrics-insecure-listen`。名前は実装で決める）を付けたときだけ。付けずに外向きの平文を指定したら起動で断る。\n- 断ったときは 401／403 を返し、理由を外に詳しく出さない（ログには出す）。/metrics に断った数を出す。\n- 設計書（§22・§26 の該当）・docs/metrics.md・docs/read-api.md・CHANGELOG-v3.x。公開の書き方は「/metrics と読み取りの口の TLS と認可」。\n\n## 確かめ方\n受け入れテスト：TLS なしで繋ぐと断る・トークンが違う／無いと断る・CA の違うクライアント証明書は断る・正しい資格では読める・外向きの平文は旗なしで起動を断る・書き込みの口は読み取りの資格で使えない。\n\n## 決まり\nGo は stdlib のみ。make check・make test-race を通す。",
+      "doneWhen": "TLS なし・違うトークン・違う証明書で断り、正しい資格で読めることを受け入れテストで示す。外向きの平文は明示しない限り起動で断る。make check・make test-race が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T02:49:29.921Z",
+      "updatedAt": "2026-10-28T02:49:29.921Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
