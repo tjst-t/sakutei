@@ -25,7 +25,7 @@ intent の例：
   "fields": {"name": "greeting", "value": "hello", "token": "secretref:file/app/token"}}]}
 ```
 
-`--provider-config` の値は、共通のフラグ（`--state` 等）から作る設定に重ねて provider ごとに factory に渡る（同じキーはファイルが勝つ）。`kvfile` の設定キー：`path`（無ければ `--state` の値、それも無ければ `kvfile.json`）、`secret_store`（`token` を Apply するときに要る）。
+`--provider-config` の値は、共通のフラグ（`--state` 等）から作る設定に重ねて provider ごとに factory に渡る（同じキーはファイルが勝つ）。`kvfile` の設定キー：`path`（無ければ `--state` の値、それも無ければ `kvfile.json`）、`secret_store`（file の `token` を Apply するときに要る。`secret_backends:` に書いた取り出し先（Vault KV v2・外のコマンド）の `token` は store なしで解決する）。
 
 組み込みと同じ名前（例 `fake`）で登録すると、起動時に終了コード 1 で止まる。
 

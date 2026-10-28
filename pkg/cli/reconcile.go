@@ -340,6 +340,15 @@ func runReconcile(args []string) {
 		externalInputs = append(externalInputs, allocRes.Inputs...)
 		recomputeRendered = true
 	}
+	// #188: render phase 1 — secret generations (§20.2).  A ref whose
+	// generation cannot be read makes its resource unknown (§20.3).
+	openSecretBackends("sakutei reconcile", *providerConfigFile)
+	secretRes := renderSecretGenerations("sakutei reconcile", intentResources, logErr)
+	intentResources = secretRes.Resources
+	if len(secretRes.Inputs) > 0 {
+		externalInputs = append(externalInputs, secretRes.Inputs...)
+		recomputeRendered = true
+	}
 	if recomputeRendered {
 		rootScope := core.NewScope(nil)
 		rev.RenderedRevision = revision.ComputeRenderedRevision(
@@ -567,6 +576,9 @@ func runReconcile(args []string) {
 	// skipped like an unobservable one — not Observed, downstream skipped,
 	// never pruned — but they are not a safety failure (§19.9).
 	waitingAlloc := allocRes.WaitingLocals(parentToChildrenRec)
+	// #188: resources whose secret generation could not be read are unknown
+	// (§20.3): skipped like an unobservable one, and counted as one.
+	secretUnknown := secretRes.UnknownLocals(parentToChildrenRec)
 	// #41: strategy: task resources with a diff (held for the daemon's Task).
 	taskHeld := map[string]bool{}
 	// #42: Workflow targets with a diff (driven by the daemon's Workflow).
@@ -731,6 +743,10 @@ func runReconcile(args []string) {
 		}
 
 		if waitingAlloc[res.ID.Local] {
+			unobservable[res.ID.Local] = true
+			continue
+		}
+		if secretUnknown[res.ID.Local] {
 			unobservable[res.ID.Local] = true
 			continue
 		}
@@ -1023,6 +1039,8 @@ func runReconcile(args []string) {
 		switch {
 		case waitingAlloc[local]:
 			heldReason[local] = reconcile.WaitingAllocationSkipReason
+		case secretUnknown[local]:
+			heldReason[local] = render.SecretUnknownSkipReason
 		case obsHeld.Locals[local]:
 			heldReason[local] = "held: its provider observes only (§23.4)"
 		case scopeHeld.Locals[local]:

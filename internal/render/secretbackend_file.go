@@ -30,11 +30,12 @@
 // returned by this path.  Value resolution is the JIT step at Apply time
 // (FileSecretBackend.ResolveValue → core.SecretRef.Resolve), never render.
 //
-// # Vault stays a documented stub (offline / stdlib-only)
+// # Other backends (#188)
 //
-// VaultSecretBackend implements the same seam but returns a clear
-// "not implemented offline" error.  It lands as a real client in v1b/v2; the
-// stub keeps the seam callable and the wiring shape fixed today.
+// A ref naming a backend configured for the process (Vault KV v2, an outside
+// command, one added through pkg/cli.WithSecretBackend; see secretgen.go) is
+// resolved by that backend: ResolveValue delegates to it, so a provider that
+// resolves through its file store resolves those refs too.
 
 package render
 
@@ -120,7 +121,15 @@ func (b *FileSecretBackend) GenerationOf(_ context.Context, secretPath string) (
 // single current value per path, so it is used only to assert the caller's ref
 // is not stale relative to the store (best-effort; a mismatch is not fatal in
 // 段0-minimal).
-func (b *FileSecretBackend) ResolveValue(_ context.Context, _ string, path string, _ int64) (string, error) {
+//
+// A ref naming another backend configured for the process (#188) is resolved
+// by that backend, at the ref's generation.
+func (b *FileSecretBackend) ResolveValue(ctx context.Context, backend string, path string, generation int64) (string, error) {
+	if backend != "file" {
+		if cb, ok := configuredSecretBackend(backend); ok {
+			return cb.Resolve(ctx, path, generation)
+		}
+	}
 	store, err := b.load()
 	if err != nil {
 		return "", err
@@ -239,28 +248,7 @@ func (e *SecretBackendUnreachableError) Error() string {
 
 func (e *SecretBackendUnreachableError) Unwrap() error { return e.Cause }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// VaultSecretBackend — documented stub (v1b/v2; offline+stdlib-only in v1a)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// VaultSecretBackend is the seam-compatible stub for HashiCorp Vault (KV v2).
-//
-// v1a is offline and stdlib-only, so no Vault client is built here.  The stub
-// keeps the SecretBackend seam callable and the wiring shape fixed; GenerationOf
-// returns a clear "not implemented offline" error.  The real client (Vault KV v2
-// metadata → generation) lands in v1b/v2 behind this exact seam (§20.5).
-type VaultSecretBackend struct{}
-
-var _ SecretBackend = (*VaultSecretBackend)(nil)
-
-// GenerationOf returns a not-implemented error: Vault is unavailable in the
-// offline v1a build.  The seam exists so callers can name and wire it now.
-func (b *VaultSecretBackend) GenerationOf(_ context.Context, _ string) (string, error) {
-	return "", errText("vault SecretBackend not implemented in offline v1a (段0-minimal uses the file backend; Vault lands in v1b/v2)")
-}
-
-// errText is a stdlib-free sentinel error type (avoids importing errors for a
-// single stub message).
+// errText is a stdlib-free sentinel error type.
 type errText string
 
 func (e errText) Error() string { return string(e) }

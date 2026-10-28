@@ -86,8 +86,8 @@ type ExternalInputResolver interface {
 // AllocationAuthority is the seam through which render phase 1 requests
 // deterministic address/VLAN/ASN allocations (§9.1 フェーズ1 allocation).
 //
-// v1a: no implementation.  The interface type is declared so future wiring
-// (v1b / S8) can reference it without changing the interface shape.
+// The configured backends of the run (Vault KV v2, an outside command) use
+// GenerationalSecretBackend and ResolveSecretGenerations (secretgen.go, #188).
 //
 // IMPORTANT — §26 カテゴリ A: allocation inclusion in rendered_revision
 // must be settled before the AllocationAuthority implementation is built.
@@ -98,14 +98,14 @@ type AllocationAuthority interface {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SecretBackend seam (v1b / S8 placeholder — no implementation)
+// SecretBackend seam (the file store and devenv's fake)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // SecretBackend is the seam through which render phase 1 resolves secret
 // generations (Vault metadata, §9.1 フェーズ1 シークレット世代解決).
 //
-// v1a: no implementation.  The interface type is declared so future wiring
-// (v1b / S8) can reference it without changing the interface shape.
+// The configured backends of the run (Vault KV v2, an outside command) use
+// GenerationalSecretBackend and ResolveSecretGenerations (secretgen.go, #188).
 //
 // NOTE: SecretBackend resolves ONLY metadata (generation numbers / version
 // IDs) — never secret values.  Secret values are resolved JIT at Apply time

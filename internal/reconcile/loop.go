@@ -1821,6 +1821,16 @@ func runCycleAsync(
 	}
 	intentResources := allocRes.Resources
 	phase1ExternalInputHashes = append(phase1ExternalInputHashes, allocRes.Inputs...)
+	// #188 render phase 1: secret generations (§20.2), metadata only.  A new
+	// generation is an external input change (cause E) and gets Applied; a
+	// ref whose generation cannot be read makes its resource unknown this
+	// cycle (§20.3) — the rest of the cycle goes on.
+	secretRes := render.ResolveSecretGenerations(ctx, render.SecretBackends(), intentResources)
+	for _, u := range secretRes.Unresolved {
+		fmt.Fprintf(cfg.ErrOut, "sakutei: %s: %s\n", u.ID, u.Reason())
+	}
+	intentResources = secretRes.Resources
+	phase1ExternalInputHashes = append(phase1ExternalInputHashes, secretRes.Inputs...)
 
 	// S072a14-3 render phase 1 (continued): recompute rendered_revision with the
 	// external inputs so that a change in external inputs causes rendered_revision
@@ -2050,6 +2060,8 @@ func runCycleAsync(
 
 	// #25: waiting-allocation resources and the children they expand to.
 	waitingAlloc := allocRes.WaitingLocals(parentToChildren)
+	// #188: resources whose secret generation could not be read.
+	secretUnknown := secretRes.UnknownLocals(parentToChildren)
 	var waitingThisCycle []string
 	// waitingHeld gives their skip line its reason (#111): they are held for
 	// their allocation, not unobservable.
@@ -2249,6 +2261,13 @@ func runCycleAsync(
 			unobservable[local] = true
 			waitingHeld[local] = WaitingAllocationSkipReason
 			view.unobservable(res.ID, core.AvailabilityUnknown.String(), WaitingAllocationSkipReason)
+			continue
+		}
+		// #188 (§20.3): unknown — not Observed or Applied; downstream
+		// skipped; never a prune candidate (it stays in desired).
+		if secretUnknown[local] {
+			unobservable[local] = true
+			view.unobservable(res.ID, core.AvailabilityUnknown.String(), render.SecretUnknownSkipReason)
 			continue
 		}
 

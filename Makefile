@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -198,6 +198,23 @@ integration-hostconf:
 	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^sakutei-hcit-'; then \
 	  echo 'integration-hostconf: the container was left behind; removing it'; \
 	  sudo -n docker rm -f -v sakutei-hcit-h1 >/dev/null || status=1; \
+	fi; \
+	exit $$status
+
+# Vault 形（KV v2）の秘密の取り出し先の統合テスト（#188）。docker で OpenBao
+# （tag と digest で固定）を dev モードで立て、token のファイルと AppRole で取り出し・
+# 版が上がったときの Apply・届かないときの unknown を確かめ、終わったら（失敗しても）
+# コンテナを消す。docker と sudo（パスワードなし）が要るので、check・test・CI には
+# 入れない。イメージは SAKUTEI_IT_OPENBAO_IMAGE で差し替えられる。手順と結果は
+# docs/providers/secret-backends.md の「統合テスト」。
+VAULT_IT := ./tests/integration/vault/
+integration-vault:
+	go vet -tags integration_vault $(VAULT_IT)
+	@status=0; \
+	go test -tags integration_vault -count=1 -v -timeout 10m $(VAULT_IT) || status=$$?; \
+	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^sakutei-vaultit-'; then \
+	  echo 'integration-vault: the container was left behind; removing it'; \
+	  sudo -n docker rm -f -v sakutei-vaultit-openbao >/dev/null || status=1; \
 	fi; \
 	exit $$status
 

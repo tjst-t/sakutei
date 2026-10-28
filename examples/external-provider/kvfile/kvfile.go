@@ -20,8 +20,10 @@
 //
 //	path          the JSON file (default: the --state value, then kvfile.json)
 //	secret_store  the file SecretBackend store; required to Apply a "token"
-//	              (a secret field: only its SecretRef is in intent, and only a
-//	              digest of the resolved value is written to the file)
+//	              of the file backend (a secret field: only its SecretRef is in
+//	              intent, and only a digest of the resolved value is written to
+//	              the file).  A token of a backend configured in
+//	              secret_backends: (Vault KV v2, a command) needs no store.
 package kvfile
 
 import (
@@ -58,8 +60,9 @@ type record struct {
 
 // Provider implements provider.Provider and provider.Lister.
 type Provider struct {
-	path    string
-	secrets core.SecretResolver
+	path        string
+	secretStore string
+	secrets     core.SecretResolver
 }
 
 var (
@@ -76,10 +79,9 @@ func New(config map[string]string) (*Provider, error) {
 	if path == "" {
 		path = "kvfile.json"
 	}
-	p := &Provider{path: path}
-	if s := config["secret_store"]; s != "" {
-		p.secrets = sdk.NewFileSecretResolver(s)
-	}
+	// The resolver also takes the refs of the backends configured in
+	// secret_backends: (#188); the file store is only for "file" refs.
+	p := &Provider{path: path, secretStore: config["secret_store"], secrets: sdk.NewFileSecretResolver(config["secret_store"])}
 	return p, nil
 }
 
@@ -154,7 +156,7 @@ func (p *Provider) setToken(ctx context.Context, r *record, v string) error {
 	if err != nil {
 		return fmt.Errorf("token: %w", err)
 	}
-	if p.secrets == nil {
+	if ref.Backend() == "file" && p.secretStore == "" {
 		return errors.New("token: secret_store is not set in --provider-config")
 	}
 	val, err := ref.Resolve(ctx, p.secrets)

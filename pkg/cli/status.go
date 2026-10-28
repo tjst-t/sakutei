@@ -200,6 +200,11 @@ Exit codes:
 	}
 	intentResources = allocRes.Resources
 	externalInputs = append(externalInputs, allocRes.Inputs...)
+	// #188: render phase 1 — secret generations (§20.2).
+	openSecretBackends("sakutei status", *providerConfigFile)
+	secretRes := renderSecretGenerations("sakutei status", intentResources, os.Stderr)
+	intentResources = secretRes.Resources
+	externalInputs = append(externalInputs, secretRes.Inputs...)
 	if len(externalInputs) > 0 {
 		rev.RenderedRevision = revision.ComputeRenderedRevision(core.NewScope(nil), rev.IntentRevision, externalInputs)
 	}
@@ -344,9 +349,22 @@ Exit codes:
 	// Workflow, not by the loop — reported as such, never as drifted.
 	wfHeld := workflowHeld(in.Workflows, *workflowStore)
 
+	// #188: a resource whose secret generation could not be read is unknown.
+	secretUnknown := map[string]string{}
+	secretChildren := render.BuildParentChildMap(expanded)
+	for _, u := range secretRes.Unresolved {
+		secretUnknown[u.ID.Local] = u.Reason()
+		for _, child := range secretChildren[u.ID.Local] {
+			secretUnknown[child] = u.Reason()
+		}
+	}
 	for _, res := range desired {
 		if h, ok := wfHeld[res.ID.Local]; ok {
 			builder.AddWorkflowHeld(res.ID, h.Workflow, h.Stage)
+			continue
+		}
+		if why, ok := secretUnknown[res.ID.Local]; ok {
+			builder.AddUnobservableReason(res.ID, why)
 			continue
 		}
 		fp := providers[res.ID.Provider]

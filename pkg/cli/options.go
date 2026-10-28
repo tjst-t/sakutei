@@ -39,6 +39,8 @@ type options struct {
 	extra []*registry.ProviderRegistry
 	// realizers are the network_policy realizers WithRealizer adds (#174).
 	realizers []namedRealizer
+	// secretTypes are the secret backend types WithSecretBackend adds (#188).
+	secretTypes []namedSecretType
 }
 
 // WithRegistry adds every provider registered in reg to the built-in ones
@@ -227,9 +229,13 @@ func loadProviderConfig(path string, reg *registry.ProviderRegistry) (map[string
 		return nil, err
 	}
 	for k := range tree {
-		if k != "providers" {
-			return nil, fmt.Errorf("%s: unknown key %q (want only \"providers\")", path, k)
+		if k != "providers" && k != "secret_backends" {
+			return nil, fmt.Errorf("%s: unknown key %q (want \"providers\" and \"secret_backends\")", path, k)
 		}
+	}
+	if _, ok := tree["providers"]; !ok {
+		// Only secret_backends: (#188), read by openSecretBackends.
+		return map[string]map[string]string{}, nil
 	}
 	raw, ok := tree["providers"].(map[string]any)
 	if !ok {

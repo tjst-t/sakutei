@@ -345,11 +345,6 @@ func TestFileSecretBackend_GenerationOf(t *testing.T) {
 		t.Errorf("expected error for unknown path")
 	}
 
-	// Vault stub returns a clear not-implemented error (offline v1a).
-	var vault render.VaultSecretBackend
-	if _, err := vault.GenerationOf(context.Background(), "db/root"); err == nil {
-		t.Errorf("Vault stub should return not-implemented error offline")
-	}
 }
 
 // ---------------------------------------------------------------------------

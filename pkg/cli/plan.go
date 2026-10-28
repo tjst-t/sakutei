@@ -294,6 +294,15 @@ func runPlan(args []string) {
 		fmt.Fprintln(logErr, line)
 		report.PendingAllocations = append(report.PendingAllocations, pendingAllocationJSON(pa, line))
 	}
+	// #188: render phase 1 — secret generations (§20.2).  A ref whose
+	// generation cannot be read makes its resource unknown (§20.3).
+	openSecretBackends("sakutei plan", *providerConfigFile)
+	secretRes := renderSecretGenerations("sakutei plan", intentResources, logErr)
+	intentResources = secretRes.Resources
+	if len(secretRes.Inputs) > 0 {
+		externalInputs = append(externalInputs, secretRes.Inputs...)
+		recomputeRendered = true
+	}
 	if recomputeRendered {
 		rootScope := core.NewScope(nil)
 		rev.RenderedRevision = revision.ComputeRenderedRevision(
@@ -482,11 +491,19 @@ func runPlan(args []string) {
 		}
 	}
 
+	secretUnknown := secretRes.UnknownLocals(render.BuildParentChildMap(expanded))
 	for _, res := range desired {
 		if h, ok := wfHeld[res.ID.Local]; ok {
 			h.ID = res.ID
 			heldShown = append(heldShown, h)
 			unobservable[res.ID.Local] = true
+			continue
+		}
+		if secretUnknown[res.ID.Local] {
+			// #188 (§20.3): said above; not planned (unknown ≠ absent).
+			unobservable[res.ID.Local] = true
+			report.Unobservable = append(report.Unobservable, planreport.Unobservable{
+				Target: planreport.NewTarget(res.ID), Availability: core.AvailabilityUnknown.String()})
 			continue
 		}
 		// S62dbba-2: route Read and Diff to the provider for this resource.

@@ -79,6 +79,10 @@ func Main(opts ...Option) {
 		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 		os.Exit(1)
 	}
+	if err := registerSecretTypes(o.secretTypes); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Route to the daemon loop when:
 	//   (a) no arguments at all, or
@@ -417,6 +421,8 @@ func runDaemon() {
 	// provider; --zone / --ruleset (when set) keep the dnszone / nftables
 	// files apart from it.
 	reg := openProviderSet("sakutei", *providerConfigFile)
+	// #188: the secret backends render phase 1 reads generations from.
+	openSecretBackends("sakutei", *providerConfigFile)
 	if remCfg.Mode == remediation.ModeAlertOnly || (freezeControl != nil && freezeControl.Flag != nil && freezeControl.Flag.Until.IsZero()) {
 		// §20.7 (#185): a daemon started with --mode alert-only, or with a
 		// --freeze without a deadline, never writes: no write credential is

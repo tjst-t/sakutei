@@ -23,7 +23,8 @@ import (
 
 // ParseSecretRef reads the value of a secret-flagged field as a provider's
 // Apply receives it (§20, #119): the ref form "secretref:<backend>/<path>"
-// with an optional "#gen<N>", or the JSON form
+// with an optional "#gen<N>" (any other "#" stays in the path: a Vault-style
+// backend reads "app/db#password" as the key password, #188), or the JSON form
 // {"$secret":"<path>","backend":"<backend>","gen":N}.  Anything else — above
 // all a bare plaintext — is an error.  The error never quotes s.
 func ParseSecretRef(s string) (SecretRef, error) {
