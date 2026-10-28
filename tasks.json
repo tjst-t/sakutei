@@ -3608,7 +3608,7 @@
       "number": 159,
       "kind": "task",
       "title": "CLI でしか設定できない装置を扱う汎用の provider（ssh で CLI を打って観測し、コマンド列で変える）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "fw-redfish-updateservice",
       "dependsOn": [],
       "milestone": null,
@@ -3620,7 +3620,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:47:11.928Z",
-      "updatedAt": "2026-10-28T02:47:11.928Z",
+      "updatedAt": "2026-10-28T07:47:48.635Z",
       "closedAt": null,
       "extra": {}
     },
