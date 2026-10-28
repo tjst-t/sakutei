@@ -2,6 +2,16 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## v2.1.0（2026-10-28）
+
+仮想マシンとディレクトリを宣言で扱えるようにした版。Proxmox VE の VM、LDAP の項目、採番した値を IP アドレスなどの文字列にして埋め込むテンプレート。設計書は v3.25 → v3.26（`docs/architecture/CHANGELOG-v3.26.md`）と §29.1。
+
+### 追加
+
+- **Proxmox VE の VM provider `proxmox-vm`**（#143）：REST API と API トークン（SecretRef）で、VM・CPU・メモリ・ディスク（大きくするだけ）・NIC（bridge・VLAN）・cloud-init（利用者・ssh の公開鍵・IP・GW・DNS）・電源を宣言で合わせる。テンプレートから full clone で作り、vmid は宣言か採番から配る。再起動を待つ変更（pending）を重ねて書かず、再起動は宣言したとき（`apply_pending: reboot`）か Workflow の操作のときだけ。触らない VM を設定で除外できる（List に出さず、宣言すれば計画のエラー）。VM は prune しない。`make integration-proxmox`：Proxmox VE 9.2-1 を入れ子の KVM に自動導入し、Debian 13 のクラウドイメージのテンプレートから作った VM に cloud-init の鍵とアドレスで入れることまで確かめた（PASS）。使い方は `docs/providers/proxmox-vm.md`。
+- **LDAP provider `ldap`**（#144）：OpenLDAP のクライアント（`ldapsearch`・`ldapmodify`）を呼び、項目（DN）の宣言した属性だけを値の集合ちょうどに合わせる。DN は正規形で扱い、`userPassword` は書き込みだけ（SecretRef）。LDAPS・StartTLS、証明書は必ず確かめる。子のある項目は消さない。`make integration-ldap`：389 Directory Server で、作る・手の変更が戻る・何周しても drift が出ない・止めると unknown を確かめた（PASS）。使い方は `docs/providers/ldap.md`。
+- **採番の値のテンプレート**（#145、#108 の 1）：採番の要求に `template: "192.0.2.{n}"` を書くと、払い出した整数を埋め込んだ文字列がフィールドに入る（採番の記録は整数のまま）。`kind: ipv4` / `ipv6` を書くと、プールの範囲のすべての値がアドレスになることを読み込みで確かめる。
+
 ## v2.0.1（2026-10-27）
 
 ### 修正
