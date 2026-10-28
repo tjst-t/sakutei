@@ -3629,7 +3629,7 @@
       "number": 160,
       "kind": "task",
       "title": "HTTP の管理 API を使う provider で、API のパスの前置きを設定で変えられるようにする",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "fw-redfish-updateservice",
       "dependsOn": [],
       "milestone": null,
@@ -3641,7 +3641,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:47:17.445Z",
-      "updatedAt": "2026-10-28T02:47:17.445Z",
+      "updatedAt": "2026-10-28T11:54:07.118Z",
       "closedAt": null,
       "extra": {}
     },
