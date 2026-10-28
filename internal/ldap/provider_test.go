@@ -565,6 +565,10 @@ func TestExecRunner(t *testing.T) {
 	t.Setenv("SAKUTEI_FAKE_LDAP_MAIN", "1")
 	t.Setenv("SAKUTEI_FAKE_LDAP_STATE", state)
 	t.Setenv("LDAPTLS_REQCERT", "never") // 親の設定は引き継がない。
+	// 一時のパスワードファイルはこのテストだけのディレクトリに作らせる（共有の
+	// /tmp を見ると、同時に走るほかのテストのファイルを消し残しと取り違える）。
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
 	p, err := ldap.New(map[string]ldap.Server{"dir1": server(nil)}, ldap.Options{LDAPSearch: search, LDAPModify: modify, Secrets: secrets{"ldap/dm": dmPW, "ldap/alice": alicePW}})
 	if err != nil {
 		t.Fatal(err)
@@ -579,11 +583,9 @@ func TestExecRunner(t *testing.T) {
 	if a := st.Find("uid=alice,ou=people," + suffix); a == nil || a.Get("userPassword")[0] != ldaptest.HashPassword(alicePW) {
 		t.Fatalf("alice = %+v", a)
 	}
-	left, _ := filepath.Glob(filepath.Join(os.TempDir(), "sakutei-ldap-*"))
+	left, _ := filepath.Glob(filepath.Join(tmp, "sakutei-ldap-*"))
 	for _, f := range left {
-		if info, err := os.Stat(f); err == nil && time.Since(info.ModTime()) < time.Minute {
-			t.Errorf("a temporary password file was left: %s", f)
-		}
+		t.Errorf("a temporary password file was left: %s", f)
 	}
 	// コマンドが無い。
 	p2, _ := ldap.New(map[string]ldap.Server{"dir1": server(nil)}, ldap.Options{LDAPSearch: filepath.Join(dir, "nope"), Secrets: secrets{"ldap/dm": dmPW}})
