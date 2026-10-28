@@ -36,6 +36,16 @@
 //	          all (the provider is set up by --provider-config only); the
 //	          protected VM and the template are not shown; a declared VM is
 //	          not unmanaged; reconcile leaves the unmanaged VM alone
+//	AC-165-1  a VM declaring pool is created in the pool (passed to the
+//	          clone); taken out of the pool by hand, status shows the pool
+//	          drift and reconcile puts it back
+//	AC-165-2  a token restricted to the pool (it sees only the pool's VMs
+//	          and the template) creates the VM and reads it: reconcile is
+//	          converged and status shows it conformant; a VM taken out of the
+//	          pool is invisible to it, and reconcile says its vmid is used by
+//	          a VM the token cannot see instead of creating another
+//	AC-165-3  the daemon refuses --cause-state, saying it keeps the previous
+//	          cycle in memory
 package acceptance
 
 import (
@@ -57,7 +67,15 @@ import (
 // template (9000), and writes its cluster list and secret store.
 func pveRig(t *testing.T) (*pvetest.Server, string) {
 	t.Helper()
-	srv := pvetest.New(pvetest.Options{})
+	srv, cfg, _ := pveRigWith(t, pvetest.Options{})
+	return srv, cfg
+}
+
+// pveRigWith is pveRig with the fake server's options.  It also writes a
+// cluster list using the first of opts.PoolTokens (if any), returned third.
+func pveRigWith(t *testing.T, opts pvetest.Options) (*pvetest.Server, string, string) {
+	t.Helper()
+	srv := pvetest.New(opts)
 	t.Cleanup(srv.Close)
 	srv.AddVM(pvetest.VM{VMID: 100, Node: "pve1", Name: "sakutei-ctl", Status: "running", Config: map[string]string{
 		"cores": "2", "memory": "2048", "scsi0": "local-lvm:vm-100-disk-0,size=16G",
@@ -71,12 +89,20 @@ func pveRig(t *testing.T) (*pvetest.Server, string) {
 	cfg := "secret_store: secrets.json\nclusters:\n  lab:\n    endpoint: " + srv.URL + "\n    token_id: " + srv.TokenID() +
 		"\n    token_secret: secretref:file/proxmox/lab\n    node: pve1\n    timeout: 2s\n    task_wait: 2s\n" +
 		"    protected_vmids:\n      - 100\n    protected_names:\n      - sakutei-ctl\n"
-	for name, body := range map[string]string{"secrets.json": store, "pve.yaml": cfg} {
+	files := map[string]string{"secrets.json": store, "pve.yaml": cfg}
+	poolCfg := ""
+	if len(opts.PoolTokens) > 0 {
+		tok := opts.PoolTokens[0]
+		files["pool-secrets.json"] = `{"secrets": {"proxmox/lab": {"gen": 1, "value": "` + tok.Secret + `"}}}`
+		files["pve-pool.yaml"] = strings.NewReplacer("secrets.json", "pool-secrets.json", "token_id: "+srv.TokenID(), "token_id: "+tok.TokenID).Replace(cfg)
+		poolCfg = filepath.Join(dir, "pve-pool.yaml")
+	}
+	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return srv, filepath.Join(dir, "pve.yaml")
+	return srv, filepath.Join(dir, "pve.yaml"), poolCfg
 }
 
 func TestProxmoxVM_RegistryAndContract(t *testing.T) {
@@ -273,5 +299,102 @@ func TestProxmoxVM_UndeclaredVMIsUnmanaged(t *testing.T) {
 	}
 	if srv.Calls("destroy") != 0 {
 		t.Errorf("[AC-164-1] a VM was destroyed (%d destroy calls)", srv.Calls("destroy"))
+	}
+}
+
+const poolVM = `{"provider": "proxmox-vm", "id": "lab/app1", "fields": {
+  "vmid": "510", "template": "debian-tmpl", "pool": "apps", "cores": "2", "memory": "2G",
+  "disks": "scsi0 storage=local-lvm size=8G", "nics": "net0 bridge=vmbr0", "power": "running"}}`
+
+func TestProxmoxVM_Pool(t *testing.T) {
+	// [AC-165-1]
+	srv, cfg, _ := pveRigWith(t, pvetest.Options{Pools: []string{"apps"}})
+	bin := buildBinary(t)
+	common := pveIntent(t, cfg, poolVM)
+	for i := 0; i < 2; i++ {
+		if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 {
+			t.Fatalf("[AC-165-1] reconcile %d exit %d:\n%s", i, code, o)
+		}
+	}
+	if vm, ok := srv.VMByName("app1"); !ok || vm.Pool != "apps" || srv.Calls("pools") != 0 {
+		t.Fatalf("[AC-165-1] app1 = %+v (PUT /pools %d); want it cloned into pool apps", vm, srv.Calls("pools"))
+	}
+	if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 || !strings.Contains(o, "Converged (no changes)") {
+		t.Fatalf("[AC-165-1] reconcile after the create exit %d, want converged:\n%s", code, o)
+	}
+
+	srv.SetPool(510, "")
+	if o, _ := runBin(t, bin, append([]string{"status"}, common...)...); !strings.Contains(o, "pool") || !strings.Contains(o, "drifted=1") {
+		t.Errorf("[AC-165-1] status after the VM was taken out of the pool does not show the pool drift:\n%s", o)
+	}
+	if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 || !strings.Contains(o, "1 change(s) applied") {
+		t.Fatalf("[AC-165-1] reconcile after the hand change exit %d:\n%s", code, o)
+	}
+	if vm, _ := srv.VM(510); vm.Pool != "apps" {
+		t.Errorf("[AC-165-1] pool after reconcile = %q, want apps", vm.Pool)
+	}
+}
+
+func TestProxmoxVM_PoolToken(t *testing.T) {
+	// [AC-165-2]
+	srv, _, poolCfg := pveRigWith(t, pvetest.Options{Pools: []string{"apps"}, PoolTokens: []pvetest.PoolToken{{
+		TokenID: "sakutei@pve!apps", Secret: "apps-secret", Pool: "apps", Templates: []int{9000}, PoolAudit: true,
+	}}})
+	bin := buildBinary(t)
+	common := pveIntent(t, poolCfg, poolVM)
+	for i := 0; i < 2; i++ {
+		if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 {
+			t.Fatalf("[AC-165-2] reconcile %d with the pool token exit %d:\n%s", i, code, o)
+		}
+	}
+	if vm, ok := srv.VMByName("app1"); !ok || vm.Pool != "apps" || vm.Status != "running" {
+		t.Fatalf("[AC-165-2] app1 = %+v", vm)
+	}
+	if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 || !strings.Contains(o, "Converged (no changes)") {
+		t.Fatalf("[AC-165-2] reconcile with the pool token exit %d, want converged:\n%s", code, o)
+	}
+	o, code := runBin(t, bin, append([]string{"status", "--json"}, common...)...)
+	var rep struct {
+		Summary   struct{ Conformant, Drifted, Unmanaged, Total int }
+		Resources []struct {
+			LocalID string `json:"local_id"`
+			State   string
+		}
+	}
+	if i := strings.Index(o, "{"); i < 0 || json.Unmarshal([]byte(o[i:]), &rep) != nil {
+		t.Fatalf("[AC-165-2] status --json exit %d, not JSON:\n%s", code, o)
+	}
+	if code != 0 || rep.Summary.Total != 1 || len(rep.Resources) != 1 || rep.Resources[0].LocalID != "lab/app1" || rep.Resources[0].State != "conformant" {
+		t.Errorf("[AC-165-2] status with the pool token: exit %d, %+v; want app1 conformant and nothing else (the token sees its pool only)", code, rep)
+	}
+
+	// pool から手で外すと、トークンには見えない。作り直さずに知らせる。
+	srv.SetPool(510, "")
+	o, code = runBin(t, bin, append([]string{"reconcile"}, common...)...)
+	if !strings.Contains(o, "cannot see") || !strings.Contains(o, "not converged") {
+		t.Errorf("[AC-165-2] reconcile after the VM was taken out of the pool: exit %d, want a failed apply saying the token cannot see the VM using vmid 510:\n%s", code, o)
+	}
+	if n := len(srvVMs(srv)); n != 3 {
+		t.Errorf("[AC-165-2] %d VMs, want 3 (no second app1)", n)
+	}
+}
+
+// srvVMs returns the VMs of the fake server (by vmid, up to 10000).
+func srvVMs(srv *pvetest.Server) []pvetest.VM {
+	var out []pvetest.VM
+	for id := 100; id < 10000; id++ {
+		if vm, ok := srv.VM(id); ok {
+			out = append(out, vm)
+		}
+	}
+	return out
+}
+
+func TestDaemon_RefusesCauseState(t *testing.T) {
+	// [AC-165-3]
+	bin := buildBinary(t)
+	o, code := runBin(t, bin, "--intent", t.TempDir(), "--cause-state", filepath.Join(t.TempDir(), "cause.json"))
+	if code != 1 || !strings.Contains(o, "in memory") || !strings.Contains(o, "one-shot") {
+		t.Errorf("[AC-165-3] the daemon with --cause-state: exit %d, want 1 and a message that it keeps the previous cycle in memory:\n%s", code, o)
 	}
 }

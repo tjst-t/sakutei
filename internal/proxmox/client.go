@@ -261,7 +261,8 @@ func scrub(err error, secret string) error {
 // クラスタの設定（pmxcfs）から来るが、名前・status・template・lock は pvestatd
 // が周期（約 10 秒）で更新する写しで、作った直後の VM は名前が空、status が
 // 古いことがある。名前が空の項目は Provider が設定で確かめ、電源と lock は
-// CurrentStatus で読む。
+// CurrentStatus で読む。Pool は pool の設定（user.cfg）から来る今の値で、
+// トークンにその pool の Pool.Audit が無ければ載らない（空）。
 type Resource struct {
 	Type     string
 	VMID     int
@@ -270,6 +271,7 @@ type Resource struct {
 	Status   string
 	Template bool
 	Lock     string
+	Pool     string
 }
 
 // Resources はクラスタの VM（qemu と lxc）の一覧を返す。
@@ -292,6 +294,7 @@ func (c *Client) Resources(ctx context.Context) ([]Resource, error) {
 			Status:   scalar(m["status"]),
 			Template: scalar(m["template"]) == "1",
 			Lock:     scalar(m["lock"]),
+			Pool:     scalar(m["pool"]),
 		})
 	}
 	return out, nil
@@ -390,6 +393,18 @@ func (c *Client) PowerAction(ctx context.Context, node string, vmid int, action 
 // Destroy は VM を消す（UPID を返す）。ディスクと、ジョブ・HA の設定も消す。
 func (c *Client) Destroy(ctx context.Context, node string, vmid int) (string, error) {
 	return c.task(ctx, http.MethodDelete, vmPath(node, vmid), url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}})
+}
+
+// SetPool は VM を pool に入れる（ほかの pool にあれば移す、allow-move）。
+// remove なら pool から外す。PUT /pools（Proxmox VE 8.1 から）、同期。
+func (c *Client) SetPool(ctx context.Context, pool string, vmid int, remove bool) error {
+	params := url.Values{"poolid": {pool}, "vms": {strconv.Itoa(vmid)}}
+	if remove {
+		params.Set("delete", "1")
+	} else {
+		params.Set("allow-move", "1")
+	}
+	return c.call(ctx, http.MethodPut, "/pools", params, nil)
 }
 
 // TaskStatus は非同期の仕事の状態。

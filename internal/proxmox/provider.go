@@ -34,6 +34,11 @@
 //     計画のエラー（移行は扱わない）。
 //   - template: 複製する元のテンプレート（名前か vmid）。作るときだけ使い、
 //     観測しない（差分から落とす）。full clone。
+//   - pool: Proxmox の pool（Backlog #165）。作る・複製するときに渡し（API
+//     トークンを pool の ACL だけで絞れるように）、観測して違えば移す（PUT
+//     /pools、allow-move。"" は pool から外す）。pool は作らない（無ければ Apply
+//     のエラー）。pool は /cluster/resources で読み、トークンにその pool の
+//     Pool.Audit が無ければ「pool に無い」に見える。
 //   - cores・memory（MiB の整数か "2G" など）。
 //   - disks: "<slot> storage=<storage> size=<大きさ>" を "," でつなぐ。宣言した
 //     slot だけを比べる。大きくするのはよい（resize）、小さくするのと
@@ -113,6 +118,7 @@ const (
 	FieldVMID          = "vmid"
 	FieldNode          = "node"
 	FieldTemplate      = "template"
+	FieldPool          = "pool"
 	FieldCores         = "cores"
 	FieldMemory        = "memory"
 	FieldDisks         = "disks"
@@ -156,6 +162,9 @@ const ListSep = ","
 var configFields = []string{FieldCores, FieldMemory, FieldDisks, FieldNICs, FieldCIUser, FieldCISSHKeys, FieldCIIP, FieldCIGateway, FieldCIDNS}
 
 var ciFields = []string{FieldCIUser, FieldCISSHKeys, FieldCIIP, FieldCIGateway, FieldCIDNS}
+
+// poolName は pool の名前（Proxmox の決まり。入れ子は "/" で 3 段まで）。
+var poolName = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+){0,2}$`)
 
 // vmName は VM の名前（Proxmox の決まり：DNS の名前）。
 var vmName = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,61}[a-zA-Z0-9])?$`)
@@ -242,6 +251,7 @@ func (p *Provider) Schema() provider.Schema {
 		FieldVMID:          {Kind: core.FieldKindInt},
 		FieldNode:          s(),
 		FieldTemplate:      s(),
+		FieldPool:          s(),
 		FieldCores:         {Kind: core.FieldKindInt},
 		FieldMemory:        s(),
 		FieldDisks:         s(),
@@ -539,6 +549,7 @@ func toState(cluster string, r Resource, cur, next map[string]string) core.State
 		FieldName:    str(r.Name),
 		FieldVMID:    {Kind: core.FieldKindInt, Value: int64(r.VMID)},
 		FieldNode:    str(r.Node),
+		FieldPool:    str(r.Pool),
 		FieldPower:   str(r.Status),
 		FieldLock:    str(cur["lock"]),
 	}
@@ -731,6 +742,9 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	}
 	if v, ok := fields[FieldTemplate]; ok && strings.TrimSpace(v) == "" {
 		return fail("template is empty")
+	}
+	if v, ok := fields[FieldPool]; ok && v != "" && !poolName.MatchString(v) {
+		return fail("pool %q: want a Proxmox VE pool name (letters, digits, '.', '_' and '-'; nested pools as parent/child), or \"\" for no pool", v)
 	}
 	if v, ok := fields[FieldCores]; ok {
 		if n, err := strconv.Atoi(v); err != nil || n < 1 {
@@ -1143,6 +1157,7 @@ func (p *Provider) create(ctx context.Context, c Cluster, localID, vm string, wa
 		}
 	}
 
+	pool := want[FieldPool]
 	var upid string
 	if tmpl := want[FieldTemplate]; tmpl != "" {
 		var src *Resource
@@ -1171,11 +1186,17 @@ func (p *Provider) create(ctx context.Context, c Cluster, localID, vm string, wa
 		if st := oneStorage(disks); st != "" {
 			params.Set("storage", st)
 		}
+		if pool != "" {
+			params.Set("pool", pool)
+		}
 		if upid, err = c.Client.Clone(ctx, src.Node, src.VMID, params); err != nil {
-			return false, classify(fail("clone %d: %w", src.VMID, err))
+			return false, createError(fail("clone %d: %w", src.VMID, err), vmid, pool)
 		}
 	} else {
 		params := url.Values{"vmid": {strconv.Itoa(vmid)}, "name": {vm}}
+		if pool != "" {
+			params.Set("pool", pool)
+		}
 		for _, f := range []struct{ field, key string }{{FieldCores, "cores"}} {
 			if v, ok := want[f.field]; ok {
 				params.Set(f.key, v)
@@ -1221,10 +1242,46 @@ func (p *Provider) create(ctx context.Context, c Cluster, localID, vm string, wa
 			}
 		}
 		if upid, err = c.Client.Create(ctx, node, params); err != nil {
-			return false, classify(fail("%w", err))
+			return false, createError(fail("%w", err), vmid, pool)
 		}
 	}
 	return p.waitTask(ctx, c, localID, upid)
+}
+
+// createError は作る・複製するときの失敗を分ける。pool が無い（Proxmox は 403
+// で断る）・pool に権限が無いことと、見えない VM がその vmid を使っている
+// こと（pool に絞ったトークンには pool の外の VM が見えない。Proxmox は 500 で
+// 断る）は、設定か宣言を直すまで治らない。
+func createError(err error, vmid int, pool string) error {
+	switch {
+	case pool != "" && KindOf(err) == KindAuth:
+		return provider.NewPermanentError(fmt.Errorf("%w (pool %s must exist in Proxmox VE — Sakutei does not create pools — and the token needs VM.Allocate on /pool/%s)", err, pool, pool))
+	case strings.Contains(err.Error(), "already exists"):
+		return provider.NewPermanentError(fmt.Errorf("%w (vmid %d is used by a VM this token cannot see, e.g. one outside the token's pool: declare another vmid, or put that VM back into the pool)", err, vmid))
+	}
+	return classify(err)
+}
+
+// movePool は VM を pool に移す（to が "" なら今の pool から外す）。fail は
+// エラーの文言の頭を付ける。
+func movePool(ctx context.Context, c Cluster, vm Resource, to string, fail func(string, ...any) error) error {
+	var err error
+	if to == "" {
+		err = c.Client.SetPool(ctx, vm.Pool, vm.VMID, true)
+	} else {
+		err = c.Client.SetPool(ctx, to, vm.VMID, false)
+	}
+	if err == nil {
+		return nil
+	}
+	err = fail("pool %q → %q: %w", vm.Pool, to, err)
+	switch {
+	case KindOf(err) == KindAuth:
+		return provider.NewPermanentError(fmt.Errorf("%w (moving a VM between pools needs Pool.Allocate on the pools; the token sees the pool of a VM only with Pool.Audit on that pool, and without it the VM looks to be in no pool)", err))
+	case strings.Contains(err.Error(), "does not exist"):
+		return provider.NewPermanentError(fmt.Errorf("%w (create the pool in Proxmox VE: Sakutei does not create pools)", err))
+	}
+	return classify(err)
 }
 
 // oneStorage は disks が全部同じストレージならそれを返す（複製の先）。
@@ -1305,6 +1362,11 @@ func (p *Provider) update(ctx context.Context, c Cluster, localID string, vm Res
 	}
 	if v, ok := want[FieldNode]; ok && v != vm.Node {
 		return provider.NewPermanentError(fail("node %s is declared but the VM is on node %s", v, vm.Node))
+	}
+	if v, ok := want[FieldPool]; ok && v != vm.Pool {
+		if err := movePool(ctx, c, vm, v, fail); err != nil {
+			return err
+		}
 	}
 	entries, err := c.Client.Pending(ctx, vm.Node, vm.VMID)
 	if err != nil {

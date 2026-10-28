@@ -1,6 +1,6 @@
 # Proxmox VE の VM provider（proxmox-vm）
 
-Proxmox VE のクラスタの VM（qemu）を宣言で作り、CPU・メモリ・ディスク・NIC・cloud-init・電源を合わせる provider（Backlog #143、設計書 §29.1「Proxmox VE の VM provider」）。
+Proxmox VE のクラスタの VM（qemu）を宣言で作り、pool・CPU・メモリ・ディスク・NIC・cloud-init・電源を合わせる provider（Backlog #143、設計書 §29.1「Proxmox VE の VM provider」）。
 REST API（`/api2/json`）を Go の標準ライブラリの net/http で叩く。認証は API トークン（`Authorization: PVEAPIToken=<user>@<realm>!<tokenname>=<secret>`）。
 
 - 完全の階級：Read・Apply・List・BulkObserve（`/cluster/resources` を 1 回と VM ごとの設定）。
@@ -41,7 +41,39 @@ clusters:
 
 - `token_secret` は SecretRef でしか書けない（生の文字列はエラー。値は文言にも出さない）。値は要求の直前に解決し（JIT、§20.2）、provider にも持たない。読み込みの時点では store にその path があることだけを確かめる。
 - 未知のキーはエラー。YAML はリポジトリのサブセットで、`[a, b]` の流れの書き方は使えない（`- a` の形で書く）。
-- トークンに要る権限：VM の作成・複製・設定・電源・削除（`VM.Allocate`・`VM.Clone`・`VM.Config.*`・`VM.PowerMgmt`）、ストレージの領域の割り当て（`Datastore.AllocateSpace`）、`/cluster/resources` と仕事の状態を読むこと（`Sys.Audit`）。テンプレートから複製するなら、そのテンプレートに `VM.Clone`。privsep のあるトークンには、利用者と同じかそれ以下の権限を付ける。
+- トークンに要る権限は下の「トークンの権限」。
+
+## トークンの権限
+
+トークンに要るのは、VM の作成・複製・設定・電源・削除（`VM.Allocate`・`VM.Clone`・`VM.Config.*`・`VM.PowerMgmt`・`VM.Audit`）、ストレージの領域の割り当て（`Datastore.AllocateSpace`）、bridge を使うこと（`SDN.Use`）、テンプレートから複製するならそのテンプレートに `VM.Clone`。
+仕事（UPID）の状態は、そのトークンが始めた仕事なら権限なしで読める。privsep のあるトークン（`--privsep 1`）の権限は、利用者とトークンの両方に付けた ACL の重なりなので、同じ ACL を両方に付ける。
+
+### pool に絞ったトークン（Backlog #165）
+
+VM に `pool` を宣言すると、作るときにその pool に入るので、トークンの権限を pool の ACL だけで絞れる。Proxmox VE 9.2 で確かめた最小の組（`make integration-proxmox` の pool の段と同じ）:
+
+```console
+# pvesh create /pools --poolid apps
+# pveum user add sakutei@pve
+# pveum user token add sakutei@pve sakutei --privsep 1
+# for who in "--users sakutei@pve" "--tokens sakutei@pve!sakutei"; do
+    pveum acl modify /pool/apps              --roles PVEVMAdmin,PVEPoolUser $who   # pool の VM を作る・設定・電源・消す、pool を見る
+    pveum acl modify /storage/local-lvm      --roles PVEDatastoreUser $who         # ディスク・cloud-init のドライブの領域
+    pveum acl modify /sdn/zones/localnetwork --roles PVESDNUser $who               # vmbr0 などの bridge（VLAN のタグを含む）
+    pveum acl modify /vms/9000               --roles PVETemplateUser $who          # 複製の元のテンプレート（見る・複製する）
+  done
+```
+
+| ACL | ロール | 何のため |
+| --- | --- | --- |
+| `/pool/<pool>` | `PVEVMAdmin` | pool の中の VM の作成（`pool` を渡した作成・複製は `/vms/<vmid>` でなく `/pool/<pool>` の `VM.Allocate` で通る）・設定・resize・電源・削除・読み |
+| `/pool/<pool>` | `PVEPoolUser`（`Pool.Audit`） | **pool を観測するため**。これが無いと `/cluster/resources` に `pool` が載らず、VM が「pool に無い」に見える（pool の drift になり、移そうとして権限で断られる） |
+| `/storage/<storage>` | `PVEDatastoreUser` | 宣言したディスク・複製の先のストレージ |
+| `/sdn/zones/localnetwork`（か bridge ごと） | `PVESDNUser` | NIC の bridge |
+| テンプレート（`/vms/<vmid>`） | `PVETemplateUser` | 複製の元を見つけて（`VM.Audit`）複製する（`VM.Clone`）。テンプレートを同じ pool に入れてもよい |
+| `/pool/<pool>` | `PVEPoolAdmin`（`Pool.Allocate`） | pool を移す（宣言の pool と違うとき）ときだけ。作るときに渡すだけなら要らない |
+
+このトークンに見えるのは pool の VM と、`VM.Audit` のあるテンプレートだけである（`List`・`status` の unmanaged も pool の中だけ）。触らない VM（Sakutei 自身の VM）を pool の外に置けば、トークンからは見えも触れもしない。
 
 ## intent の例
 
@@ -57,6 +89,7 @@ resources:
       vmid:
         from_pool: vmids              # 採番から配る（vmid: "501" と書いてもよい）
       template: debian-13-cloud       # 複製する元（名前か vmid）。作るときだけ
+      pool: apps                      # Proxmox の pool。作るときに渡し、違えば移す
       cores: "2"
       memory: 4G                      # MiB の整数（4096）でもよい
       disks: "scsi0 storage=local-lvm size=32G"
@@ -79,6 +112,7 @@ resources:
 | `vmid` | 100〜999999999 | 作るときに使う。宣言するか `from_pool` で配る（どちらも無ければ作るときにエラー）。今ある VM と違えば計画のエラー（番号は変えない）。使われている番号・触らない番号なら作らない |
 | `node` | ノード名 | 省略すればクラスタの `node`。今ある VM と違えば計画のエラー（移行は扱わない） |
 | `template` | 名前か vmid | 作るときだけ使う full clone の元。観測しない（差分から落とす）。宣言したディスクが全部同じストレージなら、複製の先のストレージにする |
+| `pool` | pool の名前（入れ子は `親/子`）か `""` | 作るときに渡す（複製・作成の `pool`）。観測と違えば移す（`""` は pool から外す）。宣言しなければ触らない。pool は作らない（下の「pool」） |
 | `cores` | 正の整数 | |
 | `memory` | `2048`（MiB）・`2048M`・`2G` | |
 | `disks` | `<slot> storage=<storage> size=<大きさ>` を `,` でつなぐ | slot は `scsiN`・`virtioN`・`sataN`・`ideN`。大きさは GiB で割り切れること。**宣言した slot だけ**を比べる。大きくするのはよい（resize）、**小さくするのと、ストレージを変えるのは計画のエラー**。無い slot は足す。宣言から外したディスクは消さない |
@@ -139,8 +173,16 @@ Proxmox が書き戻す表記と、宣言の書き方の違いは比べる前に
 
 ### 作る・消す
 
-- 作る：`template` があれば full clone（`/nodes/<テンプレートのノード>/qemu/<vmid>/clone`、`target` はこの VM のノード）、無ければ空から（`POST /nodes/<node>/qemu`。scsi のディスクがあれば `scsihw: virtio-scsi-single`）。終わったら同じ Apply で残りを合わせて、`power: running` なら起動する。
+- 作る：`template` があれば full clone（`/nodes/<テンプレートのノード>/qemu/<vmid>/clone`、`target` はこの VM のノード）、無ければ空から（`POST /nodes/<node>/qemu`。scsi のディスクがあれば `scsihw: virtio-scsi-single`）。`pool` を宣言していればどちらにも渡す。終わったら同じ Apply で残りを合わせて、`power: running` なら起動する。
 - 消す（`ensure: absent` の Delete、破壊的）：走っていれば止めて（stop）から、ディスクごと消す（`purge=1`・`destroy-unreferenced-disks=1`）。触らない VM・テンプレートは消さない。
+
+### pool（Backlog #165）
+
+- 作るときに渡す（あとから入れ直さない）。観測は `/cluster/resources` の `pool`（pool の設定の今の値で、名前・status のようには遅れない）。
+- 観測と違えば drift（`status` に `pool` が出る）で、`reconcile` が移す：`PUT /pools` に `poolid`・`vms`・`allow-move=1`（ほかの pool にあれば移す）。`pool: ""` は今の pool から外す（`delete=1`）。`PUT /pools` は Proxmox VE 8.1 からの口で、それより前の版では移せない（Apply のエラー）。
+- **pool は作らない**（pool は Proxmox の設定で、VM の宣言の外）。無い pool は Apply のエラーで、設定を直すまで繰り返さない（PermanentError）：作成・複製は Proxmox が 403 `Permission check failed (pool 'x' does not exist)` で、移すのは 500 `pool 'x' does not exist` で断る。文言に「pool を Proxmox で作る」と出る。
+- 権限が無い（403）のも PermanentError で、要る権限（作るなら `/pool/<pool>` の `VM.Allocate`、移すなら `Pool.Allocate`、見るなら `Pool.Audit`）を文言に出す。
+- **pool に絞ったトークンでは、pool から手で外された VM は見えない**（absent に見える）。作り直そうとして vmid がぶつかるので、Proxmox の `unable to create VM <vmid>: config file already exists` を「vmid がこのトークンに見えない VM に使われている（pool の外など）」と PermanentError にして知らせ、作り直さない。pool に戻すのは pool の外も見える資格（人か、別のトークン）の仕事。root に近いトークンでは、手で外したのは drift に見えて `reconcile` が戻す。
 
 ### 宣言で消す（`ensure: absent`、Backlog #163）
 
@@ -205,7 +247,32 @@ $ make integration-proxmox
 | 触らない VM に触れない | 名前でも vmid でも、宣言すれば `plan`・`reconcile` が protected と言って断り、VM 100 の設定の digest は変わらず、走ったまま |
 | 届かないと unknown | qemu を SIGSTOP で止めると `status --json` が unobservable=1・drifted=0。SIGCONT で戻せば適合に戻る |
 | 宣言の外の VM は unmanaged | 宣言を 0 件にすると `status --json` は it-vm1 だけを unmanaged に出し（total 1）、文の出力も `unmanaged=1`。触らない VM（100）とテンプレート（9000）は出ない。`reconcile` しても VM は消えず走ったまま。宣言に戻すと unmanaged は 0（#164） |
+| pool に入れて作る・pool に絞ったトークン | root で pool `it-pool` と、privsep のトークン `sakutei@pve!pool`（ACL は上の「pool に絞ったトークン」の組）を作る。そのトークンの設定で、`pool: it-pool` の VM（vmid 520）をテンプレートから作り（複製・resize・VLAN の NIC・cloud-init・起動）、`Converged (no changes)` まで。root の API で VM が `it-pool` にあり走っている。トークンには pool の外の VM（100）が見えず、`status --json` は it-vm2 だけを適合に出す。root で pool から外すと、トークンの `reconcile` は「見えない VM が vmid を使っている」と知らせ、root のトークンでは `status` が pool の drift を出して `reconcile` が戻す。無い pool を宣言すると `does not exist` のエラーで、VM は動かない |
 | absent で消す | 宣言から外しただけでは消えない（走ったまま）。`ensure: absent` にすると `plan` が DELETE を `blocked: approval` で出し、レーンが無い `reconcile` は消さない（`AbsentAwaitingApproval`）。承認のある planned_change（`kind: delete`）を足した `reconcile --audit-log` で走っている VM が止まって消え、次の `reconcile` は `Converged (no changes)`。ほかの VM（100・9000）は残る。触らない VM を `ensure: absent` にすると protected と言って断る |
+
+### 結果（2026-10-28、Backlog #165 の「pool に入れて作る・pool に絞ったトークン」）
+
+同じ開発機・同じキャッシュで、`make integration-proxmox` が PASS（全段で約 3 分）:
+
+```
+=== RUN   TestProxmoxVM/pool_に入れて作る・pool_に絞ったトークン
+    proxmox_integration_test.go:926: reconcile 1: Reconcile: 1 change(s) applied
+    proxmox_integration_test.go:927: converged with the pool token after 2 reconcile(s)
+    proxmox_integration_test.go:945: the pool token sees [520:it-vm2:it-pool 9000:it-tmpl:]
+--- PASS: TestProxmoxVM (171.87s)
+    ...
+    --- PASS: TestProxmoxVM/absent_で消す (5.31s)
+    --- PASS: TestProxmoxVM/pool_に入れて作る・pool_に絞ったトークン (16.20s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/proxmox	171.876s
+```
+
+pool に絞ったトークン（privsep）で、テンプレートからの複製・resize・VLAN の NIC・cloud-init・起動が 1 回の Apply で済み、次の `reconcile` は適合。トークンに見えるのは pool の VM とテンプレートだけ（テンプレートの `pool` は空）。
+
+段を作る前に本物で調べて分かったこと：
+
+- `/cluster/resources` の `pool` は、トークンにその pool の **`Pool.Audit` が無いと載らない**（`PVEVMAdmin` だけでは VM は見えるが pool が空に見える）。`PVEPoolUser` を足すと載る。
+- 無い pool は、作成・複製では 403 `Permission check failed (pool 'nope' does not exist)`、`PUT /pools` では 500 `update pools failed: pool 'nope' does not exist`。ほかの pool にある VM は `allow-move` が無ければ 500 で断られ、pool に無い VM を外すと 500 `VM <vmid> is not a pool member`。
+- pool の外の VM と同じ vmid で複製すると 500 `unable to create VM <vmid>: config file already exists`（トークンにその VM は見えない）。
 
 ### 結果（2026-10-28、Backlog #163 の「absent で消す」）
 
@@ -271,4 +338,5 @@ ok  	github.com/tjst-t/sakutei/tests/integration/proxmox	156.570s
 `make check` に入るもの：
 
 - [internal/proxmox](../../internal/proxmox)：偽の Proxmox VE（[pvetest](../../internal/proxmox/pvetest)、httptest。API トークンを確かめ、ディスクの切り出し・MAC の付与・pending・非同期の仕事・lock・ノードの停止・接続の切断と、`ResourceLag` で pvestatd の写しの遅れを真似る）を相手に、`sdk.ContractTester`・`sdk.BulkEquivalenceTester`、正規形、pending、触らない VM、ディスクの縮小とストレージの変更の計画のエラー、強制停止が破壊的になること、非同期の仕事の Converging と失敗、一度きりの操作。
-- [tests/acceptance/proxmox_vm_test.go](../../tests/acceptance/proxmox_vm_test.go)：DefaultRegistry と CLI（`--provider-config`）を通して、採番の vmid でテンプレートから作り何周でも適合のまま・手の変更が戻る・pending を重ねない（AC-143-1〜4）。
+- [tests/acceptance/proxmox_vm_test.go](../../tests/acceptance/proxmox_vm_test.go)：DefaultRegistry と CLI（`--provider-config`）を通して、採番の vmid でテンプレートから作り何周でも適合のまま・手の変更が戻る・pending を重ねない（AC-143-1〜4）。pool に入って作られ、手で外すと戻る・pool に絞ったトークンで作れて読め、pool から外された VM は作り直さずに知らせる（AC-165-1・2）。
+- pool の単体（[pool_test.go](../../internal/proxmox/pool_test.go)）：偽の Proxmox に pool（`Options.Pools`・`SetPool`・`PUT /pools`）と pool に絞ったトークン（`Options.PoolTokens`。pool の VM とテンプレートしか見えず触れない、`PoolAudit` が無ければ pool が載らない）を足して確かめる。

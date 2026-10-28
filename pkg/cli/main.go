@@ -156,6 +156,10 @@ func Main(opts ...Option) {
 //	--unreachable-skip-limit <n>  consecutive unreachable skips before the Prolonged alert (default 3)
 //	--stuck-after <n>    consecutive cycles after which a level Event is promoted transient → stuck (default 5, §22.3)
 //
+// --cause-state is refused (#165): the daemon keeps the previous cycle's
+// revisions in memory (Daemon.prevRev), so the file that carries them between
+// one-shot plan / reconcile / status runs is not needed.
+//
 // The loop runs until SIGTERM or SIGINT is received, at which point it stops
 // at the next cycle boundary and exits 0.
 //
@@ -265,6 +269,11 @@ func runDaemon() {
 	logFormat := addLogFormatFlag(fs)
 	eventLog := addEventLogFlag(fs)
 	eventNotify := addEventNotifyFlags(fs)
+	// #165: --cause-state は一回性の動詞（plan・reconcile・status）が前の回の
+	// revision を持ち越すためのもの。常駐は前の周をメモリに持つので受けず、
+	// 黙って無視もしない（そう言って断る）。
+	causeState := fs.String("cause-state", "",
+		"not used by the daemon: it keeps the previous cycle's revisions in memory (the cause-state file is for the one-shot plan / reconcile / status)")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// "-h"/"--help" makes flag.Parse return flag.ErrHelp after printing
@@ -273,6 +282,10 @@ func runDaemon() {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
 		}
+		os.Exit(1)
+	}
+	if *causeState != "" {
+		fmt.Fprintln(os.Stderr, "sakutei: --cause-state is for the one-shot plan, reconcile and status; the daemon keeps the previous cycle's revisions in memory (the cause tags A/B/C/E compare against the previous cycle of the same process), so it takes no cause-state file")
 		os.Exit(1)
 	}
 

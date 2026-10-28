@@ -853,6 +853,143 @@ qm list`); err != nil {
 			t.Errorf("reconcile with the protected VM declared absent: exit %d:\n%s", code, out)
 		}
 	})
+
+	t.Run("pool に入れて作る・pool に絞ったトークン", func(t *testing.T) {
+		// #165: pool と、その pool だけに絞ったトークン（privsep の API トークン。
+		// 利用者とトークンの両方に同じ ACL）を root で作る。
+		out, err := l.ssh(`set -e
+pvesh create /pools --poolid it-pool >/dev/null
+pveum user add sakutei@pve
+pveum user token add sakutei@pve pool --privsep 1 --output-format json > /root/pool-token.json
+for who in "--users sakutei@pve" "--tokens sakutei@pve!pool"; do
+  pveum acl modify /pool/it-pool --roles PVEVMAdmin,PVEPoolUser $who
+  pveum acl modify /storage/local-lvm --roles PVEDatastoreUser $who
+  pveum acl modify /sdn/zones/localnetwork --roles PVESDNUser $who
+  pveum acl modify /vms/9000 --roles PVETemplateUser $who
+done
+cat /root/pool-token.json`)
+		if err != nil {
+			t.Fatalf("creating the pool and the pool token: %v\n%s", err, out)
+		}
+		var tok struct {
+			Value string `json:"value"`
+		}
+		if i := strings.Index(out, "{"); i < 0 || json.Unmarshal([]byte(out[i:]), &tok) != nil || tok.Value == "" {
+			t.Fatalf("the pool token: %s", out)
+		}
+		poolCfg := filepath.Join(l.dir, "pve-pool.yaml")
+		cfg := strings.NewReplacer("secrets.json", "pool-secrets.json", "token_id: root@pam!"+tokenName, "token_id: sakutei@pve!pool").Replace(readFile(t, l.cfg))
+		pc, _ := json.Marshal(map[string]any{"providers": map[string]any{"proxmox-vm": map[string]any{"proxmox_config": poolCfg}}})
+		for name, body := range map[string]string{
+			"pool-secrets.json":         `{"secrets": {"proxmox/it": {"gen": 1, "value": "` + tok.Value + `"}}}`,
+			"pve-pool.yaml":             cfg,
+			"provider-config-pool.json": string(pc),
+		} {
+			if err := os.WriteFile(filepath.Join(l.dir, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rootPC, poolPC := l.pc, filepath.Join(l.dir, "provider-config-pool.json")
+		defer func() { l.pc = rootPC }()
+		poolAPI, err := proxmox.NewClient(proxmox.ClientConfig{
+			Endpoint: fmt.Sprintf("https://127.0.0.1:%d", l.port), TokenID: "sakutei@pve!pool", InsecureSkipVerify: true,
+			Timeout: 30 * time.Second, Secret: func(context.Context) (string, error) { return tok.Value, nil },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		poolOf := func(c *proxmox.Client, vmid int) (string, bool) {
+			t.Helper()
+			res, err := c.Resources(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range res {
+				if r.VMID == vmid {
+					return r.Pool, true
+				}
+			}
+			return "", false
+		}
+
+		vm2 := func(pool string) string {
+			return `{"resources": [{"provider": "proxmox-vm", "id": "it/it-vm2", "fields": {"vmid": "520", "template": "it-tmpl", "pool": "` + pool + `",
+			  "cores": "1", "memory": "1G", "disks": "scsi0 storage=local-lvm size=4G", "nics": "net0 bridge=vmbr0, net1 bridge=vmbr0 vlan=42",
+			  "ci_user": "ops", "ci_ssh_keys": "` + itKey + `", "ci_ip": "10.0.2.51/24", "ci_gateway": "10.0.2.2", "power": "running"}}]}`
+		}
+
+		// pool に絞ったトークンで作る：複製に pool を渡し、resize・NIC・cloud-init・起動まで。
+		l.pc = poolPC
+		if out, code := l.sakutei(t, vm2("it-pool"), "plan"); code != 0 || !strings.Contains(out, "CREATE proxmox-vm//it/it-vm2") {
+			t.Fatalf("plan with the pool token exit %d:\n%s", code, out)
+		}
+		n := l.converge(t, vm2("it-pool"), 10)
+		t.Logf("converged with the pool token after %d reconcile(s)", n)
+		if p, ok := poolOf(l.api, 520); !ok || p != "it-pool" || l.status(t, 520) != "running" {
+			t.Fatalf("VM 520: listed %v, pool %q, status %s; want running in it-pool", ok, p, l.status(t, 520))
+		}
+		cur, _ := l.config(t, 520)
+		if !strings.Contains(cur["scsi0"], "size=4G") || !strings.Contains(cur["net1"], "tag=42") || cur["ciuser"] != "ops" {
+			t.Errorf("VM 520 config = %v", cur)
+		}
+
+		// 読める：トークンには pool の VM（とテンプレート）しか見えず、status は適合。
+		res, err := poolAPI.Resources(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var seen []string
+		for _, r := range res {
+			seen = append(seen, fmt.Sprintf("%d:%s:%s", r.VMID, r.Name, r.Pool))
+		}
+		t.Logf("the pool token sees %v", seen)
+		if _, ok := poolOf(poolAPI, 100); ok {
+			t.Errorf("the pool token sees VM 100 (outside the pool): %v", seen)
+		}
+		out, code := l.sakutei(t, vm2("it-pool"), "status", "--json")
+		var doc struct {
+			Summary struct{ Conformant, Drifted, Unmanaged, Total int }
+		}
+		if i := strings.Index(out, "{"); i >= 0 {
+			_ = json.Unmarshal([]byte(out[i:]), &doc)
+		}
+		if code != 0 || doc.Summary.Conformant != 1 || doc.Summary.Total != 1 {
+			t.Errorf("status with the pool token: exit %d:\n%s", code, out)
+		}
+		for i := 0; i < 3; i++ {
+			if out, code := l.sakutei(t, vm2("it-pool"), "reconcile"); code != 0 || !strings.Contains(out, "Converged (no changes)") {
+				t.Fatalf("reconcile %d with the pool token exit %d:\n%s", i, code, out)
+			}
+		}
+
+		// 手で pool から外す：pool のトークンには見えなくなり、作り直さずに知らせる。
+		if err := l.api.SetPool(ctx, "it-pool", 520, true); err != nil {
+			t.Fatal(err)
+		}
+		if out, _ := l.sakutei(t, vm2("it-pool"), "reconcile"); !strings.Contains(out, "cannot see") {
+			t.Errorf("reconcile with the pool token after the VM was taken out of the pool:\n%s", out)
+		}
+		// root のトークンでは pool の drift に見え、reconcile が戻す。
+		l.pc = rootPC
+		if out, _ := l.sakutei(t, vm2("it-pool"), "status"); !strings.Contains(out, "pool") || !strings.Contains(out, "drifted=1") {
+			t.Errorf("status (root token) after the VM was taken out of the pool:\n%s", out)
+		}
+		if out, code := l.sakutei(t, vm2("it-pool"), "reconcile"); code != 0 || !strings.Contains(out, "1 change(s) applied") {
+			t.Fatalf("reconcile (root token) exit %d:\n%s", code, out)
+		}
+		if p, _ := poolOf(l.api, 520); p != "it-pool" {
+			t.Errorf("pool after reconcile = %q, want it-pool", p)
+		}
+		// 無い pool は Apply のエラー（pool は作らない）。
+		if out, _ := l.sakutei(t, vm2("no-such-pool"), "reconcile"); !strings.Contains(out, "does not exist") {
+			t.Errorf("reconcile with a pool that does not exist:\n%s", out)
+		}
+		if p, _ := poolOf(l.api, 520); p != "it-pool" {
+			t.Errorf("pool after the failed move = %q, want it-pool", p)
+		}
+		l.pc = poolPC
+		l.converge(t, vm2("it-pool"), 2)
+	})
 }
 
 func readFile(t *testing.T, path string) string {

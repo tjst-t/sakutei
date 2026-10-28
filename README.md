@@ -10,7 +10,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 
 - **ライセンス:** Apache-2.0
 - **言語:** Go（1.22・標準ライブラリのみ、外部依存なし）
-- **状態:** 設計 v3.32／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.1`、変更点は [CHANGELOG.md](CHANGELOG.md)）
+- **状態:** 設計 v3.33／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.1`、変更点は [CHANGELOG.md](CHANGELOG.md)）
 
 ---
 
@@ -84,6 +84,8 @@ sakutei fence        # 各 scope の fencing 世代と holder を表示する（
 sakutei mirror       # 拠点が pull する読み取り専用の git ミラーを中央に追従させる  --upstream <url> --dir <dir> [--once]
 sakutei secrets extract  # 中央の資格ファイルから 1 拠点分だけを抜き出す  --from <ファイル> --claim <selector> --out <ファイル>
 ```
+
+原因タグ（A〜E、§10.2）は前の回と比べて付けます。一回性の `plan`・`reconcile`・`status` は前の回の revision を `--cause-state <ファイル>` で持ち越します（無ければ初回として扱う）。常駐の `sakutei` は前の周をメモリに持つので要らず、`--cause-state` を渡すと理由を言って断ります（#165）。
 
 `import` は現実を List と Read で観測し、`<dir>/imported-<provider>.yaml` に書き出します。直後の `plan` は差分ゼロになります。何度か観測して（`--samples`、既定 3 回）値が変わったフィールドには **managed 候補** の印を付けます。書き出すのは「現状のスナップショット」なので、人が読んで整理してから intent にしてください。全リソースは `deletion_policy: ExplicitAbsentOnly`（prune しない）で書き出され、secret の平文は書き出しません。
 
@@ -165,7 +167,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 コードは設計仕様の**射影**です。設計に関する記述は `docs/` を正とします。
 
 - **[docs/README.md](docs/README.md)** — ドキュメント索引（まずここ）
-- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.32（8 部 29 節・分冊）。§番号は全体で一意
+- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.33（8 部 29 節・分冊）。§番号は全体で一意
 - **[docs/web/sakutei.html](docs/web/sakutei.html)** — 設計思想を庭園メタファで表したランディングページ
 - **[docs/web/buildout.html](docs/web/buildout.html)** — 段0だけがある状態から、20台規模のポッド(リーフスイッチ→BMC→ハイパーバイザー導入→クラスタ構築)を1つの intent PR から積み上げる様子を追う構築ウォークスルー
 - **[docs/web/scenarios.html](docs/web/scenarios.html)** — 稼働中の仮想基盤を題材に、増設/物理交換/FW更新/HVローリング更新が実際どう実行されるかを追う運用シナリオ集

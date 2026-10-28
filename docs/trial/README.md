@@ -67,6 +67,8 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 
 別の端末からゾーンファイルや ruleset を手で書き換えて、次の周期の動きを見る。止めるのは Ctrl-C（周期の切れ目で止まる）。
 
+デーモンは `--cause-state` を受けない。原因タグを付けるための前の周の revision はメモリに持つので要らない（`--cause-state` は一回性の `plan`・`reconcile`・`status` が回をまたいで持ち越すためのもの。渡すと理由を言って終了コード 1 で断る、#165）。
+
 ### D1. 収束と自己修復（2026-10-21 に確かめた）
 
 初期状態（`docs/trial/v1/initial/`）から `--interval 1s` で起動する。

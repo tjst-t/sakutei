@@ -31,8 +31,16 @@
 //   - Options.ResourceLag が正なら、/cluster/resources の名前・status・template は
 //     pvestatd のように周期で写した古い値（作った直後の VM は名前が空）。今の
 //     電源と lock は /status/current、名前とテンプレートは /config が正。
+//   - pool（Backlog #165）：作成・複製の pool（無い pool は 403 "Permission check
+//     failed (pool 'x' does not exist)"）、PUT /pools（poolid・vms・allow-move・
+//     delete。無い pool・ほかの pool にある VM・pool に無い VM は 500）、
+//     /cluster/resources の pool（設定の今の値で、遅れない）。
+//   - pool に絞ったトークン（Options.PoolTokens）：その pool の VM と、Templates に
+//     挙げたテンプレートだけが見え、触れる（ほかは 403）。作成・複製はその pool を
+//     渡したときだけ。/cluster/resources の pool は PoolAudit のときだけ載り、
+//     PUT /pools は PoolAllocate のときだけその pool に。
 //
-// テストから: 現実を手で変える（SetConfig・SetStatus・SetLock）、ノードを落とす
+// テストから: 現実を手で変える（SetConfig・SetStatus・SetLock・SetPool）、ノードを落とす
 // （SetNodeOffline：資源の status が unknown、ノードの API が 595）、届かなく
 // する（SetUnreachable）、次の仕事を失敗させる（FailNextTask）。
 package pvetest
@@ -65,6 +73,21 @@ type Options struct {
 	// pvestatd のように周期で写す：この回数の一覧ごとに 1 回だけ今の値に
 	// 更新する。作った直後の VM は名前が空・status が空で載る。
 	ResourceLag int
+	// Pools は在る pool の名前。
+	Pools []string
+	// PoolTokens は pool に絞ったトークン（TokenID・Secret のほかに受け付ける）。
+	PoolTokens []PoolToken
+}
+
+// PoolToken は 1 つの pool に絞ったトークン（ACL が /pool/<Pool> に PVEVMAdmin、
+// テンプレートに PVETemplateUser）。
+type PoolToken struct {
+	TokenID, Secret, Pool string
+	// Templates は見えて複製できるテンプレートの vmid。
+	Templates []int
+	// PoolAudit は Pool.Audit（/cluster/resources に pool が載る）、PoolAllocate は
+	// Pool.Allocate（PUT /pools でその pool に出し入れできる）。
+	PoolAudit, PoolAllocate bool
 }
 
 // VM は偽サーバの VM。
@@ -75,6 +98,7 @@ type VM struct {
 	Template bool
 	Status   string // running / stopped
 	Lock     string
+	Pool     string
 	// Config は設定（キー → 値）。
 	Config map[string]string
 	// Pending は再起動を待つ値、PendingDelete は再起動で消えるキー。
@@ -101,6 +125,7 @@ type Server struct {
 
 	mu          sync.Mutex
 	vms         map[int]*VM
+	pools       map[string]bool
 	tasks       map[string]*task
 	seq         int
 	macSeq      int
@@ -126,8 +151,11 @@ func New(opts Options) *Server {
 	if opts.ColdKeys == nil {
 		opts.ColdKeys = []string{"cores", "memory"}
 	}
-	s := &Server{opts: opts, vms: map[int]*VM{}, tasks: map[string]*task{}, offline: map[string]bool{},
+	s := &Server{opts: opts, vms: map[int]*VM{}, pools: map[string]bool{}, tasks: map[string]*task{}, offline: map[string]bool{},
 		failNext: map[string]string{}, calls: map[string]int{}}
+	for _, p := range opts.Pools {
+		s.pools[p] = true
+	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	return s
 }
@@ -149,7 +177,7 @@ func (s *Server) SetNodeOffline(node string, v bool) { s.mu.Lock(); s.offline[no
 func (s *Server) FailNextTask(kind, msg string) { s.mu.Lock(); s.failNext[kind] = msg; s.mu.Unlock() }
 
 // Calls は操作（"resources"・"pending"・"config"・"create"・"clone"・"resize"・
-// "start"・"shutdown"・"stop"・"reboot"・"reset"・"destroy"・"task"）ごとの
+// "start"・"shutdown"・"stop"・"reboot"・"reset"・"destroy"・"task"・"pools"）ごとの
 // 呼ばれた回数を返す。
 func (s *Server) Calls(op string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls[op] }
 
@@ -229,6 +257,18 @@ func (s *Server) SetPending(vmid int, key, value string) {
 	defer s.mu.Unlock()
 	if v, ok := s.vms[vmid]; ok {
 		v.Pending[key] = value
+	}
+}
+
+// AddPool は pool を作る。
+func (s *Server) AddPool(name string) { s.mu.Lock(); s.pools[name] = true; s.mu.Unlock() }
+
+// SetPool は VM の pool を直に変える（手での変更。"" は外す）。
+func (s *Server) SetPool(vmid int, pool string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.vms[vmid]; ok {
+		v.Pool = pool
 	}
 }
 
@@ -317,9 +357,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errf(fail, "injected failure"))
 		return
 	}
-	if r.Header.Get("Authorization") != "PVEAPIToken="+s.opts.TokenID+"="+s.opts.Secret {
-		writeErr(w, errf(http.StatusUnauthorized, "authentication failure"))
-		return
+	var tok *PoolToken
+	if auth := r.Header.Get("Authorization"); auth != "PVEAPIToken="+s.opts.TokenID+"="+s.opts.Secret {
+		for i, pt := range s.opts.PoolTokens {
+			if auth == "PVEAPIToken="+pt.TokenID+"="+pt.Secret {
+				tok = &s.opts.PoolTokens[i]
+			}
+		}
+		if tok == nil {
+			writeErr(w, errf(http.StatusUnauthorized, "authentication failure"))
+			return
+		}
 	}
 	path, ok := strings.CutPrefix(r.URL.Path, "/api2/json")
 	if !ok {
@@ -330,7 +378,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errf(http.StatusBadRequest, "%v", err))
 		return
 	}
-	data, aerr := s.route(r.Method, path, r.Form)
+	data, aerr := s.route(tok, r.Method, path, r.Form)
 	if aerr != nil {
 		writeErr(w, aerr)
 		return
@@ -345,12 +393,16 @@ func writeErr(w http.ResponseWriter, e *apiError) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": nil, "message": e.msg + "\n"})
 }
 
-func (s *Server) route(method, path string, form url.Values) (any, *apiError) {
+func (s *Server) route(tok *PoolToken, method, path string, form url.Values) (any, *apiError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if path == "/cluster/resources" && method == http.MethodGet {
 		s.calls["resources"]++
-		return s.resources(form.Get("type")), nil
+		return s.resources(tok, form.Get("type")), nil
+	}
+	if path == "/pools" && method == http.MethodPut {
+		s.calls["pools"]++
+		return nil, s.updatePool(tok, form)
 	}
 	if m := taskRe.FindStringSubmatch(path); m != nil && method == http.MethodGet {
 		s.calls["task"]++
@@ -381,6 +433,9 @@ func (s *Server) route(method, path string, form url.Values) (any, *apiError) {
 		if s.offline[parts[1]] {
 			return nil, errf(595, "no route to host")
 		}
+		if aerr := s.checkPoolParam(tok, form.Get("pool")); aerr != nil {
+			return nil, aerr
+		}
 		return s.create(parts[1], form)
 	}
 	m := vmRe.FindStringSubmatch(path)
@@ -393,6 +448,9 @@ func (s *Server) route(method, path string, form url.Values) (any, *apiError) {
 		return nil, errf(595, "no route to host")
 	}
 	vm, ok := s.vms[vmid]
+	if tok != nil && !(ok && (vm.Pool == tok.Pool || (rest == "/clone" && containsInt(tok.Templates, vmid)))) {
+		return nil, errf(http.StatusForbidden, "Permission check failed")
+	}
 	if !ok || vm.Node != node {
 		return nil, errf(http.StatusInternalServerError, "Configuration file 'nodes/%s/qemu-server/%d.conf' does not exist", node, vmid)
 	}
@@ -422,6 +480,9 @@ func (s *Server) route(method, path string, form url.Values) (any, *apiError) {
 		return nil, s.setConfig(vm, form)
 	case rest == "/clone" && method == http.MethodPost:
 		s.calls["clone"]++
+		if aerr := s.checkPoolParam(tok, form.Get("pool")); aerr != nil {
+			return nil, aerr
+		}
 		return s.clone(vm, form)
 	case rest == "/resize" && method == http.MethodPut:
 		s.calls["resize"]++
@@ -452,7 +513,48 @@ func (s *Server) nodeKnown(n string) bool {
 	return false
 }
 
-func (s *Server) resources(typ string) []map[string]any {
+// checkPoolParam は作成・複製の pool を確かめる（本物と同じく、無い pool は
+// 権限の検査で断る）。pool に絞ったトークンはその pool を渡したときだけ作れる。
+func (s *Server) checkPoolParam(tok *PoolToken, pool string) *apiError {
+	if pool != "" && !s.pools[pool] {
+		return errf(http.StatusForbidden, "Permission check failed (pool '%s' does not exist)", pool)
+	}
+	if tok != nil && pool != tok.Pool {
+		return errf(http.StatusForbidden, "Permission check failed")
+	}
+	return nil
+}
+
+// updatePool は PUT /pools（VM の出し入れだけ）。
+func (s *Server) updatePool(tok *PoolToken, form url.Values) *apiError {
+	pool := form.Get("poolid")
+	if tok != nil && (pool != tok.Pool || !tok.PoolAllocate) {
+		return errf(http.StatusForbidden, "Permission check failed (/pool/%s, Pool.Allocate)", pool)
+	}
+	if !s.pools[pool] {
+		return errf(http.StatusInternalServerError, "update pools failed: pool '%s' does not exist", pool)
+	}
+	del, move := form.Get("delete") == "1", form.Get("allow-move") == "1"
+	for _, f := range strings.FieldsFunc(form.Get("vms"), func(r rune) bool { return r == ',' || r == ' ' || r == ';' }) {
+		vmid, _ := strconv.Atoi(f)
+		vm, ok := s.vms[vmid]
+		switch {
+		case !ok:
+			return errf(http.StatusInternalServerError, "update pools failed: guest '%s' does not exist", f)
+		case del && vm.Pool != pool:
+			return errf(http.StatusInternalServerError, "update pools failed: VM %d is not a pool member", vmid)
+		case del:
+			vm.Pool = ""
+		case vm.Pool != "" && vm.Pool != pool && !move:
+			return errf(http.StatusInternalServerError, "update pools failed: VM %d belongs already to pool '%s' and 'allow-move' is not set", vmid, vm.Pool)
+		default:
+			vm.Pool = pool
+		}
+	}
+	return nil
+}
+
+func (s *Server) resources(tok *PoolToken, typ string) []map[string]any {
 	s.resCalls++
 	fresh := s.opts.ResourceLag <= 0 || s.resCalls%s.opts.ResourceLag == 0
 	ids := make([]int, 0, len(s.vms))
@@ -464,6 +566,9 @@ func (s *Server) resources(typ string) []map[string]any {
 	for _, id := range ids {
 		v := s.vms[id]
 		if typ != "" && typ != "vm" {
+			continue
+		}
+		if tok != nil && v.Pool != tok.Pool && !containsInt(tok.Templates, v.VMID) {
 			continue
 		}
 		if fresh {
@@ -486,6 +591,9 @@ func (s *Server) resources(typ string) []map[string]any {
 		}
 		if v.Lock != "" {
 			m["lock"] = v.Lock
+		}
+		if v.Pool != "" && (tok == nil || tok.PoolAudit) {
+			m["pool"] = v.Pool
 		}
 		out = append(out, m)
 	}
@@ -605,10 +713,10 @@ func (s *Server) create(node string, form url.Values) (any, *apiError) {
 		return nil, errf(http.StatusInternalServerError, "unable to create VM %d - VM %d already exists on node '%s'", vmid, vmid, s.vms[vmid].Node)
 	}
 	vm := &VM{VMID: vmid, Node: node, Name: form.Get("name"), Status: "stopped", Config: map[string]string{},
-		Pending: map[string]string{}, PendingDelete: map[string]bool{}, Lock: "create"}
+		Pending: map[string]string{}, PendingDelete: map[string]bool{}, Lock: "create", Pool: form.Get("pool")}
 	keys := sortedKeys(form)
 	for _, k := range keys {
-		if k == "vmid" {
+		if k == "vmid" || k == "pool" {
 			continue
 		}
 		v, aerr := s.normalize(vm, k, form.Get(k))
@@ -689,7 +797,7 @@ func (s *Server) clone(src *VM, form url.Values) (any, *apiError) {
 		target = src.Node
 	}
 	vm := &VM{VMID: newid, Node: target, Name: form.Get("name"), Status: "stopped", Config: map[string]string{},
-		Pending: map[string]string{}, PendingDelete: map[string]bool{}, Lock: "clone"}
+		Pending: map[string]string{}, PendingDelete: map[string]bool{}, Lock: "clone", Pool: form.Get("pool")}
 	storage := form.Get("storage")
 	for _, k := range sortedKeysMap(src.Config) {
 		v := src.Config[k]
@@ -845,6 +953,15 @@ func fmtSize(b int64) string {
 		}
 	}
 	return strconv.FormatInt(b, 10)
+}
+
+func containsInt(xs []int, x int) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(xs []string, x string) bool {
