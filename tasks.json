@@ -4083,7 +4083,7 @@
       "number": 174,
       "kind": "task",
       "title": "網の間の許可を抽象のリソースにする（検査と nftables への変換）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "m6-netconf-apply-base-chain-2-apply",
       "dependsOn": [
         "nftables-base-chain-policy",
@@ -4095,12 +4095,12 @@
       "labels": [],
       "body": "網の間の通信の許可を、機器に依らない抽象のリソースとして intent に書けるようにする。\n\n- intent に網（名前・CIDR の一覧）と許可（from の網・to の網・proto・port の範囲）を書く形を loader と JSON Schema に足す。既定は拒否で、書いた許可だけが通る。\n- **許可の1行ごとの理由と印**：各許可に `reason`（なぜ許すかの文）と、任意の印 `tags`（文字列の一覧。例 `exception`＝弱い方式をその機器だけ例外として許す行）を書ける。reason は検査の結果・plan の展開・nftables のルールの comment（nft の comment の長さと使える文字に合わせて切る・逃がす）に出す。tags は plan と検査の結果に出す。\n- **理由の無い例外は断る**：`exception` の印が付いた許可に reason が無ければ、読み込みの時点で断る（例外は必ず理由つきで宣言する）。印の無い許可の reason は任意。\n- **検査**（読み込み・plan の時点で断るか警告）：網の CIDR の重なり、宣言に無い網を指す許可、前の許可に覆われて効かない許可（隠れた許可）、同じ許可の重複。検査の結果にはその行の reason を添える。\n- **変換**：許可を nftables のルール（base chain の宣言と組み合わせる、#173 の形）へ展開する。実現先（境界の FW・各ホスト）ごとに、そこを通る許可だけを出す。展開した結果は plan で見られる。\n- 展開の口を pkg/cli に出し、使う側が別の実現先（例：スイッチの ACL）への変換を足せるようにする（reason・tags も渡す）。本体はスイッチの ACL への変換を持たない。\n- provider の設定はつなぎ方（宛先・鍵・時間）だけ、範囲と除外は intent に書く。\n- 受け入れテストで、許可の宣言 → 検査 → nftables の宣言への展開（comment に reason）→ Apply（偽の nft）→ 宣言を変えると規則が変わる、を示す。統合テストで実際の nft に当たり、comment が読み戻しで drift にならないことを確かめる。\n- 設計書に節を足し、docs に書き方を置く。",
       "doneWhen": "網と許可の宣言から nftables のルールが作られ（reason が comment に出る）、重なり・隠れた許可・宣言に無い網・理由の無い例外を検査で知らせることを単体・受け入れテストで示し、統合テストで実際の nft に当たる。make check・make test-race が合格",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/nftables）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:49:00.946Z",
-      "updatedAt": "2026-10-28T11:47:40.293Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-28T12:23:34.154Z",
+      "closedAt": "2026-10-28T12:23:34.154Z",
       "extra": {}
     },
     {
