@@ -4356,6 +4356,32 @@
       "extra": {}
     },
     {
+      "id": "nftables-confirm-chain-docs",
+      "number": 192,
+      "kind": "task",
+      "title": "nftables の confirm：先ごとに「変えたあとだけ確かめる」を選べるようにし、変える chain を通る経路の先で空から組めない注意を docs に書く",
+      "status": "ready",
+      "parent": "m7",
+      "dependsOn": [
+        "nftables-sh-sudo-nft"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "m7",
+        "nftables"
+      ],
+      "body": "base chain の宣言の `confirm` に、変える対象の chain を通る経路の先（例：forward を通る別の経路の ssh）を書くと、空からの初回は、変える前の確かめでその先に届かない。そのため、一度も変えられない。\n\n- docs（nftables・network-policy の頁）に、この行き詰まりと避け方を書く。\n- `confirm` の先ごとに、「変えたあとだけ確かめる」印を書けるようにする（例 `after:ssh://…`）。\n  - 印の付いた先は、変える前に届かなくても止めない。\n  - 変えたあとは、ほかの先と同じに必ず届くことを確かめ、届かなければ巻き戻す。\n  - 変える前に確かめる先が1つも無い宣言（`self` を外し、全部に印を付けたもの）は、読み込みで断る。\n- plan の表示と、前の確かめ・後の確かめの知らせに、印の有無を出す。",
+      "doneWhen": "統合試験で、forward を通る経路の先に印を付けた宣言が、空から 1 回で変えられ、変えたあとに確かめられる。同じ先に印が無ければ、いまどおり変える前に止まる。変えたあとに印の付いた先に届かなければ巻き戻る。全部に印の付いた宣言は読み込みで断る。docs に注意がある。make check・make test-race・make integration-nftables が通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T15:40:45.547Z",
+      "updatedAt": "2026-10-28T15:40:59.144Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "api-provider-proxmox-vm-redfish-ldap-pos",
       "number": 186,
       "kind": "task",
@@ -4468,32 +4494,6 @@
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
       "updatedAt": "2026-10-28T13:07:46.058Z",
-      "closedAt": null,
-      "extra": {}
-    },
-    {
-      "id": "nftables-confirm-chain-docs",
-      "number": 192,
-      "kind": "task",
-      "title": "nftables の confirm：先ごとに「変えたあとだけ確かめる」を選べるようにし、変える chain を通る経路の先で空から組めない注意を docs に書く",
-      "status": "ready",
-      "parent": "m7",
-      "dependsOn": [
-        "nftables-sh-sudo-nft"
-      ],
-      "milestone": null,
-      "priority": "normal",
-      "labels": [
-        "m7",
-        "nftables"
-      ],
-      "body": "base chain の宣言の `confirm` に、変える対象の chain を通る経路の先（例：forward を通る別の経路の ssh）を書くと、空からの初回は、変える前の確かめでその先に届かない。そのため、一度も変えられない。\n\n- docs（nftables・network-policy の頁）に、この行き詰まりと避け方を書く。\n- `confirm` の先ごとに、「変えたあとだけ確かめる」印を書けるようにする（例 `after:ssh://…`）。\n  - 印の付いた先は、変える前に届かなくても止めない。\n  - 変えたあとは、ほかの先と同じに必ず届くことを確かめ、届かなければ巻き戻す。\n  - 変える前に確かめる先が1つも無い宣言（`self` を外し、全部に印を付けたもの）は、読み込みで断る。\n- plan の表示と、前の確かめ・後の確かめの知らせに、印の有無を出す。",
-      "doneWhen": "統合試験で、forward を通る経路の先に印を付けた宣言が、空から 1 回で変えられ、変えたあとに確かめられる。同じ先に印が無ければ、いまどおり変える前に止まる。変えたあとに印の付いた先に届かなければ巻き戻る。全部に印の付いた宣言は読み込みで断る。docs に注意がある。make check・make test-race・make integration-nftables が通る",
-      "resolution": null,
-      "refs": [],
-      "threads": [],
-      "createdAt": "2026-10-28T15:40:45.547Z",
-      "updatedAt": "2026-10-28T15:40:59.144Z",
       "closedAt": null,
       "extra": {}
     }
