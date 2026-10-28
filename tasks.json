@@ -4245,7 +4245,7 @@
       "number": 182,
       "kind": "task",
       "title": "A3 後半：netconf・ldap・cli-device・guest-os・host-file・systemd-unit などの範囲を intent に",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "m7",
       "dependsOn": [
         "a3-provider-intent-proxmox-vm-dnszone-nf"
@@ -4259,7 +4259,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T14:15:28.984Z",
+      "updatedAt": "2026-10-28T14:46:06.449Z",
       "closedAt": null,
       "extra": {}
     },
