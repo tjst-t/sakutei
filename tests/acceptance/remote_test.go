@@ -476,3 +476,36 @@ func TestRemote_Registry(t *testing.T) {
 		}
 	}
 }
+
+func TestRemote_RegistryGuardTool(t *testing.T) {
+	// [AC-191-2-5] ruleset_guard_tool: 離れたホストだけ・絶対パス・ruleset_nft と
+	// 併せない。
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "hosts.yaml")
+	if err := os.WriteFile(cfg, []byte("known_hosts: known_hosts\nhosts:\n  fw1:\n    address: 192.0.2.1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.DefaultRegistry()
+	base := func(kv ...string) map[string]string {
+		m := map[string]string{"ruleset_target": "live", "ruleset_tables": "inet/filter", "remote_config": cfg, "ruleset_hosts": "fw1"}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	if _, err := reg.Get("nftables", base("ruleset_guard_tool", "/usr/local/libexec/sakutei-nft-guard")); err != nil {
+		t.Fatalf("[AC-191-2-5] %v", err)
+	}
+	local := base("ruleset_guard_tool", "/usr/local/libexec/sakutei-nft-guard")
+	delete(local, "ruleset_hosts")
+	for name, c := range map[string]map[string]string{
+		"relative":      base("ruleset_guard_tool", "sakutei-nft-guard"),
+		"a shell word":  base("ruleset_guard_tool", "/usr/bin/env sh"),
+		"with nft":      base("ruleset_guard_tool", "/usr/local/libexec/sakutei-nft-guard", "ruleset_nft", "/usr/sbin/nft"),
+		"the local nft": local,
+	} {
+		if _, err := reg.Get("nftables", c); err == nil {
+			t.Errorf("[AC-191-2-5] ruleset_guard_tool %s must be an error", name)
+		}
+	}
+}

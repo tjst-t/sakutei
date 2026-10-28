@@ -36,7 +36,7 @@ intent の列は `providers.<provider の名前>.` の下のキー。「—」�
 | provider | 範囲（intent の `providers:` に書く） | 元の設定 | 正規形（比べ方） | つなぎ方（設定に残す） |
 | --- | --- | --- | --- | --- |
 | dnszone（#181） | `scope` | `zone_scope`（`--zone-scope`） | scope の文字列 | `zone`（`--zone`・`--state`）・`soa_serial`・`zone_reload`・`zone_hosts`・`remote_config` |
-| nftables（#181） | `scope`・`tables`（live だけ） | `ruleset_scope`・`ruleset_tables` | scope・並べ替えた表の組 | `ruleset`・`ruleset_target`・`ruleset_nft`・`ruleset_hosts`・`remote_config`・`ruleset_rollback_timeout`・`ruleset_confirm_address` |
+| nftables（#181） | `scope`・`tables`（live だけ） | `ruleset_scope`・`ruleset_tables` | scope・並べ替えた表の組 | `ruleset`・`ruleset_target`・`ruleset_nft`・`ruleset_hosts`・`remote_config`・`ruleset_rollback_timeout`・`ruleset_confirm_address`・`ruleset_guard_tool` |
 | proxmox-vm（#181） | `clusters.<名前>.scope` | `proxmox_config` の `clusters.<名前>.scope` | scope | `proxmox_config` のほか（endpoint・`api_base_path`・token・node・CA）。触らない VM は `external_owners:` |
 | netconf（#182） | `hosts`・`subtrees.<名前>.filter` | `netconf_hosts`・`netconf_subtrees` のファイルの `subtrees.<名前>` | 並べ替えたホストの組・filter の XML の正規形（名前空間は URI で、空白・兄弟の順を問わない） | `remote_config`・`netconf_apply`・`netconf_confirm_timeout`・`netconf_commit_flow`。長い filter の `filter_file` は部分木の一覧のファイルにだけ書ける |
 | ldap（#182） | `scope`・`servers.<名前>.base_dn`・`servers.<名前>.filter`・`servers.<名前>.scope` | `ldap_config` のファイルの同じキー | scope・DN の正規形（大文字小文字を問わない）・filter はそのまま | `ldap_config` のほか（`ldapsearch`・`ldapmodify`・`secret_store`・`uri`・`starttls`・`ca_cert`・`bind_dn`・`bind_password`・`timeout`） |

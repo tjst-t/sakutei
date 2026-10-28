@@ -26,6 +26,11 @@
 // 手元の live（確かめは TCP の宛先。設定の宛先と宣言の tcp://）も namespace で
 // 確かめる。
 //
+// 決まった道具 sakutei-nft-guard（Backlog #191）は、別の使い捨てのコンテナに道具と
+// その設定ファイルを置き、sudoers を道具だけに絞った利用者で、base chain の変更・
+// 確かめ・巻き戻しが効くこと、sh・nft を root で流せないこと、道具が表の外を断る
+// ことを確かめる（guardtool_integration_test.go）。
+//
 // 網の間の許可（network_policy:、Backlog #174）から展開した base chain を
 // namespace の nft に流し、reason の comment が読み戻しで drift にならないことを
 // 確かめる（netpolicy_integration_test.go）。

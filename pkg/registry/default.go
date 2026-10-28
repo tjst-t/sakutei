@@ -32,6 +32,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/metricsprobe"
 	"github.com/tjst-t/sakutei/v2/internal/netconf"
 	"github.com/tjst-t/sakutei/v2/internal/nftables"
+	"github.com/tjst-t/sakutei/v2/internal/nftguard"
 	"github.com/tjst-t/sakutei/v2/internal/postgresql"
 	"github.com/tjst-t/sakutei/v2/internal/proxmox"
 	"github.com/tjst-t/sakutei/v2/internal/redfish"
@@ -73,7 +74,9 @@ import (
 //   - Remote hosts (Backlog #130): config["remote_config"] is the host list
 //     (remote.LoadConfig: address, user, private_key SecretRef, known_hosts,
 //     sudo, timeouts).  nftables live with config["ruleset_hosts"]
-//     ("fw1,fw2") runs nft on those hosts over ssh; dnszone with
+//     ("fw1,fw2") runs nft on those hosts over ssh (with
+//     config["ruleset_guard_tool"], the absolute path of sakutei-nft-guard on
+//     the hosts, that tool instead of nft and sh, Backlog #191); dnszone with
 //     config["zone_hosts"] manages config["zone"] (absolute) on those hosts.
 //     The local ids then start with "<host>/".  config["zone_reload"] is the
 //     command run after an Apply changed the zone (here, or on the host).
@@ -203,7 +206,8 @@ func DefaultRegistry() *ProviderRegistry {
 	// as a management boundary (§27 FW〈順序付き〉) unless the intent declares
 	// one (type/hook/priority/policy, Backlog #173; a live change to one goes
 	// through the lockout guard: ruleset_rollback_timeout, and for the local
-	// nft ruleset_confirm_address).
+	// nft ruleset_confirm_address; on a remote host, ruleset_guard_tool runs
+	// the fixed tool sakutei-nft-guard instead of nft and sh, Backlog #191).
 	r.Register("nftables", func(config map[string]string) (provider.Provider, error) {
 		rulesetPath := config["ruleset"]
 		if rulesetPath == "" {
@@ -255,6 +259,20 @@ func DefaultRegistry() *ProviderRegistry {
 				local.Probe = nftables.TCPProbe(addr)
 			}
 			cfg.Guard = local
+			// Backlog #191: the guard tool on the remote hosts (the only thing
+			// run as root there; sudo allows it alone).
+			tool := config["ruleset_guard_tool"]
+			if tool != "" {
+				if !path.IsAbs(tool) || strings.ContainsAny(tool, " \t\r\n'\"\\$`;|&<>*?") {
+					return nil, fmt.Errorf("nftables: ruleset_guard_tool %q: want the absolute path of the tool on the hosts (e.g. %s)", tool, nftguard.DefaultPath)
+				}
+				if config["ruleset_hosts"] == "" {
+					return nil, errors.New("nftables: ruleset_guard_tool is for the remote hosts (ruleset_hosts); the local nft runs as sakutei itself")
+				}
+				if config["ruleset_nft"] != "" {
+					return nil, errors.New("nftables: ruleset_guard_tool and ruleset_nft: the tool runs nft from its own config (/etc/sakutei/nft-guard.json on the host); drop ruleset_nft")
+				}
+			}
 			// Backlog #130: the remote hosts (ruleset_hosts + remote_config).
 			if config["ruleset_hosts"] != "" {
 				execs, order, err := remoteHosts(config, "ruleset_hosts")
@@ -266,11 +284,16 @@ func DefaultRegistry() *ProviderRegistry {
 					if err != nil {
 						return nil, fmt.Errorf("nftables: %w", err)
 					}
-					cfg.Hosts = append(cfg.Hosts, nftables.LiveHost{
+					h := nftables.LiveHost{
 						Name:   name,
 						Runner: nftables.RemoteRunner{Exec: execs[name], NFT: config["ruleset_nft"]},
 						Guard:  nftables.ExecGuard{Exec: execs[name], NFT: config["ruleset_nft"], Probe: probe},
-					})
+					}
+					if tool != "" {
+						h.Runner = nftables.RemoteRunner{Exec: execs[name], Tool: tool}
+						h.Guard = nftables.ToolGuard{Exec: execs[name], Tool: tool, Probe: probe}
+					}
+					cfg.Hosts = append(cfg.Hosts, h)
 				}
 			}
 			return nftables.NewLive(cfg, opts...)

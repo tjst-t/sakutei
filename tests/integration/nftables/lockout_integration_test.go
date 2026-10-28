@@ -53,6 +53,9 @@ const (
 
 type sshLab struct {
 	dir, ctrl, intent, config, state, audit string
+	// container is the docker container; key is a copy of the private key
+	// for a test's own ssh (Backlog #191).
+	container, key string
 	// port は sshd の 22、port2 は別の経路（sshd の 2222）の手元のポート。
 	port, port2 int
 }
@@ -80,7 +83,13 @@ func docker(args ...string) (string, error) {
 // csh runs a shell command in the container as root (not over the network).
 func csh(t *testing.T, script string) string {
 	t.Helper()
-	out, err := docker("exec", lockContainer, "sh", "-c", script)
+	return cshIn(t, lockContainer, script)
+}
+
+// cshIn is csh in the container name.
+func cshIn(t *testing.T, name, script string) string {
+	t.Helper()
+	out, err := docker("exec", name, "sh", "-c", script)
 	if err != nil {
 		t.Fatalf("container: %s: %v\n%s", script, err, out)
 	}
@@ -110,6 +119,12 @@ func writeJSONFile(t *testing.T, path string, v any) {
 
 func setupSSHLab(t *testing.T) *sshLab {
 	t.Helper()
+	return setupSSHLabIn(t, lockContainer)
+}
+
+// setupSSHLabIn is setupSSHLab in the container name.
+func setupSSHLabIn(t *testing.T, name string) *sshLab {
+	t.Helper()
 	if out, err := docker("version"); err != nil {
 		t.Fatalf("docker through sudo without a password is required: %v\n%s", err, out)
 	}
@@ -118,7 +133,7 @@ func setupSSHLab(t *testing.T) *sshLab {
 			t.Fatalf("%s is not installed", tool)
 		}
 	}
-	l := &sshLab{dir: t.TempDir()}
+	l := &sshLab{dir: t.TempDir(), container: name}
 	var err error
 	// A unix socket's path is limited: the ssh control dir is short.
 	if l.ctrl, err = os.MkdirTemp("/tmp", "snl-"); err != nil {
@@ -129,7 +144,7 @@ func setupSSHLab(t *testing.T) *sshLab {
 		for _, s := range socks {
 			_ = exec.Command("ssh", "-F", os.DevNull, "-o", "ControlPath="+s, "-O", "exit", "x").Run()
 		}
-		_, _ = docker("rm", "-f", "-v", lockContainer)
+		_, _ = docker("rm", "-f", "-v", name)
 		os.RemoveAll(l.ctrl)
 	})
 
@@ -153,16 +168,20 @@ func setupSSHLab(t *testing.T) *sshLab {
 	pub, _ := os.ReadFile(key + ".pub")
 	priv, _ := os.ReadFile(key)
 	os.Remove(key)
+	l.key = filepath.Join(l.dir, "id_direct")
+	if err := os.WriteFile(l.key, priv, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	_, _ = docker("rm", "-f", "-v", lockContainer)
+	_, _ = docker("rm", "-f", "-v", name)
 	l.port, l.port2 = freePort(t), freePort(t)
-	if out, err := docker("run", "-d", "--init", "--name", lockContainer, "--hostname", "fw",
+	if out, err := docker("run", "-d", "--init", "--name", name, "--hostname", "fw",
 		"--cap-add", "NET_ADMIN", "-p", fmt.Sprintf("127.0.0.1:%d:22", l.port), "-p", fmt.Sprintf("127.0.0.1:%d:2222", l.port2), image); err != nil {
 		t.Fatalf("docker run: %v\n%s", err, out)
 	}
-	csh(t, "ssh-keygen -A >/dev/null && printf '%s\\n' '"+strings.TrimSpace(string(pub))+"' > /home/sakutei/.ssh/authorized_keys && "+
+	cshIn(t, name, "ssh-keygen -A >/dev/null && printf '%s\\n' '"+strings.TrimSpace(string(pub))+"' > /home/sakutei/.ssh/authorized_keys && "+
 		"chown sakutei: /home/sakutei/.ssh/authorized_keys && chmod 600 /home/sakutei/.ssh/authorized_keys")
-	if out, err := docker("exec", "-d", lockContainer, "/usr/sbin/sshd", "-D", "-e", "-p", "22", "-p", "2222"); err != nil {
+	if out, err := docker("exec", "-d", name, "/usr/sbin/sshd", "-D", "-e", "-p", "22", "-p", "2222"); err != nil {
 		t.Fatalf("sshd: %v\n%s", err, out)
 	}
 	deadline := time.Now().Add(20 * time.Second)
@@ -172,7 +191,7 @@ func setupSSHLab(t *testing.T) *sshLab {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	hostKey := strings.Fields(csh(t, "cat /etc/ssh/ssh_host_ed25519_key.pub"))
+	hostKey := strings.Fields(cshIn(t, name, "cat /etc/ssh/ssh_host_ed25519_key.pub"))
 	knownHosts := filepath.Join(l.dir, "known_hosts")
 	if err := os.WriteFile(knownHosts, []byte(fmt.Sprintf("[127.0.0.1]:%d %s %s\n[127.0.0.1]:%d %s %s\n",
 		l.port, hostKey[0], hostKey[1], l.port2, hostKey[0], hostKey[1])), 0o600); err != nil {
@@ -271,10 +290,16 @@ func table(t *testing.T) string {
 
 func policy(t *testing.T) string {
 	t.Helper()
+	return policyIn(t, lockContainer)
+}
+
+// policyIn is policy in the container name.
+func policyIn(t *testing.T, name string) string {
+	t.Helper()
 	var doc struct {
 		Nftables []map[string]json.RawMessage `json:"nftables"`
 	}
-	if err := json.Unmarshal([]byte(csh(t, "nft -j list chain inet sk input")), &doc); err != nil {
+	if err := json.Unmarshal([]byte(cshIn(t, name, "nft -j list chain inet sk input")), &doc); err != nil {
 		t.Fatal(err)
 	}
 	for _, o := range doc.Nftables {

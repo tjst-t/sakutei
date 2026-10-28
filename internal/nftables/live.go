@@ -632,6 +632,17 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 	if h.name != "" {
 		who = "host " + h.name
 	}
+	// The guard tool (Backlog #191): there, of this protocol, covering the
+	// tables; otherwise not changed.
+	if c, ok := h.guard.(GuardChecker); ok {
+		if err := c.CheckGuard(ctx, touched, p.rollbackAfter); err != nil {
+			err = fmt.Errorf("nftables: Apply: not changing base chain(s) %s on %s: %w", strings.Join(changed, ", "), who, err)
+			if errors.Is(err, ErrToolConfig) {
+				return provider.NewPermanentError(err)
+			}
+			return provider.NewTransientError(err)
+		}
+	}
 	// 0. Confirm before the change (Backlog #179): a target not reached now
 	// would only fail the confirmation after it and roll it back.
 	if err := p.preconfirm(ctx, h, targets); err != nil {
@@ -642,20 +653,23 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 		}
 		return provider.NewTransientError(err)
 	}
-	// 1. The tables as they are now.
+	// 1. The tables as they are now (the guard tool takes its own copy).
+	armer, own := h.guard.(TableArmer)
 	var restore bytes.Buffer
-	for _, ref := range touched {
-		fmt.Fprintf(&restore, "add table %s %s\ndelete table %s %s\n", ref.Family, ref.Name, ref.Family, ref.Name)
-		out, err := h.runner.Run(ctx, []string{"list", "table", ref.Family, ref.Name}, nil)
-		if err != nil {
-			if noSuchTable(err) {
-				continue
+	if !own {
+		for _, ref := range touched {
+			fmt.Fprintf(&restore, "add table %s %s\ndelete table %s %s\n", ref.Family, ref.Name, ref.Family, ref.Name)
+			out, err := h.runner.Run(ctx, []string{"list", "table", ref.Family, ref.Name}, nil)
+			if err != nil {
+				if noSuchTable(err) {
+					continue
+				}
+				return observeErr(fmt.Errorf("nftables: Apply: copy table %s before changing it: %w", ref, err))
 			}
-			return observeErr(fmt.Errorf("nftables: Apply: copy table %s before changing it: %w", ref, err))
-		}
-		restore.Write(out)
-		if len(out) > 0 && out[len(out)-1] != '\n' {
-			restore.WriteByte('\n')
+			restore.Write(out)
+			if len(out) > 0 && out[len(out)-1] != '\n' {
+				restore.WriteByte('\n')
+			}
 		}
 	}
 	// 2. Check.
@@ -663,11 +677,23 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 		return classifyApplyErr(h.what("nft -c (check)"), err, true)
 	}
 	// 3. Arm the rollback on the host.
-	token, err := h.guard.Arm(ctx, restore.Bytes(), p.rollbackAfter)
+	var token string
+	var err error
+	if own {
+		token, err = armer.ArmTables(ctx, touched, p.rollbackAfter)
+	} else {
+		token, err = h.guard.Arm(ctx, restore.Bytes(), p.rollbackAfter)
+	}
 	if err != nil {
 		return remote.ProviderError(fmt.Errorf("nftables: Apply: %s: %w", h.what("lockout guard"), err))
 	}
-	fireAt := time.Now().Add(p.rollbackAfter)
+	// The host's rollback sleeps whole seconds (the tool and the sh round
+	// up): wait for it as it was armed.
+	armedFor := p.rollbackAfter
+	if _, sh := h.guard.(ExecGuard); sh || own {
+		armedFor = time.Duration(rollbackSeconds(p.rollbackAfter)) * time.Second
+	}
+	fireAt := time.Now().Add(armedFor)
 	// 4. Apply.
 	if _, err := h.runner.Run(ctx, []string{"-f", "-"}, body); err != nil {
 		if derr := h.guard.Disarm(ctx, token); derr != nil && !errors.Is(derr, ErrRollbackFired) {
@@ -678,7 +704,7 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 	}
 	// 5. Confirm every target over a new connection, until half the time is
 	// gone.
-	confirmErr := p.confirm(ctx, h, targets, fireAt.Add(-p.rollbackAfter/2))
+	confirmErr := p.confirm(ctx, h, targets, fireAt.Add(-armedFor/2))
 	tables := refsText(touched)
 	if confirmErr == nil {
 		// 6. Cancel the rollback.
@@ -687,14 +713,14 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 			return p.verify(ctx, checks)
 		}
 		if !errors.Is(derr, ErrRollbackFired) {
-			waitUntil(ctx, fireAt.Add(rollbackGrace(p.rollbackAfter)))
+			waitUntil(ctx, fireAt.Add(rollbackGrace(armedFor)))
 		}
 		return provider.NewRolledBackError(fmt.Errorf(
 			"nftables: Apply: %s was reached after changing base chain(s) %s, but the rollback could not be cancelled (%v): it restored tables %s as they were before",
 			who, strings.Join(changed, ", "), derr, tables))
 	}
 	// Not confirmed: the rollback armed on the host puts the tables back.
-	waitUntil(ctx, fireAt.Add(rollbackGrace(p.rollbackAfter)))
+	waitUntil(ctx, fireAt.Add(rollbackGrace(armedFor)))
 	return provider.NewRolledBackError(fmt.Errorf(
 		"nftables: Apply: %s could not be reached over a new connection within %s after changing base chain(s) %s (%v): the rollback armed on the host restored tables %s as they were before, after %s. Declare a rule that keeps the management path open (e.g. jump to the minimal chain kept outside Sakutei) and apply again",
 		who, p.rollbackAfter/2, strings.Join(changed, ", "), confirmErr, tables, p.rollbackAfter))

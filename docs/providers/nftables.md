@@ -38,6 +38,7 @@ Schema・identity・local id は同じなので、intent は対象を変えて�
 | `--ruleset-scope <selector>` | `ruleset_scope` | List・BulkObserve が ID に付ける固定の scope（Backlog #106）。**intent の `providers.nftables.scope` に移す** |
 | `--ruleset-rollback-timeout <d>` | `ruleset_rollback_timeout` | live で base chain を変えた後、確かめられなければホストが写しに戻すまでの時間（既定 `30s`、1 秒以上。確かめはその半分まで、Backlog #173） |
 | `--ruleset-confirm-address <host:port>` | `ruleset_confirm_address` | 手元の live で base chain を変える前と後に、新しい TCP の接続で届くことを確かめる宛先（確かめる先の `self`、Backlog #173）。設定せず、宣言の `confirm` にも `tcp://` の先しか書いていなければ使わない。`self` を確かめるのに要るのに設定していなければ手元の base chain は変えない。離れたホストは ssh で確かめるので使わない |
+| （設定だけ） | `ruleset_guard_tool` | 離れたホスト（`ruleset_hosts`）で、nft と sh の代わりに決まった道具 `sakutei-nft-guard` を走らせる（そのホストの上の道具の絶対パス。ふつうは `/usr/local/libexec/sakutei-nft-guard`、Backlog #191）。下の「決まった道具（sakutei-nft-guard）」。`ruleset_nft` と併せては書けない（nft のパスは道具の設定ファイルに書く）。手元の live には使えない |
 
 `--provider-config` の例（フラグより優先する、§28.9）:
 
@@ -152,7 +153,7 @@ base chain を作る・変える・消す Apply は、NETCONF の commit confirm
 0. **変える前に**、確かめる先（下の「確かめる先を宣言する」。書かなければ `self`）のすべてに新しい接続で 1 回ずつ届くかを確かめる。1 つでも届かなければ**変えない**（一時的な失敗。届かない先を名指しする。前に届かないのに変えると、後の確かめが落ちて戻すだけになるため。Backlog #179）。
 1. 変える table の写しを取る（`nft list table`。戻しのスクリプトは `add table`・`delete table`・写し。無かった table は消す）。
 2. `nft -c -f -` で検査する。
-3. 対象のホストの側に、`ruleset_rollback_timeout`（既定 30 秒）の後に写しを `nft -f` で流す仕掛けを置く（POSIX の sh で一時のディレクトリ `${TMPDIR:-/tmp}/sakutei-nft-rollback.*` に写しを置き、`setsid`・`nohup` で切り離して眠る）。**ホストの上で時間で動くので、Sakutei との接続が切れても、Sakutei が落ちても戻る。** 戻したときは `logger -t sakutei-nft-rollback` で syslog に残す。
+3. 対象のホストの側に、`ruleset_rollback_timeout`（既定 30 秒）の後に写しを `nft -f` で流す仕掛けを置く（POSIX の sh で一時のディレクトリ `${TMPDIR:-/tmp}/sakutei-nft-rollback.*` に写しを置き、`setsid`・`nohup` で切り離して眠る。決まった道具を使うホストでは道具の `arm` が写しを自分で取り、root だけが読み書きできる状態のディレクトリに置いて、自分を切り離して起動し直して眠る。下の「決まった道具」）。**ホストの上で時間で動くので、Sakutei との接続が切れても、Sakutei が落ちても戻る。** 戻したときは `logger -t sakutei-nft-rollback` で syslog に残す。
 4. `nft -f -` で 1 つのトランザクションとして流す。
 5. **新しい接続**で、確かめる先の**すべて**に到達を確かめる。`self` は、離れたホストなら ssh の master に相乗りしない新しい ssh の接続（`ControlPath=none`）で `true` を走らせ、手元の live なら `ruleset_confirm_address` への新しい TCP の接続。上限の半分まで、まだ届いていない先を張り直す。すべてに届いたときだけ確かめられたとする。
 6. 確かめられたら仕掛けを取り消す（眠っている仕掛けを止め、写しを消す）。
@@ -170,7 +171,8 @@ base chain を作る・変える・消す Apply は、NETCONF の commit confirm
   ```
   sakutei: apply nftables/site=lab/fw/inet/sk/input: transient: nftables: Apply: not changing base chain(s) fw/inet/sk/input: host fw cannot be reached over a new connection before the change (ssh://127.0.0.1:2200: remote fw: unreachable: ...); the change would only be rolled back. Confirm targets: self, ssh://127.0.0.1:2200
   ```
-- 離れたホストで root が要るときは、remote の設定の `sudo: true` で仕掛けの sh も root で動く。
+- 離れたホストで root が要るときは、remote の設定の `sudo: true` で仕掛けの sh も root で動く。sh と nft を sudo で許すのは root を与えるのと同じなので、sudo を使うホストでは決まった道具（下）を使い、sudo で許すのを道具だけにする。
+- 上限は秒に切り上げて仕掛ける（`1.5s` なら 2 秒）。Sakutei は切り上げた時刻まで待つ。
 
 ```yaml
 providers:
@@ -253,6 +255,7 @@ providers:
 - nft の呼び出し（`nft -j list`・`nft -a -s list`・`nft -c -f -`・`nft -f -`、base chain を変えるときは写しの `nft list table` と仕掛けの `sh`）をそのホストで走らせる。base chain を変える前と後の到達の確かめは、既定ではそのホストへの新しい ssh の接続（上の「締め出しの守り」）で、宣言の `confirm` で別の経路の ssh・TCP の宛先を足せる。スクリプトは標準入力で渡す。Apply はホストごとに 1 つのトランザクション。`ruleset_nft` はホストの上の nft のパスになる。
 - ホストに届かない・認証の失敗は観測できない（unknown）、ホスト鍵の不一致は PermanentError。BulkObserve は読めないホストの分だけを返さず（そのホストの chain は Read が unknown と答える）、ほかのホストは収束を続ける。List は全部のホストを読めたときだけ complete。
 - `ruleset_hosts` を書かなければ今までどおり手元の nft（ID も同じ）。
+- `ruleset_guard_tool` を書いたホストでは、上の nft と sh の代わりに決まった道具だけを走らせる（下）。
 
 ## live の動き方
 
@@ -314,17 +317,130 @@ permanent: nftables: Apply: nft lists rule 0 of inet/filter/ssh as "ct state est
 
 ルール文は nft のスクリプトにそのまま 1 行で埋め込むので、引用符の外の `;`・`#` と改行は受けない（読み込みの時点でエラー）。` ; ` を含むルール（引用符の中でも）は 1 本の `rules` に符号化できないので、そのルールを持つ chain は管理の外（Read は PermanentError）。
 
+## 決まった道具（sakutei-nft-guard、Backlog #191）
+
+離れたホストを sudo つきの利用者で扱うと、今までの動かし方（nft を直接・巻き戻しの仕掛けを `sh -c` で）では sudoers に `nft` と `sh` を許すしかなく、それは root を与えるのと同じだった。資格が漏れたときの被害を小さくするため（役目ごとの鍵の分け、#185 と同じ考え）、ホストで root で走るのを**決まった道具 1 つ**にし、**sudo で許すのも道具だけ**にできる。
+
+- 道具はこのリポジトリの `cmd/sakutei-nft-guard`（Go の小さな別の実行ファイル。外の依存なし）。ホストの決まった場所 `/usr/local/libexec/sakutei-nft-guard` に置き、provider の設定 `ruleset_guard_tool` にそのパスを書く。
+- 道具がやるのは、決まった形の引数の次だけ（ほかは何もせず終了コード 2 で断る）:
+
+  | 引数 | すること |
+  | --- | --- |
+  | `list <family> <name> json\|handles` | 規則を読む（`nft -j list table`・`nft -a -s list table`。観測用） |
+  | `check` / `apply` | 標準入力の規則を確かめる（`nft -c -f -`）・当てる（`nft -f -`） |
+  | `arm <秒> [<family>/<name>...]` | 名指しした表（無ければ許した表のすべて）の写しを道具が取り、秒の後に写しへ戻す予約を置いて token（16 進 32 桁）を返す |
+  | `disarm <token>` | 予約を取り消す（`disarmed`。もう戻していれば `fired`） |
+  | `status` | 道具の名前・取り決めの版（`protocol`）・扱う表・秒の上限・予約の様子を JSON で |
+
+- **扱う表は道具の設定ファイルに書く**（呼び手からは渡さない）。決まった場所 `/etc/sakutei/nft-guard.json`:
+
+  ```json
+  {
+    "tables": ["inet/filter"],
+    "nft": "/usr/sbin/nft",
+    "state_dir": "/run/sakutei-nft-guard",
+    "max_rollback_seconds": 600
+  }
+  ```
+
+  `tables` は必須（provider の管理する表と同じものを書く）。`nft`（絶対パス、既定 `/usr/sbin/nft`）・`state_dir`（写しと予約を置く。既定 `/run/sakutei-nft-guard`。道具が 0700 で作る）・`max_rollback_seconds`（`arm` の秒の上限、1〜3600、既定 600）は省略できる。知らないキーは断る。設定ファイル・そのディレクトリ・nft は root の持ち物で group・other が書けないこと、状態のディレクトリは root だけが読み書きできることを道具が毎回確かめ、違えば何もしない（終了コード 3）。
+- **規則の中身は構造として読む**：`check`・`apply` の標準入力は、行ごとに `add table`・`add chain`（base chain の `{ type … hook … priority <数> ; policy accept|drop ; }` だけ）・`flush chain`・`delete chain`・`add rule` の 5 つの形だけを受け、どれも許した表のものでなければならない。ルール文は引用符の外の `;`・`#`・`$`・`\`・制御文字・閉じない括弧と引用符を受けない（1 行に 1 つの命令しか書けない）。`flush ruleset`・`include`・`define`・`delete table`・別の表・`table … { }` の塊が **1 行でもあれば、何もせず断る**。Sakutei の流すスクリプトはいつもこの形。
+- **写しを取るのも戻すのも許した表だけ**。予約は道具が自分を `setsid` で切り離して起動し直して眠り、秒の後に写しを `nft -f` で流す（syslog の authpriv に残す）。Sakutei との接続が切れても、Sakutei が居なくなっても戻る。取り消しと戻すのは写しのファイルの rename で決着する。起動し直した道具は、予約のディレクトリにだけ置いた nonce を受け取ったときだけ動く（呼び手は `_fire` を流せない）。
+- **引数の形・秒の範囲・token の形も道具が確かめる**（秒は 1〜`max_rollback_seconds` の整数、token は小文字の 16 進 32 桁、表は `family/name` で許したもの、同じ表の二度書きも断る）。
+- 終了コード: 0 成功、2 断った（何もしていない）、3 道具の設定・状態のディレクトリが使えない、4 それ以外、10 nft が失敗した（標準エラーは nft のもの）。
+- **道具が無い・版が合わない**ときは base chain を変えない（一時的な失敗）。Sakutei は base chain を変える前に道具の `status` を読み、名前と取り決めの版（`protocol`）が合うこと、変える表が道具の `tables` にあること、`ruleset_rollback_timeout` が `max_rollback_seconds` に収まることを確かめる。表・秒が道具の設定の外なら変えない（直すのは設定、PermanentError）。道具が断った検査（`check`）は PermanentError。regular chain だけを変える Apply・観測も道具を通るので、道具が無ければ観測できない（unknown）・Apply は一時的な失敗。
+- **sudo を使わず root で入る構成**（`user: root`・`sudo: false`）では、今までの動かし方（nft と sh）を残してよい（`ruleset_guard_tool` を書かない）。道具を使っても構わない。
+
+### 入れ方
+
+```console
+$ CGO_ENABLED=0 go build -trimpath -o sakutei-nft-guard ./cmd/sakutei-nft-guard
+$ sudo install -o root -g root -m 0755 sakutei-nft-guard /usr/local/libexec/sakutei-nft-guard
+$ sudo install -d -o root -g root -m 0755 /etc/sakutei
+$ sudo install -o root -g root -m 0644 nft-guard.json /etc/sakutei/nft-guard.json
+$ sudo /usr/local/libexec/sakutei-nft-guard status
+{"tool":"sakutei-nft-guard","protocol":1,"tables":["inet/filter"],"max_rollback_seconds":600,"rollbacks":[]}
+```
+
+道具は Sakutei の版と取り決めの版（`protocol`）で合わせる。Sakutei を上げて `protocol` が変わったら道具も入れ直す（合わなければ base chain を変えずに知らせる）。
+
+### sudoers の最小の行
+
+書き込み用の利用者には道具だけを、観測用の利用者（#185）には道具の `list` だけを許す。`nft`・`sh` は許さない:
+
+```
+# /etc/sudoers.d/sakutei（visudo -c で確かめる。0440 root:root）
+sakutei    ALL=(root) NOPASSWD: /usr/local/libexec/sakutei-nft-guard
+sakutei-ro ALL=(root) NOPASSWD: /usr/local/libexec/sakutei-nft-guard list *
+```
+
+対象の一覧（[../remote.md](../remote.md)）は今までどおり `sudo: true`（観測用の資格を分けるなら `observe:` に `sakutei-ro`）:
+
+```yaml
+# hosts.yaml
+hosts:
+  fw1:
+    address: 192.0.2.10
+    user: sakutei
+    private_key: secretref:file/ssh/fw1-rw
+    sudo: true
+    observe:
+      user: sakutei-ro
+      private_key: secretref:file/ssh/fw1-ro
+```
+
+```yaml
+# providers.yaml
+providers:
+  nftables:
+    ruleset_target: live
+    ruleset_tables: inet/filter
+    ruleset_hosts: fw1
+    remote_config: hosts.yaml
+    ruleset_guard_tool: /usr/local/libexec/sakutei-nft-guard
+```
+
+### 配り方（host-file で配る例）
+
+道具の設定ファイルと sudoers の行は [host-file](host-file.md) で配れる。ただし道具に絞った利用者は `/etc` を書けないので、**配る側は別の資格**（段0 の管理者の利用者など、`sudo` を広く持つ別の対象。同じ address を別の名前で対象の一覧に書く）で動かす。道具の本体（静的リンクの数 MiB の実行ファイル）は host-file の中身の上限（256 KiB）を超えるので、パッケージ・イメージ・段0 の Ansible で置く。
+
+```yaml
+# 配る側の対象の一覧（hosts-admin.yaml）の fw1-admin は fw1 と同じ address、管理者の利用者
+resources:
+  - provider: host-file
+    id: fw1-admin/etc/sakutei/nft-guard.json
+    fields:
+      content: |
+        {"tables": ["inet/filter"], "max_rollback_seconds": 600}
+      mode: "0644"
+      owner: root
+      group: root
+  - provider: host-file
+    id: fw1-admin/etc/sudoers.d/sakutei
+    fields:
+      content: |
+        sakutei    ALL=(root) NOPASSWD: /usr/local/libexec/sakutei-nft-guard
+        sakutei-ro ALL=(root) NOPASSWD: /usr/local/libexec/sakutei-nft-guard list *
+      mode: "0440"
+      owner: root
+      group: root
+```
+
+- 道具の `tables` は provider の管理する表（intent の `providers.nftables.tables`・`ruleset_tables`）と同じにする。道具の側が狭ければ、その表の base chain は変えない（PermanentError で知らせる）。
+- sudoers を書き換えるときは、書く前に `visudo -c -f` で確かめる手順を配る側に置く（壊れた sudoers は sudo 全体を止める）。
+
 ## 観測用と書き込み用の資格（Backlog #185）
 
 離れたホスト（live）では、対象の一覧のホストに観測用（`observe:`）と書き込み用（`write:`）の資格を分けて書ける（[../remote.md の「観測用と書き込み用の資格」](../remote.md#観測用と書き込み用の資格)）。
 
 - 観測（`Read`・`List`・`BulkObserve`）が流すのは、管理するテーブルごとの `nft -j list table <family> <name>` と `nft -a -s list table <family> <name>` だけ。観測用のユーザーは sudoers でこの 2 つだけを許せば、全部の項目を観測できる（sudo 無しでは CAP_NET_ADMIN が無く観測できない）。
 - 書き込み用のユーザーは Apply の中だけで使う：`nft -f -`・`nft -c -f -`、base chain の締め出しの守り（ホストの側の時間切れの巻き戻しを仕掛ける・外す `sh -c` のスクリプト）、新しい接続での到達の確かめ。sudo には `nft` と `sh` が要る。
+- 決まった道具（`ruleset_guard_tool`、Backlog #191）を使うホストでは、観測は道具の `list <family> <name> json|handles` だけ、書き込みは道具の `check`・`apply`・`arm`・`disarm`・`status` だけになる。sudoers は観測用に道具の `list *`、書き込み用に道具だけを許せばよい（上の「sudoers の最小の行」）。
 - `plan`・`status`・`--mode alert-only` の `reconcile` は書き込み用の鍵が無くても動く。
 
 ## 権限
 
-live の Read も Apply も netlink で ruleset を読み書きするので、CAP_NET_ADMIN が要る（ふつうは root で動かす）。権限が無いと Read は観測できない（unknown）になり、drift とも適合とも数えない。network namespace の中の ruleset を扱うときは、その namespace に入った nft を `--ruleset-nft` に渡す（下の統合テストのラッパーと同じ形）。
+live の Read も Apply も netlink で ruleset を読み書きするので、CAP_NET_ADMIN が要る（ふつうは root で動かす）。権限が無いと Read は観測できない（unknown）になり、drift とも適合とも数えない。network namespace の中の ruleset を扱うときは、その namespace に入った nft を `--ruleset-nft` に渡す（下の統合テストのラッパーと同じ形）。離れたホストを sudo で扱うときは、sudo で許すのを決まった道具だけにする（上の「決まった道具」）。
 
 ## 統合テスト
 
@@ -368,6 +484,20 @@ $ make integration-nftables
 | another path declared and shut: rolled back although self is reached | 同じ `confirm` で 2222 を通さない宣言 → 前の確かめは通り、後の確かめで別の経路が届かない → 4 で「rolled back」とその先を名指し、table は前の段のまま、両方の経路が届く |
 | the minimal core was not touched | `mgmt` が最初から最後まで変わらない |
 
+決まった道具（Backlog #191、`guardtool_integration_test.go` の `TestNFTablesGuardToolOverSSH`）：同じイメージの別のコンテナに、CGO なしでビルドした `cmd/sakutei-nft-guard` を `/usr/local/libexec/sakutei-nft-guard`（root・0755）に、`/etc/sakutei/nft-guard.json`（`inet/sk` だけを許す、`max_rollback_seconds: 60`）を置く。**sudoers は上の「sudoers の最小の行」だけ**（書き込み用の `sakutei` に道具だけ、観測用の `sakutei-ro` に道具の `list *` だけ。イメージの `NOPASSWD: ALL` は消す）。sakutei は `ruleset_guard_tool` で道具を使い、対象の一覧の `observe:` は `sakutei-ro`。最小の核（`inet sk mgmt`）と、道具の許さない表 `inet other` を Sakutei の外で入れる。テストの側の ssh は sakutei と別の、新しい接続:
+
+| 段 | 内容 |
+| --- | --- |
+| sudo runs the tool only | `sakutei`・`sakutei-ro` のどちらでも、`sudo -n sh -c id`・`bash`・`nft list ruleset`・`nft flush ruleset`・`id`・`-s`・`-i`・`env`・`cat /etc/shadow`・`sudoedit`・道具に `sh -c id`・`nft …` を渡すのが通らない（終了コードが 0 でなく、`uid=0` を出さない）。`sakutei` の道具の `status`、`sakutei-ro` の道具の `list inet sk json` は通る。`sakutei-ro` の道具の `apply`・`check`・`arm`・`status`・`disarm` は sudo が断り、ruleset は変わらない |
+| the tool refuses and changes nothing | 道具に `flush ruleset`・別の表を足す・許さない表のルール・`delete table`・`;` の後の命令・正しい行の後の `flush ruleset`・正しい行の後の別の表・`include`・`define` と `$x`・`table { }` の塊・`\` の行の続き・base chain の `{ }` の後の `; flush ruleset`・許さない表の `list`・`list ruleset`・知らない形式・`arm 0`・`arm 61`（上限の外）・`arm 100000`・`arm -5`・許さない表の `arm`・同じ表の二度書き・`disarm ../../etc/passwd`・形の外の token・`_fire`・知らない命令・空の引数を流す → どれも終了コード 2。ruleset 全体が変わらず、状態のディレクトリに何も残らない。許した形（引用符の中の `;` を含む comment）の `check` は通る |
+| policy drop is applied and confirmed through the tool | lockout と同じ宣言 → reconcile が 0 で上限を待たずに返り、policy drop。上限を過ぎても drop のまま、状態のディレクトリに予約が残らず、sh の仕掛け（`/tmp/sakutei-nft-rollback.*`）は使っていない。`status --json`（観測用の `sakutei-ro` が道具の `list` で読む）は drift 0 |
+| a declaration that shuts ssh out is rolled back by the tool | `jump mgmt` を外した宣言 → 4 で「rolled back」、上限の後に返り、table は前の段のまま、新しい接続で届く |
+| the host rolls back even when sakutei is gone | 別の、ssh を塞ぐ宣言で reconcile を始め、流れたのを確かめてから sakutei と ssh を SIGKILL → 新しい接続は届かない → 上限の後に道具の予約が写しに戻し、届くようになる。道具の `status` はその予約を `fired` と出す |
+| a tool of another protocol: not changed | `status` だけ `protocol: 999` を返す道具に入れ替える → reconcile は Apply の失敗（`protocol 999` を名指し）を報告し、table は変わらない |
+| no tool: not changed | 道具を退ける → reconcile は流さず、table は変わらない |
+| the tool back: the change goes through | 道具を戻す → 同じ宣言が流れる |
+| outside the tool's tables: not touched | `inet sk mgmt` と `inet other` が最初から最後まで変わらない |
+
 網の間の許可（Backlog #174、`netpolicy_integration_test.go` の `TestNFTablesNetworkPolicy`）：上の network namespace の nft に、`network_policy:` の境界（`inet np forward`）とホスト（`inet np input`）を展開して流す（確かめる先は宣言の `tcp://` のテストの待ち受け、承認した planned_change のレーンを置く）:
 
 | 段 | 内容 |
@@ -381,42 +511,52 @@ $ make integration-nftables
 
 ### 結果
 
-nftables v1.0.9 で回した結果（全段 PASS、Backlog #181 の段を足して）:
+nftables v1.0.9 で回した結果（全段 PASS、Backlog #191 の段を足して）:
 
 ```
---- PASS: TestNFTablesLiveIntentRanges (0.28s)
-    --- PASS: TestNFTablesLiveIntentRanges/tables_only_in_the_intent (0.15s)
+--- PASS: TestNFTablesGuardToolOverSSH (63.57s)
+    --- PASS: TestNFTablesGuardToolOverSSH/sudo_runs_the_tool_only (7.72s)
+    --- PASS: TestNFTablesGuardToolOverSSH/the_tool_refuses_and_changes_nothing (6.62s)
+    --- PASS: TestNFTablesGuardToolOverSSH/policy_drop_is_applied_and_confirmed_through_the_tool (16.18s)
+    --- PASS: TestNFTablesGuardToolOverSSH/a_declaration_that_shuts_ssh_out_is_rolled_back_by_the_tool (13.56s)
+    --- PASS: TestNFTablesGuardToolOverSSH/the_host_rolls_back_even_when_sakutei_is_gone (11.34s)
+    --- PASS: TestNFTablesGuardToolOverSSH/a_tool_of_another_protocol:_not_changed (1.28s)
+    --- PASS: TestNFTablesGuardToolOverSSH/no_tool:_not_changed (0.20s)
+    --- PASS: TestNFTablesGuardToolOverSSH/the_tool_back:_the_change_goes_through (2.74s)
+    --- PASS: TestNFTablesGuardToolOverSSH/outside_the_tool's_tables:_not_touched (0.12s)
+--- PASS: TestNFTablesLiveIntentRanges (0.24s)
+    --- PASS: TestNFTablesLiveIntentRanges/tables_only_in_the_intent (0.13s)
     --- PASS: TestNFTablesLiveIntentRanges/a_disagreement_is_refused_before_nft_runs (0.02s)
-    --- PASS: TestNFTablesLiveIntentRanges/the_same_in_both,_and_only_in_the_config (0.07s)
---- PASS: TestNFTablesLockoutOverSSH (57.60s)
-    --- PASS: TestNFTablesLockoutOverSSH/policy_drop_is_applied_and_reaching_the_host_is_confirmed (14.14s)
-    --- PASS: TestNFTablesLockoutOverSSH/a_declaration_that_shuts_ssh_out_is_rolled_back_on_the_host (12.47s)
-    --- PASS: TestNFTablesLockoutOverSSH/the_same_change_is_not_applied_again (0.14s)
-    --- PASS: TestNFTablesLockoutOverSSH/the_host_rolls_back_even_when_sakutei_is_gone (10.61s)
-    --- PASS: TestNFTablesLockoutOverSSH/a_target_not_reached_before_the_change:_not_changed (0.65s)
-    --- PASS: TestNFTablesLockoutOverSSH/the_other_path_opened_(confirmed_over_self) (2.69s)
-    --- PASS: TestNFTablesLockoutOverSSH/another_path_declared_and_kept_open:_confirmed_over_both (1.20s)
-    --- PASS: TestNFTablesLockoutOverSSH/another_path_declared_and_shut:_rolled_back_although_self_is_reached (12.68s)
+    --- PASS: TestNFTablesLiveIntentRanges/the_same_in_both,_and_only_in_the_config (0.06s)
+--- PASS: TestNFTablesLockoutOverSSH (58.56s)
+    --- PASS: TestNFTablesLockoutOverSSH/policy_drop_is_applied_and_reaching_the_host_is_confirmed (14.16s)
+    --- PASS: TestNFTablesLockoutOverSSH/a_declaration_that_shuts_ssh_out_is_rolled_back_on_the_host (12.46s)
+    --- PASS: TestNFTablesLockoutOverSSH/the_same_change_is_not_applied_again (0.13s)
+    --- PASS: TestNFTablesLockoutOverSSH/the_host_rolls_back_even_when_sakutei_is_gone (10.63s)
+    --- PASS: TestNFTablesLockoutOverSSH/a_target_not_reached_before_the_change:_not_changed (0.74s)
+    --- PASS: TestNFTablesLockoutOverSSH/the_other_path_opened_(confirmed_over_self) (2.86s)
+    --- PASS: TestNFTablesLockoutOverSSH/another_path_declared_and_kept_open:_confirmed_over_both (1.40s)
+    --- PASS: TestNFTablesLockoutOverSSH/another_path_declared_and_shut:_rolled_back_although_self_is_reached (12.76s)
     --- PASS: TestNFTablesLockoutOverSSH/the_minimal_core_was_not_touched (0.07s)
---- PASS: TestNFTablesLocalLockout (8.23s)
-    --- PASS: TestNFTablesLocalLockout/confirmed (4.12s)
-    --- PASS: TestNFTablesLocalLockout/not_reached_before_the_change:_not_changed (0.08s)
+--- PASS: TestNFTablesLocalLockout (8.24s)
+    --- PASS: TestNFTablesLocalLockout/confirmed (4.11s)
+    --- PASS: TestNFTablesLocalLockout/not_reached_before_the_change:_not_changed (0.09s)
     --- PASS: TestNFTablesLocalLockout/declared_tcp_targets_without_ruleset_confirm_address (0.17s)
-    --- PASS: TestNFTablesLocalLockout/one_declared_target_not_reached_after_the_change:_rolled_back (3.86s)
---- PASS: TestNFTablesNetworkPolicy (0.94s)
-    --- PASS: TestNFTablesNetworkPolicy/the_allows_are_applied_with_their_reasons_as_comments (0.24s)
-    --- PASS: TestNFTablesNetworkPolicy/no_drift_however_many_cycles_(comments_read_back_as_written) (0.39s)
-    --- PASS: TestNFTablesNetworkPolicy/changing_the_declaration_changes_the_rules (0.29s)
+    --- PASS: TestNFTablesLocalLockout/one_declared_target_not_reached_after_the_change:_rolled_back (3.87s)
+--- PASS: TestNFTablesNetworkPolicy (0.98s)
+    --- PASS: TestNFTablesNetworkPolicy/the_allows_are_applied_with_their_reasons_as_comments (0.25s)
+    --- PASS: TestNFTablesNetworkPolicy/no_drift_however_many_cycles_(comments_read_back_as_written) (0.40s)
+    --- PASS: TestNFTablesNetworkPolicy/changing_the_declaration_changes_the_rules (0.31s)
     --- PASS: TestNFTablesNetworkPolicy/an_exception_without_reason_is_refused_and_nothing_changes (0.02s)
---- PASS: TestNFTablesLiveIntegration (2.41s)
-    --- PASS: TestNFTablesLiveIntegration/create_from_empty (0.25s)
-    --- PASS: TestNFTablesLiveIntegration/base_chain_and_set_are_not_touched (0.17s)
-    --- PASS: TestNFTablesLiveIntegration/a_rule_deleted_by_hand_is_drift_and_comes_back (0.28s)
-    --- PASS: TestNFTablesLiveIntegration/a_reordering_is_drift_and_is_put_back (0.21s)
+--- PASS: TestNFTablesLiveIntegration (2.24s)
+    --- PASS: TestNFTablesLiveIntegration/create_from_empty (0.23s)
+    --- PASS: TestNFTablesLiveIntegration/base_chain_and_set_are_not_touched (0.16s)
+    --- PASS: TestNFTablesLiveIntegration/a_rule_deleted_by_hand_is_drift_and_comes_back (0.25s)
+    --- PASS: TestNFTablesLiveIntegration/a_reordering_is_drift_and_is_put_back (0.18s)
     --- PASS: TestNFTablesLiveIntegration/a_rule_nft_-c_refuses_changes_nothing (0.07s)
-    --- PASS: TestNFTablesLiveIntegration/declared_as_listed,_no_drift_however_many_cycles (0.43s)
-    --- PASS: TestNFTablesLiveIntegration/normal_form (0.35s)
-    --- PASS: TestNFTablesLiveIntegration/a_set_nft_merges_is_not_drift (0.62s)
+    --- PASS: TestNFTablesLiveIntegration/declared_as_listed,_no_drift_however_many_cycles (0.41s)
+    --- PASS: TestNFTablesLiveIntegration/normal_form (0.33s)
+    --- PASS: TestNFTablesLiveIntegration/a_set_nft_merges_is_not_drift (0.59s)
     --- PASS: TestNFTablesLiveIntegration/the_unmanaged_table_did_not_change (0.01s)
 PASS
 ```
@@ -425,4 +565,4 @@ PASS
 
 ## 通常のテスト
 
-nft を呼ぶ所は `nftables.Runner`（seam）に、締め出しの守りは `nftables.Guard`（seam）に切ってあり、`make check` は偽の nft と偽の守り（`internal/nftables/nftfake`。Arm で写しを取り、上限で戻す。届かないかどうかはテストが決める）で回る。仕掛けの sh（`ExecGuard`）は手元の sh と、nft の代わりに写しを書き出すだけのスクリプトで、取り消し・時間切れの戻し・残りが無いことを確かめる。base chain と守りの試験は `internal/nftables/basechain_test.go`・`guard_test.go`、ループが巻き戻された Apply を次の周に繰り返さないことは `tests/acceptance/nftables_lockout_test.go`、確かめる先の宣言・前の確かめ・承認と予算は `tests/acceptance/nftables_approval_test.go`（Backlog #179。偽の守りは先ごとに届くかをテストが決める）。本物の nft の出力を記録したもの（`internal/nftables/testdata/`）を読む試験、契約テスト（`sdk.ContractTester`、観測できないのを absent にしないことを含む）、BulkObserve 等価性テスト（`sdk.BulkEquivalenceTester`）を live でも通す（`tests/acceptance/nftables_live_test.go`）。
+nft を呼ぶ所は `nftables.Runner`（seam）に、締め出しの守りは `nftables.Guard`（seam）に切ってあり、`make check` は偽の nft と偽の守り（`internal/nftables/nftfake`。Arm で写しを取り、上限で戻す。届かないかどうかはテストが決める）で回る。仕掛けの sh（`ExecGuard`）は手元の sh と、nft の代わりに写しを書き出すだけのスクリプトで、取り消し・時間切れの戻し・残りが無いことを確かめる。決まった道具（Backlog #191）は、道具の中身を `internal/nftguard/nftguard_test.go`（nft の代わりに呼ばれ方と標準入力を書き出すスクリプト。受ける形・断る形と nft を呼ばないこと・写しの範囲・予約と取り消しと時間切れの戻し・引数と設定の検査）で、provider の側を `internal/nftables/tool_test.go`（偽のホストの上の偽の道具。道具の list・check・apply・arm・disarm・status だけを呼ぶこと・道具が無い・版が合わない・表と秒が合わないときに変えないこと）と `tests/acceptance/remote_test.go`（`ruleset_guard_tool` の設定の検査）で確かめる。base chain と守りの試験は `internal/nftables/basechain_test.go`・`guard_test.go`、ループが巻き戻された Apply を次の周に繰り返さないことは `tests/acceptance/nftables_lockout_test.go`、確かめる先の宣言・前の確かめ・承認と予算は `tests/acceptance/nftables_approval_test.go`（Backlog #179。偽の守りは先ごとに届くかをテストが決める）。本物の nft の出力を記録したもの（`internal/nftables/testdata/`）を読む試験、契約テスト（`sdk.ContractTester`、観測できないのを absent にしないことを含む）、BulkObserve 等価性テスト（`sdk.BulkEquivalenceTester`）を live でも通す（`tests/acceptance/nftables_live_test.go`）。

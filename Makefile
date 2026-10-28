@@ -46,7 +46,8 @@ integration-redfish:
 # 使い捨ての network namespace の中で回す（ホストの FW には触れない。namespace は
 # テストが終われば消える）。base chain の policy drop と締め出しの守り（#173）は、
 # sshd・nft の入った使い捨てのコンテナ（make integration-remote と同じイメージ）に
-# ssh で入って確かめ、終わればコンテナを消す。nft・unshare・nsenter・docker・ssh と
+# ssh で入って確かめ、終わればコンテナを消す。決まった道具 sakutei-nft-guard（#191）は
+# sudoers を道具だけに絞った利用者で同じように確かめる。nft・unshare・nsenter・docker・ssh と
 # sudo（パスワードなし）が要るので、check・test・CI には入れない。手順と結果は
 # docs/providers/nftables.md の「統合テスト」。
 NFTABLES_IT := ./tests/integration/nftables/

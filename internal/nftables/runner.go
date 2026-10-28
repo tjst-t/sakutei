@@ -97,10 +97,20 @@ type RemoteRunner struct {
 	Exec remote.Executor
 	// NFT はそのホストの nft のパス（既定 "nft"）。
 	NFT string
+	// Tool が空でなければ、nft の代わりにそのホストの決まった道具（Backlog
+	// #191、tool.go）を走らせる。
+	Tool string
 }
 
 // Run implements Runner.
 func (r RemoteRunner) Run(ctx context.Context, args []string, stdin []byte) ([]byte, error) {
+	if r.Tool != "" {
+		targs, err := toolArgs(args)
+		if err != nil {
+			return nil, err
+		}
+		return runTool(ctx, r.Exec, r.Tool, targs, stdin)
+	}
 	nft := r.NFT
 	if nft == "" {
 		nft = "nft"

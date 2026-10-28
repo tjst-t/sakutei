@@ -26,6 +26,8 @@ package nftables
 //     先ごとに 1 回）。1 つでも届かなければ変えない（一時的な失敗）。前に届かない
 //     のに変えると、後の確かめが落ちて戻すだけになるため。
 //  1. 変える table の写しを取る（`nft list table`。無ければ「無い」こと）。
+//     決まった道具（TableArmer、Backlog #191）は 3 で写しを自分で取る。その前に
+//     道具の status で版と扱う表を確かめる（GuardChecker）。
 //  2. `nft -c -f -` で検査する。
 //  3. 対象のホストの側に、時間の上限（RollbackAfter）の後に写しへ戻す仕掛けを
 //     置く（Guard.Arm）。仕掛けはホストの上で時間で動くので、Sakutei との接続が
@@ -60,7 +62,8 @@ const DefaultRollbackAfter = 30 * time.Second
 var ErrRollbackFired = errors.New("the rollback has already restored the previous ruleset")
 
 // Guard は 1 つのホストの締め出しの守りの seam。通常のテストは偽のもの
-// （nftfake.Guard）、本物は ExecGuard。
+// （nftfake.Guard）、本物は ExecGuard（sh）と ToolGuard（決まった道具、tool.go、
+// Backlog #191）。
 type Guard interface {
 	// Arm はホストの上に、after の後に restore（`nft -f` に流すスクリプト）を
 	// 流す仕掛けを置き、取り消すための token を返す。仕掛けはホストの上で時間で

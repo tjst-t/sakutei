@@ -148,6 +148,13 @@ nftables の観測用のユーザーの sudoers の例（管理するテーブ�
 sakutei-ro ALL=(root) NOPASSWD: /usr/sbin/nft -j list table inet filter, /usr/sbin/nft -a -s list table inet filter
 ```
 
+決まった道具（`ruleset_guard_tool`、Backlog #191、[providers/nftables.md の「決まった道具」](providers/nftables.md#決まった道具sakutei-nft-guardbacklog-191)）を使うホストでは、観測用には道具の `list` だけを、書き込み用には道具だけを許す（`nft`・`sh` は許さない。扱う表は道具の設定ファイルが決める）:
+
+```
+sakutei    ALL=(root) NOPASSWD: /usr/local/libexec/sakutei-nft-guard
+sakutei-ro ALL=(root) NOPASSWD: /usr/local/libexec/sakutei-nft-guard list *
+```
+
 ## 届かないとき
 
 | 起きたこと | provider の答え |
