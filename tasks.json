@@ -3807,7 +3807,7 @@
       "number": 163,
       "kind": "task",
       "title": "宣言で消す：リソースに明示の absent（ensure: absent）を書けるようにし、prune しない型でも予算と承認ゲートを通して消す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "proxmox-vm-vm-vm-unmanaged-pool",
       "dependsOn": [],
       "milestone": null,
@@ -3819,7 +3819,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T03:54:32.654Z",
-      "updatedAt": "2026-10-28T03:54:32.654Z",
+      "updatedAt": "2026-10-28T03:56:08.362Z",
       "closedAt": null,
       "extra": {}
     },
