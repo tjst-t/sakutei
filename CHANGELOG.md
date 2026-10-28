@@ -2,11 +2,22 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
-## 未リリース
+## v2.4.0（2026-10-28）
+
+正しい状態を宣言の側に置く仕組みと、効かない Apply を止める仕組みを入れた版。採番の結果を宣言の側のファイルへ書き戻してそれを正として読む、触らない宣言を intent に書く、Apply のあとに読み直して効いたかを確かめる。あわせて、List の ID の scope と宣言の scope の突き合わせの修正と、Redfish の FW の更新を BMC の模擬で確かめたこと。設計書は v3.33 → v3.38（`docs/architecture/CHANGELOG-v3.34.md`〜`v3.38.md`）。
+
+> **終了コードの追加**：一回性の `sakutei reconcile` に終了コード **4** を足した（下の #166）。**0 と 1 の意味は変わらない**（1 の条件と同時なら 1）。終了コードを見て分岐する包みは、4 を「収束していない」として扱うこと。コマンドごとの表は `docs/exit-codes.md`。
+
+### 追加
+
+- **Apply のあとに読み直して効いたかを確かめ、効かない Apply を止める**（#166）：Apply が成功を返したリソースはその場で読み直し（型ごとの settle の間は待つ。redfish-system は 15 秒、ほかは 1 回読み直す）、Diff が残れば「効かなかった」と数える。同じ Diff で `max_ineffective_applies`（既定 3）回効かなければ、そのリソースへの Apply を止める（`oscillating`。そのリソースだけ alert-only、下流は待つ）。Diff が変わる・現実が宣言どおりになる・人が `sakutei apply-check release` で解くと戻る。Event `ApplyIneffective`、status・`GET /status`・`GET /plan`・/metrics に出る。一回性の `reconcile` は、Apply が成功を返したのに Diff が残った・Apply を止めたリソースがあれば**終了コード 4**。旗 `--settle`・`--max-ineffective-applies`・`--max-ineffective-duration` と intent の `apply_check:`（食い違えば厳しい方）。BMC が電源の命令を受けて何もしない故障を `make integration-redfish` の段で確かめた（PASS）。
+- **採番の結果を宣言の側へ書き戻し、それを正として読む**（#157）：`pools:` のプールに `write_back: true` と書くと、配った値をプールごとの素の YAML（`schema_version: 1`、書式は `docs/allocation-file.md`）に書き、Git にコミットする（`--alloc-write-back` で、直接コミット `commit`・別のブランチで人のレビューを通す `review`・書くだけ `file`）。読み込みはそのファイルを正とし、store と食い違えばその Apply を止めて知らせる（どちらにも寄せない）。store を失ったら `sakutei allocator import` でファイルから作り直せる（同じ値に戻り、付け替わらない）。store は写しと作業の記録に下がる。
+- **触らない宣言 `external_owners:`**（#158）：intent に「この範囲は外の持ち主のもの」を provider に依らず書ける（provider・scope・ID の完全一致か前方一致・観測した値。proxmox-vm は `vmid`・`node`・`pool`）。選ばれたものは観測しても Apply・Delete・prune をしない。intent が同じものを管理・absent にすると読み込みで断る。provider の設定の除外（proxmox-vm の `protected_vmids` など）は最後の安全の網として残し、intent と食い違えば断る。原則「provider の設定はつなぎ方だけ、管理の範囲と除外は intent」を設計書 §1.7 に書いた。
 
 ### 修正
 
 - **List の ID の scope が宣言の scope と合わず、status の unmanaged と prune の突き合わせが外れた**（#169）：List を持つ provider は ID に provider の設定の scope（無ければ root）を付けるので、宣言に `scope:` を書き provider に scope を書かないと、`status` で宣言済みのものが unmanaged に出て、`status --claim` では宣言の外のものが出ず、prune は claim の下で孤児を取りこぼしていた。突き合わせる前に scope を宣言に合わせる（provider に依らず本体の 1 か所）：宣言にあるものは宣言の ID に合わせ、宣言に無いものは status だけがその provider の宣言の scope（1 種類のとき）に入れる。provider の scope と宣言の scope が食い違えば、status は `unmanaged_undetectable` の `scope_mismatch`（終了コード 3）、prune は止まる。`--claim` で scope が決まらないものは `scope_undecided` の注記で件数を出す。設計書 v3.38（`docs/architecture/CHANGELOG-v3.38.md`）。`make integration-proxmox` に「scope 付きの宣言と --claim」段。
+- **Redfish の FW の更新が、Task に `Payload` を返さない BMC で止まるはずだった**（#168）：BMC の更新の Task を、`Payload` が無ければ Update の登録簿のメッセージ `TargetDetermined` で見分ける。統合試験の BMC の模擬を qemu-bmc 0.11.0（digest で固定）に上げ、`make integration-redfish` に FW の段（版の観測・BMC の更新・BIOS の再起動までの保留・イメージの拒否と更新の失敗）を足した（PASS）。
 
 ## v2.3.0（2026-10-28）
 
