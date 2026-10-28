@@ -44,7 +44,12 @@ $ sakutei --intent intent/ --otlp-endpoint https://collector.example:4318 --otlp
 - resource の属性は `service.name`（既定 `sakutei`、`service_name` で変える）・`service.version`・`host.name`・`sakutei.command`
   （`daemon`・`plan`・`reconcile`）。
 - 一回性の `plan`・`reconcile` は 1 回が 1 つのトレースで、根に `sakutei.exit_code` を載せる。終わる前に送り終える（最大 5 秒待つ）。
-- 失敗（provider の誤り・Workflow の halt・終了コード 1）は span の status を ERROR にし、誤りの文を載せる。
+- 失敗は span の status を ERROR にする。provider の誤り（Read・Apply）はその誤りの文を載せる。
+- Workflow の手順の失敗と halt は、手順の欄の値を含む文になるので載せず、決まった短い理由だけを載せる：手順の span は
+  `<種類> step failed: <理由>`（理由は `timed out`・`plan error`・`apply error`・`task failed`・`target absent`・
+  `invariant broken`・`action error` など）、Workflow の span は `workflow run halted`・`workflow error`。理由の全文は
+  `sakutei workflow list` とログで見る。
+- 一回性のコマンドが終了コード 1 で終わったときは、根の span を ERROR にする。
 - **欄の値は載せない**：Diff の中身・SecretRef の値は span に入らない。載るのは名前・ID・数・結果だけ。
 - 非同期の Apply は周の span が閉じたあとに終わることがある（子が親より遅く閉じる。OTLP では正しい形）。
 

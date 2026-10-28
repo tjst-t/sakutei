@@ -274,9 +274,15 @@ func (e *Engine) traced(ctx context.Context, def Definition) []Event {
 	if run, ok, err := e.Store.Get(ctx, def.Name); err == nil && ok {
 		span.SetAttributes(tracing.String(tracing.AttrRun, run.RunID), tracing.String(tracing.AttrOutcome, string(run.Phase)))
 	}
+	// ev.Message は手順の欄の値を含みうる（"apply map[...]: ..."）ので載せない。
+	// span に出すのは出来事の種類だけ（§26.8：欄の値は載せない）。理由は
+	// `sakutei workflow list` とログで見る。
 	for _, ev := range events {
-		if ev.Kind == EventError || ev.Kind == EventHalted {
-			span.Fail(errors.New(ev.Message))
+		switch ev.Kind {
+		case EventHalted:
+			span.Fail(errors.New("workflow run halted"))
+		case EventError:
+			span.Fail(errors.New("workflow error"))
 		}
 	}
 	return events
@@ -290,6 +296,9 @@ type stepper struct {
 	run    Run
 	now    time.Time
 	events []Event
+	// failWhy は失敗した手順の短い理由（span の status に載せる。欄の値・誤りの
+	// 文を含めない決まった文、#189・§26.8）。exec の前に空にし、fail が書く。
+	failWhy string
 	// obsErr は最後の Observe が読めなかった理由（リソースごと）。待ちの理由に
 	// 添えて、なぜ観測できないのか（届かない・認証の失敗など）を人に見せる（#86）。
 	obsErr map[core.IDKey]error
@@ -469,6 +478,13 @@ const (
 	stepStopped
 )
 
+// fail は手順の失敗を返す。why は span に載せる決まった短い理由（欄の値・
+// 誤りの文を入れない）、msg は halt の理由（S2・ログ・Event）に出す文。
+func (s *stepper) fail(why, msg string) (stepStatus, string) {
+	s.failWhy = why
+	return stepFailed, msg
+}
+
 // String は span の outcome に出す名前（#189）。
 func (s stepStatus) String() string {
 	switch s {
@@ -543,10 +559,12 @@ func (s *stepper) advance(ctx context.Context) {
 			tracing.String(tracing.AttrStage, stage.Name), tracing.String(tracing.AttrTarget, target.String()),
 			tracing.Int(tracing.AttrStep, s.run.Step+1), tracing.String(tracing.AttrStepKind, string(step.Kind)),
 			tracing.String(tracing.AttrResource, res.String()))
+		s.failWhy = ""
 		status, msg := s.exec(stepCtx, step, res, resObs)
 		span.SetAttributes(tracing.String(tracing.AttrOutcome, status.String()))
 		if status == stepFailed {
-			span.Fail(errors.New(msg))
+			// msg は欄の値を含みうる：決まった短い理由だけを載せる。
+			span.Fail(fmt.Errorf("%s step failed: %s", step.Kind, s.failWhy))
 		}
 		span.End()
 		switch status {
@@ -630,7 +648,7 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 	switch step.Kind {
 	case StepVerify:
 		if n := s.countActive(s.observeAll(ctx), target, nil); n < s.def.Invariant.MinActive {
-			return stepFailed, fmt.Sprintf("verify: invariant min_active %d broken (%d active)", s.def.Invariant.MinActive, n)
+			return s.fail("invariant broken", fmt.Sprintf("verify: invariant min_active %d broken (%d active)", s.def.Invariant.MinActive, n))
 		}
 		return stepDone, "invariant holds"
 	case StepWait, StepRequire:
@@ -639,7 +657,7 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 			return stepDone, fmt.Sprintf("observed %v", step.Fields)
 		}
 		if step.Timeout > 0 && !s.now.Before(s.run.StepStartedAt.Add(step.Timeout)) {
-			return stepFailed, fmt.Sprintf("%s %v timed out after %s", step.Kind, step.Fields, step.Timeout)
+			return s.fail("timed out", fmt.Sprintf("%s %v timed out after %s", step.Kind, step.Fields, step.Timeout))
 		}
 		if obs.Availability != core.AvailabilityOk {
 			if err := s.obsErr[target.Key()]; err != nil {
@@ -657,7 +675,7 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 		return stepPending, "target is unobservable (unknown ≠ absent); waiting"
 	}
 	if obs.State == nil {
-		return stepFailed, "target is absent in reality"
+		return s.fail("target absent", "target is absent in reality")
 	}
 	if s.satisfied(obs, target, step.Fields) {
 		if step.Kind == StepTask && s.e.Tasks != nil {
@@ -676,10 +694,10 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 		}
 		plan, err := d.Plan(obs, diff.DesiredResource{ID: target, Fields: step.Fields}, cause.CauseContext{})
 		if err != nil {
-			return stepFailed, fmt.Sprintf("plan %v: %v", step.Fields, err)
+			return s.fail("plan error", fmt.Sprintf("plan %v: %v", step.Fields, err))
 		}
 		if err := s.e.execute(ctx, plan); err != nil {
-			return stepFailed, fmt.Sprintf("apply %v: %v", step.Fields, err)
+			return s.fail("apply error", fmt.Sprintf("apply %v: %v", step.Fields, err))
 		}
 		fresh, err := provider.ReadFor(ctx, s.e.providerOf(target), target.Local, step.Fields)
 		if err == nil && s.satisfied(fresh, target, step.Fields) {
@@ -701,7 +719,7 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 		return stepPending, fmt.Sprintf("task %s launched for %v", dec.Record.TaskID, step.Fields)
 	case task.Outstanding:
 		if dec.Record.Phase == task.PhaseFailed {
-			return stepFailed, dec.Reason
+			return s.fail("task failed", dec.Reason)
 		}
 	}
 	return stepPending, dec.Reason
@@ -711,8 +729,8 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 // 送る前に「送りかけ」を S2 に書き、立ったまま戻ってきたら二度送らない。
 func (s *stepper) action(ctx context.Context, step Step, target core.ID) (stepStatus, string) {
 	if s.run.ActionSending {
-		return stepFailed, fmt.Sprintf("%s was being sent when the run stopped and it is unknown whether it reached the target; not sending it twice (check the machine, then `sakutei workflow cancel %s` to start over)",
-			step.Op, s.def.Name)
+		return s.fail("action may have been sent already", fmt.Sprintf("%s was being sent when the run stopped and it is unknown whether it reached the target; not sending it twice (check the machine, then `sakutei workflow cancel %s` to start over)",
+			step.Op, s.def.Name))
 	}
 	p := s.e.providerOf(target)
 	if p == nil {
@@ -720,11 +738,11 @@ func (s *stepper) action(ctx context.Context, step Step, target core.ID) (stepSt
 	}
 	a, ok := p.(provider.Actioner)
 	if !ok {
-		return stepFailed, fmt.Sprintf("provider %s has no one-time operations (action %s)", target.Provider, step.Op)
+		return s.fail("no one-time operations", fmt.Sprintf("provider %s has no one-time operations (action %s)", target.Provider, step.Op))
 	}
 	plan, err := a.PlanAction(target.Local, step.Op, step.Args)
 	if err != nil {
-		return stepFailed, fmt.Sprintf("action %s: %v", step.Op, err)
+		return s.fail("action plan error", fmt.Sprintf("action %s: %v", step.Op, err))
 	}
 	desc := plan.Description
 	if desc == "" {
@@ -753,7 +771,7 @@ func (s *stepper) action(ctx context.Context, step Step, target core.ID) (stepSt
 			}
 			return stepPending, fmt.Sprintf("action %s not sent: %s; trying again next cycle", desc, shortReason(err))
 		}
-		return stepFailed, fmt.Sprintf("action %s: %v", desc, err)
+		return s.fail("action error", fmt.Sprintf("action %s: %v", desc, err))
 	}
 	if inLane {
 		return stepDone, fmt.Sprintf("sent %s (in the planned_change lane)", desc)

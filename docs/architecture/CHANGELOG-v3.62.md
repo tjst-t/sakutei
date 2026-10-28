@@ -16,6 +16,8 @@
   2. **形**：OTLP/HTTP の JSON の写像（`POST <endpoint>/v1/traces`）。protobuf も OpenTelemetry の SDK も使わない（外の依存なし）。
   3. **既定は出さない**：`--otlp-endpoint` を明示したときだけ。`OTEL_*` の環境変数は読まず、環境の proxy を通さず、転送に従わない。
   4. **値は載せない**：名前・ID・数・結果（availability・Op の種類・cause・手順の結果）だけ。欄の値・秘密は載せない。
+     Workflow の手順の失敗と halt の文は Sakutei が手順の欄の値を書き足したものなので載せず、決まった短い理由
+     （`apply step failed: plan error`・`workflow run halted` など）だけを載せる（理由の全文は S2 とログ）。
   5. **収束を止めない**：上限つきの列（4096）と束（512・1 秒）で送り、届かない・429・5xx は 2 度まで送り直し、だめなら捨てて
      数える。送れない間は 1 度だけ知らせ、戻れば 1 度だけ知らせる。
   6. **宛先の TLS と認可は読み取りの口（#161）と同じ考え**（`--otlp-config`）：TLS 1.2 以上（1.3 も選べる）・`ca_file` と
@@ -26,5 +28,5 @@
   メトリクスの OTLP は今回の範囲外（ログは `--log-format json`・event sink、メトリクスは `/metrics`）。
 - **互換**: `--otlp-endpoint` を渡さない今までの使い方は何も変わらない（何も送らない）。
 - 実装：`internal/tracing`（span の口。標準のライブラリだけに依り、どこからでも呼べる）・`internal/otlpexport`（送り手と設定）・
-  `pkg/cli/trace.go`。受け入れ `tests/acceptance/otlp_trace_test.go`（`[AC-189-1]`〜`[AC-189-4]`）、統合 `make integration-otlp`
+  `pkg/cli/trace.go`。受け入れ `tests/acceptance/otlp_trace_test.go`（`[AC-189-1]`〜`[AC-189-5]`）、統合 `make integration-otlp`
   （OpenTelemetry Collector contrib 0.163.2 を tag と digest で固定、`IT-189-1`〜`IT-189-5`）。利用者の文書は `docs/tracing.md`。

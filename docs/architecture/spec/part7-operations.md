@@ -684,7 +684,10 @@ Workflow の段を span にし、OTLP/HTTP で OpenTelemetry の Collector へ�
   | `sakutei.workflow.step` | Workflow の手順の 1 つ | stage・対象・手順の番号と種類・結果（done・pending・failed） |
 
   一回性の `plan`・`reconcile` は 1 回が 1 つのトレースで、根に終了コードを載せ、終わる前に送り終える（時間切れ 5 秒）。
-  失敗（provider の誤り・Workflow の halt）は span の status を ERROR にして誤りの文を載せる。
+  失敗は span の status を ERROR にする。provider の誤り（Read・Apply）はその誤りの文を載せる。Workflow の手順の失敗と halt は、
+  Sakutei 自身が手順の欄の値を書き足した文（`apply map[...]: ...`・`wait map[...] timed out ...`）になるので、その文は載せず、
+  決まった短い理由（`<種類> step failed: timed out`・`plan error`・`apply error`・`task failed`・`action error` など、
+  Workflow の span は `workflow run halted`・`workflow error`）だけを載せる。理由の全文は S2 の run とログに残る。
 - **値は載せない**：span には名前・ID・数・結果だけを載せ、欄の値（Diff の中身・SecretRef の値）は載せない（§20 の決まりと同じ）。
 - **送れなくても収束を止めない・待たない**：span は上限つきの列（4096）に積み、1 つの goroutine が束（最大 512・1 秒ごと）に
   して送る。届かない・429・5xx は 2 度まで送り直し、それでも駄目なら捨てて数える。送れない間は 1 度だけ知らせ、戻れば 1 度だけ
