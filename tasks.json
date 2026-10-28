@@ -3881,11 +3881,11 @@
       "labels": [],
       "body": "## なぜ\n作った VM が Proxmox の pool に入らないので、API トークンを pool の ACL だけで絞れない。\n\n## やること\n- proxmox-vm のフィールドに `pool` を足す（intent に書く。A3：範囲は intent）。複製（clone の `pool`）・作成のときに渡す。観測で pool を読み、違えば drift として合わせる（pool の移し替えの API があれば。無ければ計画のエラーにして書く）。pool が無い・権限が無い場合の失敗の扱いを決めて書く。\n- pool に絞ったトークンで作る・読むのに要る権限（テンプレートへの権限・ストレージ・bridge）を docs/providers/proxmox-vm.md に書く。\n- 常駐のデーモンが `--cause-state` を受け付けないのが意図どおりかを確かめ、意図どおりなら docs（CLI の説明）に「常駐は前の周の状態をメモリに持つので要らない」などと一言書く。意図どおりでなければ直す。\n- 設計書 §29.1、CHANGELOG-v3.x。\n\n## 確かめ方\n- 偽の Proxmox（pvetest）に pool を足し、単体・受け入れテスト（pool に入って作られる・手で外すと戻るか知らせる）。\n- `make integration-proxmox` に pool の段を足す（pool を作り、pool だけに絞ったトークンで作れて読めること）。\n\n## 決まり\nGo は stdlib のみ。make check・make test-race を通す。",
       "doneWhen": "pool を宣言した VM が pool に入って作られ、pool に絞ったトークンで作れて読めることを integration-proxmox で示す。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/proxmox-pool）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T03:54:32.654Z",
-      "updatedAt": "2026-10-28T05:16:00.803Z",
+      "updatedAt": "2026-10-28T05:16:10.862Z",
       "closedAt": "2026-10-28T05:16:00.803Z",
       "extra": {}
     }
