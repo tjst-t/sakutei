@@ -2,6 +2,22 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## v2.2.0（2026-10-28）
+
+離れたホストのファイルと systemd のユニットを宣言で保てるようにし、通知を複数の宛先へ送れるようにした版。あわせて、Redfish の FW の版の観測と承認ゲートつきの更新。設計書は v3.26 → v3.29（`docs/architecture/CHANGELOG-v3.27.md`・`v3.28.md`・`v3.29.md`、と §29.1）。
+
+### 追加
+
+- **離れたホストのファイル `host-file` と systemd のユニット `systemd-unit`**（#155）：ssh 越しの実行の層（#130）の上で、ファイルの中身（宣言の文か SecretRef）・mode・owner・group と、ユニット（podman の quadlet を含む。`app.container` → `app.service`）の中身・state・enabled を宣言どおりに保つ。観測は中身の sha256 と stat だけで、平文を状態やイベントに載せない。**書き換えたら入れ替える口**：`restart_on` に依って立つファイルを書くと、その中身が前の起動のときと変わったときだけユニットを 1 回入れ替える（ホストの側の印で level に判定）。ユニットのファイルを書き換えたら daemon-reload を 1 回。`disruptive: true` は予算に数える。`make integration-hostconf`：systemd を PID 1 で動かすコンテナで、ふつうのユニットと podman 5 の quadlet を確かめた（PASS）。使い方は `docs/providers/host-file.md`・`systemd-unit.md`。
+- **通知の宛先を複数に**（#154）：`--event-alertmanager`・`--event-webhook` は、フラグを繰り返すか `,` でつないで複数の宛先を書ける（1 つの書き方はそのまま）。`--event-notify-config` の `alertmanager.urls`・`webhook.urls` にも書ける。宛先ごとに送り直し・backoff・送り待ちを持ち、1 台が落ちても他へは送り続け、戻った宛先には待っていた分と firing の今を送る。宛先ごとの送りの状態を `/metrics`（`sakutei_notify_*{sink,url}`）と status の `notify` に出す。
+- **Redfish の FW の版 `redfish-firmware`**（#148）：UpdateService の FirmwareInventory の版を観測し、宣言した版と違えば、承認ゲートつきの多相 Task（確かめる → 送る → 当てる → 宣言したときだけ再起動 → 確かめる）で更新する。イメージの sha256 を承認の後で確かめ、各相の入口で版と BMC の Task を観測して二重に送らない。版の違いは破壊的な変更として予算に数える。試験は偽の Redfish サーバまで（統合試験に使う BMC の模擬が UpdateService を持たないため、模擬・実機での確かめはまだ）。使い方は `docs/providers/redfish-firmware.md`。
+- **Ansible の例**：podman と systemd の quadlet でサービスを配る例を `docs/providers/ansible.md` に足した（例そのものは試していない）。
+
+### 修正
+
+- Proxmox の統合試験：一時ディレクトリとキャッシュが別のファイルシステムでも、自動導入の ISO を移せるようにした。
+- LDAP の統合試験：一時のパスワードファイルの消し残しを、その試験だけの一時ディレクトリで確かめるようにした。
+
 ## v2.1.0（2026-10-28）
 
 仮想マシンとディレクトリを宣言で扱えるようにした版。Proxmox VE の VM、LDAP の項目、採番した値を IP アドレスなどの文字列にして埋め込むテンプレート。設計書は v3.25 → v3.26（`docs/architecture/CHANGELOG-v3.26.md`）と §29.1。
