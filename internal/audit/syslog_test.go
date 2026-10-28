@@ -67,8 +67,9 @@ func TestForward_TCP_EachRecordAtOnce(t *testing.T) {
 		if err := l.Append(audit.Record{Kind: audit.KindApply, Resource: fmt.Sprintf("fake//r%d", i), Result: audit.ResultOK}); err != nil {
 			t.Fatal(err)
 		}
-		// 一回性のコマンド（Run していない）でも、Append のたびにその場で届く。
-		if got := len(srv.Messages()); got != i+1 {
+		// 一回性のコマンド（Run していない）でも、Append のたびにその場で送る
+		// （次の Append を待たない）。受け手が読み終えるのは非同期なので待つ。
+		if got := len(srv.Wait(i+1, 5*time.Second)); got != i+1 {
 			t.Fatalf("after append %d the receiver has %d message(s)", i+1, got)
 		}
 	}
