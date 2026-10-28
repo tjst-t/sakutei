@@ -270,3 +270,54 @@ func TestExporter_NotifyPerDestination(t *testing.T) {
 		t.Error("active alerts exported for a webhook")
 	}
 }
+
+// TestParseScrape は他の exporter の書くページを読む（#149 の metrics-probe）。
+func TestParseScrape(t *testing.T) {
+	text := "# HELP q Messages.\n" +
+		"# TYPE q gauge\n" +
+		"q{ queue = \"orders\" , vhost=\"/\" } 1200\n" +
+		"h_bucket{le=\"+Inf\"} 4 1700000000000\n" +
+		"untyped\t7\n" +
+		"q{queue=\"a\\\"b\\\\c\\nd\"} 1.5e3 1.7e9\n" +
+		"  # an indented comment\n" +
+		"x -Inf\n" +
+		"# EOF\n"
+	ps, err := ParseScrape(strings.NewReader(text))
+	if err != nil {
+		t.Fatalf("ParseScrape: %v", err)
+	}
+	got := map[string]float64{}
+	for _, p := range ps {
+		got[p.Key()] = p.Value
+	}
+	for k, want := range map[string]float64{
+		`q{queue="orders",vhost="/"}`: 1200,
+		`h_bucket{le="+Inf"}`:         4,
+		`untyped`:                     7,
+		`q{queue="a\"b\\c\nd"}`:       1500,
+	} {
+		if v, ok := got[k]; !ok || v != want {
+			t.Fatalf("%s = %v (%v), want %v; all %v", k, v, ok, want, got)
+		}
+	}
+	if !math.IsInf(got["x"], -1) {
+		t.Fatalf("x = %v", got["x"])
+	}
+	for name, bad := range map[string]string{
+		"bad value":    "x one\n",
+		"no value":     "x\n",
+		"bad name":     "1x 1\n",
+		"bad label":    "x{1a=\"b\"} 1\n",
+		"unterminated": "x{a=\"b} 1\n",
+		"twice":        "x 1\nx 2\n",
+		"bad ts":       "x 1 soon\n",
+		"extra":        "x 1 2 3\n",
+		"html":         "<html>\n",
+		"no comma":     "x{a=\"b\" c=\"d\"} 1\n",
+		"unquoted":     "x{a=b} 1\n",
+	} {
+		if _, err := ParseScrape(strings.NewReader(bad)); err == nil {
+			t.Errorf("%s: ParseScrape accepted %q", name, bad)
+		}
+	}
+}

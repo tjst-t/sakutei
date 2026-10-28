@@ -115,7 +115,7 @@ func Parse(r io.Reader) ([]Parsed, error) {
 			typed[name] = f[3]
 			continue
 		}
-		p, err := parseSample(line)
+		p, err := parseSample(line, false)
 		if err != nil {
 			return nil, fail("%v", err)
 		}
@@ -137,10 +137,48 @@ func Parse(r io.Reader) ([]Parsed, error) {
 	return out, sc.Err()
 }
 
-// parseSample parses name{labels} value [timestamp].
-func parseSample(line string) (Parsed, error) {
+// ParseScrape reads the text exposition format as other exporters write it
+// (Backlog #149, the metrics-probe provider): comments, HELP and TYPE lines
+// are skipped and a sample needs no TYPE before it, so histogram and summary
+// samples, untyped samples and families out of order are read.  The samples
+// themselves are still checked: names, labels (spaces around the pairs are
+// allowed), escapes, the value and an optional timestamp (an integer, or the
+// OpenMetrics float).  A malformed line or a series twice is an error — a
+// broken page is not read as a partial one.
+func ParseScrape(r io.Reader) ([]Parsed, error) {
+	var out []Parsed
+	seen := map[string]bool{}
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for n := 1; sc.Scan(); n++ {
+		line := strings.TrimRight(sc.Text(), " \t\r")
+		line = strings.TrimLeft(line, " \t")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		p, err := parseSample(line, true)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %v", n, err)
+		}
+		if seen[p.Key()] {
+			return nil, fmt.Errorf("line %d: series %s twice", n, p.Key())
+		}
+		seen[p.Key()] = true
+		out = append(out, p)
+	}
+	return out, sc.Err()
+}
+
+// parseSample parses name{labels} value [timestamp].  lenient (ParseScrape)
+// allows spaces around the label pairs and their "=", runs of spaces or tabs before the
+// value and the timestamp, and a float timestamp.
+func parseSample(line string, lenient bool) (Parsed, error) {
 	p := Parsed{Labels: map[string]string{}}
-	i := strings.IndexAny(line, "{ ")
+	stops := "{ "
+	if lenient {
+		stops = "{ \t"
+	}
+	i := strings.IndexAny(line, stops)
 	if i < 0 {
 		return p, fmt.Errorf("no value")
 	}
@@ -152,19 +190,37 @@ func parseSample(line string) (Parsed, error) {
 	if rest[0] == '{' {
 		rest = rest[1:]
 		for {
+			if lenient {
+				rest = strings.TrimLeft(rest, " \t")
+			}
 			if strings.HasPrefix(rest, "}") {
 				rest = rest[1:]
 				break
 			}
-			eq := strings.Index(rest, "=\"")
-			if eq < 0 {
-				return p, fmt.Errorf("bad label")
+			var name string
+			if lenient {
+				// name = "value": spaces around the "=" are allowed.
+				eq := strings.IndexByte(rest, '=')
+				if eq < 0 {
+					return p, fmt.Errorf("bad label")
+				}
+				name = strings.TrimRight(rest[:eq], " \t")
+				rest = strings.TrimLeft(rest[eq+1:], " \t")
+				if !strings.HasPrefix(rest, "\"") {
+					return p, fmt.Errorf("bad label %s: the value is not quoted", name)
+				}
+				rest = rest[1:]
+			} else {
+				eq := strings.Index(rest, "=\"")
+				if eq < 0 {
+					return p, fmt.Errorf("bad label")
+				}
+				name = rest[:eq]
+				rest = rest[eq+2:]
 			}
-			name := rest[:eq]
 			if !validLabelName(name) {
 				return p, fmt.Errorf("invalid label name %q", name)
 			}
-			rest = rest[eq+2:]
 			var v strings.Builder
 			for {
 				if rest == "" {
@@ -198,10 +254,19 @@ func parseSample(line string) (Parsed, error) {
 				return p, fmt.Errorf("label %s twice", name)
 			}
 			p.Labels[name] = v.String()
+			if lenient {
+				rest = strings.TrimLeft(rest, " \t")
+				if !strings.HasPrefix(rest, ",") && !strings.HasPrefix(rest, "}") {
+					return p, fmt.Errorf("want , or } after the label %s", name)
+				}
+			}
 			if strings.HasPrefix(rest, ",") {
 				rest = rest[1:]
 			}
 		}
+	}
+	if lenient {
+		return p, lenientValue(&p, rest)
 	}
 	if !strings.HasPrefix(rest, " ") {
 		return p, fmt.Errorf("no space before the value")
@@ -221,6 +286,28 @@ func parseSample(line string) (Parsed, error) {
 		}
 	}
 	return p, nil
+}
+
+// lenientValue reads " value [timestamp]" (ParseScrape).
+func lenientValue(p *Parsed, rest string) error {
+	if rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
+		return fmt.Errorf("no space before the value")
+	}
+	f := strings.Fields(rest)
+	if len(f) < 1 || len(f) > 2 {
+		return fmt.Errorf("want a value and an optional timestamp")
+	}
+	v, err := parseValue(f[0])
+	if err != nil {
+		return err
+	}
+	p.Value = v
+	if len(f) == 2 {
+		if _, err := strconv.ParseFloat(f[1], 64); err != nil || strings.ContainsAny(f[1], "xXpP_") {
+			return fmt.Errorf("bad timestamp %q", f[1])
+		}
+	}
+	return nil
 }
 
 func parseValue(s string) (float64, error) {

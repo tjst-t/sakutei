@@ -26,6 +26,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/guestos"
 	"github.com/tjst-t/sakutei/v2/internal/hostconf"
 	"github.com/tjst-t/sakutei/v2/internal/ldap"
+	"github.com/tjst-t/sakutei/v2/internal/metricsprobe"
 	"github.com/tjst-t/sakutei/v2/internal/netconf"
 	"github.com/tjst-t/sakutei/v2/internal/nftables"
 	"github.com/tjst-t/sakutei/v2/internal/postgresql"
@@ -110,6 +111,13 @@ import (
 //     (Backlog #143).  config["proxmox_config"] is the cluster list
 //     (proxmox.LoadConfig: endpoint, API token id and its secret as a
 //     SecretRef, default node, scope, the VMs never to touch).
+//
+//   - "metrics-probe": observes values of /metrics (the Prometheus text
+//     format) over HTTP(S) (Backlog #149).  config["metrics_probe_config"] is
+//     the endpoint and probe list (metricsprobe.LoadConfig: url, TLS, the
+//     credential as a SecretRef, metric name, label match, sum / max and the
+//     comparisons such as "< 1000").  Observe only (Capabilities.ObserveOnly):
+//     a Workflow's require and ready_condition read it.
 func DefaultRegistry() *ProviderRegistry {
 	r := New()
 
@@ -412,6 +420,17 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, errors.New("proxmox-vm: the cluster list is not set: proxmox_config in --provider-config")
 		}
 		return proxmox.NewFromConfig(path)
+	})
+
+	// "metrics-probe" — /metrics（Prometheus の text 形式）の値の観測だけ（§29.1、
+	// #149）。config["metrics_probe_config"] は endpoint と probe の一覧
+	// （--provider-config の metrics-probe の metrics_probe_config）。
+	r.Register(metricsprobe.Name, func(config map[string]string) (provider.Provider, error) {
+		path := config["metrics_probe_config"]
+		if path == "" {
+			return nil, errors.New("metrics-probe: the probe list is not set: metrics_probe_config in --provider-config")
+		}
+		return metricsprobe.NewFromConfig(path)
 	})
 
 	return r
