@@ -278,7 +278,8 @@ type Capabilities struct {
 - 宣言に無いものの scope は、status だけが宣言から推す（§26.4）。prune は推さない（確信なき減算はしない、§3）。
 
 収束の経路のバルク観測（§5.7）は既に「宣言の scope で無ければ root の ID で引く」逃げ道を持つ（`pkg/sdk` の CycleObserver）ので、Read の経路はこれと同じ結果になる。
-provider の設定の scope は、書かないか宣言と同じにする（つなぎ方だけを設定に書く、§1.7）。
+provider の設定の scope は、書かないか宣言と同じにする（つなぎ方だけを設定に書く、§1.7）。scope は intent の `providers:` に
+書ける（§7.7、#181）。
 
 ### §5.5 エラー分類
 
@@ -819,3 +820,43 @@ regular chain なのに現実が base chain のものは計画の時点で断る
 - **本体の realizer は nftables だけ**：実現先 1 つを nftables の base chain 1 つ（#173 の形、§7.4・§29.1。id は nftables の local id `[<host>/]<family>/<table>/<chain>`）にし、`type filter`・hook（boundary は `forward`、host は `input`）・`priority filter`・`policy drop` を既定に、`settings`（`hook`・`priority`・`policy`・`confirm`）で変えられる。ルールは `before`・許可・`after` の順で、許可 1 つをアドレスの族ごとに 1 ルール（`ip saddr … ip daddr … tcp dport … accept comment "<reason>"`）にする。nft の comment は 128 バイトまでで `"` を逃がせないので、`"` → `'`・`\` → `/`・`;` → `,`・空白と制御文字を 1 つの空白にし、超えれば文字の境目で切って `…` を付ける（読み戻しで同じ文字列になり drift にならない）。集合は #178 の正規形で作る。
 - **展開の口**：使う側は `pkg/cli` の `WithRealizer(name, r)`（§28.9 の `WithProviders` と同じ口）で別の実現先（スイッチの ACL など）への変換を足し、target の `realizer:` にその名前を書く。realizer にはそこを通る許可が from・to の網と reason・tags 付きで渡る。本体はスイッチの ACL への変換を持たない。すでにある名前（本体の `nftables` を含む）は起動のエラー。
 - **provider の設定はつなぎ方だけ**（§1.7、#158）：どの許可をどの実現先に出すか・既定の拒否・最小の核の `jump` は intent（`network_policy:` と `before`）に書き、provider の設定（`ruleset_target`・`ruleset_hosts`・鍵・時間）はつなぎ方だけを持つ。
+
+
+### §7.7 provider の範囲 —— intent の `providers:` と設定との突き合わせ
+
+provider の設定には、つなぎ方（宛先・鍵・時間）に混じって**管理の範囲**——provider のインスタンスが ID に付ける scope、
+管理する表——が残っていた。範囲は「何を管理するか」であり、正しい状態は宣言に置く（§1.7）ので、intent に書く。除外（触らない
+もの）は `external_owners:`（§7.3（c））に寄せ、ここには書かない（Backlog #181）。
+
+```yaml
+providers:                    # intent のトップレベル。provider のインスタンス（名前）ごと
+  dnszone:
+    scope:                    # 旧 zone_scope（--zone-scope）
+      site: tokyo
+  nftables:
+    scope:                    # 旧 ruleset_scope（--ruleset-scope）
+      site: tokyo
+    tables:                   # 旧 ruleset_tables（--ruleset-tables）。live だけ
+      - inet/filter
+  proxmox-vm:
+    clusters:
+      lab:                    # 設定（proxmox_config）にあるクラスタ
+        scope:                # 旧 clusters.lab.scope
+          site: tokyo
+```
+
+- **共通の口**：provider は範囲の読み方を `provider.IntentRanges`（`FromIntent`・`FromConfig`・`Apply`）として factory の隣に
+  登録する（`registry.RegisterIntentRanges`。範囲は provider を組み立てる前に要るため、組み立てた provider の capability ではなく
+  registry に置く）。どちらの側も値を正規形（scope は `core.Scope` の文字列、表は並べ替えた組）に直して申告し、コアの
+  `provider.MergeRanges` が一つの決まりで突き合わせる:
+  - **設定にだけある**：今までどおり読み、intent にも書くよう警告する（常駐では同じ警告は一度だけ）。
+  - **intent にだけある**：intent の値で provider を組み立てる（設定に書いたのと同じに動く）。
+  - **両方にある**：設定は安全の網として残す。**同じでなければ読み込みで断る**（弱い側に寄せない。§7.3（c）と同じ）。
+- **読み込みで断るもの**：知らない provider の名前・範囲を intent から受け取らない provider・知らないキー・値の書き違い・
+  設定に無いもの（proxmox-vm のクラスタ）を指す範囲・同じ provider を 2 つのファイルに書くこと・inventory のファイルに書くこと・
+  file の対象の nftables に `tables` を書くこと（ファイルの全部を収束させる対象で範囲が黙って広がらないように）。
+- **経路**：`plan`・`reconcile`・`status`・`graph`・`sync`（起動のときに読んだ intent で）と常駐は、provider を組み立てる入口で同じ突き合わせをする。常駐は起動の時点で
+  断り、動いているあいだに intent が食い違うように変われば、その周を飛ばす（Observe・Apply・prune をしない）。範囲の宣言が
+  変われば、その provider を組み立て直す。
+- **移し方**：まず intent に書き（警告が消える）、設定は網として残す。設定から範囲を外す（設定に書けなくする）のは次のメジャー版。
+  外の provider も同じ口で範囲を intent から受け取れる（`pkg/registry` の `RegisterIntentRanges`、§28.9）。

@@ -2,6 +2,14 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## 未リリース
+
+### 追加
+
+- **provider の範囲を intent に書く `providers:`**（#181）：provider の設定に残っていた管理の範囲——proxmox-vm のクラスタの `scope`、dnszone の `zone_scope`（`--zone-scope`）、nftables の `ruleset_scope`（`--ruleset-scope`）と live の `ruleset_tables`（`--ruleset-tables`）——を intent のトップレベルの `providers:` に provider ごとに書ける（`dnszone.scope`・`nftables.scope`・`nftables.tables`・`proxmox-vm.clusters.<名前>.scope`）。設定にだけあれば今どおり読んで警告し、両方にあって違えば読み込みで断る（常駐は起動で断り、周の途中で食い違えば周を飛ばす）。除外は `external_owners:` に寄せる。外の provider も `registry.RegisterIntentRanges` で同じ口を使える。設定から範囲を外すのは次のメジャー版。設計書 v3.53（`docs/architecture/CHANGELOG-v3.53.md`）。
+
+> **振る舞いの変化**：`--zone-scope`・`--ruleset-scope`・`--ruleset-tables`・proxmox-vm のクラスタの `scope` を設定にだけ書いていると、`plan`・`reconcile`・`status`・常駐が警告を出す（動きは変わらない）。
+
 ## v2.6.0（2026-10-28）
 
 網の設定を宣言で扱う版。網の間の許可を機器に依らない抽象のリソースとして書き、nftables の既定の拒否（base chain の policy）を締め出しの守りつきで保ち、NETCONF の機器に commit confirmed の 2 段で設定を当てる。あわせて、空から 1 回で組めるよう依存先の Apply のあとに観測し直す。設計書は v3.44 → v3.51（`docs/architecture/CHANGELOG-v3.45.md`〜`v3.51.md`）。

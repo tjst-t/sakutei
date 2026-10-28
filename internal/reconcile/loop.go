@@ -171,6 +171,11 @@ type Config struct {
 	// name that cannot be resolved leaves its resources unobservable for the
 	// cycle (no Apply, no prune) and is retried next cycle.
 	Providers ProviderResolver
+	// IntentProviders, when set, is used instead of Providers: it resolves
+	// each provider with the intent's providers.<name>: entry (§7.7, Backlog
+	// #181).  A provider whose entry changes is rebuilt; an entry that
+	// disagrees with the provider config skips the cycle (invalid intent).
+	IntentProviders IntentProviderResolver
 	// Interval is the base duration between convergence cycles.
 	// A random jitter of up to 10% of Interval is added to each sleep.
 	Interval time.Duration
@@ -1840,6 +1845,21 @@ func runCycleAsync(
 			continue
 		}
 		desired = append(desired, r.DesiredResource)
+	}
+
+	// §7.7 (#181): the intent's providers: section.  A provider with an entry
+	// is built here (its range settings merged into its config), so an entry
+	// that disagrees with the provider config skips the whole cycle instead
+	// of leaving its resources quietly unobservable.
+	if err := providers.useIntent(in.Providers); err != nil {
+		return CycleResult{ExcludedByClaim: excludedByClaim},
+			fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): %w", err)
+	}
+	for _, name := range intentRangeNames(in.Providers, desired) {
+		if _, err := providers.get(name); err != nil {
+			return CycleResult{ExcludedByClaim: excludedByClaim},
+				fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): %w", err)
+		}
 	}
 
 	// §28.4 (#69): an id the provider would never List (e.g. a relative DNS

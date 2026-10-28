@@ -21,7 +21,7 @@ firewall の chain（順序付きのルール列）を収束させる provider�
 | `nft` を呼ぶか | 呼ばない（ファイルを書いても FW には反映されない） | 呼ぶ |
 | FW を直に変えたとき | 見えない | drift として見え、reconcile で戻る |
 | 権限 | ファイルの読み書き | CAP_NET_ADMIN（ふつうは root） |
-| 管理の範囲 | ファイルの中のすべての table の regular chain | 名指しした table（`--ruleset-tables`）の regular chain だけ |
+| 管理の範囲 | ファイルの中のすべての table の regular chain | 名指しした table（intent の `providers.nftables.tables`、または `--ruleset-tables`）の regular chain だけ |
 
 Schema・identity・local id は同じなので、intent は対象を変えてもそのまま使える。file は CI や手元で ruleset を作る・見る用、live は実際の FW を収束させる用。
 
@@ -33,9 +33,9 @@ Schema・identity・local id は同じなので、intent は対象を変えて�
 | --- | --- | --- |
 | `--ruleset-target file\|live` | `ruleset_target` | 対象。既定 `file` |
 | `--ruleset <file>` | `ruleset` | file の ruleset ファイル（無ければ `--state`、それも無ければ `sakutei-nftables.rules`） |
-| `--ruleset-tables <family>/<name>,...` | `ruleset_tables` | live で管理する table。**live では必須**（推測しない）。family は `ip`・`ip6`・`inet`・`arp`・`bridge`・`netdev` |
+| `--ruleset-tables <family>/<name>,...` | `ruleset_tables` | live で管理する table。**live では必須**（推測しない。intent の `providers.nftables.tables` に書けば設定には要らない）。family は `ip`・`ip6`・`inet`・`arp`・`bridge`・`netdev`。**intent に移す**（下の「範囲を intent に書く」） |
 | `--ruleset-nft <path>` | `ruleset_nft` | live で呼ぶ nft（既定 PATH の `nft`） |
-| `--ruleset-scope <selector>` | `ruleset_scope` | List・BulkObserve が ID に付ける固定の scope（Backlog #106） |
+| `--ruleset-scope <selector>` | `ruleset_scope` | List・BulkObserve が ID に付ける固定の scope（Backlog #106）。**intent の `providers.nftables.scope` に移す** |
 | `--ruleset-rollback-timeout <d>` | `ruleset_rollback_timeout` | live で base chain を変えた後、確かめられなければホストが写しに戻すまでの時間（既定 `30s`、1 秒以上。確かめはその半分まで、Backlog #173） |
 | `--ruleset-confirm-address <host:port>` | `ruleset_confirm_address` | 手元の live で base chain を変える前と後に、新しい TCP の接続で届くことを確かめる宛先（確かめる先の `self`、Backlog #173）。設定せず、宣言の `confirm` にも `tcp://` の先しか書いていなければ使わない。`self` を確かめるのに要るのに設定していなければ手元の base chain は変えない。離れたホストは ssh で確かめるので使わない |
 
@@ -54,6 +54,31 @@ providers:
 $ sudo sakutei reconcile --intent intent/ --provider-config providers.yaml
 $ sudo sakutei status --intent intent/ --ruleset-target live --ruleset-tables inet/filter
 ```
+
+## 範囲を intent に書く（`providers:`、Backlog #181）
+
+provider の設定はつなぎ方（対象・nft・ホスト・時間）だけにし、管理の範囲（管理する table と ID の scope）は intent に書く
+（§1.7・§7.7）:
+
+```yaml
+# intent/providers.yaml
+providers:
+  nftables:
+    scope:                            # --ruleset-scope site=tokyo と同じ
+      site: tokyo
+    tables:                           # --ruleset-tables inet/filter,ip/nat と同じ（live だけ）
+      - inet/filter
+      - ip/nat
+```
+
+- intent にだけ書けば、フラグを渡したのと同じに動く（live の `--provider-config` に `ruleset_tables` は要らない）。
+- 設定にだけあれば、今までどおり読み、`plan`・`reconcile`・`status`・常駐が「is only in the provider config: write it in the
+  intent too (providers.nftables.tables)」と警告する（常駐では一度だけ）。
+- 両方にあれば、設定は安全の網として残る。**食い違えば読み込みで断る**（弱い側に寄せない。nft を走らせる前に断る）。table の
+  並びの違いは食い違いではない（同じ組なら同じ）。常駐は起動で断り、動いているあいだに intent が食い違うように変われば、その周を
+  飛ばす。intent を直せば provider を組み立て直して続ける。
+- `tables` は live のためのもの。file の対象（ファイルの全部を収束させる）で `tables` を書けば断る（範囲が黙って広がらないように）。
+- 書けるのは `scope` と `tables` だけ。設定から `ruleset_scope`・`ruleset_tables` を外すのは次のメジャー版。
 
 ## intent の例
 
@@ -305,6 +330,7 @@ $ make integration-nftables
 
 - `sudo -n unshare -n sh -c 'echo $$; exec cat >/dev/null'` で使い捨ての network namespace を作り、nft をその中で `sudo -n nsenter -t <pid> -n nft ...` として走らせるラッパーを `ruleset_nft` に渡す。sakutei は本物の ExecRunner で本物の nft を呼ぶ。ホストの FW には触れない（作った namespace がホストのものと違うことを最初に確かめる）。namespace は cat の標準入力が閉じれば（テストが終われば、落ちても）消える。
 - sakutei のバイナリを作り、`--provider-config`（`ruleset_target: live`・`ruleset_tables: inet/sk`）で `status --json`・`plan`・`reconcile` を回す。
+- 管理する table を intent に書く（Backlog #181、`intent_ranges_integration_test.go`）：`--provider-config` に `ruleset_tables` を書かず、intent の `providers.nftables.tables: [inet/ir]` だけで `reconcile` が `inet ir web` を作り、次は `Converged (no changes)`。設定の `ruleset_tables: inet/sk` と食い違えば `plan`・`reconcile` が断り、ruleset は変わらない。設定と intent が同じなら警告は無く、intent から外して設定にだけ残すと警告して `Converged (no changes)`。ほかの table は変わらない。
 
 確かめること:
 
@@ -347,9 +373,13 @@ $ make integration-nftables
 
 ### 結果
 
-nftables v1.0.9 で回した結果（全段 PASS、Backlog #174 の段を足して）:
+nftables v1.0.9 で回した結果（全段 PASS、Backlog #181 の段を足して）:
 
 ```
+--- PASS: TestNFTablesLiveIntentRanges (0.28s)
+    --- PASS: TestNFTablesLiveIntentRanges/tables_only_in_the_intent (0.15s)
+    --- PASS: TestNFTablesLiveIntentRanges/a_disagreement_is_refused_before_nft_runs (0.02s)
+    --- PASS: TestNFTablesLiveIntentRanges/the_same_in_both,_and_only_in_the_config (0.07s)
 --- PASS: TestNFTablesLockoutOverSSH (57.60s)
     --- PASS: TestNFTablesLockoutOverSSH/policy_drop_is_applied_and_reaching_the_host_is_confirmed (14.14s)
     --- PASS: TestNFTablesLockoutOverSSH/a_declaration_that_shuts_ssh_out_is_rolled_back_on_the_host (12.47s)

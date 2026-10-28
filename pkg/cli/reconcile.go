@@ -439,7 +439,7 @@ func runReconcile(args []string) {
 	if *ansibleConfig != "" {
 		providerConfig["ansible_config"] = *ansibleConfig
 	}
-	providers, resolveErr := resolveProviders(reg, desired, providerConfig, "sakutei reconcile")
+	providers, resolveErr := resolveIntentProviders(reg, in.Providers, desired, providerConfig, "sakutei reconcile", logErr)
 	if resolveErr == nil {
 		resolveErr = checkExternalOwners(in.ExternalOwners, desired, providers, "sakutei reconcile", logErr)
 	}

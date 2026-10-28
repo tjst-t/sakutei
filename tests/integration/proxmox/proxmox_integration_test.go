@@ -1053,6 +1053,22 @@ cat /root/pool-token.json`)
 		if s := l.status(t, 530); s == "" || strings.HasPrefix(s, "absent") {
 			t.Errorf("the hand-made VM after reconcile: %s", s)
 		}
+
+		// #181（§7.7）：クラスタの scope を intent の providers.proxmox-vm に書く。
+		// List の ID はその scope（node=mgmt）になり、宣言と同じなので結果は
+		// 変わらない。設定に scope は無いので範囲の警告も出ない。
+		withRange := strings.TrimSuffix(scoped, "}") + `, "providers": {"proxmox-vm": {"clusters": {"it": {"scope": {"node": "mgmt"}}}}}}`
+		out, code := l.sakutei(t, withRange, "status", "--json")
+		if code != 0 || !strings.Contains(out, `"it/it-hand"`) || strings.Contains(out, "providers.proxmox-vm.clusters") {
+			t.Errorf("status with the cluster scope in the intent: exit %d:\n%s", code, out)
+		}
+		if out, code := l.sakutei(t, withRange, "reconcile"); code != 0 || !strings.Contains(out, "Converged (no changes)") {
+			t.Errorf("reconcile with the cluster scope in the intent: exit %d:\n%s", code, out)
+		}
+		unknown := strings.TrimSuffix(scoped, "}") + `, "providers": {"proxmox-vm": {"clusters": {"nosuch": {"scope": {"node": "mgmt"}}}}}}`
+		if out, code := l.sakutei(t, unknown, "plan"); code == 0 || !strings.Contains(out, "no such cluster") {
+			t.Errorf("plan with an unknown cluster in the intent: exit %d:\n%s", code, out)
+		}
 	})
 
 	t.Run("ciupgrade: false（初回の起動でパッケージを更新しない）", func(t *testing.T) {

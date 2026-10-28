@@ -17,10 +17,31 @@ RFC1035 形式のゾーンファイルの DNS レコードを収束させる pro
 | --- | --- | --- |
 | `--zone <file>` | `zone` | ゾーンファイル（無ければ `--state`、それも無ければ `sakutei-zone.db`） |
 | `--zone-soa-serial bump\|keep` | `soa_serial` | 書き換えたときに SOA のシリアルを上げるか（既定 `bump`） |
-| `--zone-scope <selector>` | `zone_scope` | List・BulkObserve が ID に付ける固定の scope（Backlog #106） |
+| `--zone-scope <selector>` | `zone_scope` | List・BulkObserve が ID に付ける固定の scope（Backlog #106）。**intent の `providers.dnszone.scope` に移す**（下の「範囲を intent に書く」） |
 | — | `zone_reload` | 書き換えたあとに走らせる再読み込みのコマンド（例 `knotc zone-reload example.com.`。既定は無し） |
 | — | `zone_hosts` | 扱う離れたホストの名前（`ns1,ns2`）。`remote_config` と一緒に |
 | — | `remote_config` | 対象の一覧のファイル（[../remote.md](../remote.md)） |
+
+## 範囲を intent に書く（`providers:`、Backlog #181）
+
+provider の設定はつなぎ方（ファイル・ホスト・時間）だけにし、管理の範囲は intent に書く（§1.7・§7.7）。dnszone の範囲は
+List・BulkObserve が ID に付ける scope で、intent のトップレベルの `providers:` に書く:
+
+```yaml
+# intent/providers.yaml
+providers:
+  dnszone:
+    scope:                            # --zone-scope site=tokyo と同じ
+      site: tokyo
+```
+
+- intent にだけ書けば、`--zone-scope` を渡したのと同じに動く。
+- 設定（`--zone-scope`・`zone_scope`）にだけあれば、今までどおり読み、`plan`・`reconcile`・`status`・常駐が「is only in the
+  provider config: write it in the intent too (providers.dnszone.scope)」と警告する（常駐では一度だけ）。
+- 両方にあれば、設定は安全の網として残る。**食い違えば読み込みで断る**（弱い側に寄せない）。常駐は起動で断り、動いている
+  あいだに intent が食い違うように変われば、その周を飛ばす（Observe・Apply・prune をしない）。intent を直せば provider を
+  組み立て直して続ける。
+- 書けるのは `scope` だけ（ほかのキーは断る）。設定から `zone_scope` を外すのは次のメジャー版。
 
 ## 再読み込み
 

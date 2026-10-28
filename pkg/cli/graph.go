@@ -169,6 +169,10 @@ func runGraph(args []string) {
 	}
 	providerConfig["ruleset_scope"] = rScope
 	rulesetTarget.put(providerConfig)
+	if err := reg.useIntent(in.Providers, "sakutei graph", os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	ready := observeReadyUpstreams(context.Background(), desired, func(name string) (provider.Provider, error) {
 		return reg.Get(name, providerConfig)

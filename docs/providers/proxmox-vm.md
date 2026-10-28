@@ -29,7 +29,7 @@ clusters:
     token_id: sakutei@pve!sakutei     # <user>@<realm>!<tokenname>
     token_secret: secretref:file/proxmox/lab/token
     node: pve1                        # 省略可：node を宣言しない VM を作るノード
-    scope: site=tokyo                 # 省略可：このクラスタの ID の scope（既定 root）
+    scope: site=tokyo                 # 省略可：このクラスタの ID の scope（既定 root）。intent の providers: に移す（下）
     protected_vmids:                  # 触らない VM（vmid で）
       - 100
     protected_names:                  # 触らない VM（名前で）
@@ -44,6 +44,30 @@ clusters:
 - `api_base_path`（Backlog #160）は、実機と試験用の模擬で API のパスの前置きが違うとき（模擬が `/mock/pve/api2/json` の下にいる、逆プロキシの下のパスに置いた、など）に変える。つなぎ方なので provider の設定に置き（intent には書かない）、同じ intent を実機にも模擬にも当てられる。`/` で始まるパスだけを受け付け（末尾の `/` は落とす）、クエリ・`%`・空白・空の段・`.`・`..` の段は読み込みの時点でエラー。省けば今までどおり `/api2/json`。
 - 未知のキーはエラー。YAML はリポジトリのサブセットで、`[a, b]` の流れの書き方は使えない（`- a` の形で書く）。
 - トークンに要る権限は下の「トークンの権限」。
+
+### クラスタの scope を intent に書く（`providers:`、Backlog #181）
+
+クラスタの ID の scope は管理の範囲なので、intent のトップレベルの `providers:` に書く（§1.7・§7.7）。宛先・トークン・時間は
+設定（`proxmox_config`）に残す:
+
+```yaml
+# intent/providers.yaml
+providers:
+  proxmox-vm:
+    clusters:
+      lab:                            # proxmox_config の clusters のクラスタの名前
+        scope:                        # clusters.lab.scope: site=tokyo と同じ
+          site: tokyo
+```
+
+- intent にだけ書けば、設定の `scope` に書いたのと同じに動く（List・BulkObserve の ID の scope、設定の除外の scope）。
+- 設定にだけあれば、今までどおり読み、`plan`・`reconcile`・`status`・常駐が「is only in the provider config: write it in the
+  intent too (providers.proxmox-vm.clusters.lab.scope)」と警告する（常駐では一度だけ）。
+- 両方にあれば、設定は安全の網として残る。**食い違えば読み込みで断る**（弱い側に寄せない）。常駐は起動で断り、動いているあいだに
+  intent が食い違うように変われば、その周を飛ばす。
+- `proxmox_config` に無いクラスタの名前は断る（どこへどうつなぐかは設定が言う）。書けるのは `clusters.<名前>.scope` だけ。
+- 触らない VM（`protected_vmids`・`protected_names`）は `providers:` ではなく `external_owners:` に書く（下）。設定から `scope` を
+  外すのは次のメジャー版。
 
 ### 触らない VM を intent に書く（external_owners、Backlog #158）
 
@@ -290,8 +314,23 @@ $ make integration-proxmox
 | 宣言の外の VM は unmanaged | 宣言を 0 件にすると `status --json` は it-vm1 だけを unmanaged に出し（total 1）、文の出力も `unmanaged=1`。触らない VM（100）とテンプレート（9000）は出ない。`reconcile` しても VM は消えず走ったまま。宣言に戻すと unmanaged は 0（#164） |
 | pool に入れて作る・pool に絞ったトークン | root で pool `it-pool` と、privsep のトークン `sakutei@pve!pool`（ACL は上の「pool に絞ったトークン」の組）を作る。そのトークンの設定で、`pool: it-pool` の VM（vmid 520）をテンプレートから作り（複製・resize・VLAN の NIC・cloud-init・起動）、`Converged (no changes)` まで。root の API で VM が `it-pool` にあり走っている。トークンには pool の外の VM（100）が見えず、`status --json` は it-vm2 だけを適合に出す。root で pool から外すと、トークンの `reconcile` は「見えない VM が vmid を使っている」と知らせ、root のトークンでは `status` が pool の drift を出して `reconcile` が戻す。無い pool を宣言すると `does not exist` のエラーで、VM は動かない |
 | absent で消す | 宣言から外しただけでは消えない（走ったまま）。`ensure: absent` にすると `plan` が DELETE を `blocked: approval` で出し、レーンが無い `reconcile` は消さない（`AbsentAwaitingApproval`）。承認のある planned_change（`kind: delete`）を足した `reconcile --audit-log` で走っている VM が止まって消え、次の `reconcile` は `Converged (no changes)`。ほかの VM（100・9000）は残る。触らない VM を `ensure: absent` にすると protected と言って断る |
-| scope 付きの宣言と `--claim` | 設定に `scope` を書かず、it-vm2 を `scope: {node: mgmt}` で宣言し、API で直接 VM（vmid 530、`it-hand`）を作る。`status --json --claim node=mgmt` と claim なしの `status --json` は it-hand だけを `node=mgmt` の unmanaged に出し、it-vm2 は適合で注記は無い。`--claim node=edge` は何も出さない。`reconcile --claim node=mgmt` は `Converged (no changes)` で it-hand を消さない（#169） |
+| scope 付きの宣言と `--claim` | 設定に `scope` を書かず、it-vm2 を `scope: {node: mgmt}` で宣言し、API で直接 VM（vmid 530、`it-hand`）を作る。`status --json --claim node=mgmt` と claim なしの `status --json` は it-hand だけを `node=mgmt` の unmanaged に出し、it-vm2 は適合で注記は無い。`--claim node=edge` は何も出さない。`reconcile --claim node=mgmt` は `Converged (no changes)` で it-hand を消さない（#169）。クラスタの scope を intent の `providers.proxmox-vm.clusters.it.scope`（`node: mgmt`）に書いても `status --json` は警告なしに it-hand を出し、`reconcile` は `Converged (no changes)`。設定に無いクラスタの名前を書くと `plan` が断る（#181） |
 | ciupgrade: false | `ciupgrade: false` の VM（vmid 540、止めたまま）をテンプレートから作り、`Converged (no changes)` まで。API で見た設定の `ciupgrade` が `0` で、`qm cloudinit dump 540 user` に `package_upgrade` が無い（Proxmox は 1 のときだけ `package_upgrade: true` を書く）。`ciupgrade` を書かない VM（520）の設定には `ciupgrade` が無い。API で 1 にすると `status` が ciupgrade の drift を出し、`reconcile` が 0 に戻す（#170）。出口の無い網で起動が待たされないことは確かめない（テストの網は slirp で外に出られる） |
+
+### 結果（2026-10-28、Backlog #181 の「クラスタの scope を intent に書く」）
+
+同じ開発機・同じキャッシュで、`make integration-proxmox` が PASS（全段で約 2 分）。「scope 付きの宣言と --claim」の段の終わりに、
+クラスタの scope を intent の `providers.proxmox-vm.clusters.it.scope` に書いた `status --json`・`reconcile` と、設定に無いクラスタを
+書いた `plan` の拒否を足した。最初の試行は段の確かめ方の誤りで落ちた（#158 の除外の警告も「is only in the provider config」と
+言うので、範囲の警告を `providers.proxmox-vm.clusters` で見るように直した）:
+
+```
+--- PASS: TestProxmoxVM (123.74s)
+    ...
+    --- PASS: TestProxmoxVM/scope_付きの宣言と_--claim（provider_の側に_scope_を書かない） (1.30s)
+    --- PASS: TestProxmoxVM/ciupgrade:_false（初回の起動でパッケージを更新しない） (10.75s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/proxmox	123.740s
+```
 
 ### 結果（2026-10-28、Backlog #170 の「ciupgrade: false」）
 

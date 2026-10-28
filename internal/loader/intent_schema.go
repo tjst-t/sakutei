@@ -31,6 +31,7 @@ import (
 //
 //   - resources は配列（pools / scopes だけのファイルも書けるよう任意）。
 //   - external_owners は触らない宣言（owner / provider / scope / id / id_prefix / fields、§7.3・#158）。
+//   - providers は provider のインスタンスごとの範囲（scope・管理する表など、§7.7・#181）。
 //   - compatibility は部品の版の互換の表（name / components / allow、§29.1・#151）。
 //   - pools は採番プールの宣言（name / range / claim / space、§19.8）。
 //   - scopes は scope ごとの mode（converge / sync）と sync.target_path（§24.5）、
@@ -162,6 +163,13 @@ func intentSchema() schemaNode {
 						"fields":    stringMap,
 					},
 				},
+			},
+			// providers は provider のインスタンスごとの範囲（§7.7、#181）。
+			// provider の名前 → その範囲の設定。中身の意味は provider の
+			// IntentRanges が確かめる（registry、provider を組み立てる入口）。
+			"providers": schemaNode{
+				"type":                 "object",
+				"additionalProperties": true,
 			},
 			// network_policy は網の間の許可（§7.6、#174）。網（名前と CIDR）・許可
 			// （from・to・proto・ports・reason・tags）・実現先。中身の意味は

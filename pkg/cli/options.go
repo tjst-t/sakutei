@@ -22,6 +22,7 @@ package cli
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -75,6 +76,9 @@ func buildRegistry(extra []*registry.ProviderRegistry) (*registry.ProviderRegist
 			}
 			f, _ := e.Lookup(name)
 			reg.Register(name, f)
+			if spec, ok := e.IntentRangesOf(name); ok {
+				reg.RegisterIntentRanges(name, spec)
+			}
 		}
 	}
 	return reg, nil
@@ -86,6 +90,27 @@ func buildRegistry(extra []*registry.ProviderRegistry) (*registry.ProviderRegist
 type providerSet struct {
 	reg       *registry.ProviderRegistry
 	overrides map[string]map[string]string
+
+	// intent is the loaded intent's providers: section (§7.7, #181), set by
+	// useIntent; Get merges a provider's entry into its config.  Before
+	// useIntent (a command that reads no intent) the config is used as is.
+	intent        map[string]map[string]any
+	useIntentDone bool
+	warnTo        io.Writer
+	warnName      string
+	warned        map[string]bool
+}
+
+// useIntent makes Get take the range settings of the intent's providers:
+// section (§7.7, #181) and write the warnings (a setting only in the
+// provider config) to w, each once.  An entry naming an unknown provider, or
+// one that takes no range settings, is an error.
+func (s *providerSet) useIntent(entries map[string]map[string]any, commandName string, w io.Writer) error {
+	if err := s.reg.CheckIntentProviders(entries); err != nil {
+		return fmt.Errorf("%s: %w", commandName, err)
+	}
+	s.intent, s.useIntentDone, s.warnTo, s.warnName = entries, true, w, commandName
+	return nil
 }
 
 // Lookup reports whether name is registered.
@@ -96,7 +121,28 @@ func (s *providerSet) Lookup(name string) (registry.ProviderFactory, bool) {
 // Get builds the named provider from base overlaid with its
 // --provider-config values.  base is not modified.
 func (s *providerSet) Get(name string, base map[string]string) (provider.Provider, error) {
-	return s.reg.Get(name, s.configFor(name, base))
+	if !s.useIntentDone {
+		return s.reg.Get(name, s.configFor(name, base))
+	}
+	p, warnings, err := s.reg.GetWithIntent(name, s.configFor(name, base), s.intent[name])
+	if err != nil {
+		return nil, err
+	}
+	s.warn(warnings)
+	return p, nil
+}
+
+func (s *providerSet) warn(warnings []string) {
+	for _, w := range warnings {
+		if s.warned[w] || s.warnTo == nil {
+			continue
+		}
+		if s.warned == nil {
+			s.warned = map[string]bool{}
+		}
+		s.warned[w] = true
+		fmt.Fprintf(s.warnTo, "%s: warn: %s\n", s.warnName, w)
+	}
 }
 
 // configured reports whether the run sets up the named provider: it has a
@@ -203,4 +249,20 @@ func loadProviderConfig(path string, reg *registry.ProviderRegistry) (map[string
 		out[name] = m
 	}
 	return out, nil
+}
+
+// intentResolver is the daemon's reconcile.IntentProviderResolver (§7.7,
+// #181): the providers of the run, each built with the intent's
+// providers.<name>: entry of the cycle.
+type intentResolver struct {
+	set  *providerSet
+	base map[string]string
+}
+
+func (r intentResolver) CheckIntentProviders(entries map[string]map[string]any) error {
+	return r.set.reg.CheckIntentProviders(entries)
+}
+
+func (r intentResolver) ResolveWithIntent(name string, entry map[string]any) (provider.Provider, []string, error) {
+	return r.set.reg.GetWithIntent(name, r.set.configFor(name, r.base), entry)
 }

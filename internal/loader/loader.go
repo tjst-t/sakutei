@@ -209,6 +209,19 @@ func treeToIntentFile(tree map[string]any, file string) (intentFile, error) {
 		return intentFile{}, err
 	}
 	out.Runtime = rt
+	if raw, ok := tree["providers"].(map[string]any); ok {
+		out.Providers = map[string]map[string]any{}
+		for name, v := range raw {
+			entry, ok := v.(map[string]any)
+			if !ok && v != nil {
+				return intentFile{}, fmt.Errorf("providers.%s: want an object (the provider's ranges, §7.7)", name)
+			}
+			if entry == nil {
+				entry = map[string]any{}
+			}
+			out.Providers[name] = entry
+		}
+	}
 	return out, nil
 }
 
@@ -316,6 +329,8 @@ type intentFile struct {
 	NetworkPolicy netpolicy.Policy `json:"-"`
 	// Runtime is the top-level runtime: (§26.7, #183); nil when undeclared.
 	Runtime *runtimeargs.Declaration `json:"-"`
+	// Providers is the top-level providers (§7.7, #181).
+	Providers map[string]map[string]any `json:"-"`
 }
 
 // intentResource is one resource declaration within an intent file.
@@ -526,8 +541,13 @@ type Intent struct {
 	// Runtime is the long-lived start arguments (§26.7, Backlog #183),
 	// declared in at most one intent file; the CLI checks the flags against
 	// them.  Nil when no file declares runtime:.
-	Runtime  *runtimeargs.Declaration
-	Revision core.RevisionInfo
+	Runtime *runtimeargs.Declaration
+	// Providers is the range settings per provider instance (§7.7, Backlog
+	// #181): provider name → its providers.<name>: entry, as written.  The
+	// provider's IntentRanges reads it where the provider is built
+	// (registry.GetWithIntent); nil when no file declares providers:.
+	Providers map[string]map[string]any
+	Revision  core.RevisionInfo
 }
 
 // LoadIntent reads every intent file in dir (same rules as LoadDir) and also
@@ -580,6 +600,8 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 	var tables compat.Set
 	var policy netpolicy.Policy
 	var rt *runtimeargs.Declaration
+	var providerRanges map[string]map[string]any
+	providerFrom := map[string]string{}
 	for _, name := range names {
 		path := filepath.Join(dir, filepath.FromSlash(name))
 		loaded, file, err := loadFile(path)
@@ -609,6 +631,16 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 			}
 			rt = file.Runtime
 			rt.File = name
+		}
+		for pname, entry := range file.Providers {
+			if prev, dup := providerFrom[pname]; dup {
+				return Intent{}, fmt.Errorf("loader: providers.%s: declared in both %s and %s; declare a provider's ranges once (§7.7)", pname, prev, name)
+			}
+			providerFrom[pname] = name
+			if providerRanges == nil {
+				providerRanges = map[string]map[string]any{}
+			}
+			providerRanges[pname] = entry
 		}
 	}
 
@@ -698,7 +730,7 @@ func loadIntentFiles(dir string, names []string, rev func(string, core.Scope) (c
 		return Intent{}, fmt.Errorf("loader: revision: %w", err)
 	}
 
-	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, ApplyChecks: applyChecks, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, ExternalOwners: owners, Compatibility: tables, NetworkPolicy: netResult, Runtime: rt, Revision: ri}, nil
+	return Intent{Resources: resources, Pools: pools, Scopes: scopes, ObserveTiers: tiers, ApplyChecks: applyChecks, Remediation: rem, PlannedChanges: planned, Profile: prof.profile, Workflows: workflows, ExternalOwners: owners, Compatibility: tables, NetworkPolicy: netResult, Runtime: rt, Providers: providerRanges, Revision: ri}, nil
 }
 
 // realizedResource is the desired resource a network_policy target expands
@@ -909,8 +941,8 @@ func LoadResourcesFile(path string) ([]diff.DesiredResource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loader: %w", err)
 	}
-	if len(file.Pools) > 0 || len(file.Scopes) > 0 || len(file.ExternalOwners) > 0 || len(file.Compatibility) > 0 || !file.NetworkPolicy.Empty() || file.Runtime != nil {
-		return nil, fmt.Errorf("loader: %s: an inventory file declares resources only (pools/scopes/external_owners/compatibility/runtime/network_policy belong in intent)", path)
+	if len(file.Pools) > 0 || len(file.Scopes) > 0 || len(file.ExternalOwners) > 0 || len(file.Compatibility) > 0 || !file.NetworkPolicy.Empty() || file.Runtime != nil || file.Providers != nil {
+		return nil, fmt.Errorf("loader: %s: an inventory file declares resources only (pools/scopes/external_owners/compatibility/runtime/providers/network_policy belong in intent)", path)
 	}
 	if err := detectDuplicateLocalIDs(resources); err != nil {
 		return nil, fmt.Errorf("loader: %s: %w", path, err)

@@ -528,12 +528,10 @@ func DefaultRegistry() *ProviderRegistry {
 	// "proxmox-vm" — Proxmox VE の VM（§29.1、#143）。config["proxmox_config"] は
 	// クラスタの一覧（--provider-config の proxmox-vm の proxmox_config）。--state
 	// は代わりにならない（endpoint と資格は推測しない）。
+	// クラスタの scope は intent の providers.proxmox-vm.clusters.<名前>.scope
+	// にも書ける（§7.7、#181、registerIntentRanges）。
 	r.Register(proxmox.Name, func(config map[string]string) (provider.Provider, error) {
-		path := config["proxmox_config"]
-		if path == "" {
-			return nil, errors.New("proxmox-vm: the cluster list is not set: proxmox_config in --provider-config")
-		}
-		return proxmox.NewFromConfig(path)
+		return proxmox.NewFromProviderConfig(config)
 	})
 
 	// "metrics-probe" — /metrics（Prometheus の text 形式）の値の観測だけ（§29.1、
@@ -547,6 +545,7 @@ func DefaultRegistry() *ProviderRegistry {
 		return metricsprobe.NewFromConfig(path)
 	})
 
+	registerIntentRanges(r)
 	return r
 }
 

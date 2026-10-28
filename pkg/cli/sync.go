@@ -117,6 +117,15 @@ func runSync(args []string) {
 	if *postgresqlConfig != "" {
 		cfg["postgresql_config"] = *postgresqlConfig
 	}
+	// §7.7 (#181): the providers take their ranges (the scope their List
+	// tags ids with) from the intent's providers: section, read at start.
+	if in, err := loader.LoadIntent(*intentDir); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei sync: load intent: %v\n", err)
+		os.Exit(1)
+	} else if err := reg.useIntent(in.Providers, "sakutei sync", os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	providers := map[string]provider.Provider{}
 	for _, name := range strings.Split(*providersFlag, ",") {
 		name = strings.TrimSpace(name)

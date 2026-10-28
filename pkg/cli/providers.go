@@ -113,6 +113,24 @@ func resolveProviders(
 	return result, nil
 }
 
+// resolveIntentProviders is resolveProviders with the intent's providers:
+// section (§7.7, #181): every provider this run builds through reg takes its
+// range settings from it (a setting only in the provider config is read with
+// a warning on w; one in both must agree, or the run is refused).
+func resolveIntentProviders(
+	reg *providerSet,
+	ranges map[string]map[string]any,
+	resources []diff.DesiredResource,
+	baseConfig map[string]string,
+	commandName string,
+	w io.Writer,
+) (map[string]provider.Provider, error) {
+	if err := reg.useIntent(ranges, commandName, w); err != nil {
+		return nil, err
+	}
+	return resolveProviders(reg, resources, baseConfig, commandName)
+}
+
 // checkExternalOwners runs the load-time external_owners check (§7.3, #158):
 // the intent's external_owners against the desired resources (after render)
 // and against the providers' own config exclusions.  A disagreement is an

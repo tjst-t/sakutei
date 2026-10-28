@@ -60,12 +60,15 @@ type ProviderFactory func(config map[string]string) (provider.Provider, error)
 // at startup via Register; providers are resolved at runtime via Get.
 type ProviderRegistry struct {
 	factories map[string]ProviderFactory
+	// ranges are the providers that take range settings from the intent's
+	// providers: section (§7.7, Backlog #181).
+	ranges map[string]provider.IntentRanges
 }
 
 // New returns an empty ProviderRegistry.
 // Use DefaultRegistry() to get a registry pre-loaded with built-in providers.
 func New() *ProviderRegistry {
-	return &ProviderRegistry{factories: make(map[string]ProviderFactory)}
+	return &ProviderRegistry{factories: make(map[string]ProviderFactory), ranges: make(map[string]provider.IntentRanges)}
 }
 
 // Register adds a named factory to the registry.
@@ -120,4 +123,69 @@ func (r *ProviderRegistry) Get(name string, config map[string]string) (provider.
 		return nil, fmt.Errorf("provider %q: factory: %w", name, err)
 	}
 	return p, nil
+}
+
+// RegisterIntentRanges declares that the provider registered as name takes
+// its range settings (scope, the tables it manages, ...) from the intent's
+// providers.<name>: section (§7.7, Backlog #181).
+func (r *ProviderRegistry) RegisterIntentRanges(name string, spec provider.IntentRanges) {
+	if name == "" || spec == nil {
+		panic("registry.RegisterIntentRanges: name and spec must be set")
+	}
+	r.ranges[name] = spec
+}
+
+// IntentRangesOf returns the IntentRanges registered for name.
+func (r *ProviderRegistry) IntentRangesOf(name string) (provider.IntentRanges, bool) {
+	spec, ok := r.ranges[name]
+	return spec, ok
+}
+
+// CheckIntentProviders checks the intent's providers: section against the
+// registry: every name must be a registered provider that takes range
+// settings from the intent (a typo, or a provider that reads none, would
+// otherwise be silently ignored).
+func (r *ProviderRegistry) CheckIntentProviders(entries map[string]map[string]any) error {
+	names := make([]string, 0, len(entries))
+	for n := range entries {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if _, ok := r.factories[n]; !ok {
+			return fmt.Errorf("intent providers.%s: unknown provider", n)
+		}
+		if _, ok := r.ranges[n]; !ok {
+			return fmt.Errorf("intent providers.%s: provider %s takes no range settings from the intent (§7.7)", n, n)
+		}
+	}
+	return nil
+}
+
+// GetWithIntent is Get with the intent's providers.<name>: entry (nil: the
+// intent has none) merged into config by provider.MergeRanges (§7.7, Backlog
+// #181): a setting only in the config is read with a warning, one in both
+// must agree.  A provider without IntentRanges is built as by Get (an entry
+// for it is an error).
+func (r *ProviderRegistry) GetWithIntent(name string, config map[string]string, entry map[string]any) (provider.Provider, []string, error) {
+	spec, ok := r.ranges[name]
+	if !ok {
+		if entry != nil {
+			return nil, nil, fmt.Errorf("intent providers.%s: provider %s takes no range settings from the intent (§7.7)", name, name)
+		}
+		p, err := r.Get(name, config)
+		return p, nil, err
+	}
+	if _, ok := r.factories[name]; !ok {
+		return nil, nil, fmt.Errorf("unknown provider: %s", name)
+	}
+	merged, warnings, err := provider.MergeRanges(name, spec, entry, config)
+	if err != nil {
+		return nil, nil, err
+	}
+	p, err := r.Get(name, merged)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, warnings, nil
 }

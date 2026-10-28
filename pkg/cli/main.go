@@ -506,6 +506,7 @@ func runDaemon() {
 		Providers: func(name string) (provider.Provider, error) {
 			return reg.Get(name, providerConfig)
 		},
+		IntentProviders:       intentResolver{set: reg, base: providerConfig},
 		Interval:              interval,
 		BudgetConfig:          budgetCfg,
 		CapacityGates:         capacityGates,
@@ -624,6 +625,12 @@ func validateIntentProviders(reg *providerSet, intentDir string, providerConfig 
 	if err != nil {
 		return
 	}
+	// §7.7 (#181): the intent's providers: section is checked here too, so
+	// an entry that disagrees with the provider config stops the start.
+	if err := reg.reg.CheckIntentProviders(in.Providers); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
+		os.Exit(1)
+	}
 	seen := map[string]bool{}
 	for _, r := range in.Resources {
 		name := r.ID.Provider
@@ -631,7 +638,7 @@ func validateIntentProviders(reg *providerSet, intentDir string, providerConfig 
 			continue
 		}
 		seen[name] = true
-		p, err := reg.Get(name, providerConfig)
+		p, _, err := reg.reg.GetWithIntent(name, reg.configFor(name, providerConfig), in.Providers[name])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "sakutei: provider resolution failed (%q): %v\n", name, err)
 			os.Exit(1)

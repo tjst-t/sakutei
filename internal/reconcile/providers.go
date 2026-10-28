@@ -26,6 +26,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -45,6 +46,20 @@ import (
 // name cannot be served: the resources of that provider are unobservable for
 // the cycle (no Apply, no prune) and the resolution is retried next cycle.
 type ProviderResolver func(name string) (provider.Provider, error)
+
+// IntentProviderResolver resolves a provider name with the intent's
+// providers.<name>: entry (§7.7, Backlog #181), e.g. the ProviderRegistry's
+// GetWithIntent: the entry's range settings are merged into the provider
+// config (a setting only in the config comes back as a warning; one in both
+// must agree, or Resolve fails).
+type IntentProviderResolver interface {
+	// CheckIntentProviders refuses an entry naming an unknown provider or
+	// one that takes no range settings from the intent.
+	CheckIntentProviders(entries map[string]map[string]any) error
+	// ResolveWithIntent builds the provider of name with its entry (nil:
+	// none).
+	ResolveWithIntent(name string, entry map[string]any) (provider.Provider, []string, error)
+}
 
 // providerEntry is one resolved provider with the per-provider engines that
 // live as long as the daemon (S3): the diff engine built from its Schema and
@@ -74,6 +89,13 @@ func newProviderEntry(name string, p provider.Provider) *providerEntry {
 type providerSet struct {
 	single  *providerEntry // Config.Provider: every resource routes here
 	resolve ProviderResolver
+	// intent, when set, replaces resolve (§7.7, #181): ranges is this
+	// cycle's providers: section, builtWith the entry each cached provider
+	// was built with (a changed entry rebuilds it).
+	intent    IntentProviderResolver
+	ranges    map[string]map[string]any
+	builtWith map[string]string
+	errOut    io.Writer
 
 	mu     sync.Mutex
 	byName map[string]*providerEntry
@@ -85,7 +107,43 @@ func newProviderSet(cfg Config) *providerSet {
 	if cfg.Provider != nil {
 		return &providerSet{single: newProviderEntry("", cfg.Provider)}
 	}
-	return &providerSet{resolve: cfg.Providers, byName: map[string]*providerEntry{}}
+	return &providerSet{resolve: cfg.Providers, intent: cfg.IntentProviders, byName: map[string]*providerEntry{}, builtWith: map[string]string{}, errOut: cfg.ErrOut}
+}
+
+// useIntent takes this cycle's providers: section (§7.7, #181): an entry
+// naming an unknown provider is an error, and a cached provider whose entry
+// changed is dropped so the next get builds it with the new one.
+func (s *providerSet) useIntent(entries map[string]map[string]any) error {
+	if s.single != nil || s.intent == nil {
+		if len(entries) > 0 && s.single == nil {
+			return fmt.Errorf("intent providers: this daemon resolves providers without the intent's range settings")
+		}
+		return nil
+	}
+	if err := s.intent.CheckIntentProviders(entries); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ranges = entries
+	for name := range s.byName {
+		if s.builtWith[name] != entryKey(entries[name]) {
+			delete(s.byName, name)
+		}
+	}
+	return nil
+}
+
+// entryKey is the canonical form of an entry (json.Marshal sorts map keys).
+func entryKey(entry map[string]any) string {
+	if entry == nil {
+		return ""
+	}
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Sprintf("%v", entry)
+	}
+	return string(b)
 }
 
 // get returns the provider of name, resolving it on first use.  A resolved
@@ -100,10 +158,21 @@ func (s *providerSet) get(name string) (*providerEntry, error) {
 	if e, ok := s.byName[name]; ok {
 		return e, nil
 	}
-	if s.resolve == nil {
+	var p provider.Provider
+	var err error
+	switch {
+	case s.intent != nil:
+		var warnings []string
+		p, warnings, err = s.intent.ResolveWithIntent(name, s.ranges[name])
+		if err == nil {
+			s.warnLocked(warnings)
+			s.builtWith[name] = entryKey(s.ranges[name])
+		}
+	case s.resolve != nil:
+		p, err = s.resolve(name)
+	default:
 		return nil, fmt.Errorf("no provider configured for %q", name)
 	}
-	p, err := s.resolve(name)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", name, err)
 	}
@@ -376,17 +445,24 @@ func checkExternalOwners(owners extowner.Set, desired []diff.DesiredResource, pr
 	}
 	providers.mu.Lock()
 	defer providers.mu.Unlock()
-	for _, w := range warnings {
-		if providers.warned[w] {
+	providers.warnTo(errOut, warnings)
+	return nil
+}
+
+// warnLocked writes warnings once per daemon; s.mu is held.
+func (s *providerSet) warnLocked(warnings []string) { s.warnTo(s.errOut, warnings) }
+
+func (s *providerSet) warnTo(w io.Writer, warnings []string) {
+	for _, msg := range warnings {
+		if s.warned[msg] || w == nil {
 			continue
 		}
-		if providers.warned == nil {
-			providers.warned = map[string]bool{}
+		if s.warned == nil {
+			s.warned = map[string]bool{}
 		}
-		providers.warned[w] = true
-		fmt.Fprintf(errOut, "sakutei: warn: %s\n", w)
+		s.warned[msg] = true
+		fmt.Fprintf(w, "sakutei: warn: %s\n", msg)
 	}
-	return nil
 }
 
 // manualObserver observes a strategy: manual resource for its Task (§6.2
@@ -409,4 +485,20 @@ func manualObserver(providers *providerSet) task.ManualObserver {
 		}
 		return task.StepUnknown, nil
 	}
+}
+
+// intentRangeNames are the providers of desired that have an entry in the
+// intent's providers: section, in name order.
+func intentRangeNames(entries map[string]map[string]any, desired []diff.DesiredResource) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range desired {
+		name := r.ID.Provider
+		if _, ok := entries[name]; ok && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
