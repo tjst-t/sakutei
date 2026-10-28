@@ -3651,7 +3651,7 @@
       "number": 154,
       "kind": "task",
       "title": "--event-alertmanager に宛先を複数渡す（複数台の Alertmanager へ同じ知らせを送る）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "systemd-quadlet",
       "dependsOn": [],
       "milestone": null,
@@ -3663,7 +3663,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:43:02.954Z",
-      "updatedAt": "2026-10-28T02:43:02.954Z",
+      "updatedAt": "2026-10-28T03:36:45.002Z",
       "closedAt": null,
       "extra": {}
     },
