@@ -2,13 +2,21 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
-## 未リリース
+## v2.7.0（2026-10-28）
+
+正しい状態を宣言に置く原則を仕上げる版。provider の設定に残っていた管理の範囲と、長く効く起動の引数を intent に書けるようにし、freeze を誰が・なぜ・いつまでつきで監査に残す。設計書は v3.51 → v3.55（`docs/architecture/CHANGELOG-v3.52.md`〜`v3.55.md`）。
+
+> **互換の注意**：`--freeze` は理由（`--freeze-reason`）と監査の記録先（`--audit-log`）が要るようになった（#184）。理由の無い `--freeze`・記録できない `--freeze` は、何も変えずに断られる。
 
 ### 追加
 
 - **provider の範囲を intent に書く `providers:`**（#181）：provider の設定に残っていた管理の範囲——proxmox-vm のクラスタの `scope`、dnszone の `zone_scope`（`--zone-scope`）、nftables の `ruleset_scope`（`--ruleset-scope`）と live の `ruleset_tables`（`--ruleset-tables`）——を intent のトップレベルの `providers:` に provider ごとに書ける（`dnszone.scope`・`nftables.scope`・`nftables.tables`・`proxmox-vm.clusters.<名前>.scope`）。設定にだけあれば今どおり読んで警告し、両方にあって違えば読み込みで断る（常駐は起動で断り、周の途中で食い違えば周を飛ばす）。除外は `external_owners:` に寄せる。外の provider も `registry.RegisterIntentRanges` で同じ口を使える。設定から範囲を外すのは次のメジャー版。設計書 v3.53（`docs/architecture/CHANGELOG-v3.53.md`）。
 
-- **残りの provider の範囲も intent の `providers:` に**（#182）：netconf の `hosts`・`subtrees`（旧 `netconf_hosts`・`netconf_subtrees`）、ldap の `scope`・`servers.<名前>.{base_dn, filter, scope}`、cli-device・host-file・systemd-unit の `hosts`（旧 `cli_hosts`・`file_hosts`・`unit_hosts`）、guest-os の `hosts`・`markers`（旧 `guest_hosts`・`guest_markers`）、postgresql の `scope`・`servers.<名前>.scope`、s3-bucket の `scope`・`endpoints.<名前>.bucket_prefix`。どれがつなぎ方（設定に残す）でどれが範囲（intent）かの一覧は [docs/providers/ranges.md](docs/providers/ranges.md)。移し方と食い違いの扱いは #181 と同じ。ldap の `base_dn` は intent に書けばサーバの一覧から外せる。
+- **残りの provider の範囲も intent の `providers:` に**（#182）：netconf の `hosts`・`subtrees`（旧 `netconf_hosts`・`netconf_subtrees`）、ldap の `scope`・`servers.<名前>.{base_dn, filter, scope}`、cli-device・host-file・systemd-unit の `hosts`（旧 `cli_hosts`・`file_hosts`・`unit_hosts`）、guest-os の `hosts`・`markers`（旧 `guest_hosts`・`guest_markers`）、postgresql の `scope`・`servers.<名前>.scope`、s3-bucket の `scope`・`endpoints.<名前>.bucket_prefix`。どれがつなぎ方（設定に残す）でどれが範囲（intent）かの一覧は [docs/providers/ranges.md](docs/providers/ranges.md)。移し方と食い違いの扱いは #181 と同じ。ldap の `base_dn` は intent に書けばサーバの一覧から外せる。設計書 v3.54。
+
+- **長く効く起動の引数を intent の `runtime:` に書く**（#183）：予算・既定の mode・settle・効かない Apply と観測し直しの上限・stuck の周数・間隔を、intent のトップレベルの `runtime:` に書ける。旗だけ・宣言だけならそれを使う。大小のある引数と mode・`on_exceed` は、旗が締める向きなら旗を使い、level の Event `RuntimeTightened` と status の `runtime_tightened` に旗の値と宣言の値を両方出す。緩める向きなら起動を断る。向きの無い引数（`interval`・`settle`・`window_duration`・`reobserve_*`・`stuck_after`）は、食い違えば起動を断る。断るときは 1 行に、引数の名前・両方の値・直し方（旗を外すか、宣言を変えるか）を出す。常駐は起動したときの値で回り、途中で `runtime:` が変われば `RuntimeDeclarationChanged` と status の `runtime_changed` で知らせる。設計書 v3.52。
+
+- **freeze を監査に残す**（#184）：global freeze の始まり・終わり・期限切れを、誰が・理由（必須）・期限（任意）つきで監査の記録に残す（種別 `freeze.started`・`freeze.ended`・`freeze.expired`）。入口は起動の旗 `--freeze`（`--freeze-reason`・`--freeze-by`・`--freeze-until`）と、動いている常駐を止めずに freeze する `sakutei freeze start / end / status`（状態のファイルを常駐と `reconcile` が `--freeze-state` で毎周読む）。効いている freeze への start は断る。期限を過ぎた freeze は次に読んだ者が解いて記録する。状態のファイルが読めない周は freeze として扱う。level の Event `Frozen` と status の `freeze` に出す。起動に失敗した常駐は freeze を記録しない。設計書 v3.55。
 
 > **振る舞いの変化**：`--zone-scope`・`--ruleset-scope`・`--ruleset-tables`・proxmox-vm のクラスタの `scope`、#182 の範囲（`netconf_hosts`・`netconf_subtrees`・ldap の `base_dn`・`filter`・`scope`・`*_hosts`・`guest_markers`・postgresql と s3-bucket の `scope`・`bucket_prefix`）を設定にだけ書いていると、`plan`・`reconcile`・`status`・常駐が警告を出す（動きは変わらない）。
 
