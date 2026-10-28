@@ -91,6 +91,18 @@ type State struct {
 	Unreachable bool `json:"unreachable"`
 	// PlaintextPasswords は PASSWORD に平文が来た回数（provider は来させない）。
 	PlaintextPasswords int `json:"plaintext_passwords"`
+	// ReadOnly は読むだけのロール（名前 → パスワード、#186）。つなげて、
+	// /* sakutei:<名前> */ の読む問い合わせ（passwords を除く）は流せるが、
+	// 変える文は権限のエラー（42501）で断られる。ロールとして見せるなら Roles
+	// にも足す。
+	ReadOnly map[string]string `json:"read_only,omitempty"`
+}
+
+// Counts は 1 つのロールでつないだ文の数（#186）。
+type Counts struct {
+	// Reads は流せた読む問い合わせ、Writes は流せた変える文（BEGIN・COMMIT を
+	// 除く）、Denied は権限で断られた文。
+	Reads, Writes, Denied int
 }
 
 // Call は 1 回の起動の記録。
@@ -105,6 +117,8 @@ type Server struct {
 	mu    sync.Mutex
 	st    *State
 	calls []Call
+	// counts はロール（PGUSER）ごとの文の数。
+	counts map[string]*Counts
 	// Missing なら起動できない（psql が無い）。
 	Missing bool
 }
@@ -163,7 +177,25 @@ func (s *Server) Run(_ context.Context, _ string, args, env []string, stdin stri
 		e[k] = v
 	}
 	s.calls = append(s.calls, Call{Args: append([]string(nil), args...), Env: e, Stdin: stdin})
-	return run(s.st, args, e, stdin)
+	if s.counts == nil {
+		s.counts = map[string]*Counts{}
+	}
+	c := s.counts[e["PGUSER"]]
+	if c == nil {
+		c = &Counts{}
+		s.counts[e["PGUSER"]] = c
+	}
+	return runCounted(s.st, args, e, stdin, c)
+}
+
+// CountsOf は user（PGUSER）でつないだ文の数。
+func (s *Server) CountsOf(user string) Counts {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c := s.counts[user]; c != nil {
+		return *c
+	}
+	return Counts{}
 }
 
 // Main は偽の psql の実行ファイルとして動く（状態は環境変数
@@ -226,6 +258,10 @@ func fail(code, format string, args ...any) error {
 }
 
 func run(st *State, args []string, env map[string]string, stdin string) (string, string, int, error) {
+	return runCounted(st, args, env, stdin, &Counts{})
+}
+
+func runCounted(st *State, args []string, env map[string]string, stdin string, counts *Counts) (string, string, int, error) {
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"-X", "-A", "-t", "ON_ERROR_STOP=1"} {
 		if !strings.Contains(" "+joined+" ", " "+want+" ") && !strings.Contains(joined, want) {
@@ -238,7 +274,12 @@ func run(st *State, args []string, env map[string]string, stdin string) (string,
 	}
 	user := env["PGUSER"]
 	pw, havePw := readPassfile(env["PGPASSFILE"])
-	if user != st.AdminUser || !havePw || pw != st.AdminPassword {
+	roPw, readOnly := st.ReadOnly[user]
+	switch {
+	case user == st.AdminUser && havePw && pw == st.AdminPassword:
+		readOnly = false
+	case readOnly && havePw && pw == roPw:
+	default:
 		return "", fmt.Sprintf("psql: error: connection to server at %q, port %s failed: FATAL:  password authentication failed for user %q\n", host, env["PGPORT"], user), 2, nil
 	}
 	dbName := env["PGDATABASE"]
@@ -252,7 +293,7 @@ func run(st *State, args []string, env map[string]string, stdin string) (string,
 	if !db.AllowConn {
 		return "", fmt.Sprintf("psql: error: connection to server at %q failed: FATAL:  55000: database %q is not currently accepting connections\n", host, dbName), 2, nil
 	}
-	x := &execCtx{st: st, user: user, db: dbName}
+	x := &execCtx{st: st, user: user, db: dbName, readOnly: readOnly, counts: counts}
 	var out strings.Builder
 	for i, stmt := range splitStatements(stdin) {
 		res, err := x.exec(stmt)
@@ -550,6 +591,9 @@ type execCtx struct {
 	user  string
 	db    string
 	saved *State // BEGIN の時点の写し（nil ならトランザクションの外）
+	// readOnly は読むだけのロールでつないだ（変える文を断る）。
+	readOnly bool
+	counts   *Counts
 }
 
 func clone(st *State) *State {
@@ -563,13 +607,28 @@ func (x *execCtx) exec(stmt string) (string, error) {
 	if strings.HasPrefix(stmt, "/* sakutei:") {
 		name := strings.TrimPrefix(stmt, "/* sakutei:")
 		name = name[:strings.Index(name, " */")]
-		return x.query(name)
+		out, err := x.query(name)
+		var se *sqlErr
+		switch {
+		case err == nil:
+			x.counts.Reads++
+		case errors.As(err, &se) && se.code == "42501":
+			x.counts.Denied++
+		}
+		return out, err
 	}
 	toks, err := lex(stmt)
 	if err != nil {
 		return "", err
 	}
 	p := &parser{toks: toks}
+	if !p.peekKw("begin") && !p.peekKw("commit") {
+		if x.readOnly {
+			x.counts.Denied++
+			return "", fail("42501", "permission denied (role %q can only read)", x.user)
+		}
+		x.counts.Writes++
+	}
 	switch {
 	case p.kw("begin"):
 		if x.saved == nil {
@@ -1148,7 +1207,7 @@ func (x *execCtx) query(name string) (string, error) {
 		}
 		v = exts
 	case "passwords":
-		if !x.st.Roles[x.user].Super {
+		if r := x.st.Roles[x.user]; r == nil || !r.Super {
 			return "", fail("42501", "permission denied for table pg_authid")
 		}
 		m := map[string]string{}

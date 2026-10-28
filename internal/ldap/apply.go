@@ -31,8 +31,14 @@ import (
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
-// Apply は plan を適用する。
+// Apply は plan を適用する。書き込みなので、中の読み直しも含めて書き込み用の
+// 資格で bind する（provider.WithWrite、§20.7、#186）。この回が書かないなら
+// 何も送らずに provider.ErrNoWriteAccess で断る。
 func (p *Provider) Apply(ctx context.Context, plan core.Plan) error {
+	if p.noWrite && len(plan.Ops) > 0 {
+		return provider.NewPermanentError(fmt.Errorf("%s: Apply: %w", Name, provider.ErrNoWriteAccess))
+	}
+	ctx = provider.WithWrite(ctx)
 	for _, op := range plan.Ops {
 		if err := p.applyOp(ctx, op); err != nil {
 			return err

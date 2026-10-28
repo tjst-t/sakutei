@@ -108,6 +108,8 @@ $ sakutei status --intent intent/ --provider-config providers.yaml
 
 ホストごとに、観測に使う資格（`observe:`）と書き込みに使う資格（`write:`）を分けて書ける（Backlog #185、設計書 §20.7）。どちらも `user`・`private_key`（SecretRef）・`sudo` だけを持ち、書かないキーはホストの値を受け継ぐ。どちらも書かなければ今までどおり 1 本の資格を両方に使う。
 
+管理 API の provider（proxmox-vm・redfish・ldap・postgresql・s3-bucket）も、対象の設定に同じ `observe:`・`write:` を書ける（Backlog #186）。資格のキーと観測用に要る最小の権限は各 provider の文書（[proxmox-vm](providers/proxmox-vm.md)・[redfish](providers/redfish.md)・[ldap](providers/ldap.md)・[postgresql](providers/postgresql.md)・[s3-bucket](providers/s3-bucket.md)）の「観測用と書き込み用の資格」。
+
 ```yaml
 hosts:
   fw1:

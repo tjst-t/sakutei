@@ -58,7 +58,7 @@ func (IntentRanges) FromIntent(entry map[string]any, config map[string]string) (
 	}
 	var known map[string]ClusterConfig
 	if path := config["proxmox_config"]; path != "" {
-		cfg, err := LoadConfig(path)
+		cfg, err := loadFor(config, path)
 		if err != nil {
 			return nil, err
 		}
@@ -101,7 +101,7 @@ func (IntentRanges) FromConfig(config map[string]string) ([]provider.RangeSettin
 	if path == "" {
 		return nil, nil // factory が断る
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadFor(config, path)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +169,7 @@ func NewFromProviderConfig(config map[string]string) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("proxmox-vm: %w", err)
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadFor(config, path)
 	if err != nil {
 		return nil, err
 	}
@@ -186,4 +186,13 @@ func NewFromProviderConfig(config map[string]string) (*Provider, error) {
 		return nil, fmt.Errorf("proxmox config %s: %w", path, err)
 	}
 	return New(cls, Options{}), nil
+}
+
+// loadFor は path の設定を、config の回の access（provider.ConfigAccess、§20.7、
+// #186）の読み方で読む。書かない回は書き込み用の secret を確かめない。
+func loadFor(config map[string]string, path string) (Config, error) {
+	if err := provider.CheckAccess(config); err != nil {
+		return Config{}, fmt.Errorf("proxmox-vm: %w", err)
+	}
+	return LoadConfigWith(path, LoadOptions{ObserveOnly: provider.ObserveOnlyRun(config)})
 }

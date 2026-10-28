@@ -593,7 +593,8 @@ func (p *Provider) Action(ctx context.Context, localID, op string, args map[stri
 	}
 	sys, err := c.GetSystem(ctx)
 	if err != nil {
-		return notSent("%s: action %s on %q: %v", Name, op, localID, err)
+		// %w: 書かない回の断り（provider.ErrNoWriteAccess、#186）を呼び手が見分ける。
+		return notSent("%s: action %s on %q: %w", Name, op, localID, err)
 	}
 	switch op {
 	case ActionBootOnce:

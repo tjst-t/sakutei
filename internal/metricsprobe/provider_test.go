@@ -396,6 +396,9 @@ func TestConfigErrors(t *testing.T) {
 		"bad metric":        strings.Replace(base("", ""), "metric: m", "metric: 1m", 1),
 		"unknown endpoint":  strings.Replace(base("", ""), "endpoint: mq", "endpoint: other", 1),
 		"probe unknown key": base("", "    labls:\n      a: b\n"),
+		// [AC-186-8-1] observe-only: no write credential to split (#186).
+		"write credential": base("    write:\n      bearer_token: secretref:file/t\n", ""),
+		"observe section":  base("    observe:\n      bearer_token: secretref:file/t\n", ""),
 	} {
 		if _, err := LoadConfig(writeFile(t, dir, "c.yaml", text)); err == nil {
 			t.Errorf("[AC-149-1-5] %s: accepted\n%s", name, text)

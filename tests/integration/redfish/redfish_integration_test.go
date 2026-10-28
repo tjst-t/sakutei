@@ -65,6 +65,14 @@
 //	           Task は作られない）と firmware-update-fail（Task が Exception、
 //	           ApplyFailed）。どちらも版は変わらず、Task は理由つきで止まり、通知の
 //	           口（webhook）に出て、二度目を送らない。
+//	[AC-186-14] 観測用と書き込み用の資格（#186、credential_split_integration_test.go）:
+//	           IPMI で作った 2 人目の利用者を観測用に、admin を書き込み用に書く。
+//	           qemu-bmc は Redfish の役割を持たないので、ReadOnly の役割は BMC の
+//	           前の中継で真似る。書かない回（plan・reconcile --mode alert-only）は
+//	           書き込み用の password が store に無くても観測用の GET だけで差分を
+//	           出し、書く回は password が無ければ起動しない。両方あれば観測は観測用、
+//	           書き込みは書き込み用で収束し、書き込み用を ReadOnly の利用者に
+//	           書き間違えれば 403 で断られて BMC は変わらない。
 package redfish
 
 import (
@@ -472,7 +480,12 @@ func baseArgs() []string {
 // sakutei は CLI を 1 回動かして、出力（stdout + stderr）と終了コードを返す。
 func sakutei(t *testing.T, verb string, extra ...string) (string, int) {
 	t.Helper()
-	args := append(append([]string{verb}, baseArgs()...), extra...)
+	return runSakutei(t, append(append([]string{verb}, baseArgs()...), extra...))
+}
+
+// runSakutei は sakutei を args で 1 回動かす。
+func runSakutei(t *testing.T, args []string) (string, int) {
+	t.Helper()
 	out, err := exec.Command(lab.bin, args...).CombinedOutput()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -591,7 +604,7 @@ func systemID(n node) string { return "redfish-system//" + n.name }
 
 // ---- テスト ----
 
-// TestRedfishIntegration は (0)〜(13) を順に回す。前の段が作った現実を次の段が
+// TestRedfishIntegration は (0)〜(14) を順に回す。前の段が作った現実を次の段が
 // 使うので、1 つ失敗したら残りは回さない。
 func TestRedfishIntegration(t *testing.T) {
 	steps := []struct {
@@ -612,6 +625,7 @@ func TestRedfishIntegration(t *testing.T) {
 		{"11_firmware_bmc_update", stepFirmwareBMCUpdate},
 		{"12_firmware_bios_pending_reboot", stepFirmwareBIOSPending},
 		{"13_firmware_faults", stepFirmwareFaults},
+		{"14_credential_split", stepCredentialSplit},
 	}
 	for _, s := range steps {
 		if !t.Run(s.name, s.fn) {

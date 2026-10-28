@@ -48,6 +48,10 @@ const (
 	dmPW       = "dm-pw:with space\\x"
 	alicePW    = "alice-pw-gen1"
 	alice2PW   = "alice-pw-gen2"
+	// readerDN は読むだけの bind の DN（観測用の資格、§20.7、#186）。base_dn の
+	// 下に置く（List に出さないことを確かめるため）。
+	readerDN = "uid=sakutei-read," + suffix
+	readerPW = "reader-pw-1"
 )
 
 var lab struct {
@@ -60,6 +64,9 @@ var lab struct {
 	// ranges は base_dn と filter を書かない設定（範囲は intent の
 	// providers.ldap、§7.7、#182）。
 	ranges string
+	// split は観測を readerDN、書き込みを Directory Manager で bind する設定、
+	// splitNoWrite はその書き込み用のパスワードが store に無い設定（#186）。
+	split, splitNoWrite string
 }
 
 func TestMain(m *testing.M) { os.Exit(runMain(m)) }
@@ -168,11 +175,20 @@ func setup() error {
 	server := func(uri, extra, pwRef string) string {
 		return connection(uri, extra, pwRef) + "    base_dn: " + suffix + "\n    filter: (!(ou=outside))\n"
 	}
+	split := func(writeRef string) string {
+		return "ldapsearch: " + filepath.Join(dir, "ldapsearch") + "\nldapmodify: " + filepath.Join(dir, "ldapmodify") + "\nsecret_store: secrets.json\nservers:\n  dir1:\n" +
+			"    uri: ldap://" + serverName + ":3389\n    starttls: true\n    ca_cert: ca.crt\n    timeout: 5s\n" +
+			"    base_dn: " + suffix + "\n    filter: (!(ou=outside))\n" +
+			"    observe:\n      bind_dn: " + readerDN + "\n      bind_password: secretref:file/ldap/reader\n" +
+			"    write:\n      bind_dn: " + dmDN + "\n      bind_password: " + writeRef + "\n"
+	}
 	files := map[string]string{
-		"ranges.yaml":   connection("ldap://"+serverName+":3389", "    starttls: true\n", "secretref:file/ldap/dm"),
-		"starttls.yaml": server("ldap://"+serverName+":3389", "    starttls: true\n", "secretref:file/ldap/dm"),
-		"ldaps.yaml":    server("ldaps://"+serverName+":3636", "", "secretref:file/ldap/dm"),
-		"bad.yaml":      server("ldap://"+serverName+":3389", "    starttls: true\n", "secretref:file/ldap/wrong"),
+		"split.yaml":         split("secretref:file/ldap/dm"),
+		"split-nowrite.yaml": split("secretref:file/ldap/not-in-store"),
+		"ranges.yaml":        connection("ldap://"+serverName+":3389", "    starttls: true\n", "secretref:file/ldap/dm"),
+		"starttls.yaml":      server("ldap://"+serverName+":3389", "    starttls: true\n", "secretref:file/ldap/dm"),
+		"ldaps.yaml":         server("ldaps://"+serverName+":3636", "", "secretref:file/ldap/dm"),
+		"bad.yaml":           server("ldap://"+serverName+":3389", "    starttls: true\n", "secretref:file/ldap/wrong"),
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
@@ -189,6 +205,10 @@ func setup() error {
 			lab.ldaps = pc
 		case "ranges.yaml":
 			lab.ranges = pc
+		case "split.yaml":
+			lab.split = pc
+		case "split-nowrite.yaml":
+			lab.splitNoWrite = pc
 		default:
 			lab.badBind = pc
 		}
@@ -204,9 +224,10 @@ func setup() error {
 
 func writeSecrets(alice string, gen int) error {
 	store := map[string]any{"secrets": map[string]any{
-		"ldap/dm":    map[string]any{"gen": 1, "value": dmPW},
-		"ldap/wrong": map[string]any{"gen": 1, "value": "not-the-password"},
-		"ldap/alice": map[string]any{"gen": gen, "value": alice},
+		"ldap/dm":     map[string]any{"gen": 1, "value": dmPW},
+		"ldap/wrong":  map[string]any{"gen": 1, "value": "not-the-password"},
+		"ldap/reader": map[string]any{"gen": 1, "value": readerPW},
+		"ldap/alice":  map[string]any{"gen": gen, "value": alice},
 	}}
 	b, err := json.Marshal(store)
 	if err != nil {
@@ -384,7 +405,7 @@ func cliArgs(providers, verb string, extra ...string) []string {
 
 func checkSecrets(t *testing.T, what, out string) {
 	t.Helper()
-	for _, s := range []string{dmPW, alicePW, alice2PW, "{PBKDF2", "{SSHA"} {
+	for _, s := range []string{dmPW, alicePW, alice2PW, readerPW, "{PBKDF2", "{SSHA"} {
 		if strings.Contains(out, s) {
 			t.Fatalf("sakutei %s shows a secret (%q):\n%s", what, s, out)
 		}
@@ -393,7 +414,12 @@ func checkSecrets(t *testing.T, what, out string) {
 
 func sakutei(t *testing.T, verb string, extra ...string) (string, int) {
 	t.Helper()
-	out, err := exec.Command(lab.bin, cliArgs(lab.providers, verb, extra...)...).CombinedOutput()
+	return sakuteiWith(t, lab.providers, verb, extra...)
+}
+
+func sakuteiWith(t *testing.T, providers, verb string, extra ...string) (string, int) {
+	t.Helper()
+	out, err := exec.Command(lab.bin, cliArgs(providers, verb, extra...)...).CombinedOutput()
 	checkSecrets(t, verb, string(out))
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -686,6 +712,88 @@ func TestLDAPIntegration(t *testing.T) {
 		}
 		if s, _, _ := status(t); s.Summary.Conformant != n {
 			t.Errorf("after start: %+v", s.Summary)
+		}
+	})
+
+	t.Run("observe with a read-only DN, write with another", func(t *testing.T) {
+		// #186: 観測は読むだけの DN（ACI で base_dn の下に read・search・compare
+		// だけ）、書き込みは Directory Manager。
+		writeIntent(t, declared("secretref:file/ldap/alice#gen2"))
+		aci := func(targetattr string) string {
+			return `(targetattr ` + targetattr + `)(version 3.0; acl "sakutei-read"; allow (read, search, compare) userdn = "ldap:///` + readerDN + `";)`
+		}
+		modify(t, "dn: "+readerDN+"\nchangetype: add\nobjectClass: account\nobjectClass: simpleSecurityObject\nuid: sakutei-read\nuserPassword: "+readerPW+"\n\n"+
+			"dn: "+suffix+"\nchangetype: modify\nadd: aci\naci: "+aci(`!= "userPassword"`)+"\n-\n\n")
+		defer modify(t, "dn: "+suffix+"\nchangetype: modify\ndelete: aci\naci: "+aci(`= "*"`)+"\n-\n\n"+
+			"dn: "+readerDN+"\nchangetype: delete\n\n")
+
+		// 読むだけの DN では変更をサーバが断る。
+		out, err := clientToolAs(readerDN, readerPW, "ldapmodify", "dn: "+peopleDN+"\nchangetype: modify\nreplace: description\ndescription: by the reader\n-\n\n")
+		if err == nil || !strings.Contains(out, "Insufficient access") {
+			t.Fatalf("ldapmodify with the read-only DN: %v\n%s", err, out)
+		}
+
+		// userPassword を読めない DN では、在ることが見えない（宣言した
+		// userPassword が「無い」と観測される）。
+		s, code, errOut := statusWith(t, lab.split)
+		if got := drifted(s); code != 0 || !s.Complete || strings.Join(got, " ") != "dir1/"+aliceDN+"=drift" {
+			t.Errorf("status with the read-only DN that cannot read userPassword (exit %d): %v %+v\n%s", code, got, s.Summary, errOut)
+		}
+		// userPassword も read できれば、観測は Directory Manager と同じ。
+		modify(t, "dn: "+suffix+"\nchangetype: modify\ndelete: aci\naci: "+aci(`!= "userPassword"`)+"\n-\nadd: aci\naci: "+aci(`= "*"`)+"\n-\n\n")
+		s, code, errOut = statusWith(t, lab.split)
+		if code != 0 || !s.Complete || s.Summary.Conformant != n || s.Summary.Drift != 0 {
+			t.Errorf("status with the read-only DN (exit %d): %+v\n%s", code, s.Summary, errOut)
+		}
+		// 2 本の bind の DN は List に出ない（ou=orphan は出る）。
+		var unmanaged []string
+		for _, r := range s.Resources {
+			if r.State == "unmanaged" {
+				unmanaged = append(unmanaged, r.LocalID)
+			}
+		}
+		if strings.Join(unmanaged, " ") != "dir1/ou=orphan,"+suffix {
+			t.Errorf("unmanaged = %v; want ou=orphan only (not the bind DN %s)", unmanaged, readerDN)
+		}
+
+		// 書き込み用のパスワードが store に無くても、書かない回（status・plan）は動く。
+		if s, code, errOut := statusWith(t, lab.splitNoWrite); code != 0 || s.Summary.Conformant != n {
+			t.Errorf("status without the write password (exit %d): %+v\n%s", code, s.Summary, errOut)
+		}
+		if out, code := sakuteiWith(t, lab.splitNoWrite, "plan"); code != 0 {
+			t.Errorf("plan without the write password: exit %d\n%s", code, out)
+		}
+		// 書く回は読み込みで断る。
+		if out, code := sakuteiWith(t, lab.splitNoWrite, "reconcile"); code == 0 || !strings.Contains(out, "servers.dir1.write.bind_password") {
+			t.Errorf("reconcile without the write password: exit %d\n%s", code, out)
+		}
+
+		// 手で変えたものを、書き込み用の資格で戻す。
+		modify(t, "dn: "+aliceDN+"\nchangetype: modify\nreplace: mail\nmail: evil@example.com\n-\n\n"+
+			"dn: "+peopleDN+"\nchangetype: modify\nreplace: description\ndescription: changed\n-\n\n")
+		var logs []string
+		for i := 0; i < 3; i++ {
+			out, code := sakuteiWith(t, lab.split, "reconcile")
+			logs = append(logs, out)
+			if code != 0 {
+				t.Fatalf("reconcile with the split credentials exited %d:\n%s", code, out)
+			}
+			if s, _, _ := statusWith(t, lab.split); s.Summary.Conformant == n && s.Summary.Drift == 0 {
+				break
+			}
+		}
+		if s, _, errOut := statusWith(t, lab.split); s.Summary.Conformant != n || s.Summary.Drift != 0 {
+			t.Fatalf("not converged with the split credentials: %+v\n%s\n%s", s.Summary, strings.Join(logs, "\n"), errOut)
+		}
+		if got := sorted(entry(t, aliceDN)["mail"]); got != "al@example.com,alice@example.com" {
+			t.Errorf("alice mail = %q", got)
+		}
+		if entry(t, readerDN) == nil {
+			t.Error("the read-only bind DN was deleted")
+		}
+		// 変更をしたのは Directory Manager（modifiersName）。
+		if got := entry(t, peopleDN, "modifiersName")["modifiersname"]; len(got) != 1 || !strings.EqualFold(got[0], dmDN) {
+			t.Errorf("people modifiersName = %q; want %s", got, dmDN)
 		}
 	})
 }

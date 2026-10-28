@@ -28,6 +28,12 @@ clusters:
     api_base_path: /api2/json         # 省略可：API のパスの前置き（既定 /api2/json、"/" は前置き無し）
     token_id: sakutei@pve!sakutei     # <user>@<realm>!<tokenname>
     token_secret: secretref:file/proxmox/lab/token
+    observe:                          # 省略可：観測用のトークン（下の「観測用と書き込み用の資格」）
+      token_id: sakutei-ro@pve!audit
+      token_secret: secretref:file/proxmox/lab/audit
+    write:                            # 省略可：書き込み用のトークン（書かないキーは上の値）
+      token_id: sakutei@pve!sakutei
+      token_secret: secretref:file/proxmox/lab/token
     node: pve1                        # 省略可：node を宣言しない VM を作るノード
     scope: site=tokyo                 # 省略可：このクラスタの ID の scope（既定 root）。intent の providers: に移す（下）
     protected_vmids:                  # 触らない VM（vmid で）
@@ -125,6 +131,35 @@ VM に `pool` を宣言すると、作るときにその pool に入るので、
 | `/pool/<pool>` | `PVEPoolAdmin`（`Pool.Allocate`） | pool を移す（宣言の pool と違うとき）ときだけ。作るときに渡すだけなら要らない |
 
 このトークンに見えるのは pool の VM と、`VM.Audit` のあるテンプレートだけである（`List`・`status` の unmanaged も pool の中だけ）。触らない VM（Sakutei 自身の VM）を pool の外に置けば、トークンからは見えも触れもしない。
+
+## 観測用と書き込み用の資格（Backlog #186）
+
+クラスタに観測用（`observe:`）と書き込み用（`write:`）のトークンを分けて書ける（§20.7。ssh 越しの provider の
+[`observe:`・`write:`](../remote.md#観測用と書き込み用の資格) と同じ決まり）。どちらも `token_id`・`token_secret` だけを持ち、
+書かないキーはクラスタの上の値を受け継ぐ。どちらも書かなければ今までどおり 1 本のトークン。
+
+- 観測（`Read`・`List`・`BulkObserve`。`plan`・`status`・読み取りの口・常駐の毎周の観測、Apply のあとの効いたかの読み直し）は
+  観測用のトークンだけを、書き込み（`Apply`・Workflow の `action`）は書き込み用のトークンだけを使う。Apply の中の読み直し
+  （作った VM の設定を読むなど）は書き込み用で行う。
+- 書かない回（`plan`・`status`・`import`・`--mode alert-only`・`--freeze` の `reconcile` など）は、書き込み用の `token_secret` が
+  secret store に無くても起動する（確かめず、取り出さない）。書く回は無ければ読み込みで断る（`clusters.<名前>.write.token_secret: ... is not in the secret store`）。
+
+観測用のトークンに要る最小の権限は **`/` に `PVEAuditor`**（`Datastore.Audit`・`Pool.Audit`・`SDN.Audit`・`Sys.Audit`・`VM.Audit` などの
+読むだけの権限。Proxmox VE 9.2 で確かめた。`make integration-proxmox` の段と同じ）:
+
+```console
+# pveum user add sakutei-ro@pve
+# pveum user token add sakutei-ro@pve audit --privsep 1
+# pveum acl modify / --roles PVEAuditor --users sakutei-ro@pve
+# pveum acl modify / --roles PVEAuditor --tokens 'sakutei-ro@pve!audit'
+```
+
+- `VM.Audit` で `/cluster/resources`・`/status/current`・`/pending` が読める。`Pool.Audit` が無いと `/cluster/resources` に `pool` が
+  載らない（pool を宣言した VM が「pool に無い」に見える。上の pool に絞ったトークンの表と同じ）。観測を pool に絞るなら、
+  `/` でなく `/pool/<pool>` と複製の元のテンプレートに `PVEAuditor` を付ける（見える VM は pool の中だけになる）。
+- Apply が待ち切れなかった仕事（UPID）の状態は、次の周の観測が観測用のトークンで読む。他人の始めた仕事の状態を読むには
+  `/nodes/<node>` の `Sys.Audit` が要り、`PVEAuditor` に入っている。
+- 書き込み用のトークンの権限は上の「トークンの権限」（または pool に絞ったトークン）のまま。
 
 ## intent の例
 
@@ -316,6 +351,21 @@ $ make integration-proxmox
 | absent で消す | 宣言から外しただけでは消えない（走ったまま）。`ensure: absent` にすると `plan` が DELETE を `blocked: approval` で出し、レーンが無い `reconcile` は消さない（`AbsentAwaitingApproval`）。承認のある planned_change（`kind: delete`）を足した `reconcile --audit-log` で走っている VM が止まって消え、次の `reconcile` は `Converged (no changes)`。ほかの VM（100・9000）は残る。触らない VM を `ensure: absent` にすると protected と言って断る |
 | scope 付きの宣言と `--claim` | 設定に `scope` を書かず、it-vm2 を `scope: {node: mgmt}` で宣言し、API で直接 VM（vmid 530、`it-hand`）を作る。`status --json --claim node=mgmt` と claim なしの `status --json` は it-hand だけを `node=mgmt` の unmanaged に出し、it-vm2 は適合で注記は無い。`--claim node=edge` は何も出さない。`reconcile --claim node=mgmt` は `Converged (no changes)` で it-hand を消さない（#169）。クラスタの scope を intent の `providers.proxmox-vm.clusters.it.scope`（`node: mgmt`）に書いても `status --json` は警告なしに it-hand を出し、`reconcile` は `Converged (no changes)`。設定に無いクラスタの名前を書くと `plan` が断る（#181） |
 | ciupgrade: false | `ciupgrade: false` の VM（vmid 540、止めたまま）をテンプレートから作り、`Converged (no changes)` まで。API で見た設定の `ciupgrade` が `0` で、`qm cloudinit dump 540 user` に `package_upgrade` が無い（Proxmox は 1 のときだけ `package_upgrade: true` を書く）。`ciupgrade` を書かない VM（520）の設定には `ciupgrade` が無い。API で 1 にすると `status` が ciupgrade の drift を出し、`reconcile` が 0 に戻す（#170）。出口の無い網で起動が待たされないことは確かめない（テストの網は slirp で外に出られる） |
+| 観測用（PVEAuditor）と書き込み用のトークン | root で `sakutei-ro@pve!audit`（privsep、`/` に `PVEAuditor`）を作る。そのトークンは `/cluster/resources` を読めて、VM の設定を変えられない（403）。観測用にそれ、書き込み用に root のトークンを書いた設定で、API で手で `cores` を変えた VM（540）に対し、書き込み用の secret の無い store で `status`・`plan`・`reconcile --mode alert-only` が drift を出し、書く `reconcile` は `write.token_secret` が store に無いと言って起動せず VM は変わらない。両方の secret の store の `reconcile` が `1 change(s) applied` で戻し、次は `Converged (no changes)`（#186） |
+
+### 結果（2026-10-28、Backlog #186 の「観測用（PVEAuditor）と書き込み用のトークン」）
+
+同じ開発機・同じキャッシュで、`make integration-proxmox` が PASS（全段で約 3 分）。最後の段に、`/` に `PVEAuditor` だけの privsep の
+トークンで観測し（書き込み用の secret の無い store で `status`・`plan`・`reconcile --mode alert-only` が drift を出し、書く `reconcile`
+は起動しない）、root のトークンで書いて戻す段を足した。監査役のトークンで VM の設定を変える要求は Proxmox が断った:
+
+```
+--- PASS: TestProxmoxVM (186.21s)
+    ...
+    --- PASS: TestProxmoxVM/ciupgrade:_false（初回の起動でパッケージを更新しない） (10.61s)
+    --- PASS: TestProxmoxVM/観測用（PVEAuditor）と書き込み用のトークン (2.22s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/proxmox	186.211s
+```
 
 ### 結果（2026-10-28、Backlog #181 の「クラスタの scope を intent に書く」）
 

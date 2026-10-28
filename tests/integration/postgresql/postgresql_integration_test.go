@@ -598,3 +598,179 @@ ALTER ROLE reader REPLICATION;`)
 		}
 	})
 }
+
+// ---- 観測用と書き込み用のロール（§20.7、#186） ----
+
+const (
+	roUser = "sakutei_ro"
+	roPW   = "ro-pw:1"
+)
+
+// splitConfig は observe: に読むだけのロール、write: に管理用のロールを書いた
+// サーバの一覧（secret store は secrets-split.json。ほかの段の store に触らない）。
+func splitConfig(t *testing.T, verify bool) string {
+	t.Helper()
+	cfg := "psql: " + lab.wrapper + "\nsecret_store: secrets-split.json\nservers:\n  main:\n    host: " + serverName +
+		"\n    port: 5432\n    connect_timeout: 3s\n    verify_passwords: " + fmt.Sprint(verify) +
+		"\n    observe:\n      user: " + roUser + "\n      password: secretref:file/pg/ro" +
+		"\n    write:\n      user: " + adminUser + "\n      password: secretref:file/pg/admin\n"
+	path := filepath.Join(lab.dir, "pg-split.yaml")
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func splitStore(t *testing.T, withAdmin bool) {
+	t.Helper()
+	secrets := map[string]any{
+		"pg/ro":  map[string]any{"gen": 1, "value": roPW},
+		"pg/app": map[string]any{"gen": 1, "value": appPW},
+	}
+	if withAdmin {
+		secrets["pg/admin"] = map[string]any{"gen": 1, "value": adminPW}
+	}
+	if err := writeJSON(filepath.Join(lab.dir, "secrets-split.json"), map[string]any{"secrets": secrets}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// roStatements はサーバのログ（log_statement = all）から、user でつないで流れた
+// 文の行を返す。
+func roStatements(t *testing.T, user string) []string {
+	t.Helper()
+	out, err := docker("logs", serverName)
+	if err != nil {
+		t.Fatalf("docker logs: %v", err)
+	}
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "user="+user+" ") && strings.Contains(l, "statement:") {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+func TestPostgreSQLCredentialSplitIntegration(t *testing.T) {
+	// 読むだけのロール: LOGIN だけ（観測が読むカタログ pg_roles・pg_auth_members・
+	// pg_database・pg_extension と shobj_description・aclexplode は PUBLIC が読める）。
+	admin(t, "postgres", `CREATE ROLE `+roUser+` LOGIN PASSWORD 'ro-pw:1';`)
+	admin(t, "postgres", `ALTER SYSTEM SET log_statement = 'all';`)
+	admin(t, "postgres", `ALTER SYSTEM SET log_line_prefix = 'user=%u ';`)
+	admin(t, "postgres", `SELECT pg_reload_conf();`)
+	saved := lab.config
+	lab.config = splitConfig(t, false)
+	defer func() {
+		lab.config = saved
+		admin(t, "postgres", `ALTER SYSTEM RESET log_statement;`)
+		admin(t, "postgres", `ALTER SYSTEM RESET log_line_prefix;`)
+		admin(t, "postgres", `SELECT pg_reload_conf();`)
+	}()
+	rs := []resource{
+		r("role/split_app", map[string]string{"login": "true", "password": "secretref:file/pg/app#gen1"}),
+		r("database/splitdb", map[string]string{"owner": "split_app"}),
+		r("database/splitdb/grant/split_app", map[string]string{"privileges": "CONNECT"}),
+		r("database/splitdb/extension/citext", map[string]string{}),
+	}
+	n := len(rs)
+	writeIntent(t, rs)
+
+	t.Run("the read-only role cannot change anything", func(t *testing.T) {
+		out, err := psqlAs(roUser, roPW, "postgres", "CREATE ROLE sk_by_ro;")
+		if err == nil || !strings.Contains(out, "permission denied") {
+			t.Fatalf("CREATE ROLE as %s: %v: %s; want permission denied", roUser, err, out)
+		}
+		out, err = psqlAs(roUser, roPW, "postgres", "CREATE DATABASE sk_by_ro;")
+		if err == nil || !strings.Contains(out, "permission denied") {
+			t.Fatalf("CREATE DATABASE as %s: %v: %s; want permission denied", roUser, err, out)
+		}
+	})
+
+	t.Run("an observe-only run starts without the write password", func(t *testing.T) {
+		splitStore(t, false)
+		s, _, errOut := status(t)
+		if s.Summary.Missing != n || s.Summary.Unobservable != 0 {
+			t.Fatalf("status without the write password: %+v\n%s", s.Summary, errOut)
+		}
+		out, code := sakutei(t, "reconcile")
+		if code == 0 || !strings.Contains(out, "servers.main.write.password") {
+			t.Fatalf("reconcile without the write password (exit %d):\n%s", code, out)
+		}
+	})
+
+	t.Run("observe as the read-only role, write as the admin role", func(t *testing.T) {
+		splitStore(t, true)
+		out := converge(t, n)
+		t.Logf("reconcile:\n%s", out)
+		if got := admin(t, "postgres", `SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'splitdb';`); got != "split_app" {
+			t.Errorf("splitdb owner = %q", got)
+		}
+		ro := roStatements(t, roUser)
+		if len(ro) == 0 {
+			t.Fatalf("no statement ran as %s (the observation)", roUser)
+		}
+		for _, l := range ro {
+			// sk_by_ro は上の段で手で流して断られた文。
+			if !strings.Contains(l, "/* sakutei:") && !strings.Contains(l, "sk_by_ro") {
+				t.Errorf("%s ran a statement other than the observation: %s", roUser, l)
+			}
+		}
+		var created bool
+		for _, l := range roStatements(t, adminUser) {
+			if strings.Contains(l, "CREATE DATABASE") {
+				created = true
+			}
+		}
+		if !created {
+			t.Error("CREATE DATABASE did not run as the write role")
+		}
+	})
+
+	t.Run("the two roles are not listed or pruned", func(t *testing.T) {
+		writeIntent(t, withPrune(rs))
+		for i := 0; i < 2; i++ {
+			out, _ := sakutei(t, "reconcile")
+			t.Logf("reconcile with PruneWithinScope #%d:\n%s", i+1, out)
+		}
+		s, _, _ := status(t)
+		for _, res := range s.Resources {
+			if strings.Contains(res.LocalID, roUser) || res.LocalID == "main/role/"+adminUser {
+				t.Errorf("status shows a role Sakutei connects as: %s=%s", res.LocalID, res.State)
+			}
+		}
+		if got := admin(t, "postgres", `SELECT count(*) FROM pg_roles WHERE rolname IN ('`+roUser+`', '`+adminUser+`');`); got != "2" {
+			t.Errorf("a role Sakutei connects as was dropped: %s", got)
+		}
+		if s.Summary.Conformant != n || s.Summary.Drift != 0 {
+			t.Errorf("after prune: %+v", s.Summary)
+		}
+	})
+
+	t.Run("verify_passwords needs pg_authid and is unknown without it", func(t *testing.T) {
+		lab.config = splitConfig(t, true)
+		s, code, errOut := status(t)
+		if code != 3 || s.Summary.Unobservable != 1 || s.Summary.Drift != 0 || !strings.Contains(errOut, "pg_authid") {
+			t.Errorf("status with verify_passwords as the read-only role: exit %d %+v\n%s", code, s.Summary, errOut)
+		}
+		// pg_read_all_data は pg_authid も読める（全部の表も読める）。
+		admin(t, "postgres", `GRANT pg_read_all_data TO `+roUser+`;`)
+		if s, code, errOut := status(t); code != 0 || s.Summary.Conformant != n {
+			t.Errorf("status with pg_read_all_data: exit %d %+v\n%s", code, s.Summary, errOut)
+		}
+		admin(t, "postgres", `REVOKE pg_read_all_data FROM `+roUser+`;`)
+		lab.config = splitConfig(t, false)
+	})
+
+	t.Run("clean up", func(t *testing.T) {
+		writeIntent(t, withPrune([]resource{r("role/app", map[string]string{"login": "true"})}))
+		for i := 0; i < 3; i++ {
+			out, _ := sakutei(t, "reconcile")
+			t.Logf("reconcile #%d:\n%s", i+1, out)
+		}
+		if got := admin(t, "postgres", `SELECT string_agg(datname, ',' ORDER BY datname) FROM pg_database;`); got != "postgres,template0,template1" {
+			t.Errorf("databases left = %q", got)
+		}
+		admin(t, "postgres", `DROP ROLE `+roUser+`;`)
+	})
+}

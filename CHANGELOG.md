@@ -10,9 +10,13 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 - **監査の記録を固める**（#187）：監査のログ（`--audit-log`）にふつうの Apply と prune も Op ごとに残す（種別 `resource.apply`・`resource.prune`。resource・変えた欄の名前・cause・結果・レーンの承認者）。各行に通し番号 `seq` と前の行のハッシュ `prev` を持たせて鎖にし、`sakutei audit verify`（exit 3）が書き換え・抜き取り・差し込み・回したファイルの抜け・送った所を超える切り詰めを見つける。`--audit-rotate-bytes` で書き換え・切り詰めをせず新しいファイルへ回す。`--audit-syslog tcp://…`／`tls://…` で RFC 5424 の syslog へ 1 件ずつ送り、届かない間は手元に貯めて送り直す（`sakutei audit forward`）。
 
+- **管理 API の provider の資格も分ける**（#186）：proxmox-vm・redfish・ldap・postgresql・s3-bucket の対象（クラスタ・BMC・サーバ・endpoint）に `observe:`・`write:` を書け（proxmox-vm は `token_id`・`token_secret`、redfish は `username`・`password`、ldap は `bind_dn`・`bind_password`、postgresql は `user`・`password`、s3-bucket は `access_key`・`secret_key`。書かないキーは対象の値）、観測は観測用だけ、Apply・action・Task の実行は書き込み用だけを使う。書かない回は書き込み用の secret が無くても起動する。観測用の資格に要る最小の権限（Proxmox の `PVEAuditor`、Redfish の `ReadOnly`、LDAP の read・search、PostgreSQL の `LOGIN`、S3 の読みの policy）は各 provider の文書。metrics-probe は観測だけなので資格は観測用のまま。
+
 > **振る舞いの変化**（#185）：host-file・systemd-unit・guest-os を root でない利用者で動かすとき、覗けないディレクトリの中のパスを「無い」でなく「観測できない」とするようになった（そのリソースは何もされない。これまでは在るファイルを作り直す計画を出していた）。
 
 > **振る舞いの変化**（#187）：監査のログに Apply・prune の行と、各行の `seq`・`prev` が増える。既存のログにはそのまま続けて書ける。種別で絞らずに行を数えている道具は直す必要がある。
+
+> **振る舞いの変化**（#186）：redfish-firmware・sqlmigrate の Task の実行は、資格を分けた設定では書き込み用の資格を使う。sqlmigrate の `engine: postgresql` の版の観測は観測用のロールで読む（版の表の SELECT が要る）。postgresql の `verify_passwords` は、`pg_authid` を読めない観測用のロールでは観測できない（unknown）。
 
 ## v2.7.0（2026-10-28）
 

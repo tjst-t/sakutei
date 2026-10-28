@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // Request は1回の Task の起動。
@@ -282,17 +283,19 @@ func (m *Manager) Trigger(ctx context.Context, id core.ID, desired map[string]st
 
 	// 非冪等な手順を途中で切らない: デーモンの停止シグナルで Task を中断しない。
 	runCtx := context.WithoutCancel(ctx)
+	// Task の実行・巻き戻し・多相 Task の相の実行は書き込み（provider.WithWrite、
+	// §20.7、#186）: 実行体は書き込み用の資格を使う。CheckStep は観測用のまま。
 	if pr != nil {
 		m.start(key, func() { m.runPhased(runCtx, pr, req, steps, 0, rec, pol) })
 		return Decision{Outcome: Launched, Record: rec, Reason: "phased task launched"}, nil
 	}
 	m.start(key, func() {
 		phase, rolledBack, msg := PhaseSucceeded, false, ""
-		if runErr := m.runner.RunTask(runCtx, req); runErr != nil {
+		if runErr := m.runner.RunTask(provider.WithWrite(runCtx), req); runErr != nil {
 			phase, msg = PhaseFailed, runErr.Error()
 			if pol.RollbackOnFail {
 				rolledBack = true
-				switch note, rbErr := m.runner.RollbackTask(runCtx, req); {
+				switch note, rbErr := m.runner.RollbackTask(provider.WithWrite(runCtx), req); {
 				case rbErr != nil:
 					msg += "; rollback failed: " + rbErr.Error()
 				case note != "":

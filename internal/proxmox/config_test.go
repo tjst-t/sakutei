@@ -93,7 +93,7 @@ clusters:
 		t.Errorf("dc2 base = %q", b)
 	}
 	// secret は要求の直前に解決する。
-	got, err := p.clusters["lab"].Client.secret(context.Background())
+	got, err := p.clusters["lab"].Client.tokens.Observe.Secret(context.Background())
 	if err != nil || got != "very-secret-token" {
 		t.Errorf("secret = %q, %v", got, err)
 	}

@@ -23,6 +23,11 @@ package ldap
 //   - bind は simple bind（-x -D）。パスワードは呼ぶたびに secret store から解決し
 //     （JIT、§20.2）、0600 の一時ファイルに書いて -y で渡し、終われば消す。
 //     引数・環境変数・ログ・エラーには出さない。
+//   - 観測用と書き込み用の 2 本の資格を持てる（§20.7、#186）: ldapmodify と、
+//     書き込みの ctx（provider.Writing。Apply の中の読み直し）の ldapsearch だけが
+//     書き込み用で bind し、ほかの ldapsearch は観測用で bind する。この回が
+//     書かない（Options.NoWrite）なら書き込みを provider.ErrNoWriteAccess で断り、
+//     書き込み用のパスワードは取り出さない。
 //   - LDAPS（ldaps://）と StartTLS（-ZZ：TLS にできなければ失敗）。CA は
 //     LDAPTLS_CACERT、証明書の確かめは LDAPTLS_REQCERT=demand（利用者の ldaprc の
 //     TLS_REQCERT never などで緩めさせない）。親の LDAP で始まる環境変数は引き継が
@@ -40,11 +45,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/apicred"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // Invocation はコマンドの 1 回の起動。
@@ -124,6 +132,8 @@ const (
 	KindLDAP
 	// KindOutput はコマンドの出力が読めない。
 	KindOutput
+	// KindNoWrite はこの回が書かない（provider.ErrNoWriteAccess）ので送らなかった。
+	KindNoWrite
 )
 
 // Error はコマンドの 1 回の失敗。文言にパスワードは入れない。
@@ -150,6 +160,8 @@ func (e *Error) Error() string {
 		what = "LDAP error " + strconv.Itoa(e.Code)
 	case KindOutput:
 		what = "unreadable ldap command output"
+	case KindNoWrite:
+		what = "not sent"
 	}
 	s := fmt.Sprintf("server %s: %s", e.Server, what)
 	if e.Message != "" {
@@ -195,11 +207,12 @@ type Client struct {
 	search, modify string
 	runner         Runner
 	secrets        core.SecretResolver
+	noWrite        bool
 }
 
 // NewClient は opts でコマンドを呼ぶ Client を返す。
 func NewClient(opts Options) *Client {
-	c := &Client{search: opts.LDAPSearch, modify: opts.LDAPModify, runner: opts.Runner, secrets: opts.Secrets}
+	c := &Client{search: opts.LDAPSearch, modify: opts.LDAPModify, runner: opts.Runner, secrets: opts.Secrets, noWrite: opts.NoWrite}
 	if c.search == "" {
 		c.search = "ldapsearch"
 	}
@@ -263,14 +276,31 @@ func (c *Client) Search(ctx context.Context, name string, srv *Server, req Searc
 	return es, err
 }
 
-// Modify は LDIF の変更を流す（最初のエラーで止まる）。
+// Modify は LDIF の変更を流す（最初のエラーで止まる）。いつも書き込み用の資格で
+// bind する。
 func (c *Client) Modify(ctx context.Context, name string, srv *Server, ldif string) error {
-	_, err := c.run(ctx, c.modify, name, srv, nil, ldif)
+	_, err := c.run(provider.WithWrite(ctx), c.modify, name, srv, nil, ldif)
 	return err
 }
 
 func seconds(d time.Duration) int {
 	return max(int((d+time.Second-1)/time.Second), 1)
+}
+
+// bind は 1 本の資格（bind の DN とパスワードの SecretRef）。
+type bind struct {
+	dn       string
+	password core.SecretRef
+}
+
+// binds は srv の観測用と書き込み用の資格。
+func (c *Client) binds(srv *Server) apicred.Pair[bind] {
+	pair := apicred.Single(bind{dn: srv.BindDN, password: srv.BindPassword})
+	if srv.WriteBindDN != "" {
+		pair.Write = bind{dn: srv.WriteBindDN, password: srv.WriteBindPassword}
+	}
+	pair.NoWrite = c.noWrite
+	return pair
 }
 
 // run はコマンドを 1 回起動し、標準出力を返す。
@@ -285,8 +315,12 @@ func (c *Client) run(ctx context.Context, path, name string, srv *Server, extra 
 	if srv.Timeout > 0 {
 		args = append(args, "-o", "nettimeout="+strconv.Itoa(seconds(srv.Timeout)))
 	}
-	args = append(args, "-D", srv.BindDN)
-	ref := srv.BindPassword
+	cred, err := c.binds(srv).For(ctx, "ldap "+filepath.Base(path))
+	if err != nil {
+		return "", mk(KindNoWrite, 0, "", err)
+	}
+	args = append(args, "-D", cred.dn)
+	ref := cred.password
 	if c.secrets == nil {
 		return "", mk(KindSecret, 0, fmt.Sprintf("%s: no secret store is configured", ref), nil)
 	}

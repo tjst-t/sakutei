@@ -24,6 +24,7 @@ import (
 
 	"github.com/tjst-t/sakutei/v2/internal/audit"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // stepRunner は相ごとの現実を map で持つ PhasedRunner。
@@ -33,37 +34,43 @@ type stepRunner struct {
 	done     map[string]bool
 	runs     map[string]int
 	rollback []string // RollbackTask に渡った Request.Step
+	// ctxWrite は呼び出し（"run:<相>"・"check:<相>"・"rollback"）が書き込みの
+	// ctx（provider.Writing）だったか（#186）。
+	ctxWrite map[string]bool
 }
 
 func newStepRunner(steps []StepSpec) *stepRunner {
-	return &stepRunner{steps: steps, done: map[string]bool{}, runs: map[string]int{}}
+	return &stepRunner{steps: steps, done: map[string]bool{}, runs: map[string]int{}, ctxWrite: map[string]bool{}}
 }
 
 func (r *stepRunner) RunTask(context.Context, Request) error {
 	panic("simple RunTask on a phased task")
 }
 
-func (r *stepRunner) RollbackTask(_ context.Context, req Request) (string, error) {
+func (r *stepRunner) RollbackTask(ctx context.Context, req Request) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.ctxWrite["rollback"] = provider.Writing(ctx)
 	r.rollback = append(r.rollback, req.Step)
 	return "", nil
 }
 
 func (r *stepRunner) TaskSteps(context.Context, Request) ([]StepSpec, error) { return r.steps, nil }
 
-func (r *stepRunner) CheckStep(_ context.Context, _ Request, step string) (StepState, error) {
+func (r *stepRunner) CheckStep(ctx context.Context, _ Request, step string) (StepState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.ctxWrite["check:"+step] = provider.Writing(ctx)
 	if r.done[step] {
 		return StepDone, nil
 	}
 	return StepPending, nil
 }
 
-func (r *stepRunner) RunStep(_ context.Context, _ Request, step string) error {
+func (r *stepRunner) RunStep(ctx context.Context, _ Request, step string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.ctxWrite["run:"+step] = provider.Writing(ctx)
 	r.runs[step]++
 	r.done[step] = true
 	return nil
@@ -117,6 +124,11 @@ func TestPhased_ConfirmNotDoneFails(t *testing.T) {
 	}
 	if len(r.rollback) != 1 || r.rollback[0] != StepConfirming {
 		t.Fatalf("rollback got steps %v", r.rollback)
+	}
+	// [AC-186-1-3] the steps that write and the rollback run in a write
+	// context (the write credential); the checks do not.
+	if !r.ctxWrite["run:"+StepApplying] || !r.ctxWrite["rollback"] || r.ctxWrite["check:"+StepConfirming] || r.ctxWrite["check:"+StepApplying] {
+		t.Errorf("write contexts = %v", r.ctxWrite)
 	}
 }
 

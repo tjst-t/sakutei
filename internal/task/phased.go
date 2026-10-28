@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // 多相 Task（§6.2 多相型、Backlog #51）。firmware 更新のような、中断できず・長く・
@@ -360,7 +361,7 @@ func (m *Manager) runPhased(ctx context.Context, pr PhasedRunner, req Request, s
 			rolledBack = true
 			rreq := req
 			rreq.Step = step
-			switch note, rbErr := pr.RollbackTask(ctx, rreq); {
+			switch note, rbErr := pr.RollbackTask(provider.WithWrite(ctx), rreq); {
 			case rbErr != nil:
 				msg += "; rollback failed: " + rbErr.Error()
 			case note != "":
@@ -421,7 +422,7 @@ func (m *Manager) runPhased(ctx context.Context, pr PhasedRunner, req Request, s
 			if s.Critical && !write(func(r *Record) { r.Critical = true }) {
 				return // 印を立てられなければ書込を始めない
 			}
-			if err := pr.RunStep(ctx, req, s.Name); err != nil {
+			if err := pr.RunStep(provider.WithWrite(ctx), req, s.Name); err != nil {
 				fail(s.Name, err)
 				return
 			}

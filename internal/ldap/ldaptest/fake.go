@@ -26,6 +26,8 @@
 //   - userPassword はハッシュに似た形（{FAKE}...）で保存し、検索では base64 で返す。
 //   - 検索の出力は -LLL でも "# pagedresults" のコメントを出す（-E pr のとき）。
 //   - ldapSubEntry の項目は、base の検索のほかには出さない。
+//   - Readers の DN は検索だけができ、変更は 50 insufficientAccessRights で断る
+//     （olcAccess の by dn.exact=... read に当たる、#186）。
 //
 // Server.Run は ldap.Runner と同じ形の関数（ldap.RunnerFunc で包む）で、Main は
 // 環境変数 SAKUTEI_FAKE_LDAP_STATE の JSON の状態を相手にする実行ファイルとして
@@ -58,9 +60,11 @@ type Entry struct {
 
 // State はディレクトリ全体。
 type State struct {
-	BindDN       string   `json:"bind_dn"`
-	BindPassword string   `json:"bind_password"`
-	Entries      []*Entry `json:"entries"`
+	BindDN       string `json:"bind_dn"`
+	BindPassword string `json:"bind_password"`
+	// Readers は読むだけの bind の DN → パスワード（検索はできるが変更はできない、#186）。
+	Readers map[string]string `json:"readers,omitempty"`
+	Entries []*Entry          `json:"entries"`
 	// Schema はクラス（小文字）→ 上位のクラス（小文字）。
 	Schema map[string]string `json:"schema"`
 	// Unreachable ならどの起動もサーバに届かない（終了コード 255）。
@@ -79,6 +83,8 @@ type Call struct {
 	Stdin   string
 	// Password は -y のファイルの中身（テストが「引数に出していない」ことを確かめる）。
 	Password string
+	// BindDN は -D の DN（書いたまま）。
+	BindDN string
 }
 
 // Server は偽の ldap コマンドとそのディレクトリ。
@@ -122,6 +128,22 @@ func (s *Server) Calls() []Call {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Call(nil), s.calls...)
+}
+
+// BindCalls は bind の DN ごと（正規形）・コマンドごと（"ldapsearch"・
+// "ldapmodify"）の起動の数。
+func (s *Server) BindCalls() map[string]map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]map[string]int{}
+	for _, c := range s.calls {
+		dn := canon(c.BindDN)
+		if out[dn] == nil {
+			out[dn] = map[string]int{}
+		}
+		out[dn][c.Command]++
+	}
+	return out
 }
 
 var errNotFound = errors.New(`exec: "ldapsearch": executable file not found in $PATH`)
@@ -353,7 +375,7 @@ func parseArgs(args []string) (options, error) {
 func ldapErr(op string, code int) (string, string, int) {
 	names := map[int]string{
 		1: "Operations error", 4: "Size limit exceeded", 13: "Confidentiality required", 32: "No such object",
-		49: "Invalid credentials", 65: "Object class violation", 66: "Operation not allowed on non-leaf",
+		49: "Invalid credentials", 50: "Insufficient access", 65: "Object class violation", 66: "Operation not allowed on non-leaf",
 		67: "Operation not allowed on RDN", 68: "Already exists", 21: "Invalid syntax",
 	}
 	return "", fmt.Sprintf("%s: %s (%d)\n", op, names[code], code), code
@@ -379,10 +401,15 @@ func run(st *State, cmd string, args []string, stdin string, call *Call) (string
 		pw = string(b)
 	}
 	call.Password = pw
+	call.BindDN = o.bindDN
 	if !st.bind(o.bindDN, pw) {
 		return ldapErr("ldap_bind", 49)
 	}
 	if cmd == "ldapmodify" {
+		if st.reader(o.bindDN) {
+			_, errOut, code := ldapErr("ldap_modify", 50)
+			return "", errOut, code
+		}
 		return st.modify(stdin)
 	}
 	return st.search(o)
@@ -392,11 +419,26 @@ func (st *State) bind(dn, pw string) bool {
 	if canon(dn) == canon(st.BindDN) {
 		return pw == st.BindPassword
 	}
+	for r, rpw := range st.Readers {
+		if canon(dn) == canon(r) {
+			return pw == rpw
+		}
+	}
 	if e := st.Find(dn); e != nil {
 		for _, v := range e.Get("userPassword") {
 			if v == hashPassword(pw) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// reader は dn が読むだけの bind の DN か。
+func (st *State) reader(dn string) bool {
+	for r := range st.Readers {
+		if canon(dn) == canon(r) {
+			return true
 		}
 	}
 	return false

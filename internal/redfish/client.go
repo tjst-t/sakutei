@@ -25,6 +25,9 @@
 //     FW の更新（SimpleUpdate・multipart の送信、update.go）だけ。
 //   - 観測 state レス（§3 原則 1）: System・Manager・VirtualMedia・Bios のパスは
 //     キャッシュせず、呼ぶたびに辿り直す。
+//   - 観測用と書き込み用の 2 本の資格を持てる（§20.7、#186）: 書き込みの ctx
+//     （provider.Writing。Apply・Action・Task の実行）の要求は、その中の GET も
+//     含めて書き込み用だけを使い、ほかの要求は観測用だけを使う。
 //   - エラーは Error の Kind で分ける（errors.go）。届かない・タイムアウト・
 //     5xx・認証以外の想定外は KindUnreachable、401 / 403 は KindAuth、証明書の
 //     検証失敗は KindCertificate、その他の 4xx は KindRequest（BMC の内容つき）。
@@ -44,6 +47,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/tjst-t/sakutei/v2/internal/apicred"
 )
 
 // 電源の状態（ComputerSystem.PowerState）。
@@ -85,13 +90,20 @@ type Config struct {
 	// https とみなす。http は受け付けない。
 	Endpoint string
 	// Username・Password は Basic 認証の資格。Password は provider が SecretRef
-	// （§20）から解決して渡す。
+	// （§20）から解決して渡す。Username・Password・PasswordFunc は観測用（Write が
+	// 無ければ書き込みにも使う）。
 	Username string
 	Password string
 	// PasswordFunc は要求のたびに Password を解決する（SecretRef の JIT 解決、
 	// §20.2。値を Client に持たない）。設定すれば Password より優先する。解決
 	// できなければその要求は KindUnreachable（何も操作しない側）。
 	PasswordFunc func(ctx context.Context) (string, error)
+	// Write は書き込み用の資格（省略可。provider.Writing の ctx の要求だけが
+	// 使う、§20.7、#186）。
+	Write *Credential
+	// NoWrite はこの回が書かない（provider.AccessObserve）: 書き込みの ctx の
+	// 要求を送らずに provider.ErrNoWriteAccess を包んだ error で断る。
+	NoWrite bool
 	// CAFile は BMC の証明書を検証する CA（PEM）のファイル。指定すれば
 	// システムの CA の代わりにこれだけを使う。
 	CAFile string
@@ -106,6 +118,15 @@ type Config struct {
 	// ManagerPath は VirtualMedia を持つ Manager のパス（例
 	// "/redfish/v1/Managers/1"）。空なら /redfish/v1/Managers の最初のメンバー。
 	ManagerPath string
+}
+
+// Credential は 1 本の Basic 認証の資格。
+type Credential struct {
+	Username string
+	Password string
+	// PasswordFunc は要求のたびに Password を解決する（設定すれば Password より
+	// 優先する）。
+	PasswordFunc func(ctx context.Context) (string, error)
 }
 
 // Boot は起動先の上書きの設定。
@@ -229,13 +250,11 @@ type Client interface {
 
 // HTTPClient は net/http による Client の実装。
 type HTTPClient struct {
-	base     *url.URL
-	username string
-	password string
-	pwFunc   func(ctx context.Context) (string, error)
-	sysPath  string
-	mgrPath  string
-	hc       *http.Client
+	base    *url.URL
+	creds   apicred.Pair[Credential]
+	sysPath string
+	mgrPath string
+	hc      *http.Client
 	// hcLong は時間切れを ctx に任せる http.Client（イメージの送信、update.go）。
 	hcLong *http.Client
 }
@@ -290,15 +309,18 @@ func New(cfg Config) (*HTTPClient, error) {
 
 	// リダイレクトは辿らない（資格を別の場所へ送らない）。3xx は想定外。
 	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	creds := apicred.Single(Credential{Username: cfg.Username, Password: cfg.Password, PasswordFunc: cfg.PasswordFunc})
+	if cfg.Write != nil {
+		creds.Write = *cfg.Write
+	}
+	creds.NoWrite = cfg.NoWrite
 	return &HTTPClient{
-		base:     u,
-		username: cfg.Username,
-		password: cfg.Password,
-		pwFunc:   cfg.PasswordFunc,
-		sysPath:  cfg.SystemPath,
-		mgrPath:  cfg.ManagerPath,
-		hc:       &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: noRedirect},
-		hcLong:   &http.Client{Transport: tr, CheckRedirect: noRedirect},
+		base:    u,
+		creds:   creds,
+		sysPath: cfg.SystemPath,
+		mgrPath: cfg.ManagerPath,
+		hc:      &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: noRedirect},
+		hcLong:  &http.Client{Transport: tr, CheckRedirect: noRedirect},
 	}, nil
 }
 
@@ -755,20 +777,29 @@ func (c *HTTPClient) doRaw(ctx context.Context, hc *http.Client, method, path st
 		return 0, nil, nil, &Error{Kind: KindUnreachable, Method: method, Path: path,
 			Message: "link points outside the BMC endpoint"}
 	}
+	// 書き込みの ctx は書き込み用の資格、ほかは観測用（#186）。この回が書かない
+	// なら送らない。資格が無いのと同じく KindAuth（設定を直すまで治らない。
+	// KindRequest にすると「BMC が持たない」と読む呼び手がある）で、
+	// provider.ErrNoWriteAccess を包む。
+	cred, err := c.creds.For(ctx, "redfish "+method+" "+path)
+	if err != nil {
+		return 0, nil, nil, &Error{Kind: KindAuth, Method: method, Path: path,
+			Message: "this run does not write", Err: err}
+	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), rd)
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("redfish: %s %s: %w", method, path, err)
 	}
-	password := c.password
-	if c.pwFunc != nil {
-		pw, err := c.pwFunc(ctx)
+	password := cred.Password
+	if cred.PasswordFunc != nil {
+		pw, err := cred.PasswordFunc(ctx)
 		if err != nil {
 			return 0, nil, nil, &Error{Kind: KindUnreachable, Method: method, Path: path,
 				Message: "cannot resolve the password", Err: err}
 		}
 		password = pw
 	}
-	req.SetBasicAuth(c.username, password)
+	req.SetBasicAuth(cred.Username, password)
 	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)

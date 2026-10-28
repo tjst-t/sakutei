@@ -26,6 +26,12 @@ endpoints:
     addressing: path                  # path（既定。<endpoint>/<bucket>）| virtual（<bucket>.<host>）
     access_key: secretref:file/s3/minio/access_key
     secret_key: secretref:file/s3/minio/secret_key
+    observe:                          # 省略可：観測用のキー（下の「観測用と書き込み用の資格」）
+      access_key: secretref:file/s3/minio/ro_access_key
+      secret_key: secretref:file/s3/minio/ro_secret_key
+    write:                            # 省略可：書き込み用のキー（Apply だけが使う）
+      access_key: secretref:file/s3/minio/rw_access_key
+      secret_key: secretref:file/s3/minio/rw_secret_key
     bucket_prefix: app-               # 省略可。この接頭辞のバケットだけを扱う
     ca_file: ca.pem                   # 省略可。この CA だけで証明書を検証する
     insecure_skip_verify: false       # 明示したときだけ true（ca_file とは排他）
@@ -48,6 +54,70 @@ $ sakutei status --intent intent/ --s3-config s3.yaml --json
 - `api_base_path`（Backlog #160）は、S3 の API がホストの根ではなくパスの下にいるとき（逆プロキシの下のパス、試験用の模擬など）に書く。要求のパスは path 形式なら `<前置き>/<bucket>`、virtual-host 形式なら `<前置き>/`（バケット名はホストに付く）、ListBuckets は `<前置き>/`。署名（SigV4）は前置きを含んだパスで作る（前置きを書き換えて転送する逆プロキシの下では署名が合わない）。`/` で始まるパスだけを受け付け（末尾の `/` は落とす。`/` は前置き無し）、クエリ・`%`・空白・空の段・`.`・`..` の段は読み込みの時点でエラー。省けば今までどおり前置き無し。`endpoint` には今までどおりパスを書かない。
 - virtual-host 形式で https を使うとき、名前に `.` を含むバケットは証明書のワイルドカードに合わないことが多い。
 - 未知のキーはエラー（書き間違いを黙って無視しない）。
+
+## 観測用と書き込み用の資格（Backlog #186）
+
+endpoint に観測用（`observe:`）と書き込み用（`write:`）のキーを分けて書ける（§20.7。ssh 越しの provider の
+[`observe:`・`write:`](../remote.md#観測用と書き込み用の資格) と同じ決まり）。どちらも `access_key`・`secret_key` だけを持ち
+（SecretRef でしか書けないのは上と同じ）、書かないキーは endpoint の上の値を受け継ぐ。どちらも書かなければ今までどおり 1 組のキー。
+
+- 観測（`Read`・`List`・`BulkObserve`。`plan`・`status`・読み取りの口・常駐の毎周の観測、Apply のあとの効いたかの読み直し）は
+  観測用のキーだけで、書き込み（`Apply`）は書き込み用のキーだけで署名する。Apply の中の読み戻し（設定したポリシー・
+  ライフサイクル・タグの Get）は書き込み用で行う。
+- 書かない回（`plan`・`status`・`import`・`--mode alert-only`・`--freeze` の `reconcile` など）は、書き込み用のキーが
+  secret store に無くても起動する（確かめず、取り出さない。書き込みを頼まれれば何も送らずに断る）。書く回は無ければ
+  読み込みで断る（`endpoints.<名前>.write.access_key: ... is not in the secret store`）。
+
+観測用のキーに要る最小のポリシー（MinIO RELEASE.2026-08-04T00-00-00Z で確かめた。`make integration-s3` の段と同じ。
+どれか 1 つを外すと、そのバケットは観測できない）:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "s3:ListAllMyBuckets",
+      "s3:GetBucketVersioning",
+      "s3:GetBucketPolicy",
+      "s3:GetLifecycleConfiguration",
+      "s3:GetBucketTagging"
+    ],
+    "Resource": ["arn:aws:s3:::*"]
+  }]
+}
+```
+
+- `fields` で扱う設定を絞った endpoint では、外した設定の Get の許可は要らない（Get を呼ばない）。
+- **許可の足りない Get は「設定が無い」と読まない**。Get が 403（`AccessDenied`）なら、そのバケットはその周は観測できない
+  （Unknown。absent にしない、§3 第3原則）。設定が無いこと（`NoSuchBucketPolicy`・`NoSuchLifecycleConfiguration`・
+  `NoSuchTagSet`。404）だけを空の値として読む。`s3:ListAllMyBuckets` が無ければ ListBuckets が 403 で、List も error（prune は止まる）。
+  MinIO は ListAllMyBuckets の無い利用者に見えるバケットだけの一覧を返すのでなく、ListBuckets を 403 で断る（確かめた）。
+- `s3:GetBucketLocation` は要らない（provider は呼ばない。region は設定で渡す）。
+
+書き込み用のキーのポリシー（同じ版で確かめた。作る・消す・4 つの設定の Put と外す、Apply の中の読み戻し）:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "s3:ListAllMyBuckets",
+      "s3:CreateBucket", "s3:DeleteBucket",
+      "s3:PutBucketVersioning", "s3:GetBucketVersioning",
+      "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:GetBucketPolicy",
+      "s3:PutLifecycleConfiguration", "s3:GetLifecycleConfiguration",
+      "s3:PutBucketTagging", "s3:GetBucketTagging"
+    ],
+    "Resource": ["arn:aws:s3:::*"]
+  }]
+}
+```
+
+- ライフサイクル・タグを外す（DeleteBucketLifecycle・DeleteBucketTagging）は、それぞれ `s3:PutLifecycleConfiguration`・
+  `s3:PutBucketTagging` の許可で通る（AWS と同じ）。
+- 書き込み用に読むだけのキーを書き違えると、Apply は endpoint の 403（`AccessDenied`）の PermanentError で止まり、何も変わらない。
 
 ## 範囲を intent に書く（`providers:`、Backlog #182）
 
@@ -197,6 +267,7 @@ $ make integration-s3
 | an endpoint without the API | 今の minio・seaweedfs は 4 つの GET をどれも持つことを確かめる。seaweedfs-old に versioning・tags を宣言 → バケットは作られ、Apply が NotImplemented の PermanentError で止まり、status は drift。フィールドを宣言しなければ適合 |
 | fields leave out settings | 同じ seaweedfs を別の名前 `seaweedfs-compat`（`bucket_prefix: sk-compat-`、`fields` は policy・tags だけ）でも登録。policy・tags を宣言したバケットが適合し、versioning は触らない。versioning を宣言すると `plan` が `fields` を名指したエラーで止まる。`storage_class_aliases` は SeaweedFS では再現できない（この版は Transition を含む lifecycle の PUT が 501、古い版は受け付けるが読み戻すと Transition が無い）ので、偽サーバの単体・受け入れテストで確かめる |
 | clean up through prune | 宣言を 1 つだけにして PruneWithinScope で reconcile → 空のバケットが prune で消える（中身のあるものは残る）。コンテナは teardown で消す |
+| 観測用と書き込み用の資格（#186、`TestS3CredentialSplit`、minio が要る） | minio の中の `mc admin` で、上の読むだけのポリシーの利用者 `sakutei-ro` と書き込み用のポリシーの利用者 `sakutei-rw` を作り、`observe:`・`write:` に書いた endpoint の一覧（`bucket_prefix: sk-split-`）を使う。観測用のキーだけの store で `status --json`（complete・drift 1）と `plan` が通り、`reconcile`（書く回）は `endpoints.minio.write.access_key` が無いと断ってバケットを作らない。`sakutei-ro` の CreateBucket・PutBucketTagging・PutBucketVersioning・DeleteBucket は 403 で断られる。両方のキーの store の `reconcile` で収束し（空の orphan の prune を含む）、4 つの設定を外す・付け直すのも通る。読むだけのポリシーから 1 つずつ外した利用者では、そのバケットの Read が Unknown（absent にならない） |
 
 ### 結果
 
@@ -214,6 +285,19 @@ $ make integration-s3
     --- PASS: TestS3Integration/clean_up_through_prune (0.04s)
 PASS
 ```
+
+観測用と書き込み用の資格の段（#186、2026-10-28。TestS3Integration も同じ回で全段 PASS）:
+
+```
+--- PASS: TestS3CredentialSplit (3.06s)
+    --- PASS: TestS3CredentialSplit/observe_with_the_read-only_user,_without_the_write_keys (0.02s)
+    --- PASS: TestS3CredentialSplit/a_write_with_the_read-only_user_is_refused (0.01s)
+    --- PASS: TestS3CredentialSplit/converge_with_the_write_user (0.36s)
+    --- PASS: TestS3CredentialSplit/each_read_action_is_needed_and_a_missing_one_is_unknown,_not_absent (1.83s)
+```
+
+読むだけのポリシーから 1 つ外した利用者の Read は、どれも `authentication failed (HTTP 403): AccessDenied: Access Denied.`
+（`ListBuckets` か、外した許可の Get）で Unknown になる。
 
 任意のサーバのイメージをわざと取れないものにした場合（同日）:
 
@@ -238,4 +322,5 @@ PASS
 
 - SigV4：AWS の公開のテストベクタ（Signature Version 4 の test suite の get-vanilla、S3 の文書の GET Object・PUT Object・GET Bucket Lifecycle・ListObjects の例、署名鍵の導出の例）と同じ値になる（`internal/s3bucket/sigv4_test.go`）。
 - 契約テスト（`sdk.ContractTester`、届かないのを absent にしないことを含む）・BulkObserve 等価性テスト（`sdk.BulkEquivalenceTester`）・正規形・NotImplemented・中身のあるバケットの Delete・観測できないもの（届かない・5xx・鍵の誤り・資格を解決できない）・ListBuckets のページ送りと `bucket_prefix`・path-style と virtual-host のアドレス・設定ファイルの検査（`internal/s3bucket/*_test.go`）。
+- 観測用と書き込み用のキー（`internal/s3bucket/credential_split_test.go`、`[AC-186-6-*]`）：偽サーバに読むだけのキー（GET・HEAD だけ。ほかは 403 `AccessDenied`）を足し、キーごとの読み・書きの回数を数える。観測は読むだけのキーだけ・書き込みは書き込み用のキーだけで収束すること、書かない回は書き込み用のキーが store に無くても起動して書き込みを `provider.ErrNoWriteAccess` で断ること（書き込み用のキーの要求は 0）、書く回は無ければ読み込みで断ること、設定の誤り、4 つの Get のどれが 403 でも Unknown（absent にしない）こと。
 - 受け入れテスト（`tests/acceptance/s3bucket_test.go`、`[AC-122-*]`）：DefaultRegistry から作って契約テスト、PruneWithinScope の prune で空の orphan だけが消えること、届かないと prune が止まり何もしないこと。

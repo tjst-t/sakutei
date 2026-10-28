@@ -26,6 +26,12 @@
 //	    manager: /redfish/v1/Managers/1 # 省略可（Managers の最初のメンバー）
 //	    username: admin
 //	    password: secretref:file/bmc/node1
+//	    observe:                        # 省略可。観測用の資格（§20.7、#186。ReadOnly の役割の利用者）
+//	      username: sakutei-ro          #   書かないキーは上（username・password）のまま
+//	      password: secretref:file/bmc/node1-ro
+//	    write:                          # 省略可。書き込み用の資格（Apply・Action・Task の実行だけが使う）
+//	      username: sakutei-admin
+//	      password: secretref:file/bmc/node1-admin
 //	    ca_file: ca.pem                 # 省略可
 //	    insecure_skip_verify: true      # 明示したときだけ（既定 false）
 //	    timeout: 10s                    # 省略可（既定 redfish.DefaultTimeout）
@@ -40,6 +46,12 @@
 //     確かめる（値は読まない）。
 //   - 相対パス（secret_store・ca_file）は設定ファイルのあるディレクトリから。
 //   - 未知のキーはエラー（書き間違いを黙って無視しない）。
+//   - 観測用と書き込み用（#186、internal/apicred）: observe・write はどちらも
+//     username・password だけを持ち、書かないキーは BMC の上の値を受け継ぐ。
+//     観測（Read・List・BulkObserve・多相 Task の CheckStep）は observe の資格
+//     だけを、書き込み（Apply・Action・Task の実行、provider.Writing の ctx）は
+//     write の資格だけを使う。この回が書かない（LoadOptions.ObserveOnly）なら
+//     write の password は store にあるかを確かめず、取り出さず、書き込みを断る。
 package bmcconfig
 
 import (
@@ -54,6 +66,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/apicred"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/redfish"
 	"github.com/tjst-t/sakutei/v2/internal/render"
@@ -62,14 +75,21 @@ import (
 
 // BMC は 1 ノードの BMC の設定。
 type BMC struct {
-	Address            string
-	SystemPath         string
-	ManagerPath        string
-	Username           string
-	Password           core.SecretRef
+	Address     string
+	SystemPath  string
+	ManagerPath string
+	// Username・Password は観測用の資格（observe: が無ければ BMC の上の値）。
+	Username string
+	Password core.SecretRef
+	// WriteUsername・WritePassword は書き込み用の資格（write: が無ければ BMC の
+	// 上の値。observe:・write: を書かなければ観測用と同じ、#186）。
+	WriteUsername      string
+	WritePassword      core.SecretRef
 	CAFile             string
 	InsecureSkipVerify bool
 	Timeout            time.Duration
+
+	split bool // observe:・write: のどちらかが書いてある
 }
 
 // Config は設定ファイルの中身。
@@ -78,6 +98,15 @@ type Config struct {
 	SecretStore string
 	// BMCs はノード名 → BMC。
 	BMCs map[string]BMC
+	// ObserveOnly はこの回が書かない（LoadOptions.ObserveOnly）。
+	ObserveOnly bool
+}
+
+// LoadOptions は設定の読み方。
+type LoadOptions struct {
+	// ObserveOnly はこの回が書かない（provider.AccessObserve、§20.7、#186）:
+	// 書き込み用の password は store にあるかを確かめず・取り出さず、書き込みを断る。
+	ObserveOnly bool
 }
 
 var (
@@ -85,29 +114,35 @@ var (
 	bmcKeys = map[string]bool{
 		"address": true, "system": true, "manager": true, "username": true, "password": true,
 		"ca_file": true, "insecure_skip_verify": true, "timeout": true,
+		apicred.KeyObserve: true, apicred.KeyWrite: true,
 	}
 	secretRefString = regexp.MustCompile(`^secretref:([^/]+)/(.+?)(?:#gen(\d+))?$`)
 )
 
-// Load は path の設定を読み、検査する。password の SecretRef の path が
-// secret_store に無ければエラー（値は読まない）。
+// Load は path の設定を読み、検査する（書く回として）。password の SecretRef の
+// path が secret_store に無ければエラー（値は読まない）。
 func Load(path string) (Config, error) {
+	return LoadWith(path, LoadOptions{})
+}
+
+// LoadWith は Load を opts の読み方で行う。
+func LoadWith(path string, opts LoadOptions) (Config, error) {
 	tree, err := loader.ReadTree(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("redfish config: %w", err)
 	}
-	cfg, err := parse(tree, filepath.Dir(path))
+	cfg, err := parse(tree, filepath.Dir(path), opts)
 	if err != nil {
 		return Config{}, fmt.Errorf("redfish config %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
-func parse(tree map[string]any, dir string) (Config, error) {
+func parse(tree map[string]any, dir string, opts LoadOptions) (Config, error) {
 	if err := unknownKeys("", tree, topKeys); err != nil {
 		return Config{}, err
 	}
-	cfg := Config{BMCs: map[string]BMC{}}
+	cfg := Config{BMCs: map[string]BMC{}, ObserveOnly: opts.ObserveOnly}
 	store, err := str(tree, "secret_store", "")
 	if err != nil {
 		return Config{}, err
@@ -150,8 +185,13 @@ func parse(tree map[string]any, dir string) (Config, error) {
 		have[p] = true
 	}
 	for _, node := range nodes {
-		if ref := cfg.BMCs[node].Password; !have[ref.Path()] {
-			return Config{}, fmt.Errorf("bmcs.%s.password: %s is not in the secret store %s", node, ref, cfg.SecretStore)
+		b := cfg.BMCs[node]
+		if ref := b.Password; !have[ref.Path()] {
+			return Config{}, fmt.Errorf("bmcs.%s%s.password: %s is not in the secret store %s", node, b.observeAt(), ref, cfg.SecretStore)
+		}
+		// The write password is checked only in a run that may write (#186).
+		if ref := b.WritePassword; !opts.ObserveOnly && !have[ref.Path()] {
+			return Config{}, fmt.Errorf("bmcs.%s%s.password: %s is not in the secret store %s", node, b.writeAt(), ref, cfg.SecretStore)
 		}
 	}
 	return cfg, nil
@@ -169,7 +209,7 @@ func parseBMC(node string, m map[string]any, dir string) (BMC, error) {
 		dst *string
 	}{
 		{"address", &b.Address}, {"system", &b.SystemPath}, {"manager", &b.ManagerPath},
-		{"username", &b.Username}, {"ca_file", &b.CAFile},
+		{"ca_file", &b.CAFile},
 	} {
 		if *f.dst, err = str(m, f.key, p+"."); err != nil {
 			return BMC{}, err
@@ -177,9 +217,6 @@ func parseBMC(node string, m map[string]any, dir string) (BMC, error) {
 	}
 	if b.Address == "" {
 		return BMC{}, fmt.Errorf("%s.address is required", p)
-	}
-	if b.Username == "" {
-		return BMC{}, fmt.Errorf("%s.username is required", p)
 	}
 	if b.CAFile != "" {
 		b.CAFile = rel(dir, b.CAFile)
@@ -202,14 +239,53 @@ func parseBMC(node string, m map[string]any, dir string) (BMC, error) {
 		}
 		b.Timeout = d
 	}
-	pw, ok := m["password"]
-	if !ok {
-		return BMC{}, fmt.Errorf("%s.password is required (a SecretRef such as \"secretref:file/bmc/%s\")", p, node)
+	sec, err := apicred.Read(p, m, "username", "password")
+	if err != nil {
+		return BMC{}, err
 	}
-	if b.Password, err = parseSecretRef(pw); err != nil {
-		return BMC{}, fmt.Errorf("%s.password: %w", p, err)
+	b.split = sec.Split
+	if b.Username, b.Password, err = parseCredential(p+b.observeAt(), node, sec.Observe); err != nil {
+		return BMC{}, err
+	}
+	if b.WriteUsername, b.WritePassword, err = parseCredential(p+b.writeAt(), node, sec.Write); err != nil {
+		return BMC{}, err
 	}
 	return b, nil
+}
+
+// observeAt・writeAt は文言の中の資格の場所（分けていなければ BMC の上）。
+func (b BMC) observeAt() string {
+	if b.split {
+		return "." + apicred.KeyObserve
+	}
+	return ""
+}
+
+func (b BMC) writeAt() string {
+	if b.split {
+		return "." + apicred.KeyWrite
+	}
+	return ""
+}
+
+// parseCredential は 1 本の資格（username・password）を読む。
+func parseCredential(p, node string, m map[string]any) (string, core.SecretRef, error) {
+	user, err := str(m, "username", p+".")
+	if err != nil {
+		return "", core.SecretRef{}, err
+	}
+	if user == "" {
+		return "", core.SecretRef{}, fmt.Errorf("%s.username is required", p)
+	}
+	pw, ok := m["password"]
+	if !ok {
+		return "", core.SecretRef{}, fmt.Errorf("%s.password is required (a SecretRef such as \"secretref:file/bmc/%s\")", p, node)
+	}
+	ref, err := parseSecretRef(pw)
+	if err != nil {
+		return "", core.SecretRef{}, fmt.Errorf("%s.password: %w", p, err)
+	}
+	return user, ref, nil
 }
 
 // parseSecretRef は password を SecretRef として読む。生の値は（エラーの文言にも）
@@ -249,18 +325,22 @@ func parseSecretRef(v any) (core.SecretRef, error) {
 }
 
 // Clients はノードごとの redfish.Client を作る。password は要求のたびに
-// secret_store から解決する。
+// secret_store から解決する（観測は観測用、書き込みは書き込み用、#186）。
 func (c Config) Clients() (map[string]redfish.Client, error) {
 	backend := render.NewFileSecretBackend(c.SecretStore)
 	out := make(map[string]redfish.Client, len(c.BMCs))
 	for node, b := range c.BMCs {
-		ref := b.Password
-		cl, err := redfish.New(redfish.Config{
-			Endpoint: b.Address,
-			Username: b.Username,
-			PasswordFunc: func(ctx context.Context) (string, error) {
+		resolve := func(ref core.SecretRef) func(ctx context.Context) (string, error) {
+			return func(ctx context.Context) (string, error) {
 				return backend.ResolveValue(ctx, ref.Backend(), ref.Path(), ref.Generation())
-			},
+			}
+		}
+		cl, err := redfish.New(redfish.Config{
+			Endpoint:           b.Address,
+			Username:           b.Username,
+			PasswordFunc:       resolve(b.Password),
+			Write:              &redfish.Credential{Username: b.WriteUsername, PasswordFunc: resolve(b.WritePassword)},
+			NoWrite:            c.ObserveOnly,
 			CAFile:             b.CAFile,
 			InsecureSkipVerify: b.InsecureSkipVerify,
 			Timeout:            b.Timeout,
@@ -284,7 +364,12 @@ func (c Config) Secrets() core.SecretResolver {
 // LoadClientsAndSecrets は LoadClients に、secret_store の SecretResolver を足したもの
 // （redfish-firmware の factory 用）。
 func LoadClientsAndSecrets(path string) (map[string]redfish.Client, core.SecretResolver, error) {
-	cfg, err := Load(path)
+	return LoadClientsAndSecretsWith(path, LoadOptions{})
+}
+
+// LoadClientsAndSecretsWith は LoadClientsAndSecrets を opts の読み方で行う。
+func LoadClientsAndSecretsWith(path string, opts LoadOptions) (map[string]redfish.Client, core.SecretResolver, error) {
+	cfg, err := LoadWith(path, opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -297,7 +382,12 @@ func LoadClientsAndSecrets(path string) (map[string]redfish.Client, core.SecretR
 
 // LoadClients は Load と Clients をまとめたもの（provider の factory 用）。
 func LoadClients(path string) (map[string]redfish.Client, error) {
-	cfg, err := Load(path)
+	return LoadClientsWith(path, LoadOptions{})
+}
+
+// LoadClientsWith は LoadClients を opts の読み方で行う。
+func LoadClientsWith(path string, opts LoadOptions) (map[string]redfish.Client, error) {
+	cfg, err := LoadWith(path, opts)
 	if err != nil {
 		return nil, err
 	}

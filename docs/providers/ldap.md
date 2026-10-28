@@ -40,6 +40,55 @@ servers:
 - 親の環境変数のうち `LDAP` で始まるもの（`LDAPTLS_*` など）は引き継がない。
 - 相対パスは設定ファイルのあるディレクトリから。未知のキーはエラー。
 
+## 観測用と書き込み用の資格（Backlog #186）
+
+サーバごとに、観測に使う bind（`observe:`）と書き込みに使う bind（`write:`）を分けて書ける（設計書 §20.7。ssh 越しの provider の
+[../remote.md の「観測用と書き込み用の資格」](../remote.md#観測用と書き込み用の資格)と同じ決まり）。どちらも `bind_dn`・`bind_password`（SecretRef）
+だけを持ち、書かないキーはサーバの上の値を受け継ぐ。受け継いだ後の 2 本がそろっていれば、サーバの上の `bind_dn`・`bind_password` は省ける。
+どちらも書かなければ今までどおり 1 本の資格を両方に使う。
+
+```yaml
+servers:
+  dir1:
+    uri: ldap://ldap.example.net:389
+    starttls: true
+    base_dn: dc=example,dc=com
+    observe:                         # 観測（Read・List・BulkObserve。plan・status・読み取りの口）
+      bind_dn: cn=sakutei-read,ou=system,dc=example,dc=com
+      bind_password: secretref:file/ldap/dir1-read
+    write:                           # 書き込み（Apply の ldapmodify と、その中の読み直し）だけ
+      bind_dn: cn=sakutei,ou=system,dc=example,dc=com
+      bind_password: secretref:file/ldap/dir1-write
+```
+
+- **観測は観測用の DN だけ**で bind する（`ldapsearch`）。**書き込み用の DN は Apply の中だけ**（`ldapmodify` と、Apply の中の読み直しの `ldapsearch`、子の項目を確かめる検索）で、パスワードは起動の直前に store から取り出す。
+- **書かない回は書き込み用のパスワードを取り出さない**：`plan`・`status`・`import` と `--mode alert-only`・`--freeze` の回は、`write.bind_password` が store にあるかを確かめず、無くても起動する。その回に書こうとすれば `ldapmodify` を起動せずに断る。書く回（`reconcile`・常駐の既定）は、`write.bind_password` が store に無ければ読み込みで断る（`servers.dir1.write.bind_password: ... is not in the secret store`）。どの回が書かないかは本体が命令と mode から決める（[../remote.md](../remote.md#観測用と書き込み用の資格)）。
+- **2 本の `bind_dn` はどちらも管理の外**：List に出さず（prune しない）、ID に書けば読み込みで断る。
+
+### 観測用の DN に要る権限
+
+観測用の DN には、`base_dn` の部分木への **read と search（389 Directory Server なら `read, search, compare`）** があればよい。書き込みの権限は要らない。
+
+- **部分木の全部の項目が見えること**：List・BulkObserve は `base_dn` から `filter` で部分木を検索する（`objectClass` で絞る）。見えない項目は List に出ず（prune の候補にならないので消えはしない）、Read では「無い」になって毎周 Create を計画する。
+- **宣言する属性が読めること**：読めない属性はサーバが黙って返さないので「無い」と観測し、毎周 drift になる。宣言しない属性は読めなくてよい。
+- **`userPassword` を宣言するなら、その属性も read が要る**：provider は `userPassword` の値（ハッシュ）を観測に入れず捨てるが、**在ることは属性が返ってくるかで見る**。OpenLDAP の `auth`（bind の確かめにだけ使える）や 389 Directory Server の `targetattr != "userPassword"` では返ってこないので、宣言した `userPassword` が「無い」と観測され、毎周書き直す（統合テストの段で確かめた）。`userPassword` を宣言しないなら読めなくてよい。
+- ルート DSE の `subschemaSubentry` と subschema（`cn=schema`・`cn=Subschema`）の `objectClasses` が読めること（389 Directory Server は既定で誰でも読める。OpenLDAP は配布の設定の例が `to dn.base="" by * read`・`to dn.base="cn=Subschema" by * read` を置く）。
+
+OpenLDAP（slapd、`cn=config`）の例（389 Directory Server の例と違い、統合テストでは確かめていない）。`userPassword` を守る規則が先にあれば、その規則にも `by dn.exact=... read` を足す（slapd は最初に当たった `to` の規則だけを使う）:
+
+```
+olcAccess: {0}to attrs=userPassword by self write by dn.exact="cn=sakutei,ou=system,dc=example,dc=com" write by dn.exact="cn=sakutei-read,ou=system,dc=example,dc=com" read by anonymous auth by * none
+olcAccess: {1}to dn.subtree="dc=example,dc=com" by dn.exact="cn=sakutei,ou=system,dc=example,dc=com" write by dn.exact="cn=sakutei-read,ou=system,dc=example,dc=com" read by * break
+```
+
+389 Directory Server の例（`base_dn` の項目の `aci`）:
+
+```
+aci: (targetattr = "*")(version 3.0; acl "sakutei-read"; allow (read, search, compare) userdn = "ldap:///cn=sakutei-read,ou=system,dc=example,dc=com";)
+```
+
+書き込み用の DN には、宣言する項目の追加・属性の変更・（prune を使うなら）削除の権限と、上と同じ読みの権限（Apply の後の読み直し）が要る。
+
 ## 範囲を intent に書く（`providers:`、Backlog #182）
 
 検索の根（`base_dn`）と List の条件（`filter`）、ID の `scope` は管理の範囲なので、intent のトップレベルの `providers:` に
@@ -151,7 +200,7 @@ resources:
 
 ### 管理の境界（§7）
 
-List は `base_dn` の下（`base_dn` そのものは含まない）の、`filter` に合う項目だけを返す（ページに分けて受け取るので、サーバの件数の上限に当たらない）。`bind_dn` の項目、サブエントリ（`ldapSubEntry`）・tombstone は返さない。スキーマ（`cn=schema`）・設定（`cn=config`）は `base_dn` の外にある。`filter` に合わない項目は、宣言しなければ prune されない（例：`(!(ou=outside))`）。
+List は `base_dn` の下（`base_dn` そのものは含まない）の、`filter` に合う項目だけを返す（ページに分けて受け取るので、サーバの件数の上限に当たらない）。`bind_dn` の項目（観測用・書き込み用を分けたときはどちらも）、サブエントリ（`ldapSubEntry`）・tombstone は返さない。スキーマ（`cn=schema`）・設定（`cn=config`）は `base_dn` の外にある。`filter` に合わない項目は、宣言しなければ prune されない（例：`(!(ou=outside))`）。
 
 ### 削除
 
@@ -186,20 +235,23 @@ $ make integration-ldap
 | LDAPS and a failed bind | LDAPS の設定で status → 適合 5。誤った bind のパスワードの設定で status → 5 つとも観測できない（終了コード 3、missing にしない） |
 | an entry with children is not pruned | 手で `ou=handmade`・`ou=leaf`・`ou=outside` を作り、`ou=handmade` の下の `uid=kept` だけを宣言して PruneWithinScope で reconcile → `ou=leaf` は消える（`[DESTRUCTIVE]`）、`ou=handmade` は「child entries」の PermanentError で残る、filter に合わない `ou=outside` と base の項目は残る |
 | a stopped server | `docker stop` → status は 5 つとも観測できない（終了コード 3）、reconcile は何もせず `prune halted`、手で作った orphan は残る。`docker start` の後は適合 5 |
+| observe with a read-only DN（#186） | `base_dn` の下に読むだけの DN `uid=sakutei-read` を作り、`base_dn` の項目の `aci` で `read, search, compare` だけを与える。その DN の `ldapmodify` はサーバが断る（Insufficient access）。`targetattr != "userPassword"` の間は、観測用をその DN・書き込み用を Directory Manager にした設定の status で alice だけが drift（`userPassword` が在ることが見えない）、`targetattr = "*"` にすると適合 5 で、unmanaged は手で作った `ou=orphan` だけ（観測用の DN は出ない）。書き込み用のパスワードが store に無い設定でも status・plan は通り、reconcile は `servers.dir1.write.bind_password` で断る。手で変えた 2 項目は reconcile で戻り、変更した者（`modifiersName`）は Directory Manager |
 
 ### 結果
 
-既定のイメージ（389 Directory Server 3.1）で回した結果（全段 PASS、2026-10-27）:
+既定のイメージ（389 Directory Server 3.1）で回した結果（全段 PASS、2026-10-28）:
 
 ```
---- PASS: TestLDAPIntegration (83.58s)
-    --- PASS: TestLDAPIntegration/create_from_empty (12.56s)
-    --- PASS: TestLDAPIntegration/changed_by_hand_is_drift_and_comes_back (11.95s)
-    --- PASS: TestLDAPIntegration/userPassword_is_write-only (12.81s)
-    --- PASS: TestLDAPIntegration/no_drift_however_many_cycles (22.73s)
-    --- PASS: TestLDAPIntegration/LDAPS_and_a_failed_bind (5.04s)
-    --- PASS: TestLDAPIntegration/an_entry_with_children_is_not_pruned (8.99s)
-    --- PASS: TestLDAPIntegration/a_stopped_server_is_unobservable_and_nothing_is_done (9.51s)
+--- PASS: TestLDAPIntegration (123.00s)
+    --- PASS: TestLDAPIntegration/create_from_empty (13.52s)
+    --- PASS: TestLDAPIntegration/changed_by_hand_is_drift_and_comes_back (13.04s)
+    --- PASS: TestLDAPIntegration/userPassword_is_write-only (13.27s)
+    --- PASS: TestLDAPIntegration/no_drift_however_many_cycles (22.55s)
+    --- PASS: TestLDAPIntegration/LDAPS_and_a_failed_bind (5.00s)
+    --- PASS: TestLDAPIntegration/the_base_and_filter_in_the_intent (10.54s)
+    --- PASS: TestLDAPIntegration/an_entry_with_children_is_not_pruned (9.69s)
+    --- PASS: TestLDAPIntegration/a_stopped_server_is_unobservable_and_nothing_is_done (10.56s)
+    --- PASS: TestLDAPIntegration/observe_with_a_read-only_DN,_write_with_another (24.84s)
 PASS
 ```
 
@@ -211,5 +263,5 @@ PASS
 
 ## 通常のテスト
 
-- 単体・契約テスト：`internal/ldap`（偽の ldap コマンド `internal/ldap/ldaptest`。`sdk.ContractTester`、DN の正規形・LDIF・値の書き方・スキーマ、属性の大文字小文字、objectClass・DN の値・userPassword の比べ方、管理の境界と prune、届かない・bind・TLS の失敗、BulkObserve と Read の等価、本物の exec の経路）。
+- 単体・契約テスト：`internal/ldap`（偽の ldap コマンド `internal/ldap/ldaptest`。`sdk.ContractTester`、DN の正規形・LDIF・値の書き方・スキーマ、属性の大文字小文字、objectClass・DN の値・userPassword の比べ方、管理の境界と prune、届かない・bind・TLS の失敗、BulkObserve と Read の等価、本物の exec の経路）。観測用と書き込み用の資格は `internal/ldap/credential_split_test.go`（`[AC-186-4-1]`〜`[AC-186-4-3]`、偽の ldap コマンドの読むだけの DN `Readers`）と `pkg/registry/ldap_access_test.go`（`[AC-186-4-4]`、factory の `access`）。
 - 受け入れ：`tests/acceptance/ldap_test.go`（`[AC-144-1]`〜`[AC-144-3]`、偽の ldap コマンドを実行ファイルにして本物の CLI と `--provider-config` で）。

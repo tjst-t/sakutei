@@ -54,6 +54,39 @@ $ sakutei status --intent intent/ --postgresql-config pg.yaml --json
 - 名前は識別子として常に `"..."` で囲み（中の `"` は `""`）、値は `E'...'` で囲む（中の `'` は `''`、`\` は `\\`）。NUL を含む名前・値はエラー。
 - エラーは SQLSTATE で分ける。届かない（終了コード 2）・時間切れ・一時的な SQLSTATE（class 08・40・53・55・57、まだ無いデータベース 3D000・ロールなど 42704）は Transient、psql が無い・認証の失敗・そのほかの SQL のエラーは Permanent。管理用のパスワードを secret store から読めない（store から消えた・読めない）ときは、ほかの provider と同じく安全に止まる側（#137）：Read は unknown（観測できない。そのリソースと下流は飛ばす）、Apply は Transient で、秘密が戻れば次の周で続く（Permanent にすると常駐はそのリソースを stuck として長く止めてしまう）。起動の時点で store にその path が無ければ、設定のエラーとして何もせずに止まる（一回性の plan・reconcile は終了コード 1）。エラーの文から SCRAM・md5 の検証値は消す。
 
+## 観測用と書き込み用の資格（Backlog #186）
+
+サーバごとに、観測に使うロール（`observe:`）と書き込みに使うロール（`write:`）を分けて書ける（設計書 §20.7。ssh 越しの provider の `observe:`・`write:`（[../remote.md](../remote.md#観測用と書き込み用の資格)、#185）と同じ決まり）。どちらも `user`・`password`（SecretRef）だけを持ち、書かないキーはサーバの値を受け継ぐ。どちらも書かなければ今までどおり 1 本の資格を両方に使う。
+
+```yaml
+servers:
+  main:
+    host: db.example.net
+    observe:                          # 観測（Read・List・BulkObserve。plan・status・読み取りの口）
+      user: sakutei_ro
+      password: secretref:file/pg/main/ro
+    write:                            # 書き込み（Apply。中の読み直しも）だけ
+      user: sakutei
+      password: secretref:file/pg/main/admin
+```
+
+- **観測は観測用のロールだけ**でつなぐ：`plan`・`status`・読み取りの口・常駐の毎周の観測。**書き込み用のロールは Apply の中だけ**（文を流すのも、Apply の中の読み直しも）で、パスワードは psql を起動する直前に store から取り出す。
+- **書かない回は書き込み用のパスワードを取り出さない**：`plan`・`status`・`import`・`sync`・`graph` と、`--mode alert-only`・`--freeze` の `reconcile` などは、`write.password` を store にあるか確かめず、無くても起動する。その回に書こうとすれば psql を起動せずに断る（`provider.ErrNoWriteAccess`）。書く回（`reconcile`・常駐の既定）は、書き込み用のパスワードが store に無ければ起動しない（何もしない）。
+- 2 つのロールはどちらも**管理の境界の外**：List に出さず（prune で消えない）、宣言（ロール・権限）もできない。
+- sqlmigrate の `engine: postgresql`（同じサーバの一覧を `postgresql_config` で読む）は、Task の実行を書き込み用のロールで、版の観測（Read）を観測用のロールで流す。観測用のロールに版の表（`schema_migrations`）の SELECT が無ければ、その観測は unknown になる。
+
+### 読むだけのロールで観測するとき
+
+観測は管理用の DB の `pg_roles`・`pg_auth_members`・`pg_database`（`aclexplode`・`shobj_description` を含む）と、データベースごとの `pg_extension` だけを読む。どれも PUBLIC が読めるカタログなので、**観測用のロールは LOGIN だけでよい**（統合テストで確かめた最小の作り方）:
+
+```sql
+CREATE ROLE sakutei_ro LOGIN PASSWORD '...';
+```
+
+- 拡張を読むために、観測用のロールは**境界の内の各データベースに接続できる**必要がある。PUBLIC の CONNECT を宣言で外すデータベース（`grant/PUBLIC` の `privileges: ""`）では、観測用のロールに手で `GRANT CONNECT ON DATABASE <db> TO sakutei_ro` する（このロールの権限は宣言できず、List にも出ないので prune で外れない）。接続できなければ拡張は観測できない（unknown）、List は失敗して prune はその周止まる。
+- **`verify_passwords` は観測用のロールで `pg_authid` を読む**。読むだけのロールでは読めない（`permission denied for table pg_authid`）ので、パスワードを宣言したロールは**観測できない（unknown）として報告し、「違う」とはしない**（§3 第3原則。書き直さない）。手で変えたパスワードを見たいなら、観測用のロールを超ユーザにするか `pg_read_all_data` に入れる（`pg_authid` も読めるが、**全部の表の中身も読める**）。読み込みの時点では断らない（観測用のロールの権限は起動の時点では分からないため）。
+- 書き込み用のロールには、1 本の資格のときと同じ権限が要る（ロールなら CREATEROLE、superuser 属性を宣言するなら超ユーザ、データベースなら CREATEDB、拡張は拡張による）。Apply の中の読み戻しは書き込み用のロールで流すので、`verify_passwords` の読み戻しには書き込み用のロールが `pg_authid` を読める（超ユーザ）必要がある。
+
 ## 範囲を intent に書く（`providers:`、Backlog #182）
 
 List・BulkObserve が ID に付ける `scope`（一覧の頭とサーバごと）は管理の範囲なので、intent のトップレベルの `providers:` に
@@ -193,6 +226,7 @@ $ make integration-postgresql
 | a database with user tables is not pruned | 表のある orphan DB・空の orphan DB（拡張あり）・orphan ロールを手で作り、PruneWithinScope で reconcile → 空の DB と orphan ロールは消える（`[DESTRUCTIVE]`）、表のある DB は「user table(s), so it is not dropped」の PermanentError で残り、表の行も残る。`postgres`・`template0`・`template1`・`pg_monitor`・管理用のロールは残る |
 | a stopped server | `docker stop` → status は 9 つとも観測できない（終了コード 3）、reconcile は何もせず（`prune halted`・`9 resource(s) skipped`）。`docker start` の後は適合 9 |
 | clean up through prune | 宣言を `app` だけにして PruneWithinScope → データベース・権限・拡張は 1 周目、それらを持っていたロールは 2 周目に消える。残るのは `postgres`・`template0`・`template1` と `app`・管理用のロール |
+| 観測用と書き込み用の資格（#186、`TestPostgreSQLCredentialSplitIntegration`） | LOGIN だけの `sakutei_ro` を作り、`observe:` に `sakutei_ro`、`write:` に管理用のロールを書いた一覧で回す（`log_statement = all` でロールごとの文をサーバのログから数える）。`sakutei_ro` の `CREATE ROLE`・`CREATE DATABASE` は permission denied。書き込み用のパスワードの無い store で `status` は通り（missing 4）、`reconcile` は `servers.main.write.password` で断って何もしない。両方の store で reconcile → 適合 4、`sakutei_ro` が流したのは `/* sakutei:... */` の読む問い合わせだけで、`CREATE DATABASE` は管理用のロールが流した。PruneWithinScope でも 2 つのロールは status に出ず消えない。`verify_passwords: true` では、パスワードを宣言したロールは観測できない 1（drift 0、終了コード 3、文言に `pg_authid`）、`GRANT pg_read_all_data TO sakutei_ro` の後は適合 4 |
 
 ### 結果
 
@@ -209,6 +243,18 @@ $ make integration-postgresql
     --- PASS: TestPostgreSQLIntegration/a_stopped_server_is_unobservable_and_nothing_is_done (6.73s)
     --- PASS: TestPostgreSQLIntegration/clean_up_through_prune (8.08s)
 PASS
+```
+
+観測用と書き込み用の資格の段（#186、2026-10-28、PostgreSQL 17.11）:
+
+```
+--- PASS: TestPostgreSQLCredentialSplitIntegration (20.42s)
+    --- PASS: TestPostgreSQLCredentialSplitIntegration/the_read-only_role_cannot_change_anything (0.35s)
+    --- PASS: TestPostgreSQLCredentialSplitIntegration/an_observe-only_run_starts_without_the_write_password (0.93s)
+    --- PASS: TestPostgreSQLCredentialSplitIntegration/observe_as_the_read-only_role,_write_as_the_admin_role (5.64s)
+    --- PASS: TestPostgreSQLCredentialSplitIntegration/the_two_roles_are_not_listed_or_pruned (3.78s)
+    --- PASS: TestPostgreSQLCredentialSplitIntegration/verify_passwords_needs_pg_authid_and_is_unknown_without_it (3.26s)
+    --- PASS: TestPostgreSQLCredentialSplitIntegration/clean_up (5.09s)
 ```
 
 分かったこと:
@@ -229,4 +275,5 @@ PASS
 - SCRAM-SHA-256：RFC 7677 の例と同じ検証値になる。md5 の形も確かめられる。
 - 契約テスト（`sdk.ContractTester`、ロール・データベース・権限・拡張の 4 種類で、届かないのを absent にしないことを含む）・BulkObserve 等価性テスト・管理の境界・パスワード（平文が引数・環境変数・SQL・plan に出ない、passfile が残らない、世代を上げれば設定し直す、`verify_passwords` で手の変更が見える）・作るときだけのフィールド・権限と所属の集合・拡張の版・Delete（表のある DB・オブジェクトを持つロール・頼られている拡張は消さない）・観測できないもの（届かない・パスワード違い・secret が無い・psql が無い）・読み戻しの不一致・本物の exec の経路（テストのバイナリを偽の psql として起動）・設定ファイルの検査（`internal/postgresql/*_test.go`）。
 - 受け入れテスト（`tests/acceptance/postgresql_test.go`、`[AC-125-*]`）：偽の psql を実行ファイルにして、DefaultRegistry から作って契約テスト、PruneWithinScope で表のある DB が残ること、届かないと prune が止まり何もしないこと、`sakutei reconcile`・`status --json` で空から適合になりパスワードが出力に出ないこと。
+- 観測用と書き込み用の資格（`internal/postgresql/credential_split_test.go`、`[AC-186-5-*]`）：偽の psql に読むだけのロール（読む問い合わせは流せ、変える文は 42501 で断られる）を足し、ロールごとの文の数を数える。読むだけのロールで観測・管理用のロールで Apply して収束し、読むだけのロールは読むだけ、2 つのロールは List に出ず宣言できない。書かない回は書き込み用のパスワードが無くても読み込めて観測し、Apply は `provider.ErrNoWriteAccess` で psql を起動しない。書く回はパスワードが無ければ読み込みで断る。`verify_passwords` で `pg_authid` を読めなければ unknown。`observe:`・`write:` の書き誤り。
 - 受け入れテスト（`tests/acceptance/postgresql_secret_test.go`、`[AC-137-*]`）：常駐のように provider を作った後で管理用の秘密が store から消えると、Read は unknown・Apply は Transient（Permanent ではない）で何も変えず、秘密が戻れば同じ Apply が通ること。起動の時点で秘密が無ければ `plan`・`reconcile` が何もせずに 0 でない終了コードで止まり、戻せば収束すること。

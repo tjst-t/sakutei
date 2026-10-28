@@ -24,7 +24,9 @@ package s3bucket
 //   - アドレスは path-style（<endpoint>/<bucket>）が既定、virtual-host
 //     （<bucket>.<endpoint のホスト>）は設定で選ぶ。
 //   - 資格は要求の直前に解決する（Session、§20.2）。Client にも Session の外にも
-//     持たず、エラー・ログに出さない。
+//     持たず、エラー・ログに出さない。観測用と書き込み用の 2 組の資格を持てる
+//     （§20.7、#186）: 書き込みの ctx（provider.Writing）で開いた Session だけが
+//     書き込み用で署名する。
 //   - エラーは Error の Kind で分ける。届かない・時間切れ・5xx（501 を除く）は
 //     KindUnreachable、401 / 403 は KindAuth、証明書の検証失敗は KindCertificate、
 //     資格を解決できないのは KindCredentials、501 か Code が NotImplemented は
@@ -52,6 +54,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/apibase"
+	"github.com/tjst-t/sakutei/v2/internal/apicred"
 )
 
 // DefaultRegion は region を設定しないときの値。
@@ -178,7 +181,14 @@ type ClientConfig struct {
 	// false なら path-style。
 	VirtualHost bool
 	// Credentials は要求の直前に資格を解決する（SecretRef の JIT 解決、§20.2）。
+	// 観測用（WriteCredentials が無ければ書き込みにも使う）。
 	Credentials func(ctx context.Context) (Credentials, error)
+	// WriteCredentials は書き込み用の資格を解決する（省略可。provider.Writing の
+	// ctx で開いた Session だけが使う）。
+	WriteCredentials func(ctx context.Context) (Credentials, error)
+	// NoWrite はこの回が書かない（provider.AccessObserve）: 書き込みの ctx の
+	// Open を provider.ErrNoWriteAccess で断る（何も送らない）。
+	NoWrite bool
 	// CAFile は証明書を検証する CA（PEM）のファイル。
 	CAFile string
 	// InsecureSkipVerify は証明書を検証しない（明示したときだけ）。
@@ -195,7 +205,7 @@ type Client struct {
 	basePath    string
 	region      string
 	virtualHost bool
-	creds       func(ctx context.Context) (Credentials, error)
+	creds       apicred.Pair[func(ctx context.Context) (Credentials, error)]
 	now         func() time.Time
 	hc          *http.Client
 }
@@ -226,6 +236,11 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.Credentials == nil {
 		return nil, errors.New("s3: no credentials")
 	}
+	creds := apicred.Single(cfg.Credentials)
+	if cfg.WriteCredentials != nil {
+		creds.Write = cfg.WriteCredentials
+	}
+	creds.NoWrite = cfg.NoWrite
 	region := cfg.Region
 	if region == "" {
 		region = DefaultRegion
@@ -262,7 +277,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		basePath:    basePath,
 		region:      region,
 		virtualHost: cfg.VirtualHost,
-		creds:       cfg.Credentials,
+		creds:       creds,
 		now:         now,
 		hc: &http.Client{
 			Transport:     tr,
@@ -279,9 +294,16 @@ type Session struct {
 	creds Credentials
 }
 
-// Open は資格を今解決して Session を返す。
+// Open は資格を今解決して Session を返す。書き込みの ctx（provider.Writing）なら
+// 書き込み用の資格、ほかは観測用の資格（§20.7、#186）。この回が書かない
+// （NoWrite）なら書き込みの ctx は provider.ErrNoWriteAccess を包んだ
+// KindCredentials で断る（資格を取り出さない）。
 func (c *Client) Open(ctx context.Context) (*Session, error) {
-	cr, err := c.creds(ctx)
+	resolve, err := c.creds.For(ctx, "s3: a write")
+	if err != nil {
+		return nil, &Error{Kind: KindCredentials, Op: "ResolveCredentials", Message: "this run does not write", Err: err}
+	}
+	cr, err := resolve(ctx)
 	if err != nil {
 		// 資格の解決のエラーは値を含まない（SecretBackend が path だけを言う）。
 		return nil, &Error{Kind: KindCredentials, Op: "ResolveCredentials", Err: err}

@@ -21,7 +21,8 @@
 // 別のコードで断る（Options.GetStatus）、lifecycle の StorageClass を書き換えて
 // 持つ（Options.StorageClassRewrite）、届かなく
 // する（SetUnreachable：接続を切る）、5xx を返す（SetFailStatus）、中身を入れる
-// （PutObject）、現実を手で変える（SetPolicy など）。
+// （PutObject）、現実を手で変える（SetPolicy など）、読むだけのキーを受ける
+// （Options.ReadOnlyAccessKey、#186）、キーごとの読み・書きの回数を見る（KeyCalls）。
 package s3test
 
 import (
@@ -56,6 +57,9 @@ const (
 type Options struct {
 	// AccessKey・SecretKey は受け付ける資格（既定 "test-access" / "test-secret"）。
 	AccessKey, SecretKey string
+	// ReadOnlyAccessKey・ReadOnlySecretKey は読むだけのキー（読むだけのポリシーの
+	// 利用者、#186）。GET・HEAD だけを受け付け、ほかは 403 AccessDenied。
+	ReadOnlyAccessKey, ReadOnlySecretKey string
 	// NotImplemented に挙げた API は 501 NotImplemented を返す。
 	NotImplemented []string
 	// PageSize が正なら ListBuckets をこの件数ずつ ContinuationToken で返す。
@@ -103,6 +107,7 @@ type Server struct {
 	unreachable bool
 	failStatus  int
 	calls       map[string]int
+	byKey       map[string]map[string]int // access key → "READ"・"WRITE" → 回数
 }
 
 // New は偽サーバを立てる（HTTP）。
@@ -129,7 +134,7 @@ func newServer(opts Options) *Server {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Server{opts: opts, buckets: map[string]*bucket{}, calls: map[string]int{}}
+	return &Server{opts: opts, buckets: map[string]*bucket{}, calls: map[string]int{}, byKey: map[string]map[string]int{}}
 }
 
 // SetUnreachable は true の間、接続を応答なしで切る。
@@ -140,6 +145,18 @@ func (s *Server) SetFailStatus(code int) { s.mu.Lock(); s.failStatus = code; s.m
 
 // Calls は操作（"ListBuckets" など）ごとの呼ばれた回数を返す。
 func (s *Server) Calls(op string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls[op] }
+
+// KeyCalls は accessKey のキーで署名した要求の回数（GET・HEAD は "READ"、ほかは
+// "WRITE"。断った要求も数える）。
+func (s *Server) KeyCalls(accessKey string) map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]int{}
+	for k, v := range s.byKey[accessKey] {
+		out[k] = v
+	}
+	return out
+}
 
 // CreateBucket はバケットを直に作る（Sakutei の外で作られたもの）。
 func (s *Server) CreateBucket(name string) {
@@ -239,8 +256,24 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "IncompleteBody", err.Error())
 		return
 	}
-	if code, msg := s.authenticate(r, body); code != "" {
+	key, code, msg := s.authenticate(r, body)
+	if code != "" {
 		writeError(w, http.StatusForbidden, code, msg)
+		return
+	}
+	read := r.Method == http.MethodGet || r.Method == http.MethodHead
+	s.mu.Lock()
+	if s.byKey[key] == nil {
+		s.byKey[key] = map[string]int{}
+	}
+	if read {
+		s.byKey[key]["READ"]++
+	} else {
+		s.byKey[key]["WRITE"]++
+	}
+	s.mu.Unlock()
+	if key == s.opts.ReadOnlyAccessKey && !read {
+		writeError(w, http.StatusForbidden, "AccessDenied", "Access Denied.")
 		return
 	}
 
@@ -446,13 +479,28 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// authenticate は SigV4 の署名を検証する。問題があれば S3 の Code を返す。
-func (s *Server) authenticate(r *http.Request, body []byte) (string, string) {
+// authenticate は SigV4 の署名を検証し、署名したキーを返す。問題があれば S3 の
+// Code を返す。
+func (s *Server) authenticate(r *http.Request, body []byte) (key, code, msg string) {
+	code, msg = s.verify(r, body)
+	if code != "" {
+		return "", code, msg
+	}
+	a, _ := s3bucket.ParseAuthorization(r.Header.Get("Authorization"))
+	return a.AccessKey, "", ""
+}
+
+func (s *Server) verify(r *http.Request, body []byte) (string, string) {
 	a, err := s3bucket.ParseAuthorization(r.Header.Get("Authorization"))
 	if err != nil {
 		return "AccessDenied", err.Error()
 	}
-	if a.AccessKey != s.opts.AccessKey {
+	secret := s.opts.SecretKey
+	switch {
+	case a.AccessKey == s.opts.AccessKey:
+	case s.opts.ReadOnlyAccessKey != "" && a.AccessKey == s.opts.ReadOnlyAccessKey:
+		secret = s.opts.ReadOnlySecretKey
+	default:
 		return "InvalidAccessKeyId", "The AWS Access Key Id you provided does not exist in our records."
 	}
 	if a.Service != "s3" {
@@ -476,7 +524,7 @@ func (s *Server) authenticate(r *http.Request, body []byte) (string, string) {
 	if err != nil || absDur(time.Since(t)) > 15*time.Minute {
 		return "RequestTimeTooSkewed", "The difference between the request time and the current time is too large."
 	}
-	if err := s3bucket.VerifyV4(r, a, s.opts.SecretKey, sum); err != nil {
+	if err := s3bucket.VerifyV4(r, a, secret, sum); err != nil {
 		return "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided."
 	}
 	return "", ""

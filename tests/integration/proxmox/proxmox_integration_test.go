@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/proxmox"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // 固定する版。
@@ -1103,6 +1104,106 @@ cat /root/pool-token.json`)
 		}
 		if cur, _ := l.config(t, 540); cur["ciupgrade"] != "0" {
 			t.Errorf("ciupgrade after reconcile = %q, want 0", cur["ciupgrade"])
+		}
+		l.converge(t, vm3, 2)
+	})
+
+	t.Run("観測用（PVEAuditor）と書き込み用のトークン", func(t *testing.T) {
+		// #186（§20.7）: 観測は / に PVEAuditor だけの privsep のトークンで、書き込みは
+		// root のトークンで。書き込み用の secret が store に無くても plan・status は
+		// 回り、書く reconcile は起動しない。両方あれば観測は監査役、変更は書き込み用
+		// （監査役のトークンでは書けないので、変更が通れば書き込み用で書いた）。
+		out, err := l.ssh(`set -e
+pveum user add sakutei-ro@pve
+pveum user token add sakutei-ro@pve audit --privsep 1 --output-format json > /root/audit-token.json
+pveum acl modify / --roles PVEAuditor --users sakutei-ro@pve
+pveum acl modify / --roles PVEAuditor --tokens 'sakutei-ro@pve!audit'
+cat /root/audit-token.json`)
+		if err != nil {
+			t.Fatalf("creating the audit token: %v\n%s", err, out)
+		}
+		var tok struct {
+			Value string `json:"value"`
+		}
+		if i := strings.Index(out, "{"); i < 0 || json.Unmarshal([]byte(out[i:]), &tok) != nil || tok.Value == "" {
+			t.Fatalf("the audit token: %s", out)
+		}
+		auditAPI, err := proxmox.NewClient(proxmox.ClientConfig{
+			Endpoint: fmt.Sprintf("https://127.0.0.1:%d", l.port), TokenID: "sakutei-ro@pve!audit", InsecureSkipVerify: true,
+			Timeout: 30 * time.Second, Secret: func(context.Context) (string, error) { return tok.Value, nil },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 監査役のトークンは読めて、書けない。
+		if res, err := auditAPI.Resources(ctx); err != nil || len(res) == 0 {
+			t.Fatalf("the audit token reads the resources: %d, %v", len(res), err)
+		}
+		if err := auditAPI.SetConfig(provider.WithWrite(ctx), pveNode, 540, url.Values{"description": {"by-audit"}}); err == nil {
+			t.Fatal("the audit token changed VM 540")
+		}
+
+		split := strings.Replace(readFile(t, l.cfg), "    token_id: root@pam!"+tokenName+"\n    token_secret: secretref:file/proxmox/it\n",
+			"    observe:\n      token_id: sakutei-ro@pve!audit\n      token_secret: secretref:file/proxmox/audit\n"+
+				"    write:\n      token_id: root@pam!"+tokenName+"\n      token_secret: secretref:file/proxmox/it\n", 1)
+		if !strings.Contains(split, "observe:") {
+			t.Fatalf("the cluster list:\n%s", split)
+		}
+		auditSecret := `"proxmox/audit": {"gen": 1, "value": "` + tok.Value + `"}`
+		for name, body := range map[string]string{
+			"ro-secrets.json":    `{"secrets": {` + auditSecret + `}}`,
+			"split-secrets.json": `{"secrets": {` + auditSecret + `, "proxmox/it": {"gen": 1, "value": "` + l.secret + `"}}}`,
+			"pve-ro.yaml":        strings.Replace(split, "secret_store: secrets.json", "secret_store: ro-secrets.json", 1),
+			"pve-split.yaml":     strings.Replace(split, "secret_store: secrets.json", "secret_store: split-secrets.json", 1),
+		} {
+			if err := os.WriteFile(filepath.Join(l.dir, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		pcFor := func(cfg string) string {
+			path := filepath.Join(l.dir, "provider-config-"+cfg+".json")
+			pc, _ := json.Marshal(map[string]any{"providers": map[string]any{"proxmox-vm": map[string]any{"proxmox_config": filepath.Join(l.dir, cfg)}}})
+			if err := os.WriteFile(path, pc, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}
+		rootPC := l.pc
+		defer func() { l.pc = rootPC }()
+		vm3 := `{"resources": [{"provider": "proxmox-vm", "id": "it/it-vm3", "fields": {"vmid": "540", "template": "it-tmpl",
+		  "cores": "1", "memory": "512", "disks": "scsi0 storage=local-lvm size=4G", "nics": "net0 bridge=vmbr0",
+		  "ci_user": "ops", "ci_ssh_keys": "` + itKey + `", "ci_ip": "10.0.2.52/24", "ci_gateway": "10.0.2.2",
+		  "ciupgrade": false, "power": "stopped"}}]}`
+
+		// 手で cores を変える（drift）。
+		if err := l.api.SetConfig(provider.WithWrite(ctx), pveNode, 540, url.Values{"cores": {"2"}}); err != nil {
+			t.Fatal(err)
+		}
+		// 監査役のトークンだけ：status・plan は観測でき、drift が見える。
+		l.pc = pcFor("pve-ro.yaml")
+		if out, code := l.sakutei(t, vm3, "status"); code != 0 || !strings.Contains(out, "cores") || !strings.Contains(out, "drifted=1") {
+			t.Errorf("status with the audit token only: exit %d:\n%s", code, out)
+		}
+		if out, code := l.sakutei(t, vm3, "plan"); code != 0 || !strings.Contains(out, "cores") {
+			t.Errorf("plan with the audit token only: exit %d:\n%s", code, out)
+		}
+		if out, code := l.sakutei(t, vm3, "reconcile", "--mode", "alert-only"); code != 0 || !strings.Contains(out, "1 drifted resource(s) detected") {
+			t.Errorf("reconcile --mode alert-only with the audit token only: exit %d:\n%s", code, out)
+		}
+		// 書く reconcile は書き込み用の secret が無ければ起動しない（何もしない）。
+		if out, code := l.sakutei(t, vm3, "reconcile"); code == 0 || !strings.Contains(out, "write.token_secret") {
+			t.Errorf("reconcile without the write secret: exit %d:\n%s", code, out)
+		}
+		if cur, _ := l.config(t, 540); cur["cores"] != "2" {
+			t.Fatalf("VM 540 cores = %q after the refused runs, want 2 (untouched)", cur["cores"])
+		}
+		// 両方：観測は監査役、変更は書き込み用で収束する。
+		l.pc = pcFor("pve-split.yaml")
+		if out, code := l.sakutei(t, vm3, "reconcile"); code != 0 || !strings.Contains(out, "1 change(s) applied") {
+			t.Fatalf("reconcile with both tokens: exit %d:\n%s", code, out)
+		}
+		if cur, _ := l.config(t, 540); cur["cores"] != "1" {
+			t.Errorf("VM 540 cores = %q after reconcile, want 1", cur["cores"])
 		}
 		l.converge(t, vm3, 2)
 	})

@@ -27,6 +27,12 @@ bmcs:
     password: secretref:file/bmc/node1  # SecretRef だけ（生の文字列はエラー）
     ca_file: bmc-ca.pem               # 省略可。BMC の証明書を検証する CA（PEM）
     timeout: 10s                      # 省略可（既定 10s、1 要求あたり）
+    observe:                          # 省略可：観測用の資格（下の「観測用と書き込み用の資格」）
+      username: sakutei-ro
+      password: secretref:file/bmc/node1-ro
+    write:                            # 省略可：書き込み用の資格（書かないキーは上の値）
+      username: admin
+      password: secretref:file/bmc/node1
   node2:
     address: https://172.20.20.3
     username: admin
@@ -52,6 +58,52 @@ secret store（file SecretBackend）の例:
   "bmc/node2": {"gen": 1, "value": "…"}
 }}
 ```
+
+## 観測用と書き込み用の資格（Backlog #186）
+
+BMC ごとに観測用（`observe:`）と書き込み用（`write:`）の資格を分けて書ける（§20.7。ssh 越しの provider の
+[`observe:`・`write:`](../remote.md#観測用と書き込み用の資格)・proxmox-vm の[トークン](proxmox-vm.md#観測用と書き込み用の資格backlog-186)と同じ決まり）。
+どちらも `username`・`password`（SecretRef）だけを持ち、書かないキーは BMC の上の値を受け継ぐ。どちらも書かなければ今までどおり 1 本の資格。
+
+```yaml
+bmcs:
+  node1:
+    address: https://172.20.20.2
+    observe:                          # 観測（plan・status・読み取りの口・常駐の毎周の観測）
+      username: sakutei-ro            # Redfish の ReadOnly の役割
+      password: secretref:file/bmc/node1-ro
+    write:                            # 書き込み（Apply・Workflow の action・FW の更新の Task の実行）だけ
+      username: sakutei
+      password: secretref:file/bmc/node1
+```
+
+- 観測（`Read`。`plan`・`status`・読み取りの口・常駐の毎周の観測、Apply のあとの効いたかの読み直し、FW の更新の Task の相の
+  確かめ）は観測用の資格だけを、書き込み（`Apply`・Workflow の `action` の `boot_once`・`reset`、FW の更新の Task の相の実行）は
+  書き込み用の資格だけを使う。書き込みの中の読み（Reset の前に `Systems/1` の Actions を読むなど）は書き込み用で行う。
+- 書かない回（`plan`・`status`・`import`・`--mode alert-only`・`--freeze` の `reconcile` など）は、書き込み用の `password` が
+  secret store に無くても起動する（確かめず、取り出さない）。その回に書こうとすれば BMC に送らずに断る。書く回は無ければ
+  読み込みで断る（`bmcs.<ノード>.write.password: ... is not in the secret store`）。
+- 書き込み用に読むだけの利用者を書き間違えると、BMC が 403 で断る（認証の失敗と同じく、設定を直すまで治らないエラー）。
+
+観測用の利用者に要る最小の権限は **Redfish の `ReadOnly` の役割**（`Login` と、自分のパスワードを変える `ConfigureSelf` だけ）。
+観測で読むのはサービスルート・`Systems`（と `EthernetInterfaces`）・`Managers` の `VirtualMedia`・`Bios` と `Bios/Settings`・
+`Registries`・`UpdateService` の `FirmwareInventory`・`TaskService` の `Tasks` で、どれも GET（DMTF の権限の登録簿で `Login`）。
+
+書き込み用の利用者に要る権限（DMTF の権限の登録簿の既定。BMC ごとの実際の割り当ては `/redfish/v1/AccountService` の
+`PrivilegeMap` で確かめる）:
+
+| 操作 | provider | 要る権限 |
+| --- | --- | --- |
+| 電源（`#ComputerSystem.Reset`）・起動先の上書き（`Systems/1` の PATCH）・Workflow の `boot_once`・`reset` | redfish-system | `ConfigureComponents`（`Operator` の役割にある） |
+| BIOS の設定（`Bios/Settings` の PATCH） | redfish-bios | `ConfigureComponents` |
+| 仮想メディアの `InsertMedia`・`EjectMedia`（`Managers` の下） | redfish-virtual-media | `ConfigureManager`（`Administrator` の役割。`ConfigureComponents` で許す BMC もある） |
+| FW の更新（`UpdateService` の `SimpleUpdate`・`MultipartHttpPushUri` の送信） | redfish-firmware | 登録簿では `ConfigureComponents`。BMC の更新を `ConfigureManager`・`Administrator` に限る実機が多い |
+
+- **他の利用者の Task を見せない BMC**では、観測用の利用者から書き込み用の利用者が始めた BMC の Task（FW の更新）が見えず、
+  Task の相（`staging`・`applying`）が済んだことを観測できず、halt する。その BMC の
+  `redfish-firmware` では資格を分けない（`redfish-firmware` だけ別の `--redfish-config` にはできないので、BMC の一覧ごと 1 本にする）。
+- qemu-bmc 0.11.0 は AccountService も役割も持たない（下の「統合テスト」の 14 段目）。役割で断る振る舞いは偽 BMC
+  （`redfishtest.Options.ReadOnlyUsername`）と統合テストの中継で確かめた。
 
 ## intent の例
 
@@ -343,7 +395,7 @@ $ make integration-redfish
 
 1. 一時ディレクトリにトポロジ（`tests/integration/redfish/topology.clab.yml`）を写し、小さな ISO 9660 を 2 つ（`iso/sakutei-a.iso`・`iso/sakutei-b.iso`、テストがその場で書く）と sakutei のバイナリ、BMC の一覧（`insecure_skip_verify: true`、パスワードは file SecretBackend の SecretRef）を置く。
 2. 同じ名前の lab の残りを消してから `sudo containerlab deploy` する。lab 名と管理ネットは `sakutei-rf84`（`172.31.84.0/24`、BMC は node1 = `172.31.84.11`・node2 = `172.31.84.12`、Redfish は HTTPS 443・自己署名・`admin`/`password`）。
-3. (0)〜(13) を順に回す（前の段の現実を次の段が使うので、1 つ落ちたら残りは回さない）。10〜13 段目は、FW のイメージを配る HTTP（管理ネットのゲートウェイ、既定 `172.31.84.1` の空いたポート。BMC が取りに来る）と、通知を受ける webhook（`127.0.0.1`、常駐の `--event-webhook`）をテストの中に立てる。
+3. (0)〜(14) を順に回す（前の段の現実を次の段が使うので、1 つ落ちたら残りは回さない）。10〜13 段目は、FW のイメージを配る HTTP（管理ネットのゲートウェイ、既定 `172.31.84.1` の空いたポート。BMC が取りに来る）と、通知を受ける webhook（`127.0.0.1`、常駐の `--event-webhook`）をテストの中に立てる。
 4. **終わったら必ず `containerlab destroy --cleanup`**（失敗しても・Ctrl-C で止めても）。テストのプロセスごと落ちた（`-timeout` など）ときは、Makefile が lab の残りを見つけて消す。
 
 トポロジの要点: 2 台とも `/dev/kvm`・`/dev/net/tun` を渡し、`SYSTEM_UUID`・`VM_MACS` を固定、VM の NIC は eth1（2 台を直結）、`GRACEFUL_TIMEOUT` は 10 秒、FW の更新の Task は `FIRMWARE_UPDATE_SECONDS` 3 秒。node1 だけ初めの FW の版を `BMC_FIRMWARE_VERSION: "1.0.0"`・`BIOS_FIRMWARE_VERSION: "BIOS-1.0.0"` にし、node2 は既定のまま（BMC は `v0.11.0`）。障害注入の口（`FAULT_API_ADDR: ":8623"`）は node2 だけ。**`VM_DISK_SIZE` は付けない**——ディスクの無い VM は BIOS のまま ACPI の電源ボタンに応えないので、GracefulShutdown は PoweringOff のあと `GRACEFUL_TIMEOUT` 秒で On に戻る。これを既定停止の stuck と graceful_then_force の確かめに使う。`POWER_ON_AT_START` の既定（false）で VM は Off から始まる。
@@ -377,6 +429,29 @@ $ sudo containerlab destroy -t topology.clab.yml --cleanup && rm -rf iso
 | (11) `[AC-168-11]` | BMC の即時の更新 | 常駐（`--task-store`・`--event-webhook`）で node1 の BMC を `2.0.0`（SimpleUpdate）にすると、Task は承認ゲート（`awaiting_approval:verifying`）で止まり、3 周回しても BMC の Task は増えず、イメージも取りに来ない。webhook に RequiresTask（awaiting approval）。`sakutei task approve` のあと BMC の Task が 1 つ増えて Running → Completed（`TargetDetermined` の MessageArgs が部品とイメージの URI、`UpdateSuccessful`）、イメージを取りに来たのは 1 回、部品と Managers/1 の版が `2.0.0` になって Task が閉じる。続けて `2.1.0` を `transfer: multipart` で宣言すると、同じく承認の後に 1 回だけ送り、BMC の Task のイメージは送ったファイルの名前（`bmc-2.1.0.bin`）で、版が `2.1.0` になる。plan は Converged。 |
 | (12) `[AC-168-12]` | BIOS の保留と再起動 | node1 の BIOS を `BIOS-2.0.0`（`reboot` を書かず、`reboot_timeout: 20s`）にして承認すると、BMC の Task は Completed で最後のメッセージが `Update.1.0.AwaitToActivate`、BIOS の部品は `StandbyOffline` で版は `BIOS-1.0.0` のまま。Sakutei は再起動を送らず（電源はずっと On）、Task は `rebooting` の相で halt し、webhook に RequiresTask（rebooting の理由つき）。`sakutei task cancel` して `reboot: force` を宣言し直して承認すると、更新は送り直さず（BMC の Task もイメージの取得も 1 回のまま）、再起動のあと BIOS が `BIOS-2.0.0`・`Enabled`、Systems/1 の `BiosVersion` も同じ。plan は Converged。 |
 | (13) `[AC-168-13]` | 故障 | node2 に `firmware-image-rejected`（BIOS）と `firmware-update-fail`（BMC、`atPercent: 30`）を足し、BIOS と BMC の版を宣言して両方承認する。BIOS は `staging` で halt（理由は BMC の 400 の文「Verification of image … failed」）、BMC の Task は作られない。BMC は BMC の Task が 30% で `Exception`（`Update.1.0.ApplyFailed`）になり、`applying` で halt（理由に `Update.1.0.ApplyFailed`）。どちらも版は変わらず、webhook に理由つきの RequiresTask。さらに 3 周回しても二度目は送らない（BMC の Task は 1 つ、イメージの取得は 1 回のまま）、Task は halt のまま（人が確かめて cancel する）。 |
+| (14) `[AC-186-14]` | 観測用と書き込み用の資格（#186） | node1 の BMC に `ipmitool user set name/password`（コンテナの中から自分の IPMI over LAN に）で 2 人目の利用者 `sakutei-ro`（IPMI の権限 USER）を作る。qemu-bmc の Redfish はこの利用者を Basic 認証で受け付けるが、AccountService は 404 で、役割も無い（USER の利用者の PATCH も通る）。そこで BMC の前にテストが HTTPS の中継を立て、`sakutei-ro` の GET 以外を 403（`Base.1.0.InsufficientPrivilege`）で断る（ReadOnly の役割の真似）と、利用者ごとの GET と書き込みを数える。node1 の起動先を手で Disabled にし、Continuous の Hdd を宣言する。観測用の password だけの store で `plan`・`reconcile --mode alert-only` が通って差分を出し、中継に来たのは `sakutei-ro` の GET だけ（admin は 0）で BMC は変わらない。同じ store の `reconcile`（書く回）は `bmcs.node1.write.password` が無いと断る。両方の store の `reconcile` で収束し、`sakutei-ro` は GET だけ・書き込みは admin だけ、続く plan は Converged。書き込み用を `sakutei-ro` に書き間違えると 403 で失敗し、BMC は変わらない。 |
+
+### 結果（2026-10-28、qemu-bmc 0.11.0、観測用と書き込み用の資格を足して、#186）
+
+(14) を足して `make integration-redfish` が合格した（(0)〜(13) は変えていない）。qemu-bmc 0.11.0 で分かったこと:
+AccountService は無く（`/redfish/v1/AccountService` は 404）、Redfish の役割も無い。IPMI で作った利用者（権限 USER）は
+Redfish の Basic 認証で通るが、PATCH も 200 で通す（BMC の上では読むだけの利用者を作れない）。そのため ReadOnly の役割で
+断る振る舞いは、BMC の前の中継で真似た。
+
+```
+--- PASS: TestRedfishIntegration (189.30s)
+    ...
+    --- PASS: TestRedfishIntegration/13_firmware_faults (19.06s)
+    --- PASS: TestRedfishIntegration/14_credential_split (0.36s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/redfish	193.964s
+
+qemu-bmc v0.11.0: AccountService 404; PATCH of the same Boot by the USER-privilege account: 200
+reconcile: sakutei-ro map[GET:6], admin map[GET:3 WRITE:1], writes [admin PATCH /redfish/v1/Systems/1]
+```
+
+書き込み用を `sakutei-ro` に書き間違えた reconcile は
+`permanent: ... PATCH /redfish/v1/Systems/1: authentication failed (HTTP 403): There are insufficient privileges ...` で
+`Reconcile: not converged` になり、BMC は変わらない（reconcile の終了コードは Apply の失敗では 0 のまま）。
 
 ### 結果（2026-10-28、qemu-bmc 0.11.0、FW の更新を足して、#168）
 

@@ -21,6 +21,7 @@ package postgresql
 //   - 接続の設定（host・port・dbname・user・sslmode・sslrootcert・connect_timeout）は
 //     子プロセスの環境変数（PGHOST など）で渡す。親の PG* の環境変数は引き継が
 //     ない（PGSERVICE・PGOPTIONS などで黙って別の所へつながないように）。
+//   - つなぐロールは観測用か書き込み用（ctx で選ぶ、#186）。
 //   - 管理用のロールのパスワードは呼ぶたびに secret store から解決し（JIT、
 //     §20.2）、0600 の一時的な passfile に書いて PGPASSFILE で渡し、終われば消す。
 //     引数・環境変数の値・ログ・エラーには出さない。
@@ -45,6 +46,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // Invocation は psql の 1 回の起動。
@@ -114,6 +116,9 @@ const (
 	KindSQL
 	// KindOutput は psql の出力が読めない。
 	KindOutput
+	// KindNoWrite はこの回が書かない（provider.AccessObserve）のに書き込みの
+	// psql を求められた（起動しない。Err は provider.ErrNoWriteAccess を包む）。
+	KindNoWrite
 )
 
 // Error は psql の 1 回の失敗。文言にパスワードや SCRAM の検証値は入れない。
@@ -141,6 +146,8 @@ func (e *Error) Error() string {
 		what = "SQL error " + e.SQLState
 	case KindOutput:
 		what = "unreadable psql output"
+	case KindNoWrite:
+		what = "the write is refused"
 	}
 	s := fmt.Sprintf("server %s", e.Server)
 	if e.Database != "" {
@@ -215,11 +222,12 @@ type Client struct {
 	psqlPath string
 	runner   Runner
 	secrets  core.SecretResolver
+	noWrite  bool
 }
 
 // NewClient は opts（Psql・Runner・Secrets）で psql を呼ぶ Client を返す。
 func NewClient(opts Options) *Client {
-	c := &Client{psqlPath: opts.Psql, runner: opts.Runner, secrets: opts.Secrets}
+	c := &Client{psqlPath: opts.Psql, runner: opts.Runner, secrets: opts.Secrets, noWrite: opts.NoWrite}
 	if c.psqlPath == "" {
 		c.psqlPath = "psql"
 	}
@@ -230,13 +238,18 @@ func NewClient(opts Options) *Client {
 }
 
 // Run は srv（名前は server）の database につなぐ psql を 1 回起動して script を
-// 流し、標準出力を返す。失敗は *Error。
+// 流し、標準出力を返す。失敗は *Error。つなぐロールは ctx で選ぶ: 書き込み
+// （provider.Writing）なら書き込み用、ほかは観測用（§20.7、#186）。
 func (c *Client) Run(ctx context.Context, server string, srv Server, database, script string) (string, error) {
 	mk := func(kind ErrorKind, state, msg string, err error) error {
 		return &Error{Kind: kind, Server: server, Database: database, SQLState: state, Message: msg, Err: err}
 	}
 	if database == "" {
 		database = srv.DBName
+	}
+	cred, err := srv.credentials(c.noWrite).For(ctx, "psql")
+	if err != nil {
+		return "", mk(KindNoWrite, "", "", provider.ErrNoWriteAccess)
 	}
 	env := childEnv(os.Environ())
 	add := func(k, v string) {
@@ -249,7 +262,7 @@ func (c *Client) Run(ctx context.Context, server string, srv Server, database, s
 		add("PGPORT", strconv.Itoa(srv.Port))
 	}
 	add("PGDATABASE", database)
-	add("PGUSER", srv.User)
+	add("PGUSER", cred.User)
 	add("PGSSLMODE", srv.SSLMode)
 	add("PGSSLROOTCERT", srv.SSLRootCert)
 	if t := srv.ConnectTimeout; t > 0 {
@@ -259,8 +272,8 @@ func (c *Client) Run(ctx context.Context, server string, srv Server, database, s
 	add("PGAPPNAME", "sakutei")
 	add("PGCLIENTENCODING", "UTF8")
 	add("LC_MESSAGES", "C")
-	if srv.HasPassword {
-		ref := srv.Password
+	if cred.HasPassword {
+		ref := cred.Password
 		if c.secrets == nil {
 			return "", mk(KindSecret, "", fmt.Sprintf("%s: no secret store is configured", ref), nil)
 		}

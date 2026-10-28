@@ -28,6 +28,12 @@ package s3bucket
 //	    addressing: path                  # path（既定）| virtual
 //	    access_key: secretref:file/s3/minio/access_key
 //	    secret_key: secretref:file/s3/minio/secret_key
+//	    observe:                          # 省略可。観測用の資格（§20.7、#186。読むだけのポリシーのキー）
+//	      access_key: secretref:file/s3/minio/ro_access_key   #   書かないキーは上（access_key・secret_key）のまま
+//	      secret_key: secretref:file/s3/minio/ro_secret_key
+//	    write:                            # 省略可。書き込み用の資格（Apply だけが使う）
+//	      access_key: secretref:file/s3/minio/rw_access_key
+//	      secret_key: secretref:file/s3/minio/rw_secret_key
 //	    bucket_prefix: app-               # 省略可（この接頭辞のバケットだけを扱う）
 //	    ca_file: ca.pem                   # 省略可
 //	    insecure_skip_verify: true        # 明示したときだけ（既定 false）
@@ -53,6 +59,12 @@ package s3bucket
 //     endpoint でもバケットを観測できるように）、intent で宣言すれば計画の
 //     時点でエラーにする。storage_class_aliases は観測した lifecycle の
 //     StorageClass を標準の名前に読み替える表。
+//   - 観測用と書き込み用（#186、internal/apicred）: observe・write はどちらも
+//     access_key・secret_key だけを持ち、書かないキーは endpoint の上の値を
+//     受け継ぐ。観測（Read・List・BulkObserve）は observe の資格だけで署名し、
+//     書き込み（Apply、provider.Writing の ctx。Apply の中の読み戻しの Get も）
+//     は write の資格だけで署名する。この回が書かない（LoadOptions.ObserveOnly）
+//     なら write の資格は store にあるかを確かめず、取り出さず、書き込みを断る。
 
 import (
 	"context"
@@ -66,6 +78,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/apibase"
+	"github.com/tjst-t/sakutei/v2/internal/apicred"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -82,11 +95,16 @@ type EndpointConfig struct {
 	Endpoint string
 	// APIBasePath は API のパスの前置き（api_base_path。既定 "" は前置き無し）。
 	// 逆プロキシの下のパスに置いた endpoint や、模擬で前置きが違うとき（#160）。
-	APIBasePath        string
-	Region             string
-	Addressing         string
-	AccessKey          core.SecretRef
-	SecretKey          core.SecretRef
+	APIBasePath string
+	Region      string
+	Addressing  string
+	// AccessKey・SecretKey は観測用の資格（observe: が無ければ endpoint の上の値）。
+	AccessKey core.SecretRef
+	SecretKey core.SecretRef
+	// WriteAccessKey・WriteSecretKey は書き込み用の資格（write: が無ければ
+	// endpoint の上の値。observe:・write: を書かなければ観測用と同じ、#186）。
+	WriteAccessKey     core.SecretRef
+	WriteSecretKey     core.SecretRef
 	BucketPrefix       string
 	CAFile             string
 	InsecureSkipVerify bool
@@ -95,6 +113,8 @@ type EndpointConfig struct {
 	Fields []string
 	// StorageClassAliases は endpoint が返す StorageClass の名前 → 標準の名前。
 	StorageClassAliases map[string]string
+
+	split bool // observe:・write: のどちらかが書いてある
 }
 
 // Config は設定ファイルの中身。
@@ -102,6 +122,15 @@ type Config struct {
 	SecretStore string
 	Scope       core.Scope
 	Endpoints   map[string]EndpointConfig
+	// ObserveOnly はこの回が書かない（LoadOptions.ObserveOnly）。
+	ObserveOnly bool
+}
+
+// LoadOptions は設定の読み方。
+type LoadOptions struct {
+	// ObserveOnly はこの回が書かない（provider.AccessObserve、§20.7、#186）:
+	// 書き込み用の資格は store にあるかを確かめず・取り出さず、書き込みを断る。
+	ObserveOnly bool
 }
 
 var (
@@ -109,30 +138,35 @@ var (
 	endpointKeys = map[string]bool{
 		"endpoint": true, "api_base_path": true, "region": true, "addressing": true, "access_key": true, "secret_key": true,
 		"bucket_prefix": true, "ca_file": true, "insecure_skip_verify": true, "timeout": true,
-		"fields": true, "storage_class_aliases": true,
+		"fields": true, "storage_class_aliases": true, apicred.KeyObserve: true, apicred.KeyWrite: true,
 	}
 	// endpointName は endpoint の名前（ID の前半。"/" を含まない）。
 	endpointName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 )
 
-// LoadConfig は path の設定を読み、検査する。
+// LoadConfig は path の設定を読み、検査する（書く回として）。
 func LoadConfig(path string) (Config, error) {
+	return LoadConfigWith(path, LoadOptions{})
+}
+
+// LoadConfigWith は LoadConfig を opts の読み方で行う。
+func LoadConfigWith(path string, opts LoadOptions) (Config, error) {
 	tree, err := loader.ReadTree(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("s3 config: %w", err)
 	}
-	cfg, err := parseConfig(tree, filepath.Dir(path))
+	cfg, err := parseConfig(tree, filepath.Dir(path), opts)
 	if err != nil {
 		return Config{}, fmt.Errorf("s3 config %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
-func parseConfig(tree map[string]any, dir string) (Config, error) {
+func parseConfig(tree map[string]any, dir string, opts LoadOptions) (Config, error) {
 	if err := unknownKeys("", tree, topKeys); err != nil {
 		return Config{}, err
 	}
-	cfg := Config{Endpoints: map[string]EndpointConfig{}}
+	cfg := Config{Endpoints: map[string]EndpointConfig{}, ObserveOnly: opts.ObserveOnly}
 	store, err := str(tree, "secret_store", "")
 	if err != nil {
 		return Config{}, err
@@ -181,12 +215,22 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 	}
 	for _, name := range names {
 		e := cfg.Endpoints[name]
-		for _, f := range []struct {
-			key string
-			ref core.SecretRef
-		}{{"access_key", e.AccessKey}, {"secret_key", e.SecretKey}} {
-			if !have[f.ref.Path()] {
-				return Config{}, fmt.Errorf("endpoints.%s.%s: %s is not in the secret store %s", name, f.key, f.ref, cfg.SecretStore)
+		at := map[string]core.SecretRef{
+			e.observeAt() + ".access_key": e.AccessKey, e.observeAt() + ".secret_key": e.SecretKey,
+		}
+		// The write keys are checked only in a run that may write (#186).
+		if !opts.ObserveOnly {
+			at[e.writeAt()+".access_key"] = e.WriteAccessKey
+			at[e.writeAt()+".secret_key"] = e.WriteSecretKey
+		}
+		keys := make([]string, 0, len(at))
+		for k := range at {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if ref := at[k]; !have[ref.Path()] {
+				return Config{}, fmt.Errorf("endpoints.%s%s: %s is not in the secret store %s", name, k, ref, cfg.SecretStore)
 			}
 		}
 	}
@@ -286,19 +330,50 @@ func parseEndpoint(p string, m map[string]any, dir string) (EndpointConfig, erro
 			e.StorageClassAliases[from] = to
 		}
 	}
+	sec, err := apicred.Read(p, m, "access_key", "secret_key")
+	if err != nil {
+		return EndpointConfig{}, err
+	}
+	e.split = sec.Split
+	if e.AccessKey, e.SecretKey, err = parseKeyPair(p+e.observeAt(), sec.Observe); err != nil {
+		return EndpointConfig{}, err
+	}
+	if e.WriteAccessKey, e.WriteSecretKey, err = parseKeyPair(p+e.writeAt(), sec.Write); err != nil {
+		return EndpointConfig{}, err
+	}
+	return e, nil
+}
+
+// observeAt・writeAt は文言の中の資格の場所（分けていなければ endpoint の上）。
+func (e EndpointConfig) observeAt() string {
+	if e.split {
+		return "." + apicred.KeyObserve
+	}
+	return ""
+}
+
+func (e EndpointConfig) writeAt() string {
+	if e.split {
+		return "." + apicred.KeyWrite
+	}
+	return ""
+}
+
+// parseKeyPair は 1 組の資格（access_key・secret_key）を読む。
+func parseKeyPair(p string, m map[string]any) (ak, sk core.SecretRef, err error) {
 	for _, f := range []struct {
 		key string
 		dst *core.SecretRef
-	}{{"access_key", &e.AccessKey}, {"secret_key", &e.SecretKey}} {
+	}{{"access_key", &ak}, {"secret_key", &sk}} {
 		v, ok := m[f.key]
 		if !ok {
-			return EndpointConfig{}, fmt.Errorf("%s.%s is required (a SecretRef such as \"secretref:file/s3/%s\")", p, f.key, f.key)
+			return ak, sk, fmt.Errorf("%s.%s is required (a SecretRef such as \"secretref:file/s3/%s\")", p, f.key, f.key)
 		}
 		if *f.dst, err = parseSecretRef(v); err != nil {
-			return EndpointConfig{}, fmt.Errorf("%s.%s: %w", p, f.key, err)
+			return ak, sk, fmt.Errorf("%s.%s: %w", p, f.key, err)
 		}
 	}
-	return e, nil
+	return ak, sk, nil
 }
 
 // parseSecretRef は SecretRef を読む。生の値は（エラーの文言にも）出さない。
@@ -340,13 +415,8 @@ func (c Config) Build() (map[string]Endpoint, error) {
 	backend := render.NewFileSecretBackend(c.SecretStore)
 	out := make(map[string]Endpoint, len(c.Endpoints))
 	for name, e := range c.Endpoints {
-		ak, sk := e.AccessKey, e.SecretKey
-		cl, err := NewClient(ClientConfig{
-			Endpoint:    e.Endpoint,
-			APIBasePath: e.APIBasePath,
-			Region:      e.Region,
-			VirtualHost: e.Addressing == AddressingVirtual,
-			Credentials: func(ctx context.Context) (Credentials, error) {
+		keys := func(ak, sk core.SecretRef) func(ctx context.Context) (Credentials, error) {
+			return func(ctx context.Context) (Credentials, error) {
 				a, err := backend.ResolveValue(ctx, ak.Backend(), ak.Path(), ak.Generation())
 				if err != nil {
 					return Credentials{}, fmt.Errorf("access_key %s: %w", ak, err)
@@ -356,7 +426,16 @@ func (c Config) Build() (map[string]Endpoint, error) {
 					return Credentials{}, fmt.Errorf("secret_key %s: %w", sk, err)
 				}
 				return Credentials{AccessKey: a, SecretKey: s}, nil
-			},
+			}
+		}
+		cl, err := NewClient(ClientConfig{
+			Endpoint:           e.Endpoint,
+			APIBasePath:        e.APIBasePath,
+			Region:             e.Region,
+			VirtualHost:        e.Addressing == AddressingVirtual,
+			Credentials:        keys(e.AccessKey, e.SecretKey),
+			WriteCredentials:   keys(e.WriteAccessKey, e.WriteSecretKey),
+			NoWrite:            c.ObserveOnly,
 			CAFile:             e.CAFile,
 			InsecureSkipVerify: e.InsecureSkipVerify,
 			Timeout:            e.Timeout,
@@ -383,9 +462,15 @@ func NewFromConfig(path string) (*Provider, error) {
 }
 
 // NewFromConfigTree は path から読んだ設定の木 tree（intent の providers: の範囲を
-// 重ねたもの、§7.7、#182）から Provider を作る（registry の factory 用）。
+// 重ねたもの、§7.7、#182）から Provider を作る（registry の factory 用。書く回として）。
 func NewFromConfigTree(path string, tree map[string]any) (*Provider, error) {
-	cfg, err := parseConfig(tree, filepath.Dir(path))
+	return NewFromConfigTreeWith(path, tree, LoadOptions{})
+}
+
+// NewFromConfigTreeWith は NewFromConfigTree を opts の読み方で行う（書かない回は
+// 書き込み用の資格を確かめない、§20.7、#186）。
+func NewFromConfigTreeWith(path string, tree map[string]any, opts LoadOptions) (*Provider, error) {
+	cfg, err := parseConfig(tree, filepath.Dir(path), opts)
 	if err != nil {
 		return nil, fmt.Errorf("s3 config %s: %w", path, err)
 	}

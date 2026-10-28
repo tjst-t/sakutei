@@ -99,7 +99,8 @@ import (
 //   - "ldap": entries of LDAP directories (Backlog #144), only the declared
 //     attributes, through the OpenLDAP clients ldapsearch / ldapmodify.
 //     config["ldap_config"] is the server list (ldap.LoadConfig: uri, StartTLS,
-//     CA, bind DN and its SecretRef, base DN, filter).
+//     CA, bind DN and its SecretRef — one, or an observe and a write one
+//     (§20.7, Backlog #186) — base DN, filter).
 //
 //   - "template-file": writes files rendered from the user's text/template
 //     templates (config["template_dir"]) into config["output_dir"], e.g. the
@@ -313,7 +314,11 @@ func DefaultRegistry() *ProviderRegistry {
 		if path == "" {
 			return nil, errors.New("the BMC list is not set: pass --redfish-config <file>")
 		}
-		clients, secrets, err := bmcconfig.LoadClientsAndSecrets(path)
+		opts, err := redfishLoadOptions(config)
+		if err != nil {
+			return nil, err
+		}
+		clients, secrets, err := bmcconfig.LoadClientsAndSecretsWith(path, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -340,11 +345,15 @@ func DefaultRegistry() *ProviderRegistry {
 		if config["s3_config"] == "" {
 			return nil, errors.New("the endpoint list is not set: pass --s3-config <file> (or s3_config in --provider-config)")
 		}
+		if err := provider.CheckAccess(config); err != nil {
+			return nil, fmt.Errorf("s3-bucket: %w", err)
+		}
 		path, tree, err := s3Ranges.Tree(config)
 		if err != nil {
 			return nil, err
 		}
-		return s3bucket.NewFromConfigTree(path, tree)
+		// 書かない回（provider.AccessObserve）は書き込み用の資格を確かめない（§20.7、#186）。
+		return s3bucket.NewFromConfigTreeWith(path, tree, s3bucket.LoadOptions{ObserveOnly: provider.ObserveOnlyRun(config)})
 	})
 
 	// "postgresql" — PostgreSQL のロール・データベース・権限・拡張（§29.1、
@@ -355,11 +364,15 @@ func DefaultRegistry() *ProviderRegistry {
 		if config["postgresql_config"] == "" {
 			return nil, errors.New("the server list is not set: pass --postgresql-config <file> (or postgresql_config in --provider-config)")
 		}
+		if err := provider.CheckAccess(config); err != nil {
+			return nil, err
+		}
 		path, tree, err := postgresqlRanges.Tree(config)
 		if err != nil {
 			return nil, err
 		}
-		return postgresql.NewFromConfigTree(path, tree)
+		// 書かない回は書き込み用の password を確かめず・取り出さない（§20.7、#186）。
+		return postgresql.NewFromConfigTreeWith(path, tree, postgresql.LoadOptions{ObserveOnly: provider.ObserveOnlyRun(config)})
 	})
 
 	// "ansible" — Ansible のモジュールを 1 つのホストに流す最小階級の provider
@@ -438,11 +451,15 @@ func DefaultRegistry() *ProviderRegistry {
 		if config["ldap_config"] == "" {
 			return nil, errors.New("ldap: the server list is not set: ldap_config in --provider-config")
 		}
+		if err := provider.CheckAccess(config); err != nil {
+			return nil, fmt.Errorf("ldap: %w", err)
+		}
 		path, tree, err := ldapRanges.Tree(config)
 		if err != nil {
 			return nil, err
 		}
-		return ldap.NewFromConfigTree(path, tree)
+		// 書かない回は書き込み用の bind_password を確かめない（§20.7、#186）。
+		return ldap.NewFromConfigTreeWith(path, tree, ldap.LoadOptions{ObserveOnly: provider.ObserveOnlyRun(config)})
 	})
 
 	// "template-file" — 雛形（text/template）に対象ごとの値を入れたファイルを
@@ -689,7 +706,20 @@ func redfishClients(config map[string]string) (map[string]redfish.Client, error)
 	if path == "" {
 		return nil, errors.New("the BMC list is not set: pass --redfish-config <file>")
 	}
-	return bmcconfig.LoadClients(path)
+	opts, err := redfishLoadOptions(config)
+	if err != nil {
+		return nil, err
+	}
+	return bmcconfig.LoadClientsWith(path, opts)
+}
+
+// redfishLoadOptions は BMC の一覧の読み方（§20.7、#186）: この回が書かない
+// （provider.AccessObserve）なら書き込み用の password を確かめず、書き込みを断る。
+func redfishLoadOptions(config map[string]string) (bmcconfig.LoadOptions, error) {
+	if err := provider.CheckAccess(config); err != nil {
+		return bmcconfig.LoadOptions{}, fmt.Errorf("redfish: %w", err)
+	}
+	return bmcconfig.LoadOptions{ObserveOnly: provider.ObserveOnlyRun(config)}, nil
 }
 
 // netconfApplyConfig は netconf の 2 段の Apply の設定を読む（#175）。

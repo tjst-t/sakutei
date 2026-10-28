@@ -51,7 +51,13 @@
 // 試験用の口: SetUnreachable（接続を切って到達不能にする）・SetFailStatus
 // （すべての要求に 5xx などを返す）・SetDelay（応答を遅らせる）・
 // SetIgnorePowerActions（電源の Reset に 204 を返すが電源を変えない。qemu-bmc
-// の障害注入 power-action-ignored を真似る、#166）・Requests（受けた要求の記録）。
+// の障害注入 power-action-ignored を真似る、#166）・Requests（受けた要求の記録）・
+// UserCalls（利用者ごとの GET と書き込みの回数）。
+//
+// Options.ReadOnlyUsername・ReadOnlyPassword は Redfish の ReadOnly の役割（Login
+// 権限だけ）の利用者（#186）: GET は通し、PATCH・POST・DELETE は 403
+// （Base.1.0.InsufficientPrivilege）で何も変えない。qemu-bmc 0.11.0 は役割を
+// 持たない（どの利用者も書ける）ので、これは実機の BMC を真似たもの。
 package redfishtest
 
 import (
@@ -115,6 +121,9 @@ type Options struct {
 	// Username・Password は Basic 認証の資格（既定 admin / password）。
 	Username string
 	Password string
+	// ReadOnlyUsername・ReadOnlyPassword は ReadOnly の役割の利用者（省略可、
+	// #186）。GET だけを受け付け、ほかは 403。
+	ReadOnlyUsername, ReadOnlyPassword string
 	// PowerState は最初の電源状態（既定 On）。
 	PowerState string
 	// UUID・MACs・MemoryGiB・CPUs は qemu-bmc の SYSTEM_UUID・VM_MACS・
@@ -156,6 +165,8 @@ type Request struct {
 	Method string
 	Path   string
 	Body   string
+	// User は Basic 認証の利用者（無ければ空）。
+	User string
 }
 
 // Server は偽 BMC。
@@ -191,6 +202,7 @@ type Server struct {
 	failStatus     int
 	delay          time.Duration
 	requests       []Request
+	byUser         map[string]map[string]int // 利用者 → "GET"・"WRITE" → 回数
 }
 
 // New は偽 BMC を立てる。終わったら Close する。
@@ -389,8 +401,20 @@ func (s *Server) Requests() []Request {
 	return append([]Request(nil), s.requests...)
 }
 
-// ClearRequests は要求の記録を消す。
-func (s *Server) ClearRequests() { s.mu.Lock(); s.requests = nil; s.mu.Unlock() }
+// ClearRequests は要求の記録を消す（UserCalls も）。
+func (s *Server) ClearRequests() { s.mu.Lock(); s.requests, s.byUser = nil, nil; s.mu.Unlock() }
+
+// UserCalls は user（Basic 認証の利用者）で受けた要求の回数（"GET" と、ほかの
+// "WRITE"。断った要求も数える、#186）。
+func (s *Server) UserCalls(user string) map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]int{}
+	for k, v := range s.byUser[user] {
+		out[k] = v
+	}
+	return out
+}
 
 // ---- 状態の移り変わり（s.mu を持って呼ぶ） ----
 
@@ -480,8 +504,22 @@ func (s *Server) reset(t string) {
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 
+	user, pass, hasAuth := r.BasicAuth()
+	kind := "WRITE"
+	if r.Method == http.MethodGet {
+		kind = "GET"
+	}
 	s.mu.Lock()
-	s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Body: string(body)})
+	s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Body: string(body), User: user})
+	if hasAuth {
+		if s.byUser == nil {
+			s.byUser = map[string]map[string]int{}
+		}
+		if s.byUser[user] == nil {
+			s.byUser[user] = map[string]int{}
+		}
+		s.byUser[user][kind]++
+	}
 	unreachable, failStatus, delay := s.unreachable, s.failStatus, s.delay
 	s.mu.Unlock()
 
@@ -505,9 +543,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, failStatus, "Base.1.0.InternalError", "injected failure")
 		return
 	}
-	if u, p, ok := r.BasicAuth(); !ok || u != s.opts.Username || p != s.opts.Password {
+	readOnly := s.opts.ReadOnlyUsername != "" && hasAuth && user == s.opts.ReadOnlyUsername && pass == s.opts.ReadOnlyPassword
+	if !readOnly && (!hasAuth || user != s.opts.Username || pass != s.opts.Password) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="qemu-bmc"`)
 		writeError(w, http.StatusUnauthorized, "Base.1.0.InsufficientPrivilege", "authentication required")
+		return
+	}
+	if readOnly && r.Method != http.MethodGet {
+		// ReadOnly の役割は Login 権限だけ（ConfigureComponents・ConfigureManager が無い）。
+		writeError(w, http.StatusForbidden, "Base.1.0.InsufficientPrivilege",
+			"There are insufficient privileges for the account or credentials associated with the current session to perform the requested operation.")
 		return
 	}
 

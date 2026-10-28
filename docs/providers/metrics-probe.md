@@ -49,6 +49,15 @@ probes:
 - `ca_file`・`insecure_skip_verify` は https の URL のときだけ書ける。
 - 未知のキーは拒否する（書き間違いを黙って無視しない）。
 
+### 資格は観測用だけ（Backlog #186）
+
+metrics-probe は観測だけの provider で（Apply を持たない）、書き込み用の資格を持たない。`bearer_token`・`username`／`password` は
+いつも観測用で、ほかの API の provider の `observe:`・`write:`（§20.7）は書けない（未知のキーとして拒否する）。書かない回
+（`plan`・`status`・`--mode alert-only` など、provider の設定の `access: observe`）でも書く回でも同じに動く。
+
+資格には **`/metrics` を読むことだけを許したもの**を渡す（RabbitMQ なら `monitoring` タグの利用者、Prometheus の exporter の前に
+置いた逆プロキシなら読むだけのトークン）。管理 API の書き込みのできる利用者（RabbitMQ の `administrator` など）を渡さない。
+
 ### ラベルの一致と集計
 
 - `labels` に書いたラベルがすべて等しい系列が一致する。書かないラベルは問わない。値 `""` は「そのラベルが無い」

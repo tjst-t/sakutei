@@ -17,7 +17,8 @@ package proxmox
 // client.go — Proxmox VE の REST API（既定の前置きは /api2/json）を net/http で叩く。認証は
 // API トークン（Authorization: PVEAPIToken=<user>!<id>=<secret>）。secret は
 // 要求の直前に関数から受け取り（JIT、§20.2）、Client にも持たず、エラーの
-// 文言にも出さない。
+// 文言にも出さない。観測用と書き込み用の 2 本のトークンを持てる（§20.7、#186）:
+// 書き込みの ctx（provider.Writing）の要求だけが書き込み用を使う。
 
 import (
 	"bytes"
@@ -36,6 +37,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/apibase"
+	"github.com/tjst-t/sakutei/v2/internal/apicred"
 )
 
 // DefaultTimeout は 1 つの要求の時間切れの既定。
@@ -104,8 +106,14 @@ type ClientConfig struct {
 	APIBasePath string
 	// TokenID は "<user>@<realm>!<tokenname>"。
 	TokenID string
-	// Secret はトークンの secret を要求の直前に返す。
+	// Secret はトークンの secret を要求の直前に返す。TokenID・Secret は観測用
+	// （Write が無ければ書き込みにも使う）。
 	Secret func(ctx context.Context) (string, error)
+	// Write は書き込み用のトークン（省略可。provider.Writing の ctx の要求だけが使う）。
+	Write *Token
+	// NoWrite はこの回が書かない（provider.AccessObserve）: 書き込みの ctx の
+	// 要求を provider.ErrNoWriteAccess で断る。
+	NoWrite bool
 	// CAFile が空でなければ、それだけを信頼する。
 	CAFile string
 	// InsecureSkipVerify は証明書を確かめない（明示したときだけ）。
@@ -114,12 +122,19 @@ type ClientConfig struct {
 	Timeout time.Duration
 }
 
+// Token は 1 本の API トークン。
+type Token struct {
+	// ID は "<user>@<realm>!<tokenname>"。
+	ID string
+	// Secret はトークンの secret を要求の直前に返す。
+	Secret func(ctx context.Context) (string, error)
+}
+
 // Client は 1 つのクラスタ（の 1 つの endpoint）の API の口。
 type Client struct {
-	base    string
-	tokenID string
-	secret  func(ctx context.Context) (string, error)
-	http    *http.Client
+	base   string
+	tokens apicred.Pair[Token]
+	http   *http.Client
 }
 
 // NewClient は cfg の Client を作る。
@@ -128,11 +143,18 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		return nil, fmt.Errorf("endpoint %q: want https://host:port", cfg.Endpoint)
 	}
-	if !strings.Contains(cfg.TokenID, "!") || !strings.Contains(cfg.TokenID, "@") {
-		return nil, fmt.Errorf("token_id %q: want <user>@<realm>!<tokenname>", cfg.TokenID)
+	tokens := apicred.Single(Token{ID: cfg.TokenID, Secret: cfg.Secret})
+	if cfg.Write != nil {
+		tokens.Write = *cfg.Write
 	}
-	if cfg.Secret == nil {
-		return nil, errors.New("the token secret is not set")
+	tokens.NoWrite = cfg.NoWrite
+	for _, t := range []Token{tokens.Observe, tokens.Write} {
+		if !strings.Contains(t.ID, "!") || !strings.Contains(t.ID, "@") {
+			return nil, fmt.Errorf("token_id %q: want <user>@<realm>!<tokenname>", t.ID)
+		}
+		if t.Secret == nil {
+			return nil, errors.New("the token secret is not set")
+		}
 	}
 	basePath := cfg.APIBasePath
 	if basePath == "" {
@@ -166,10 +188,9 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	tr.TLSClientConfig = tlsCfg
 	tr.Proxy = nil
 	return &Client{
-		base:    u.String() + basePath,
-		tokenID: cfg.TokenID,
-		secret:  cfg.Secret,
-		http:    &http.Client{Transport: tr, Timeout: timeout},
+		base:   u.String() + basePath,
+		tokens: tokens,
+		http:   &http.Client{Transport: tr, Timeout: timeout},
 	}, nil
 }
 
@@ -177,7 +198,11 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 // GET・DELETE の params はクエリ、POST・PUT は form の本文に入れる。
 func (c *Client) call(ctx context.Context, method, path string, params url.Values, out any) error {
 	op := method + " " + path
-	secret, err := c.secret(ctx)
+	token, err := c.tokens.For(ctx, "proxmox "+op)
+	if err != nil {
+		return &Error{Kind: KindRejected, Op: op, Message: "this run does not write", Err: err}
+	}
+	secret, err := token.Secret(ctx)
 	if err != nil {
 		return &Error{Kind: KindAuth, Op: op, Message: "the token secret cannot be resolved", Err: err}
 	}
@@ -194,7 +219,7 @@ func (c *Client) call(ctx context.Context, method, path string, params url.Value
 	if err != nil {
 		return &Error{Kind: KindRejected, Op: op, Err: err}
 	}
-	req.Header.Set("Authorization", "PVEAPIToken="+c.tokenID+"="+secret)
+	req.Header.Set("Authorization", "PVEAPIToken="+token.ID+"="+secret)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

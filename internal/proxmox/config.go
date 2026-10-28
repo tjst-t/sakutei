@@ -25,6 +25,12 @@ package proxmox
 //	    api_base_path: /api2/json         # 省略可（API のパスの前置き。既定 /api2/json、"/" は前置き無し）
 //	    token_id: sakutei@pve!sakutei     # <user>@<realm>!<tokenname>
 //	    token_secret: secretref:file/proxmox/lab/token
+//	    observe:                          # 省略可。観測用の資格（§20.7、#186。PVEAuditor のトークン）
+//	      token_id: sakutei@pve!audit     #   書かないキーは上（token_id・token_secret）のまま
+//	      token_secret: secretref:file/proxmox/lab/audit
+//	    write:                            # 省略可。書き込み用の資格（Apply だけが使う）
+//	      token_id: sakutei@pve!write
+//	      token_secret: secretref:file/proxmox/lab/write
 //	    node: pve1                        # 省略可（node を宣言しない VM を作るノード）
 //	    scope: site=tokyo                 # 省略可（このクラスタの ID の scope。既定 root）
 //	    protected_vmids:                  # 触らない VM（段0 のもの、§23）
@@ -44,6 +50,12 @@ package proxmox
 //     store にその path があることだけを確かめる。
 //   - 相対パス（secret_store・ca_file）は設定ファイルのあるディレクトリから。
 //   - 未知のキーはエラー（書き間違いを黙って無視しない）。
+//   - 観測用と書き込み用（#186、internal/apicred）: observe・write はどちらも
+//     token_id・token_secret だけを持ち、書かないキーはクラスタの上の値を
+//     受け継ぐ。観測（Read・List）は observe の資格だけを、書き込み（Apply、
+//     provider.Writing の ctx）は write の資格だけを使う。この回が書かない
+//     （LoadOptions.ObserveOnly）なら write の secret は store にあるかを
+//     確かめず、取り出さず、書き込みを断る。
 //   - 触らない VM（protected_vmids・protected_names）は List に出さず、
 //     Read・Apply もしない。intent で宣言すれば計画のエラー（§23 の段0 の線引き）。
 
@@ -60,6 +72,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/apibase"
+	"github.com/tjst-t/sakutei/v2/internal/apicred"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -74,9 +87,14 @@ type ClusterConfig struct {
 	Endpoint string
 	// APIBasePath は API のパスの前置き（api_base_path。省けば
 	// DefaultAPIBasePath、"/" は前置き無し）。実機と模擬で違うときに変える。
-	APIBasePath        string
-	TokenID            string
-	TokenSecret        core.SecretRef
+	APIBasePath string
+	// TokenID・TokenSecret は観測用の資格（observe: が無ければクラスタの上の値）。
+	TokenID     string
+	TokenSecret core.SecretRef
+	// WriteTokenID・WriteTokenSecret は書き込み用の資格（write: が無ければ
+	// クラスタの上の値。observe:・write: を書かなければ観測用と同じ、#186）。
+	WriteTokenID       string
+	WriteTokenSecret   core.SecretRef
 	Node               string
 	Scope              core.Scope
 	ProtectedVMIDs     []int
@@ -85,12 +103,23 @@ type ClusterConfig struct {
 	InsecureSkipVerify bool
 	Timeout            time.Duration
 	TaskWait           time.Duration
+
+	split bool // observe:・write: のどちらかが書いてある
 }
 
 // Config は設定ファイルの中身。
 type Config struct {
 	SecretStore string
 	Clusters    map[string]ClusterConfig
+	// ObserveOnly はこの回が書かない（LoadOptions.ObserveOnly）。
+	ObserveOnly bool
+}
+
+// LoadOptions は設定の読み方。
+type LoadOptions struct {
+	// ObserveOnly はこの回が書かない（provider.AccessObserve、§20.7、#186）:
+	// 書き込み用の secret は store にあるかを確かめず・取り出さず、書き込みを断る。
+	ObserveOnly bool
 }
 
 var (
@@ -98,30 +127,35 @@ var (
 	clusterKeys = map[string]bool{
 		"endpoint": true, "api_base_path": true, "token_id": true, "token_secret": true, "node": true, "scope": true,
 		"protected_vmids": true, "protected_names": true, "ca_file": true, "insecure_skip_verify": true,
-		"timeout": true, "task_wait": true,
+		"timeout": true, "task_wait": true, apicred.KeyObserve: true, apicred.KeyWrite: true,
 	}
 	// clusterName はクラスタの名前（ID の前半。"/" を含まない）。
 	clusterName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 )
 
-// LoadConfig は path の設定を読み、検査する。
+// LoadConfig は path の設定を読み、検査する（書く回として）。
 func LoadConfig(path string) (Config, error) {
+	return LoadConfigWith(path, LoadOptions{})
+}
+
+// LoadConfigWith は LoadConfig を opts の読み方で行う。
+func LoadConfigWith(path string, opts LoadOptions) (Config, error) {
 	tree, err := loader.ReadTree(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("proxmox config: %w", err)
 	}
-	cfg, err := parseConfig(tree, filepath.Dir(path))
+	cfg, err := parseConfig(tree, filepath.Dir(path), opts)
 	if err != nil {
 		return Config{}, fmt.Errorf("proxmox config %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
-func parseConfig(tree map[string]any, dir string) (Config, error) {
+func parseConfig(tree map[string]any, dir string, opts LoadOptions) (Config, error) {
 	if err := unknownKeys("", tree, topKeys); err != nil {
 		return Config{}, err
 	}
-	cfg := Config{Clusters: map[string]ClusterConfig{}}
+	cfg := Config{Clusters: map[string]ClusterConfig{}, ObserveOnly: opts.ObserveOnly}
 	store, err := str(tree, "secret_store", "")
 	if err != nil {
 		return Config{}, err
@@ -162,8 +196,13 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 		have[p] = true
 	}
 	for _, name := range names {
-		if ref := cfg.Clusters[name].TokenSecret; !have[ref.Path()] {
-			return Config{}, fmt.Errorf("clusters.%s.token_secret: %s is not in the secret store %s", name, ref, cfg.SecretStore)
+		c := cfg.Clusters[name]
+		if ref := c.TokenSecret; !have[ref.Path()] {
+			return Config{}, fmt.Errorf("clusters.%s%s.token_secret: %s is not in the secret store %s", name, c.observeAt(), ref, cfg.SecretStore)
+		}
+		// The write secret is checked only in a run that may write (#186).
+		if ref := c.WriteTokenSecret; !opts.ObserveOnly && !have[ref.Path()] {
+			return Config{}, fmt.Errorf("clusters.%s%s.token_secret: %s is not in the secret store %s", name, c.writeAt(), ref, cfg.SecretStore)
 		}
 	}
 	return cfg, nil
@@ -180,7 +219,7 @@ func parseCluster(p string, m map[string]any, dir string) (ClusterConfig, error)
 		key string
 		dst *string
 	}{
-		{"endpoint", &c.Endpoint}, {"token_id", &c.TokenID}, {"node", &c.Node},
+		{"endpoint", &c.Endpoint}, {"node", &c.Node},
 		{"scope", &scope}, {"ca_file", &c.CAFile},
 	} {
 		if *f.dst, err = str(m, f.key, p+"."); err != nil {
@@ -198,9 +237,6 @@ func parseCluster(p string, m map[string]any, dir string) (ClusterConfig, error)
 		if _, err := apibase.Clean(c.APIBasePath); err != nil {
 			return ClusterConfig{}, fmt.Errorf("%s.%w", p, err)
 		}
-	}
-	if c.TokenID == "" {
-		return ClusterConfig{}, fmt.Errorf("%s.token_id is required (<user>@<realm>!<tokenname>)", p)
 	}
 	if c.Scope, err = core.ParseScope(scope); err != nil {
 		return ClusterConfig{}, fmt.Errorf("%s.scope: %w", p, err)
@@ -262,14 +298,53 @@ func parseCluster(p string, m map[string]any, dir string) (ClusterConfig, error)
 			c.ProtectedNames = append(c.ProtectedNames, s)
 		}
 	}
-	v, ok := m["token_secret"]
-	if !ok {
-		return ClusterConfig{}, fmt.Errorf("%s.token_secret is required (a SecretRef such as \"secretref:file/proxmox/token\")", p)
+	sec, err := apicred.Read(p, m, "token_id", "token_secret")
+	if err != nil {
+		return ClusterConfig{}, err
 	}
-	if c.TokenSecret, err = parseSecretRef(v); err != nil {
-		return ClusterConfig{}, fmt.Errorf("%s.token_secret: %w", p, err)
+	c.split = sec.Split
+	if c.TokenID, c.TokenSecret, err = parseToken(p+c.observeAt(), sec.Observe); err != nil {
+		return ClusterConfig{}, err
+	}
+	if c.WriteTokenID, c.WriteTokenSecret, err = parseToken(p+c.writeAt(), sec.Write); err != nil {
+		return ClusterConfig{}, err
 	}
 	return c, nil
+}
+
+// observeAt・writeAt は文言の中の資格の場所（分けていなければクラスタの上）。
+func (c ClusterConfig) observeAt() string {
+	if c.split {
+		return "." + apicred.KeyObserve
+	}
+	return ""
+}
+
+func (c ClusterConfig) writeAt() string {
+	if c.split {
+		return "." + apicred.KeyWrite
+	}
+	return ""
+}
+
+// parseToken は 1 本の資格（token_id・token_secret）を読む。
+func parseToken(p string, m map[string]any) (string, core.SecretRef, error) {
+	id, err := str(m, "token_id", p+".")
+	if err != nil {
+		return "", core.SecretRef{}, err
+	}
+	if id == "" {
+		return "", core.SecretRef{}, fmt.Errorf("%s.token_id is required (<user>@<realm>!<tokenname>)", p)
+	}
+	v, ok := m["token_secret"]
+	if !ok {
+		return "", core.SecretRef{}, fmt.Errorf("%s.token_secret is required (a SecretRef such as \"secretref:file/proxmox/token\")", p)
+	}
+	ref, err := parseSecretRef(v)
+	if err != nil {
+		return "", core.SecretRef{}, fmt.Errorf("%s.token_secret: %w", p, err)
+	}
+	return id, ref, nil
 }
 
 // parseSecretRef は SecretRef を読む。生の値は（エラーの文言にも）出さない。
@@ -311,18 +386,24 @@ func (c Config) Build() (map[string]Cluster, error) {
 	backend := render.NewFileSecretBackend(c.SecretStore)
 	out := make(map[string]Cluster, len(c.Clusters))
 	for name, cc := range c.Clusters {
-		ref := cc.TokenSecret
-		cl, err := NewClient(ClientConfig{
-			Endpoint:    cc.Endpoint,
-			APIBasePath: cc.APIBasePath,
-			TokenID:     cc.TokenID,
-			Secret: func(ctx context.Context) (string, error) {
+		token := func(id string, ref core.SecretRef) Token {
+			return Token{ID: id, Secret: func(ctx context.Context) (string, error) {
 				v, err := backend.ResolveValue(ctx, ref.Backend(), ref.Path(), ref.Generation())
 				if err != nil {
 					return "", fmt.Errorf("token_secret %s: %w", ref, err)
 				}
 				return v, nil
-			},
+			}}
+		}
+		obs := token(cc.TokenID, cc.TokenSecret)
+		write := token(cc.WriteTokenID, cc.WriteTokenSecret)
+		cl, err := NewClient(ClientConfig{
+			Endpoint:           cc.Endpoint,
+			APIBasePath:        cc.APIBasePath,
+			TokenID:            obs.ID,
+			Secret:             obs.Secret,
+			Write:              &write,
+			NoWrite:            c.ObserveOnly,
 			CAFile:             cc.CAFile,
 			InsecureSkipVerify: cc.InsecureSkipVerify,
 			Timeout:            cc.Timeout,

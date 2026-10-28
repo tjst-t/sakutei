@@ -46,7 +46,7 @@
 //   - server・dn：識別子（ID と同じ値。省略できる）。
 //
 // 管理の境界（§7）：List は base_dn の下（base_dn そのものは含まない）の、
-// filter に合う項目だけを返す。bind_dn の項目、サブエントリ（ldapSubEntry）・
+// filter に合う項目だけを返す。bind_dn の項目（観測用・書き込み用の両方）、サブエントリ（ldapSubEntry）・
 // tombstone は返さない。スキーマ・設定（cn=schema・cn=config）は base_dn の外。
 // base_dn の外や bind_dn を指す ID は読み込みの時点で断る。
 //
@@ -116,6 +116,10 @@ type Options struct {
 	Runner Runner
 	// Secrets は SecretRef（bind のパスワード・userPassword）を解決する。
 	Secrets core.SecretResolver
+	// NoWrite はこの回が書かない（provider.AccessObserve、§20.7、#186）:
+	// 書き込みを provider.ErrNoWriteAccess で断り、書き込み用のパスワードも
+	// userPassword も取り出さない。
+	NoWrite bool
 }
 
 // Provider は provider.Provider・Lister・BulkObserver・IntentValidator・
@@ -124,6 +128,7 @@ type Provider struct {
 	servers map[string]*Server
 	client  *Client
 	secrets core.SecretResolver
+	noWrite bool
 }
 
 var (
@@ -136,7 +141,7 @@ var (
 
 // New は servers（名前 → Server）を扱う Provider を返す。
 func New(servers map[string]Server, opts Options) (*Provider, error) {
-	p := &Provider{servers: map[string]*Server{}, client: NewClient(opts), secrets: opts.Secrets}
+	p := &Provider{servers: map[string]*Server{}, client: NewClient(opts), secrets: opts.Secrets, noWrite: opts.NoWrite}
 	for k, v := range servers {
 		s := v
 		if err := s.prepare(); err != nil {
@@ -216,8 +221,8 @@ func (p *Provider) parseID(localID string) (target, error) {
 	if !c.Under(srv.base) {
 		return bad("the DN is not below base_dn %q of server %s; it is outside what this provider manages (§7)", srv.BaseDN, server)
 	}
-	if c.String() == srv.bindDN.String() {
-		return bad("the DN is the bind_dn of server %s; it is outside what this provider manages (§7)", server)
+	if srv.isBindDN(cs) {
+		return bad("the DN is a bind_dn of server %s; it is outside what this provider manages (§7)", server)
 	}
 	return target{localID: localID, server: server, srv: srv, dn: c, dnStr: cs}, nil
 }
@@ -360,12 +365,17 @@ func (o *observer) listed(es []Entry) (map[string]Entry, error) {
 		}
 		c := d.Canonical()
 		cs := c.String()
-		if !c.Under(o.srv.base) || cs == o.srv.bindDN.String() || subentry(e) {
+		if !c.Under(o.srv.base) || o.srv.isBindDN(cs) || subentry(e) {
 			continue
 		}
 		out[cs] = e
 	}
 	return out, nil
+}
+
+// isBindDN は正規形の DN dn が、サーバの観測用・書き込み用の bind_dn のどちらかか。
+func (s *Server) isBindDN(dn string) bool {
+	return dn == s.bindDN.String() || dn == s.writeBindDN.String()
 }
 
 // subentry は項目がサブエントリ・tombstone か。

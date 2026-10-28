@@ -28,6 +28,12 @@ package postgresql
 //	    dbname: postgres                  # 管理用につなぐ DB（既定 postgres）
 //	    user: sakutei                     # 管理用のロール（必須）
 //	    password: secretref:file/pg/main/admin   # 省略可（SecretRef だけ）
+//	    observe:                          # 省略可。観測用の資格（§20.7、#186。読むだけのロール）
+//	      user: sakutei_ro                #   書かないキーは上（user・password）のまま
+//	      password: secretref:file/pg/main/ro
+//	    write:                            # 省略可。書き込み用の資格（Apply だけが使う）
+//	      user: sakutei
+//	      password: secretref:file/pg/main/admin
 //	    sslmode: verify-full              # 省略可
 //	    sslrootcert: ca.pem               # 省略可
 //	    connect_timeout: 10s              # 省略可（既定 10s）
@@ -42,6 +48,17 @@ package postgresql
 //   - 相対パス（secret_store・sslrootcert、"/" を含む psql）は設定ファイルの
 //     あるディレクトリから。"/" を含まない psql は PATH から探す。
 //   - 未知のキーはエラー（書き間違いを黙って無視しない）。
+//   - 観測用と書き込み用（#186、internal/apicred）: observe・write はどちらも
+//     user・password だけを持ち、書かないキーはサーバの上の値を受け継ぐ。
+//     観測（Read・List・BulkObserve の psql）は observe のロールだけで、
+//     書き込み（Apply、provider.Writing の ctx。Apply の中の読み直しを含む）は
+//     write のロールだけでつなぐ。この回が書かない（LoadOptions.ObserveOnly）
+//     なら write の password は store にあるかを確かめず、取り出さず、書き込みを
+//     断る（psql を起動しない）。2 つのロールはどちらも List に出さず、宣言も
+//     できない（管理の境界の外、§7）。
+//   - verify_passwords の pg_authid は観測のロールで読む。読めない（読むだけの
+//     ロールで権限が無い）ときは、パスワードを宣言したロールを観測できない
+//     （Unknown）として返し、「違う」とはしない（§3 第3原則）。
 
 import (
 	"context"
@@ -54,6 +71,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/apicred"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -64,20 +82,46 @@ const DefaultConnectTimeout = 10 * time.Second
 
 // Server は 1 つのサーバの設定。
 type Server struct {
-	Host        string
-	Port        int
-	DBName      string // 管理用につなぐ DB（既定 postgres）
+	Host   string
+	Port   int
+	DBName string // 管理用につなぐ DB（既定 postgres）
+	// User・HasPassword・Password は観測用の資格（observe: が無ければサーバの
+	// 上の値。observe:・write: を書かなければ書き込みにも使う 1 本の資格）。
 	User        string // 管理用のロール
 	HasPassword bool
 	Password    core.SecretRef
-	SSLMode     string
-	SSLRootCert string
+	// WriteUser・WriteHasPassword・WritePassword は書き込み用の資格（write: が
+	// 無ければサーバの上の値、#186）。WriteUser が空なら観測用と同じ。
+	WriteUser        string
+	WriteHasPassword bool
+	WritePassword    core.SecretRef
+	SSLMode          string
+	SSLRootCert      string
 	// ConnectTimeout は接続を待つ時間（PGCONNECT_TIMEOUT。秒に切り上げ、最小 2 秒）。
 	ConnectTimeout time.Duration
 	Scope          core.Scope
 	// VerifyPasswords が true なら、Read は password を宣言して作ったロールの
 	// パスワードがまだ合うかを pg_authid で確かめる（超ユーザが要る、§29.1）。
 	VerifyPasswords bool
+
+	split bool // observe:・write: のどちらかが書いてある
+}
+
+// Credential は 1 本の資格（つなぐロールとそのパスワード）。
+type Credential struct {
+	User        string
+	HasPassword bool
+	Password    core.SecretRef
+}
+
+// credentials は s の観測用と書き込み用の資格（noWrite はこの回が書かない）。
+func (s Server) credentials(noWrite bool) apicred.Pair[Credential] {
+	pair := apicred.Single(Credential{User: s.User, HasPassword: s.HasPassword, Password: s.Password})
+	if s.WriteUser != "" {
+		pair.Write = Credential{User: s.WriteUser, HasPassword: s.WriteHasPassword, Password: s.WritePassword}
+	}
+	pair.NoWrite = noWrite
+	return pair
 }
 
 // Config は設定ファイルの中身。
@@ -85,6 +129,15 @@ type Config struct {
 	Psql        string
 	SecretStore string
 	Servers     map[string]Server
+	// ObserveOnly はこの回が書かない（LoadOptions.ObserveOnly）。
+	ObserveOnly bool
+}
+
+// LoadOptions は設定の読み方。
+type LoadOptions struct {
+	// ObserveOnly はこの回が書かない（provider.AccessObserve、§20.7、#186）:
+	// 書き込み用の password は store にあるかを確かめず・取り出さず、書き込みを断る。
+	ObserveOnly bool
 }
 
 var (
@@ -92,30 +145,36 @@ var (
 	serverKeys = map[string]bool{
 		"host": true, "port": true, "dbname": true, "user": true, "password": true, "sslmode": true,
 		"sslrootcert": true, "connect_timeout": true, "scope": true, "verify_passwords": true,
+		apicred.KeyObserve: true, apicred.KeyWrite: true,
 	}
 	// serverName はサーバの名前（ID の先頭。"/" を含まない）。
 	serverName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 	sslModes   = map[string]bool{"disable": true, "allow": true, "prefer": true, "require": true, "verify-ca": true, "verify-full": true}
 )
 
-// LoadConfig は path の設定を読み、検査する。
+// LoadConfig は path の設定を読み、検査する（書く回として）。
 func LoadConfig(path string) (Config, error) {
+	return LoadConfigWith(path, LoadOptions{})
+}
+
+// LoadConfigWith は LoadConfig を opts の読み方で行う。
+func LoadConfigWith(path string, opts LoadOptions) (Config, error) {
 	tree, err := loader.ReadTree(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("postgresql config: %w", err)
 	}
-	cfg, err := parseConfig(tree, filepath.Dir(path))
+	cfg, err := parseConfig(tree, filepath.Dir(path), opts)
 	if err != nil {
 		return Config{}, fmt.Errorf("postgresql config %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
-func parseConfig(tree map[string]any, dir string) (Config, error) {
+func parseConfig(tree map[string]any, dir string, opts LoadOptions) (Config, error) {
 	if err := unknownKeys("", tree, topKeys); err != nil {
 		return Config{}, err
 	}
-	cfg := Config{Servers: map[string]Server{}}
+	cfg := Config{Servers: map[string]Server{}, ObserveOnly: opts.ObserveOnly}
 	var err error
 	if cfg.Psql, err = str(tree, "psql", ""); err != nil {
 		return Config{}, err
@@ -161,15 +220,24 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 		}
 		cfg.Servers[name] = s
 	}
-	var refs []string
+	// 確かめる SecretRef（場所 → 参照）。書き込み用は書く回でだけ（#186）。
+	type secretAt struct {
+		at  string
+		ref core.SecretRef
+	}
+	var refs []secretAt
 	for _, name := range names {
-		if s := cfg.Servers[name]; s.HasPassword {
-			refs = append(refs, name)
+		s := cfg.Servers[name]
+		if s.HasPassword {
+			refs = append(refs, secretAt{"servers." + name + s.observeAt() + ".password", s.Password})
+		}
+		if s.WriteHasPassword && !opts.ObserveOnly {
+			refs = append(refs, secretAt{"servers." + name + s.writeAt() + ".password", s.WritePassword})
 		}
 	}
 	if len(refs) > 0 {
 		if cfg.SecretStore == "" {
-			return Config{}, fmt.Errorf("servers.%s.password: \"secret_store\" is required to resolve the SecretRef", refs[0])
+			return Config{}, fmt.Errorf("%s: \"secret_store\" is required to resolve the SecretRef", refs[0].at)
 		}
 		paths, err := render.NewFileSecretBackend(cfg.SecretStore).Paths()
 		if err != nil {
@@ -179,10 +247,9 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 		for _, p := range paths {
 			have[p] = true
 		}
-		for _, name := range refs {
-			ref := cfg.Servers[name].Password
-			if !have[ref.Path()] {
-				return Config{}, fmt.Errorf("servers.%s.password: %s is not in the secret store %s", name, ref, cfg.SecretStore)
+		for _, r := range refs {
+			if !have[r.ref.Path()] {
+				return Config{}, fmt.Errorf("%s: %s is not in the secret store %s", r.at, r.ref, cfg.SecretStore)
 			}
 		}
 	}
@@ -199,15 +266,27 @@ func parseServer(p string, m map[string]any, dir string, topScope core.Scope) (S
 		key string
 		dst *string
 	}{
-		{"host", &s.Host}, {"dbname", &s.DBName}, {"user", &s.User}, {"sslmode", &s.SSLMode}, {"sslrootcert", &s.SSLRootCert},
+		{"host", &s.Host}, {"dbname", &s.DBName}, {"sslmode", &s.SSLMode}, {"sslrootcert", &s.SSLRootCert},
 	} {
 		if *f.dst, err = str(m, f.key, p+"."); err != nil {
 			return Server{}, err
 		}
 	}
-	if s.User == "" {
-		return Server{}, fmt.Errorf("%s.user is required (the role Sakutei connects as; it is never listed or pruned)", p)
+	sec, err := apicred.Read(p, m, "user", "password")
+	if err != nil {
+		return Server{}, err
 	}
+	s.split = sec.Split
+	obs, err := parseCredential(p+s.observeAt(), sec.Observe)
+	if err != nil {
+		return Server{}, err
+	}
+	write, err := parseCredential(p+s.writeAt(), sec.Write)
+	if err != nil {
+		return Server{}, err
+	}
+	s.User, s.HasPassword, s.Password = obs.User, obs.HasPassword, obs.Password
+	s.WriteUser, s.WriteHasPassword, s.WritePassword = write.User, write.HasPassword, write.Password
 	if s.DBName == "" {
 		s.DBName = "postgres"
 	}
@@ -249,14 +328,42 @@ func parseServer(p string, m map[string]any, dir string, topScope core.Scope) (S
 			return Server{}, fmt.Errorf("%s.scope: %w", p, err)
 		}
 	}
+	return s, nil
+}
+
+// observeAt・writeAt は文言の中の資格の場所（分けていなければサーバの上）。
+func (s Server) observeAt() string {
+	if s.split {
+		return "." + apicred.KeyObserve
+	}
+	return ""
+}
+
+func (s Server) writeAt() string {
+	if s.split {
+		return "." + apicred.KeyWrite
+	}
+	return ""
+}
+
+// parseCredential は 1 本の資格（user・password）を読む（p は文言の中の場所）。
+func parseCredential(p string, m map[string]any) (Credential, error) {
+	var c Credential
+	var err error
+	if c.User, err = str(m, "user", p+"."); err != nil {
+		return Credential{}, err
+	}
+	if c.User == "" {
+		return Credential{}, fmt.Errorf("%s.user is required (the role Sakutei connects as; it is never listed or pruned)", p)
+	}
 	if v, ok := m["password"]; ok {
 		ref, err := parseSecretRef(v)
 		if err != nil {
-			return Server{}, fmt.Errorf("%s.password: %w", p, err)
+			return Credential{}, fmt.Errorf("%s.password: %w", p, err)
 		}
-		s.HasPassword, s.Password = true, ref
+		c.HasPassword, c.Password = true, ref
 	}
-	return s, nil
+	return c, nil
 }
 
 // intValue は数（JSON の数・YAML の整数・数字の文字列）を int にする。
@@ -325,9 +432,14 @@ func (f fileSecrets) ResolveValue(ctx context.Context, backend, path string, gen
 	return f.b.ResolveValue(ctx, backend, path, gen)
 }
 
-// NewFromConfig は path の設定から Provider を作る（registry の factory 用）。
+// NewFromConfig は path の設定から Provider を作る（registry の factory 用。書く回）。
 func NewFromConfig(path string) (*Provider, error) {
-	cfg, err := LoadConfig(path)
+	return NewFromConfigWith(path, LoadOptions{})
+}
+
+// NewFromConfigWith は NewFromConfig を opts の読み方で行う。
+func NewFromConfigWith(path string, opts LoadOptions) (*Provider, error) {
+	cfg, err := LoadConfigWith(path, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -335,9 +447,15 @@ func NewFromConfig(path string) (*Provider, error) {
 }
 
 // NewFromConfigTree は path から読んだ設定の木 tree（intent の providers: の範囲を
-// 重ねたもの、§7.7、#182）から Provider を作る（registry の factory 用）。
+// 重ねたもの、§7.7、#182）から Provider を作る（registry の factory 用。書く回）。
 func NewFromConfigTree(path string, tree map[string]any) (*Provider, error) {
-	cfg, err := parseConfig(tree, filepath.Dir(path))
+	return NewFromConfigTreeWith(path, tree, LoadOptions{})
+}
+
+// NewFromConfigTreeWith は NewFromConfigTree を opts の読み方で行う（書かない回は
+// 書き込み用の password を確かめない、§20.7、#186）。
+func NewFromConfigTreeWith(path string, tree map[string]any, opts LoadOptions) (*Provider, error) {
+	cfg, err := parseConfig(tree, filepath.Dir(path), opts)
 	if err != nil {
 		return nil, fmt.Errorf("postgresql config %s: %w", path, err)
 	}
@@ -347,7 +465,7 @@ func NewFromConfigTree(path string, tree map[string]any) (*Provider, error) {
 // Options は設定の psql と secret_store から、psql の呼び方（Client・Provider の
 // Options）を作る。sqlmigrate の engine: postgresql も同じサーバの一覧から使う。
 func (cfg Config) Options() Options {
-	opts := Options{Psql: cfg.Psql}
+	opts := Options{Psql: cfg.Psql, NoWrite: cfg.ObserveOnly}
 	if cfg.SecretStore != "" {
 		opts.Secrets = fileSecrets{render.NewFileSecretBackend(cfg.SecretStore)}
 	}

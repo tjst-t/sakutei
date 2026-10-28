@@ -31,8 +31,10 @@ import (
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
-// Apply は plan を適用する。
+// Apply は plan を適用する。psql は書き込み用のロールでつなぐ（中の読み直しも。
+// コアは Apply を provider.WithWrite の ctx で呼ぶが、ここでも付ける、§20.7、#186）。
 func (p *Provider) Apply(ctx context.Context, plan core.Plan) error {
+	ctx = provider.WithWrite(ctx)
 	for _, op := range plan.Ops {
 		if err := p.applyOp(ctx, op); err != nil {
 			return err

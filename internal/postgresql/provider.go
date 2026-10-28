@@ -181,6 +181,10 @@ type Options struct {
 	Runner Runner
 	// Secrets は SecretRef（管理用のパスワード・ロールのパスワード）を解決する。
 	Secrets core.SecretResolver
+	// NoWrite はこの回が書かない（provider.AccessObserve、§20.7、#186）:
+	// 書き込みの ctx（provider.Writing）の psql を起動せず、
+	// provider.ErrNoWriteAccess で断る。
+	NoWrite bool
 }
 
 // Provider は provider.Provider・Lister・BulkObserver・IntentValidator・
@@ -309,8 +313,8 @@ func (s *Server) outsideRole(role string) string {
 	switch {
 	case strings.HasPrefix(role, "pg_"):
 		return fmt.Sprintf("role %q is a system role (pg_*)", role)
-	case role == s.User:
-		return fmt.Sprintf("role %q is the role Sakutei connects as", role)
+	case role == s.User || (s.WriteUser != "" && role == s.WriteUser):
+		return fmt.Sprintf("role %q is a role Sakutei connects as", role)
 	case strings.EqualFold(role, "public"):
 		return fmt.Sprintf(`%q is not a role (for the privileges of PUBLIC, write %s in a grant id)`, role, PublicGrantee)
 	}
@@ -471,7 +475,9 @@ func (o *observer) password(ctx context.Context, r *RoleInfo) (string, error) {
 		o.pw.loaded = true
 	}
 	if o.pw.err != nil {
-		return "", fmt.Errorf("verify_passwords: %w (reading pg_authid needs a superuser)", o.pw.err)
+		// 読めない（観測のロールに pg_authid を読む権限が無いなど）は観測できない
+		// （Unknown）。パスワードが違うとはしない（§3 第3原則、#186）。
+		return "", fmt.Errorf("verify_passwords: %w (reading pg_authid needs a superuser as the observe role)", o.pw.err)
 	}
 	if o.p.secrets == nil {
 		return "", &Error{Kind: KindSecret, Server: o.name, Message: fmt.Sprintf("verify_passwords: %s: no secret store is configured", ref)}

@@ -148,3 +148,78 @@ func TestClients_ResolvesPasswordPerRequest(t *testing.T) {
 		t.Fatalf("store gone: %v, want unreachable (no operation)", err)
 	}
 }
+
+// observe:・write: は username・password だけを持ち、書かないキーは BMC の上の
+// 値を受け継ぐ（#186）。
+func TestLoad_ObserveWriteSections(t *testing.T) {
+	// [AC-186-3-4]
+	dir := t.TempDir()
+	writeFile(t, dir, "secrets.json", store)
+	p := writeFile(t, dir, "bmcs.yaml", `secret_store: secrets.json
+bmcs:
+  n1:
+    address: https://10.0.0.1
+    username: admin
+    password: secretref:file/bmc/n1
+    observe:
+      username: reader
+      password: secretref:file/bmc/n2
+  n2:
+    address: https://10.0.0.2
+    username: admin
+    password: secretref:file/bmc/n2
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n1, n2 := cfg.BMCs["n1"], cfg.BMCs["n2"]
+	if n1.Username != "reader" || n1.Password.Path() != "bmc/n2" || n1.WriteUsername != "admin" || n1.WritePassword.Path() != "bmc/n1" {
+		t.Errorf("n1 = %+v; want observe reader/bmc/n2 and write admin/bmc/n1 (inherited)", n1)
+	}
+	if n2.Username != "admin" || n2.WriteUsername != "admin" || n2.Password.Path() != "bmc/n2" || n2.WritePassword.Path() != "bmc/n2" {
+		t.Errorf("n2 = %+v; want one credential for both", n2)
+	}
+}
+
+func TestLoad_ObserveWriteErrors(t *testing.T) {
+	// [AC-186-3-5]
+	dir := t.TempDir()
+	writeFile(t, dir, "secrets.json", store)
+	bmc := func(extra string) string {
+		return "secret_store: secrets.json\nbmcs:\n  n1:\n    address: https://10.0.0.1\n" + extra
+	}
+	for _, c := range []struct {
+		body, want string
+		opts       LoadOptions
+	}{
+		{body: bmc("    username: admin\n    password: secretref:file/bmc/n1\n    observe:\n      address: https://x\n"),
+			want: `unknown key "bmcs.n1.observe.address"`},
+		{body: bmc("    username: admin\n    password: secretref:file/bmc/n1\n    observe: reader\n"),
+			want: "bmcs.n1.observe: must be a map"},
+		{body: bmc("    username: admin\n    password: secretref:file/bmc/n1\n    write: 3\n"),
+			want: "bmcs.n1.write: must be a map"},
+		{body: bmc("    observe:\n      username: reader\n      password: secretref:file/bmc/n1\n"),
+			want: "bmcs.n1.write.username is required"},
+		{body: bmc("    username: admin\n    password: secretref:file/bmc/n1\n    write:\n      password: pw1\n"),
+			want: "bmcs.n1.write.password: must be a SecretRef"},
+		// The write password is checked only in a run that may write.
+		{body: bmc("    username: admin\n    password: secretref:file/bmc/n1\n    write:\n      password: secretref:file/bmc/none\n"),
+			want: "bmcs.n1.write.password: secretref:file/bmc/none#gen0 is not in the secret store"},
+		{body: bmc("    username: admin\n    password: secretref:file/bmc/none\n    write:\n      password: secretref:file/bmc/n1\n"),
+			want: "bmcs.n1.observe.password", opts: LoadOptions{ObserveOnly: true}},
+	} {
+		p := writeFile(t, dir, "bmcs.yaml", c.body)
+		_, err := LoadWith(p, c.opts)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("Load(%q) = %v, want an error containing %q", c.body, err, c.want)
+		}
+		if err != nil && strings.Contains(err.Error(), "pw1") {
+			t.Errorf("the error repeats a password: %v", err)
+		}
+	}
+	p := writeFile(t, dir, "bmcs.yaml", bmc("    username: admin\n    password: secretref:file/bmc/n1\n    write:\n      password: secretref:file/bmc/none\n"))
+	if _, err := LoadWith(p, LoadOptions{ObserveOnly: true}); err != nil {
+		t.Errorf("an observe-only run must not check the write password: %v", err)
+	}
+}

@@ -80,6 +80,9 @@ type Options struct {
 	// BasePath は API のパスの前置き（既定 "/api2/json"、"/" は前置き無し）。
 	// 前置きの違う模擬の再現（#160）。
 	BasePath string
+	// AuditTokenID・AuditSecret は読むだけのトークン（ACL が / に PVEAuditor、
+	// #186）。GET だけを受け付け、ほかは 403。
+	AuditTokenID, AuditSecret string
 }
 
 // PoolToken は 1 つの pool に絞ったトークン（ACL が /pool/<Pool> に PVEVMAdmin、
@@ -138,6 +141,7 @@ type Server struct {
 	failNext    map[string]string
 	calls       map[string]int
 	resCalls    int
+	byToken     map[string]map[string]int // トークン → "GET"・"WRITE" → 回数
 }
 
 // New は偽サーバを立てる（HTTP）。
@@ -159,7 +163,7 @@ func New(opts Options) *Server {
 		opts.ColdKeys = []string{"cores", "memory"}
 	}
 	s := &Server{opts: opts, vms: map[int]*VM{}, pools: map[string]bool{}, tasks: map[string]*task{}, offline: map[string]bool{},
-		failNext: map[string]string{}, calls: map[string]int{}}
+		failNext: map[string]string{}, calls: map[string]int{}, byToken: map[string]map[string]int{}}
 	for _, p := range opts.Pools {
 		s.pools[p] = true
 	}
@@ -170,6 +174,18 @@ func New(opts Options) *Server {
 // TokenID と Secret は受け付けるトークン。
 func (s *Server) TokenID() string { return s.opts.TokenID }
 func (s *Server) Secret() string  { return s.opts.Secret }
+
+// TokenCalls は tokenID のトークンで受けた要求の回数（"GET" と、ほかの "WRITE"。
+// 断った要求も数える）。
+func (s *Server) TokenCalls(tokenID string) map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]int{}
+	for k, v := range s.byToken[tokenID] {
+		out[k] = v
+	}
+	return out
+}
 
 // SetUnreachable は true の間、接続を切る。
 func (s *Server) SetUnreachable(v bool) { s.mu.Lock(); s.unreachable = v; s.mu.Unlock() }
@@ -365,10 +381,33 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var tok *PoolToken
-	if auth := r.Header.Get("Authorization"); auth != "PVEAPIToken="+s.opts.TokenID+"="+s.opts.Secret {
+	auth := r.Header.Get("Authorization")
+	kind := "WRITE"
+	if r.Method == http.MethodGet {
+		kind = "GET"
+	}
+	count := func(id string) {
+		s.mu.Lock()
+		if s.byToken[id] == nil {
+			s.byToken[id] = map[string]int{}
+		}
+		s.byToken[id][kind]++
+		s.mu.Unlock()
+	}
+	switch {
+	case auth == "PVEAPIToken="+s.opts.TokenID+"="+s.opts.Secret:
+		count(s.opts.TokenID)
+	case s.opts.AuditTokenID != "" && auth == "PVEAPIToken="+s.opts.AuditTokenID+"="+s.opts.AuditSecret:
+		count(s.opts.AuditTokenID)
+		if r.Method != http.MethodGet {
+			writeErr(w, errf(http.StatusForbidden, "Permission check failed (/, VM.Allocate)"))
+			return
+		}
+	default:
 		for i, pt := range s.opts.PoolTokens {
 			if auth == "PVEAPIToken="+pt.TokenID+"="+pt.Secret {
 				tok = &s.opts.PoolTokens[i]
+				count(pt.TokenID)
 			}
 		}
 		if tok == nil {
