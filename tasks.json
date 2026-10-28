@@ -3754,6 +3754,29 @@
       "extra": {}
     },
     {
+      "id": "redfish-qemu-bmc-0-11-0-redfish-firmware",
+      "number": 168,
+      "kind": "task",
+      "title": "Redfish の統合試験を qemu-bmc 0.11.0 に上げ、redfish-firmware の段を足す（UpdateService の模擬で版の観測・更新・故障を確かめる）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "redfish"
+      ],
+      "body": "## なぜ\nredfish-firmware（#148）は、統合試験に使う BMC の模擬（qemu-bmc 0.10.0）が UpdateService を持たないため、偽の Redfish サーバでしか確かめていない。qemu-bmc 0.11.0 で UpdateService の模擬が入った（https://github.com/tjst-t/qemu-bmc/releases/tag/v0.11.0、イメージ ghcr.io/tjst-t/qemu-bmc:0.11.0@sha256:3ab6ea901b1ae8a510a2a140113fd1d80ad0f3ad2c26327ab04ef94f95bbdfc9）。\n\n## やること\n1. `make integration-redfish`（と qemu-bmc を使うほかの統合試験：integration-guestos など）を 0.11.0 で流し直す。通れば固定する版（tag と digest）を 0.11.0 に上げる（Makefile・tests/integration の版の確かめ・doc.go・docs の記述）。落ちたら原因を書き、0.10.0 のまま残すか直すかを決める。\n2. integration-redfish に redfish-firmware の段を足す：\n   - 版の観測：FirmwareInventory/{BMC,BIOS} の Version（初めの版は環境変数 BMC_FIRMWARE_VERSION・BIOS_FIRMWARE_VERSION で決める）が宣言どおりなら適合、違えば差分として出る。\n   - BMC の更新：承認ゲートつきの多相 Task で、SimpleUpdate（ImageURI は試験の中で立てる HTTP で配る。イメージは 1 行目が `QBMC-FW <BMC|BIOS> <version>` のファイル）と multipart（/redfish/v1/UpdateService/upload）の両方。承認の前は送らない、承認の後に送り、BMC の Task（New → Running → Completed、FIRMWARE_UPDATE_SECONDS を短く）を待って版がすぐ変わる。\n   - BIOS の更新：Task が終わっても保留（FirmwareInventory/BIOS の Status.State が StandbyOffline、最後のメッセージが Update.1.0.AwaitToActivate）で版は変わらず、宣言の再起動（reboot）で起動したあとに変わる。再起動を宣言しないときは保留のまま知らせて止まる（今の決まりどおりの振る舞いを書く）。\n   - 故障：qemu-bmc の故障の口（FAULT_API_ADDR に POST /faults）で、`{\"kind\":\"firmware-image-rejected\",\"target\":\"BIOS\"}`（400、Update.1.0.VerificationFailed、Task は作られない）と `{\"kind\":\"firmware-update-fail\",\"target\":\"BMC\",\"atPercent\":30}`（Task が Exception、Update.1.0.ApplyFailed）。どちらも版は変わらず、Task は理由つきで止まり、Event が通知の口（試験の中の httptest の webhook か Alertmanager）に出る。二度目を勝手に送らない。\n3. 偽の Redfish と qemu-bmc の振る舞いの違いが見つかれば、provider と偽のサーバの両方を直す。\n4. docs（docs/providers/redfish.md の試験の節）、設計書 §29.1、CHANGELOG-v3.x。\n\n## 確かめ方\n`make integration-redfish` が 0.11.0 で全部の段 PASS（既存の段と firmware の段）。make check・make test-race。\n\n## 決まり\nGo は stdlib のみ。統合試験は make check と CI の外のまま。",
+      "doneWhen": "qemu-bmc 0.11.0（digest 固定）で make integration-redfish が既存の段と firmware の段（観測・BMC の即時更新・BIOS の保留と再起動・2 種の故障で版が変わらず理由つきで止まり通知に出る）を含めて PASS。make check・make test-race が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T05:32:45.047Z",
+      "updatedAt": "2026-10-28T05:32:45.047Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "external-owner-intent",
       "number": 158,
       "kind": "task",
@@ -3910,29 +3933,6 @@
       "threads": [],
       "createdAt": "2026-10-28T05:32:00.829Z",
       "updatedAt": "2026-10-28T05:32:00.829Z",
-      "closedAt": null,
-      "extra": {}
-    },
-    {
-      "id": "redfish-qemu-bmc-0-11-0-redfish-firmware",
-      "number": 168,
-      "kind": "task",
-      "title": "Redfish の統合試験を qemu-bmc 0.11.0 に上げ、redfish-firmware の段を足す（UpdateService の模擬で版の観測・更新・故障を確かめる）",
-      "status": "ready",
-      "parent": null,
-      "dependsOn": [],
-      "milestone": null,
-      "priority": "normal",
-      "labels": [
-        "redfish"
-      ],
-      "body": "## なぜ\nredfish-firmware（#148）は、統合試験に使う BMC の模擬（qemu-bmc 0.10.0）が UpdateService を持たないため、偽の Redfish サーバでしか確かめていない。qemu-bmc 0.11.0 で UpdateService の模擬が入った（https://github.com/tjst-t/qemu-bmc/releases/tag/v0.11.0、イメージ ghcr.io/tjst-t/qemu-bmc:0.11.0@sha256:3ab6ea901b1ae8a510a2a140113fd1d80ad0f3ad2c26327ab04ef94f95bbdfc9）。\n\n## やること\n1. `make integration-redfish`（と qemu-bmc を使うほかの統合試験：integration-guestos など）を 0.11.0 で流し直す。通れば固定する版（tag と digest）を 0.11.0 に上げる（Makefile・tests/integration の版の確かめ・doc.go・docs の記述）。落ちたら原因を書き、0.10.0 のまま残すか直すかを決める。\n2. integration-redfish に redfish-firmware の段を足す：\n   - 版の観測：FirmwareInventory/{BMC,BIOS} の Version（初めの版は環境変数 BMC_FIRMWARE_VERSION・BIOS_FIRMWARE_VERSION で決める）が宣言どおりなら適合、違えば差分として出る。\n   - BMC の更新：承認ゲートつきの多相 Task で、SimpleUpdate（ImageURI は試験の中で立てる HTTP で配る。イメージは 1 行目が `QBMC-FW <BMC|BIOS> <version>` のファイル）と multipart（/redfish/v1/UpdateService/upload）の両方。承認の前は送らない、承認の後に送り、BMC の Task（New → Running → Completed、FIRMWARE_UPDATE_SECONDS を短く）を待って版がすぐ変わる。\n   - BIOS の更新：Task が終わっても保留（FirmwareInventory/BIOS の Status.State が StandbyOffline、最後のメッセージが Update.1.0.AwaitToActivate）で版は変わらず、宣言の再起動（reboot）で起動したあとに変わる。再起動を宣言しないときは保留のまま知らせて止まる（今の決まりどおりの振る舞いを書く）。\n   - 故障：qemu-bmc の故障の口（FAULT_API_ADDR に POST /faults）で、`{\"kind\":\"firmware-image-rejected\",\"target\":\"BIOS\"}`（400、Update.1.0.VerificationFailed、Task は作られない）と `{\"kind\":\"firmware-update-fail\",\"target\":\"BMC\",\"atPercent\":30}`（Task が Exception、Update.1.0.ApplyFailed）。どちらも版は変わらず、Task は理由つきで止まり、Event が通知の口（試験の中の httptest の webhook か Alertmanager）に出る。二度目を勝手に送らない。\n3. 偽の Redfish と qemu-bmc の振る舞いの違いが見つかれば、provider と偽のサーバの両方を直す。\n4. docs（docs/providers/redfish.md の試験の節）、設計書 §29.1、CHANGELOG-v3.x。\n\n## 確かめ方\n`make integration-redfish` が 0.11.0 で全部の段 PASS（既存の段と firmware の段）。make check・make test-race。\n\n## 決まり\nGo は stdlib のみ。統合試験は make check と CI の外のまま。",
-      "doneWhen": "qemu-bmc 0.11.0（digest 固定）で make integration-redfish が既存の段と firmware の段（観測・BMC の即時更新・BIOS の保留と再起動・2 種の故障で版が変わらず理由つきで止まり通知に出る）を含めて PASS。make check・make test-race が合格",
-      "resolution": null,
-      "refs": [],
-      "threads": [],
-      "createdAt": "2026-10-28T05:32:45.047Z",
-      "updatedAt": "2026-10-28T05:32:45.047Z",
       "closedAt": null,
       "extra": {}
     }
