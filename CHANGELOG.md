@@ -2,7 +2,9 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
-## 未リリース
+## v2.8.0（2026-10-28）
+
+本番に向けて権限と記録を固める版。観測用と書き込み用の資格を分け、nftables で root で走るものを決まった道具 1 つに絞り、監査の記録を鎖にして外へすぐ送れるようにし、秘密の取り出し先に Vault 形（KV v2）と外のコマンドを足す。設計書は v3.55 → v3.61（`docs/architecture/CHANGELOG-v3.56.md`〜`v3.61.md`）。
 
 ### 追加
 
