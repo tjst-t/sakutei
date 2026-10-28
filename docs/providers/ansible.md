@@ -137,6 +137,45 @@ resources:
 
 間引いているあいだの drift の検知は数周遅れる（§16.5 が許容する遅れ）。drift が見えた・観測できなかったリソースは次の周も観測する（§16.5 の規則）。
 
+## 例：podman と systemd の quadlet でサービスを配る
+
+VM の中のサービス（コンテナ）を、podman の quadlet（`/etc/containers/systemd/*.container` を systemd が unit に変える仕組み）で配る例。呼び出しを 3 つに分け、`depends_on` で順に流す。
+
+```yaml
+resources:
+  # 1. コンテナの定義を置く（中身が違えば drift、書き戻す）
+  - provider: ansible
+    id: web-quadlet-app1
+    fields:
+      host: app1
+      module: ansible.builtin.copy
+      args: >-
+        {"dest": "/etc/containers/systemd/web.container", "mode": "0644",
+         "content": "[Unit]\nDescription=web\n\n[Container]\nImage=docker.io/library/nginx@sha256:<digest>\nPublishPort=8080:80\n\n[Install]\nWantedBy=multi-user.target\n"}
+  # 2. systemd に読み直させる（quadlet が web.service を作る）
+  - provider: ansible
+    id: web-daemon-reload-app1
+    depends_on: [web-quadlet-app1]
+    fields:
+      host: app1
+      module: ansible.builtin.systemd_service
+      args: '{"daemon_reload": true}'
+  # 3. 動いていること
+  - provider: ansible
+    id: web-running-app1
+    depends_on: [web-daemon-reload-app1]
+    fields:
+      host: app1
+      module: ansible.builtin.systemd_service
+      args: '{"name": "web.service", "state": "started"}'
+```
+
+- quadlet が作る unit は `enabled` にできない（生成された unit のため）。起動時に立ち上げるのは `.container` の `[Install]` で書く。
+- イメージは tag でなく digest で固定する。版を上げるのは宣言の digest を変えることで行う。
+- **定義を変えても、動いているコンテナは入れ替わらない**。ansible provider は playbook の handler を借りないので、「ファイルが変わったら再起動」を自動では流さない。入れ替えは、Workflow の手順で `state: restarted` の呼び出しを流すか、podman の auto-update など相手側の仕組みに任せる。
+- `daemon_reload` だけの呼び出しが check mode でどう答えるかは確かめていない。毎回 changed と答えるなら観測のたびに drift として見えるので、`observe_tiers` で間引くか、手順 2 を省いて手順 3 の `daemon_reload: true` に寄せる。
+- この例は書き方の例で、統合テスト（下）では確かめていない。
+
 ## 結果の読み方（ansible-core で確かめた方法）
 
 ansible-core は JSON の stdout callback を持たない（`json` は ansible.posix のもの）。provider は**自前の小さな stdout callback**（`internal/ansible/callback/sakutei_json.py`、Go のバイナリに埋め込み）を走るたびに一時ディレクトリへ書き、`ANSIBLE_CALLBACK_PLUGINS`（その場所）・`ANSIBLE_STDOUT_CALLBACK=sakutei_json`・`ANSIBLE_LOAD_CALLBACK_PLUGINS=1`（ad-hoc に stdout callback を読ませる）で読ませる。callback はホストの結果ごとに `SAKUTEI-RESULT {"host", "status", "changed", "msg", "diff"}` の 1 行を出し、provider はその行だけを読む（ほかの callback や警告の出力と混ざらない）。
