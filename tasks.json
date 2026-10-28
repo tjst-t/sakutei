@@ -4058,7 +4058,7 @@
       "number": 178,
       "kind": "bug",
       "title": "nftables：nft が集合の隣り合う範囲をまとめて書き戻すため、宣言と合わず差分が消えない",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [
         "nftables-base-chain-policy"
@@ -4074,7 +4074,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:53:58.997Z",
-      "updatedAt": "2026-10-28T09:53:58.997Z",
+      "updatedAt": "2026-10-28T10:41:54.323Z",
       "closedAt": null,
       "extra": {}
     },
