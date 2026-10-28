@@ -262,6 +262,24 @@ type Capabilities struct {
 
 **List の契約（prune するなら）**:scope 内の現実の全 ID を漏れなく返す。不完全だと prune が「List に無い = 消す」で取りこぼしを削除する——**List の網羅性が prune の安全性を担保する**。ページング完全性を保証し（next token が nil で終わったことを確認）、途中打ち切りを検知したら成功として返さず error にする（**complete-or-error**）。網羅を保証できない今回の List は `ListStatus`（complete / partial / unknown）で申告でき、コアは `complete` 以外の周は prune を保守側に倒す（`Read` の三値と対称）。中途半端な List を返すくらいなら実装しない方が安全。
 
+**List が返す ID の scope（v3.38、Backlog #169）**：provider は List・BulkObserve の ID に**自分の設定の scope**（proxmox-vm の
+クラスタの `scope`、`--zone-scope`、`--ruleset-scope`、s3-bucket の Scope。無ければ root）を付ける。これは宣言の scope とは独立に
+決まるので、宣言に `scope: {node: mgmt}` と書き provider に scope を書かなければ、同じものが List では root、宣言では `node=mgmt`
+になり、ID（provider・scope・local）で突き合わせると宣言済みのものが宣言外に見え、`--claim node=mgmt` では宣言外のものが claim
+の外に落ちる。そこでコアは、List の結果を宣言と突き合わせる前に scope を宣言に合わせる（provider に依らず本体の 1 か所、
+`internal/listscope`。使うのは status の宣言外〈§26.4〉と prune の集合差〈§12.4〉）。**宣言にあるものの scope は宣言が正**とする
+（§1.7）：
+
+- List の ID が root で、同じ provider・local の宣言がちょうど 1 つあれば、その宣言の ID（scope ごと）に置き換える。
+  scope が宣言と同じなら、そのまま。
+- List の ID が root でなく同じ provider・local の宣言のどれとも scope が違う（provider の設定の scope と宣言が食い違う）か、
+  root の ID に scope 違いの宣言が 2 つ以上あるときは**食い違い**とし、その provider の List からは宣言外も孤児も導かない
+  （status は検出不可と注記し、prune は止める。弱い側に寄せない）。
+- 宣言に無いものの scope は、status だけが宣言から推す（§26.4）。prune は推さない（確信なき減算はしない、§3）。
+
+収束の経路のバルク観測（§5.7）は既に「宣言の scope で無ければ root の ID で引く」逃げ道を持つ（`pkg/sdk` の CycleObserver）ので、Read の経路はこれと同じ結果になる。
+provider の設定の scope は、書かないか宣言と同じにする（つなぎ方だけを設定に書く、§1.7）。
+
 ### §5.5 エラー分類
 
 Apply のエラーは2種類に分類して返す（§8.5 の backoff が読む）。

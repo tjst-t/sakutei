@@ -48,7 +48,7 @@
 | `unmanaged` | 宣言外・実在（見せるだけで消さない）。provider の型が prune する型かどうかに関わらず、宣言が 1 つも無くても設定されている provider（`--provider-config` に節がある、またはその provider だけのフラグ）の現実を含む（#164） | `unmanaged=` |
 | `workflow` | Workflow に任せている（収束ループは触らない、§6.3） | `workflow=` |
 | `oscillating` | Apply を止めたリソース（同じ Diff の Apply が成功を返しても現実が変わらないまま上限に達した、§11.1 Tier3、#166）。デーモンの `GET /status` だけが数える（一回性の `status` は常に 0） | `oscillating=`（あるときだけ） |
-| `list_errors` | List がエラーだった provider の数（観測できない側に数える） | — |
+| `list_errors` | List がエラーだった、または List の ID の scope が宣言と食い違った（#169）provider の数（観測できない側に数える） | — |
 | `total` | `conformant + drift + unobservable + unmanaged + workflow + oscillating`。`resources` の要素数と同じ | — |
 
 ## `resources[]`
@@ -77,8 +77,8 @@
 | フィールド | 意味 |
 | --- | --- |
 | `provider` | provider 名 |
-| `kind` | `list_unsupported`（List 非対応）/ `list_error`（List がエラー。`complete` が `false` になる）/ `list_incomplete`（List が完全でない） |
-| `reason` | エラーの文、または `status=…`（`list_unsupported` では出ない） |
+| `kind` | `list_unsupported`（List 非対応）/ `list_error`（List がエラー。`complete` が `false` になる）/ `list_incomplete`（List が完全でない）/ `scope_mismatch`（List の ID の scope が宣言の scope と食い違う。`complete` が `false` になり `list_errors` に数える、#169）/ `scope_undecided`（`--claim` のとき、宣言外の ID の scope が決まらず claim の内外を決められなかった。`complete` は変えない、#169） |
+| `reason` | エラーの文、`status=…`、食い違いの中身（`scope_mismatch`）、または `count=N`（`scope_undecided`）。`list_unsupported` では出ない |
 | `note` | 文の出力に出る注記の行 |
 
 ## `daemon`

@@ -38,7 +38,10 @@
 //     NotePlannedRemoval, and orphans it pruned itself (budget and approval
 //     passed, Delete succeeded; v3.13, #75) with NotePrunedRemoval; those that
 //     are indeed gone from the next List are not counted as a drop.
-//  5. unknown ≠ absent (ADR-0002): resources whose Observe returned
+//  5. List scope alignment (§5.4, #169): a listed ID with the root scope
+//     takes the ID of the one declaration of its provider and local; a
+//     scope the declarations contradict halts prune for the cycle.
+//  6. unknown ≠ absent (ADR-0002): resources whose Observe returned
 //     AvailabilityUnknown or AvailabilityConverging are excluded from the
 //     deletion candidate set even if they are absent from the intent.
 //
@@ -54,6 +57,7 @@ import (
 
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/extowner"
+	"github.com/tjst-t/sakutei/v2/internal/listscope"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
@@ -266,6 +270,30 @@ func (e *Engine) ComputePrune(
 		}, nil
 	}
 
+	// #169 (§5.4, §12.4): the provider puts the scope of its own settings on
+	// the IDs it lists (root when it has none).  Before the claim filter and
+	// the set-difference, a listed ID a declaration covers takes the declared
+	// ID (the declaration is the source of truth for its scope).  Where the
+	// provider's scope and the declarations contradict, prune is halted —
+	// never leaning to the weaker side.  Unlike status, nothing is inferred
+	// for undeclared reality (原則3): it keeps the provider's scope.
+	declaredIDs := make([]core.ID, 0, len(desired))
+	closedWorld := false
+	for _, res := range desired {
+		declaredIDs = append(declaredIDs, res.ID)
+		if res.DeletionPolicy == core.PruneWithinScope {
+			closedWorld = true
+		}
+	}
+	aligned := listscope.Align(listResult.IDs, declaredIDs)
+	if len(aligned.Mismatches) > 0 && closedWorld {
+		return PruneResult{
+			Halted:     true,
+			HaltReason: "List scope contradicts the declarations (scope の食い違い): " + aligned.Mismatch(),
+		}, nil
+	}
+	listResult.IDs = aligned.IDs
+
 	// FIX #6 (§17.1): scope the prune boundary to the claim.
 	//
 	// lister.List returns ALL reality (List cannot itself be trusted to honour an
@@ -397,7 +425,7 @@ func (e *Engine) ComputePrune(
 			continue
 		}
 
-		// (5) unknown ≠ absent (ADR-0002, §12.4): skip resources with non-Ok
+		// (6) unknown ≠ absent (ADR-0002, §12.4): skip resources with non-Ok
 		// availability this cycle.
 		//
 		// A resource in reality but absent from desired is a prune candidate, but

@@ -2,6 +2,12 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## 未リリース
+
+### 修正
+
+- **List の ID の scope が宣言の scope と合わず、status の unmanaged と prune の突き合わせが外れた**（#169）：List を持つ provider は ID に provider の設定の scope（無ければ root）を付けるので、宣言に `scope:` を書き provider に scope を書かないと、`status` で宣言済みのものが unmanaged に出て、`status --claim` では宣言の外のものが出ず、prune は claim の下で孤児を取りこぼしていた。突き合わせる前に scope を宣言に合わせる（provider に依らず本体の 1 か所）：宣言にあるものは宣言の ID に合わせ、宣言に無いものは status だけがその provider の宣言の scope（1 種類のとき）に入れる。provider の scope と宣言の scope が食い違えば、status は `unmanaged_undetectable` の `scope_mismatch`（終了コード 3）、prune は止まる。`--claim` で scope が決まらないものは `scope_undecided` の注記で件数を出す。設計書 v3.38（`docs/architecture/CHANGELOG-v3.38.md`）。`make integration-proxmox` に「scope 付きの宣言と --claim」段。
+
 ## v2.3.0（2026-10-28）
 
 宣言から外したもの・宣言で消すものを扱いやすくした版。宣言で消す口（`ensure: absent`）、宣言の外にあるものを status に出す、Proxmox の VM を pool に入れる。あわせて、/metrics の値を観測する provider。設計書は v3.29 → v3.33（`docs/architecture/CHANGELOG-v3.30.md`〜`v3.33.md`、と §29.1）。

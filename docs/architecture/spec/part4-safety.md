@@ -58,6 +58,12 @@ scope・§24.2）。v1a の実装は簡略化のため provider 全体の List �
 `plan`・`reconcile`・常駐ループのすべてに効く）。`--claim` の外の scope（§17.1）と `mode: sync` の scope（§24.5）は、
 これとは別に集合差の前に落とす。
 
+**現実の scope は宣言に合わせてから比べる（v3.38、Backlog #169）**：List の ID の scope は provider の設定から付く（§5.4）ので、
+集合差・claim の境界・閉世界の判定の前に、宣言にあるものは宣言の ID に合わせる（List が root で同じ provider・local の宣言が
+1 つなら、その scope に）。provider の scope と宣言の scope が食い違えば、その周の prune を止める（§12.4）。宣言に無い現実の
+scope は推さない：provider が root で出すものは root のままで、root を閉じていない限り、`--claim` があれば claim の外に、無ければ
+どの `PruneWithinScope` の scope にも入らず open-world に残る（確信なき減算はしない）。宣言外（unmanaged）の見せ方は §26.4。
+
 **モード2 open-world（explicit absent）** — 網羅 List が非現実的な種別（パッケージ / ファイル / 個別設定エントリ）。個別宣言し、消すには明示の absent（`ensure: absent`） を要求する。この層は Ansible 方式が正しい。
 
 **明示の absent（v3.32、Backlog #163）**：リソースに `ensure: absent` を書くと（既定は `present`）、在れば Delete、無ければ適合とする。
@@ -107,6 +113,12 @@ scope:
 **planned_change（§13.3）との連動**:窓内・scope 内・種別一致の宣言済み削除/再作成（棚卸し削除・一斉再イメージ）は「急減」とみなさない。宣言済みの件数減は誤発火の原因であり、planned_change が「これは意図された減少である」を宣言することで急減 halt を抑止する（宣言外の減少は引き続き halt）。
 
 **Sakutei 自身の prune との連動（v3.13）**：Sakutei が prune で実際に消した orphan（予算〈§13〉と承認〈`--approve-large-change` 等〉を通って Delete が成功したもの）も、planned_change の宣言済み削除と同じく「意図された減少」として扱い、次の周の急減判定で基準の件数から差し引く。差し引くのは、自分が消したと記録した ID のうち、次の List に実際に無いものだけである。それ以外の減り方（自分が消していない ID の消失）は引き続き急減として halt する。これが無いと、承認して大きく消した直後の周から自分の削除を「急減」と見なし、基準の件数が更新されないまま prune が止まり続ける（2026-10-21 の試用で見つけた・Backlog #75）。消した記録は基準の件数と同じ S3（インメモリ）に置き、基準を更新した周に消す——失えば差し引かずに判定するので、安全側（halt）に倒れる。
+
+- **（d） List の ID の scope を宣言に合わせる（v3.38、Backlog #169）**：集合差の前に、List の ID の scope を宣言に合わせる（§5.4）。
+  `--claim` で絞った desired と突き合わせるので、claim の外の宣言に合うものは今までどおり claim の外に落ちる。provider の設定の
+  scope と宣言の scope が食い違う（または root の ID に scope 違いの宣言が 2 つ以上ある）ときは、その provider の prune をその周は
+  止める（`prune halted: List scope contradicts the declarations (scope の食い違い): …`）。`PruneWithinScope` の宣言が無い
+  provider は prune しないので止めない。宣言に無い現実の scope は推さない。
 
 （a）（b）（c） はいずれも v1a（prune の安全性の中核）。
 

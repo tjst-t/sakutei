@@ -531,3 +531,82 @@ func TestPruneEngine_CountDrop_OwnPruneNotCounted(t *testing.T) {
 		t.Fatalf("own deletes still in the List are no drop: %s", res.HaltReason)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// #169 (§5.4, §12.4): List scope alignment
+// ---------------------------------------------------------------------------
+
+func scopedDesired(labels map[string]string, policy core.DeletionPolicy, locals ...string) []diff.DesiredResource {
+	res := make([]diff.DesiredResource, len(locals))
+	for i, local := range locals {
+		res[i] = diff.DesiredResource{
+			ID:             core.NewID("fake", core.NewScope(labels), local),
+			DeletionPolicy: policy,
+		}
+	}
+	return res
+}
+
+// A provider without a scope lists root IDs; under a claim the declared ones
+// take their declared scope (so they stay in the claim, not orphans) and an
+// undeclared root one is not inferred into the claim (原則3).
+func TestPruneEngine_ListScopeAligned_UnderClaim(t *testing.T) {
+	mgmt := map[string]string{"node": "mgmt"}
+	lister := &fakeCompleteList{ids: []core.ID{makeID("a"), makeID("b"), makeID("x")}}
+	var errOut bytes.Buffer
+	result, err := prune.New().ComputePrune(context.Background(), lister, pruneableObserver(),
+		core.NewScope(nil), core.NewScope(mgmt),
+		scopedDesired(mgmt, core.PruneWithinScope, "a", "b"), nil, &errOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Halted || len(result.DeleteOps) != 0 {
+		t.Fatalf("got halted=%v (%s) deletes=%v, want neither", result.Halted, result.HaltReason, result.DeleteOps)
+	}
+}
+
+// A provider scope that contradicts the declared scope halts prune.
+func TestPruneEngine_ListScopeMismatch_Halts(t *testing.T) {
+	mgmt := map[string]string{"node": "mgmt"}
+	edge := core.NewScope(map[string]string{"node": "edge"})
+	lister := &fakeCompleteList{ids: []core.ID{
+		core.NewID("fake", edge, "a"), core.NewID("fake", edge, "x"),
+	}}
+	var errOut bytes.Buffer
+	result, err := prune.New().ComputePrune(context.Background(), lister, pruneableObserver(),
+		core.NewScope(nil), core.NewScope(nil),
+		scopedDesired(mgmt, core.PruneWithinScope, "a"), nil, &errOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Halted || !strings.Contains(result.HaltReason, "scope の食い違い") || len(result.DeleteOps) != 0 {
+		t.Fatalf("got halted=%v reason=%q deletes=%v, want a scope-mismatch halt", result.Halted, result.HaltReason, result.DeleteOps)
+	}
+
+	// Without a PruneWithinScope declaration nothing is pruned anyway: no halt.
+	result, _ = prune.New().ComputePrune(context.Background(), lister, pruneableObserver(),
+		core.NewScope(nil), core.NewScope(nil),
+		scopedDesired(mgmt, core.ExplicitAbsentOnly, "a"), nil, &errOut)
+	if result.Halted {
+		t.Fatalf("open world must not halt: %s", result.HaltReason)
+	}
+}
+
+// A root-scope PruneWithinScope declaration still closes the world: with a
+// scoped declaration of another local in the same batch the declared one is
+// never a candidate.
+func TestPruneEngine_ListScopeAligned_DeclaredNotCandidate(t *testing.T) {
+	mgmt := map[string]string{"node": "mgmt"}
+	desired := append(scopedDesired(mgmt, core.PruneWithinScope, "a"),
+		scopedDesired(nil, core.PruneWithinScope, "r")...)
+	lister := &fakeCompleteList{ids: []core.ID{makeID("a"), makeID("r"), makeID("x")}}
+	var errOut bytes.Buffer
+	result, err := prune.New().ComputePrune(context.Background(), lister, pruneableObserver(),
+		core.NewScope(nil), core.NewScope(nil), desired, nil, &errOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.DeleteOps) != 1 || result.DeleteOps[0].Target.Local != "x" {
+		t.Fatalf("deletes = %v, want only x", result.DeleteOps)
+	}
+}

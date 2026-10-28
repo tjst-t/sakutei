@@ -26,6 +26,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/extowner"
 	"github.com/tjst-t/sakutei/v2/internal/lastseen"
+	"github.com/tjst-t/sakutei/v2/internal/listscope"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/internal/revision"
@@ -442,7 +443,16 @@ Exit codes:
 	//
 	// #164: Pruneable かどうかに関わらない（unmanaged は見せるだけで消さない）。
 	// 宣言が 0 件の provider も、設定されていれば List する（listOnly）。
-	detectUnmanaged(ctx, providers, listOnly, listOnlyErrs, claimSelector, desired, in.ExternalOwners, builder)
+	//
+	// #169: 宣言済みかは claim で絞る前の宣言全体で決める（ほかの shard の宣言は
+	// unmanaged ではない）。List の ID の scope は宣言に合わせてから突き合わせる。
+	allDeclared := make([]core.ID, 0, len(expanded))
+	for _, r := range expanded {
+		if !r.IsComposite {
+			allDeclared = append(allDeclared, r.DesiredResource.ID)
+		}
+	}
+	detectUnmanaged(ctx, providers, listOnly, listOnlyErrs, claimSelector, allDeclared, in.ExternalOwners, builder)
 
 	// #15 (§9.2): デーモンの連続スキップ回数（デーモンが書いたファイルを READ するだけ）。
 	if *daemonStatus != "" {
@@ -490,6 +500,17 @@ Exit codes:
 // declared resource (undeclaredListers); one that could not be built
 // (listOnlyErrs) is noted like a List error.
 //
+// #169 (§5.4): a provider puts the scope of its own settings on the IDs it
+// lists (root when it has none), independently of the declarations.  The IDs
+// are aligned with the declarations first (listscope.Align): a declared one
+// takes its declared ID; a scope the declarations contradict is noted for the
+// provider (counted like a List error) and nothing is derived from its List.
+// An undeclared root ID takes the one scope every declaration of the provider
+// has (listscope.InferScope); with none decided and a --claim, the IDs whose
+// side of the claim is unknown are counted in a note, never silently hidden.
+// declared is the whole intent before the claim narrows it (another shard's
+// declaration is not unmanaged); the candidates are narrowed by the claim.
+//
 // Graceful degradation (never crash, never under-report):
 //   - provider without Lister → "検出不可（List 非対応 provider）" note, skipped.
 //   - List returns error       → "検出不可（List エラー）" note (a failed List is
@@ -502,14 +523,14 @@ func detectUnmanaged(
 	listOnly map[string]provider.Lister,
 	listOnlyErrs map[string]error,
 	claim core.Scope,
-	desired []diff.DesiredResource,
+	declaredIDs []core.ID,
 	owners extowner.Set,
 	builder *statusreport.Builder,
 ) {
 	// Declared set, keyed by collision-free ID key.
-	declared := make(map[core.IDKey]bool, len(desired))
-	for _, r := range desired {
-		declared[r.ID.Key()] = true
+	declared := make(map[core.IDKey]bool, len(declaredIDs))
+	for _, id := range declaredIDs {
+		declared[id.Key()] = true
 	}
 
 	// Deterministic provider iteration order for stable notes/output.
@@ -552,15 +573,43 @@ func detectUnmanaged(
 			builder.NoteListIncomplete(name, fmt.Sprintf("%v", result.Status))
 			continue
 		}
-		for _, realID := range result.IDs {
+		// #169: the declaration is the source of truth for the scope of what
+		// it declares; a contradiction is noted, never matched loosely.
+		aligned := listscope.Align(result.IDs, declaredIDs)
+		if len(aligned.Mismatches) > 0 {
+			fmt.Fprintf(os.Stderr, "sakutei status: list %s: scope mismatch: %s\n", name, aligned.Mismatch())
+			builder.NoteScopeMismatch(name, aligned.Mismatch())
+			continue
+		}
+		inferred, inferOK := listscope.InferScope(name, declaredIDs)
+		undecided := 0
+		for _, realID := range aligned.IDs {
+			if declared[realID.Key()] {
+				continue
+			}
+			undecidedHere := false
+			if listscope.IsRoot(realID.Scope) {
+				if inferOK {
+					realID.Scope = inferred
+				} else {
+					undecidedHere = !listscope.IsRoot(claim)
+				}
+			}
 			// §7.3 (#158): what external_owners selects by its id is declared
 			// (as someone else's), so it is not unmanaged.
 			if _, ext := owners.ByID(realID); ext {
 				continue
 			}
-			if !declared[realID.Key()] && realID.Scope.Matches(claim) {
+			if undecidedHere {
+				undecided++
+				continue
+			}
+			if realID.Scope.Matches(claim) {
 				builder.AddUnmanaged(realID)
 			}
+		}
+		if undecided > 0 {
+			builder.NoteScopeUndecided(name, undecided)
 		}
 	}
 }

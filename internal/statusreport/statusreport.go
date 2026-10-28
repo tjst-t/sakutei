@@ -125,6 +125,10 @@ const (
 	UndetectableListUnsupported = "list_unsupported"
 	UndetectableListError       = "list_error"
 	UndetectableListIncomplete  = "list_incomplete"
+	// #169: List の ID の scope が宣言の scope と食い違う（数えるのは list_error と同じ）。
+	UndetectableScopeMismatch = "scope_mismatch"
+	// #169: --claim のとき、scope が決まらず claim の内外を決められない ID があった。
+	UndetectableScopeUndecided = "scope_undecided"
 )
 
 // WorkflowHeldItem は Workflow に任せている対象 1 つ（#89）。
@@ -327,6 +331,31 @@ func (b *Builder) NoteListIncomplete(providerName, status string) {
 		Kind:     UndetectableListIncomplete,
 		Reason:   "status=" + status,
 		Note:     fmt.Sprintf("unmanaged 検出不可（List 未完全: %s: status=%s）", providerName, status),
+	})
+}
+
+// NoteScopeMismatch は List の ID の scope が宣言の scope と食い違い、その
+// provider の unmanaged 判定を控えたことを注記する（#169、§5.4）。List エラーと
+// 同じく観測できなかったものに数える（終了コード 3）。
+func (b *Builder) NoteScopeMismatch(providerName, detail string) {
+	b.listErrors++
+	b.undetectable = append(b.undetectable, UndetectableItem{
+		Provider: providerName,
+		Kind:     UndetectableScopeMismatch,
+		Reason:   detail,
+		Note:     fmt.Sprintf("unmanaged 検出不可（scope の食い違い: %s: %s）", providerName, detail),
+	})
+}
+
+// NoteScopeUndecided は --claim のとき、scope が決まらず claim の内外を決め
+// られなかった宣言外の ID の件数を注記する（#169）。黙って隠さない。
+func (b *Builder) NoteScopeUndecided(providerName string, n int) {
+	b.undetectable = append(b.undetectable, UndetectableItem{
+		Provider: providerName,
+		Kind:     UndetectableScopeUndecided,
+		Reason:   fmt.Sprintf("count=%d", n),
+		Note: fmt.Sprintf("unmanaged 検出不可（scope が決まらない %d 件: %s。provider の scope の設定か宣言で決める）",
+			n, providerName),
 	})
 }
 

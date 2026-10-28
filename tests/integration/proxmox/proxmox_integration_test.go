@@ -655,7 +655,14 @@ qm list`); err != nil {
 			}
 		}
 		out, code := l.sakutei(t, vmIntent(fields), "status")
-		if code != 0 || !strings.Contains(out, "drifted=0 converged=1") || strings.Contains(out, "sakutei-ctl") || strings.Contains(out, "it-tmpl") {
+		// #158 の警告（設定にだけある除外）は触らない VM の名前を言うので、報告の行だけを見る。
+		var report []string
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.HasPrefix(line, "sakutei status: warn:") {
+				report = append(report, line)
+			}
+		}
+		if rep := strings.Join(report, "\n"); code != 0 || !strings.Contains(rep, "drifted=0 converged=1") || strings.Contains(rep, "sakutei-ctl") || strings.Contains(rep, "it-tmpl") {
 			t.Errorf("status exit %d:\n%s", code, out)
 		}
 	})
@@ -989,6 +996,63 @@ cat /root/pool-token.json`)
 		}
 		l.pc = poolPC
 		l.converge(t, vm2("it-pool"), 2)
+	})
+
+	t.Run("scope 付きの宣言と --claim（provider の側に scope を書かない）", func(t *testing.T) {
+		// #169: クラスタの設定に scope は無いので、List の ID は root。宣言の scope
+		// （node=mgmt）に合わせてから突き合わせる。API で直接作った VM だけが
+		// unmanaged に出て、宣言した VM は出ない（claim があっても、なくても）。
+		scoped := `{"resources": [{"provider": "proxmox-vm", "scope": {"node": "mgmt"}, "id": "it/it-vm2", "fields": {"vmid": "520", "template": "it-tmpl", "pool": "it-pool",
+		  "cores": "1", "memory": "1G", "disks": "scsi0 storage=local-lvm size=4G", "nics": "net0 bridge=vmbr0, net1 bridge=vmbr0 vlan=42",
+		  "ci_user": "ops", "ci_ssh_keys": "` + itKey + `", "ci_ip": "10.0.2.51/24", "ci_gateway": "10.0.2.2", "power": "running"}}]}`
+		l.task(t)(l.api.Create(ctx, pveNode, url.Values{"vmid": {"530"}, "name": {"it-hand"}, "memory": {"128"}}))
+		defer func() { l.task(t)(l.api.Destroy(ctx, pveNode, 530)) }()
+
+		type report struct {
+			Resources []struct {
+				LocalID string            `json:"local_id"`
+				Scope   map[string]string `json:"scope"`
+				State   string            `json:"state"`
+			} `json:"resources"`
+			Undetectable []struct {
+				Kind string `json:"kind"`
+			} `json:"unmanaged_undetectable"`
+		}
+		check := func(name, wantDeclared string, wantUnmanaged []string, args ...string) {
+			t.Helper()
+			out, code := l.sakutei(t, scoped, append([]string{"status", "--json"}, args...)...)
+			var doc report
+			if i := strings.Index(out, "{"); i >= 0 {
+				_ = json.Unmarshal([]byte(out[i:]), &doc)
+			}
+			var unmanaged []string
+			declared := ""
+			for _, r := range doc.Resources {
+				switch {
+				case r.State == "unmanaged":
+					unmanaged = append(unmanaged, r.LocalID+"@"+r.Scope["node"])
+				case r.LocalID == "it/it-vm2":
+					declared = r.State
+				}
+			}
+			if code != 0 || declared != wantDeclared || len(doc.Undetectable) != 0 ||
+				strings.Join(unmanaged, ",") != strings.Join(wantUnmanaged, ",") {
+				t.Errorf("%s: exit %d, it-vm2 %q, unmanaged %v (want %v), notes %v:\n%s",
+					name, code, declared, unmanaged, wantUnmanaged, doc.Undetectable, out)
+			}
+		}
+		check("--claim node=mgmt", "conformant", []string{"it/it-hand@mgmt"}, "--claim", "node=mgmt")
+		check("no claim", "conformant", []string{"it/it-hand@mgmt"})
+		// claim の外（node=edge）には宣言も宣言外も無い。
+		check("--claim node=edge", "", nil, "--claim", "node=edge")
+
+		// claim つきの reconcile は収束したまま、宣言外の VM は消さない（open-world）。
+		if out, code := l.sakutei(t, scoped, "reconcile", "--claim", "node=mgmt"); code != 0 || !strings.Contains(out, "Converged (no changes)") {
+			t.Errorf("reconcile --claim node=mgmt: exit %d:\n%s", code, out)
+		}
+		if s := l.status(t, 530); s == "" || strings.HasPrefix(s, "absent") {
+			t.Errorf("the hand-made VM after reconcile: %s", s)
+		}
 	})
 }
 

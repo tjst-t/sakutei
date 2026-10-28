@@ -181,6 +181,14 @@ Proxmox が書き戻す表記と、宣言の書き方の違いは比べる前に
 - 届かない・5xx（落ちたノードの 595 を含む）・ノードが落ちて status が `unknown`・認証の失敗（401・403）は **Unknown**（absent にしない）。認証の失敗は設定を直すまで治らないエラー（PermanentError）。エラーの文言にトークンの secret は出ない。
 - VM に lock がある間（複製・移行・バックアップ・スナップショットなど）は **Converging**。
 - `List` は全クラスタの `/cluster/resources` が取れ、どの VM も名前で一意に引けるときだけ complete。テンプレートと触らない VM は出さない。名前の無い・重なる VM があればエラー（名前を付けるか、`protected_vmids` に入れる）。
+- `List`・`BulkObserve` の ID の scope は設定の `scope`（無ければ root）で、宣言の scope とは別に決まる。コアは status の
+  宣言外（unmanaged）と prune で突き合わせる前に、これを宣言に合わせる（Backlog #169、§5.4）：
+  - 宣言した VM は宣言の scope に合わせる（設定に `scope` を書かず、宣言に `scope: {node: mgmt}` と書いてよい。`--claim node=mgmt`
+    でも claim なしでも、宣言した VM は宣言外に出ない）。
+  - 宣言に無い VM は、この provider の宣言の scope が 1 種類ならその scope に入れる（status だけ。`--claim` の内外もそれで決まる）。
+    2 種類以上か宣言が無ければ root のままで、`--claim` があれば「scope が決まらない N 件」と注記する。prune はこの推定をしない。
+  - 設定の `scope` と宣言の scope が違えば食い違いで、status は宣言外を検出不可と注記し（終了コード 3）、prune は止まる。
+    設定の `scope` は書かないか、宣言と同じにする。
 - `BulkObserve` はクラスタごとに `/cluster/resources` を 1 回だけ呼び、VM ごとに設定を読む（Read と等価、`sdk.BulkEquivalenceTester` で確かめている）。
 
 ### 再起動が要る変更（pending）
@@ -274,6 +282,20 @@ $ make integration-proxmox
 | 宣言の外の VM は unmanaged | 宣言を 0 件にすると `status --json` は it-vm1 だけを unmanaged に出し（total 1）、文の出力も `unmanaged=1`。触らない VM（100）とテンプレート（9000）は出ない。`reconcile` しても VM は消えず走ったまま。宣言に戻すと unmanaged は 0（#164） |
 | pool に入れて作る・pool に絞ったトークン | root で pool `it-pool` と、privsep のトークン `sakutei@pve!pool`（ACL は上の「pool に絞ったトークン」の組）を作る。そのトークンの設定で、`pool: it-pool` の VM（vmid 520）をテンプレートから作り（複製・resize・VLAN の NIC・cloud-init・起動）、`Converged (no changes)` まで。root の API で VM が `it-pool` にあり走っている。トークンには pool の外の VM（100）が見えず、`status --json` は it-vm2 だけを適合に出す。root で pool から外すと、トークンの `reconcile` は「見えない VM が vmid を使っている」と知らせ、root のトークンでは `status` が pool の drift を出して `reconcile` が戻す。無い pool を宣言すると `does not exist` のエラーで、VM は動かない |
 | absent で消す | 宣言から外しただけでは消えない（走ったまま）。`ensure: absent` にすると `plan` が DELETE を `blocked: approval` で出し、レーンが無い `reconcile` は消さない（`AbsentAwaitingApproval`）。承認のある planned_change（`kind: delete`）を足した `reconcile --audit-log` で走っている VM が止まって消え、次の `reconcile` は `Converged (no changes)`。ほかの VM（100・9000）は残る。触らない VM を `ensure: absent` にすると protected と言って断る |
+| scope 付きの宣言と `--claim` | 設定に `scope` を書かず、it-vm2 を `scope: {node: mgmt}` で宣言し、API で直接 VM（vmid 530、`it-hand`）を作る。`status --json --claim node=mgmt` と claim なしの `status --json` は it-hand だけを `node=mgmt` の unmanaged に出し、it-vm2 は適合で注記は無い。`--claim node=edge` は何も出さない。`reconcile --claim node=mgmt` は `Converged (no changes)` で it-hand を消さない（#169） |
+
+### 結果（2026-10-28、Backlog #169 の「scope 付きの宣言と --claim」）
+
+同じ開発機・同じキャッシュで、`make integration-proxmox` が PASS（全段で約 3 分）。あわせて「何周でも drift が出ない」段の
+確かめ方を、#158 の警告の行（触らない VM の名前を言う）を除いた報告の行だけを見るように直した:
+
+```
+--- PASS: TestProxmoxVM (172.02s)
+    ...
+    --- PASS: TestProxmoxVM/pool_に入れて作る・pool_に絞ったトークン (16.19s)
+    --- PASS: TestProxmoxVM/scope_付きの宣言と_--claim（provider_の側に_scope_を書かない） (1.19s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/proxmox	172.023s
+```
 
 ### 結果（2026-10-28、Backlog #165 の「pool に入れて作る・pool に絞ったトークン」）
 
