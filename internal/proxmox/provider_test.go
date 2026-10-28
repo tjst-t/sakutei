@@ -54,6 +54,13 @@ type env struct {
 // 偽サーバには触らない VM（100 sakutei-ctl）とテンプレート（9000）がある。
 func newEnv(t *testing.T, opts pvetest.Options, taskWait time.Duration) *env {
 	t.Helper()
+	return newEnvBase(t, opts, taskWait, "")
+}
+
+// newEnvBase は newEnv の、Client の API のパスの前置き（api_base_path）を
+// 変えられる版（"" は既定）。
+func newEnvBase(t *testing.T, opts pvetest.Options, taskWait time.Duration, apiBasePath string) *env {
+	t.Helper()
 	srv := pvetest.New(opts)
 	t.Cleanup(srv.Close)
 	srv.AddVM(pvetest.VM{VMID: 100, Node: "pve1", Name: "sakutei-ctl", Status: "running", Config: map[string]string{
@@ -65,7 +72,7 @@ func newEnv(t *testing.T, opts pvetest.Options, taskWait time.Duration) *env {
 		"net0": "virtio=BC:24:11:00:90:00,bridge=vmbr0",
 	}})
 	c, err := proxmox.NewClient(proxmox.ClientConfig{
-		Endpoint: srv.URL, TokenID: srv.TokenID(), Timeout: 2 * time.Second,
+		Endpoint: srv.URL, APIBasePath: apiBasePath, TokenID: srv.TokenID(), Timeout: 2 * time.Second,
 		Secret: func(context.Context) (string, error) { return srv.Secret(), nil },
 	})
 	if err != nil {
@@ -141,6 +148,39 @@ func web1() map[string]string {
 		proxmox.FieldCIGateway: "192.0.2.1",
 		proxmox.FieldCIDNS:     "192.0.2.53 192.0.2.54",
 		proxmox.FieldPower:     "running",
+	}
+}
+
+// TestAPIBasePath は API のパスの前置きを変えた偽サーバ（模擬）に、設定した
+// 前置きで作って収束でき、既定の前置きのままでは観測できない（unknown）こと
+// （#160）。
+func TestAPIBasePath(t *testing.T) {
+	for _, tc := range []struct{ name, server, client string }{
+		{"default", "", ""},
+		{"explicit default", "", "/api2/json"},
+		{"mock prefix", "/mock/pve/api2/json", "/mock/pve/api2/json/"},
+		{"no prefix", "/", "/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnvBase(t, pvetest.Options{BasePath: tc.server}, time.Second, tc.client)
+			e.converge(t, "lab/web1", web1(), 3)
+			if vm, ok := e.srv.VM(200); !ok || vm.Name != "web1" {
+				t.Fatalf("VM 200 = %+v, %v", vm, ok)
+			}
+			lr, err := e.p.List(context.Background(), core.NewScope(nil))
+			if err != nil || lr.Status != core.ListComplete || len(lr.IDs) != 1 || lr.IDs[0].Local != "lab/web1" {
+				t.Errorf("List = %+v, %v", lr, err)
+			}
+		})
+	}
+	e := newEnvBase(t, pvetest.Options{BasePath: "/mock/pve/api2/json"}, time.Second, "")
+	obs, err := e.p.Read(context.Background(), "lab/web1")
+	if err == nil || obs.Availability != core.AvailabilityUnknown {
+		t.Errorf("Read with the default prefix against a moved API = %+v, %v; want unknown", obs, err)
+	}
+	if _, err := proxmox.NewClient(proxmox.ClientConfig{Endpoint: e.srv.URL, APIBasePath: "api2/json", TokenID: e.srv.TokenID(),
+		Secret: func(context.Context) (string, error) { return "", nil }}); err == nil {
+		t.Error("NewClient accepted api_base_path without a leading /")
 	}
 }
 

@@ -38,14 +38,14 @@ func (r *recorder) handler(w http.ResponseWriter, req *http.Request) {
 	_, _ = w.Write([]byte(`<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>`))
 }
 
-func newRecordingClient(t *testing.T, virtual bool) (*recorder, *Session) {
+func newRecordingClient(t *testing.T, virtual bool, basePath string) (*recorder, *Session) {
 	t.Helper()
 	rec := &recorder{}
 	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
 	t.Cleanup(srv.Close)
 	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
 	c, err := NewClient(ClientConfig{
-		Endpoint: "http://s3.test:" + port, VirtualHost: virtual,
+		Endpoint: "http://s3.test:" + port, VirtualHost: virtual, APIBasePath: basePath,
 		Credentials: func(context.Context) (Credentials, error) { return Credentials{AccessKey: "a", SecretKey: "b"}, nil },
 	})
 	if err != nil {
@@ -65,13 +65,18 @@ func newRecordingClient(t *testing.T, virtual bool) (*recorder, *Session) {
 
 func TestAddressing(t *testing.T) {
 	for _, tc := range []struct {
-		virtual bool
-		want    string
+		virtual  bool
+		basePath string
+		want     string
 	}{
-		{false, "GET s3.test:PORT /my-bucket?versioning"},
-		{true, "GET my-bucket.s3.test:PORT /?versioning"},
+		{false, "", "GET s3.test:PORT /my-bucket?versioning"},
+		{true, "", "GET my-bucket.s3.test:PORT /?versioning"},
+		{false, "/", "GET s3.test:PORT /my-bucket?versioning"},
+		// API のパスの前置き（#160）。
+		{false, "/gw/s3/", "GET s3.test:PORT /gw/s3/my-bucket?versioning"},
+		{true, "/gw/s3", "GET my-bucket.s3.test:PORT /gw/s3/?versioning"},
 	} {
-		rec, s := newRecordingClient(t, tc.virtual)
+		rec, s := newRecordingClient(t, tc.virtual, tc.basePath)
 		if v, err := s.GetVersioning(context.Background(), "my-bucket"); err != nil || v != "Enabled" {
 			t.Fatalf("GetVersioning = %q, %v", v, err)
 		}
@@ -79,7 +84,7 @@ func TestAddressing(t *testing.T) {
 		host := strings.Fields(got)[1]
 		_, port, _ := net.SplitHostPort(host)
 		if want := strings.Replace(tc.want, "PORT", port, 1); got != want {
-			t.Errorf("virtual=%v: request = %q, want %q", tc.virtual, got, want)
+			t.Errorf("virtual=%v base=%q: request = %q, want %q", tc.virtual, tc.basePath, got, want)
 		}
 	}
 }
@@ -89,6 +94,15 @@ func TestNewClient_RejectsBadEndpoints(t *testing.T) {
 	for _, ep := range []string{"", "s3.example.net", "ftp://x", "http://", "http://h/path", "http://h?q=1", "http://u:p@h"} {
 		if _, err := NewClient(ClientConfig{Endpoint: ep, Credentials: creds}); err == nil {
 			t.Errorf("NewClient(%q) succeeded", ep)
+		}
+	}
+}
+
+func TestNewClient_RejectsBadAPIBasePath(t *testing.T) {
+	creds := func(context.Context) (Credentials, error) { return Credentials{}, nil }
+	for _, bp := range []string{"s3", "/a//b", "/a/../b", "/a?x", "/a b"} {
+		if _, err := NewClient(ClientConfig{Endpoint: "http://h:9000", APIBasePath: bp, Credentials: creds}); err == nil {
+			t.Errorf("NewClient(api_base_path %q) succeeded", bp)
 		}
 	}
 }

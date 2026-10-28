@@ -83,6 +83,38 @@ func converge(t *testing.T, p *s3bucket.Provider, id string, fields map[string]s
 	}
 }
 
+// TestAPIBasePath は API のパスの前置きを変えた偽サーバ（模擬）で、設定した
+// 前置きで作る・観測する・一覧する・消すが動き、前置きを省いた（既定の）
+// Client では観測できないこと（#160）。
+func TestAPIBasePath(t *testing.T) {
+	srv := s3test.New(s3test.Options{BasePath: "/gw/s3"})
+	t.Cleanup(srv.Close)
+	newP := func(basePath string) *s3bucket.Provider {
+		c, err := s3bucket.NewClient(s3bucket.ClientConfig{
+			Endpoint: srv.URL, APIBasePath: basePath, Credentials: staticCreds("test-access", "test-secret"), Timeout: 2 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s3bucket.New(map[string]s3bucket.Endpoint{"fake": {Client: c}}, s3bucket.Options{})
+	}
+	for _, bp := range []string{"/gw/s3", "/gw/s3/"} {
+		p := newP(bp)
+		converge(t, p, "fake/based", map[string]string{s3bucket.FieldVersioning: "Enabled", s3bucket.FieldTags: sampleTags})
+		if !srv.Has("based") {
+			t.Fatalf("base %q: the bucket was not created", bp)
+		}
+		lr, err := p.List(context.Background(), core.NewScope(nil))
+		if err != nil || lr.Status != core.ListComplete || len(lr.IDs) != 1 || lr.IDs[0].Local != "fake/based" {
+			t.Errorf("base %q: List = %+v, %v", bp, lr, err)
+		}
+	}
+	obs, err := newP("").Read(context.Background(), "fake/based")
+	if err == nil && obs.Availability == core.AvailabilityOk {
+		t.Errorf("Read without the base path = %+v; want not observable", obs)
+	}
+}
+
 func TestValidateProvider(t *testing.T) {
 	_, p := newProvider(t, s3test.Options{}, "")
 	if err := sdk.ValidateProvider(p); err != nil {

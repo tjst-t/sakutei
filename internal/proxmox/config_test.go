@@ -43,6 +43,7 @@ func TestLoadConfig(t *testing.T) {
 clusters:
   lab:
     endpoint: https://pve1.example.net:8006
+    api_base_path: /mock/api2/json/
     token_id: sakutei@pve!sakutei
     token_secret: secretref:file/proxmox/lab
     node: pve1
@@ -81,6 +82,16 @@ clusters:
 	if err != nil || len(p.clusters) != 2 {
 		t.Fatalf("NewFromConfig = %v, %v", p, err)
 	}
+	// API のパスの前置き：書けばその値、省けば /api2/json（#160）。
+	if lab.APIBasePath != "/mock/api2/json/" || cfg.Clusters["dc2"].APIBasePath != DefaultAPIBasePath {
+		t.Errorf("api_base_path = %q, %q", lab.APIBasePath, cfg.Clusters["dc2"].APIBasePath)
+	}
+	if b := p.clusters["lab"].Client.base; b != "https://pve1.example.net:8006/mock/api2/json" {
+		t.Errorf("lab base = %q", b)
+	}
+	if b := p.clusters["dc2"].Client.base; b != "https://pve.dc2.example.net:8006/api2/json" {
+		t.Errorf("dc2 base = %q", b)
+	}
 	// secret は要求の直前に解決する。
 	got, err := p.clusters["lab"].Client.secret(context.Background())
 	if err != nil || got != "very-secret-token" {
@@ -98,6 +109,8 @@ func TestLoadConfig_Errors(t *testing.T) {
 		{"no endpoint", "    token_id: a@pve!b\n    token_secret: secretref:file/proxmox/lab\n", "endpoint is required"},
 		{"no token id", "    endpoint: https://h:8006\n    token_secret: secretref:file/proxmox/lab\n", "token_id is required"},
 		{"bad vmid", "    endpoint: https://h:8006\n    token_id: a@pve!b\n    token_secret: secretref:file/proxmox/lab\n    protected_vmids:\n      - abc\n", "want a VM id"},
+		{"bad api_base_path", "    endpoint: https://h:8006\n    api_base_path: api2/json\n    token_id: a@pve!b\n    token_secret: secretref:file/proxmox/lab\n", `clusters.lab.api_base_path "api2/json": want a path`},
+		{"api_base_path with ..", "    endpoint: https://h:8006\n    api_base_path: /a/../b\n    token_id: a@pve!b\n    token_secret: secretref:file/proxmox/lab\n", "segments are not allowed"},
 		{"ca and insecure", "    endpoint: https://h:8006\n    token_id: a@pve!b\n    token_secret: secretref:file/proxmox/lab\n    ca_file: ca.pem\n    insecure_skip_verify: true\n", "exclusive"},
 	}
 	for _, tc := range cases {

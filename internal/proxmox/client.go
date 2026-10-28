@@ -14,7 +14,7 @@
 
 package proxmox
 
-// client.go — Proxmox VE の REST API（/api2/json）を net/http で叩く。認証は
+// client.go — Proxmox VE の REST API（既定の前置きは /api2/json）を net/http で叩く。認証は
 // API トークン（Authorization: PVEAPIToken=<user>!<id>=<secret>）。secret は
 // 要求の直前に関数から受け取り（JIT、§20.2）、Client にも持たず、エラーの
 // 文言にも出さない。
@@ -34,6 +34,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tjst-t/sakutei/v2/internal/apibase"
 )
 
 // DefaultTimeout は 1 つの要求の時間切れの既定。
@@ -90,10 +92,16 @@ func KindOf(err error) ErrorKind {
 	return 0
 }
 
+// DefaultAPIBasePath は Proxmox VE の API のパスの前置きの既定。
+const DefaultAPIBasePath = "/api2/json"
+
 // ClientConfig は Client の設定。
 type ClientConfig struct {
-	// Endpoint は https://host:8006 の形（/api2/json は足す）。
+	// Endpoint は https://host:8006 の形（API のパスの前置きは足す）。
 	Endpoint string
+	// APIBasePath は API のパスの前置き（空なら DefaultAPIBasePath、"/" は
+	// 前置き無し）。実機と模擬で違うときに変える（#160）。
+	APIBasePath string
 	// TokenID は "<user>@<realm>!<tokenname>"。
 	TokenID string
 	// Secret はトークンの secret を要求の直前に返す。
@@ -126,6 +134,13 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.Secret == nil {
 		return nil, errors.New("the token secret is not set")
 	}
+	basePath := cfg.APIBasePath
+	if basePath == "" {
+		basePath = DefaultAPIBasePath
+	}
+	if basePath, err = apibase.Clean(basePath); err != nil {
+		return nil, err
+	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	switch {
 	case cfg.InsecureSkipVerify && cfg.CAFile != "":
@@ -151,7 +166,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	tr.TLSClientConfig = tlsCfg
 	tr.Proxy = nil
 	return &Client{
-		base:    u.String() + "/api2/json",
+		base:    u.String() + basePath,
 		tokenID: cfg.TokenID,
 		secret:  cfg.Secret,
 		http:    &http.Client{Transport: tr, Timeout: timeout},

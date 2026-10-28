@@ -50,6 +50,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tjst-t/sakutei/v2/internal/apibase"
 )
 
 // DefaultRegion は region を設定しないときの値。
@@ -167,6 +169,9 @@ type ClientConfig struct {
 	// Endpoint は "http://host:port" か "https://host:port"（scheme は必須。
 	// パス・クエリは持たない）。
 	Endpoint string
+	// APIBasePath は API のパスの前置き（"/s3" など。空か "/" は前置き無し）。
+	// 要求のパスは <前置き>/<bucket>（virtual-host 形式では <前置き>/）（#160）。
+	APIBasePath string
 	// Region は署名の region（空なら DefaultRegion）。
 	Region string
 	// VirtualHost は virtual-host 形式のアドレス（<bucket>.<host>）を使う。
@@ -187,6 +192,7 @@ type ClientConfig struct {
 // Client は 1 つの endpoint への S3 のバケット操作。
 type Client struct {
 	base        *url.URL
+	basePath    string
 	region      string
 	virtualHost bool
 	creds       func(ctx context.Context) (Credentials, error)
@@ -211,6 +217,12 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		return nil, fmt.Errorf("s3: endpoint %q: only scheme, host and port are allowed", cfg.Endpoint)
 	}
 	u.Path = ""
+	var basePath string
+	if cfg.APIBasePath != "" {
+		if basePath, err = apibase.Clean(cfg.APIBasePath); err != nil {
+			return nil, fmt.Errorf("s3: %w", err)
+		}
+	}
 	if cfg.Credentials == nil {
 		return nil, errors.New("s3: no credentials")
 	}
@@ -247,6 +259,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 	return &Client{
 		base:        u,
+		basePath:    basePath,
 		region:      region,
 		virtualHost: cfg.VirtualHost,
 		creds:       cfg.Credentials,
@@ -290,12 +303,12 @@ func (s *Session) do(ctx context.Context, op, method, bucket, query string, body
 	u := *s.c.base
 	switch {
 	case bucket == "":
-		u.Path = "/"
+		u.Path = s.c.basePath + "/"
 	case s.c.virtualHost:
 		u.Host = bucket + "." + u.Host
-		u.Path = "/"
+		u.Path = s.c.basePath + "/"
 	default:
-		u.Path = "/" + bucket
+		u.Path = s.c.basePath + "/" + bucket
 	}
 	u.RawQuery = query
 	var rd io.Reader

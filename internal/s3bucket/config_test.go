@@ -47,6 +47,7 @@ endpoints:
       $secret: s3/sk
       backend: file
     bucket_prefix: app-
+    api_base_path: /s3/
     timeout: 3s
   aws:
     endpoint: https://s3.ap-northeast-1.amazonaws.com
@@ -63,6 +64,9 @@ endpoints:
 	m := cfg.Endpoints["minio"]
 	if m.Region != DefaultRegion || m.Addressing != AddressingPath || m.BucketPrefix != "app-" || m.Timeout.String() != "3s" || m.SecretKey.Path() != "s3/sk" {
 		t.Errorf("minio = %+v", m)
+	}
+	if m.APIBasePath != "/s3" || cfg.Endpoints["aws"].APIBasePath != "" {
+		t.Errorf("api_base_path = %q, %q; want /s3 and none", m.APIBasePath, cfg.Endpoints["aws"].APIBasePath)
 	}
 	if a := cfg.Endpoints["aws"]; a.Addressing != AddressingVirtual || a.Region != "ap-northeast-1" {
 		t.Errorf("aws = %+v", a)
@@ -90,6 +94,8 @@ func TestLoadConfig_Errors(t *testing.T) {
 		{base("    endpoint: http://h\n    access_key: secretref:file/s3/ak\n    secret_key: secretref:file/s3/missing\n"), "is not in the secret store"},
 		{base("    endpoint: http://h\n    access_key: secretref:vault/s3/ak\n    secret_key: secretref:file/s3/sk\n"), "only the file SecretBackend"},
 		{base(ok + "    addressing: dns\n"), "want path or virtual"},
+		{base(ok + "    api_base_path: s3\n"), `endpoints.e1.api_base_path "s3": want a path`},
+		{base(ok + "    api_base_path: /s3?x=1\n"), "only a plain path"},
 		{base(ok + "    insecure_skip_verify: yes-please\n"), "want true or false"},
 		{base(ok + "    timeout: soon\n"), "positive duration"},
 		{base("    access_key: secretref:file/s3/ak\n    secret_key: secretref:file/s3/sk\n"), "endpoint is required"},

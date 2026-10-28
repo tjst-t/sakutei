@@ -76,6 +76,9 @@ type Options struct {
 	StorageClassRewrite map[string]string
 	// Now は作成日時の時刻（nil なら time.Now）。
 	Now func() time.Time
+	// BasePath が空でなければ、API をこのパスの下に置く（"/s3" なら
+	// "/s3/<bucket>"）。前置きの外の要求は 404（前置きの違う模擬の再現、#160）。
+	BasePath string
 }
 
 type bucket struct {
@@ -241,7 +244,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := strings.TrimPrefix(r.URL.Path, "/")
+	path := r.URL.Path
+	if base := strings.TrimRight(s.opts.BasePath, "/"); base != "" {
+		rest, ok := strings.CutPrefix(path, base)
+		if !ok || (rest != "" && !strings.HasPrefix(rest, "/")) {
+			writeError(w, http.StatusNotFound, "NoSuchKey", "the request is outside the API base path")
+			return
+		}
+		path = rest
+	}
+	name := strings.TrimPrefix(path, "/")
 	if base := s.opts.VirtualHostBase; base != "" {
 		host := r.Host
 		if i := strings.LastIndex(host, ":"); i >= 0 {

@@ -44,6 +44,7 @@ probes:
 ```
 
 - 相対パス（`secret_store`・`ca_file`）はこの設定ファイルのあるディレクトリから。
+- `url` はパスまで丸ごと書くので、API のパスの前置きを変える欄（proxmox-vm・s3-bucket の `api_base_path`、Backlog #160）は持たない。実機と模擬で前置きが違えば `url` を変える。
 - 資格は SecretRef でしか書けない（生の値は拒否。URL に `user:pass@` を書いても拒否）。値は取得の直前に解決する。
 - `ca_file`・`insecure_skip_verify` は https の URL のときだけ書ける。
 - 未知のキーは拒否する（書き間違いを黙って無視しない）。

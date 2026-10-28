@@ -23,6 +23,7 @@ package s3bucket
 //	endpoints:
 //	  minio:                              # endpoint の名前（ID は <名前>/<bucket>）
 //	    endpoint: https://s3.example.net:9000   # scheme は必須（http / https）
+//	    api_base_path: /s3                # 省略可（API のパスの前置き。既定は無し）
 //	    region: us-east-1                 # 省略可（既定 us-east-1）
 //	    addressing: path                  # path（既定）| virtual
 //	    access_key: secretref:file/s3/minio/access_key
@@ -64,6 +65,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/apibase"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -77,7 +79,10 @@ const (
 
 // EndpointConfig は 1 つの endpoint の設定。
 type EndpointConfig struct {
-	Endpoint           string
+	Endpoint string
+	// APIBasePath は API のパスの前置き（api_base_path。既定 "" は前置き無し）。
+	// 逆プロキシの下のパスに置いた endpoint や、模擬で前置きが違うとき（#160）。
+	APIBasePath        string
 	Region             string
 	Addressing         string
 	AccessKey          core.SecretRef
@@ -102,7 +107,7 @@ type Config struct {
 var (
 	topKeys      = map[string]bool{"secret_store": true, "scope": true, "endpoints": true}
 	endpointKeys = map[string]bool{
-		"endpoint": true, "region": true, "addressing": true, "access_key": true, "secret_key": true,
+		"endpoint": true, "api_base_path": true, "region": true, "addressing": true, "access_key": true, "secret_key": true,
 		"bucket_prefix": true, "ca_file": true, "insecure_skip_verify": true, "timeout": true,
 		"fields": true, "storage_class_aliases": true,
 	}
@@ -207,6 +212,15 @@ func parseEndpoint(p string, m map[string]any, dir string) (EndpointConfig, erro
 	}
 	if e.Endpoint == "" {
 		return EndpointConfig{}, fmt.Errorf("%s.endpoint is required (http://host:port or https://host:port)", p)
+	}
+	if _, ok := m["api_base_path"]; ok {
+		raw, err := str(m, "api_base_path", p+".")
+		if err != nil {
+			return EndpointConfig{}, err
+		}
+		if e.APIBasePath, err = apibase.Clean(raw); err != nil {
+			return EndpointConfig{}, fmt.Errorf("%s.%w", p, err)
+		}
 	}
 	if e.Region == "" {
 		e.Region = DefaultRegion
@@ -329,6 +343,7 @@ func (c Config) Build() (map[string]Endpoint, error) {
 		ak, sk := e.AccessKey, e.SecretKey
 		cl, err := NewClient(ClientConfig{
 			Endpoint:    e.Endpoint,
+			APIBasePath: e.APIBasePath,
 			Region:      e.Region,
 			VirtualHost: e.Addressing == AddressingVirtual,
 			Credentials: func(ctx context.Context) (Credentials, error) {

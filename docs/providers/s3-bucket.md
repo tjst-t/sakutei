@@ -21,6 +21,7 @@ scope: site=tokyo                     # 省略可。List・BulkObserve が ID �
 endpoints:
   minio:                              # endpoint の名前。ID の前半になる（a-z 0-9 _ -）
     endpoint: https://s3.example.net:9000   # scheme は必須（http / https）。パスは書かない
+    api_base_path: /s3                # 省略可。API のパスの前置き（既定は無し。path なら <前置き>/<bucket>）
     region: us-east-1                 # 省略可（既定 us-east-1）。署名と CreateBucket の LocationConstraint に使う
     addressing: path                  # path（既定。<endpoint>/<bucket>）| virtual（<bucket>.<host>）
     access_key: secretref:file/s3/minio/access_key
@@ -44,6 +45,7 @@ $ sakutei status --intent intent/ --s3-config s3.yaml --json
 
 - `access_key`・`secret_key` は **SecretRef でしか書けない**（`"secretref:file/<path>"` か `{"$secret": "<path>", "backend": "file"}`）。生の値を書くとエラーになり、その値は文言にも出ない。値は Read・Apply・List の直前に file SecretBackend から解決し、provider には持たない。読み込みの時点では store にその path があることだけを確かめる。
 - **`bucket_prefix` を勧める**。List は資格から見える全バケットを返すので、PruneWithinScope を宣言すると、prefix が無ければアカウントの全バケットが「閉じた世界」になる。prefix を書けば、その接頭辞の外のバケットは List にも Read にも出ない（intent に書くと読み込みの時点で断る）。
+- `api_base_path`（Backlog #160）は、S3 の API がホストの根ではなくパスの下にいるとき（逆プロキシの下のパス、試験用の模擬など）に書く。要求のパスは path 形式なら `<前置き>/<bucket>`、virtual-host 形式なら `<前置き>/`（バケット名はホストに付く）、ListBuckets は `<前置き>/`。署名（SigV4）は前置きを含んだパスで作る（前置きを書き換えて転送する逆プロキシの下では署名が合わない）。`/` で始まるパスだけを受け付け（末尾の `/` は落とす。`/` は前置き無し）、クエリ・`%`・空白・空の段・`.`・`..` の段は読み込みの時点でエラー。省けば今までどおり前置き無し。`endpoint` には今までどおりパスを書かない。
 - virtual-host 形式で https を使うとき、名前に `.` を含むバケットは証明書のワイルドカードに合わないことが多い。
 - 未知のキーはエラー（書き間違いを黙って無視しない）。
 

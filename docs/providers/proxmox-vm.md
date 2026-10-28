@@ -1,7 +1,7 @@
 # Proxmox VE の VM provider（proxmox-vm）
 
 Proxmox VE のクラスタの VM（qemu）を宣言で作り、pool・CPU・メモリ・ディスク・NIC・cloud-init・電源を合わせる provider（Backlog #143、設計書 §29.1「Proxmox VE の VM provider」）。
-REST API（`/api2/json`）を Go の標準ライブラリの net/http で叩く。認証は API トークン（`Authorization: PVEAPIToken=<user>@<realm>!<tokenname>=<secret>`）。
+REST API（既定の前置きは `/api2/json`。設定の `api_base_path` で変えられる）を Go の標準ライブラリの net/http で叩く。認証は API トークン（`Authorization: PVEAPIToken=<user>@<realm>!<tokenname>=<secret>`）。
 
 - 完全の階級：Read・Apply・List・BulkObserve（`/cluster/resources` を 1 回と VM ごとの設定）。
 - VM は破壊的な型なので **prune しない**（`Pruneable: false`、§12.3）。宣言から外しても消えない。消すのは intent の **`ensure: absent`**（宣言で消す、§12.2、Backlog #163。下の「宣言で消す」）だけで、Delete は破壊的として予算（§13）に数え、planned_change（`kind: delete`）のレーンが開いているときだけ走る（承認）。
@@ -25,6 +25,7 @@ secret_store: secrets.json            # file SecretBackend（§20.5）。相対�
 clusters:
   lab:                                # クラスタの名前（ID は <名前>/<VM 名>）
     endpoint: https://pve1.example.net:8006
+    api_base_path: /api2/json         # 省略可：API のパスの前置き（既定 /api2/json、"/" は前置き無し）
     token_id: sakutei@pve!sakutei     # <user>@<realm>!<tokenname>
     token_secret: secretref:file/proxmox/lab/token
     node: pve1                        # 省略可：node を宣言しない VM を作るノード
@@ -40,6 +41,7 @@ clusters:
 ```
 
 - `token_secret` は SecretRef でしか書けない（生の文字列はエラー。値は文言にも出さない）。値は要求の直前に解決し（JIT、§20.2）、provider にも持たない。読み込みの時点では store にその path があることだけを確かめる。
+- `api_base_path`（Backlog #160）は、実機と試験用の模擬で API のパスの前置きが違うとき（模擬が `/mock/pve/api2/json` の下にいる、逆プロキシの下のパスに置いた、など）に変える。つなぎ方なので provider の設定に置き（intent には書かない）、同じ intent を実機にも模擬にも当てられる。`/` で始まるパスだけを受け付け（末尾の `/` は落とす）、クエリ・`%`・空白・空の段・`.`・`..` の段は読み込みの時点でエラー。省けば今までどおり `/api2/json`。
 - 未知のキーはエラー。YAML はリポジトリのサブセットで、`[a, b]` の流れの書き方は使えない（`- a` の形で書く）。
 - トークンに要る権限は下の「トークンの権限」。
 

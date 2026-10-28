@@ -77,6 +77,9 @@ type Options struct {
 	Pools []string
 	// PoolTokens は pool に絞ったトークン（TokenID・Secret のほかに受け付ける）。
 	PoolTokens []PoolToken
+	// BasePath は API のパスの前置き（既定 "/api2/json"、"/" は前置き無し）。
+	// 前置きの違う模擬の再現（#160）。
+	BasePath string
 }
 
 // PoolToken は 1 つの pool に絞ったトークン（ACL が /pool/<Pool> に PVEVMAdmin、
@@ -148,6 +151,10 @@ func New(opts Options) *Server {
 	if len(opts.Nodes) == 0 {
 		opts.Nodes = []string{"pve1", "pve2"}
 	}
+	if opts.BasePath == "" {
+		opts.BasePath = "/api2/json"
+	}
+	opts.BasePath = strings.TrimRight(opts.BasePath, "/")
 	if opts.ColdKeys == nil {
 		opts.ColdKeys = []string{"cores", "memory"}
 	}
@@ -369,7 +376,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	path, ok := strings.CutPrefix(r.URL.Path, "/api2/json")
+	path, ok := strings.CutPrefix(r.URL.Path, s.opts.BasePath)
 	if !ok {
 		writeErr(w, errf(http.StatusNotImplemented, "Method '%s %s' not implemented", r.Method, r.URL.Path))
 		return

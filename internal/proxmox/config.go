@@ -22,6 +22,7 @@ package proxmox
 //	clusters:
 //	  lab:                                # クラスタの名前（ID は <名前>/<VM 名>）
 //	    endpoint: https://pve1.example.net:8006
+//	    api_base_path: /api2/json         # 省略可（API のパスの前置き。既定 /api2/json、"/" は前置き無し）
 //	    token_id: sakutei@pve!sakutei     # <user>@<realm>!<tokenname>
 //	    token_secret: secretref:file/proxmox/lab/token
 //	    node: pve1                        # 省略可（node を宣言しない VM を作るノード）
@@ -58,6 +59,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/apibase"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -69,7 +71,10 @@ const DefaultTaskWait = 30 * time.Second
 
 // ClusterConfig は 1 つのクラスタの設定。
 type ClusterConfig struct {
-	Endpoint           string
+	Endpoint string
+	// APIBasePath は API のパスの前置き（api_base_path。省けば
+	// DefaultAPIBasePath、"/" は前置き無し）。実機と模擬で違うときに変える。
+	APIBasePath        string
 	TokenID            string
 	TokenSecret        core.SecretRef
 	Node               string
@@ -91,7 +96,7 @@ type Config struct {
 var (
 	topKeys     = map[string]bool{"secret_store": true, "clusters": true}
 	clusterKeys = map[string]bool{
-		"endpoint": true, "token_id": true, "token_secret": true, "node": true, "scope": true,
+		"endpoint": true, "api_base_path": true, "token_id": true, "token_secret": true, "node": true, "scope": true,
 		"protected_vmids": true, "protected_names": true, "ca_file": true, "insecure_skip_verify": true,
 		"timeout": true, "task_wait": true,
 	}
@@ -184,6 +189,15 @@ func parseCluster(p string, m map[string]any, dir string) (ClusterConfig, error)
 	}
 	if c.Endpoint == "" {
 		return ClusterConfig{}, fmt.Errorf("%s.endpoint is required (https://host:8006)", p)
+	}
+	c.APIBasePath = DefaultAPIBasePath
+	if _, ok := m["api_base_path"]; ok {
+		if c.APIBasePath, err = str(m, "api_base_path", p+"."); err != nil {
+			return ClusterConfig{}, err
+		}
+		if _, err := apibase.Clean(c.APIBasePath); err != nil {
+			return ClusterConfig{}, fmt.Errorf("%s.%w", p, err)
+		}
 	}
 	if c.TokenID == "" {
 		return ClusterConfig{}, fmt.Errorf("%s.token_id is required (<user>@<realm>!<tokenname>)", p)
@@ -299,8 +313,9 @@ func (c Config) Build() (map[string]Cluster, error) {
 	for name, cc := range c.Clusters {
 		ref := cc.TokenSecret
 		cl, err := NewClient(ClientConfig{
-			Endpoint: cc.Endpoint,
-			TokenID:  cc.TokenID,
+			Endpoint:    cc.Endpoint,
+			APIBasePath: cc.APIBasePath,
+			TokenID:     cc.TokenID,
 			Secret: func(ctx context.Context) (string, error) {
 				v, err := backend.ResolveValue(ctx, ref.Backend(), ref.Path(), ref.Generation())
 				if err != nil {

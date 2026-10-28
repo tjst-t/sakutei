@@ -41,6 +41,7 @@ bmcs:
 - store が読めない周は BMC に届かないのと同じ扱い（Unknown、何も操作しない）。
 - 相対パス（`secret_store`・`ca_file`）は設定ファイルのあるディレクトリから。
 - 未知のキーはエラー。
+- API のパスの前置きを変える欄（proxmox-vm・s3-bucket の `api_base_path`、Backlog #160）は持たない。Redfish はサービスルートを規格（DSP0266）で `/redfish/v1` に決めており、provider は BMC が返す `@odata.id`（サーバの根からの絶対パス）を辿るので、前置きを足しても辿った先には効かない。サービスルートの下で置き場所が BMC ごとに違うものは、今までどおり `system`・`manager` で指す。
 - intent に、設定に無いノードを書くと計画の時点でエラー（`no BMC is configured for node "…"`）。redfish のリソースがあるのに `--redfish-config` が無いのもエラー。
 
 secret store（file SecretBackend）の例:
