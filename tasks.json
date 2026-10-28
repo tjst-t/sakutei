@@ -3494,7 +3494,7 @@
       "number": 149,
       "kind": "task",
       "title": "/metrics（Prometheus の text 形式）の値を観測する provider（観測だけ、require の元）",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "fw-redfish-updateservice",
       "dependsOn": [],
       "milestone": null,
@@ -3506,7 +3506,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:41:13.586Z",
-      "updatedAt": "2026-10-28T02:41:24.943Z",
+      "updatedAt": "2026-10-28T02:45:09.426Z",
       "closedAt": null,
       "extra": {}
     },
