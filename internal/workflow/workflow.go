@@ -156,6 +156,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/task"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
@@ -221,7 +222,12 @@ func (s Step) ResourceFor(target core.ID) core.ID {
 	if s.Resource == "" {
 		return target
 	}
-	ref := strings.ReplaceAll(s.Resource, TargetPlaceholder, target.Local)
+	return refFor(s.Resource, target)
+}
+
+// refFor は "<provider>/<id>"（id の {target} は対象の Local ID）を、対象の scope の ID にする。
+func refFor(ref string, target core.ID) core.ID {
+	ref = strings.ReplaceAll(ref, TargetPlaceholder, target.Local)
 	prov, local, _ := strings.Cut(ref, "/")
 	return core.NewID(prov, target.Scope, local)
 }
@@ -234,12 +240,17 @@ func (s Step) validateResource() error {
 	if s.Kind != StepApply && s.Kind != StepWait && s.Kind != StepRequire && s.Kind != StepAction {
 		return fmt.Errorf("resource is only for apply / wait / require / action (a task runs on the target; polymorphic Task is v2)")
 	}
-	prov, local, ok := strings.Cut(s.Resource, "/")
+	return validateRef(s.Resource)
+}
+
+// validateRef は "<provider>/<id>" の書き方の誤りを返す。
+func validateRef(ref string) error {
+	prov, local, ok := strings.Cut(ref, "/")
 	if !ok || strings.TrimSpace(prov) == "" || strings.TrimSpace(local) == "" {
-		return fmt.Errorf("resource %q: want \"<provider>/<id>\" (e.g. \"redfish-virtual-media/%s/cd\")", s.Resource, TargetPlaceholder)
+		return fmt.Errorf("resource %q: want \"<provider>/<id>\" (e.g. \"redfish-virtual-media/%s/cd\")", ref, TargetPlaceholder)
 	}
 	if rest := strings.ReplaceAll(local, TargetPlaceholder, ""); strings.ContainsAny(rest, "{}") {
-		return fmt.Errorf("resource %q: only %s can be substituted", s.Resource, TargetPlaceholder)
+		return fmt.Errorf("resource %q: only %s can be substituted", ref, TargetPlaceholder)
 	}
 	return nil
 }
@@ -361,6 +372,137 @@ type Invariant struct {
 	ActiveWhen map[string]string `json:"active_when,omitempty"`
 }
 
+// Disruption は全体を止める型の更新の宣言（§6.3、Backlog #152）。止めている間は
+// 下流が使えない更新（ゲートウェイのソフト更新など）を、対象ごとに次の順で通す
+// （engine.go の beforeDisruption）:
+//
+//	時間帯（Window・remediation の auto）→ 上流の積もり（Upstream）→ 止める前の
+//	承認ゲート（Gate。見積もり・下流・上流の観測値を出す）→ もう一度、時間帯と
+//	上流 → 知らせ（Disruption の Event、firing）→ NotifyBefore の後に手順 →
+//	対象の手順を終えたら resolved
+//
+// 書き方（Workflow の disruption:。loader のテスト TestDisruptionDocExampleLoads が
+// この例を読む）:
+//
+//	disruption:
+//	  estimate: 20m                         # 対象 1 つを止める時間の見積もり（必須）
+//	  affects:                              # 止めている間に使えない下流（必須）
+//	    - fake/app
+//	    - fake/{target}-clients
+//	  window: "Sat 02:00-04:00 UTC"         # 止めてよい時間帯（省略可）
+//	  upstream:                             # 止める前の上流の積もり（省略可）
+//	    - resource: metrics-probe/orders
+//	      fields:
+//	        ready.below_limit: "true"
+//	  max_wait: 1h                          # 上流を待つ上限（upstream があれば必須）
+//	  notify_before: 10m                    # 知らせてから止めるまで（省略可）
+//	  gate:                                 # 止める前のゲート（省略可。既定は単一承認・24h）
+//	    manual_approval:
+//	      requirements:
+//	        quorum:
+//	          n: 2
+//	          of: 3
+//	    timeout: 4h
+//
+// Task（update_policy.strategy: task）の更新を止める型にするときは、Workflow の
+// task 手順で包む（止める前の確かめ・承認・知らせは Workflow の側で持つ）。
+type Disruption struct {
+	// Estimate は対象 1 つを止める時間の見積もり（必須）。時間帯の中で始めて
+	// 見積もりが時間帯の終わりまでに収まるときだけ止める。
+	Estimate time.Duration `json:"estimate"`
+	// Affects は止めている間に使えなくなる下流のリソース "<provider>/<id>"（必須。
+	// id の {target} は対象の Local ID、scope は対象の scope）。知らせとゲートに
+	// 出すだけで、収束ループからは取り上げない。
+	Affects []string `json:"affects"`
+	// Window は止めてよい時間帯（update_policy.window と同じ書式、task.ParseWindow）。
+	// 空なら常時。remediation schedule（§14.2）が alert-only の間は Workflow
+	// 自体が進まないので、実際に止めるのはこの時間帯と auto の重なりだけ。
+	Window string `json:"window,omitempty"`
+	// Upstream は止める前に確かめる上流の積もり（require と同じく観測で一致を
+	// 見る、#87・#149）。満たさない・観測できない間は止めずに待つ。
+	Upstream []Upstream `json:"upstream,omitempty"`
+	// MaxWait は上流の積もりが下がるのを待つ上限（Upstream があれば必須）。
+	// 過ぎたら止めずに halt して知らせる。
+	MaxWait time.Duration `json:"max_wait,omitempty"`
+	// NotifyBefore は知らせてから止めるまでの間（0 なら次の周に止める）。
+	NotifyBefore time.Duration `json:"notify_before,omitempty"`
+	// Gate は止める前の承認ゲート（requirements・timeout。既定は単一承認・24h）。
+	Gate Gate `json:"gate"`
+}
+
+// Upstream は止める前に確かめる上流のリソースと、満たすべき観測値。
+type Upstream struct {
+	Resource string            `json:"resource"`
+	Fields   map[string]string `json:"fields"`
+}
+
+// DisruptionGateName は stage の targetIdx 番目（0 から）の対象を止める前の
+// 承認ゲートの名前（承認 API の {gate}）。
+func DisruptionGateName(stage string, targetIdx int) string {
+	return fmt.Sprintf("%s-disruption-%d", stage, targetIdx+1)
+}
+
+// AffectsFor は対象 target を止めたとき使えなくなる下流の ID。
+func (d *Disruption) AffectsFor(target core.ID) []core.ID {
+	out := make([]core.ID, 0, len(d.Affects))
+	for _, ref := range d.Affects {
+		out = append(out, refFor(ref, target))
+	}
+	return out
+}
+
+func (d *Disruption) validate(def Definition) error {
+	if d.Estimate <= 0 {
+		return fmt.Errorf("disruption.estimate is required (how long a target is stopped)")
+	}
+	if len(d.Affects) == 0 {
+		return fmt.Errorf("disruption.affects is required (the downstream resources unusable while a target is stopped)")
+	}
+	for _, ref := range d.Affects {
+		if err := validateRef(ref); err != nil {
+			return fmt.Errorf("disruption.affects: %w", err)
+		}
+	}
+	if _, err := task.ParseWindow(d.Window); err != nil {
+		return fmt.Errorf("disruption.%w", err)
+	}
+	for i, u := range d.Upstream {
+		if err := validateRef(u.Resource); err != nil {
+			return fmt.Errorf("disruption.upstream[%d]: %w", i, err)
+		}
+		if len(u.Fields) == 0 {
+			return fmt.Errorf("disruption.upstream[%d]: fields are required", i)
+		}
+	}
+	if len(d.Upstream) > 0 && d.MaxWait <= 0 {
+		return fmt.Errorf("disruption.max_wait is required with upstream (a backlog that never drops halts instead of waiting forever)")
+	}
+	if d.MaxWait < 0 || d.NotifyBefore < 0 {
+		return fmt.Errorf("disruption: max_wait and notify_before must not be negative")
+	}
+	if d.Gate.Timeout <= 0 {
+		return fmt.Errorf("disruption.gate: timeout must be positive")
+	}
+	if err := d.Gate.Requirements.validate(); err != nil {
+		return fmt.Errorf("disruption.gate %w", err)
+	}
+	if d.Gate.Requirements != nil && d.Gate.Requirements.Separation != "" && def.Applicant == "" {
+		return fmt.Errorf("disruption.gate: separation %s needs the workflow's applicant", d.Gate.Requirements.Separation)
+	}
+	stages := map[string]bool{}
+	for _, st := range def.Stages {
+		stages[st.Name] = true
+	}
+	for _, st := range def.Stages {
+		for i := range st.Targets {
+			if g := DisruptionGateName(st.Name, i); stages[g] {
+				return fmt.Errorf("stage %q has the name of the disruption gate of stage %s; rename it", g, st.Name)
+			}
+		}
+	}
+	return nil
+}
+
 // Definition は intent の workflows: の 1 件。
 type Definition struct {
 	Name string `json:"workflow"`
@@ -375,6 +517,8 @@ type Definition struct {
 	Invariant Invariant `json:"invariant"`
 	Stages    []Stage   `json:"stages"`
 	Steps     []Step    `json:"steps"`
+	// Disruption は全体を止める型の更新の宣言（#152）。nil なら止めない更新。
+	Disruption *Disruption `json:"disruption,omitempty"`
 }
 
 // Scope は対象の scope（target.scope。全対象で同じ）。
@@ -436,13 +580,14 @@ func (d Definition) Hash() string {
 		Gate    *Gate    `json:"gate,omitempty"`
 	}
 	v := struct {
-		Name      string    `json:"name"`
-		Applicant string    `json:"applicant,omitempty"`
-		Trigger   string    `json:"trigger,omitempty"`
-		Invariant Invariant `json:"invariant"`
-		Stages    []stage   `json:"stages"`
-		Steps     []Step    `json:"steps"`
-	}{Name: d.Name, Applicant: d.Applicant, Trigger: d.Trigger, Invariant: d.Invariant, Steps: d.Steps}
+		Name       string      `json:"name"`
+		Applicant  string      `json:"applicant,omitempty"`
+		Trigger    string      `json:"trigger,omitempty"`
+		Invariant  Invariant   `json:"invariant"`
+		Stages     []stage     `json:"stages"`
+		Steps      []Step      `json:"steps"`
+		Disruption *Disruption `json:"disruption,omitempty"`
+	}{Name: d.Name, Applicant: d.Applicant, Trigger: d.Trigger, Invariant: d.Invariant, Steps: d.Steps, Disruption: d.Disruption}
 	for _, st := range d.Stages {
 		s := stage{Name: st.Name, Gate: st.Gate}
 		for _, id := range st.Targets {
@@ -555,6 +700,11 @@ func (d Definition) Validate() error {
 		}
 		if err := s.validateResource(); err != nil {
 			return fmt.Errorf("workflow %s: steps[%d] (%s): %w", d.Name, i, s.Kind, err)
+		}
+	}
+	if d.Disruption != nil {
+		if err := d.Disruption.validate(d); err != nil {
+			return fmt.Errorf("workflow %s: %w", d.Name, err)
 		}
 	}
 	return nil

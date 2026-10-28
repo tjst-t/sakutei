@@ -1505,6 +1505,37 @@ type levelCoverage struct {
 	// compatHeld: the resources (ID.String()) held by the compatibility
 	// table this cycle (#151).
 	compatHeld map[string]bool
+	// wfTicked: the targets (ID.String()) of the Workflows advanced this
+	// cycle without a store error; disrupting: those among them whose
+	// disruptive update is notified and not done (#152).
+	wfTicked, disrupting map[string]bool
+}
+
+// disruptionCoverage returns the targets of the Workflows advanced this cycle
+// and those reported as disrupting (#152).  A Workflow that reported an error
+// (its store unreadable or unwritable) is not counted as advanced: its
+// Disruption stays firing (unsure → keep reporting).
+func disruptionCoverage(defs []workflow.Definition, events []workflow.Event) (ticked, disrupting map[string]bool) {
+	errored := map[string]bool{}
+	disrupting = map[string]bool{}
+	for _, ev := range events {
+		switch ev.Kind {
+		case workflow.EventError:
+			errored[ev.Workflow] = true
+		case workflow.EventDisruption:
+			disrupting[ev.Resource.String()] = true
+		}
+	}
+	ticked = map[string]bool{}
+	for _, def := range defs {
+		if def.Disruption == nil || errored[def.Name] {
+			continue
+		}
+		for _, id := range def.Targets() {
+			ticked[id.String()] = true
+		}
+	}
+	return ticked, disrupting
 }
 
 // resolves reports whether a level Event ev that did not recur this cycle is
@@ -1527,6 +1558,11 @@ func (c levelCoverage) resolves(ev core.Event, res CycleResult, cycleErr error) 
 		// take any more (an Apply took, the diff changed, reality converged,
 		// a person released it, or it left desired) — the daemon's own record.
 		return c.observed && ev.HasResource() && !c.applyRecorded[ev.Resource.String()]
+	case core.EventDisruption:
+		// #152: gone when the Workflow was advanced this cycle and no longer
+		// reports the target as disrupting (its steps are done, or the run
+		// was cancelled).
+		return ev.HasResource() && c.wfTicked[ev.Resource.String()] && !c.disrupting[ev.Resource.String()]
 	case core.EventVersionIncompatible:
 		// #151: gone when the compatibility check no longer holds it (the
 		// order or the table was fixed, or the group converged).
@@ -1878,6 +1914,9 @@ func runCycleAsync(
 	}
 	var wfEvents []workflow.Event
 	wfHeld := map[string]string{}
+	// #152: the targets of the Workflows advanced this cycle and those whose
+	// disruption is notified, for resolving the Disruption Events.
+	var wfTicked, wfDisrupting map[string]bool
 	if len(in.Workflows) > 0 {
 		if workflows == nil {
 			for _, def := range in.Workflows {
@@ -1908,6 +1947,7 @@ func runCycleAsync(
 				}
 			} else {
 				wfEvents = workflows.Tick(ctx, runnable)
+				wfTicked, wfDisrupting = disruptionCoverage(runnable, wfEvents)
 			}
 			held, err := workflows.Held(ctx, in.Workflows)
 			if err != nil {
@@ -2048,7 +2088,8 @@ func runCycleAsync(
 	var notDue []string
 
 	// §22.3: what this cycle sees, for the level report.
-	cov := levelCoverage{observed: true, settled: map[string]bool{}, desired: make(map[string]bool, len(desired))}
+	cov := levelCoverage{observed: true, settled: map[string]bool{}, desired: make(map[string]bool, len(desired)),
+		wfTicked: wfTicked, disrupting: wfDisrupting}
 	for _, r := range desired {
 		cov.desired[r.ID.String()] = true
 	}

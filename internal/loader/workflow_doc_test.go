@@ -106,3 +106,64 @@ func TestWorkflowDocExampleLoads(t *testing.T) {
 		t.Errorf("steps = %+v", def.Steps)
 	}
 }
+
+// #152: Disruption の説明の例（"disruption:" で始まる "//\t" の塊）は、そのまま
+// Workflow に書いて読み込める。
+func TestDisruptionDocExampleLoads(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "workflow", "workflow.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	in := false
+	for _, line := range strings.Split(string(src), "\n") {
+		body, isCode := strings.CutPrefix(line, "//\t")
+		if !in {
+			if isCode && body == "disruption:" {
+				in = true
+			} else {
+				continue
+			}
+		}
+		if !isCode {
+			break
+		}
+		b.WriteString("    " + body + "\n")
+	}
+	if b.Len() == 0 {
+		t.Fatal("workflow.go の説明に disruption: の例が見つかりません")
+	}
+	yaml := `workflows:
+  - workflow: gw-update
+    target:
+      provider: fake
+    stages:
+      - name: s1
+        targets:
+          - gw1
+    steps:
+      - apply:
+          active: "false"
+` + b.String()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in2, err := LoadIntent(dir)
+	if err != nil {
+		t.Fatalf("説明の例が読み込めません: %v\n%s", err, yaml)
+	}
+	d := in2.Workflows[0].Disruption
+	if d == nil || d.Estimate != 20*time.Minute || len(d.Affects) != 2 || d.Window != "Sat 02:00-04:00 UTC" ||
+		len(d.Upstream) != 1 || d.Upstream[0].Fields["ready.below_limit"] != "true" || d.MaxWait != time.Hour ||
+		d.NotifyBefore != 10*time.Minute || d.Gate.Timeout != 4*time.Hour || d.Gate.Requirements.Needed() != 2 {
+		t.Fatalf("disruption = %+v", d)
+	}
+	gw1 := in2.Workflows[0].Stages[0].Targets[0]
+	if got := d.AffectsFor(gw1); got[1].Local != "gw1-clients" || got[1].Provider != "fake" {
+		t.Errorf("affects for gw1 = %+v", got)
+	}
+	if g := workflow.DisruptionGateName("s1", 0); g != "s1-disruption-1" {
+		t.Errorf("gate name = %q", g)
+	}
+}

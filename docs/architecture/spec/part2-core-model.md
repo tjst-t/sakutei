@@ -575,6 +575,52 @@ planned_change:                              # この宣言が承認されると
       - alice
 ```
 
+**全体を止める型の更新 `disruption`（Backlog #152、v3.44）。** 止めている間は下流が使えない更新（ゲートウェイのソフト更新など）は、いつ止めるか・どれだけ止めるか・誰が影響を受けるかを人に見せ、上流が溢れない時にだけ止めたい。Workflow に `disruption:` を宣言すると、対象ごとに最初の手順の前で次を通す（進みは Run の `disruption`〈S2〉に置き、上流の観測値は持たない）。
+
+1. **時間帯**：いまが `window`（`update_policy.window` と同じ書式）の中で、かつ止める時間の見積もり `estimate` が時間帯の終わりまでに収まること。外なら待つ（起こさない）。remediation schedule（§14.2）が alert-only の間は Workflow 自体が進まないので、実際に止めるのは `window` と auto の重なりだけ。
+2. **上流の積もり**：`upstream` の各リソース（`{ resource, fields }`、`require` と同じく観測の一致で比べる。`metrics-probe` のキューの長さなど）を Observe する。満たさない・観測できない（unknown ≠ ok）間は止めずに待ち、待ちの理由に観測値を出す。待ち始めてから `max_wait`（upstream があれば必須）を過ぎたら止めずに halt して知らせる（`WorkflowHalted`、warning）。
+3. **止める前の承認ゲート**：ゲート `<stage>-disruption-<n>`（n は stage の中の対象の番号）を開き、見積もり・影響を受ける下流（`affects`、`<provider>/<id>`）・いまの上流の観測値・時間帯を、Run の `gate_notice`・`reason` と `StageAwaitingApproval` の Event（attrs）に出す。承認の要件（`gate.manual_approval.requirements`）・timeout（既定 24h）・却下は stage のゲートと同じ（§6.4）。ゲートは省けない。
+4. **承認の後にもう一度**：ゲートで待つ間に時間帯や上流は変わりうるので、承認の後に 1・2 を確かめ直す。外れていれば承認を残したまま待つ。
+5. **知らせ**：`Disruption` の Event（level、warning、§22.3）を通知の口へ出し、**その周は手順を始めない**（知らせが止める前に届く）。`notify_before` を宣言すればその間も待つ。
+6. **手順**：対象の手順を走らせる。手順の間（halt を含む）は `Disruption` を firing に保ち、対象の手順を終えた周に resolved になる。止め始めて `estimate` を過ぎても終わらなければ overrun として stuck（critical）に上げる。
+
+```yaml
+workflows:
+  - workflow: gw-update
+    target:
+      provider: fake
+    disruption:
+      estimate: 20m                          # 対象 1 つを止める時間の見積もり（必須）
+      affects:                               # 止めている間に使えない下流（必須。知らせとゲートに出すだけ）
+        - fake/app
+      window: "Sat 02:00-04:00 UTC"          # 止めてよい時間帯（省略可）
+      upstream:                              # 止める前の上流の積もり（省略可）
+        - resource: metrics-probe/orders
+          fields:
+            ready.below_limit: "true"        # metrics-probe の "< 1000"
+      max_wait: 1h                           # 上流を待つ上限（upstream があれば必須）
+      notify_before: 10m                     # 知らせてから止めるまで（省略可）
+      gate:
+        timeout: 4h
+    stages:
+      - name: s1
+        targets:
+          - gw1
+    steps:
+      - apply:
+          active: "false"
+      - wait:
+          fields:
+            version: "2"
+          timeout: 1h
+      - apply:
+          active: "true"
+```
+
+- `affects`・`upstream` のリソースは Workflow が触るリソース（収束ループが Apply しないもの）に入れない。下流は止めている間も収束ループのまま、上流は観測するだけ。
+- **Task の更新**（`update_policy.strategy: task`）を止める型にするときは、Workflow の `task` 手順で包む。時間帯・上流・承認・知らせは Workflow の側で持ち、Task の update_policy には持たせない（同じ決まりを 2 か所に置かない）。
+- 見送り：見積もりを過去の実績から出すこと、下流を depends_on から自動で求めること、止めている間に下流の Event を抑えること（抑制は送り先に委ねる、§22.1）。
+
 ### §6.4 承認ゲート
 
 段階適用の承認ゲートは既存 Workflow（wave + invariant + Event/sink + フェーズ永続化）の組み合わせで表現でき、新プリミティブは不要である。ゲートは health_check（自動）と manual_approval（人）を持てる。
@@ -606,6 +652,7 @@ rollout:
 - **申請者≠承認者（separation）**:PR や planned_change の申請者 ID と承認者 ID の不一致を強制し、自己承認を型で塞ぐ。
 - **全承認者を S4 監査に記録**:誰が・いつ・どの署名で承認したかの全員分を S4 に append する。承認は「事実」として恒久記録され、「どの承認ゲートを誰が通したか」が追える。
 - requirements を宣言しないゲートは従来どおり単一承認である。
+- **止める前のゲート（v3.44、Backlog #152）**：`disruption` の Workflow は stage の終わりのほかに、対象を止める前にもゲートを開く（§6.3）。ゲートの Event と Run（`GET /workflows/{id}` の `gate_notice`）に止める時間の見積もり・影響を受ける下流・いまの上流の観測値・時間帯を載せ、人は何を止めるのかを見てから承認する。
 
 ### §6.5 RequiresTaskEvent —— 非冪等操作の収束ループからの排除
 

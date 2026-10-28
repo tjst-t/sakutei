@@ -90,6 +90,13 @@ type Run struct {
 	// GateRequirements は待っているゲートの承認者要件（§14.4、nil なら単一承認）。
 	// ゲートを開いたときに定義から写す。承認 API はこれと Applicant で判定する。
 	GateRequirements *Requirements `json:"gate_requirements,omitempty"`
+	// GateNotice は止める前の承認ゲート（#152）に出す見積もり・影響を受ける下流・
+	// 上流の観測値・時間帯（キー estimate / affects / upstream / window / target）。
+	// ゲートを開いたときに置き、閉じたら消す。
+	GateNotice map[string]string `json:"gate_notice,omitempty"`
+	// Disrupt は全体を止める型の更新（#152）の、今の対象の止める前の進み。
+	// 対象を移るときに消す。
+	Disrupt *DisruptState `json:"disruption,omitempty"`
 	// Applicant は申請者 ID（起動したときの定義から写す）。
 	Applicant string `json:"applicant,omitempty"`
 	// Approvals は全ゲートへの判断の履歴（監査の正本は S4、ここは進行判断用）。
@@ -101,6 +108,21 @@ type Run struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	// Version は書込ごとに 1 増える。Save はこれで競合（承認 API との同時書込）を見分ける。
 	Version int `json:"version"`
+}
+
+// DisruptState は対象（Stage・Target の位置）を止める前の進み（S2、#152）。
+// 観測した上流の値は持たない（毎周 Observe し直す）。
+type DisruptState struct {
+	Stage  int `json:"stage"`
+	Target int `json:"target"`
+	// WaitingSince は上流の積もりが上限を超えて待ち始めた時刻（max_wait の起点）。
+	// 時間帯の外や、上流が下がったときは消す。
+	WaitingSince time.Time `json:"waiting_since,omitempty"`
+	// Approved は止める前の承認ゲートを通った。
+	Approved bool `json:"approved,omitempty"`
+	// NotifiedAt は止める前の知らせ（Disruption の Event）を出した時刻。これが
+	// 立ってから対象の手順を始め、対象の手順を終えるまで知らせを firing に保つ。
+	NotifiedAt time.Time `json:"notified_at,omitempty"`
 }
 
 // rejection は gate への却下を返す。

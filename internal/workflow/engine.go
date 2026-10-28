@@ -43,6 +43,8 @@ const (
 	EventHalted    = core.EventWorkflowHalted
 	EventCompleted = core.EventWorkflowCompleted
 	EventError     = core.EventWorkflowError
+	// EventDisruption は全体を止める型の更新の知らせ（level、#152）。
+	EventDisruption = core.EventDisruption
 )
 
 // Event は 1 周の Workflow の出来事。出すときは Core で core.Event にする。
@@ -50,6 +52,10 @@ type Event struct {
 	Kind     EventKind
 	Workflow string
 	Message  string
+	// Resource は出来事の対象（EventDisruption では止める対象）。ほかは空。
+	Resource core.ID
+	// Attrs は付属情報（workflow のほかに足すもの）。
+	Attrs map[string]string
 }
 
 func (e Event) String() string {
@@ -60,14 +66,19 @@ func (e Event) String() string {
 func (e Event) Core() core.Event {
 	sev := core.SeverityInfo
 	switch e.Kind {
-	case EventHalted, EventError, EventBlocked:
+	case EventHalted, EventError, EventBlocked, EventDisruption:
 		sev = core.SeverityWarning
+	}
+	attrs := map[string]string{"workflow": e.Workflow}
+	for k, v := range e.Attrs {
+		attrs[k] = v
 	}
 	return core.Event{
 		Kind:     e.Kind,
 		Severity: sev,
+		Resource: e.Resource,
 		Message:  e.Message,
-		Attrs:    map[string]string{"workflow": e.Workflow},
+		Attrs:    attrs,
 	}
 }
 
@@ -354,13 +365,16 @@ func (e *Engine) tick(ctx context.Context, def Definition) []Event {
 		return s.events
 	case PhaseHalted:
 		s.emit(EventHalted, "run %s is halted: %s (targets held; `sakutei workflow cancel %s` to restart)", s.run.RunID, s.run.Reason, def.Name)
+		s.disrupting()
 		return s.events
 	case PhaseAwaitingApproval:
 		if !s.gate(ctx) {
+			s.disrupting()
 			return s.events
 		}
 	}
 	s.advance(ctx)
+	s.disrupting()
 	return s.events
 }
 
@@ -376,7 +390,16 @@ func (s *stepper) gate(ctx context.Context) bool {
 	if len(approvers) >= need {
 		s.emit(EventApproved, "gate %s approved by %s (%d of %d required)", run.Gate, strings.Join(approvers, ", "), len(approvers), need)
 		s.run.Phase = PhaseRunning
+		disruptGate := s.isDisruptionGate(run.Gate)
 		s.run.Gate, s.run.GateOpenedAt, s.run.GateDeadline, s.run.GateRequirements = "", time.Time{}, time.Time{}, nil
+		s.run.GateNotice = nil
+		if disruptGate {
+			// #152: 止める前のゲート。同じ対象の手順の前に戻る（時間帯と上流を
+			// もう一度確かめてから知らせ、止める）。
+			s.run.Disrupt.Approved = true
+			s.run.Reason = ""
+			return s.save()
+		}
 		return s.nextStage()
 	}
 	if !s.now.Before(run.GateDeadline) {
@@ -402,6 +425,7 @@ func (s *stepper) nextStage() bool {
 	s.run.Stage++
 	s.run.Target, s.run.Step = 0, 0
 	s.run.Reserved = false
+	s.run.Disrupt = nil
 	s.run.StepStartedAt = s.now.UTC()
 	s.run.Reason = ""
 	if s.run.Stage >= len(s.def.Stages) {
@@ -435,6 +459,12 @@ func (s *stepper) advance(ctx context.Context) {
 		where := fmt.Sprintf("stage %s, target %s, step %d (%s)", stage.Name, target.Local, s.run.Step+1, step.Kind)
 		if step.Resource != "" {
 			where = fmt.Sprintf("stage %s, target %s, step %d (%s %s/%s)", stage.Name, target.Local, s.run.Step+1, step.Kind, res.Provider, res.Local)
+		}
+
+		// #152: 全体を止める型の更新は、対象の最初の手順の前に時間帯・上流の積もり・
+		// 承認・知らせを通す。
+		if s.def.Disruption != nil && s.run.Step == 0 && !s.beforeDisruption(ctx, stage, target) {
+			return
 		}
 
 		// #88: 入れ直しの Workflow は、対象に手を付ける前に宣言の max_count を 1 つ使う。
@@ -509,6 +539,8 @@ func (s *stepper) advance(ctx context.Context) {
 		s.run.Step = 0
 		s.run.Target++
 		s.run.Reserved = false
+		// #152: 対象の手順を終えた。止める知らせはこの周で resolved になる。
+		s.run.Disrupt = nil
 		if s.run.Target < len(stage.Targets) {
 			if !s.save() {
 				return

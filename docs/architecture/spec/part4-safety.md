@@ -286,6 +286,8 @@ remediation:
 
 **保守窓のみ auto、他は alert-only** を宣言的に表現する。窓の外で検知した drift は次の窓まで alert-only として持ち越され、level-triggered なので窓が開いた周に自然に修復される。freeze（§14.3）は「今すぐ全体を alert-only に倒すマクロ」、schedule は「時間帯で mode を張る宣言」であり、両者は重ねられる（freeze が最優先）。
 
+**全体を止める型の更新との重ね方（v3.44、Backlog #152）。** Workflow の `disruption.window`（§6.3）は「止めてよい時間帯」で、schedule とは別の決定源として重ねる（most-restrictive-wins、§14.3）。schedule が alert-only の間は Workflow 自体が進まず、`disruption.window` の外では止める前の確かめに入らない。止めるのは両方が許す時間だけで、さらに見積もり（`estimate`）が `disruption.window` の終わりまでに収まるときだけ始める。窓が閉じた後に進行中の手順を中断はしない（止めた対象を置き去りにしない。Task の窓と同じ、§6.2）。
+
 ### §14.3 優先規則（most-restrictive-wins）と freeze
 
 複数の mode 決定源（schedule / ownership 既定 / scope 明示 / freeze）が同一リソースに対して異なる mode を指すとき、**より制限的な mode が常に勝つ**（`alert-only` > `auto`）。優先順位でなく「最も制限的」で解決するのは、安全側への非対称原則（§3）を mode 解決にも一貫適用するためである——どこか1つでも「止めろ」と言えば止まる。

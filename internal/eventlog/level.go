@@ -31,6 +31,8 @@ package eventlog
 // transient → stuck: 続いた周数がしきい値（stuckAfter、既定 DefaultStuckAfter）に
 // 達したら上げる。permanent な失敗（権限・欠損など。Attrs["failure"]="permanent"）と
 // 容量の halt は初めから stuck。stuck の Event は severity=critical。
+// Disruption（全体を止める型の更新の知らせ、#152）は周数では上げず、見積もりを
+// 過ぎた（Attrs["overrun"]="true"）ときだけ stuck にする。
 
 import (
 	"fmt"
@@ -51,6 +53,11 @@ const (
 	AttrFailure      = "failure"
 	FailurePermanent = "permanent"
 )
+
+// AttrOverrun は Disruption（#152）の Attrs のキー。"true" は止めてから見積もりを
+// 過ぎても対象の手順が終わっていない: stuck（critical）に上げる。Disruption は
+// 続いた周数では stuck に上げない。
+const AttrOverrun = "overrun"
 
 // volatileAttrs は毎周変わりうる数で、内容の変化とみなさない Attrs のキー。
 var volatileAttrs = map[string]bool{
@@ -202,6 +209,14 @@ func (l *Level) observe(ev core.Event) (core.Event, bool) {
 }
 
 func (l *Level) classify(ev core.Event, count int) core.EventClass {
+	if ev.Kind == core.EventDisruption {
+		// #152: a planned stop lasts as many cycles as it takes; it is stuck
+		// only when it outlasts its estimate (the Workflow says so).
+		if ev.Attrs[AttrOverrun] == "true" {
+			return core.EventStuck
+		}
+		return core.EventTransient
+	}
 	if permanent(ev) || count >= l.stuckAfter {
 		return core.EventStuck
 	}

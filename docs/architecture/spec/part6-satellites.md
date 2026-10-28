@@ -572,6 +572,12 @@ vm:
 - **宛先ごとに独立**：宛先ごとに 1 つの sink（送る goroutine・送り直し・待ち・送り待ちの行列・firing の覚え）を持ち、Event は全部の宛先に同じものを渡す。1 台が落ちても、その宛先の待ちを挙げるだけで、他の宛先の送りを止めない・遅らせない。落ちた宛先が戻れば、その宛先の送り待ち（resolved・edge）と firing の今の全部を送る（Alertmanager は firing の全部を毎回送り直すので、落ちていた間の firing も戻ればそろう）。一回性の `reconcile` が終わる前の送り切り（最長 10 秒）は全部の宛先で同時に行い、落ちた宛先が時間を使い切っても届く宛先の送り切りは妨げない。
 - **宛先ごとの状態**：要求（POST）の数を宛先ごとに数え（届いた・届かず送り直した・4xx で捨てた・溢れて捨てた）、送り待ちの数・続けて届かなかった数・最後に届いた時刻と合わせて `/metrics`（`sakutei_notify_*{sink,url}`、§27.5）とデーモンの健全性（`--daemon-status`・`GET /status` の `daemon.notify`、§26.4）に出す。これはデーモン自身の進捗（S3、メモリだけ）で、起こし直せば 0 から数える。
 
+**全体を止める型の更新の知らせ（v3.44、Backlog #152）**：kind `Disruption`（level、warning）を足す。Workflow の `disruption`（§6.3）が対象を止める前の周に firing で出し（resource は止める対象、attrs に `estimate`・`affects`・`window`・`notified_at`・`workflow`・`run`）、その周は手順を始めない——知らせが止める前に通知の口（webhook・Alertmanager）へ届く。
+
+- **続く間**：対象の手順の間（halt を含む）は同じ内容で出し続けるので更新は出ない。続いた周数では stuck に上げず、止め始めて見積もりを過ぎても終わらなければ attrs の `overrun: true` を付けて stuck（critical）に上げる。
+- **resolved**：その周に Workflow を進め（store が読めた）、対象の手順を終えた（または run を cancel した）とき。Workflow を進めなかった周（alert-only・claim の外・store のエラー）は resolved にしない（確かめられないものは firing のまま）。
+- 止める前の承認ゲートの `StageAwaitingApproval`（edge）にも resource（止める対象）と同じ attrs（見積もり・下流・上流の観測値・時間帯）を載せる。上流が `max_wait` を過ぎて止めずに止まったときは `WorkflowHalted`（edge、warning）で知らせる。
+
 **読み取り専用の口の SSE（Backlog #136）**：デーモンの `GET /events`（`--read-listen`、§26.4）も、この単一 Event の sink の 1 つである。外の道具（可視化・ダッシュボード）が Event を流しで受けるための口で、通知の口とは別に持つ。口の TLS と認可（#161、§22.1・§26.4）は `/events` にもそのまま効く（接続のはじめに一度確かめる）。
 
 - 流すのは知らせ（周の要約とログ行を除く Event）を、`--event-log` の 1 行と同じ JSON で 1 件ずつ（SSE の `data:` の行）。level の Event は firing / resolved のまま流れる。

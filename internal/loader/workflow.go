@@ -127,7 +127,134 @@ func parseWorkflow(m map[string]any) (workflow.Definition, error) {
 		}
 		def.Steps = append(def.Steps, step)
 	}
+
+	if raw, ok := m["disruption"]; ok {
+		d, err := parseDisruption(raw)
+		if err != nil {
+			return def, fmt.Errorf("disruption: %w", err)
+		}
+		def.Disruption = d
+	}
 	return def, def.Validate()
+}
+
+// parseDisruption reads a disruptive update's declaration (#152):
+//
+//	disruption:
+//	  estimate: 20m
+//	  affects: [ <provider>/<id>, ... ]
+//	  window: "Sat 02:00-04:00 UTC"
+//	  upstream:
+//	    - resource: <provider>/<id>
+//	      fields: {...}
+//	  max_wait: 2h
+//	  notify_before: 5m
+//	  gate:                       # optional; single approval, 24h by default
+//	    manual_approval: required | { requirements: {...} }
+//	    timeout: 4h
+//
+// Unknown keys are rejected: a misspelled guard would silently not guard.
+func parseDisruption(v any) (*workflow.Disruption, error) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("must be an object { estimate, affects, window, upstream, max_wait, notify_before, gate }")
+	}
+	d := &workflow.Disruption{Gate: workflow.Gate{Timeout: workflow.DefaultGateTimeout}}
+	duration := func(key string) (time.Duration, error) {
+		raw, ok := m[key]
+		if !ok {
+			return 0, nil
+		}
+		str, isStr := raw.(string)
+		if !isStr {
+			return 0, fmt.Errorf("%s must be a duration string (e.g. 20m)", key)
+		}
+		dur, err := time.ParseDuration(strings.TrimSpace(str))
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", key, err)
+		}
+		return dur, nil
+	}
+	for k, val := range m {
+		var err error
+		switch k {
+		case "estimate":
+			d.Estimate, err = duration(k)
+		case "max_wait":
+			d.MaxWait, err = duration(k)
+		case "notify_before":
+			d.NotifyBefore, err = duration(k)
+		case "window":
+			w, isStr := val.(string)
+			if !isStr {
+				return nil, fmt.Errorf("window must be a string (e.g. \"Sat 02:00-04:00\")")
+			}
+			d.Window = strings.TrimSpace(w)
+		case "affects":
+			list, isList := val.([]any)
+			if !isList {
+				return nil, fmt.Errorf("affects must be a list of \"<provider>/<id>\"")
+			}
+			for _, item := range list {
+				ref, isStr := item.(string)
+				if !isStr {
+					return nil, fmt.Errorf("affects must be a list of \"<provider>/<id>\"")
+				}
+				d.Affects = append(d.Affects, strings.TrimSpace(ref))
+			}
+		case "upstream":
+			list, isList := val.([]any)
+			if !isList {
+				return nil, fmt.Errorf("upstream must be a list of { resource, fields }")
+			}
+			for i, item := range list {
+				um, isMap := item.(map[string]any)
+				if !isMap {
+					return nil, fmt.Errorf("upstream[%d] must be { resource, fields }", i)
+				}
+				for key := range um {
+					if key != "resource" && key != "fields" {
+						return nil, fmt.Errorf("upstream[%d].%s is not supported (resource | fields)", i, key)
+					}
+				}
+				ref, _ := um["resource"].(string)
+				if _, isMap := um["fields"].(map[string]any); !isMap {
+					return nil, fmt.Errorf("upstream[%d].fields must be an object", i)
+				}
+				d.Upstream = append(d.Upstream, workflow.Upstream{Resource: strings.TrimSpace(ref), Fields: stringifyStringMap(um["fields"])})
+			}
+		case "gate":
+			g, isMap := val.(map[string]any)
+			if !isMap {
+				return nil, fmt.Errorf("gate must be { manual_approval, timeout }")
+			}
+			for key := range g {
+				if key != "manual_approval" && key != "timeout" {
+					return nil, fmt.Errorf("gate.%s is not supported (manual_approval | timeout)", key)
+				}
+			}
+			if _, has := g["manual_approval"]; !has {
+				// The gate before a stop is always there; manual_approval only
+				// adds requirements.
+				withApproval := map[string]any{"manual_approval": "required"}
+				for key, x := range g {
+					withApproval[key] = x
+				}
+				g = withApproval
+			}
+			gate, err := parseGate(g)
+			if err != nil {
+				return nil, err
+			}
+			d.Gate = *gate
+		default:
+			return nil, fmt.Errorf("unknown key %q (estimate | affects | window | upstream | max_wait | notify_before | gate)", k)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return d, nil
 }
 
 // parseGate reads a stage gate.  manual_approval: required is a single

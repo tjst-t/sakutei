@@ -77,6 +77,12 @@ const (
 	// 観測できない）があって、その組の変わる部品を止めた（Apply も Task も
 	// 起こさない）。
 	EventVersionIncompatible EventKind = "VersionIncompatible"
+	// EventDisruption は全体を止める型の更新（Workflow の disruption、§6.3、
+	// Backlog #152）が対象を止めようとしている・止めている間の知らせ。Resource は
+	// 止める対象、attrs に止める時間の見積もり（estimate）・影響を受ける下流
+	// （affects）・時間帯（window）・上流の積もり（upstream）。止める前の周に
+	// firing で出し、その対象の手順を終えた周に resolved になる。
+	EventDisruption EventKind = "Disruption"
 
 	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。
 	EventWorkflowStarted       EventKind = "WorkflowStarted"
@@ -116,7 +122,10 @@ func (k EventKind) IsLevel() bool {
 		EventApplyIneffective,
 		// Backlog #151: a group held by the compatibility table stays held
 		// until its update order (or the table) is fixed.
-		EventVersionIncompatible:
+		EventVersionIncompatible,
+		// Backlog #152: a disruptive update's outage notice fires before the
+		// target is stopped and resolves when its steps are done.
+		EventDisruption:
 		return true
 	}
 	return false

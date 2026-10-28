@@ -308,6 +308,8 @@ func workflowsSchema() schemaNode {
 					},
 				},
 				"steps": schemaNode{"type": "array", "items": schemaNode{"type": "object"}},
+				// disruption は全体を止める型の更新（#152）。中身は parseDisruption が検証する。
+				"disruption": schemaNode{"type": "object", "additionalProperties": true},
 				"on_failure": schemaNode{
 					"type":                 "object",
 					"additionalProperties": false,
