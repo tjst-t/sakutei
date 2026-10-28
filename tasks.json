@@ -3645,6 +3645,30 @@
       "updatedAt": "2026-10-28T02:43:02.954Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "intent",
+      "number": 156,
+      "kind": "story",
+      "title": "正しい状態は宣言に置く：採番の結果を宣言の側へ書き戻す・触らない宣言を intent に入れる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "allocation",
+        "intent"
+      ],
+      "body": "設計の原則「正しい状態は宣言に置き、ツールの中だけに持たない」を当てる。ツールを失っても、ツールに依らない宣言と、宣言どおりに組まれた現実が残るようにする。作業の途中の記録（Task・Workflow の進み、承認の記録など）はツールの中にあってよい。\n\n見つかった穴：\n1. 採番で配った値（どの owner に何を配ったか）が、採番の store にしか無い。intent には `from_pool` しか無い。\n2. 設計書 §7.3 の「この範囲は外の持ち主のもの、触らない」宣言が intent に実装されておらず、除外は provider ごとの設定（例 proxmox-vm の触らない VM）にしか書けない。\n\nあわせて、設計書に原則を一般の形で書く（§1 か §29）。provider の設定はつなぎ方（宛先・鍵・時間）だけ、管理の範囲と除外は intent に書く、も原則として書く。",
+      "doneWhen": "子タスクがすべて done、make check・make test-race が通り、設計書と CHANGELOG に反映して main に push 済み",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T02:43:17.201Z",
+      "updatedAt": "2026-10-28T02:43:17.201Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
