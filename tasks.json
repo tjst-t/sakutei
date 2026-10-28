@@ -4037,7 +4037,7 @@
       "number": 173,
       "kind": "task",
       "title": "nftables：base chain の policy（既定の拒否）を宣言で管理し、到達の確かめと時間切れの巻き戻しで締め出しを防ぐ",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m6-netconf-apply-base-chain-2-apply",
       "dependsOn": [],
       "milestone": null,
@@ -4049,7 +4049,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:49:00.946Z",
-      "updatedAt": "2026-10-28T09:49:00.946Z",
+      "updatedAt": "2026-10-28T09:49:11.134Z",
       "closedAt": null,
       "extra": {}
     },
