@@ -4175,7 +4175,7 @@
       "number": 179,
       "kind": "task",
       "title": "nftables の base chain の変更：到達を確かめる先を宣言に書き、変更の前にも確かめる・壊す変更として予算と承認ゲートを通す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m6-netconf-apply-base-chain-2-apply",
       "dependsOn": [
         "nftables-base-chain-policy",
@@ -4192,7 +4192,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T10:41:48.582Z",
-      "updatedAt": "2026-10-28T10:41:48.582Z",
+      "updatedAt": "2026-10-28T10:57:52.738Z",
       "closedAt": null,
       "extra": {}
     }
