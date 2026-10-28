@@ -170,6 +170,9 @@ func runReconcile(args []string) {
 	// #166 (§11.1): re-read after every Apply that reported success; the
 	// settle and the stop limits.
 	applyCheck := addApplyCheckFlags(fs)
+	// #177 (§8.1): observe again, after an upstream's Apply, what could not
+	// be observed at the head of the run.
+	reobserve := addReobserveFlags(fs)
 
 	logFormat := addLogFormatFlag(fs)
 	eventLog := addEventLogFlag(fs)
@@ -180,6 +183,7 @@ func runReconcile(args []string) {
 		os.Exit(1)
 	}
 	acFlags := applyCheck.flags("sakutei reconcile")
+	reobserveLimits := reobserve.limits("sakutei reconcile")
 	setLogFormat("sakutei reconcile", *logFormat)
 	routeEventLog("sakutei reconcile", *eventLog, eventNotify)
 	soaSerial := checkZoneSOASerial("sakutei reconcile", *zoneSOASerial)
@@ -553,34 +557,14 @@ func runReconcile(args []string) {
 	// §29.1 (#151): the observed fields, for the compatibility check of the
 	// combinations met while updating one at a time.
 	compatObserved := make(map[string]map[string]string)
-	for _, res := range desired {
-		// S62dbba-2: route Read and Diff to the provider for this resource.
-		fp, ok := providers[res.ID.Provider]
-		if !ok {
-			// Should not happen: resolveProviders already validated all names.
-			fmt.Fprintf(logErr, "sakutei reconcile: internal error: no provider for %q\n", res.ID.Provider)
-			exitAfterEvents(1)
-		}
+	// #177: unreached are the resources not observed at the head of the run
+	// (Observe error or Availability != Ok) — the ones re-observed once an
+	// upstream's Apply has taken.  Held resources are not in it.
+	unreached := make(map[string]bool)
+	// planObserved turns one resource's Observation into its plan (or holds
+	// it); shared by the head of the run and the re-observation (#177).
+	planObserved := func(res diff.DesiredResource, obs core.Observation, err error) {
 		engine := engines[res.ID.Provider]
-
-		if waitingAlloc[res.ID.Local] {
-			unobservable[res.ID.Local] = true
-			continue
-		}
-
-		// ADR-0002: Observe independently for each resource.
-		//
-		// This is a fresh observation: reconcile does NOT carry over any
-		// observation result from a prior "sakutei plan" invocation or from
-		// a previous iteration of this loop.  Every Observe reaches reality
-		// at this moment in time — by Read, or by this invocation's single
-		// bulk call when the provider declares BulkObserve (§5.7).
-		obsv, ok := cycleObs[res.ID.Provider]
-		if !ok {
-			obsv = sdk.NewCycleObserver(fp, claimSelector)
-			cycleObs[res.ID.Provider] = obsv
-		}
-		obs, err := obsv.ObserveDesired(ctx, res.ID, res.Fields)
 		if err != nil {
 			// D-1: Observe error → unobservable, not converged.  Do not exit
 			// immediately: record it, keep observing the rest, and let ApplyWaves
@@ -588,7 +572,8 @@ func runReconcile(args []string) {
 			// below if anything was skipped (unified skip policy with the loop).
 			fmt.Fprintf(logErr, "sakutei reconcile: observe %s: %v\n", res.ID, err)
 			unobservable[res.ID.Local] = true
-			continue
+			unreached[res.ID.Local] = true
+			return
 		}
 		if obs.Availability != core.AvailabilityOk {
 			// D-1: reachable-but-unknown/converging is still not "converged".
@@ -596,7 +581,8 @@ func runReconcile(args []string) {
 			fmt.Fprintf(logErr, "sakutei reconcile: observe %s: availability=%v (not Ok); treating as unobservable\n",
 				res.ID, obs.Availability)
 			unobservable[res.ID.Local] = true
-			continue
+			unreached[res.ID.Local] = true
+			return
 		}
 		ready.Record(res.ID.Local, obs)
 		compatObserved[res.ID.Local] = engine.SnapshotFields(obs.State)
@@ -607,7 +593,7 @@ func runReconcile(args []string) {
 		if sel, ok := in.ExternalOwners.ByState(res.ID, obs.State); ok {
 			fmt.Fprintf(logErr, "sakutei reconcile: %s: %s: observed, not applied (§7.3)\n", res.ID, sel.Describe())
 			unobservable[res.ID.Local] = true
-			continue
+			return
 		}
 
 		// Convert observed State to string map for last-seen ring storage.
@@ -707,6 +693,35 @@ func runReconcile(args []string) {
 			// reconcile.ApplyWaves sees it as "already converged" for the wave
 			// scheduler (do not attempt Apply, do not skip downstream).
 		}
+	}
+	for _, res := range desired {
+		// S62dbba-2: route Read and Diff to the provider for this resource.
+		fp, ok := providers[res.ID.Provider]
+		if !ok {
+			// Should not happen: resolveProviders already validated all names.
+			fmt.Fprintf(logErr, "sakutei reconcile: internal error: no provider for %q\n", res.ID.Provider)
+			exitAfterEvents(1)
+		}
+
+		if waitingAlloc[res.ID.Local] {
+			unobservable[res.ID.Local] = true
+			continue
+		}
+
+		// ADR-0002: Observe independently for each resource.
+		//
+		// This is a fresh observation: reconcile does NOT carry over any
+		// observation result from a prior "sakutei plan" invocation or from
+		// a previous iteration of this loop.  Every Observe reaches reality
+		// at this moment in time — by Read, or by this invocation's single
+		// bulk call when the provider declares BulkObserve (§5.7).
+		obsv, ok := cycleObs[res.ID.Provider]
+		if !ok {
+			obsv = sdk.NewCycleObserver(fp, claimSelector)
+			cycleObs[res.ID.Provider] = obsv
+		}
+		obs, err := obsv.ObserveDesired(ctx, res.ID, res.Fields)
+		planObserved(res, obs, err)
 	}
 
 	saveApplyCheck()
@@ -994,14 +1009,317 @@ func runReconcile(args []string) {
 		exitAfterEvents(1)
 	}
 
-	// #110: count the resources whose Apply failed this cycle — they had ops,
-	// were attempted (neither unobservable nor skipped) and did not succeed.
-	// Their failure line is already on stderr (EmitApplyFailed); the summary
-	// below must not call the cycle converged.
+	// #166 (§11.1 Tier2): every Apply that reported success is re-read until
+	// its diff is gone or its settle has passed (in parallel).  An Apply whose
+	// diff is still the one it applied did not take: it is counted (and the
+	// resource's Apply stopped at the limit); a diff that moved is progress.
+	type verified struct {
+		out    reconcile.VerifyOutcome
+		ops    []core.Op
+		limits reconcile.ApplyCheckLimits
+	}
+	verifiedBy := map[string]verified{}
+	verifyApplied := func(ids map[string]bool) {
+		var verifyMu sync.Mutex
+		var verifyWG sync.WaitGroup
+		for _, res := range desired {
+			local := res.ID.Local
+			if !ids[local] || len(filteredPlans[local].Ops) == 0 {
+				continue
+			}
+			p := providers[res.ID.Provider]
+			lim := reconcile.ResolveApplyCheck(res, applyTypes, acFlags, p.Capabilities().Settle)
+			verifyWG.Add(1)
+			go func(res diff.DesiredResource, p provider.Provider, engine *diff.Engine, lim reconcile.ApplyCheckLimits) {
+				defer verifyWG.Done()
+				out, ops := reconcile.VerifyApply(ctx, p, engine, res, lim.Settle)
+				verifyMu.Lock()
+				verifiedBy[res.ID.Local] = verified{out: out, ops: ops, limits: lim}
+				verifyMu.Unlock()
+			}(res, p, engines[res.ID.Provider], lim)
+		}
+		verifyWG.Wait()
+	}
+	verifyApplied(appliedIDs)
+
 	skippedSet := make(map[string]bool, len(skipped))
 	for _, sk := range skipped {
 		skippedSet[sk] = true
 	}
+	// decisionOf is the budget decision that admitted a resource's ops when it
+	// is not the run's (a re-observation round's, #177).
+	decisionOf := map[string]budget.CycleDecision{}
+
+	// #177 (§8.1): the resources not observed at the head of the run that
+	// depend (directly or not) on an upstream whose Apply took in this run are
+	// observed again; those now observed are planned and go through the same
+	// gates (holds, compatibility, budget, approval) and wave order in this
+	// run.  Round after round, while an Apply takes and the limits allow.
+	if !budgetHalted && !capacityHalted {
+		reobs := reconcile.NewReobserver(reobserveLimits)
+		convergedIn := func(ids map[string]bool) map[string]bool {
+			out := map[string]bool{}
+			for local := range ids {
+				if v, ok := verifiedBy[local]; ok && v.out == reconcile.VerifyConverged {
+					out[local] = true
+				}
+			}
+			return out
+		}
+		lastApplied := convergedIn(appliedIDs)
+		for reobs.Enabled() && len(lastApplied) > 0 {
+			settled := reconcile.Settled(desired, func(local string) bool {
+				if unobservable[local] {
+					return false
+				}
+				if _, pending := plans[local]; !pending {
+					return true
+				}
+				v, ok := verifiedBy[local]
+				return ok && v.out == reconcile.VerifyConverged
+			})
+			var cands []diff.DesiredResource
+			for _, c := range reconcile.ReobserveCandidates(desired, unreached, settled, lastApplied) {
+				if !reobs.Exhausted(c.ID.Local) {
+					cands = append(cands, c)
+				} else {
+					fmt.Fprintf(logErr, "sakutei reconcile: reobserve %s: not observed again: limit reached (%s); left to the next run\n", c.ID, reobs.Limits())
+				}
+			}
+			if len(cands) == 0 {
+				break
+			}
+			// §8.3: a ready_condition upstream applied in this run is read
+			// again, so its readiness is the one after its Apply.
+			refreshed := map[string]bool{}
+			for _, c := range cands {
+				for dep := range c.ReadyConditions {
+					if !appliedIDs[dep] || refreshed[dep] {
+						continue
+					}
+					refreshed[dep] = true
+					for _, r := range desired {
+						if r.ID.Local != dep {
+							continue
+						}
+						if o, err := reconcile.ReadFresh(ctx, providers[r.ID.Provider], r); err == nil {
+							ready.Record(dep, o)
+						}
+					}
+				}
+			}
+			recovered := map[string]bool{}
+			var recDesired []diff.DesiredResource
+			for _, c := range cands {
+				obs, ok, why := reobs.Observe(ctx, providers[c.ID.Provider], c)
+				if !ok {
+					fmt.Fprintf(logErr, "sakutei reconcile: reobserve %s: still unobservable after its upstream's Apply (%s); left to the next run\n", c.ID, why)
+					continue
+				}
+				fmt.Fprintf(logErr, "sakutei reconcile: reobserve %s: observed after its upstream's Apply; planned in this run (§8.1)\n", c.ID)
+				delete(unobservable, c.ID.Local)
+				delete(unreached, c.ID.Local)
+				planObserved(c, obs, nil)
+				recovered[c.ID.Local] = true
+				recDesired = append(recDesired, c)
+			}
+			if len(recovered) == 0 {
+				break
+			}
+			// The same holds as at the head of the run: observe-only providers
+			// (§23.4) and alert-only scopes (§14.3).
+			oh := reconcile.HoldObserveOnly(recDesired, plans, unobservable, nil, func(name string) bool {
+				p, ok := providers[name]
+				return ok && p.Capabilities().ObserveOnly
+			})
+			sh := reconcile.HoldAlertOnly(recDesired, plans, unobservable, nil, in.AlertOnlyScopes())
+			mergeHeld := func(to *reconcile.Held, from reconcile.Held, reason string) {
+				to.DriftCount += from.DriftCount
+				for _, ev := range from.Events {
+					ev.Text = "  " + ev.TextLine()
+					eventlog.Emit(logOut, ev)
+				}
+				to.Events = append(to.Events, from.Events...)
+				for local := range from.Locals {
+					if to.Locals == nil {
+						to.Locals = map[string]bool{}
+					}
+					to.Locals[local] = true
+					heldReason[local] = reason
+				}
+			}
+			mergeHeld(&obsHeld, oh, "held: its provider observes only (§23.4)")
+			mergeHeld(&scopeHeld, sh, "held by an alert-only scope (§14.3)")
+			for local := range recovered {
+				switch {
+				case taskHeld[local]:
+					heldReason[local] = "strategy: task — awaits its Task (launched by the daemon, §6.5)"
+				case workflowHeld[local]:
+					heldReason[local] = "target of a Workflow (driven by the daemon, §6.3)"
+				case stoppedHeld[local]:
+					heldReason[local] = "Apply stopped (oscillating, §11.1 Tier3): its Applies of this diff did not take or were rolled back on the target (see ApplyIneffective)"
+				}
+			}
+			// §29.1 (#151): the compatibility table is checked again with what
+			// is observed now.  A combination it does not allow holds what was
+			// observed again (nothing more is done in this run).
+			findings, compatErr := compatFindings(in.Compatibility, desired, compatObserved)
+			if compatErr != nil {
+				fmt.Fprintf(logErr, "sakutei reconcile: %v\n", compatErr)
+				exitAfterEvents(1)
+			}
+			for _, f := range findings {
+				if f.Unverified {
+					for _, id := range f.Hold {
+						delete(plans, id.Local)
+						unobservable[id.Local] = true
+					}
+					continue
+				}
+				reconcile.EmitVersionIncompatible(logErr, "sakutei reconcile: ", f)
+				for local := range recovered {
+					delete(plans, local)
+					unobservable[local] = true
+				}
+			}
+
+			// The sub-DAG of this round: what was observed again and its
+			// dependents whose other upstreams are settled.
+			eligible := func(local string) bool {
+				if unobservable[local] || appliedIDs[local] {
+					return false
+				}
+				if p, ok := plans[local]; ok && len(p.Ops) > 0 {
+					_, admitted := filteredPlans[local]
+					return admitted
+				}
+				return true
+			}
+			roots := map[string]bool{}
+			for local := range recovered {
+				if !unobservable[local] {
+					roots[local] = true
+				}
+			}
+			sub := reconcile.ReobserveSubDAG(desired, roots, settled, eligible)
+			if len(sub) == 0 {
+				break
+			}
+
+			// §13: the budget sees the ops observed again, with what this run
+			// has applied or still has admitted counted like in-flight changes.
+			var newOps []core.Op
+			var inFlight budget.InFlight
+			countInFlight := func(ops []core.Op) {
+				inFlight.Total++
+				for _, op := range ops {
+					if op.Destructive {
+						inFlight.Destructive++
+						break
+					}
+				}
+			}
+			for _, plan := range filteredPlans {
+				if len(plan.Ops) > 0 {
+					countInFlight(plan.Ops)
+				}
+			}
+			for _, r := range sub {
+				if recovered[r.ID.Local] {
+					newOps = append(newOps, plans[r.ID.Local].Ops...)
+				}
+			}
+			dec := budgetEngine.CheckCycle(newOps, inFlight, len(desired))
+			for _, ev := range dec.Events {
+				reconcile.EmitPlannedChange(logErr, ev, "sakutei reconcile: "+ev)
+			}
+			dec = budget.Merge(dec, capacityDecision)
+			if dec.HaltAll || dec.HaltDestructive {
+				reconcile.EmitBudgetHalted(logErr, dec.Reason, "sakutei reconcile: BUDGET HALTED: "+dec.Reason)
+				budgetHalted = true
+				budgetDecision.HaltAll = budgetDecision.HaltAll || dec.HaltAll
+				budgetDecision.HaltDestructive = true
+				budgetDecision.Reason = dec.Reason
+			}
+			recPlans := map[string]core.Plan{}
+			for local := range recovered {
+				if plan, ok := plans[local]; ok && roots[local] {
+					recPlans[local] = plan
+				}
+			}
+			for _, op := range reconcile.UnapprovedOps(recPlans, dec) {
+				reconcile.EmitAbsentAwaitingApproval(logErr, "sakutei reconcile: ", op.Target)
+				awaitingApproval = append(awaitingApproval, op)
+			}
+			var laneOps []core.Op
+			for local, plan := range recPlans {
+				var allowed []core.Op
+				for _, op := range plan.Ops {
+					switch {
+					case !dec.IsHalted(op):
+						allowed = append(allowed, op)
+					case dec.Unapproved(op):
+					default:
+						fmt.Fprintf(logErr, "sakutei reconcile: budget: blocked %v op for %s\n", op.Kind, op.Target)
+					}
+				}
+				if len(allowed) > 0 {
+					filteredPlans[local] = core.Plan{Ops: allowed}
+					decisionOf[local] = dec
+					laneOps = append(laneOps, allowed...)
+				}
+			}
+			if dec.LaneAdmitted() > 0 {
+				budgetEngine.ReserveLanes(dec, laneOps)
+				if err := budgetEngine.FlushLaneAudit(); err != nil {
+					fmt.Fprintf(logErr, "sakutei reconcile: planned_change: cannot record lane executions in S4: %v; what was observed again is not applied\n", err)
+					for local := range recPlans {
+						delete(filteredPlans, local)
+						unobservable[local] = true
+					}
+					break
+				}
+			}
+
+			_, ids, skippedK, waveErr := reconcile.ApplyWaves(ctx, applyProvider, exec, sub, filteredPlans, unobservable, heldReason, ready, logErr)
+			if waveErr != nil {
+				fmt.Fprintf(logErr, "sakutei reconcile: wave apply: %v\n", waveErr)
+				exitAfterEvents(1)
+			}
+			skippedNow := map[string]bool{}
+			for _, sk := range skippedK {
+				skippedNow[sk] = true
+			}
+			for _, r := range sub {
+				local := r.ID.Local
+				skippedSet[local] = skippedNow[local]
+				if ids[local] {
+					appliedIDs[local] = true
+				}
+			}
+			verifyApplied(ids)
+			// What took, and what this round found already converged (observed
+			// again with no diff), lets its own dependents be observed again.
+			lastApplied = convergedIn(ids)
+			for _, r := range sub {
+				local := r.ID.Local
+				if _, pending := plans[local]; !pending && !skippedNow[local] {
+					lastApplied[local] = true
+				}
+			}
+		}
+	}
+	skipped = skipped[:0]
+	for _, res := range desired {
+		if skippedSet[res.ID.Local] {
+			skipped = append(skipped, res.ID.Local)
+		}
+	}
+
+	// #110: count the resources whose Apply failed this cycle — they had ops,
+	// were attempted (neither unobservable nor skipped) and did not succeed.
+	// Their failure line is already on stderr (EmitApplyFailed); the summary
+	// below must not call the cycle converged.
 	applyFailed := 0
 	for _, res := range desired {
 		local := res.ID.Local
@@ -1036,35 +1354,6 @@ func runReconcile(args []string) {
 		fmt.Fprintf(logErr, "sakutei reconcile: skip %s (unobservable, upstream failure, or upstream not ready; not converged this cycle)\n", sk)
 	}
 
-	// #166 (§11.1 Tier2): every Apply that reported success is re-read until
-	// its diff is gone or its settle has passed (in parallel).  An Apply whose
-	// diff is still the one it applied did not take: it is counted (and the
-	// resource's Apply stopped at the limit); a diff that moved is progress.
-	type verified struct {
-		out    reconcile.VerifyOutcome
-		ops    []core.Op
-		limits reconcile.ApplyCheckLimits
-	}
-	verifiedBy := map[string]verified{}
-	var verifyMu sync.Mutex
-	var verifyWG sync.WaitGroup
-	for _, res := range desired {
-		local := res.ID.Local
-		if !appliedIDs[local] || len(filteredPlans[local].Ops) == 0 {
-			continue
-		}
-		p := providers[res.ID.Provider]
-		lim := reconcile.ResolveApplyCheck(res, applyTypes, acFlags, p.Capabilities().Settle)
-		verifyWG.Add(1)
-		go func(res diff.DesiredResource, p provider.Provider, engine *diff.Engine, lim reconcile.ApplyCheckLimits) {
-			defer verifyWG.Done()
-			out, ops := reconcile.VerifyApply(ctx, p, engine, res, lim.Settle)
-			verifyMu.Lock()
-			verifiedBy[res.ID.Local] = verified{out: out, ops: ops, limits: lim}
-			verifyMu.Unlock()
-		}(res, p, engines[res.ID.Provider], lim)
-	}
-	verifyWG.Wait()
 	var notConverged, unconfirmed []string
 	for _, res := range desired {
 		v, ok := verifiedBy[res.ID.Local]
@@ -1099,7 +1388,11 @@ func runReconcile(args []string) {
 			continue
 		}
 		if plan, ok := filteredPlans[res.ID.Local]; ok {
-			budgetEngine.CommitOps(budgetDecision.OutsideLanes(plan.Ops))
+			dec, ok := decisionOf[res.ID.Local]
+			if !ok {
+				dec = budgetDecision
+			}
+			budgetEngine.CommitOps(dec.OutsideLanes(plan.Ops))
 		}
 	}
 

@@ -130,6 +130,15 @@ type stateFile struct {
 	PruneableCapability bool                         `json:"pruneable_capability,omitempty"`
 	ProviderVersion     string                       `json:"provider_version,omitempty"`
 	Ready               map[string]map[string]bool   `json:"ready,omitempty"`
+	// ObserveAfter maps a Local ID to another Local ID: Read returns
+	// AvailabilityUnknown for it while the other does not exist (test-only,
+	// #177: a host reached only through a firewall rule that is created in
+	// the same run).  ObserveAfterReads adds, per Local ID, how many Reads in
+	// this process still return unknown once the other exists (a host that
+	// takes a moment to answer); ObserveDelay is a delay before each Read.
+	ObserveAfter      map[string]string `json:"observe_after,omitempty"`
+	ObserveAfterReads map[string]int    `json:"observe_after_reads,omitempty"`
+	ObserveDelay      map[string]string `json:"observe_delay,omitempty"`
 	// Task runner fields (test-only, #41, §6.2): see task.go.
 	TaskRunCount      map[string]int    `json:"task_run_count,omitempty"`
 	TaskRollbackCount map[string]int    `json:"task_rollback_count,omitempty"`
@@ -167,6 +176,9 @@ type Provider struct {
 	// in-process test that holds this Provider value.
 	readMu    sync.Mutex
 	readCount map[string]int
+	// afterReads counts, per Local ID, the Reads made once its ObserveAfter
+	// resource exists (test-only, #177; guarded by readMu, not persisted).
+	afterReads map[string]int
 
 	// holdMu guards taskHolds, the in-memory gates that keep RunTask blocked
 	// until a test releases them (test-only, #41; see HoldTask).
@@ -243,7 +255,7 @@ func (p *Provider) Capabilities() provider.Capabilities {
 // For the fake, "absent" is represented as AvailabilityOk with nil State so
 // that the diff engine can distinguish it from AvailabilityUnknown (target
 // unreachable).  The diff engine checks len(obs.State) == 0 to detect absent.
-func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) {
+func (p *Provider) Read(ctx context.Context, id string) (core.Observation, error) {
 	// Hold mu for the file read so an in-flight Apply goroutine (from a prior
 	// cycle) cannot race us on the state file.  The load result is a private
 	// copy, so we can unlock immediately and compute the Observation lock-free.
@@ -272,6 +284,33 @@ func (p *Provider) Read(_ context.Context, id string) (core.Observation, error) 
 	}
 
 	key := id
+
+	// #177 (test-only): a slow target; the wait ends with ctx.
+	if d, err := time.ParseDuration(sf.ObserveDelay[key]); err == nil && d > 0 {
+		select {
+		case <-ctx.Done():
+			return core.Observation{Availability: core.AvailabilityUnknown, ObservedAt: time.Now()},
+				provider.NewTransientError(fmt.Errorf("fakeprovider: observe %s: %w", key, ctx.Err()))
+		case <-time.After(d):
+		}
+	}
+
+	// #177 (test-only): reached only once another resource exists.
+	if after, ok := sf.ObserveAfter[key]; ok {
+		if _, exists := sf.Resources[after]; !exists {
+			return core.Observation{Availability: core.AvailabilityUnknown, ObservedAt: time.Now()}, nil
+		}
+		p.readMu.Lock()
+		if p.afterReads == nil {
+			p.afterReads = make(map[string]int)
+		}
+		p.afterReads[key]++
+		n := p.afterReads[key]
+		p.readMu.Unlock()
+		if n <= sf.ObserveAfterReads[key] {
+			return core.Observation{Availability: core.AvailabilityUnknown, ObservedAt: time.Now()}, nil
+		}
+	}
 
 	// Observe-failure injection (test-only, D-1): if this resource is listed in
 	// ObserveUnknown, simulate an unreachable target.  Value "error" injects a

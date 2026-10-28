@@ -85,6 +85,35 @@ func (a *applyCheckFlags) flags(verb string) reconcile.ApplyCheckFlags {
 	return out
 }
 
+// reobserveFlags are the limits of the re-observation after an upstream's
+// Apply (§8.1, Backlog #177), shared by the daemon and the one-shot reconcile.
+type reobserveFlags struct {
+	max *int
+	dur *time.Duration
+}
+
+func addReobserveFlags(fs *flag.FlagSet) *reobserveFlags {
+	return &reobserveFlags{
+		max: fs.Int("reobserve-max", reconcile.DefaultReobserveMax,
+			"#177 (§8.1): how many times a resource not observed at the head of the run is observed again after an upstream's Apply has taken (0 = never: left to the next run)"),
+		dur: fs.Duration("reobserve-time", reconcile.DefaultReobserveTime,
+			"#177: the time a run (a daemon cycle) may spend observing again after an upstream's Apply; when it is used up the rest is left to the next run"),
+	}
+}
+
+// limits returns the limits given.  It exits 1 on a value out of range.
+func (r *reobserveFlags) limits(verb string) reconcile.ReobserveLimits {
+	if *r.max < 0 {
+		fmt.Fprintf(os.Stderr, "%s: --reobserve-max must be >= 0\n", verb)
+		os.Exit(1)
+	}
+	if *r.dur <= 0 {
+		fmt.Fprintf(os.Stderr, "%s: --reobserve-time must be > 0\n", verb)
+		os.Exit(1)
+	}
+	return reconcile.ReobserveLimits{Off: *r.max == 0, MaxPerResource: *r.max, Time: *r.dur}
+}
+
 // runApplyCheck implements "sakutei apply-check": the working record of the
 // Applies that did not take (§11.1, Backlog #166).
 //

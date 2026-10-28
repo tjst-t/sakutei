@@ -336,6 +336,12 @@ type Config struct {
 	// record in memory only (S3).
 	ApplyCheckState string
 
+	// Reobserve limits the re-observation, after an Apply has taken, of its
+	// direct dependents that could not be observed this cycle (§8.1,
+	// Backlog #177): one now observed starts the next cycle at once instead
+	// of after Interval.  The zero value is the default limits.
+	Reobserve ReobserveLimits
+
 	// StuckAfter is the number of consecutive cycles a level Event (drift,
 	// convergence failure, halt) stays firing before it is promoted
 	// transient → stuck (§22.3).  A permanent failure (sdk.IsPermanent) and a
@@ -544,6 +550,11 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 	sleep := func() bool {
+		// #177: a nil channel never fires (no daemon while idle).
+		var woken <-chan struct{}
+		if d != nil {
+			woken = d.wake
+		}
 		// Jitter sleep: base interval + up to 10%.
 		// Guard rand.Int63n against a zero/negative argument, which panics.
 		// This happens when Interval is smaller than 10ns (10% rounds to 0).
@@ -558,6 +569,8 @@ func Run(ctx context.Context, cfg Config) error {
 			drain()
 			return false
 		case <-time.After(cfg.Interval + jitter):
+			return true
+		case <-woken:
 			return true
 		}
 	}
@@ -968,6 +981,10 @@ type Daemon struct {
 	// checker counts the Applies that report success but do not take and
 	// stops applying a resource at its limit (§11.1, Backlog #166, S3).
 	checker *ApplyChecker
+	// wake starts the next cycle without waiting out Interval: a dependent
+	// not observed this cycle was observed after its upstream's Apply took
+	// (§8.1, Backlog #177).  Buffered 1; a pending wake is enough.
+	wake chan struct{}
 }
 
 // routeEvents defaults cfg.Out / cfg.ErrOut and routes the Events emitted
@@ -1148,6 +1165,7 @@ func NewDaemon(cfg Config) *Daemon {
 		fmt.Fprintf(cfg.ErrOut, "sakutei: warn: apply-check state: %v; starting with an empty record\n", err)
 	}
 	return &Daemon{
+		wake:         make(chan struct{}, 1),
 		checker:      checker,
 		view:         view,
 		level:        level,
@@ -1171,7 +1189,7 @@ func NewDaemon(cfg Config) *Daemon {
 func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 	d.cycle++
 	return runCycleAsync(ctx, d.providers, d.budgetEngine, d.exec, d.ifl, d.lsRing,
-		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows, d.view, d.checker)
+		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows, d.view, d.checker, d.wake)
 }
 
 // EndCycle closes the level report of the cycle that returned res and
@@ -1637,6 +1655,7 @@ func runCycleAsync(
 	workflows *workflow.Engine,
 	vs *viewState,
 	checker *ApplyChecker,
+	wake chan<- struct{},
 ) (CycleResult, error) {
 	// #136: what this cycle sees, for the read-only API (nil without one).
 	view := newViewBuilder(cfg, vs)
@@ -2101,6 +2120,10 @@ func runCycleAsync(
 	plans := make(map[string]core.Plan, len(desired))
 	// unobservable = truly unobservable (D-1) + in-flight (treated as converging)
 	unobservable := make(map[string]bool)
+	// #177: unreached = not observed this cycle (Observe error or Availability
+	// != Ok); observed again after an upstream's Apply has taken.  Written
+	// only here, before any Apply goroutine reads it.
+	unreached := make(map[string]bool)
 	// ready = this cycle's observed ready conditions (§8.3); never carried over.
 	ready := make(Readiness)
 	var inFlightThisCycle []string
@@ -2218,6 +2241,7 @@ func runCycleAsync(
 		if readErr != nil {
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: %v\n", res.ID, readErr)
 			unobservable[local] = true
+			unreached[local] = true
 			obsStats.Unknown++
 			view.unobservable(res.ID, core.AvailabilityUnknown.String(), fmt.Sprintf("observe error: %v", readErr))
 			sched.Observed(res, false)
@@ -2229,6 +2253,7 @@ func runCycleAsync(
 			fmt.Fprintf(cfg.ErrOut, "sakutei: observe %s: availability=%v (not Ok); treating as unobservable this cycle\n",
 				res.ID, obs.Availability)
 			unobservable[local] = true
+			unreached[local] = true
 			view.unobservable(res.ID, obs.Availability.String(), fmt.Sprintf("availability=%v", obs.Availability))
 			if obs.Availability == core.AvailabilityConverging {
 				obsStats.Converging++
@@ -2834,6 +2859,36 @@ func runCycleAsync(
 		}
 	}
 
+	// #177 (§8.1): once an Apply has taken, its direct dependents not
+	// observed this cycle are observed again (within the limits).  One now
+	// observed starts the next cycle at once; this observation is not used
+	// (the next cycle observes afresh, ADR-0002).
+	reobs := NewReobserver(cfg.Reobserve)
+	reobserveAfter := func(ctx context.Context, r diff.DesiredResource) {
+		if !reobs.Enabled() {
+			return
+		}
+		for _, c := range DirectDependents(desired, r.ID.Local) {
+			if !unreached[c.ID.Local] {
+				continue
+			}
+			pe, err := providers.get(c.ID.Provider)
+			if err != nil {
+				continue
+			}
+			if _, ok, why := reobs.Observe(ctx, pe.p, c); !ok {
+				fmt.Fprintf(cfg.ErrOut, "sakutei: reobserve %s: still unobservable after %s's Apply (%s); left to the next cycle\n", c.ID, r.ID, why)
+				continue
+			}
+			fmt.Fprintf(cfg.ErrOut, "sakutei: reobserve %s: observed after %s's Apply; the next cycle starts now (§8.1)\n", c.ID, r.ID)
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+			return
+		}
+	}
+
 	// #166 (§11.1 Tier2): an Apply that reported success is re-read in its
 	// own goroutine (the resource stays in flight — converging — through the
 	// settle) and counted when its diff is still the one it applied.
@@ -2847,6 +2902,7 @@ func runCycleAsync(
 		switch out {
 		case VerifyConverged:
 			checker.Effective(r.ID)
+			reobserveAfter(ctx, r)
 		case VerifyIneffective:
 			applied := ApplyFingerprint(r, plan.Ops)
 			if ApplyFingerprint(r, ops) != applied {

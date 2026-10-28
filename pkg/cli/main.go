@@ -264,6 +264,7 @@ func runDaemon() {
 	unreachableSkipLimit := fs.Int("unreachable-skip-limit", 0,
 		"#15: consecutive unreachable-skipped cycles after which ExternalInputUnreachableProlonged fires (once, level-reported: firing / resolved, §22.3) (default 3)")
 	applyCheck := addApplyCheckFlags(fs)
+	reobserve := addReobserveFlags(fs)
 	stuckAfter := fs.Int("stuck-after", 0,
 		"§22.3: consecutive cycles a level Event (drift, convergence failure, halt) stays firing before it is promoted transient → stuck (default 5)")
 	approvalListen := fs.String("approval-listen", "",
@@ -506,6 +507,7 @@ func runDaemon() {
 		StuckAfter:            *stuckAfter,
 		ApplyCheck:            applyCheck.flags("sakutei"),
 		ApplyCheckState:       *applyCheck.state,
+		Reobserve:             reobserve.limits("sakutei"),
 		Out:                   logOut,
 		ErrOut:                logErr,
 		EventSinks:            eventSinks,
