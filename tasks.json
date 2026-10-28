@@ -3983,6 +3983,30 @@
       "updatedAt": "2026-10-28T09:14:38.023Z",
       "closedAt": "2026-10-28T08:55:31.807Z",
       "extra": {}
+    },
+    {
+      "id": "testworkflowinvariantbrokenafterstephalt",
+      "number": 171,
+      "kind": "bug",
+      "title": "受け入れテスト TestWorkflowInvariantBrokenAfterStepHalts が CI でまれに落ちる（halt せず次の段の承認待ちへ進む）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "test",
+        "workflow"
+      ],
+      "body": "## 起きたこと\nCI（Go stable の make check）で1回だけ落ちた（main 8c3b359）。\n- 10 周回しても halt せず、Workflow は s1 の承認待ち（awaiting_approval、Target 1）まで進んでいた。\n- 手元では -race・-cpu 1,2,8 で 1000 回以上回しても再現しない。\n\n## 見立て\n- 先へ進めたのは、step の後の invariant の確かめ（n1 と n2 が外れて active が 1 つ）が効かなかったときだけ。\n- 疑っていること：\n  - テストが外した n2（setActive）が、現実の上で失われた（fake の状態のファイルの書き込みの競合など）。\n  - あるいは、確かめが外す前の観測を使った。\n- 次に落ちたときに見分けられるように、テストの失敗の文に周ごとの n1〜n3 の active を出すようにした。\n\n## やること\n次に落ちたときの記録から原因を決め、テストの仕掛け（fake provider）か Workflow の engine を直す。",
+      "doneWhen": "原因を特定して直し、CI と手元の繰り返し（-race・-count）で落ちないことを確かめる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T09:41:45.283Z",
+      "updatedAt": "2026-10-28T09:41:45.283Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
