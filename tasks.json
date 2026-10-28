@@ -4358,7 +4358,7 @@
       "number": 187,
       "kind": "task",
       "title": "監査の記録を固める（ふつうの Apply も・改ざんしにくい形・外へすぐ送る）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m7",
       "dependsOn": [
         "c-freeze"
@@ -4372,7 +4372,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T13:07:46.058Z",
+      "updatedAt": "2026-10-28T15:13:04.860Z",
       "closedAt": null,
       "extra": {}
     },
