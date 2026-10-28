@@ -3584,7 +3584,7 @@
       "number": 152,
       "kind": "task",
       "title": "全体を止める型の更新：止まる時間帯・下流への影響・見積もりの宣言と、止める前の確かめと知らせ",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "fw-redfish-updateservice",
       "dependsOn": [
         "redfish-firmware",
@@ -3599,7 +3599,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:41:13.586Z",
-      "updatedAt": "2026-10-28T02:41:13.586Z",
+      "updatedAt": "2026-10-28T08:37:34.021Z",
       "closedAt": null,
       "extra": {}
     },
