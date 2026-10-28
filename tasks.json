@@ -3976,11 +3976,11 @@
       ],
       "body": "## なぜ\nProxmox VE の cloud-init は、既定では初回の起動でパッケージを更新しようとする（VM の設定 `ciupgrade`、既定 1）。外への出口が無い網では、これが時間切れになるまで起動が待たされる。\n- 手で確かめた例：`ciupgrade` を 0 にすると、起動の完了までが約 185 秒から約 54 秒に縮んだ。\n- proxmox-vm が作る VM には、いまこの設定を渡す口が無い。\n\n## やること\n- proxmox-vm のフィールド `ciupgrade`（真偽値）を足す。\n  - 作るとき（複製・作成）に渡す。\n  - 観測して違えば合わせる。cloud-init のほかのフィールドと同じ扱いで、反映に再起動や cloud-init の再生成が要るかどうかも同じに扱う。\n- **既定は書かないこと**。書かなければ Proxmox に渡さず、観測でも比べない。書かない人の振る舞いを変えないため。\n- docs/providers/proxmox-vm.md に次を書く。\n  - フィールドの説明。\n  - 「外への出口が無い網では `ciupgrade: false` を明示すると、初回の起動がパッケージ更新の時間切れを待たない」。\n- 設計書 §29.1 の proxmox-vm の節と、CHANGELOG（未リリースの欄）。\n\n## 確かめ方\n- 単体：偽の Proxmox の API に `ciupgrade` を渡すこと、違えば合わせること、書かなければ渡さないこと。\n- `make integration-proxmox`（入れ子の Proxmox VE 9.2）に段を足す。\n  - `ciupgrade: false` で作った VM の設定の値が 0 であることを観測する。\n  - できれば、出口の無い網で、その VM の起動の完了（cloud-init が終わるまで）が待たされないことも確かめる。重ければ値の観測だけでよい。\n\n## 決まり\nGo は stdlib のみ。GOFLAGS=-p=8 で make check・make test-race を通す。",
       "doneWhen": "ciupgrade を宣言すると作るとき渡り違えば合わせ、書かなければ渡さないことを単体で示す。make integration-proxmox の新しい段で ciupgrade: false の VM の設定が 0 であることを確かめて合格。make check・make test-race が合格",
-      "resolution": "Factory が取り込みました（factory/proxmox-vm-cloud-init-ciupgrade）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T07:53:30.324Z",
-      "updatedAt": "2026-10-28T08:55:31.807Z",
+      "updatedAt": "2026-10-28T09:14:38.023Z",
       "closedAt": "2026-10-28T08:55:31.807Z",
       "extra": {}
     }
