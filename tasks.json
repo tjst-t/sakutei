@@ -4335,7 +4335,7 @@
       "number": 191,
       "kind": "task",
       "title": "nftables：root で走るものを決まった道具1つだけにし、sudo をその道具だけに絞れるようにする（当てる・巻き戻しの予約・取り消し・読む、扱う表は限る）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m7",
       "dependsOn": [],
       "milestone": null,
@@ -4351,7 +4351,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T15:40:30.658Z",
-      "updatedAt": "2026-10-28T15:42:12.487Z",
+      "updatedAt": "2026-10-28T15:48:01.163Z",
       "closedAt": null,
       "extra": {}
     },
