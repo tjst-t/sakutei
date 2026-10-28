@@ -3538,7 +3538,7 @@
       "number": 150,
       "kind": "task",
       "title": "管理 API に更新の口が無い装置：版を観測し、承認ゲートつきの Task で人に作業を促し、観測で閉じる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "fw-redfish-updateservice",
       "dependsOn": [
         "redfish-firmware"
@@ -3552,7 +3552,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:41:13.586Z",
-      "updatedAt": "2026-10-28T02:41:13.586Z",
+      "updatedAt": "2026-10-28T07:10:21.230Z",
       "closedAt": null,
       "extra": {}
     },
