@@ -130,7 +130,9 @@ func validateBase(family string, fields map[string]string, id string) error {
 
 // refineBase は PlanRefiner の base chain の分: 現実が base chain なのに宣言が
 // regular chain のもの（type・hook・priority・policy を書かない）なら断り、
-// priority の差分のうち数に直すと観測と同じもの（"filter" と "0" 等）を落とす。
+// priority の差分のうち数に直すと観測と同じもの（"filter" と "0" 等）と、rules
+// の差分のうち比べる形（rulesKey：空白・カウンタ・無名の集合のまとめ方、
+// Backlog #178）にすると観測と同じものを落とす。file 版と live 版で共通。
 func refineBase(family, id string, observed core.State, desired map[string]string, ops []core.Op) ([]core.Op, error) {
 	if v, ok := observed["hook"]; ok && v.Value != "" && !declaresBase(desired) {
 		return nil, fmt.Errorf("%s is a base chain (hook %v): declare its type, hook, priority and policy to manage it (#173); a declaration without them is a regular chain's", id, v.Value)
@@ -138,7 +140,7 @@ func refineBase(family, id string, observed core.State, desired map[string]strin
 	out := make([]core.Op, 0, len(ops))
 	for _, op := range ops {
 		if op.Kind == core.OpKindUpdate {
-			op.Fields = refinePriority(family, op.Fields)
+			op.Fields = refineRules(refinePriority(family, op.Fields))
 		}
 		out = append(out, op)
 	}
@@ -196,6 +198,19 @@ func refinePriority(family string, fields []core.FieldDiff) []core.FieldDiff {
 			if n, err := canonPriority(family, f.To); err == nil && n == f.From {
 				continue
 			}
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// refineRules は rules の差分のうち、比べる形（rulesKey）にすると観測と同じ
+// もの（空白・カウンタの値・nft が集合をまとめて書き戻しただけの違い）を落とす。
+func refineRules(fields []core.FieldDiff) []core.FieldDiff {
+	out := fields[:0:0]
+	for _, f := range fields {
+		if f.Field == "rules" && rulesKey(f.To) == rulesKey(f.From) {
+			continue
 		}
 		out = append(out, f)
 	}

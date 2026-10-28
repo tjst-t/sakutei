@@ -122,7 +122,7 @@ const ProviderName = "nftables"
 // providerVersion is a hard-coded source hash for this provider version.
 // 正規化/diff ロジック（RuleSep やルール正規化）を変えたら増分すること
 // （cause-tag C（ghost diff）検出のため）。
-const providerVersion = "nftables-v1.1.0" // v1.1.0: base chain の宣言（Backlog #173）
+const providerVersion = "nftables-v1.2.0" // v1.2.0: rules を比べる形（無名の集合の正規化、Backlog #178）
 
 // RuleSep はルール列を 1 本の文字列へ join/split する区切り。
 // intent の fields は string→string なので、順序付き rules をこの区切りで
@@ -544,7 +544,8 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 }
 
 // RefinePlan は priority の差分のうち、数に直すと観測と同じもの（"filter" と
-// "0"）を落とし、現実が base chain なのに宣言が regular chain のものを断る
+// "0"）と、rules の差分のうち比べる形（空白・カウンタ・無名の集合のまとめ方、
+// Backlog #178。live 版と同じ）にすると観測と同じものを落とし、現実が base chain なのに宣言が regular chain のものを断る
 // （Backlog #173）。I/O はしない。
 func (p *Provider) RefinePlan(localID string, observed core.State, desired map[string]string, ops []core.Op) ([]core.Op, error) {
 	family, _, _, _ := splitLocalID(localID)

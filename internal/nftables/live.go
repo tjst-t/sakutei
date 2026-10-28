@@ -39,7 +39,9 @@ package nftables
 //     出力が読めないのは「観測できない」（unknown。absent にしない、§3・§5.4）。
 //   - 正規形（canonRule）: nft が書き戻すテキスト（-s でカウンタと quota の
 //     used を落とした形）の空白を 1 つにそろえたもの。宣言も同じ関数を通して
-//     比べる（PlanRefiner）。nft は宣言を自分の形に書き換えることがある（例
+//     比べる（PlanRefiner）。比べるときはさらに無名の集合をまとめた形にそろえる
+//     （ruleKey、sets.go、Backlog #178。nft は集合の隣り合う範囲をまとめて書き
+//     戻す）。nft は宣言を自分の形に書き換えることがある（例
 //     `ct state new,established` → `established,new`）ので、Apply は流した後に
 //     読み戻し、正規形が宣言と違えば「nft の形で宣言せよ」という PermanentError
 //     を返す（永久に drift が出続ける宣言を黙って受けない）。
@@ -80,7 +82,7 @@ import (
 
 // liveProviderVersion は live 版の正規化のソースハッシュ。canonRule や読み方を
 // 変えたら増分すること（cause-tag C（ghost diff）検出のため）。
-const liveProviderVersion = "nftables-live-v1.1.0" // v1.1.0: base chain の宣言（Backlog #173）
+const liveProviderVersion = "nftables-live-v1.2.0" // v1.2.0: 無名の集合の正規化（Backlog #178）
 
 // 対象（config の ruleset_target、CLI の --ruleset-target）。
 const (
@@ -374,8 +376,8 @@ func (p *LiveProvider) ValidateIntent(localID string, fields map[string]string) 
 	return validateBase(ref.Family, fields, localID)
 }
 
-// RefinePlan は rules の差分のうち、正規形にすると観測と同じもの（空白や
-// カウンタの値だけの違い）と、priority の差分のうち数に直すと観測と同じもの
+// RefinePlan は rules の差分のうち、比べる形にすると観測と同じもの（空白や
+// カウンタの値、nft が集合をまとめて書き戻しただけの違い、Backlog #178）と、priority の差分のうち数に直すと観測と同じもの
 // （"filter" と "0"、Backlog #173）を落とす。現実が base chain なのに宣言が
 // regular chain のものは断る（Backlog #173）。I/O はしない。
 func (p *LiveProvider) RefinePlan(localID string, observed core.State, desired map[string]string, ops []core.Op) ([]core.Op, error) {
@@ -383,21 +385,7 @@ func (p *LiveProvider) RefinePlan(localID string, observed core.State, desired m
 	if _, ref, _, err := p.coords(localID); err == nil {
 		family = ref.Family
 	}
-	out := make([]core.Op, 0, len(ops))
-	for _, op := range ops {
-		if op.Kind == core.OpKindUpdate {
-			var fields []core.FieldDiff
-			for _, f := range op.Fields {
-				if f.Field == "rules" && canonRules(f.To) == f.From {
-					continue
-				}
-				fields = append(fields, f)
-			}
-			op.Fields = fields
-		}
-		out = append(out, op)
-	}
-	return refineBase(family, localID, observed, desired, out)
+	return refineBase(family, localID, observed, desired, ops)
 }
 
 // chainCheck は Apply の後に読み戻して確かめる 1 つの chain。
@@ -762,7 +750,7 @@ func (p *LiveProvider) verify(ctx context.Context, checks []chainCheck) error {
 			if i < len(c.rules) {
 				got = c.rules[i]
 			}
-			if want != got {
+			if ruleKey(want) != ruleKey(got) {
 				return provider.NewPermanentError(fmt.Errorf(
 					"nftables: Apply: nft lists rule %d of %s as %q, not as declared %q: declare it in the form nft lists it (it would show as drift every cycle otherwise)",
 					i, id, got, want))

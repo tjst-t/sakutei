@@ -204,6 +204,25 @@ providers:
 - quota の `used <n> <unit>` を落とす。
 - 末尾の `# handle <n>` は付けない。
 
+### 無名の集合はまとめた形で比べる
+
+nft は interval の集合（アドレス・CIDR・範囲・ポートの範囲を含む無名の集合 `{ ... }`）の**隣り合う・重なる範囲をまとめ、並べ替えて書き戻す**。要素が 1 つの集合は `{ }` を外して書き戻す。例（nftables v1.0.9）:
+
+| 宣言 | nft が書き戻す形 |
+| --- | --- |
+| `ip saddr { 10.0.0.0/24, 10.0.1.0/24 } accept` | `ip saddr { 10.0.0.0/23 } accept` |
+| `ip6 saddr { 2001:db8:8000::/33, 2001:db8::/33 } accept` | `ip6 saddr { 2001:db8::/32 } accept` |
+| `tcp dport { 23, 22, 80-90, 91 } accept` | `tcp dport { 22-23, 80-91 } accept` |
+| `tcp dport { 22 } accept` | `tcp dport 22 accept` |
+
+これは drift にしない（Backlog #178）。比べるときは宣言の側も観測の側も同じ関数（`nftables.NormalizeSets`）で集合を正規化する: 要素を範囲に展開し、重なり・隣り合いを合わせて並べ替えた形どうしで比べる（1 つの範囲にまとまれば `{ }` を外した形）。PlanRefiner（plan・status の差分）と Apply の後の読み戻しの両方がこの比べ方で、file 版も同じ（ファイルに nft がまとめた形を書いても、宣言と同じなら差分にしない）。
+
+- 正規化するのは、要素が全部 IPv4 のアドレス・範囲・CIDR か、全部 IPv6 のそれか、全部 10 進の数（ポート等）・数の範囲の集合だけ。名前（`{ established, related }`・`{ ssh, http }`）・連結（`ip saddr . tcp dport { ... }`）・map/vmap（`{ 22 : accept }`）・種類の混ざった集合は書いたまま比べる。
+- 正規化しても違うもの（`{ 10.0.0.0/24, 10.0.2.0/24 }` と `{ 10.0.0.0/23 }`、`{ 22, 24 }` と `{ 22-24 }`）は今までどおり差分になる。
+- 観測（state の `rules`）は nft が書き戻した形のまま持つ。正規形は比べるときだけ使う。
+- 名前の付いた set・map は今までどおり管理の外（§29.1、Backlog #121）。
+- ルールを作る側（網の間の許可の変換、Backlog #174）も `NormalizeSets` を通した形で出せば、nft がまとめても同じ比べ方で適合になる。
+
 これ以外の違いは drift になる。nft は宣言を**自分の形に書き換える**ことがある（例: `ct state new,established` → `ct state established,new`、`meta l4proto tcp tcp dport 22` → `tcp dport 22`）。そのような宣言は Apply の後の読み戻しで次のエラーになる（永久に drift が出続けないように、黙って受けない）:
 
 ```
@@ -242,6 +261,7 @@ $ make integration-nftables
 | a rule nft -c refuses | 範囲外のポート（`tcp dport 70000`）を宣言 → reconcile が `nft -c (check)` の PermanentError を報告し、ruleset 全体（handle 込み）が変わらない |
 | no drift however many cycles | 宣言どおりのまま reconcile と status を 5 周 → drift 0、ruleset（handle 込み）が変わらない（Apply が走っていない） |
 | normal form | 空白だけ違う宣言は drift にならない。nft が書き換える形（`ct state new,established`）の宣言は nft の形を添えたエラーになり、nft の形で書き直すと適合 |
+| a set nft merges | 隣り合う /24 を 2 つ・隣り合う IPv6 の /33 を 2 つ・ポートとポートの範囲を並び違いで宣言 → reconcile が収束し、nft は `{ 10.0.0.0/23 }`・`{ 2001:db8::/32 }`・`{ 22-23, 80-91 }` とまとめて書き戻す → 3 周 status が適合のまま、ruleset（handle 込み）も変わらない（Apply が走らない）。要素が本当に違う集合の宣言は drift（Backlog #178） |
 | the unmanaged table | 管理しない table（`ip other`）が最初から最後まで変わらない |
 
 締め出しの守り（Backlog #173、`lockout_integration_test.go`）。対象のホストは sshd・nft の入った使い捨てのコンテナ（自分の network namespace を持つ、NET_ADMIN）で、sakutei は手元から 127.0.0.1 の空いたポート越しに ssh で入る（`ruleset_hosts: fw`、`ruleset_rollback_timeout: 10s`）。最小の核として、Sakutei の外で `inet sk mgmt`（`tcp dport 22 accept`）を入れ、intent の `external_owners:` で外す。確かめと手の変更は docker exec（網を通らない）:
@@ -278,6 +298,7 @@ nftables v1.0.9 で回した結果（全段 PASS）:
     --- PASS: TestNFTablesLiveIntegration/a_rule_nft_-c_refuses_changes_nothing (0.06s)
     --- PASS: TestNFTablesLiveIntegration/declared_as_listed,_no_drift_however_many_cycles (0.38s)
     --- PASS: TestNFTablesLiveIntegration/normal_form (0.28s)
+    --- PASS: TestNFTablesLiveIntegration/a_set_nft_merges_is_not_drift (0.57s)
     --- PASS: TestNFTablesLiveIntegration/the_unmanaged_table_did_not_change (0.01s)
 PASS
 ```

@@ -401,6 +401,53 @@ func TestNFTablesLiveIntegration(t *testing.T) {
 		mustReconcile(t)
 	})
 
+	// Backlog #178: nft merges the adjacent ranges of an interval set when it
+	// lists it back ({ 10.0.0.0/24, 10.0.1.0/24 } → { 10.0.0.0/23 }). The
+	// comparison normalizes the sets, so it is neither a refused Apply nor drift.
+	t.Run("a set nft merges is not drift", func(t *testing.T) {
+		defer func() {
+			writeIntent(t, chainRes("web", webRules...), chainRes("ssh", sshRules...))
+			mustReconcile(t)
+		}()
+		merged := []string{
+			"ip saddr { 10.0.0.0/24, 10.0.1.0/24 } tcp dport 22 accept",
+			"ip6 saddr { 2001:db8:8000::/33, 2001:db8::/33 } tcp dport { 23, 22, 80-90, 91 } accept",
+			"drop",
+		}
+		writeIntent(t, chainRes("web", webRules...), chainRes("ssh", merged...))
+		if s := status(t); s.Summary.Drift != 1 {
+			t.Fatalf("before: %+v, want 1 drifted", s)
+		}
+		out := mustReconcile(t)
+		if strings.Contains(out, "permanent") || strings.Contains(out, "not converged") {
+			t.Fatalf("reconcile did not converge:\n%s", out)
+		}
+		got := withoutHandles(listChain(t, "ssh"))
+		want := []string{
+			"ip saddr { 10.0.0.0/23 } tcp dport 22 accept",
+			"ip6 saddr { 2001:db8::/32 } tcp dport { 22-23, 80-91 } accept",
+			"drop",
+		}
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Fatalf("nft did not merge the sets as expected: %q", got)
+		}
+		before := nft(t, "-a", "list", "ruleset")
+		for i := 0; i < 3; i++ {
+			if s := status(t); s.Summary.Drift != 0 || s.Summary.Conformant != 2 || !s.Complete {
+				t.Fatalf("cycle %d: %+v, want conformant", i, s)
+			}
+			mustReconcile(t)
+		}
+		if after := nft(t, "-a", "list", "ruleset"); after != before {
+			t.Fatalf("an Apply ran over the cycles:\n--- before\n%s\n--- after\n%s", before, after)
+		}
+		// A set that really differs is still drift.
+		writeIntent(t, chainRes("web", webRules...), chainRes("ssh", append([]string{"ip saddr { 10.0.0.0/24, 10.0.2.0/24 } tcp dport 22 accept"}, merged[1:]...)...))
+		if s := status(t); s.Summary.Drift != 1 {
+			t.Fatalf("a different set: %+v, want 1 drifted", s)
+		}
+	})
+
 	t.Run("the unmanaged table did not change", func(t *testing.T) {
 		if got := nft(t, "list", "table", "ip", "other"); got != other {
 			t.Fatalf("ip other changed:\n%s", got)

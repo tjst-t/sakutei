@@ -304,6 +304,35 @@ func TestLive_CanonicalForm(t *testing.T) {
 	}
 }
 
+// [AC-178-1-4] nft が集合の隣り合う範囲をまとめて書き戻しても、Apply の読み戻しは
+// 宣言と同じとみなし、次の周の RefinePlan も差分を落とす（適合のまま）。要素が
+// 本当に違う宣言は差分のまま。
+func TestLive_MergedSets(t *testing.T) {
+	fake := &nftfake.NFT{Rewrite: func(r string) string {
+		r = strings.ReplaceAll(r, "{ 10.0.0.0/24, 10.0.1.0/24 }", "{ 10.0.0.0/23 }")
+		return strings.ReplaceAll(r, "{ 23, 22 }", "{ 22-23 }")
+	}}
+	p := newLive(t, fake)
+	ctx := context.Background()
+	declared := "ip saddr { 10.0.0.0/24, 10.0.1.0/24 } accept" + nftables.RuleSep + "tcp dport { 23, 22 } accept"
+	if err := p.Apply(ctx, core.Plan{Ops: []core.Op{chainOp(core.OpKindCreate, "inet/filter/web", declared)}}); err != nil {
+		t.Fatalf("[AC-178-1-4] Apply must accept nft's merged form: %v", err)
+	}
+	observed, _ := rulesOf(t, p, "inet/filter/web")
+	if observed != "ip saddr { 10.0.0.0/23 } accept"+nftables.RuleSep+"tcp dport { 22-23 } accept" {
+		t.Fatalf("observed = %q", observed)
+	}
+	op := chainOp(core.OpKindUpdate, "inet/filter/web", declared)
+	op.Fields = []core.FieldDiff{{Field: "rules", From: observed, To: declared}}
+	if refined, err := p.RefinePlan("inet/filter/web", nil, nil, []core.Op{op}); err != nil || len(refined[0].Fields) != 0 {
+		t.Fatalf("[AC-178-1-4] the merged form must not be a diff: %+v, %v", refined, err)
+	}
+	op.Fields = []core.FieldDiff{{Field: "rules", From: observed, To: "ip saddr { 10.0.0.0/24, 10.0.2.0/24 } accept" + nftables.RuleSep + "tcp dport { 23, 22 } accept"}}
+	if refined, _ := p.RefinePlan("inet/filter/web", nil, nil, []core.Op{op}); len(refined[0].Fields) != 1 {
+		t.Fatalf("[AC-178-1-4] a real difference in the set must stay")
+	}
+}
+
 // [AC-121-2-2] ValidateIntent: 管理しない table・id とずれた identity・スクリプトに
 // 埋め込めないルール文を読み込みの時点で断る。
 func TestLive_ValidateIntent(t *testing.T) {
