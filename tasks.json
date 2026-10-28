@@ -4081,7 +4081,7 @@
       "number": 175,
       "kind": "task",
       "title": "NETCONF の 2 段の Apply（:confirmed-commit:1.0 を主、1.1 は持つ機器に）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m6-netconf-apply-base-chain-2-apply",
       "dependsOn": [],
       "milestone": null,
@@ -4093,7 +4093,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:49:00.946Z",
-      "updatedAt": "2026-10-28T09:49:00.946Z",
+      "updatedAt": "2026-10-28T09:49:13.789Z",
       "closedAt": null,
       "extra": {}
     },
