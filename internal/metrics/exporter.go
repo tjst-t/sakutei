@@ -109,6 +109,16 @@ type Exporter struct {
 	lastObserve *Cycle
 	// notify reports the notification sinks per destination (SetNotify).
 	notify func() []NotifyTarget
+	// extra are more families reported on every scrape (AddFamilies).
+	extra []func() []Family
+}
+
+// AddFamilies makes the Exporter report the families f returns on every
+// scrape (the read listeners' refusals, #161).
+func (e *Exporter) AddFamilies(f func() []Family) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.extra = append(e.extra, f)
 }
 
 // SetNotify makes the Exporter report the notification sinks' delivery per
@@ -226,6 +236,9 @@ func (e *Exporter) Families() []Family {
 	}
 	if e.notify != nil {
 		fams = append(fams, notifyFamilies(e.notify())...)
+	}
+	for _, f := range e.extra {
+		fams = append(fams, f()...)
 	}
 	lim := e.limits
 	if lim.Window > 0 {

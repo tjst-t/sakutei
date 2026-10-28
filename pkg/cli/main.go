@@ -154,6 +154,8 @@ func Main(opts ...Option) {
 //	--approval-listen <addr>  serve the approval gate API (§6.4)
 //	--metrics-listen <addr>   serve the convergence state on /metrics (Prometheus text format, #54)
 //	--read-listen <addr>      serve the read-only API: GET /status, /plan, /events (SSE), /graph (#136)
+//	--listen-auth-config <f>  TLS and authorization (bearer token, client certificate) of --metrics-listen and --read-listen (#161)
+//	--metrics-insecure-listen / --read-insecure-listen  allow a non-loopback address without TLS and authorization
 //	--daemon-status <f>  rewritten every cycle with the daemon health (consecutive unreachable skips, #15)
 //	--unreachable-skip-limit <n>  consecutive unreachable skips before the Prolonged alert (default 3)
 //	--stuck-after <n>    consecutive cycles after which a level Event is promoted transient → stuck (default 5, §22.3)
@@ -268,10 +270,11 @@ func runDaemon() {
 		"address to serve the approval gate API on, e.g. 127.0.0.1:8470 (§6.4; no authorization, §7); requires --workflow-store and --audit-log")
 	// #54: Prometheus exporter（§27.5）。待ち受けは明示したときだけ。
 	metricsListen := fs.String("metrics-listen", "",
-		"address to serve /metrics on (Prometheus text format: drifted / unknown counts, budget left, halts, cycle and Observe durations), e.g. 127.0.0.1:9470 (#54, §27.5; no authorization); empty=not served")
+		"address to serve /metrics on (Prometheus text format: drifted / unknown counts, budget left, halts, cycle and Observe durations), e.g. 127.0.0.1:9470 (#54, §27.5; TLS and authorization: --listen-auth-config); empty=not served")
 	// #136: 外の道具が読むための読み取り専用の口。待ち受けは明示したときだけ。
 	readListen := fs.String("read-listen", "",
-		"address to serve the read-only API on: GET /status, /plan, /graph (JSON) and /events (Server-Sent Events), e.g. 127.0.0.1:9471 (#136; no authorization, never takes writes); empty=not served")
+		"address to serve the read-only API on: GET /status, /plan, /graph (JSON) and /events (Server-Sent Events), e.g. 127.0.0.1:9471 (#136; TLS and authorization: --listen-auth-config; never takes writes); empty=not served")
+	listenAuth := addListenAuthFlags(fs)
 	// #29: claim の git 配布・S2-free シャード・資格局所性（§17.4/§17.5/§20.5）。
 	gd := addGitDistFlags(fs)
 	logFormat := addLogFormatFlag(fs)
@@ -297,6 +300,7 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
+	listenAuth.check("sakutei", *metricsListen, *readListen, *approvalListen)
 	setLogFormat("sakutei", *logFormat)
 	eventSinks := append(openEventLog("sakutei", *eventLog), eventNotify.open("sakutei")...)
 	var readAPI *readapi.Server
@@ -537,14 +541,14 @@ func runDaemon() {
 		if f := eventNotify.notifyMetrics(); f != nil {
 			cfg.Metrics.SetNotify(f)
 		}
-		if err := serveMetrics(*metricsListen, cfg.Metrics); err != nil {
+		if err := serveMetrics(*metricsListen, cfg.Metrics, listenAuth); err != nil {
 			fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 			os.Exit(1)
 		}
 	}
 	if readAPI != nil {
 		cfg.View = readAPI
-		if err := serveReadAPI(*readListen, readAPI); err != nil {
+		if err := serveReadAPI(*readListen, readAPI, listenAuth); err != nil {
 			fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 			os.Exit(1)
 		}

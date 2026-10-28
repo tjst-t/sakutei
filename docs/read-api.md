@@ -14,18 +14,27 @@ sakutei: read-only API listening on http://127.0.0.1:9471 (GET /status /plan /ev
 | `GET /events` | Event の流し出し（Server-Sent Events） | Event の JSON（`--event-log` の 1 行と同じ）を 1 件ずつ |
 | `GET /graph` | 依存の DAG（リソースと depends_on・ready_condition、今の ready かどうか、Apply の順） | `sakutei graph --json`（下記）+ 周の番号と時刻 |
 
-- **待ち受けは明示したときだけ。** `--read-listen` を渡さなければ口は開かない。承認の書き込みの口（`--approval-listen`、§6.4）・`/metrics`（`--metrics-listen`、[metrics.md](metrics.md)）とは別の待ち受けで、それらはそのまま。
+- **待ち受けは明示したときだけ。既定は手元（loopback）だけ。** `--read-listen` を渡さなければ口は開かない。loopback 以外を TLS なし・認可なしで待ち受けるのは `--read-insecure-listen` を付けたときだけで、付けなければ起動で断る（下の「TLS と認可」）。承認の書き込みの口（`--approval-listen`、§6.4）・`/metrics`（`--metrics-listen`、[metrics.md](metrics.md)）とは別の待ち受けで、それらはそのまま。
 - **書き込みは受けない。** `GET`・`HEAD` 以外（`POST`・`PUT`・`PATCH`・`DELETE` など）は `405 Method Not Allowed`（`Allow: GET, HEAD`）。知らないパスは `404`。エラーの本文は `{"error": "…"}`。
 - **収束を止めない。** 中身は収束ループが周の終わりに渡したものを返すだけで、口のために現実を観測し直さない（観測 state レスのまま：次の周はまた観測し直す）。遅い読み手のために収束ループが待つことはない（`/events` を見る）。
 - **秘密の値は出さない。** 中身は `status --json`・`plan --json` と同じく、secret のフィールドは参照の形（`secretref:…#genN`）だけ（§20.2）。git の取得先の URL に埋め込まれた資格は伏せる。
 
-## 認証は持たない（外に出すときは前段で守る）
+## TLS と認可（`--listen-auth-config`、#161）
 
-口は認証も TLS も持たない。**手元（`127.0.0.1`）で待ち受ける前提**である。読み取り専用でも、中身には構成（リソースの ID・フィールドの値・ずれ・止めた理由）が入るので、そのまま外に開けない。
+口は `/metrics` と同じ設定のファイル（`--listen-auth-config`）の `read:` で TLS と認可を持てる。書き方・決まり（証明書と鍵・トークンは SecretRef、TLS 1.2 以上、再起動なしの入れ替え、読むだけのトークンとクライアント証明書、断ったときの 401／403 と `sakutei_listen_rejected_total`）は [metrics.md の「TLS と認可」](metrics.md#tls-と認可--listen-auth-config) にまとめてある。
 
-外の道具が別のホストにあるときは、前段に置く道具で守る：
+```console
+$ curl --cacert sakutei-ca.pem --cert grafana.pem --key grafana-key.pem https://192.0.2.10:9471/status
+$ curl --cacert sakutei-ca.pem -H "Authorization: Bearer $(cat token)" -N https://192.0.2.10:9471/events
+```
 
-- **ssh のポート転送**：`ssh -L 9471:127.0.0.1:9471 <デーモンのホスト>` で、読む側から手元の口に入る。いちばん簡単。
+- 読み取りの中身には構成（リソースの ID・フィールドの値・ずれ・止めた理由）が入る。**外に開くときは TLS と認可の両方を設定する**（片方だけでは起動で断る。`--read-insecure-listen` は閉じた網の中などで平文を承知で開くときだけ）。
+- 資格は接続（`/events` は流しの始め）で一度確かめる。トークンを入れ替えても、開いたままの `/events` の流しは切らない。
+- **書き込みの口とは分ける。** 承認の口（`--approval-listen`）はこの設定を通らず、資格もポートも共有しない（同じアドレスは起動で断る）。読み取りの資格が正しくても、この口は書き込みを 405 で断る。
+
+前段に置く道具で守る形も、今までどおり使える：
+
+- **ssh のポート転送**：`ssh -L 9471:127.0.0.1:9471 <デーモンのホスト>` で、読む側から手元の口に入る。
 - **リバースプロキシ**（nginx・Caddy・Envoy など）：プロキシが TLS と認証（mTLS・Basic 認証・OIDC の前段など）を受け持ち、デーモンの `127.0.0.1:9471` に流す。`/events` は長く開いたままの応答なので、プロキシの応答のバッファを切り（nginx なら `proxy_buffering off;`）、読み取りのタイムアウトを延ばす（15 秒ごとにコメントの行を送るので、それより長くする）。
 - 書き込みのメソッドはデーモンが断るが、プロキシでも `GET`・`HEAD` だけを通すと二重に守れる。
 

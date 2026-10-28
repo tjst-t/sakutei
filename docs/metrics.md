@@ -12,8 +12,58 @@ sakutei: metrics listening on http://127.0.0.1:9470/metrics (Prometheus text for
 ```
 
 - **明示したときだけ**待ち受ける。`--metrics-listen` を書かなければポートを開かない。
-- 出すのは `/metrics` だけ（GET・HEAD）。認可は無い（承認 API と同じ）。信頼できるアドレスに縛るか、前に認証つきの proxy を置く。
+- 出すのは `/metrics` だけ（GET・HEAD）。
+- **既定は手元（loopback）だけ。** loopback 以外（`0.0.0.0`・空の host の `:9470`・名前）を TLS なし・認可なしで待ち受けるのは `--metrics-insecure-listen` を付けたときだけ。付けなければ起動で断る。外から読ませるときは下の「TLS と認可」を設定する。
 - 一回性の `plan`・`reconcile`・`status` には無い（状態を出すのは回り続けるデーモン）。
+
+## TLS と認可（`--listen-auth-config`）
+
+Backlog #161。デーモンを固い区画に置き、別の区画のコレクターが FW を越えて読みに来る構成のために、`/metrics` と読み取り専用の口（`--read-listen`、[read-api.md](read-api.md)）は TLS と認可を持てる。設定は 1 つのファイルに口ごとに書く（書式は intent と同じ JSON / YAML のサブセット）。
+
+```yaml
+secret_store: secrets.json              # file SecretBackend（相対パスはこのファイルから）
+metrics:                                # --metrics-listen の口
+  tls:
+    cert: secretref:file/sakutei/listen_cert   # サーバの証明書（PEM。中間を続けてよい）
+    key: secretref:file/sakutei/listen_key     # 鍵（PEM）
+    min_version: "1.2"                  # "1.2"（既定）か "1.3"。それより古い版は受けない
+  bearer_token: secretref:file/sakutei/metrics_token   # 読むだけのトークン
+read:                                   # --read-listen の口（中身の書き方は同じ）
+  tls:
+    cert: secretref:file/sakutei/listen_cert
+    key: secretref:file/sakutei/listen_key
+  client_ca_file: clients-ca.pem        # クライアント証明書を確かめる CA（PEM の束）
+  allowed_subjects:                     # 任意。CN か subject の全体（CN=…,O=…）
+    - grafana
+  allowed_sans:                         # 任意。DNS 名・IP・URI・email の SAN
+    - dash.example
+```
+
+```console
+$ sakutei --intent intent/ --listen-auth-config listen-auth.yaml     --metrics-listen 192.0.2.10:9470 --read-listen 192.0.2.10:9471
+sakutei: metrics listening on https://192.0.2.10:9470/metrics (Prometheus text format; TLS 1.2+; authorization: bearer token)
+sakutei: read-only API listening on https://192.0.2.10:9471 (GET /status /plan /events /graph; TLS 1.2+; authorization: client certificate)
+```
+
+- **秘密は SecretRef だけ。** 証明書・鍵・トークンを設定に生で書くとエラー（値は文言にも出さない）。CA は秘密でないのでファイル。未知のキーはエラー。
+- **認可はトークン・クライアント証明書のどちらか、または両方**（両方を書けば両方が要る）。
+  - トークン：`Authorization: Bearer <token>`。比べるのは定数時間（両方の SHA-256 を比べ、値も長さも時間に出さない）。
+  - クライアント証明書：`client_ca_file` の CA で署名され、用途に clientAuth があり、期限内であること。`allowed_subjects`・`allowed_sans` のどちらかを書けば、そのどれかに合うものだけ通す（両方空なら CA の署名だけ）。`client_ca_file` は `tls` と一緒でなければ書けない。
+- **証明書とトークンは再起動なしで入れ替わる。** 30 秒ごとに金庫を読み直し、値が変わっていれば次の接続（トークンは次の要求）から新しいものを使う。読めない・証明書と鍵が組にならないときは前のものを使い続け、ログに 1 行出す。起動のときに読めなければ起動しない。CA の束は起動のときだけ読む（入れ替えは再起動）。
+- **外向きの口は TLS と認可の両方が要る。** loopback 以外で TLS か認可のどちらかが欠ければ、`--metrics-insecure-listen`（読み取りの口は `--read-insecure-listen`）が無い限り起動で断る（トークンだけで TLS が無い、も断る）。設定に書いた口を `--*-listen` で開かない・旗だけ渡す、も起動で断る。
+- **断ったとき**は理由を外に出さない：401 `{"error":"unauthorized"}`（資格が無い・トークンが違う。トークンを使う口は `WWW-Authenticate: Bearer`）、403 `{"error":"forbidden"}`（証明書の CA が違う・期限切れ・許していない相手）。TLS の口に平文で来たものは net/http が 400 を返す。理由と相手はデーモンのログ（標準エラー）に出す。
+- **承認の書き込みの口（`--approval-listen`）とは分ける。** この設定は承認の口に効かず、承認の口を読み取りの口と同じアドレスに置くと起動で断る。読み取りの資格では書き込めない（`/metrics`・読み取りの口は書き込みのメソッドを 405 で断る）。
+
+Prometheus の設定の例（トークンと CA）:
+
+```yaml
+scrape_configs:
+  - job_name: sakutei
+    scheme: https
+    authorization: {credentials_file: /etc/prometheus/sakutei-token}
+    tls_config: {ca_file: /etc/prometheus/sakutei-ca.pem}
+    static_configs: [{targets: ["192.0.2.10:9470"]}]
+```
 
 ## 出す値
 
@@ -69,6 +119,16 @@ sakutei: metrics listening on http://127.0.0.1:9470/metrics (Prometheus text for
 | `sakutei_notify_last_success_timestamp_seconds{sink,url}` | gauge | 最後に届いた時刻（Unix 秒）。まだ一度も届いていなければ出さない |
 
 Alertmanager を複数台で動かす構成では、`min by (url) (sakutei_notify_up{sink="alertmanager"}) == 0` で、どれか 1 台に届いていないことを見張れる（その間も他の Alertmanager には届いている）。
+
+### 読み取りの口の断った数（#161）
+
+`/metrics`・読み取りの口のうち開いた口ごとに（label `listener`＝`metrics`／`read`）、理由ごとの断った数を出す。開いた口は全部の理由を 0 から出す（`rate()` が使えるように）。
+
+| 名前 | 型 | 意味 |
+|---|---|---|
+| `sakutei_listen_rejected_total{listener,reason=…}` | counter | 断った接続・要求の数。接続：`plaintext`（TLS の口に平文で来た）・`tls_handshake`（古い版・途中で切れたなど、握手が通らない）。401：`no_client_certificate`・`no_token`・`bad_token`。403：`bad_client_certificate`（CA が違う・期限切れ・用途が違う）・`client_not_allowed`（subject・SAN が一覧に無い） |
+
+`rate(sakutei_listen_rejected_total{reason=~"bad_.*|client_not_allowed"}[5m]) > 0` で、違う資格で読みに来る相手を見張れる。
 
 ## 形式のテスト
 
