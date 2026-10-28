@@ -4289,7 +4289,7 @@
       "number": 184,
       "kind": "task",
       "title": "C：freeze を監査に残す（誰が・なぜ・いつまで）",
-      "status": "ready",
+      "status": "done",
       "parent": "m7",
       "dependsOn": [
         "c-intent-runtime"
@@ -4299,12 +4299,12 @@
       "labels": [],
       "body": "freeze（--freeze と、動いているデーモンを止めずに freeze する書き込みの口）の始まりと終わりを、誰が・理由・期限（任意）つきで監査の記録に残す。理由は必須。期限を過ぎたら解けて、それも記録する。freeze の状態は status と level の Event に出す。",
       "doneWhen": "freeze の始まり・終わり・期限切れが監査に残り、理由の無い freeze は断る受け入れテストが通る。make check・make test-race が通る",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T14:59:56.435Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-28T15:00:04.944Z",
+      "closedAt": "2026-10-28T15:00:04.944Z",
       "extra": {}
     },
     {
