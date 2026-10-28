@@ -3717,7 +3717,7 @@
       "number": 157,
       "kind": "task",
       "title": "採番の結果を宣言の側のファイルへ書き戻し、それを正として読む（store は写しに下げる）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "intent",
       "dependsOn": [],
       "milestone": null,
@@ -3729,7 +3729,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:44:59.126Z",
-      "updatedAt": "2026-10-28T02:44:59.126Z",
+      "updatedAt": "2026-10-28T04:34:32.472Z",
       "closedAt": null,
       "extra": {}
     },
