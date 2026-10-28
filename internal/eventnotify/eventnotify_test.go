@@ -217,8 +217,11 @@ func TestWebhook_RetriesWhileDownThenDelivers(t *testing.T) {
 	}
 	rv.down.Store(false)
 	waitFor(t, "delivery after recovery", func() bool { return rv.count() == 1 })
-	if w.Pending() != 0 {
-		t.Errorf("pending = %d after delivery", w.Pending())
+	// The receiver counts the delivery before the sender has read the
+	// response and taken the event off its queue, so wait for that too.
+	waitFor(t, "queue empty after delivery", func() bool { return w.Pending() == 0 })
+	if rv.count() != 1 {
+		t.Errorf("delivered %d times, want 1", rv.count())
 	}
 }
 
