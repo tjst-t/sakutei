@@ -4331,6 +4331,31 @@
       "extra": {}
     },
     {
+      "id": "nftables-sh-sudo-nft",
+      "number": 191,
+      "kind": "task",
+      "title": "nftables の締め出しの守り：巻き戻しの仕掛けを sh ではなく決まった道具で動かし、sudo を道具と nft だけに絞れるようにする",
+      "status": "ready",
+      "parent": "m7",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "m7",
+        "nftables",
+        "security"
+      ],
+      "body": "いまは base chain を変えるときの巻き戻しの仕掛け（arm・disarm）を、対象のホストで `sh -c` に台本を渡して動かしている。そのため、sudo で動かすホストでは、利用者に sh の sudo（実質 root）を許すしかない。資格が漏れたときの被害を小さくするため（役目ごとの鍵の分け、#185 と同じ考え）、仕掛けを決まった道具に移す。\n\n- 決まった場所の道具（例 /usr/local/libexec/sakutei-nft-guard）にする。\n  - 引数は決まった形だけにする：arm <秒>（標準入力で写しを受け取り、token を返す）・disarm <token>・status <token> など。\n  - 引数の形・秒の範囲・token の形を道具の側で厳しく確かめ、合わなければ何もしない。\n  - 写しと印の置き場は道具が決める（呼び手は渡さない）。\n  - 道具は中で nft だけを呼ぶ。\n- 道具の場所は provider の設定（つなぎ方）で変えられる。道具が無い・違う版なら、base chain は変えない（一時的な失敗）。\n  - 道具の中身はリポジトリに置く（POSIX sh の1ファイル）。\n  - 配り方（host-file で配る例を含む）を docs に書く。\n- docs に、要る sudoers の最小の行を書く：その道具と nft（list・-c -f・-f）だけ。\n- 手元の live も同じ道具で動かせる。いまの sh の動かし方を残すかは、実装で判断して docs に書く。残すなら明示の設定のときだけにする。",
+      "doneWhen": "ssh 越しの統合試験で、sudoers を道具と nft だけに絞った利用者で base chain の変更・確かめ・巻き戻し（Sakutei が居なくなっても戻る）が通り、sh の sudo が無いことを確かめる。道具が引数の形の外を断る試験が通る。docs に sudoers の最小の行がある。make check・make test-race・make integration-nftables が通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T15:40:30.658Z",
+      "updatedAt": "2026-10-28T15:40:54.012Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "api-provider-proxmox-vm-redfish-ldap-pos",
       "number": 186,
       "kind": "task",
@@ -4443,31 +4468,6 @@
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
       "updatedAt": "2026-10-28T13:07:46.058Z",
-      "closedAt": null,
-      "extra": {}
-    },
-    {
-      "id": "nftables-sh-sudo-nft",
-      "number": 191,
-      "kind": "task",
-      "title": "nftables の締め出しの守り：巻き戻しの仕掛けを sh ではなく決まった道具で動かし、sudo を道具と nft だけに絞れるようにする",
-      "status": "ready",
-      "parent": "m7",
-      "dependsOn": [],
-      "milestone": null,
-      "priority": "normal",
-      "labels": [
-        "m7",
-        "nftables",
-        "security"
-      ],
-      "body": "いまは base chain を変えるときの巻き戻しの仕掛け（arm・disarm）を、対象のホストで `sh -c` に台本を渡して動かしている。そのため、sudo で動かすホストでは、利用者に sh の sudo（実質 root）を許すしかない。資格が漏れたときの被害を小さくするため（役目ごとの鍵の分け、#185 と同じ考え）、仕掛けを決まった道具に移す。\n\n- 決まった場所の道具（例 /usr/local/libexec/sakutei-nft-guard）にする。\n  - 引数は決まった形だけにする：arm <秒>（標準入力で写しを受け取り、token を返す）・disarm <token>・status <token> など。\n  - 引数の形・秒の範囲・token の形を道具の側で厳しく確かめ、合わなければ何もしない。\n  - 写しと印の置き場は道具が決める（呼び手は渡さない）。\n  - 道具は中で nft だけを呼ぶ。\n- 道具の場所は provider の設定（つなぎ方）で変えられる。道具が無い・違う版なら、base chain は変えない（一時的な失敗）。\n  - 道具の中身はリポジトリに置く（POSIX sh の1ファイル）。\n  - 配り方（host-file で配る例を含む）を docs に書く。\n- docs に、要る sudoers の最小の行を書く：その道具と nft（list・-c -f・-f）だけ。\n- 手元の live も同じ道具で動かせる。いまの sh の動かし方を残すかは、実装で判断して docs に書く。残すなら明示の設定のときだけにする。",
-      "doneWhen": "ssh 越しの統合試験で、sudoers を道具と nft だけに絞った利用者で base chain の変更・確かめ・巻き戻し（Sakutei が居なくなっても戻る）が通り、sh の sudo が無いことを確かめる。道具が引数の形の外を断る試験が通る。docs に sudoers の最小の行がある。make check・make test-race・make integration-nftables が通る",
-      "resolution": null,
-      "refs": [],
-      "threads": [],
-      "createdAt": "2026-10-28T15:40:30.658Z",
-      "updatedAt": "2026-10-28T15:40:54.012Z",
       "closedAt": null,
       "extra": {}
     },
