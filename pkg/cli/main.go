@@ -115,6 +115,8 @@ func Main(opts ...Option) {
 		runApprove(workflow.DecisionReject, os.Args[2:])
 	case "apply-check":
 		runApplyCheck(os.Args[2:])
+	case "freeze":
+		runFreeze(os.Args[2:])
 	case "allocator":
 		runAllocator(os.Args[2:])
 	case "mirror":
@@ -247,8 +249,7 @@ func runDaemon() {
 	// Scf7762-3: remediation mode flags (§14.1).
 	modeStr := fs.String("mode", "auto",
 		"remediation mode: auto | alert-only (§14.1); alert-only detects drift but does not Apply")
-	freeze := fs.Bool("freeze", false,
-		"global freeze: override to alert-only regardless of --mode (§14.3 escape hatch)")
+	freezeFl := addFreezeFlags(fs)
 
 	// #28: static sharding (§17).  --claim narrows convergence to the matching
 	// scopes; --fencing-store turns on double-claim detection (§15.2).
@@ -377,9 +378,12 @@ func runDaemon() {
 		os.Exit(1)
 	}
 	remCfg := remediation.Config{
-		Mode:   mode,
-		Freeze: *freeze,
+		Mode: mode,
 	}
+	// #184: a --freeze is recorded as started here (and as ended when the
+	// daemon exits); --freeze-state is read every cycle.
+	freezeControl := freezeFl.control("sakutei", *auditLog)
+	remCfg.Freeze = freezeControl != nil && freezeControl.Flag != nil
 
 	claimSelector, claimErr := parseClaimSelector(*claim)
 	if src != nil {
@@ -528,6 +532,7 @@ func runDaemon() {
 		EventSinks:            eventSinks,
 		NotifyStatus:          eventNotify.notifyStatus(),
 		Runtime:               runtimeReport,
+		Freeze:                freezeControl,
 	}
 	if *taskStore != "" {
 		cfg.TaskStore = task.NewFileStore(*taskStore)
@@ -604,6 +609,8 @@ Usage:
   sakutei reject       reject a Workflow gate: the Workflow halts (§6.4)
   sakutei apply-check  list / release the resources whose Apply is stopped: it reported
                        success but reality did not change (oscillating, §11.1, #166)
+  sakutei freeze       start / end / status a global freeze of a running daemon without
+                       stopping it (who, why, until when; recorded in the audit log, §14.3, #184)
   sakutei allocator    serve the allocation authority (active/standby, §19.8);
                        allocator release / list: give a value back, show allocations (#116)
                        allocator import: rebuild the store from the write-back files (#157)

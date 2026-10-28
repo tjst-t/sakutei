@@ -49,6 +49,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/freeze"
 	"github.com/tjst-t/sakutei/v2/internal/lastseen"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
@@ -207,6 +208,11 @@ type Report struct {
 	// DaemonStale は、status を出した時点でデーモンの健全性ファイルが周期の数倍
 	// 更新されていないこと（デーモンが止まっているかもしれない）。
 	DaemonStale bool
+	// Freeze は --freeze-state のファイルに書かれ、効いている global freeze
+	// （§14.3、#184）。status に --freeze-state が無い・効いていなければ nil。
+	Freeze *freeze.Freeze
+	// FreezeNote は --freeze-state を読めなかったときの注記。
+	FreezeNote string
 }
 
 // DriftSummaryProvider は last-seen リングの「前周は X だった」注記を提供する
@@ -238,6 +244,8 @@ type Builder struct {
 	daemon           *DaemonHealth
 	daemonNote       string
 	daemonStale      bool
+	freeze           *freeze.Freeze
+	freezeNote       string
 }
 
 // NewBuilder は指定した版情報と last-seen リングでビルダを作る。
@@ -374,6 +382,12 @@ func (b *Builder) AddOscillating(it OscillatingItem) { b.oscillating = append(b.
 // SetDaemonHealth は常駐デーモンが書いた健全性（#15）をレポートに載せる。
 func (b *Builder) SetDaemonHealth(h DaemonHealth) { b.daemon = &h }
 
+// SetFreeze は --freeze-state のファイルで効いている freeze（#184）を載せる。
+func (b *Builder) SetFreeze(f *freeze.Freeze) { b.freeze = f }
+
+// NoteFreezeUnavailable は --freeze-state を読めなかったことを注記する。
+func (b *Builder) NoteFreezeUnavailable(note string) { b.freezeNote = note }
+
 // MarkDaemonStale は、デーモンの健全性ファイルが古い（DaemonHealth.Stale）ことを記録する。
 func (b *Builder) MarkDaemonStale() { b.daemonStale = true }
 
@@ -430,6 +444,8 @@ func (b *Builder) Build() Report {
 		Daemon:            b.daemon,
 		DaemonNote:        b.daemonNote,
 		DaemonStale:       b.daemonStale,
+		Freeze:            b.freeze,
+		FreezeNote:        b.freezeNote,
 	}
 }
 
@@ -566,6 +582,15 @@ func (r Report) String() string {
 		fmt.Fprintf(&sb, "  %s\n", r.DaemonNote)
 	}
 
+	// #184: the freeze state file's freeze.
+	if r.Freeze != nil {
+		sb.WriteString("\n")
+		writeFreeze(&sb, *r.Freeze, "")
+	} else if r.FreezeNote != "" {
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "  %s\n", r.FreezeNote)
+	}
+
 	fmt.Fprintf(&sb, "\n要約: drifted=%d converged=%d unobservable=%d unmanaged=%d",
 		len(r.Drifted), r.ConvergedCount, r.UnobservableCount, len(r.Unmanaged))
 	if len(r.WorkflowHeld) > 0 {
@@ -587,6 +612,16 @@ func writeOscillating(sb *strings.Builder, indent string, it OscillatingItem) {
 		fmt.Fprintf(sb, "%s  止めた時刻: %s\n", indent, it.Since.UTC().Format(time.RFC3339))
 	}
 	fmt.Fprintf(sb, "%s  解く: desired か現実が変わる・現実が宣言どおりになる・sakutei apply-check release\n", indent)
+}
+
+// writeFreeze は効いている global freeze（#184）を 2 行で書く。
+func writeFreeze(sb *strings.Builder, f freeze.Freeze, indent string) {
+	until := "期限なし（sakutei freeze end で解く。--freeze なら実行が終わるまで）"
+	if !f.Until.IsZero() {
+		until = f.Until.UTC().Format(time.RFC3339) + " まで（過ぎたら解ける）"
+	}
+	fmt.Fprintf(sb, "%sFROZEN: global freeze（§14.3）— alert-only、drift の検知は続ける。誰が %s・入口 %s・%s から・%s\n%s  理由: %s\n",
+		indent, f.By, f.Source, f.Since.UTC().Format(time.RFC3339), until, indent, f.Reason)
 }
 
 // writeDaemonPlacement はデーモンの担当（claim）・fencing の世代・git の配布の
@@ -633,6 +668,9 @@ func writeDaemonPlacement(sb *strings.Builder, h DaemonHealth) {
 		for _, t := range h.RuntimeTightened {
 			fmt.Fprintf(sb, "    TIGHTENED %s: 旗 --%s=%s / intent runtime.%s=%s — 旗を外すと宣言に戻る\n", t.Key, t.Flag, t.FlagValue, t.Key, t.IntentValue)
 		}
+	}
+	if h.Freeze != nil {
+		writeFreeze(sb, *h.Freeze, "  ")
 	}
 	if h.RuntimeChanged != "" {
 		fmt.Fprintf(sb, "  警告: 起動したあとに intent の runtime: が変わった — 起動したときの値で回っている。起こし直すと取り込む（§26.7）: %s\n", h.RuntimeChanged)

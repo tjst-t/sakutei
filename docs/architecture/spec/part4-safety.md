@@ -298,6 +298,15 @@ remediation:
 
 **global freeze**:グローバルな変更凍結は、全体を一時的に `alert-only` に倒すマクロ（rate limit / gate 機構の一種）である。freeze 中も **drift 検知は続け、修復だけ止める**。
 
+**freeze を監査に残す（v3.55）**:freeze は「誰かが自動修復を止めた」という運用の判断なので、止めた事実をツールの中（起動の旗・プロセスのメモリ）だけに置かず、**誰が・なぜ・いつまで**を S4 監査（§4.9）に残す。
+
+- **入口は 2 つ**。起動の旗 `--freeze`（その実行・その常駐の間だけ効く）と、**動いている常駐を止めずに freeze する書き込みの口** `sakutei freeze start` / `end`（freeze の状態のファイル `--freeze-state` を書く。常駐と一回性の `reconcile` は同じファイルを毎周・毎回読む）。どちらも most-restrictive-wins の 1 つの決定源で、どちらか 1 つが効けば止まる。
+- **理由は必須**。`--freeze` は `--freeze-reason` と `--audit-log` を、`sakutei freeze start` は `--reason` を要り、無ければ何も変えずに断る（記録の無い freeze を作らない）。誰が（`--freeze-by` / `--by`、既定は OS のユーザー名）と期限（`--freeze-until` / `--until`。RFC 3339 の時刻か今からの長さ、任意）を添える。効いている freeze があるところへの `start` は断る（先に `end`）。
+- **記録する事実**:始まり `freeze.started`・終わり `freeze.ended`（`sakutei freeze end`、または `--freeze` で動いた実行・常駐が終わったとき）・期限切れ `freeze.expired`。記録は状態のファイルを書く前に追記する。
+- **期限**:期限を過ぎた freeze は、次に読んだ者（常駐の周・一回性の `reconcile`・`sakutei freeze`）が解き、期限切れを記録する。期限は「解き忘れ」を構造で塞ぐためのもので、過ぎたら自動修復が戻る。
+- **読めないときは止める**:常駐が freeze の状態のファイルを読めなければ、その周は freeze として扱う（§3：確信が持てないとき、変えない）。
+- **見えるようにする**:freeze が効いている間は level の Event `Frozen`（attrs に入口・誰が・理由・始まり・期限）を出し、解けた周に resolved。運用者が選んだ止めなので、続いても stuck に上げない。`status` は `--daemon-status`（常駐の健全性の `freeze`）と `--freeze-state`（ファイルの freeze）で出す。
+
 ### §14.4 承認ゲート（N-of-M・申請者≠承認者）
 
 段階適用における承認ゲートは、既存 Workflow（wave + invariant + Event/sink + フェーズ永続化）の組み合わせで表現でき、新プリミティブは不要。ゲート型そのものは §6 の Workflow を参照する。

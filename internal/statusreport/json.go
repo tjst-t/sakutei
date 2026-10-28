@@ -19,6 +19,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/freeze"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
@@ -55,6 +56,11 @@ type JSONReport struct {
 	Daemon *JSONDaemon `json:"daemon,omitempty"`
 	// DaemonNote は --daemon-status を読めなかったときの注記。
 	DaemonNote string `json:"daemon_note,omitempty"`
+	// Freeze は --freeze-state のファイルで効いている global freeze（#184）。
+	// 効いているときだけ出る。
+	Freeze *freeze.Freeze `json:"freeze,omitempty"`
+	// FreezeNote は --freeze-state を読めなかったときの注記。
+	FreezeNote string `json:"freeze_note,omitempty"`
 }
 
 // JSONSummary は件数の要約（文の出力の「要約:」の行と同じ数）。
@@ -149,6 +155,8 @@ func (r Report) ToJSON(now time.Time) JSONReport {
 		Resources:             []JSONResource{},
 		UnmanagedUndetectable: []JSONUndetectable{},
 		DaemonNote:            r.DaemonNote,
+		Freeze:                r.Freeze,
+		FreezeNote:            r.FreezeNote,
 	}
 	out.Summary = JSONSummary{
 		Conformant:   r.ConvergedCount,

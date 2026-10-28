@@ -258,7 +258,7 @@ func TestFreeze_OverridesToAlertOnly(t *testing.T) {
 	before := stateFileBytes(t, statePath)
 
 	// Run with --freeze (and default mode=auto — freeze must override it).
-	stdout, _, code := runReconcile(t, intentDir, statePath, "--freeze")
+	stdout, _, code := runReconcile(t, intentDir, statePath, "--freeze", "--freeze-reason", "test", "--audit-log", filepath.Join(tmp, "audit.jsonl"))
 	if code != 0 {
 		t.Errorf("[AC-Scf7762-3-2] expected exit 0 when frozen; got %d\nstdout: %s", code, stdout)
 	}
@@ -305,7 +305,7 @@ func TestFreeze_OverridesExplicitAutoMode(t *testing.T) {
 	before := stateFileBytes(t, statePath)
 
 	// Explicitly set --mode=auto AND --freeze: freeze must win.
-	stdout, _, code := runReconcile(t, intentDir, statePath, "--mode=auto", "--freeze")
+	stdout, _, code := runReconcile(t, intentDir, statePath, "--mode=auto", "--freeze", "--freeze-reason", "test", "--audit-log", filepath.Join(tmp, "audit.jsonl"))
 	if code != 0 {
 		t.Errorf("[AC-Scf7762-3-2/auto+freeze] expected exit 0; got %d\nstdout: %s", code, stdout)
 	}
@@ -516,7 +516,7 @@ func TestDaemonFreeze_NeverApplies(t *testing.T) {
 		"--intent", intentDir,
 		"--state", statePath,
 		"--interval", "100ms",
-		"--freeze",
+		"--freeze", "--freeze-reason", "test", "--audit-log", filepath.Join(tmp, "audit.jsonl"),
 	)
 	defer func() {
 		_ = cmd.Process.Kill()

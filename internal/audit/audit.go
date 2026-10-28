@@ -89,6 +89,16 @@ const (
 	// KindApplyCheckReleased は人が Apply の止め（oscillating、§11.1 Tier3）を解いた
 	// こと（sakutei apply-check release、#166）。Resource に解いたリソースを書く。
 	KindApplyCheckReleased Kind = "apply_check.released"
+
+	// KindFreezeStarted は global freeze（§14.3）の始まり（#184）。起動の旗 --freeze
+	// でも、動いている常駐を止めずに freeze する口（sakutei freeze start）でも書く。
+	// Actor に誰が、Detail に入口・理由・期限（あれば）を書く。
+	KindFreezeStarted Kind = "freeze.started"
+	// KindFreezeEnded は freeze の終わり（sakutei freeze end、または --freeze で
+	// 動いた実行・常駐の終わり）。
+	KindFreezeEnded Kind = "freeze.ended"
+	// KindFreezeExpired は期限（--freeze-until・--until）を過ぎて解けたこと。
+	KindFreezeExpired Kind = "freeze.expired"
 )
 
 // Record は監査の 1 件。

@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/freeze"
 	"github.com/tjst-t/sakutei/v2/internal/runtimeargs"
 )
 
@@ -81,6 +82,10 @@ type DaemonHealth struct {
 	// デーモンは起動したときの値で回る。起こし直すと取り込む）。変わっていない
 	// ときは空。
 	RuntimeChanged string `json:"runtime_changed,omitempty"`
+
+	// Freeze は効いている global freeze（§14.3、#184）: 入口（flag・command）・
+	// 誰が・理由・始まり・期限。最後の周に効いていたときだけ。
+	Freeze *freeze.Freeze `json:"freeze,omitempty"`
 }
 
 // ApplyStoppedHealth は Apply を止めているリソース 1 つ（#166）。

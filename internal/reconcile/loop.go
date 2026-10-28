@@ -372,6 +372,12 @@ type Config struct {
 	// one the daemon started with.  Nil means no report.
 	Runtime *RuntimeReport
 
+	// Freeze, when set, decides every cycle whether a global freeze (§14.3)
+	// is in effect — the --freeze flag's (until its deadline) or the freeze
+	// state file's — and records expiries in the audit log (Backlog #184).
+	// It overrides Remediation.Freeze.  Nil means Remediation.Freeze alone.
+	Freeze *FreezeControl
+
 	// cycleBase is the number of cycles run by earlier daemons of this Run
 	// (claim handoffs), so Events carry the cycle number Run prints.
 	cycleBase int
@@ -429,7 +435,10 @@ func (c Config) providerFilesText() string {
 // It is only what the flags say: the intent's remediation schedule (§14.2)
 // may make a cycle alert-only, which each cycle's "remediation mode=" line
 // reports.
-func startModeText(rc remediation.Config) string {
+func startModeText(rc remediation.Config, fc *FreezeControl) string {
+	if fc != nil && fc.Flag != nil {
+		return "--freeze: alert-only [FROZEN] (" + fc.Flag.Text() + ")"
+	}
 	if rc.Freeze {
 		return "--freeze: alert-only [FROZEN]"
 	}
@@ -470,7 +479,7 @@ func Run(ctx context.Context, cfg Config) error {
 	defer stop()
 
 	fmt.Fprintf(cfg.Out, "sakutei: convergence loop started (interval=%s, intent=%s, %s, %s)\n",
-		cfg.Interval, cfg.IntentDir, cfg.providerFilesText(), startModeText(cfg.Remediation))
+		cfg.Interval, cfg.IntentDir, cfg.providerFilesText(), startModeText(cfg.Remediation, cfg.Freeze))
 
 	printClaim := func(c Config) {
 		claim := c.Claim.String()
@@ -545,6 +554,8 @@ func Run(ctx context.Context, cfg Config) error {
 			h.RuntimeTightened = cfg.Runtime.Tightened
 			h.RuntimeChanged = cfg.Runtime.changed
 		}
+		// #184: the global freeze in effect.
+		h.Freeze = cfg.Freeze.Active()
 		return h
 	}
 	// publish hands a cycle that did not reach Observe (or no cycle: the
@@ -921,7 +932,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if res.AlertOnly {
 			// Scf7762-3: alert-only mode — no Apply was executed; drifted resources
 			// are reported via the DriftEvents list.
-			if cfg.Remediation.Freeze {
+			if cfg.Remediation.Freeze || cfg.Freeze.Active() != nil {
 				fmt.Fprintf(out, "sakutei: cycle %d: FROZEN (alert-only): %d drifted resource(s) detected — no changes applied\n",
 					cycleNum, res.DriftCount)
 			} else {
@@ -1203,6 +1214,12 @@ func NewDaemon(cfg Config) *Daemon {
 // returns its summary.  Apply is asynchronous; use Wait to drain it.
 func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 	d.cycle++
+	if d.cfg.Freeze != nil {
+		// #184: the freeze is resolved afresh every cycle (the state file may
+		// have been written since, a deadline may have passed).
+		w := eventlog.Stamp(d.cfg.ErrOut, d.cfg.cycleBase+d.cycle, d.prevRev)
+		d.cfg.Remediation.Freeze = d.cfg.Freeze.Check(w, "sakutei: ", d.cfg.cycleBase+d.cycle)
+	}
 	return runCycleAsync(ctx, d.providers, d.budgetEngine, d.exec, d.ifl, d.lsRing,
 		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows, d.view, d.checker, d.wake)
 }
@@ -1220,6 +1237,9 @@ func (d *Daemon) EndCycle(res CycleResult, cycleErr error) {
 			// #183: gone when the cycle compared the runtime: and did not
 			// raise it again.
 			return d.cfg.Runtime.resolves(d.cycle)
+		case core.EventFrozen:
+			// #184: gone when the cycle checked the freeze and found none.
+			return d.cfg.Freeze.resolves(d.cfg.cycleBase + d.cycle)
 		}
 		return res.level.resolves(ev, res, cycleErr)
 	})

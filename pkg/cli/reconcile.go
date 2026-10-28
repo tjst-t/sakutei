@@ -148,8 +148,7 @@ func runReconcile(args []string) {
 	// Scf7762-3: remediation mode flags (§14.1).
 	modeStr := fs.String("mode", "auto",
 		"remediation mode: auto | alert-only (§14.1); alert-only detects drift but does not Apply")
-	freeze := fs.Bool("freeze", false,
-		"global freeze: override to alert-only regardless of --mode (§14.3 escape hatch)")
+	freezeFl := addFreezeFlags(fs)
 
 	// Sf6a62f-3: --claim scope-selector (§17.1).  Restricts convergence to the
 	// resources whose scope matches the selector; out-of-scope resources are
@@ -217,9 +216,11 @@ func runReconcile(args []string) {
 		exitAfterEvents(1)
 	}
 	remCfg := remediation.Config{
-		Mode:   remMode,
-		Freeze: *freeze,
+		Mode: remMode,
 	}
+	// #184: a --freeze is recorded as started here (and as ended when the
+	// run exits); the freeze is checked once the run's revision is known.
+	freezeControl := freezeFl.control("sakutei reconcile", *auditLog)
 
 	// Parse budget configuration.
 	budgetCfg, budgetCfgErr := budgetFl.config()
@@ -406,6 +407,9 @@ func runReconcile(args []string) {
 	// #183: a flag tightening the intent's runtime: is reported with both
 	// values (the run uses the flag's).
 	reconcile.EmitRuntimeTightened(logErr, "sakutei reconcile: ", runtimeTightened)
+	// #184: the --freeze (until its deadline) or the freeze state file's
+	// freeze makes this run alert-only; it is reported as Frozen.
+	remCfg.Freeze = freezeControl.Check(logErr, "sakutei reconcile: ", 0)
 
 	// S62dbba-2: resolve providers via registry based on intent resource declarations.
 	// The --state flag is passed as the "state" config key for the "fake" provider;

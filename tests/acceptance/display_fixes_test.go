@@ -235,7 +235,7 @@ func TestDisplay_DaemonStartLine(t *testing.T) {
 	if !strings.Contains(line, "--mode auto;") || strings.Contains(line, "mode=auto") {
 		t.Fatalf("[AC-111-5] the start line must say the mode is --mode's value: %s", line)
 	}
-	if line := start("--zone", zone, "--freeze"); !strings.Contains(line, "--freeze: alert-only [FROZEN]") {
+	if line := start("--zone", zone, "--freeze", "--freeze-reason", "test", "--audit-log", filepath.Join(filepath.Dir(zone), "audit.jsonl")); !strings.Contains(line, "--freeze: alert-only [FROZEN]") {
 		t.Fatalf("[AC-111-5] the frozen start line: %s", line)
 	}
 	if line := start("--state", filepath.Join(tmp, "s.json"), "--zone", zone); !strings.Contains(line, "state="+filepath.Join(tmp, "s.json")+", zone=") {

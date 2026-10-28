@@ -360,7 +360,7 @@ func TestRemediationSchedule_OneShotReconcileFollowsScheduleAndScope(t *testing.
 
 	// --freeze は schedule の auto に勝つ。
 	mustSeed(t, fp, "web", 1)
-	stdout, _, code = runReconcile(t, intentDir, statePath, "--freeze")
+	stdout, _, code = runReconcile(t, intentDir, statePath, "--freeze", "--freeze-reason", "test", "--audit-log", filepath.Join(filepath.Dir(statePath), "audit.jsonl"))
 	if code != 0 || !strings.Contains(stdout, "FROZEN") {
 		t.Errorf("[AC-v1.5-remediation-schedule-6] --freeze で FROZEN になるはず (exit %d):\n%s", code, stdout)
 	}

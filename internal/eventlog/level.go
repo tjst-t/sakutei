@@ -217,9 +217,10 @@ func (l *Level) classify(ev core.Event, count int) core.EventClass {
 		}
 		return core.EventTransient
 	}
-	if ev.Kind == core.EventRuntimeTightened {
+	if ev.Kind == core.EventRuntimeTightened || ev.Kind == core.EventFrozen {
 		// #183: a tightening flag is the operator's choice for this run; it
 		// lasts as long as the process and is not a failure to escalate.
+		// #184: nor is a freeze, which lasts until it is ended or expires.
 		return core.EventTransient
 	}
 	if permanent(ev) || count >= l.stuckAfter {

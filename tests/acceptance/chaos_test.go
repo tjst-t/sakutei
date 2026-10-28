@@ -749,7 +749,7 @@ func TestChaos_Freeze_MassDrift_NeverApplied(t *testing.T) {
 
 	// Run with --freeze (global freeze).  Mode defaults to auto but freeze must
 	// override it to alert-only (most-restrictive-wins, §14.3).
-	stdout, stderr, code := runReconcile(t, intentDir, statePath, "--freeze")
+	stdout, stderr, code := runReconcile(t, intentDir, statePath, "--freeze", "--freeze-reason", "test", "--audit-log", filepath.Join(tmp, "audit.jsonl"))
 	if code != 0 {
 		t.Errorf("[AC-Scf7762-4-3/freeze] expected exit 0; got %d\nstdout=%s\nstderr=%s",
 			code, stdout, stderr)

@@ -179,7 +179,9 @@ AUTO="  tz: $TZW
 d=$(mk 3-mode)
 sched "$d" "$AUTO"
 cd "$d"
-for m in "--mode auto" "--mode alert-only" "--freeze" "--mode alert-only --freeze"; do
+# #184: --freeze は理由と監査の記録（誰が・なぜ・いつまで）を要る。
+FZ="--freeze --freeze-reason trial --audit-log freeze-audit.jsonl"
+for m in "--mode auto" "--mode alert-only" "$FZ" "--mode alert-only $FZ"; do
 	set +e; $S reconcile --intent intent --zone example.com.zone $m >out 2>&1; c=$?; set -e
 	printf '%-28s %s（終了コード %s、www=%s）\n' "[$m]" "$(grep -E '^Remediation mode|FROZEN' out | head -1)" "$c" "$(val . www)"
 	cp "$HERE/initial/example.com.zone" .
@@ -194,8 +196,8 @@ cp "$HERE/initial/example.com.zone" .
 echo "--- plan は --mode を受け取らない（読むだけ）"
 rc $S plan --intent intent --zone example.com.zone --mode alert-only 2>&1 | tail -2
 echo "--- 常駐で --mode alert-only・--freeze"
-for m in "--mode alert-only" "--freeze"; do
-	lg=daemon$(echo "$m" | tr ' ' '_').log
+for m in "--mode alert-only" "$FZ"; do
+	lg=daemon$(echo "$m" | cut -d' ' -f1-2 | tr ' ' '_').log
 	start "$d" "$lg" $m
 	wait_for 10 "2 周" 'has "$d/$lg" "cycle 2:"'
 	stop

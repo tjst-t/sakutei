@@ -34,6 +34,8 @@
 | `unmanaged_undetectable` | 配列 | 宣言外の検出ができなかった provider とその理由（下記）。無ければ空の配列 |
 | `daemon` | オブジェクト | `--daemon-status` を読めたときだけ。常駐デーモンの健全性（#15） |
 | `daemon_note` | 文字列 | `--daemon-status` を読めなかったときの注記 |
+| `freeze` | オブジェクト | `--freeze-state` のファイルで global freeze が効いているときだけ（#184）。形は `daemon.freeze` と同じ |
+| `freeze_note` | 文字列 | `--freeze-state` を読めなかったときの注記 |
 
 ## `summary`
 
@@ -102,4 +104,5 @@
 | `apply_stopped` | Apply を止めたリソースがあるとき（#166） | `[{"resource", "diff", "ineffective_applies", "max_applies", "settle", "reason", "note", "since"}]`（ID の順）。同じ Diff の Apply が成功を返しても現実が変わらないまま上限に達し、デーモンが Apply を止めているリソース（oscillating、§11.1 Tier3）。文の出力ではデーモンの行の下に `警告: Apply を止めている` と `OSCILLATING` の行で出る。status の終了コードは変えない |
 | `runtime_tightened` | 起動の旗が intent の `runtime:` を締めているとき（#183） | `[{"key", "flag", "flag_value", "intent_value", "file"}]`。旗が宣言より締める向き（予算が小さい・mode が弱い）で、旗の値が効いている一時的な締め（§26.7）。文の出力では `注意: 起動の旗が intent の runtime: を一時的に締めている` と `TIGHTENED` の行で出る |
 | `runtime_changed` | 起動したあとに intent の `runtime:` が変わったとき（#183） | 違いの文（`max_changes_per_cycle: started with 20, now 5` を `; ` でつなぐ）。デーモンは起動したときの値で回り、起こし直すと取り込む |
+| `freeze` | 最後の周に global freeze が効いていたとき（#184） | `{"source", "by", "reason", "since", "until"}`。`source` は `flag`（起動の `--freeze`）か `command`（`--freeze-state` のファイル、`sakutei freeze start`）。`until` は期限があるときだけ。文の出力では `FROZEN: global freeze` と `理由:` の行で出る |
 | `notify` | 通知の口（`--event-webhook`・`--event-alertmanager`）があるとき | 宛先ごとの送りの状態（#154、開いた順）`{"sink", "url", "delivered", "failed", "rejected", "dropped", "pending", "active", "consecutive_failures", "last_success", "last_failure", "last_error"}`。数は要求（POST）の単位でデーモンが起きてからのもの（`delivered` 届いた・`failed` 届かず送り直した・`rejected` 4xx で捨てた・`dropped` 待ち行列が溢れて捨てた）。`active` は Alertmanager に送り直している firing の alert の数（webhook では出ない）。`consecutive_failures` が 0 でなければ、その宛先に今届いていない（他の宛先へは送り続けている）。文の出力では `notify:` の行と、届いていない宛先の警告の行で出る。`url` の資格と query は伏せる |

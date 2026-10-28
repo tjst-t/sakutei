@@ -25,6 +25,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/cause"
 	"github.com/tjst-t/sakutei/v2/internal/diff"
 	"github.com/tjst-t/sakutei/v2/internal/extowner"
+	"github.com/tjst-t/sakutei/v2/internal/freeze"
 	"github.com/tjst-t/sakutei/v2/internal/lastseen"
 	"github.com/tjst-t/sakutei/v2/internal/listscope"
 	"github.com/tjst-t/sakutei/v2/internal/loader"
@@ -128,6 +129,8 @@ Exit codes:
 	causeStatePath := fs.String("cause-state", "",
 		"OPTIONAL path to a cause-state JSON file to READ previous-cycle revisions for consistent cause tags (Sc7a647); status never writes it (read-only)")
 
+	freezeState := fs.String("freeze-state", "",
+		"OPTIONAL path to the freeze state file (--freeze-state of the daemon, written by `sakutei freeze`, #184): reports the global freeze in effect, with who, why and until when")
 	daemonStatus := fs.String("daemon-status", "",
 		"OPTIONAL path to the daemon status file written by `sakutei --daemon-status` (#15): reports the consecutive cycles skipped because an external input was unreachable")
 
@@ -463,6 +466,16 @@ Exit codes:
 			if h.Stale(time.Now()) {
 				builder.MarkDaemonStale()
 			}
+		}
+	}
+
+	// #184: freeze の状態のファイル（READ するだけ。期限切れの記録は常駐・
+	// reconcile・sakutei freeze が監査とともに行う）。
+	if *freezeState != "" {
+		if f, err := freeze.Read(*freezeState); err != nil {
+			builder.NoteFreezeUnavailable(fmt.Sprintf("freeze の状態: 読めない（%v）", err))
+		} else if f != nil && !f.Expired(time.Now()) {
+			builder.SetFreeze(f)
 		}
 	}
 

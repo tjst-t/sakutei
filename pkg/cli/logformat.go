@@ -208,8 +208,18 @@ func flushNotify() {
 	notifyClosers = nil
 }
 
-// exitAfterEvents flushes the notification sinks, then exits with code.
+// exitHooks run, in order, before exitAfterEvents exits (#184: the end of
+// a --freeze is recorded in the audit log when the run ends).
+var exitHooks []func()
+
+// exitAfterEvents runs the exit hooks, flushes the notification sinks, then
+// exits with code.
 func exitAfterEvents(code int) {
+	hooks := exitHooks
+	exitHooks = nil
+	for _, h := range hooks {
+		h()
+	}
 	flushNotify()
 	os.Exit(code)
 }

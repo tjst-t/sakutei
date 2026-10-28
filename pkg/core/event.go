@@ -100,6 +100,11 @@ const (
 	// 回り続ける。起こし直すと宣言を取り込む）。attrs の <key>.started と
 	// <key>.intent に起動したときの値といまの宣言の値。
 	EventRuntimeDeclarationChanged EventKind = "RuntimeDeclarationChanged"
+	// EventFrozen は global freeze（§14.3、Backlog #184）が効いている間の level
+	// Event。attrs の source（flag・command）・by・reason・since・until（期限が
+	// あるとき）。freeze を解いた周（sakutei freeze end・期限切れ）に resolved。
+	// freeze は運用者が選んだものなので、続いても stuck に上げない。
+	EventFrozen EventKind = "Frozen"
 
 	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。
 	EventWorkflowStarted       EventKind = "WorkflowStarted"
@@ -148,7 +153,9 @@ func (k EventKind) IsLevel() bool {
 		// Backlog #183: a flag tightening the intent's runtime:, and a
 		// runtime: changed since the daemon started, last as long as the
 		// process (or the declaration) does.
-		EventRuntimeTightened, EventRuntimeDeclarationChanged:
+		EventRuntimeTightened, EventRuntimeDeclarationChanged,
+		// Backlog #184: a global freeze lasts until it is ended or expires.
+		EventFrozen:
 		return true
 	}
 	return false

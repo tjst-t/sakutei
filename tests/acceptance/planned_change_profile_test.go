@@ -352,7 +352,7 @@ func TestPlannedChangeProfile_SoloCoolingOff_StartsWhileAlertOnly(t *testing.T) 
 	d := newPCRig(t)
 	d.write(solo, map[string]any{})
 	stop := startPlannedChangeDaemon(t, d.intentDir, d.statePath, d.logPath,
-		"--max-destructive-per-cycle=1", "--audit-log", d.auditPath, "--freeze")
+		"--max-destructive-per-cycle=1", "--audit-log", d.auditPath, "--freeze", "--freeze-reason", "test")
 	waitForMoreCycles(t, d.logPath, 2)
 	stop()
 	if k := d.auditKinds(); k[audit.KindPlannedChangeDeclared] != 1 || d.remaining() != 6 {
