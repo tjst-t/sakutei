@@ -2,6 +2,12 @@
 
 Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
 
+## 未リリース
+
+### 追加
+
+- **proxmox-vm の cloud-init の初回のパッケージ更新 `ciupgrade`**（#170）：真偽値のフィールド。作るとき（作成・複製）に渡し、観測して違えば合わせる（cloud-init のほかのフィールドと同じ扱い）。書かなければ Proxmox に渡さず比べない（既定の振る舞いは変わらない）。外への出口が無い網では `ciupgrade: false` を明示すると、初回の起動がパッケージ更新の時間切れを待たない。`make integration-proxmox` に「ciupgrade: false」段。設計書 v3.43（`docs/architecture/CHANGELOG-v3.43.md`）。
+
 ## v2.4.0（2026-10-28）
 
 正しい状態を宣言の側に置く仕組みと、効かない Apply を止める仕組みを入れた版。採番の結果を宣言の側のファイルへ書き戻してそれを正として読む、触らない宣言を intent に書く、Apply のあとに読み直して効いたかを確かめる。あわせて、List の ID の scope と宣言の scope の突き合わせの修正と、Redfish の FW の更新を BMC の模擬で確かめたこと。設計書は v3.33 → v3.38（`docs/architecture/CHANGELOG-v3.34.md`〜`v3.38.md`）。

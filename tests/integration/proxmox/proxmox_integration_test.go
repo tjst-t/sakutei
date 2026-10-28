@@ -1054,6 +1054,42 @@ cat /root/pool-token.json`)
 			t.Errorf("the hand-made VM after reconcile: %s", s)
 		}
 	})
+
+	t.Run("ciupgrade: false（初回の起動でパッケージを更新しない）", func(t *testing.T) {
+		// #170: 宣言すれば複製した VM の設定に ciupgrade=0 が入り、Proxmox の作る
+		// cloud-init の user-data から package_upgrade が消える（1 のときだけ
+		// package_upgrade: true を書く。Proxmox VE 9.2 で確かめた）。手で 1 に
+		// 戻すと reconcile が 0 に合わせる。書かない VM（it-vm2）には渡さない。
+		vm3 := `{"resources": [{"provider": "proxmox-vm", "id": "it/it-vm3", "fields": {"vmid": "540", "template": "it-tmpl",
+		  "cores": "1", "memory": "512", "disks": "scsi0 storage=local-lvm size=4G", "nics": "net0 bridge=vmbr0",
+		  "ci_user": "ops", "ci_ssh_keys": "` + itKey + `", "ci_ip": "10.0.2.52/24", "ci_gateway": "10.0.2.2",
+		  "ciupgrade": false, "power": "stopped"}}]}`
+		n := l.converge(t, vm3, 10)
+		t.Logf("converged after %d reconcile(s)", n)
+		if cur, _ := l.config(t, 540); cur["ciupgrade"] != "0" {
+			t.Fatalf("VM 540 ciupgrade = %q, want 0 (config %v)", cur["ciupgrade"], cur)
+		}
+		if out, err := l.ssh("qm cloudinit dump 540 user"); err != nil || !strings.Contains(out, "#cloud-config") || strings.Contains(out, "package_upgrade") {
+			t.Errorf("the cloud-init user-data of VM 540 (%v):\n%s", err, out)
+		}
+		if cur, _ := l.config(t, 520); cur["ciupgrade"] != "" {
+			t.Errorf("VM 520 (ciupgrade not declared) has ciupgrade %q", cur["ciupgrade"])
+		}
+
+		if err := l.api.SetConfig(ctx, pveNode, 540, url.Values{"ciupgrade": {"1"}}); err != nil {
+			t.Fatal(err)
+		}
+		if out, _ := l.sakutei(t, vm3, "status"); !strings.Contains(out, "ciupgrade") || !strings.Contains(out, "drifted=1") {
+			t.Errorf("status after the hand change of ciupgrade:\n%s", out)
+		}
+		if out, code := l.sakutei(t, vm3, "reconcile"); code != 0 || !strings.Contains(out, "1 change(s) applied") {
+			t.Fatalf("reconcile exit %d:\n%s", code, out)
+		}
+		if cur, _ := l.config(t, 540); cur["ciupgrade"] != "0" {
+			t.Errorf("ciupgrade after reconcile = %q, want 0", cur["ciupgrade"])
+		}
+		l.converge(t, vm3, 2)
+	})
 }
 
 func readFile(t *testing.T, path string) string {

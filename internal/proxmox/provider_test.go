@@ -333,6 +333,67 @@ func TestNormalisationNoDrift(t *testing.T) {
 	}
 }
 
+// ciupgrade（Backlog #170）：宣言すれば作るときに渡し（空から作る・複製）、
+// 手で変えれば戻す。書かなければ渡さず、観測の値が何でも比べない。
+func TestCIUpgrade(t *testing.T) {
+	e := newEnv(t, pvetest.Options{}, time.Second)
+
+	// 空から作る：作るときの設定に入る。
+	want := web1()
+	want[proxmox.FieldCIUpgrade] = "false"
+	e.cycle(t, "lab/web1", want)
+	if vm, _ := e.srv.VM(200); vm.Config["ciupgrade"] != "0" {
+		t.Fatalf("after create: ciupgrade = %q, want 0 (config %v)", vm.Config["ciupgrade"], vm.Config)
+	}
+	e.converge(t, "lab/web1", want, 3)
+	if _, obs, _ := e.plan(t, "lab/web1", want); obs.State[proxmox.FieldCIUpgrade] != (core.TypedValue{Kind: core.FieldKindBool, Value: false}) {
+		t.Errorf("observed ciupgrade = %+v, want bool false", obs.State[proxmox.FieldCIUpgrade])
+	}
+
+	// 手で変える → 戻す。
+	e.srv.SetConfig(200, "ciupgrade", "1")
+	ops := e.cycle(t, "lab/web1", want)
+	if len(ops) != 1 || len(ops[0].Fields) != 1 || ops[0].Fields[0].Field != proxmox.FieldCIUpgrade || ops[0].Fields[0].From != "true" {
+		t.Fatalf("ops = %+v, want ciupgrade true → false", ops)
+	}
+	if vm, _ := e.srv.VM(200); vm.Config["ciupgrade"] != "0" {
+		t.Fatalf("after Apply: ciupgrade = %q, want 0", vm.Config["ciupgrade"])
+	}
+	if ops := e.cycle(t, "lab/web1", want); len(ops) != 0 {
+		t.Errorf("ops = %+v, want none", ops)
+	}
+
+	// true を宣言すると、書かれていない（Proxmox の既定 1）ことを true と見る。
+	want[proxmox.FieldCIUpgrade] = "true"
+	e.converge(t, "lab/web1", want, 3)
+	e.srv.SetConfig(200, "ciupgrade", "")
+	if pl, _, err := e.plan(t, "lab/web1", want); err != nil || len(pl.Ops) != 0 {
+		t.Errorf("ciupgrade unset vs true: ops %+v, %v; want none", pl.Ops, err)
+	}
+
+	// 複製：作った後、走らせる前に cloud-init と一緒に書く。
+	app := map[string]string{
+		proxmox.FieldVMID: "201", proxmox.FieldTemplate: "debian-tmpl", proxmox.FieldDisks: "scsi0 storage=local-lvm size=4G",
+		proxmox.FieldCIUser: "ops", proxmox.FieldCIUpgrade: "false", proxmox.FieldPower: "running",
+	}
+	e.converge(t, "lab/app1", app, 3)
+	if vm, _ := e.srv.VM(201); vm.Config["ciupgrade"] != "0" || vm.Status != "running" {
+		t.Errorf("clone: ciupgrade = %q, status %s", vm.Config["ciupgrade"], vm.Status)
+	}
+
+	// 書かなければ渡さず、観測の値（0 でも）を比べない。
+	plain := web1()
+	plain[proxmox.FieldName], plain[proxmox.FieldVMID] = "web2", "202"
+	e.converge(t, "lab/web2", plain, 3)
+	if vm, _ := e.srv.VM(202); func() bool { _, ok := vm.Config["ciupgrade"]; return ok }() {
+		t.Errorf("ciupgrade was passed without being declared: %v", vm.Config)
+	}
+	e.srv.SetConfig(202, "ciupgrade", "0")
+	if pl, _, err := e.plan(t, "lab/web2", plain); err != nil || len(pl.Ops) != 0 {
+		t.Errorf("undeclared ciupgrade: ops %+v, %v; want none", pl.Ops, err)
+	}
+}
+
 func TestDisks(t *testing.T) {
 	e := newEnv(t, pvetest.Options{}, time.Second)
 	want := web1()
@@ -628,6 +689,7 @@ func TestValidateIntent(t *testing.T) {
 		"force without mode": {"lab/web1", map[string]string{proxmox.FieldForceAfter: "1m"}},
 		"mode without force": {"lab/web1", map[string]string{proxmox.FieldPowerOff: proxmox.PowerOffGracefulThenForce}},
 		"apply_pending":      {"lab/web1", map[string]string{proxmox.FieldApplyPending: "always"}},
+		"ciupgrade":          {"lab/web1", map[string]string{proxmox.FieldCIUpgrade: "no"}},
 	} {
 		if err := e.p.ValidateIntent(tc.id, tc.fields); err == nil {
 			t.Errorf("%s: no error", name)

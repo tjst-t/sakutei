@@ -147,12 +147,14 @@ resources:
 | `ci_ip` | `dhcp` か CIDR（IPv4） | `ipconfig0` の `ip`。`ip6` などほかのキーは残す |
 | `ci_gateway` | IPv4 | `ipconfig0` の `gw` |
 | `ci_dns` | アドレスを空白かカンマで | `nameserver`（順は意味がある） |
+| `ciupgrade` | `true`・`false` | cloud-init が初回の起動でパッケージを更新するか（`ciupgrade`、Backlog #170）。**書かなければ Proxmox に渡さず、比べない**（Proxmox の既定は更新する）。観測は設定の `0`・`1` で、書かれていなければ既定の `true` と見る |
 | `power` | `running`・`stopped` | 停止は正常停止（shutdown）。再起動は宣言できない（下の「再起動」） |
 | `power_off` | `graceful`（既定）・`graceful_then_force` | `graceful_then_force` のときだけ、最初の shutdown から `force_after` を過ぎても止まらなければ強制停止（stop）。その Op は**破壊的**（予算に数える） |
 | `force_after` | 時間（`5m` など） | `graceful_then_force` のときだけ書け、そのときは必須 |
 | `apply_pending` | `never`（既定）・`reboot` | `reboot` のときだけ、宣言したフィールドに再起動を待つ変更があれば VM を再起動する |
 
 cloud-init の値は、空から作る VM（`template` を宣言しない）では cloud-init のドライブ（`ide2`、最初のディスクと同じストレージ）を足して入れる。テンプレートから作る VM ではテンプレートのドライブを使う（無ければ値は設定に入るだけで、ゲストには届かない）。
+外への出口が無い網では `ciupgrade: false` を明示すると、初回の起動がパッケージ更新の時間切れを待たない（手で確かめた例：起動の完了までが約 185 秒から約 54 秒に縮んだ）。
 cloud-init の値はゲストが次に起動したときに読む（cloud-init の決まり。一度起動した VM の値を変えても、ゲストの中が変わるかはイメージの cloud-init の設定による）。
 
 観測だけの値（Computed）：`lock`（Proxmox の lock）、`pending`（再起動を待つフィールドの名前）、`current_values`（それらの今効いている値、JSON）。
@@ -283,6 +285,22 @@ $ make integration-proxmox
 | pool に入れて作る・pool に絞ったトークン | root で pool `it-pool` と、privsep のトークン `sakutei@pve!pool`（ACL は上の「pool に絞ったトークン」の組）を作る。そのトークンの設定で、`pool: it-pool` の VM（vmid 520）をテンプレートから作り（複製・resize・VLAN の NIC・cloud-init・起動）、`Converged (no changes)` まで。root の API で VM が `it-pool` にあり走っている。トークンには pool の外の VM（100）が見えず、`status --json` は it-vm2 だけを適合に出す。root で pool から外すと、トークンの `reconcile` は「見えない VM が vmid を使っている」と知らせ、root のトークンでは `status` が pool の drift を出して `reconcile` が戻す。無い pool を宣言すると `does not exist` のエラーで、VM は動かない |
 | absent で消す | 宣言から外しただけでは消えない（走ったまま）。`ensure: absent` にすると `plan` が DELETE を `blocked: approval` で出し、レーンが無い `reconcile` は消さない（`AbsentAwaitingApproval`）。承認のある planned_change（`kind: delete`）を足した `reconcile --audit-log` で走っている VM が止まって消え、次の `reconcile` は `Converged (no changes)`。ほかの VM（100・9000）は残る。触らない VM を `ensure: absent` にすると protected と言って断る |
 | scope 付きの宣言と `--claim` | 設定に `scope` を書かず、it-vm2 を `scope: {node: mgmt}` で宣言し、API で直接 VM（vmid 530、`it-hand`）を作る。`status --json --claim node=mgmt` と claim なしの `status --json` は it-hand だけを `node=mgmt` の unmanaged に出し、it-vm2 は適合で注記は無い。`--claim node=edge` は何も出さない。`reconcile --claim node=mgmt` は `Converged (no changes)` で it-hand を消さない（#169） |
+| ciupgrade: false | `ciupgrade: false` の VM（vmid 540、止めたまま）をテンプレートから作り、`Converged (no changes)` まで。API で見た設定の `ciupgrade` が `0` で、`qm cloudinit dump 540 user` に `package_upgrade` が無い（Proxmox は 1 のときだけ `package_upgrade: true` を書く）。`ciupgrade` を書かない VM（520）の設定には `ciupgrade` が無い。API で 1 にすると `status` が ciupgrade の drift を出し、`reconcile` が 0 に戻す（#170）。出口の無い網で起動が待たされないことは確かめない（テストの網は slirp で外に出られる） |
+
+### 結果（2026-10-28、Backlog #170 の「ciupgrade: false」）
+
+同じ開発機・同じキャッシュで、`make integration-proxmox` が PASS（全段で約 3 分）。複製の後の設定の書き換えに `-ciupgrade 0` が
+cloud-init のほかの値と一緒に入った（pvedaemon の journal）。最初の試行では user-data に `package_upgrade: false` が出ると見込んで
+落ちた：Proxmox VE 9.2 は `ciupgrade` が 1 のときだけ `package_upgrade: true` を書き、0 のときは何も書かない（cloud-init の既定は
+更新しない）。確かめ方を「`package_upgrade` が無い」に直した:
+
+```
+--- PASS: TestProxmoxVM (183.59s)
+    ...
+    --- PASS: TestProxmoxVM/scope_付きの宣言と_--claim（provider_の側に_scope_を書かない） (2.20s)
+    --- PASS: TestProxmoxVM/ciupgrade:_false（初回の起動でパッケージを更新しない） (10.58s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/proxmox	183.598s
+```
 
 ### 結果（2026-10-28、Backlog #169 の「scope 付きの宣言と --claim」）
 

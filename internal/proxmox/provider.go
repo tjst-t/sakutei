@@ -49,6 +49,11 @@
 //     いつも、mac と model は書いたときだけ比べる。
 //   - ci_user・ci_ssh_keys（改行で区切る）・ci_ip（dhcp か CIDR、ipconfig0）・
 //     ci_gateway・ci_dns: cloud-init。
+//   - ciupgrade: true / false。cloud-init の初回の起動でパッケージを更新するか
+//     （Proxmox の ciupgrade。書かれていなければ Proxmox の既定 1 を true と
+//     観測する）。書かなければ Proxmox に渡さず比べない（既定を変えない）。
+//     外への出口が無い網では false を明示すると、初回の起動が更新の時間切れを
+//     待たない（Backlog #170）。
 //   - power: running / stopped。停止は正常停止（shutdown）。power_off:
 //     graceful_then_force と force_after を宣言したときだけ、正常停止から
 //     force_after を過ぎて強制停止（stop）に進み、その Op は破壊的（§13）。
@@ -128,6 +133,7 @@ const (
 	FieldCIIP          = "ci_ip"
 	FieldCIGateway     = "ci_gateway"
 	FieldCIDNS         = "ci_dns"
+	FieldCIUpgrade     = "ciupgrade"
 	FieldPower         = "power"
 	FieldPowerOff      = "power_off"
 	FieldForceAfter    = "force_after"
@@ -159,9 +165,9 @@ const (
 const ListSep = ","
 
 // configFields は VM の設定から観測するフィールド（pending を比べるもの）。
-var configFields = []string{FieldCores, FieldMemory, FieldDisks, FieldNICs, FieldCIUser, FieldCISSHKeys, FieldCIIP, FieldCIGateway, FieldCIDNS}
+var configFields = []string{FieldCores, FieldMemory, FieldDisks, FieldNICs, FieldCIUser, FieldCISSHKeys, FieldCIIP, FieldCIGateway, FieldCIDNS, FieldCIUpgrade}
 
-var ciFields = []string{FieldCIUser, FieldCISSHKeys, FieldCIIP, FieldCIGateway, FieldCIDNS}
+var ciFields = []string{FieldCIUser, FieldCISSHKeys, FieldCIIP, FieldCIGateway, FieldCIDNS, FieldCIUpgrade}
 
 // poolName は pool の名前（Proxmox の決まり。入れ子は "/" で 3 段まで）。
 var poolName = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+){0,2}$`)
@@ -265,6 +271,7 @@ func (p *Provider) Schema() provider.Schema {
 		FieldCIIP:          s(),
 		FieldCIGateway:     s(),
 		FieldCIDNS:         s(),
+		FieldCIUpgrade:     {Kind: core.FieldKindBool},
 		FieldPower:         s(),
 		FieldPowerOff:      s(),
 		FieldForceAfter:    s(),
@@ -541,7 +548,19 @@ func configState(cfg map[string]string) map[string]string {
 		dns = c
 	}
 	out[FieldCIDNS] = dns
+	out[FieldCIUpgrade] = observedBool(cfg["ciupgrade"], true)
 	return out
+}
+
+// observedBool は Proxmox の真偽値（0 / 1、無ければ def）を "true" / "false" にする。
+func observedBool(v string, def bool) string {
+	switch strings.TrimSpace(v) {
+	case "":
+		return strconv.FormatBool(def)
+	case "0":
+		return "false"
+	}
+	return "true"
 }
 
 // toState は観測を Schema どおりの State にする。
@@ -560,10 +579,13 @@ func toState(cluster string, r Resource, cur, next map[string]string) core.State
 	current := map[string]string{}
 	var names []string
 	for _, f := range configFields {
-		if f == FieldCores {
+		switch f {
+		case FieldCores:
 			n, _ := strconv.ParseInt(after[f], 10, 64)
 			st[f] = core.TypedValue{Kind: core.FieldKindInt, Value: n}
-		} else {
+		case FieldCIUpgrade:
+			st[f] = core.TypedValue{Kind: core.FieldKindBool, Value: after[f] == "true"}
+		default:
 			st[f] = str(after[f])
 		}
 		if after[f] != now[f] {
@@ -822,6 +844,9 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 		if err := CheckSSHKeys(v); err != nil {
 			return fail("%w", err)
 		}
+	}
+	if v, ok := fields[FieldCIUpgrade]; ok && v != "true" && v != "false" {
+		return fail("ciupgrade %q: want true or false", v)
 	}
 	if v, ok := fields[FieldCIUser]; ok && strings.ContainsAny(v, " \t\n:") {
 		return fail("ci_user %q: want a user name without spaces or ':'", v)
@@ -1378,6 +1403,13 @@ func ciParams(params url.Values, want map[string]string, next map[string]string)
 			return err
 		}
 		set("nameserver", d)
+	}
+	if v, ok := want[FieldCIUpgrade]; ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ciupgrade %q: want true or false", v)
+		}
+		set("ciupgrade", map[bool]string{true: "1", false: "0"}[b])
 	}
 	if len(del) > 0 {
 		params.Set("delete", strings.Join(del, ","))

@@ -602,7 +602,7 @@ func (s *Server) resources(tok *PoolToken, typ string) []map[string]any {
 
 func num(key, v string) any {
 	switch key {
-	case "cores", "sockets", "vmid", "template":
+	case "cores", "sockets", "vmid", "template", "ciupgrade":
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
