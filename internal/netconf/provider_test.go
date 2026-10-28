@@ -259,7 +259,7 @@ func TestUnknown(t *testing.T) {
 			s.SetBadHello(`<hello xmlns="` + netconf.BaseNS + `"><capabilities><capability>` + netconf.CapBase10 + `</capability></capabilities></hello>`)
 		},
 		"hello: not XML": func(s *netconffake.Server) { s.SetBadHello(`SSH-2.0-banner`) },
-		"rpc-error":      func(s *netconffake.Server) { s.SetRPCError("access-denied") },
+		"rpc-error":      func(s *netconffake.Server) { s.SetRPCError("operation-failed") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := netconffake.New(running, true)
@@ -274,7 +274,7 @@ func TestUnknown(t *testing.T) {
 			}
 			if name == "rpc-error" {
 				var re *netconf.RPCError
-				if !errors.As(err, &re) || re.Tag != "access-denied" {
+				if !errors.As(err, &re) || re.Tag != "operation-failed" {
 					t.Errorf("[AC-141-2-5] err = %v, want the rpc-error", err)
 				}
 			}

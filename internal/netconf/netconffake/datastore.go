@@ -78,9 +78,13 @@ func (s *Server) handleEdit(sid int, mid, name string, op *elem) (reply string, 
 		if err != nil {
 			return rpcError(mid, "application", "operation-failed", "bad candidate: "+err.Error()), true
 		}
+		before, _ := parse([]byte(cur))
 		tree, tag, msg := s.editLevel(tree, cfg.Children, "merge")
 		if tag != "" {
 			return rpcError(mid, "application", tag, msg), true
+		}
+		if s.writesOutside(before, tree) {
+			return accessDenied(mid, "application", "/", "the edit writes outside the user's scope (the fake's Scope)"), true
 		}
 		var b strings.Builder
 		for _, n := range tree {

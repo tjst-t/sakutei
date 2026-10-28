@@ -40,6 +40,14 @@ package netconf
 // 当てると Sakutei 自身が NACM の部分木を読めなくなる＝読みの締め出し）で
 // 起こし、確定せずに confirm-timeout で機器が戻すことを確かめる（書き込みは
 // 許したままなので、機器の巻き戻しも NACM に断られない）。
+//
+// 部分木だけに絞ったユーザー（#176）: コンテナに 2 人目の利用者 sakutei を
+// 作り（同じ鍵）、NACM で sw1/acl-rules と sw1/group の 2 つの部分木の読み書きと、
+// 要る rpc（get-config・lock・unlock・edit-config・validate・commit・
+// discard-changes）の実行だけを許し、ほかは読み・書き・実行のすべてを断る。
+// このユーザーで観測と 2 段の Apply が通り（その間に機器のログに断った rpc が
+// 無い）、部分木の外（sw1/admin-rules）を変える宣言は access-denied で断られて
+// 機器は変わらないことを確かめる。
 
 import (
 	"bytes"
@@ -110,6 +118,31 @@ const adminNACM = `<nacm xmlns="` + nacmNS + `"><groups><group><name>sakutei-it-
 	`<rule-list><name>sakutei-it-admin</name><group>sakutei-it-admin</group><rule><name>permit-all</name><module-name>*</module-name>` +
 	`<access-operations>*</access-operations><action>permit</action></rule></rule-list></nacm>`
 
+// scopedUser は NACM で部分木だけに絞った利用者。
+const scopedUser = "sakutei"
+
+// scopedNACM lets scopedUser read and write the subtrees sw1/acl-rules and
+// sw1/group and execute the rpcs Sakutei sends, and denies everything else.
+var scopedNACM = func() string {
+	var b strings.Builder
+	b.WriteString(`<nacm xmlns="` + nacmNS + `"><groups><group><name>sakutei-scoped</name><user-name>` + scopedUser + `</user-name></group></groups>`)
+	b.WriteString(`<rule-list><name>sakutei-scoped</name><group>sakutei-scoped</group>`)
+	for name, path := range map[string]string{
+		"acl-rules": `/nacm:nacm/nacm:rule-list[nacm:name='sakutei-it']`,
+		"group":     `/nacm:nacm/nacm:groups/nacm:group[nacm:name='sakutei-it']`,
+	} {
+		b.WriteString(`<rule><name>subtree-` + name + `</name><path xmlns:nacm="` + nacmNS + `">` + path + `</path>` +
+			`<access-operations>*</access-operations><action>permit</action></rule>`)
+	}
+	for _, rpc := range []string{"get-config", "lock", "unlock", "edit-config", "validate", "commit", "discard-changes"} {
+		b.WriteString(`<rule><name>rpc-` + rpc + `</name><module-name>ietf-netconf</module-name><rpc-name>` + rpc + `</rpc-name>` +
+			`<access-operations>exec</access-operations><action>permit</action></rule>`)
+	}
+	b.WriteString(`<rule><name>deny-rest</name><module-name>*</module-name><access-operations>*</access-operations><action>deny</action></rule>`)
+	b.WriteString(`</rule-list></nacm>`)
+	return b.String()
+}()
+
 func setup() error {
 	if _, err := docker("version"); err != nil {
 		return fmt.Errorf("docker through sudo without a password is required: %w", err)
@@ -149,6 +182,13 @@ func setup() error {
 	if out, err := docker("exec", name, "chmod", "644", "/home/netconf/.ssh/authorized_keys"); err != nil {
 		return fmt.Errorf("chmod: %v\n%s", err, out)
 	}
+	// The scoped user: a system user with the same key (netopeer2 checks the
+	// user's authorized_keys).
+	if out, err := docker("exec", name, "sh", "-c", "useradd -m -s /bin/sh "+scopedUser+
+		" && mkdir -p /home/"+scopedUser+"/.ssh && cp /home/netconf/.ssh/authorized_keys /home/"+scopedUser+"/.ssh/authorized_keys"+
+		" && chown -R "+scopedUser+" /home/"+scopedUser+"/.ssh && chmod 600 /home/"+scopedUser+"/.ssh/authorized_keys"); err != nil {
+		return fmt.Errorf("useradd: %v\n%s", err, out)
+	}
 	if err := waitServer(); err != nil {
 		return err
 	}
@@ -165,6 +205,15 @@ func setup() error {
 	if out, err := docker("exec", name, "sysrepocfg", "--edit=/tmp/sakutei-it-nacm.xml", "-d", "running", "-f", "xml", "-m", "ietf-netconf-acm"); err != nil {
 		return fmt.Errorf("sysrepocfg: %v\n%s", err, out)
 	}
+	if err := os.WriteFile(nacm, []byte(scopedNACM), 0o644); err != nil {
+		return err
+	}
+	if out, err := docker("cp", nacm, name+":/tmp/sakutei-it-nacm-scoped.xml"); err != nil {
+		return fmt.Errorf("docker cp: %v\n%s", err, out)
+	}
+	if out, err := docker("exec", name, "sysrepocfg", "--edit=/tmp/sakutei-it-nacm-scoped.xml", "-d", "running", "-f", "xml", "-m", "ietf-netconf-acm"); err != nil {
+		return fmt.Errorf("sysrepocfg (scoped): %v\n%s", err, out)
+	}
 
 	priv, err := os.ReadFile(lab.key)
 	if err != nil {
@@ -174,16 +223,18 @@ func setup() error {
 		"ssh/netconf": map[string]any{"value": string(priv), "generation": 1}}}); err != nil {
 		return err
 	}
-	if err := writeJSON(filepath.Join(dir, "hosts.json"), map[string]any{
-		"secret_store": "secrets.json",
-		"known_hosts":  "known_hosts",
-		"control_dir":  lab.ctrl,
-		"hosts": map[string]any{"sw1": map[string]any{
-			"address": "127.0.0.1", "port": lab.port, "user": "netconf",
-			"private_key": "secretref:file/ssh/netconf", "connect_timeout": "3s",
-		}},
-	}); err != nil {
-		return err
+	for file, user := range map[string]string{"hosts.json": "netconf", "hosts-scoped.json": scopedUser} {
+		if err := writeJSON(filepath.Join(dir, file), map[string]any{
+			"secret_store": "secrets.json",
+			"known_hosts":  "known_hosts",
+			"control_dir":  lab.ctrl,
+			"hosts": map[string]any{"sw1": map[string]any{
+				"address": "127.0.0.1", "port": lab.port, "user": user,
+				"private_key": "secretref:file/ssh/netconf", "connect_timeout": "3s",
+			}},
+		}); err != nil {
+			return err
+		}
 	}
 	if err := writeJSON(filepath.Join(dir, "subtrees.json"), map[string]any{"subtrees": map[string]any{
 		"acl-rules":   map[string]string{"filter": `<nacm xmlns="` + nacmNS + `"><rule-list><name>sakutei-it</name></rule-list></nacm>`},
@@ -215,6 +266,17 @@ func setup() error {
 		}}); err != nil {
 			return err
 		}
+	}
+	if err := writeJSON(filepath.Join(dir, "providers-scoped.json"), map[string]any{"providers": map[string]any{
+		"netconf": map[string]string{
+			"remote_config":           filepath.Join(dir, "hosts-scoped.json"),
+			"netconf_hosts":           "sw1",
+			"netconf_subtrees":        filepath.Join(dir, "subtrees.json"),
+			"netconf_apply":           "true",
+			"netconf_confirm_timeout": confirmTimeout.String(),
+		},
+	}}); err != nil {
+		return err
 	}
 	lab.bin = filepath.Join(dir, "sakutei")
 	build := exec.Command("go", "build", "-o", lab.bin, "./cmd/sakutei")
@@ -399,7 +461,13 @@ type statusDoc struct {
 
 func status(t *testing.T) statusDoc {
 	t.Helper()
-	out, errOut, code := sakutei(t, "status", "--json")
+	return statusWith(t, filepath.Join(lab.dir, "intent"), lab.config)
+}
+
+// statusWith is status on another intent directory and provider config.
+func statusWith(t *testing.T, intent, config string) statusDoc {
+	t.Helper()
+	out, errOut, code := sakuteiWith(t, intent, config, "status", "--json")
 	if code != 0 && code != 3 {
 		t.Fatalf("sakutei status exited %d:\n%s%s", code, out, errOut)
 	}
@@ -561,6 +629,79 @@ func TestNetconfIntegration(t *testing.T) {
 		asDeclared(t, "applied (1.1)")
 		time.Sleep(confirmTimeout + 2*time.Second)
 		asDeclared(t, "after the confirm-timeout (1.1)")
+	})
+
+	t.Run("scoped user (NACM): observed and applied inside, refused outside", func(t *testing.T) {
+		scoped := filepath.Join(lab.dir, "providers-scoped.json")
+		intent := filepath.Join(lab.dir, "intent")
+		changeByHand(t)
+		since := time.Now().UTC().Format(time.RFC3339Nano)
+		d := statusWith(t, intent, scoped)
+		for _, local := range []string{"sw1/acl-rules", "sw1/group"} {
+			if got, why := d.state(local); got != "drift" {
+				t.Fatalf("scoped: %s is %q (%s), want drift", local, got, why)
+			}
+		}
+		out, errOut, code := sakuteiWith(t, intent, scoped, "reconcile")
+		if code != 0 || !strings.Contains(out, "2 change(s) applied") {
+			t.Fatalf("reconcile (scoped): exit %d\n%s%s", code, out, errOut)
+		}
+		t.Logf("sakutei reconcile (the scoped user):\n%s%s", out, errOut)
+		d = statusWith(t, intent, scoped)
+		for _, local := range []string{"sw1/acl-rules", "sw1/group"} {
+			if got, why := d.state(local); got != "conformant" {
+				t.Fatalf("scoped: after the Apply %s is %q (%s), want conformant", local, got, why)
+			}
+		}
+		asDeclared(t, "applied by the scoped user")
+		time.Sleep(confirmTimeout + 2*time.Second)
+		asDeclared(t, "after the confirm-timeout (scoped)")
+		// Nothing was refused by NACM while the scoped user observed and
+		// applied: no rpc of it reached outside what it is allowed.
+		logs, err := docker("logs", "--since", since, name)
+		if err != nil {
+			t.Fatalf("docker logs: %v\n%s", err, logs)
+		}
+		// (netopeer2 logs a refused rpc as "Operation not authorized" and a
+		// refused edit as "User callback failed"; "SSH channel unexpected EOF"
+		// is a closed connection, not a refusal.)
+		for _, bad := range []string{"not authorized", "callback failed", "denied"} {
+			if strings.Contains(logs, bad) {
+				t.Fatalf("scoped: netopeer2 refused something (%q):\n%s", bad, logs)
+			}
+		}
+
+		// Outside: the rule-list sakutei-it-admin is not the scoped user's.
+		dir := filepath.Join(lab.dir, "intent-outside")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeJSON(filepath.Join(dir, "netconf.json"), map[string]any{"resources": []map[string]any{
+			{"provider": "netconf", "id": "sw1/admin-rules", "fields": map[string]string{
+				"config": `<nacm xmlns="` + nacmNS + `"><rule-list><name>sakutei-it-admin</name><group>sakutei-it-admin</group>` +
+					`<rule><name>permit-all</name><module-name>*</module-name><access-operations>*</access-operations><action>permit</action></rule>` +
+					`<rule><name>outside</name><module-name>ietf-interfaces</module-name><access-operations>read</access-operations><action>permit</action></rule></rule-list></nacm>`}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		before := runningNACM(t)
+		out, errOut, _ = sakuteiWith(t, dir, scoped, "reconcile")
+		t.Logf("sakutei reconcile (the scoped user, outside):\n%s%s", out, errOut)
+		for _, want := range []string{"edit-config on the candidate", "access-denied", "NACM", "the candidate was discarded, nothing was committed"} {
+			if !strings.Contains(errOut, want) {
+				t.Fatalf("reconcile (scoped, outside) does not say %q:\n%s%s", want, out, errOut)
+			}
+		}
+		if after := runningNACM(t); after != before || strings.Contains(after, "<name>outside</name>") {
+			t.Fatalf("the device changed:\n%s\n→\n%s", before, after)
+		}
+		// The candidate was let go: the scoped user still applies inside.
+		changeByHand(t)
+		out, errOut, code = sakuteiWith(t, intent, scoped, "reconcile")
+		if code != 0 || !strings.Contains(out, "2 change(s) applied") {
+			t.Fatalf("reconcile (scoped, again): exit %d\n%s%s", code, out, errOut)
+		}
+		asDeclared(t, "applied again by the scoped user")
 	})
 
 	t.Run("apply: the check fails, the device rolls back at the timeout", func(t *testing.T) {

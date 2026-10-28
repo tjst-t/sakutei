@@ -23,7 +23,12 @@ package netconf
 //     だけ。2 段の Apply（apply.go、#175）は lock・unlock・edit-config・
 //     validate・commit（confirmed）・discard-changes を足す。
 //   - rpc-reply の rpc-error（error-severity が error のもの）は *RPCError。
-//     warning だけなら成功として扱う。
+//     warning だけなら成功として扱う。error-tag が access-denied のもの（NACM
+//     などで権限が無くて断られた、RFC 6241 付録 A・RFC 8341）は
+//     IsAccessDenied で見分ける。
+//   - 機器について知ることは hello の capability だけから読む（<get> で
+//     netconf-state・yang-library を読みに行かない）。部分木だけに絞った
+//     ユーザー（#176）でも、宣言した部分木の外を読む rpc は送らない。
 //   - 1 つのセッションは 1 度に 1 つの rpc（Session は並行に使わない）。
 
 import (
@@ -57,17 +62,29 @@ const (
 // ErrHello は相手の hello が NETCONF のものとして合わないことを表す。
 var ErrHello = errors.New("netconf: the server's hello does not match")
 
-// RPCError は rpc-reply の rpc-error。
+// RPCError は rpc-reply の rpc-error。Path は error-path（機器が付けたとき）。
 type RPCError struct {
-	Type, Tag, Severity, Message string
+	Type, Tag, Severity, Message, Path string
 }
 
 func (e *RPCError) Error() string {
 	msg := fmt.Sprintf("netconf: rpc-error: %s %s (%s)", e.Type, e.Tag, e.Severity)
+	if e.Path != "" {
+		msg += " at " + e.Path
+	}
 	if e.Message != "" {
 		msg += ": " + e.Message
 	}
 	return msg
+}
+
+// TagAccessDenied は権限が無くて断られたことを表す error-tag。
+const TagAccessDenied = "access-denied"
+
+// IsAccessDenied は err が access-denied の rpc-error か。
+func IsAccessDenied(err error) bool {
+	var re *RPCError
+	return errors.As(err, &re) && re.Tag == TagAccessDenied
 }
 
 // Session は開いた NETCONF のセッション。
@@ -354,6 +371,7 @@ func rpcErrorOf(reply []byte) error {
 			Tag      string `xml:"error-tag"`
 			Severity string `xml:"error-severity"`
 			Message  string `xml:"error-message"`
+			Path     string `xml:"error-path"`
 		} `xml:"rpc-error"`
 	}
 	if err := xml.Unmarshal(reply, &r); err != nil {
@@ -365,7 +383,7 @@ func rpcErrorOf(reply []byte) error {
 			continue
 		}
 		return &RPCError{Type: strings.TrimSpace(e.Type), Tag: strings.TrimSpace(e.Tag),
-			Severity: sev, Message: strings.TrimSpace(e.Message)}
+			Severity: sev, Message: strings.TrimSpace(e.Message), Path: strings.TrimSpace(e.Path)}
 	}
 	return nil
 }

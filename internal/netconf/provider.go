@@ -42,7 +42,13 @@
 //     RefinePlan（両側を並べ替えた正規形）。
 //   - 届かない・認証・ホスト鍵・hello が合わない・区切りが壊れた・rpc-error は
 //     観測できない（unknown）。absent にしない（§3）。部分木が機器に無い
-//     （<data> が空）のは観測の事実（absent）。
+//     （<data> が空）のは観測の事実（absent）。get-config が access-denied
+//     （権限が無い）なら unknown の PermanentError（やり直しても変わらない）。
+//   - 部分木だけに絞ったユーザー（機器の側の NACM、#176）で動く: 観測は
+//     部分木の filter の get-config だけで、部分木の外を読まない。ただし NACM は
+//     読めないデータを黙って省く（RFC 8341 §3.4.5）ので、読むのを許されて
+//     いない部分木は機器に無い（absent）と見分けられない。その部分木を Apply
+//     すると機器が access-denied で断り、理由つきの PermanentError になる。
 //   - セッションはホストごとに 1 本を使い回し、1 度に 1 つの rpc。使い回した
 //     セッションが切れていたら（機器が idle で切った等）1 度だけ開き直す。
 //     rpc-error ではセッションを捨てない。
@@ -216,6 +222,10 @@ func (p *Provider) Read(ctx context.Context, id string) (core.Observation, error
 		if errors.As(err, &ce) {
 			return unknown, remote.ProviderError(err)
 		}
+		if IsAccessDenied(err) {
+			// Retrying does not help: the user lacks the right (NACM, §29.1).
+			return unknown, provider.NewPermanentError(fmt.Errorf("%w; %s", err, readDeniedHint))
+		}
 		return unknown, provider.NewTransientError(err)
 	}
 	obs := core.Observation{Availability: core.AvailabilityOk, ObservedAt: time.Now()}
@@ -231,6 +241,9 @@ func (p *Provider) Read(ctx context.Context, id string) (core.Observation, error
 	}
 	return obs, nil
 }
+
+// readDeniedHint は get-config が access-denied で断られたときの説明。
+const readDeniedHint = "the device refused the user's get-config (access-denied): permit the user to execute get-config and to read the subtree (NACM, RFC 8341)"
 
 // getConfig は filter の部分木を取る。使い回したセッションが切れていたら
 // 1 度だけ開き直す。

@@ -29,6 +29,9 @@
 //     cancel-commit。戻した理由は Rollbacks に残る。
 //   - YANG を持たないので、リストのエントリは子の name（無ければ最初の葉）で、
 //     LeafLists で名指しした葉は値で突き合わせる。
+//   - Scope・ScopeOps で、部分木だけに絞ったユーザー（NACM）のように振る舞う
+//     （外の読みは黙って省き、外の書き込み・許さない操作は access-denied。
+//     Denials に残す。scope.go）。
 //   - 止める（Down）・セッションを切る（Drop）・hello を壊す・rpc-error を返す
 //     （SetRPCError・SetOpError）・行う前・応答の前に切る（SetDropBefore・
 //     SetDropAfter）・running
@@ -71,6 +74,11 @@ type Server struct {
 	// RefuseDialsWhen が true を返す running の間は、新しい接続を断る（届かなく
 	// なる設定。開いているセッションは切らない）。
 	RefuseDialsWhen func(running string) bool
+	// Scope があれば、部分木だけに絞ったユーザー（NACM）のように、Scope（subtree
+	// filter の形の XML）が選ぶ所だけを読み書きさせる（scope.go）。
+	Scope string
+	// ScopeOps があれば、その操作の名前だけを許す（ほかは access-denied）。
+	ScopeOps []string
 
 	mu        sync.Mutex
 	running   string
@@ -92,6 +100,7 @@ type Server struct {
 	opErrors   map[string]string
 	dropAfter  map[string]int
 	dropBefore map[string]int
+	denials    []string
 }
 
 // Call は受けた rpc 1 つ（セッションの番号と操作の名前）。
@@ -433,6 +442,7 @@ func (s *Server) handle(sid int, msg []byte) (string, bool) {
 	running, rpcErr, opErr := s.running, s.rpcError, s.opErrors[name]
 	dropBefore := countdown(s.dropBefore, name)
 	drop := !dropBefore && countdown(s.dropAfter, name)
+	denied := !dropBefore && s.opDenied(name)
 	s.mu.Unlock()
 	if dropBefore {
 		return "", true
@@ -442,6 +452,9 @@ func (s *Server) handle(sid int, msg []byte) (string, bool) {
 			fmt.Fprintln(f, name)
 			f.Close()
 		}
+	}
+	if denied {
+		return accessDenied(mid, "protocol", "/ietf-netconf:"+op.Name.Local, "the user may not execute "+name+" (the fake's ScopeOps)"), false
 	}
 	if opErr != "" {
 		return rpcError(mid, "application", opErr, "refused by the fake"), false
@@ -485,6 +498,7 @@ func (s *Server) handle(sid int, msg []byte) (string, bool) {
 		if fl := op.child("filter"); fl != nil {
 			data = filterNodes(data, fl.Children)
 		}
+		data = s.readScoped(data)
 		var b strings.Builder
 		b.WriteString(`<rpc-reply message-id="` + mid + `" xmlns="` + netconf.BaseNS + `"><data>`)
 		for _, n := range data {

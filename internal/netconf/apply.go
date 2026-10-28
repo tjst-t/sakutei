@@ -39,6 +39,16 @@ package netconf
 // など）ときは TransientError: 次の周の観測に任せる。途中で落ちても、
 // 1.0 の機器はセッションの終わりで、そうでなくても confirm-timeout で戻す。
 //
+// 部分木だけに絞ったユーザー（機器の側の NACM、#176）で動く: 送る rpc は
+// lock・unlock（candidate）・get-config（部分木の filter）・edit-config（部分木の
+// 置き換え。外には触れない、edit.go）・validate・commit・discard-changes・
+// close-session だけ。lock は candidate の全体を締める（NETCONF に部分木の
+// lock は running の partial-lock しか無い）が、締めるだけで外を読み書き
+// しない。candidate は lock の間は自分の変更しか持たないので、discard・
+// validate・commit も外を変えない。どれかが access-denied で断られたら
+// （部分木の外を変える宣言・許されていない rpc）、何も確定せずに理由つきの
+// PermanentError（同じ宣言は変わるまで当て直さない）。
+//
 // :confirmed-commit:1.1 の persist の流れは、設定で選び（ApplyConfig.Persist）
 // 機器が 1.1 を持つときだけ: commit confirmed に <persist> を付け、確定は
 // <persist-id> で送る。Apply のセッションが切れていれば新しいセッションから
@@ -216,14 +226,14 @@ func (a *applyRun) run(ctx context.Context) error {
 
 	if err := s.Lock(ctx, "candidate"); err != nil {
 		closeSession()
-		return a.stepErr("lock the candidate", err, false)
+		return a.stepErr("lock the candidate", err, errNotDiscarded)
 	}
 	// abandon discards the candidate and unlocks: nothing was committed.
 	abandon := func(step string, err error) error {
-		_ = s.DiscardChanges(ctx)
+		derr := s.DiscardChanges(ctx)
 		_ = s.Unlock(ctx, "candidate")
 		closeSession()
-		return a.stepErr(step, err, true)
+		return a.stepErr(step, err, derr)
 	}
 	data, err := s.GetConfig(ctx, a.st.Filter)
 	if err != nil {
@@ -292,19 +302,36 @@ func (a *applyRun) run(ctx context.Context) error {
 	return nil
 }
 
+// errNotDiscarded は stepErr に「candidate にまだ何も書いていない（discard
+// しなかった）」を伝える。
+var errNotDiscarded = errors.New("not discarded")
+
+// applyDeniedHint は Apply の rpc が access-denied で断られたときの説明。
+const applyDeniedHint = "the device refused it for the user (access-denied): the user may not write this part, or may not execute the rpc. " +
+	"Sakutei writes only inside the subtree; it needs the user to read and write the subtree and to execute lock, unlock, get-config, edit-config, validate, commit and discard-changes (NACM, RFC 8341). " +
+	"A subtree the user may not read is observed as absent"
+
 // stepErr は手順の失敗を分ける: rpc-error のうち使用中（lock の取り合い）は
-// TransientError、ほかの rpc-error（宣言を機器が受けない）は PermanentError。
-// 接続の失敗は観測と同じ分け方。
-func (a *applyRun) stepErr(step string, err error, discarded bool) error {
+// TransientError、access-denied（権限が無い）とほかの rpc-error（宣言を機器が
+// 受けない）は PermanentError。接続の失敗は観測と同じ分け方。discard は
+// candidate を discard した結果（nil なら捨てた。errNotDiscarded なら
+// まだ何も書いていない。ほかは discard-changes が失敗した）。
+func (a *applyRun) stepErr(step string, err error, discard error) error {
+	discarded := discard != errNotDiscarded
 	tail := ""
-	if discarded {
+	switch {
+	case discard == nil:
 		tail = "; the candidate was discarded, nothing was committed"
+	case discarded:
+		tail = fmt.Sprintf("; nothing was committed, but discard-changes failed (%v): the candidate may still hold the edit (until it is discarded, the next lock may be refused)", discard)
 	}
 	var re *RPCError
 	if errors.As(err, &re) {
 		switch re.Tag {
 		case "lock-denied", "in-use", "resource-denied":
 			return provider.NewTransientError(a.errf("%s: %v%s", step, err, tail))
+		case TagAccessDenied:
+			return provider.NewPermanentError(a.errf("%s: %v; %s%s", step, err, applyDeniedHint, tail))
 		}
 		return provider.NewPermanentError(a.errf("%s: %v%s", step, err, tail))
 	}

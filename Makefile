@@ -158,7 +158,8 @@ integration-guestos:
 	fi; \
 	exit $$status
 
-# netconf provider の統合テスト（#141 の観測・#175 の 2 段の Apply）。docker で
+# netconf provider の統合テスト（#141 の観測・#175 の 2 段の Apply・#176 の NACM で
+# 部分木だけに絞ったユーザー）。docker で
 # 公開の NETCONF サーバ（netopeer2 のコンテナ。tag と digest で固定）を 127.0.0.1
 # の空いたポートに立て、sakutei の CLI から ssh の netconf サブシステムで設定の
 # 部分木を観測し（適合・手で変えると drift・観測だけなら Apply は出ない・止めると
