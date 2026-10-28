@@ -70,6 +70,23 @@ type Cycle struct {
 	ConsecutiveErrors           int
 }
 
+// NotifyTarget is the delivery of the notification sinks to one destination
+// (#154, §22.3): the counts are requests (POSTs) since the daemon started.
+type NotifyTarget struct {
+	// Sink is "webhook" or "alertmanager"; URL the destination (redacted).
+	Sink, URL string
+	// Delivered, Failed (retried) and Rejected (a 4xx, dropped) requests;
+	// Dropped Events / alerts (queue overflow).
+	Delivered, Failed, Rejected, Dropped int
+	// Pending is what waits to be sent; Active the firing alerts resent to
+	// an Alertmanager.
+	Pending, Active int
+	// ConsecutiveFailures is the requests in a row that did not get there.
+	ConsecutiveFailures int
+	// LastSuccess is when a request last got there (zero: never).
+	LastSuccess time.Time
+}
+
 // Exporter keeps the last cycle and the counters of the daemon and serves
 // them on /metrics.  Record is called by the loop, ServeHTTP by the HTTP
 // server; both are safe to call concurrently.
@@ -82,6 +99,81 @@ type Exporter struct {
 	last   *Cycle
 	// lastObserve is the last cycle that reached the Observe phase.
 	lastObserve *Cycle
+	// notify reports the notification sinks per destination (SetNotify).
+	notify func() []NotifyTarget
+}
+
+// SetNotify makes the Exporter report the notification sinks' delivery per
+// destination (#154); f is called on every scrape.
+func (e *Exporter) SetNotify(f func() []NotifyTarget) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.notify = f
+}
+
+// notifyFamilies are the families of the notification sinks, one sample per
+// destination (labels sink and url).
+func notifyFamilies(ts []NotifyTarget) []Family {
+	if len(ts) == 0 {
+		return nil
+	}
+	per := func(v func(NotifyTarget) float64) []Sample {
+		out := make([]Sample, 0, len(ts))
+		for _, t := range ts {
+			out = append(out, Sample{Labels: []Label{{"sink", t.Sink}, {"url", t.URL}}, Value: v(t)})
+		}
+		return out
+	}
+	var requests []Sample
+	for _, t := range ts {
+		for _, r := range []struct {
+			result string
+			n      int
+		}{{"delivered", t.Delivered}, {"failed", t.Failed}, {"rejected", t.Rejected}} {
+			requests = append(requests, Sample{Labels: []Label{{"sink", t.Sink}, {"url", t.URL}, {"result", r.result}}, Value: float64(r.n)})
+		}
+	}
+	fams := []Family{
+		{Name: "sakutei_notify_requests_total", Type: Counter,
+			Help:    "Requests the notification sinks sent, per destination, by result: delivered, failed (retried with a growing wait) and rejected (a 4xx other than 408 / 429, dropped) (§22.3).",
+			Samples: requests},
+		{Name: "sakutei_notify_dropped_total", Type: Counter,
+			Help:    "Events / alerts a notification sink dropped because its queue overflowed, per destination.",
+			Samples: per(func(t NotifyTarget) float64 { return float64(t.Dropped) })},
+		{Name: "sakutei_notify_pending", Type: Gauge,
+			Help:    "Events (webhook) / one-shot alerts (alertmanager) waiting to be sent, per destination.",
+			Samples: per(func(t NotifyTarget) float64 { return float64(t.Pending) })},
+		{Name: "sakutei_notify_up", Type: Gauge,
+			Help: "1 unless the last request to the destination failed (a down destination does not stop the others).",
+			Samples: per(func(t NotifyTarget) float64 {
+				if t.ConsecutiveFailures > 0 {
+					return 0
+				}
+				return 1
+			})},
+		{Name: "sakutei_notify_consecutive_failures", Type: Gauge,
+			Help:    "Requests in a row that did not reach the destination.",
+			Samples: per(func(t NotifyTarget) float64 { return float64(t.ConsecutiveFailures) })},
+	}
+	var active, last []Sample
+	for _, t := range ts {
+		l := []Label{{"sink", t.Sink}, {"url", t.URL}}
+		if t.Sink == "alertmanager" {
+			active = append(active, Sample{Labels: l, Value: float64(t.Active)})
+		}
+		if !t.LastSuccess.IsZero() {
+			last = append(last, Sample{Labels: l, Value: float64(t.LastSuccess.UnixNano()) / 1e9})
+		}
+	}
+	if len(active) > 0 {
+		fams = append(fams, Family{Name: "sakutei_notify_active_alerts", Type: Gauge,
+			Help: "Firing alerts resent to the Alertmanager, per destination.", Samples: active})
+	}
+	if len(last) > 0 {
+		fams = append(fams, Family{Name: "sakutei_notify_last_success_timestamp_seconds", Type: Gauge,
+			Help: "Unix time a request last reached the destination.", Samples: last})
+	}
+	return fams
 }
 
 // NewExporter returns an Exporter for a daemon with the given budget limits.
@@ -119,6 +211,9 @@ func (e *Exporter) Families() []Family {
 	fams := []Family{
 		{Name: "sakutei_cycles_total", Type: Counter, Help: "Convergence cycles the daemon has run.", Samples: one(float64(e.cycles))},
 		{Name: "sakutei_cycle_errors_total", Type: Counter, Help: "Convergence cycles that ended in an error.", Samples: one(float64(e.errors))},
+	}
+	if e.notify != nil {
+		fams = append(fams, notifyFamilies(e.notify())...)
 	}
 	lim := e.limits
 	if lim.Window > 0 {

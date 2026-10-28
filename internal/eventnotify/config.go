@@ -24,6 +24,8 @@
 //     の alerts の形に写して送り、firing が続く間は期限が切れないように送り
 //     直す（--event-alertmanager <url>）。
 //
+// どちらも宛先を複数書け（#154、set.go）、宛先ごとに別の sink を持つ。
+//
 // どちらも Emit は待ち行列に積むだけで戻り、送るのは別の goroutine。送れない
 // ときは待ちを挙げながら送り直し、収束は止めない（衛星の停止は変化を止めるが
 // 維持を止めない、§3 原則 8）。送れなかったことはログに 1 行出す。
@@ -34,12 +36,17 @@ package eventnotify
 //
 //	secret_store: secrets.json          # file SecretBackend（headers に要る）
 //	webhook:
+//	  urls:                             # 宛先の一覧（省略可。--event-webhook と合わせる）
+//	    - https://hooks.example/a
 //	  headers:                          # 値は SecretRef だけ（認証のヘッダ）
 //	    Authorization: secretref:file/notify/webhook_auth
 //	  ca_file: ca.pem                   # 省略可
 //	  insecure_skip_verify: true        # 明示したときだけ（既定 false）
 //	  timeout: 10s                      # 省略可（既定 10s）
 //	alertmanager:
+//	  urls:                             # Alertmanager の base URL の一覧（省略可。
+//	    - http://am-1:9093              #   --event-alertmanager と合わせる、#154）
+//	    - http://am-2:9093
 //	  headers: {...}                    # webhook と同じ
 //	  ca_file / insecure_skip_verify / timeout
 //	  resend_interval: 1m               # firing を送り直す間隔（既定 1m）
@@ -53,6 +60,8 @@ package eventnotify
 //     値は文言にも出さない。値は送るたびに解決し（JIT、§20.2）、持たない。
 //   - 相対パス（secret_store・ca_file）は設定ファイルのあるディレクトリから。
 //   - 未知のキーはエラー。
+//   - 宛先（urls）は全部に同じ設定（headers・TLS・時間・labels）で送る。宛先
+//     ごとに別の sink（送り直し・待ち・待ち行列）を持つ（#154）。
 
 import (
 	"encoding/json"
@@ -78,10 +87,13 @@ const (
 	DefaultEdgeTTL        = time.Hour
 )
 
-// Target は 1 つの送り先の設定（URL は CLI の --event-webhook・
-// --event-alertmanager）。
+// Target は送り先の設定（URL は CLI の --event-webhook・--event-alertmanager
+// か、設定の urls）。
 type Target struct {
 	URL string
+	// URLs は設定の urls（宛先の一覧、#154）。Open が CLI の宛先と合わせ、
+	// 宛先ごとに URL を埋めた Target で sink を作る。
+	URLs []string
 	// Headers は要求に付けるヘッダ（名前 → SecretRef）。
 	Headers            map[string]core.SecretRef
 	CAFile             string
@@ -102,8 +114,8 @@ type Config struct {
 
 var (
 	topKeys    = map[string]bool{"secret_store": true, "webhook": true, "alertmanager": true}
-	commonKeys = map[string]bool{"headers": true, "ca_file": true, "insecure_skip_verify": true, "timeout": true}
-	amKeys     = map[string]bool{"headers": true, "ca_file": true, "insecure_skip_verify": true, "timeout": true,
+	commonKeys = map[string]bool{"urls": true, "headers": true, "ca_file": true, "insecure_skip_verify": true, "timeout": true}
+	amKeys     = map[string]bool{"urls": true, "headers": true, "ca_file": true, "insecure_skip_verify": true, "timeout": true,
 		"resend_interval": true, "edge_ttl": true, "labels": true}
 	// labelName は Prometheus の label の名前。
 	labelName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
@@ -192,6 +204,23 @@ func parseConfig(tree map[string]any, dir string) (Config, error) {
 func parseTarget(p string, m map[string]any, dir string) (Target, error) {
 	var t Target
 	var err error
+	if v, ok := m["urls"]; ok {
+		list, isList := v.([]any)
+		if !isList {
+			return Target{}, fmt.Errorf("%s.urls: want a list of URLs", p)
+		}
+		for i, x := range list {
+			u, isStr := x.(string)
+			if !isStr {
+				return Target{}, fmt.Errorf("%s.urls[%d]: want a string", p, i)
+			}
+			u = strings.TrimSpace(u)
+			if err := CheckURL(u); err != nil {
+				return Target{}, fmt.Errorf("%s.urls[%d]: %w", p, i, err)
+			}
+			t.URLs = append(t.URLs, u)
+		}
+	}
 	if t.CAFile, err = str(m, "ca_file", p+"."); err != nil {
 		return Target{}, err
 	}

@@ -231,3 +231,42 @@ func TestExporter_Concurrent(t *testing.T) {
 	}
 	<-done
 }
+
+func TestExporter_NotifyPerDestination(t *testing.T) {
+	e := NewExporter(BudgetLimits{})
+	last := time.Unix(1700000000, 0)
+	e.SetNotify(func() []NotifyTarget {
+		return []NotifyTarget{
+			{Sink: "alertmanager", URL: "http://am-1:9093", Delivered: 7, Active: 2, LastSuccess: last},
+			{Sink: "alertmanager", URL: "http://am-2:9093", Failed: 3, Pending: 1, ConsecutiveFailures: 3},
+			{Sink: "webhook", URL: "https://hook", Delivered: 1, Rejected: 1, Dropped: 4},
+		}
+	})
+	var b bytes.Buffer
+	if err := Write(&b, e.Families()); err != nil {
+		t.Fatal(err)
+	}
+	v := values(t, b.String())
+	for k, want := range map[string]float64{
+		`sakutei_notify_requests_total{result="delivered",sink="alertmanager",url="http://am-1:9093"}`: 7,
+		`sakutei_notify_requests_total{result="failed",sink="alertmanager",url="http://am-2:9093"}`:    3,
+		`sakutei_notify_requests_total{result="rejected",sink="webhook",url="https://hook"}`:           1,
+		`sakutei_notify_dropped_total{sink="webhook",url="https://hook"}`:                              4,
+		`sakutei_notify_pending{sink="alertmanager",url="http://am-2:9093"}`:                           1,
+		`sakutei_notify_up{sink="alertmanager",url="http://am-1:9093"}`:                                1,
+		`sakutei_notify_up{sink="alertmanager",url="http://am-2:9093"}`:                                0,
+		`sakutei_notify_consecutive_failures{sink="alertmanager",url="http://am-2:9093"}`:              3,
+		`sakutei_notify_active_alerts{sink="alertmanager",url="http://am-1:9093"}`:                     2,
+		`sakutei_notify_last_success_timestamp_seconds{sink="alertmanager",url="http://am-1:9093"}`:    1700000000,
+	} {
+		if got, ok := v[k]; !ok || got != want {
+			t.Errorf("%s = %v (exported %v), want %v", k, got, ok, want)
+		}
+	}
+	if _, ok := v[`sakutei_notify_last_success_timestamp_seconds{sink="alertmanager",url="http://am-2:9093"}`]; ok {
+		t.Error("last success exported for a destination never reached")
+	}
+	if _, ok := v[`sakutei_notify_active_alerts{sink="webhook",url="https://hook"}`]; ok {
+		t.Error("active alerts exported for a webhook")
+	}
+}

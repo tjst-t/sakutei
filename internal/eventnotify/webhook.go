@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"sync"
 
+	"github.com/tjst-t/sakutei/v2/internal/statusreport"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
@@ -36,6 +37,7 @@ type Webhook struct {
 	p    *poster
 	o    worker
 	name string
+	url  string
 
 	mu    sync.Mutex
 	queue []core.Event
@@ -48,7 +50,7 @@ func NewWebhook(t Target, secretStore string, o Options) (*Webhook, error) {
 	if err != nil {
 		return nil, fmt.Errorf("event webhook: %w", err)
 	}
-	w := &Webhook{p: p, name: "webhook " + redact(t.URL)}
+	w := &Webhook{p: p, name: "webhook " + redact(t.URL), url: redact(t.URL)}
 	w.o.start(o, w.run)
 	return w, nil
 }
@@ -70,6 +72,7 @@ func (w *Webhook) Emit(_ context.Context, ev core.Event) error {
 	w.mu.Unlock()
 	w.o.poke()
 	if over {
+		w.o.st.drop()
 		return fmt.Errorf("%s: %d Events waiting; dropped the oldest (%s)", w.name, w.o.opt.MaxQueue, dropped.Kind)
 	}
 	return nil
@@ -80,6 +83,13 @@ func (w *Webhook) Pending() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.queue)
+}
+
+// Status はこの宛先への送りの状態（#154）。
+func (w *Webhook) Status() statusreport.NotifyHealth {
+	h := w.o.st.status()
+	h.Sink, h.URL, h.Pending = "webhook", w.url, w.Pending()
+	return h
 }
 
 // Close は送り待ちを ctx の間だけ送り切ろうとしてから止める。
@@ -117,6 +127,7 @@ func (w *Webhook) run() {
 			err = w.p.post(w.o.ctx, body)
 		}
 		if err == nil {
+			w.o.st.ok(w.o.opt.Now())
 			w.pop()
 			b.reset()
 			continue
@@ -125,10 +136,12 @@ func (w *Webhook) run() {
 			return
 		}
 		if rejected(err) {
+			w.o.st.reject(w.o.opt.Now(), err)
 			fmt.Fprintf(w.o.opt.ErrOut, "sakutei: warn: event sink: %s: %s rejected, dropped: %v (convergence continues)\n", w.name, ev.Kind, err)
 			w.pop()
 			continue
 		}
+		w.o.st.fail(w.o.opt.Now(), err)
 		d := b.next()
 		fmt.Fprintf(w.o.opt.ErrOut, "sakutei: warn: event sink: %s: %s not delivered: %v; retrying in %s (convergence continues)\n", w.name, ev.Kind, err, d)
 		if !wait(d, w.o.abort) {

@@ -52,6 +52,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/eventlog"
+	"github.com/tjst-t/sakutei/v2/internal/statusreport"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
@@ -75,6 +76,7 @@ type Alertmanager struct {
 	p      *poster
 	o      worker
 	name   string
+	url    string
 	resend time.Duration
 	edge   time.Duration
 	labels map[string]string
@@ -98,7 +100,7 @@ func NewAlertmanager(t Target, secretStore string, o Options) (*Alertmanager, er
 	if err != nil {
 		return nil, fmt.Errorf("event alertmanager: %w", err)
 	}
-	a := &Alertmanager{p: p, name: "alertmanager " + redact(base),
+	a := &Alertmanager{p: p, name: "alertmanager " + redact(base), url: redact(base),
 		resend: t.ResendInterval, edge: t.EdgeTTL, labels: t.Labels, active: map[string]Alert{}}
 	if a.resend <= 0 {
 		a.resend = DefaultResendInterval
@@ -170,6 +172,7 @@ func (a *Alertmanager) push(al Alert) error {
 	}
 	dropped := a.pending[0]
 	a.pending = a.pending[1:]
+	a.o.st.drop()
 	return fmt.Errorf("%s: %d alerts waiting; dropped the oldest (%s)", a.name, a.o.opt.MaxQueue, dropped.Labels["alertname"])
 }
 
@@ -241,6 +244,16 @@ func (a *Alertmanager) Pending() int {
 	return len(a.pending)
 }
 
+// Status はこの宛先への送りの状態（#154）。
+func (a *Alertmanager) Status() statusreport.NotifyHealth {
+	h := a.o.st.status()
+	h.Sink, h.URL = "alertmanager", a.url
+	a.mu.Lock()
+	h.Pending, h.Active = len(a.pending), len(a.active)
+	a.mu.Unlock()
+	return h
+}
+
 // Close は届いていない alert（resolved・edge と、firing の今の endsAt）を
 // ctx の間だけ送り切ろうとしてから止める。firing の alert は送り直しが止まる
 // ので、endsAt で Alertmanager から消える。
@@ -280,14 +293,17 @@ func (a *Alertmanager) run() {
 			}
 			switch {
 			case err == nil:
+				a.o.st.ok(a.o.opt.Now())
 				a.sent(n)
 				b.reset()
 			case a.o.aborted():
 				return
 			case rejected(err):
+				a.o.st.reject(a.o.opt.Now(), err)
 				fmt.Fprintf(a.o.opt.ErrOut, "sakutei: warn: event sink: %s: %d alert(s) rejected, the one-shot ones dropped: %v (convergence continues)\n", a.name, len(alerts), err)
 				a.sent(n)
 			default:
+				a.o.st.fail(a.o.opt.Now(), err)
 				d := b.next()
 				fmt.Fprintf(a.o.opt.ErrOut, "sakutei: warn: event sink: %s: %d alert(s) not delivered: %v; retrying in %s (convergence continues)\n", a.name, len(alerts), err, d)
 				if !wait(d, a.o.abort) {

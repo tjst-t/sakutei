@@ -10,7 +10,7 @@ Kubernetes からは *収束原理*（level-triggered な収束ループ）だ�
 
 - **ライセンス:** Apache-2.0
 - **言語:** Go（1.22・標準ライブラリのみ、外部依存なし）
-- **状態:** 設計 v3.28／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.1`、変更点は [CHANGELOG.md](CHANGELOG.md)）
+- **状態:** 設計 v3.29／ 実装 **v1 完成**（v1a・v1b・v1.5。最新のタグ `v2.0.1`、変更点は [CHANGELOG.md](CHANGELOG.md)）
 
 ---
 
@@ -165,7 +165,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 コードは設計仕様の**射影**です。設計に関する記述は `docs/` を正とします。
 
 - **[docs/README.md](docs/README.md)** — ドキュメント索引（まずここ）
-- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.28（8 部 29 節・分冊）。§番号は全体で一意
+- **[docs/architecture/spec/](docs/architecture/spec/)** — 設計の正 v3.29（8 部 29 節・分冊）。§番号は全体で一意
 - **[docs/web/sakutei.html](docs/web/sakutei.html)** — 設計思想を庭園メタファで表したランディングページ
 - **[docs/web/buildout.html](docs/web/buildout.html)** — 段0だけがある状態から、20台規模のポッド(リーフスイッチ→BMC→ハイパーバイザー導入→クラスタ構築)を1つの intent PR から積み上げる様子を追う構築ウォークスルー
 - **[docs/web/scenarios.html](docs/web/scenarios.html)** — 稼働中の仮想基盤を題材に、増設/物理交換/FW更新/HVローリング更新が実際どう実行されるかを追う運用シナリオ集
@@ -192,7 +192,7 @@ Provider は `Schema` / `Capabilities` / `Read` / `Apply` ＋ 集合列挙 `List
 | **v1.5** | 単純 Task ＋ 最小 Workflow（直列＋不変条件＋N-of-M 手動承認）＋ remediation schedule ＋ planned_change ＋ 運用プロファイル ＋ DR モード（break-glass） | ✅ 完成 |
 | **v2+** | 多相 Task、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、intent UI、採番の SQLite 版、一括 API を持つ対象（Proxmox・vCenter 等）の provider | 予定 |
 
-既知の v1 の限界（設計 §29 に記録）: 振動の検知と隔離は未配線（`StatusOscillating` は型のみ。破壊的な flip-flop は ghost-diff hold で抑制）／ Vault SecretBackend はスタブ（file backend は実装済み）／ 採番はファイル版（同一ホストでの同時払い出しは flock で直列化。SQLite 版は v2）／ BulkObserve は dnszone・nftables での実証まで（一括 API を持つ対象は Backlog #49）／ Event の出し先（sink）は標準エラー・JSON lines のファイル（`--event-log`）・webhook（`--event-webhook`）・Alertmanager（`--event-alertmanager`）。Alertmanager は本物を相手にした統合テストをまだ持たない（httptest まで）。firing / resolved の状態はメモリに持つので、デーモンを起こし直すと続いているものを改めて firing として出す。／ Redfish provider は qemu-bmc（0.9.0）を相手にした統合テストまでで、実機のサーバの BMC では確かめていない。IPMI は持たない。起動先の `Once` は宣言できない（Workflow の手順の `action: boot_once` で 1 回だけ施す）。
+既知の v1 の限界（設計 §29 に記録）: 振動の検知と隔離は未配線（`StatusOscillating` は型のみ。破壊的な flip-flop は ghost-diff hold で抑制）／ Vault SecretBackend はスタブ（file backend は実装済み）／ 採番はファイル版（同一ホストでの同時払い出しは flock で直列化。SQLite 版は v2）／ BulkObserve は dnszone・nftables での実証まで（一括 API を持つ対象は Backlog #49）／ Event の出し先（sink）は標準エラー・JSON lines のファイル（`--event-log`）・webhook（`--event-webhook`）・Alertmanager（`--event-alertmanager`。webhook とも宛先を複数書ける、#154）。Alertmanager は本物を相手にした統合テストをまだ持たない（httptest まで）。firing / resolved の状態はメモリに持つので、デーモンを起こし直すと続いているものを改めて firing として出す。／ Redfish provider は qemu-bmc（0.9.0）を相手にした統合テストまでで、実機のサーバの BMC では確かめていない。IPMI は持たない。起動先の `Once` は宣言できない（Workflow の手順の `action: boot_once` で 1 回だけ施す）。
 
 ---
 

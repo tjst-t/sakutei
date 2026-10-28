@@ -333,6 +333,11 @@ type Config struct {
 	// daemon serves it on /metrics.  Nil means no metrics.
 	Metrics *metrics.Exporter
 
+	// NotifyStatus, when set, reports the notification sinks' delivery per
+	// destination (#154, §22.3) for the daemon status (DaemonStatusPath and
+	// the read-only API's /status).
+	NotifyStatus func() []statusreport.NotifyHealth
+
 	// View, when set, receives every cycle's status, plan and dependency
 	// graph (#136): the daemon serves them read-only on --read-listen.
 	View ViewSink
@@ -498,6 +503,9 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		if mr, ok := cfg.Source.(MirrorReporter); ok {
 			h.Mirror = mr.MirrorHealth()
+		}
+		if cfg.NotifyStatus != nil {
+			h.Notify = cfg.NotifyStatus()
 		}
 		return h
 	}

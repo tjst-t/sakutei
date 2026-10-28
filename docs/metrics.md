@@ -53,6 +53,22 @@ sakutei: metrics listening on http://127.0.0.1:9470/metrics (Prometheus text for
 | `sakutei_budget_destructive_cycle_limit` | gauge | 1 周で許す破壊的な op の数（`--max-destructive-per-cycle`。無制限なら出さない） |
 | `sakutei_budget_changes_cycle_limit` | gauge | 1 周で許す op の数（`--max-changes-per-cycle`。無制限なら出さない） |
 
+### 通知の口（#154）
+
+`--event-webhook`・`--event-alertmanager` があるとき、宛先ごとに（labels `sink`＝`webhook`／`alertmanager`、`url`＝宛先。資格と query は伏せる）送りの状態を出す。周の値ではなく、スクレイプした時点の値。数は要求（POST）の単位で、デーモンが起きてからのもの（webhook は 1 要求＝1 Event、Alertmanager は 1 要求＝その時点の alert の全部）。宛先ごとに送り直し・待ち・待ち行列を持つので、1 台が落ちていても他の宛先の数は進む。
+
+| 名前 | 型 | 意味 |
+|---|---|---|
+| `sakutei_notify_requests_total{sink,url,result=…}` | counter | 送った要求の数。`delivered`（届いた）・`failed`（届かず、待ちを挙げて送り直した）・`rejected`（408・429 を除く 4xx。捨てた） |
+| `sakutei_notify_dropped_total{sink,url}` | counter | 待ち行列が溢れて捨てた Event・alert の数 |
+| `sakutei_notify_pending{sink,url}` | gauge | 送り待ち（webhook は Event、Alertmanager は 1 回だけ送る resolved・edge の alert）の数 |
+| `sakutei_notify_up{sink,url}` | gauge | 最後の要求が届いていれば 1（まだ送っていなくても 1）、届かなかったら 0 |
+| `sakutei_notify_consecutive_failures{sink,url}` | gauge | 続けて届かなかった要求の数 |
+| `sakutei_notify_active_alerts{sink="alertmanager",url}` | gauge | その Alertmanager に送り直している firing の alert の数（Alertmanager だけ） |
+| `sakutei_notify_last_success_timestamp_seconds{sink,url}` | gauge | 最後に届いた時刻（Unix 秒）。まだ一度も届いていなければ出さない |
+
+Alertmanager を複数台で動かす構成では、`min by (url) (sakutei_notify_up{sink="alertmanager"}) == 0` で、どれか 1 台に届いていないことを見張れる（その間も他の Alertmanager には届いている）。
+
 ## 形式のテスト
 
 `internal/metrics.Parse` が text format を厳しく読み直す（TYPE が先・族の行が続いている・名前とラベルの文字・エスケープ・同じ系列が 2 度出ない・counter は `_total`）。単体テスト（`internal/metrics`）と受け入れテスト `[AC-54-1]`〜`[AC-54-3]`（`tests/acceptance/metrics_test.go`）がこれで `/metrics` を確かめる。

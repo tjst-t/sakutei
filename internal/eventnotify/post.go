@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/render"
+	"github.com/tjst-t/sakutei/v2/internal/statusreport"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
@@ -201,9 +202,11 @@ func wait(d time.Duration, stop <-chan struct{}) bool {
 	}
 }
 
-// worker は送る goroutine の始まりと終わり（Close で送り待ちを送り切る）。
+// worker は送る goroutine の始まりと終わり（Close で送り待ちを送り切る）と、
+// 送りの数（宛先ごとの状態、#154）。
 type worker struct {
 	opt    Options
+	st     stats
 	ctx    context.Context
 	cancel context.CancelFunc
 	// wake は送るものが増えた知らせ（1 つだけ溜まる）。
@@ -286,4 +289,70 @@ func (k *worker) close(ctx context.Context, name string, pending func() int) err
 		return fmt.Errorf("%s: %d not delivered before shutdown", name, n)
 	}
 	return nil
+}
+
+// stats は 1 つの宛先への送りの数（#154: /metrics と status に宛先ごとに出す）。
+// 数は要求（POST）の単位。webhook は 1 要求 = 1 Event、Alertmanager は
+// 1 要求 = その時点の alert の全部。
+type stats struct {
+	mu                    sync.Mutex
+	delivered, failed     int
+	rejected, dropped     int
+	consecutive           int
+	lastSuccess, lastFail time.Time
+	lastError             string
+}
+
+func (s *stats) ok(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delivered++
+	s.consecutive = 0
+	s.lastSuccess = now
+}
+
+// fail は送れなかった（送り直す）要求。
+func (s *stats) fail(now time.Time, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failed++
+	s.consecutive++
+	s.lastFail, s.lastError = now, err.Error()
+}
+
+// reject は送り先が受け付けなかった（捨てた）要求。届いてはいるので続けての
+// 失敗には数えない。
+func (s *stats) reject(now time.Time, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejected++
+	s.consecutive = 0
+	s.lastFail, s.lastError = now, err.Error()
+}
+
+// drop は待ち行列が溢れて捨てたもの。
+func (s *stats) drop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropped++
+}
+
+// status は数を statusreport.NotifyHealth に写す（Sink・URL・Pending・Active は
+// 呼び手が埋める）。
+func (s *stats) status() statusreport.NotifyHealth {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h := statusreport.NotifyHealth{
+		Delivered: s.delivered, Failed: s.failed, Rejected: s.rejected, Dropped: s.dropped,
+		ConsecutiveFailures: s.consecutive, LastError: s.lastError,
+	}
+	if !s.lastSuccess.IsZero() {
+		t := s.lastSuccess.UTC()
+		h.LastSuccess = &t
+	}
+	if !s.lastFail.IsZero() {
+		t := s.lastFail.UTC()
+		h.LastFailure = &t
+	}
+	return h
 }

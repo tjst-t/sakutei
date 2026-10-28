@@ -474,6 +474,7 @@ func runDaemon() {
 		Out:                   logOut,
 		ErrOut:                logErr,
 		EventSinks:            eventSinks,
+		NotifyStatus:          eventNotify.notifyStatus(),
 	}
 	if *taskStore != "" {
 		cfg.TaskStore = task.NewFileStore(*taskStore)
@@ -502,6 +503,9 @@ func runDaemon() {
 			DestructivePerWindow: budgetCfg.MaxDestructivePerWindow,
 			Window:               budgetWindow(budgetCfg),
 		})
+		if f := eventNotify.notifyMetrics(); f != nil {
+			cfg.Metrics.SetNotify(f)
+		}
 		if err := serveMetrics(*metricsListen, cfg.Metrics); err != nil {
 			fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 			os.Exit(1)

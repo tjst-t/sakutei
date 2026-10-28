@@ -539,6 +539,18 @@ func writeDaemonPlacement(sb *strings.Builder, h DaemonHealth) {
 			fmt.Fprintf(sb, "  警告: intent の取得先に届いていない — 手元の写しで収束を続けている（§17.4）: %s\n", m.Error)
 		}
 	}
+	for _, n := range h.Notify {
+		fmt.Fprintf(sb, "  notify: %s %s delivered=%d failed=%d rejected=%d dropped=%d pending=%d", n.Sink, n.URL,
+			n.Delivered, n.Failed, n.Rejected, n.Dropped, n.Pending)
+		if n.Sink == "alertmanager" {
+			fmt.Fprintf(sb, " active=%d", n.Active)
+		}
+		sb.WriteString("\n")
+		if n.Down() {
+			fmt.Fprintf(sb, "  警告: 通知の宛先 %s に届いていない（続けて %d 回）— 送り直している。他の宛先には送り続ける（§22.3）: %s\n",
+				n.URL, n.ConsecutiveFailures, n.LastError)
+		}
+	}
 }
 
 // Incomplete は、報告はできたが観測できないもの（観測不能なリソース、または List

@@ -538,6 +538,12 @@ vm:
 - **送れないとき**：Emit は送り待ちに積むだけで戻り、送るのは sink ごとの goroutine（収束の周は待たない）。送れなければ待ちを 1 秒から倍々に挙げて（webhook は最大 1 分、Alertmanager は最大 resend_interval）送り直し、そのたびにログに 1 行出す（`sakutei: warn: event sink: …`）。送り待ちは 1000 件まで（溢れたら古いものから捨て、ログに出す）。408・429 を除く 4xx は送り直しても通らないので、ログに出して捨てる。一回性の `reconcile` は終わる前に最長 10 秒、送り待ちを送り切ろうとする。
 - **資格と TLS**（`--event-notify-config <file>`）：認証のヘッダは SecretRef でしか書けず（生の値はエラー）、送るたびに file SecretBackend から解決する（JIT、§20.2）。値は Event にもログにも出さない（Event はもとから secret の値を載せない）。TLS は `ca_file`、検証の省略は `insecure_skip_verify: true` を明示したときだけ。URL に資格（userinfo）は書けない。
 
+**v3.29 の決まり（Backlog #154）：宛先を複数にする**。Alertmanager を複数台で動かす構成（HA）では、送る側がすべての Alertmanager に同じ alert を送り、重複は Alertmanager どうしが消す（Alertmanager の HA の作法）。Sakutei はどれか 1 台を選ばない（選ぶと、選んだ 1 台が落ちたときに知らせが途切れる）。
+
+- **書き方**：`--event-alertmanager`・`--event-webhook` はフラグを繰り返すか、`,` でつないで複数の宛先を書ける（宛先が 1 つの書き方はそのまま）。`--event-notify-config` の `alertmanager.urls`・`webhook.urls` にも一覧で書け、フラグの宛先のあとに合わせる。同じ宛先（Alertmanager は末尾の `/` を除いて比べる）は 1 つにまとめる。headers・TLS・timeout・resend_interval・edge_ttl・labels は全部の宛先に同じものを使う（宛先ごとに変える口は持たない）。設定の `urls` だけでもよい。
+- **宛先ごとに独立**：宛先ごとに 1 つの sink（送る goroutine・送り直し・待ち・送り待ちの行列・firing の覚え）を持ち、Event は全部の宛先に同じものを渡す。1 台が落ちても、その宛先の待ちを挙げるだけで、他の宛先の送りを止めない・遅らせない。落ちた宛先が戻れば、その宛先の送り待ち（resolved・edge）と firing の今の全部を送る（Alertmanager は firing の全部を毎回送り直すので、落ちていた間の firing も戻ればそろう）。一回性の `reconcile` が終わる前の送り切り（最長 10 秒）は全部の宛先で同時に行い、落ちた宛先が時間を使い切っても届く宛先の送り切りは妨げない。
+- **宛先ごとの状態**：要求（POST）の数を宛先ごとに数え（届いた・届かず送り直した・4xx で捨てた・溢れて捨てた）、送り待ちの数・続けて届かなかった数・最後に届いた時刻と合わせて `/metrics`（`sakutei_notify_*{sink,url}`、§27.5）とデーモンの健全性（`--daemon-status`・`GET /status` の `daemon.notify`、§26.4）に出す。これはデーモン自身の進捗（S3、メモリだけ）で、起こし直せば 0 から数える。
+
 **読み取り専用の口の SSE（Backlog #136）**：デーモンの `GET /events`（`--read-listen`、§26.4）も、この単一 Event の sink の 1 つである。外の道具（可視化・ダッシュボード）が Event を流しで受けるための口で、通知の口とは別に持つ。
 
 - 流すのは知らせ（周の要約とログ行を除く Event）を、`--event-log` の 1 行と同じ JSON で 1 件ずつ（SSE の `data:` の行）。level の Event は firing / resolved のまま流れる。

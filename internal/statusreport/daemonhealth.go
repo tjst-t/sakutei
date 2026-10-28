@@ -61,7 +61,44 @@ type DaemonHealth struct {
 	Fencing []FencingGeneration `json:"fencing,omitempty"`
 	// Mirror は git の配布（--intent-repo）の取得の状態（§17.4）。git 配布のときだけ。
 	Mirror *MirrorHealth `json:"mirror,omitempty"`
+
+	// Notify は通知の口（--event-webhook・--event-alertmanager）の宛先ごとの送りの
+	// 状態（#154、§22.3）。通知の口があるときだけ。
+	Notify []NotifyHealth `json:"notify,omitempty"`
 }
+
+// NotifyHealth は通知の口の 1 つの宛先への送りの状態（#154、§22.3）。宛先ごとに
+// 送り直し・待ち・待ち行列を持つので、1 台が落ちていても他の宛先の数は進む。
+// 数は要求（POST）の単位（webhook は 1 要求 = 1 Event、Alertmanager は 1 要求 =
+// その時点の alert の全部）。デーモンが起きてからの数（S3、メモリだけ）。
+type NotifyHealth struct {
+	// Sink は "webhook" か "alertmanager"。
+	Sink string `json:"sink"`
+	// URL は宛先（資格と query は伏せる）。
+	URL string `json:"url"`
+	// Delivered は届いた要求の数。
+	Delivered int `json:"delivered"`
+	// Failed は届かなかった（送り直した）要求の数。
+	Failed int `json:"failed"`
+	// Rejected は送り先が受け付けなかった（408・429 を除く 4xx。捨てた）要求の数。
+	Rejected int `json:"rejected"`
+	// Dropped は待ち行列が溢れて捨てた Event・alert の数。
+	Dropped int `json:"dropped"`
+	// Pending は送り待ち（webhook は Event、Alertmanager は 1 回だけ送る alert）の数。
+	Pending int `json:"pending"`
+	// Active は Alertmanager に送り直している firing の alert の数（webhook は 0）。
+	Active int `json:"active,omitempty"`
+	// ConsecutiveFailures は続けて届かなかった要求の数（届けば 0 に戻る）。
+	ConsecutiveFailures int `json:"consecutive_failures"`
+	// LastSuccess・LastFailure は最後に届いた・届かなかった（受け付けられなかった）時刻。
+	LastSuccess *time.Time `json:"last_success,omitempty"`
+	LastFailure *time.Time `json:"last_failure,omitempty"`
+	// LastError は最後に届かなかった・受け付けられなかった理由。
+	LastError string `json:"last_error,omitempty"`
+}
+
+// Down は宛先に今届いていない（最後の要求が届かなかった）ことを返す。
+func (n NotifyHealth) Down() bool { return n.ConsecutiveFailures > 0 }
 
 // FencingGeneration は 1 つの scope の fencing の世代（§15.2）。
 type FencingGeneration struct {

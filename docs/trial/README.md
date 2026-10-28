@@ -117,6 +117,15 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 
   送り先が落ちていても収束は止まらない。送れないと `sakutei: warn: event sink: webhook …: … not delivered: …; retrying in …` の行が出て、待ちを挙げながら送り直す。
 
+  宛先は複数書ける（#154）。Alertmanager を複数台で動かす構成では、すべての Alertmanager に同じ alert を送る（重複は Alertmanager どうしが消す）。フラグを繰り返すか、`,` でつなぐ（`--event-alertmanager http://am-1:9093,http://am-2:9093`）。設定ファイルの `webhook.urls`・`alertmanager.urls` にも一覧で書け、フラグの宛先と合わせて使う（同じ宛先は 1 つにまとめる）。headers・TLS・時間・labels は全部の宛先に同じものを使う。宛先ごとに送り直し・待ち・待ち行列を持つので、1 台が落ちていても他へは送り続け、戻った宛先には待っていた resolved と firing の今を送る。宛先ごとの送りの状態は `/metrics`（`sakutei_notify_*`、[../metrics.md](../metrics.md)）と `--daemon-status`（`status --daemon-status` の `notify:` の行）に出る。
+
+  ```yaml
+  alertmanager:
+    urls:
+      - http://am-1:9093
+      - http://am-2:9093
+  ```
+
 ### D3. 破壊的な操作の上限で halt（2026-10-21 に確かめた）
 
 ゾーンに intent に無いレコードを 2 件置き、intent 側を `deletion_policy: PruneWithinScope` にして、上限 1 件で起動する。
