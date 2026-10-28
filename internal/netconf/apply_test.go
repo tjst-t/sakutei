@@ -254,6 +254,19 @@ func TestApply_VerifyStopsAtHalfTheTimeout(t *testing.T) {
 	}
 }
 
+// waitRollbacks は偽の機器が n 回戻すまで（上限 5 秒）待つ。セッションの終わりの
+// 戻しは、機器の側がセッションの閉じたのに気づいてから（別の goroutine で）走る。
+func waitRollbacks(srv *netconffake.Server, n int) []string {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := srv.Rollbacks()
+		if len(got) >= n || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestApply_OutcomeUnknown(t *testing.T) {
 	// [AC-175-2-4]
 	fields := map[string]string{"config": declared}
@@ -267,7 +280,7 @@ func TestApply_OutcomeUnknown(t *testing.T) {
 	if err := applyOnce(t, p, "sw1/if-uplink", fields); !isTransient(err) || !strings.Contains(err.Error(), "outcome is unknown") {
 		t.Fatalf("[AC-175-2-4] commit confirmed dropped: %v", err)
 	}
-	if got := srv.Rollbacks(); len(got) != 1 || got[0] != "session-end" || srv.Running() != before {
+	if got := waitRollbacks(srv, 1); len(got) != 1 || got[0] != "session-end" || srv.Running() != before {
 		t.Fatalf("[AC-175-2-4] rollbacks %v, running %s", got, srv.Running())
 	}
 
@@ -291,7 +304,7 @@ func TestApply_OutcomeUnknown(t *testing.T) {
 	if err := applyOnce(t, p, "sw1/if-uplink", fields); !isTransient(err) {
 		t.Fatalf("[AC-175-2-4] confirming commit lost: %v", err)
 	}
-	if got := srv.Rollbacks(); len(got) != 1 || got[0] != "session-end" || srv.Running() != before {
+	if got := waitRollbacks(srv, 1); len(got) != 1 || got[0] != "session-end" || srv.Running() != before {
 		t.Fatalf("[AC-175-2-4] rollbacks %v, running %s", got, srv.Running())
 	}
 }
