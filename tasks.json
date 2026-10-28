@@ -3826,7 +3826,7 @@
       "number": 161,
       "kind": "task",
       "title": "/metrics と読み取りの口の TLS と認可（読むだけのトークン・クライアント証明書）、平文の外向き待ち受けは明示したときだけ",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -3841,7 +3841,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:49:29.921Z",
-      "updatedAt": "2026-10-28T02:49:29.921Z",
+      "updatedAt": "2026-10-28T07:10:18.506Z",
       "closedAt": null,
       "extra": {}
     },
