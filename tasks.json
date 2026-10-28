@@ -4195,6 +4195,29 @@
       "updatedAt": "2026-10-28T11:47:34.243Z",
       "closedAt": "2026-10-28T11:47:25.658Z",
       "extra": {}
+    },
+    {
+      "id": "m7",
+      "number": 180,
+      "kind": "story",
+      "title": "M7: 本番に向けた固め（正しい状態を宣言に・役目ごとの鍵・監査・秘密の取り出し先・トレース）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "m7"
+      ],
+      "body": "本番で長く使うための固め。順は (1) 正しい状態を宣言に置く原則の仕上げ（A3・C）と (2) 鍵を役目ごとに分ける、を先に、トレースの出口は最後。\n\n原則：正しい状態は宣言（intent・inventory）に置き、ツールの中だけに持たない。provider の設定はつなぎ方（宛先・鍵・時間）だけ、範囲と除外は intent。設定と intent が食い違えば弱い側に寄せず読み込みで断る（A2 と同じ）。\n\n流す順（同じ所を触る組は順に、同時に2件まで）：\n- 流れ1（provider の設定）：A3 の共通の口と前半 → A3 の後半 → 鍵の分けの共通の口と ssh 越しの provider → API の provider の鍵の分け\n- 流れ2（本体）：C の起動の引数を intent に → freeze を監査に → 監査の記録（改ざんしにくい形・外へすぐ送る）→ 秘密の取り出し先 → OTLP のトレース → 本番の手引き\n\n版：v2.7.0＝A3・C（原則の仕上げ）、v2.8.0＝鍵の分け・監査、v2.9.0＝秘密の取り出し先・トレース・手引き。",
+      "doneWhen": "子のタスクがすべて done で、v2.9.0 まで出ている",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T13:07:10.888Z",
+      "updatedAt": "2026-10-28T13:07:10.888Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
