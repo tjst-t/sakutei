@@ -4312,7 +4312,7 @@
       "number": 185,
       "kind": "task",
       "title": "鍵の分け 前半：観測用と書き込み用の資格を分ける共通の口と、ssh 越しの provider",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m7",
       "dependsOn": [
         "a3-netconf-ldap-cli-device-guest-os-host"
@@ -4326,7 +4326,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T13:07:46.058Z",
+      "updatedAt": "2026-10-28T14:59:34.929Z",
       "closedAt": null,
       "extra": {}
     },
