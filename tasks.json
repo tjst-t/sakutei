@@ -3630,7 +3630,7 @@
       "number": 155,
       "kind": "task",
       "title": "離れたホストのファイルと systemd のユニット（quadlet を含む）を保つ provider、書き換えたらサービスを入れ替える口",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "systemd-quadlet",
       "dependsOn": [],
       "milestone": null,
@@ -3642,7 +3642,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T02:43:02.954Z",
-      "updatedAt": "2026-10-28T02:43:02.954Z",
+      "updatedAt": "2026-10-28T02:45:11.341Z",
       "closedAt": null,
       "extra": {}
     },
