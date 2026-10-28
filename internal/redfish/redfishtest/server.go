@@ -40,6 +40,10 @@
 //     400 で、何も変えない。qemu-bmc と違い、値は文字列だけでなく数（Integer）
 //     と真偽（Boolean）の属性も持つ。Options.NoBios なら Bios のリンクも無く
 //     404、Options.NoBiosRegistry なら登録簿だけが無い。
+//   - /redfish/v1/UpdateService・FirmwareInventory・SimpleUpdate・
+//     MultipartHttpPushUri と /redfish/v1/TaskService（#148、update.go）。
+//     qemu-bmc は持たないので、DMTF の Redfish の仕様（DSP0266・UpdateService・
+//     Task のスキーマ）に沿って書いた。
 //
 // 時刻は Options.Now で差し替えられる（状態の移り変わりは要求を受けたときに
 // その時刻で進めるので、goroutine を持たない）。
@@ -140,6 +144,8 @@ type Options struct {
 	// NoBiosRegistry は Bios はあるが属性の登録簿（/redfish/v1/Registries）が
 	// 空の BMC。
 	NoBiosRegistry bool
+	// FW の更新（update.go、#148）。
+	UpdateOptions
 	// Now は時刻（既定 time.Now）。
 	Now func() time.Time
 }
@@ -175,6 +181,8 @@ type Server struct {
 	biosAttrs        map[string]any
 	biosPending      map[string]any
 	biosResetPending bool
+	// FW の更新（update.go）。
+	fw fwState
 	// 試験用の口。
 	ignoreGraceful bool
 	unreachable    bool
@@ -232,6 +240,7 @@ func New(opts Options) *Server {
 	for _, a := range DefaultBiosAttributes {
 		s.biosAttrs[a.Name] = a.Default
 	}
+	s.initUpdate()
 	s.Server = httptest.NewUnstartedServer(http.HandlerFunc(s.serve))
 	// 証明書を拒むクライアントの TLS ハンドシェイク失敗をログに撒かない。
 	s.Server.Config.ErrorLog = log.New(io.Discard, "", 0)
@@ -395,6 +404,7 @@ func (s *Server) boot() {
 		s.biosAttrs[k] = v
 	}
 	s.biosPending = map[string]any{}
+	s.bootFirmware()
 }
 
 // advance は進行中の操作を今の時刻まで進める。
@@ -423,6 +433,7 @@ func (s *Server) advance() {
 	if s.inserted && s.mediaFetchFail && now.Sub(s.insertedAt) >= s.opts.MediaFetchDelay {
 		s.inserted = false
 	}
+	s.advanceUpdates(now)
 }
 
 // reset は ResetType を受ける。途中の操作は打ち切る。
@@ -518,6 +529,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPatch && path == BiosSettingsPath && !s.opts.NoBios:
 		s.patchBiosSettings(w, body)
+	case r.Method == http.MethodPost && s.serveUpdate(w, r, path, body):
 	default:
 		if _, ok := s.document(path); ok {
 			writeError(w, http.StatusMethodNotAllowed, "Base.1.0.ActionNotSupported", r.Method+" not allowed on "+path)
@@ -704,11 +716,18 @@ func (s *Server) document(path string) (any, bool) {
 	}
 	switch path {
 	case "/redfish/v1":
-		return map[string]any{
+		root := map[string]any{
 			"@odata.id": "/redfish/v1", "RedfishVersion": "1.6.0",
 			"Systems": ref("/redfish/v1/Systems"), "Managers": ref("/redfish/v1/Managers"),
 			"Registries": ref(RegistriesPath),
-		}, true
+		}
+		if !s.opts.NoUpdateService {
+			root["UpdateService"] = ref(UpdateServicePath)
+		}
+		if !s.opts.NoTaskService {
+			root["Tasks"] = ref(TaskServicePath)
+		}
+		return root, true
 	case "/redfish/v1/Systems":
 		return coll(path, SystemPath), true
 	case RegistriesPath:
@@ -799,6 +818,9 @@ func (s *Server) document(path string) (any, bool) {
 				"#VirtualMedia.EjectMedia":  map[string]any{"target": EjectMediaPath},
 			},
 		}, true
+	}
+	if doc, ok := s.updateDocument(path); ok {
+		return doc, true
 	}
 	prefix := SystemPath + "/EthernetInterfaces/"
 	if strings.HasPrefix(path, prefix) {

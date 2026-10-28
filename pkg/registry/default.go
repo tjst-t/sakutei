@@ -213,8 +213,8 @@ func DefaultRegistry() *ProviderRegistry {
 		return nftables.New(rulesetPath, nftables.WithScope(scope)), nil
 	})
 
-	// "redfish-system" / "redfish-virtual-media" / "redfish-bios" — Redfish の
-	// BMC provider（§29.1、#83・#140）。config["redfish_config"] は BMC の一覧（--redfish-config）。
+	// "redfish-system" / "redfish-virtual-media" / "redfish-bios" /
+	// "redfish-firmware" — Redfish の BMC provider（§29.1、#83・#140・#148）。config["redfish_config"] は BMC の一覧（--redfish-config）。
 	// --state は代わりにならない（BMC のアドレスと資格は推測しない）。
 	r.Register(system.Name, func(config map[string]string) (provider.Provider, error) {
 		clients, err := redfishClients(config)
@@ -236,6 +236,19 @@ func DefaultRegistry() *ProviderRegistry {
 			return nil, err
 		}
 		return system.NewBios(clients), nil
+	})
+	// "redfish-firmware" — FW の版の観測と、多相 Task での更新（§29.1、#148）。
+	// イメージの資格（image_password の SecretRef）は BMC の一覧の secret_store から。
+	r.Register(system.FirmwareName, func(config map[string]string) (provider.Provider, error) {
+		path := config["redfish_config"]
+		if path == "" {
+			return nil, errors.New("the BMC list is not set: pass --redfish-config <file>")
+		}
+		clients, secrets, err := bmcconfig.LoadClientsAndSecrets(path)
+		if err != nil {
+			return nil, err
+		}
+		return system.NewFirmware(clients, system.FirmwareOptions{Secrets: secrets}), nil
 	})
 
 	// "sqlmigrate" — SQLite・PostgreSQL のマイグレーション（§29.1、#92・#94・#126）。

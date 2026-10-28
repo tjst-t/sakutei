@@ -275,6 +275,26 @@ func (c Config) Clients() (map[string]redfish.Client, error) {
 	return out, nil
 }
 
+// Secrets は secret_store の file SecretBackend（FW の更新のイメージの資格など、
+// intent に書いた SecretRef を解決する。§20、#148）。
+func (c Config) Secrets() core.SecretResolver {
+	return render.NewFileSecretBackend(c.SecretStore)
+}
+
+// LoadClientsAndSecrets は LoadClients に、secret_store の SecretResolver を足したもの
+// （redfish-firmware の factory 用）。
+func LoadClientsAndSecrets(path string) (map[string]redfish.Client, core.SecretResolver, error) {
+	cfg, err := Load(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	cs, err := cfg.Clients()
+	if err != nil {
+		return nil, nil, fmt.Errorf("redfish config %s: %w", path, err)
+	}
+	return cs, cfg.Secrets(), nil
+}
+
 // LoadClients は Load と Clients をまとめたもの（provider の factory 用）。
 func LoadClients(path string) (map[string]redfish.Client, error) {
 	cfg, err := Load(path)

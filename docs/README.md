@@ -21,7 +21,7 @@ Sakutei（作庭）の設計ドキュメント一覧。現時点ではコード�
 
 | ドキュメント | 内容 |
 | --- | --- |
-| [providers/redfish.md](providers/redfish.md) | Redfish の BMC provider（`redfish-system`・`redfish-virtual-media`・`redfish-bios`）。BMC の一覧（`--redfish-config`、パスワードは SecretRef）と intent の例。BIOS の設定（宣言した属性だけを `Bios/Settings` で合わせる・効くのは再起動のあと）。qemu-bmc + containerlab の統合テスト（`make integration-redfish`）の回し方と結果。 |
+| [providers/redfish.md](providers/redfish.md) | Redfish の BMC provider（`redfish-system`・`redfish-virtual-media`・`redfish-bios`・`redfish-firmware`）。BMC の一覧（`--redfish-config`、パスワードは SecretRef）と intent の例。BIOS の設定（宣言した属性だけを `Bios/Settings` で合わせる・効くのは再起動のあと）。FW の更新（UpdateService・承認ゲートつきの多相 Task、統合テストは偽のサーバまで）。qemu-bmc + containerlab の統合テスト（`make integration-redfish`）の回し方と結果。 |
 | [providers/sqlmigrate.md](providers/sqlmigrate.md) | SQLite・PostgreSQL のマイグレーション provider（`sqlmigrate`、単純 Task 専用）。データベースの一覧（`--sqlmigrate-config`）、マイグレーションのファイル名の決まり、intent の例（`strategy: task`・`window`・`rollback_on_fail`）、plan・reconcile・常駐での動き方、PostgreSQL（`engine: postgresql`・advisory lock・トランザクションに入れられない文・統合テスト）。 |
 | [providers/nftables.md](providers/nftables.md) | nftables provider（`nftables`）。対象 `file`（管理された ruleset ファイル）と `live`（カーネルの実際の ruleset を `nft` で読み・流す）の違い、設定（`--ruleset-target`・`--ruleset-tables`・`--ruleset-nft`・`--provider-config`）、権限（CAP_NET_ADMIN）、ルールの正規形。使い捨ての network namespace での統合テスト（`make integration-nftables`）の回し方と結果。 |
 | [providers/dnszone.md](providers/dnszone.md) | dnszone provider（`dnszone`）。ID とフィールド、管理の境界（SOA・NS）と SOA シリアル、設定（`--zone`・`--zone-soa-serial`・`--zone-scope`・`zone_reload`）、離れたホストのゾーンファイル（`zone_hosts`）。 |

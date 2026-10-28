@@ -24,7 +24,8 @@ import (
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
-// 多相 Task の危険区間と人手ゲート（§29.1、Backlog #52）。
+// 多相 Task の危険区間と人手ゲート（§29.1、Backlog #52）と、承認の要る相の
+// 入口のゲート（§6.4、Backlog #148）。
 //
 // 相の入口の Observe（phased.go）は相の境界で止まった Task を守るが、書込の途中
 // （Applying の RunStep の中）で持ち主が消えた Task は、引き継いだデーモンから見て
@@ -50,6 +51,11 @@ import (
 //   - 承認・却下は S4 監査に append してから S2 に書く（同じロックの中）。コアは
 //     認可を持たない（§7）: 承認者 ID・役割・署名は記録するだけ。要件は単一承認
 //     （team の既定、§14.4・§14.5）。
+//   - 承認の要る相（StepSpec.Approval、#148）: 入口の Observe で済んでいなければ
+//     RunStep の前に同じゲート（Record.Gate が GateApproval）を開く。判定・承認・
+//     却下・タイムアウトは上と同じで、承認はその相を RunStep してよいという判断
+//     （Record.ApprovedStep）。待つ間に相が済んだと Observe で見えれば承認なしで
+//     閉じる。
 
 // AwaitingApproval は Trigger / Resume の結果: 危険区間の中で止まった多相 Task が
 // 人手ゲートで承認を待っている。
@@ -77,7 +83,7 @@ func (m *Manager) openGate(ctx context.Context, id core.ID, rec Record, st StepS
 		if !same(r) {
 			return false // 先に誰かが引き継いだ・ゲートにした
 		}
-		r.Phase, r.GateOpenedAt, r.GateDeadline = PhaseAwaitingApproval, now, now.Add(m.gateTimeout())
+		r.Phase, r.Gate, r.GateOpenedAt, r.GateDeadline = PhaseAwaitingApproval, "", now, now.Add(m.gateTimeout())
 		r.Error = fmt.Sprintf("step %s: stopped inside the critical section (%s) and the step is not observed done (%s); cannot tell a reboot from a bricked device",
 			rec.Step, why, st)
 		return true
@@ -108,7 +114,7 @@ func (m *Manager) gated(ctx context.Context, id core.ID, desired map[string]stri
 			if !sameGate(r) {
 				return false
 			}
-			r.Phase = PhaseFailed
+			r.Phase, r.Gate = PhaseFailed, ""
 			r.Error = fmt.Sprintf("%s; approval gate timed out after %s (opened %s)",
 				r.Error, m.gateTimeout(), r.GateOpenedAt.UTC().Format(time.RFC3339))
 			return true
@@ -121,7 +127,7 @@ func (m *Manager) gated(ctx context.Context, id core.ID, desired map[string]stri
 	if m.stopped() || rec.DesiredHash != DesiredHash(desired) {
 		return waiting, false, nil
 	}
-	req := Request{TaskID: rec.TaskID, Resource: id, Desired: copyFields(desired), Plan: plan}
+	req := Request{TaskID: rec.TaskID, Resource: id, Desired: copyFields(desired), Plan: plan, StartedAt: rec.StartedAt}
 	pr, steps, err := m.phasedSteps(ctx, req)
 	if err != nil {
 		return Decision{}, false, err
@@ -157,7 +163,7 @@ func (m *Manager) gated(ctx context.Context, id core.ID, desired map[string]stri
 // reopen はゲートを閉じ、記録を危険区間の相の入口で手放された状態に戻す。
 // 相のタイムアウトは今から数え直す。
 func reopen(r *Record, now time.Time) {
-	r.Phase, r.Released, r.Critical, r.Error = PhaseRunning, true, false, ""
+	r.Phase, r.Released, r.Critical, r.Error, r.Gate, r.Awaiting = PhaseRunning, true, false, "", "", false
 	r.StepStartedAt, r.HeartbeatAt = now, now
 	r.GateOpenedAt, r.GateDeadline = time.Time{}, time.Time{}
 }
@@ -213,6 +219,12 @@ func Decide(ctx context.Context, store Store, log *audit.Log, resource string, a
 			kind, detail = audit.KindTaskGateRejected,
 				fmt.Sprintf("task stopped inside the critical section of step %s rejected; halted", r.Step)
 		}
+		if r.Gate == GateApproval {
+			detail = fmt.Sprintf("task approved before step %s; running step %s", r.Step, r.Step)
+			if a.Reject {
+				detail = fmt.Sprintf("task rejected before step %s; halted", r.Step)
+			}
+		}
 		if decideErr = log.Append(audit.Record{
 			Time: now, Kind: kind, Resource: resource, RunID: r.TaskID, Gate: r.Step,
 			Actor: a.Approver, Roles: a.Roles, Signature: a.Signature, Detail: detail,
@@ -220,13 +232,17 @@ func Decide(ctx context.Context, store Store, log *audit.Log, resource string, a
 			return false
 		}
 		if a.Reject {
-			r.Phase = PhaseFailed
+			r.Phase, r.Gate = PhaseFailed, ""
 			r.Error = fmt.Sprintf("%s; rejected by %s", r.Error, a.Approver)
 			r.GateOpenedAt, r.GateDeadline = time.Time{}, time.Time{}
 			return true
 		}
+		approvalGate := r.Gate == GateApproval
 		reopen(r, now.UTC())
 		r.ApprovedBy = a.Approver
+		if approvalGate {
+			r.ApprovedStep = r.Step
+		}
 		return true
 	})
 	if err != nil {

@@ -42,6 +42,9 @@ import (
 //     消えたとも取らず、相のタイムアウトまで再出現を待つ。Await の相（Rebooting）は
 //     RunStep の後も Done が見えるまで待つ。タイムアウトは StepStartedAt から数える
 //     （起こし直しても延びない）。過ぎたら Failed（halt）。
+//   - Await の相の RunStep が返ったら、記録に Awaiting の印を置く（#148）。待ちの
+//     間に止まった・落ちた Task を引き継いだデーモンは、その相では入口の Observe
+//     も RunStep もせずに待つ（再起動を二度送らない）。
 //   - 1-outstanding・窓・失敗で halt は単純 Task と同じ。窓が問うのは起動だけで、
 //     進行中の Task は窓の外でも続ける（リブート中の機器を置き去りにしない）。
 //   - 引き継ぎ: デーモンが安全な区切り（相の間・待ちの間）で止まれば記録を
@@ -109,6 +112,12 @@ type StepSpec struct {
 	// 相（Applying、#52）。RunStep の間は S2 に印を立て、その中で落ちた Task は
 	// 人手ゲートにする（gate.go）。
 	Critical bool
+	// Approval は入口の Observe で済んでいなければ、RunStep の前に人の承認
+	// （sakutei task approve）を待つ相（§6.4、#148。firmware の更新の最初の相）。
+	// 記録を PhaseAwaitingApproval（Record.Gate が GateApproval）にして止まる。
+	// 承認すればその相から続け、却下とゲートのタイムアウトは halt。待つ間に
+	// Observe で相が済んだと見えれば、承認なしでゲートを閉じて続ける。
+	Approval bool
 }
 
 func (s StepSpec) timeout() time.Duration {
@@ -250,7 +259,7 @@ func (m *Manager) resume(ctx context.Context, id core.ID, desired map[string]str
 		return outstanding(fmt.Sprintf("task %s stopped in step %s, but the desired state changed since it was launched; not resuming — check reality and cancel it",
 			rec.TaskID, rec.Step))
 	}
-	req := Request{TaskID: rec.TaskID, Resource: id, Desired: copyFields(desired), Plan: plan}
+	req := Request{TaskID: rec.TaskID, Resource: id, Desired: copyFields(desired), Plan: plan, StartedAt: rec.StartedAt}
 	pr, steps, err := m.phasedSteps(ctx, req)
 	if err != nil {
 		return Decision{}, false, err
@@ -263,7 +272,7 @@ func (m *Manager) resume(ctx context.Context, id core.ID, desired map[string]str
 	prev := rec
 	sameAsPrev := func(r *Record) bool {
 		return r.Phase == PhaseRunning && r.Step == prev.Step && r.Holder == prev.Holder &&
-			r.Released == prev.Released && r.HeartbeatAt.Equal(prev.HeartbeatAt) && r.Critical == prev.Critical
+			r.Released == prev.Released && r.HeartbeatAt.Equal(prev.HeartbeatAt) && r.Critical == prev.Critical && r.Awaiting == prev.Awaiting
 	}
 	if rec.Critical {
 		// 危険区間の中で持ち主が消えた（#52）。書込が済んだと Observe で確かめられ
@@ -362,49 +371,68 @@ func (m *Manager) runPhased(ctx context.Context, pr PhasedRunner, req Request, s
 		started := rec.StepStartedAt
 		if i != idx || rec.Step != s.Name {
 			started = m.now().UTC()
-			if !write(func(r *Record) { r.Step, r.StepStartedAt, r.HeartbeatAt = s.Name, started, started }) {
+			if !write(func(r *Record) { r.Step, r.StepStartedAt, r.HeartbeatAt, r.Awaiting = s.Name, started, started, false }) {
 				return // cancel された・引き継がれた
 			}
 		}
 		deadline := started.Add(s.timeout())
-
-		// 入口: もう済んでいるか。見えなければ再出現を待つ。
-		st, err := m.awaitStep(ctx, pr, req, s, deadline, func(st StepState) bool { return st != StepUnknown })
-		if errors.Is(err, errStopped) {
-			release()
-			return
-		}
-		if err != nil {
-			fail(s.Name, err)
-			return
-		}
-		if st == StepDone {
-			continue
-		}
-		if !s.Action {
-			fail(s.Name, errors.New("not confirmed: reality does not show the step done"))
-			return
-		}
-		if m.stopped() {
-			release()
-			return
-		}
-		if s.Critical && !write(func(r *Record) { r.Critical = true }) {
-			return // 印を立てられなければ書込を始めない
-		}
-		if err := pr.RunStep(ctx, req, s.Name); err != nil {
-			fail(s.Name, err)
-			return
-		}
-		// 書けなければ印が立ったまま残る（引き継ぐデーモンは人手ゲートにする。安全側）。
-		if s.Critical && !write(func(r *Record) { r.Critical = false }) {
-			return
-		}
-		if !s.Await && m.stopped() {
-			// 相の効果は済んだが、次の相へ進んだことはまだ書いていない。続きを
-			// 引き継ぐデーモンは、この相の入口の Observe で済んだと分かって飛ばす。
-			release()
-			return
+		// Await の相の RunStep が前の持ち主のもとで返っていれば（Record.Awaiting）、
+		// 入口の Observe も RunStep もせずに待つだけ（再起動を二度送らない、#148）。
+		if !(i == idx && rec.Step == s.Name && rec.Awaiting && s.Await) {
+			// 入口: もう済んでいるか。見えなければ再出現を待つ。
+			st, err := m.awaitStep(ctx, pr, req, s, deadline, func(st StepState) bool { return st != StepUnknown })
+			if errors.Is(err, errStopped) {
+				release()
+				return
+			}
+			if err != nil {
+				fail(s.Name, err)
+				return
+			}
+			if st == StepDone {
+				continue
+			}
+			if !s.Action {
+				fail(s.Name, errors.New("not confirmed: reality does not show the step done"))
+				return
+			}
+			if m.stopped() {
+				release()
+				return
+			}
+			if s.Approval && !(i == idx && rec.ApprovedStep == s.Name) {
+				// 承認の要る相（#148）: 人の承認を待つ。書けなければ running のまま
+				// 残り、lease が切れてから引き継いだデーモンがもう一度ここに来る。
+				now := m.now().UTC()
+				write(func(r *Record) {
+					r.Phase, r.Gate, r.GateOpenedAt, r.GateDeadline = PhaseAwaitingApproval, GateApproval, now, now.Add(m.gateTimeout())
+					r.Error = fmt.Sprintf("step %s needs approval before it runs", s.Name)
+				})
+				return
+			}
+			if s.Critical && !write(func(r *Record) { r.Critical = true }) {
+				return // 印を立てられなければ書込を始めない
+			}
+			if err := pr.RunStep(ctx, req, s.Name); err != nil {
+				fail(s.Name, err)
+				return
+			}
+			// 書けなければ印が立ったまま残る（引き継ぐデーモンは人手ゲートにする。安全側）。
+			// Await の相は、印を下ろすのと同じ書込で「RunStep は返った、あとは待つだけ」
+			// （Awaiting）を置く。待ちの間に落ちても、引き継いだデーモンは RunStep を
+			// もう一度呼ばない。
+			if s.Await && !write(func(r *Record) { r.Critical, r.Awaiting = false, true }) {
+				return
+			}
+			if s.Critical && !s.Await && !write(func(r *Record) { r.Critical = false }) {
+				return
+			}
+			if !s.Await && m.stopped() {
+				// 相の効果は済んだが、次の相へ進んだことはまだ書いていない。続きを
+				// 引き継ぐデーモンは、この相の入口の Observe で済んだと分かって飛ばす。
+				release()
+				return
+			}
 		}
 		if s.Await {
 			_, err := m.awaitStep(ctx, pr, req, s, deadline, func(st StepState) bool { return st == StepDone })

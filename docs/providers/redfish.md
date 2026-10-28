@@ -1,12 +1,13 @@
-# Redfish の BMC provider（redfish-system / redfish-virtual-media / redfish-bios）
+# Redfish の BMC provider（redfish-system / redfish-virtual-media / redfish-bios / redfish-firmware）
 
-物理サーバの BMC を Redfish で扱う provider。決まりの正は設計書 §29.1「Redfish の BMC provider」（v3.15・v3.16）と「Redfish の BIOS の設定」（#140）。ここは使い方の説明で、矛盾したら spec/ が優先する。
+物理サーバの BMC を Redfish で扱う provider。決まりの正は設計書 §29.1「Redfish の BMC provider」（v3.15・v3.16）と「Redfish の BIOS の設定」（#140）・「Redfish の FW の更新」（#148）。ここは使い方の説明で、矛盾したら spec/ が優先する。
 
 | provider 名 | ID | 扱うもの |
 | --- | --- | --- |
 | `redfish-system` | ノード名（例 `node1`） | 電源（On / Off）・起動先の上書き（Continuous / Disabled）。Workflow の手順から一度きりの操作（1 回だけの起動先・再起動、#139） |
 | `redfish-virtual-media` | `<ノード名>/cd`（例 `node1/cd`） | 仮想メディアの CD（Insert / Eject） |
 | `redfish-bios` | `<ノード名>/bios`（例 `node1/bios`） | BIOS の設定（宣言した属性だけを `Bios/Settings` で合わせる。効くのは次の再起動、#140） |
+| `redfish-firmware` | `<ノード名>/firmware/<部品の Id>`（例 `node1/firmware/BMC`） | FW の版（UpdateService の FirmwareInventory を観測し、違えば承認ゲートつきの多相 Task で更新する、#148） |
 
 どれも標準階級（List・BulkObserve を持たない）で、prune の対象にしない（サーバは Sakutei が作ったり消したりしない）。
 
@@ -155,6 +156,85 @@ BIOS の設定は書いてもすぐには効かない。sakutei は `Bios/Settin
 - 読み取り専用・選べない値などの PATCH は 400（`@Message.ExtendedInfo` に属性ごとの Base のメッセージ）で、何も変えない。
 
 偽 BMC（`internal/redfish/redfishtest`）は qemu-bmc の Bios を真似たうえで、数（`BootRetryCount`）と真偽（`SriovGlobalEnable`）の属性も持つ。契約テストは `internal/redfish/system/bios_test.go`（`[AC-140-1]`〜`[AC-140-5]`。契約テストは Apply の直後の観測が宣言どおりであることを求めるので、Apply と偽 BMC の再起動を組にして回す）、CLI の受け入れテストは `tests/acceptance/redfish_bios_test.go`（`[AC-140-6]`・`[AC-140-7]`）。
+
+## FW の更新（redfish-firmware、#148）
+
+UpdateService の `FirmwareInventory` の部品ごとの `Version` を観測し、宣言した版と違えば**多相 Task**（§6.2）で更新する。FW の更新は中断できずリブートをまたぐので、収束ループは Apply せず（`update_policy.strategy: task` が必須）、Task を起こすだけ。更新は**破壊的**として予算（§13、`--max-destructive-per-cycle` など）に数え、Task は最初に**承認ゲート**で止まる。
+
+```json
+{
+  "provider": "redfish-firmware",
+  "id": "node1/firmware/BMC",
+  "update_policy": {"strategy": "task", "window": "Sat 02:00-06:00"},
+  "fields": {
+    "name": "node1",
+    "version": "2.0.0",
+    "image_uri": "https://images.example/bmc-2.0.0.bin",
+    "sha256": "<イメージの SHA-256、16 進 64 文字>",
+    "apply_time": "OnReset",
+    "reboot": "graceful",
+    "image_username": "fw",
+    "image_password": "secretref:file/fw/images"
+  }
+}
+```
+
+部品の Id は BMC の `/redfish/v1/UpdateService/FirmwareInventory` のメンバーの `Id`（`BMC`・`BIOS` など、BMC ごとに違う）。ID を `<ノード名>/<Id>` にしないのは、Local ID が intent 全体で一意なので `node1/bios` などと重なりうるため。
+
+### フィールド
+
+| フィールド | 値 | 意味 |
+| --- | --- | --- |
+| `name` | ノード名 | ID のノード名と同じ（必須） |
+| `component` | 部品の Id | 書くなら ID の部品と同じ |
+| `version` | 文字列 | 望む版（必須）。**前後の空白を除いた文字列の完全一致**で比べる（大文字と小文字も区別する。`v` の有無や数としての大小は見ない）。違えば上げるか下げるかを問わず更新する |
+| `image_uri` | http / https の URI | イメージの在りか（必須）。`transfer: multipart` なら `file:///…` も。資格を URI に書くとエラー |
+| `sha256` | 16 進 64 文字 | 書けば、流す前に Sakutei がイメージを取りに行って確かめる |
+| `transfer` | `simple_update`（既定）/ `multipart` | `simple_update` は BMC が `image_uri` を取りに行く（`#UpdateService.SimpleUpdate`）。`multipart` は Sakutei が取りに行って確かめた中身を `MultipartHttpPushUri` に送る（BMC がその口を持つときだけ） |
+| `apply_time` | `Immediate`（既定）/ `OnReset` | `@Redfish.OperationApplyTime`。BMC が `@Redfish.OperationApplyTimeSupport` を報告していればその中だけ |
+| `reboot` | `none`（既定）/ `graceful` / `force` | 書き終えたあとホストを再起動するか（GracefulRestart / ForceRestart、切れていれば On）。`none` でも、誰かが再起動して版が合えば閉じる |
+| `update_timeout` | 時間（既定 `1h`） | BMC の Task の完了を待つ上限 |
+| `reboot_timeout` | 時間（既定 `30m`） | 再起動して版が合うのを待つ上限 |
+| `image_username`・`image_password` | 文字列・**SecretRef** | `image_uri` を取りに行く資格（BMC の SimpleUpdate の `Username`・`Password` と、Sakutei が取りに行くときの Basic 認証）。`image_password` は BMC の一覧の `secret_store` から使う直前に解決し、ログ・エラー・Task の記録・監査に出さない |
+
+版以外のフィールドは「どう合わせるか」で BMC には無いので、差分には出ない（`plan` が出すのは版の違いだけ）。`update_policy.rollback_on_fail` は書けない（FW は自動では戻さない。戻すなら前の版を宣言する）。
+
+### 相と承認
+
+| 相 | すること | 入口で「もう済んでいる」と見るとき |
+| --- | --- | --- |
+| `verifying` | **承認を待つ**（下）。承認の後、`sha256` を書いていればイメージを取りに行って確かめる | 版が宣言どおりのときだけ（BMC の Task では済みにしない＝承認を飛ばさない） |
+| `staging` | SimpleUpdate を送る（`multipart` なら中身を確かめて送る） | この更新の BMC の Task があって失敗で終わっていない（もう送った。二重に送らない） |
+| `applying` | BMC の Task の完了を待つ（**危険区間**：この中で落ちた Task は人手ゲート、#52） | その Task が `Completed`（`OnReset` なら `Pending` も） |
+| `rebooting` | `reboot` を宣言していれば再起動し、版が合うまで待つ（再起動を宣言したときは**危険区間**：Reset を送る最中に落ちた Task は人手ゲート。送った後の待ちの間に落ちた Task は、引き継いだデーモンが待つだけで二度目の Reset を送らない） | 版が宣言どおり |
+| `confirming` | 版を確かめる | 版が宣言どおり |
+
+どの相も、版が宣言どおりなら済んでいる（Task は次の周の観測で閉じる）。BMC に届かない間（BMC 自身の更新で再起動している）は unknown で、相のタイムアウトまで待つ。「この更新の BMC の Task」は TaskService の Task のうち、Payload の `TargetUri` が SimpleUpdate の target（`multipart` なら `MultipartHttpPushUri`）で、`JsonBody` の `Targets` にこの部品があり、SimpleUpdate なら `ImageURI` が宣言と同じもの。Task の URI は持たず、毎回見つけ直す。前の更新の残りかすを数えないよう、BMC の Task の `StartTime` を時刻として読み、この Task の起動の時刻から 5 分（BMC とこのホストの時計のずれの許し）を引いた時刻より前に始まったものは数えない（`StartTime` を読めない Task は数える）。
+
+承認ゲートで止まった Task は `sakutei task list` に `awaiting_approval:verifying` と出て、デーモンは周ごとに RequiresTask（warning）で知らせる。
+
+```console
+$ sakutei task approve --store tasks.json --audit-log audit.log --approver alice redfish-firmware//node1/firmware/BMC
+$ sakutei task reject  --store tasks.json --audit-log audit.log --approver alice redfish-firmware//node1/firmware/BMC   # halt
+```
+
+承認・却下は S4 監査に残る。承認が無いまま既定 24h（`--task-gate-timeout`）を過ぎれば halt。待つ間に別の道具で版が合えば、承認なしで閉じる。BMC の Task が `Exception` などで終われば halt で、送り直さない（BMC を確かめてから `sakutei task cancel`）。
+
+### 計画の時点で断るもの
+
+更新できない部品（`Updateable: false`）・FirmwareInventory に無い部品・UpdateService の無い BMC・TaskService の無い BMC（更新を終わりまで追えない）・`MultipartHttpPushUri` の無い BMC への `multipart`・BMC が選べない `apply_time`。
+
+### 限界
+
+- BMC の時計がこのホストより 5 分を超えて遅れていると、自分の送った Task を前のものと見て数えない。送った直後に見えなければ halt するので送り直しは重ねないが、送ってから次の相を記録する前にデーモンが落ちると、引き継いだデーモンがもう一度送る。BMC の時計を合わせておく。
+- `StartTime` を読めない BMC では前の更新の残りかすを数えてしまい、`staging`・`applying` を飛ばして `reboot_timeout` で halt する（承認は飛ばさない）。
+- Task の Payload を返さない BMC では、送ったことを観測できないので `staging` の後で halt する。
+- `sha256` の確認は Sakutei が取りに行った中身についてで、SimpleUpdate で BMC が取りに行く中身と同じとは保証しない（同じにしたいなら `multipart`）。
+- 承認は Task（1 台の 1 部品）ごとの単一承認。
+
+### 確かめ方（統合テストは偽のサーバまで）
+
+qemu-bmc 0.10.0 は UpdateService・TaskService を持たない（`/redfish/v1` に `UpdateService`・`Tasks` のリンクが無い）ので、`make integration-redfish` には段を足していない。**統合テストは偽のサーバまで**。偽 BMC（`internal/redfish/redfishtest`）は DMTF の Redfish の仕様に沿って UpdateService・FirmwareInventory・SimpleUpdate・multipart の送信・TaskService を持つ。契約テストと単体は `internal/redfish/system/firmware_test.go`（`[AC-148-1]`〜`[AC-148-6]`・`[AC-148-12]`）、常駐ループの受け入れテストは `tests/acceptance/redfish_firmware_test.go`（`[AC-148-7]`〜`[AC-148-11]`・`[AC-148-13]`・`[AC-148-14]`）。
 
 ## 一度きりの操作（Workflow の action 手順、#139）
 

@@ -65,6 +65,10 @@ type Request struct {
 	// Step は多相 Task の RollbackTask に渡す、失敗した相（phased.go）。
 	// 単純 Task では空。
 	Step string
+	// StartedAt はこの Task を起動した時刻（Record.StartedAt。引き継いだときも
+	// 起動の時刻のまま）。実行体が「この起動より前の現実の残りかす」（例: 前の
+	// 更新の BMC の Task）を見分けるのに使う（#148）。
+	StartedAt time.Time
 }
 
 // Runner は Task の実行体。
@@ -241,7 +245,7 @@ func (m *Manager) Trigger(ctx context.Context, id core.ID, desired map[string]st
 		return Decision{Outcome: Outstanding, Reason: "task manager is stopping"}, nil
 	}
 	taskID := fmt.Sprintf("%s-%d-%d", m.holder, now.UnixNano(), m.seq.Add(1))
-	req := Request{TaskID: taskID, Resource: id, Desired: copyFields(desired), Plan: plan}
+	req := Request{TaskID: taskID, Resource: id, Desired: copyFields(desired), Plan: plan, StartedAt: now.UTC()}
 	pr, steps, err := m.phasedSteps(ctx, req)
 	if err != nil {
 		return Decision{}, err
@@ -313,6 +317,10 @@ func (m *Manager) outstandingReason(rec Record) string {
 	case PhaseSucceeded:
 		return fmt.Sprintf("task %s reported success but its completion mark is not observed yet; not re-running — check reality and cancel it if needed", rec.TaskID)
 	case PhaseAwaitingApproval:
+		if rec.Gate == GateApproval {
+			return fmt.Sprintf("task %s needs approval before step %s; awaiting approval until %s — sakutei task approve (run step %s) or reject (halt)",
+				rec.TaskID, rec.Step, rec.GateDeadline.UTC().Format(time.RFC3339), rec.Step)
+		}
 		return fmt.Sprintf("task %s stopped inside the critical section of step %s and reality does not show the step done; awaiting approval until %s — check the device, then sakutei task approve (resume at step %s) or reject (halt)",
 			rec.TaskID, rec.Step, rec.GateDeadline.UTC().Format(time.RFC3339), rec.Step)
 	case PhaseFailed:

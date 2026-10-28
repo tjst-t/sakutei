@@ -195,7 +195,7 @@ func checkScope(commandName, flagName, v string) string {
 }
 
 // redfishConfigFlag registers --redfish-config, the BMC list of the Redfish
-// providers (redfish-system / redfish-virtual-media / redfish-bios, §29.1, #83, #140): per node the
+// providers (redfish-system / redfish-virtual-media / redfish-bios / redfish-firmware, §29.1, #83, #140, #148): per node the
 // BMC address, username and the password as a SecretRef.
 func redfishConfigFlag(fs *flag.FlagSet) *string {
 	return fs.String("redfish-config", "",

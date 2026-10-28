@@ -21,7 +21,8 @@
 //   - HTTPS と Basic 認証だけ。自己署名の証明書は、CA ファイルを指定したか
 //     InsecureSkipVerify を明示したときだけ許す。
 //   - Reset・Boot の PATCH・InsertMedia・EjectMedia・Bios/Settings の PATCH は
-//     200 / 204 を成功とし、本文は期待しない。Redfish の Task（202）は使わない。
+//     200 / 204 を成功とし、本文は期待しない。Redfish の Task（202）を使うのは
+//     FW の更新（SimpleUpdate・multipart の送信、update.go）だけ。
 //   - 観測 state レス（§3 原則 1）: System・Manager・VirtualMedia・Bios のパスは
 //     キャッシュせず、呼ぶたびに辿り直す。
 //   - エラーは Error の Kind で分ける（errors.go）。届かない・タイムアウト・
@@ -221,6 +222,9 @@ type Client interface {
 	// AttributeRegistry）を /redfish/v1/Registries から探して読む。無ければ
 	// KindRequest のエラー。
 	GetAttributeRegistry(ctx context.Context, id string) (AttributeRegistry, error)
+
+	// FW の更新（UpdateService・TaskService、update.go、#148）。
+	UpdateClient
 }
 
 // HTTPClient は net/http による Client の実装。
@@ -232,6 +236,8 @@ type HTTPClient struct {
 	sysPath  string
 	mgrPath  string
 	hc       *http.Client
+	// hcLong は時間切れを ctx に任せる http.Client（イメージの送信、update.go）。
+	hcLong *http.Client
 }
 
 var _ Client = (*HTTPClient)(nil)
@@ -282,6 +288,8 @@ func New(cfg Config) (*HTTPClient, error) {
 	tr.TLSClientConfig = tlsCfg
 	tr.Proxy = nil
 
+	// リダイレクトは辿らない（資格を別の場所へ送らない）。3xx は想定外。
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &HTTPClient{
 		base:     u,
 		username: cfg.Username,
@@ -289,12 +297,8 @@ func New(cfg Config) (*HTTPClient, error) {
 		pwFunc:   cfg.PasswordFunc,
 		sysPath:  cfg.SystemPath,
 		mgrPath:  cfg.ManagerPath,
-		hc: &http.Client{
-			Transport: tr,
-			Timeout:   timeout,
-			// リダイレクトは辿らない（資格を別の場所へ送らない）。3xx は想定外。
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
+		hc:       &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: noRedirect},
+		hcLong:   &http.Client{Transport: tr, CheckRedirect: noRedirect},
 	}, nil
 }
 
@@ -728,65 +732,74 @@ func (c *HTTPClient) send(ctx context.Context, method, path string, payload any)
 // do は 1 要求を送り、2xx / 3xx の状態と本文を返す。届かない・4xx・5xx は
 // Error にする。
 func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
+	var rd io.Reader
+	ct := ""
+	if body != nil {
+		rd, ct = bytes.NewReader(body), "application/json"
+	}
+	status, _, data, err := c.doRaw(ctx, c.hc, method, path, rd, ct)
+	return status, data, err
+}
+
+// doRaw は do の下回り。本文を rd（contentType つき、nil なら無し）で送り、応答の
+// header も返す。hc は使う http.Client（大きなイメージの送信では時間切れを
+// ctx に任せる、update.go）。
+func (c *HTTPClient) doRaw(ctx context.Context, hc *http.Client, method, path string, rd io.Reader, contentType string) (int, http.Header, []byte, error) {
 	ref, err := url.Parse(path)
 	if err != nil {
-		return 0, nil, fmt.Errorf("redfish: path %q: %w", path, err)
+		return 0, nil, nil, fmt.Errorf("redfish: path %q: %w", path, err)
 	}
 	u := c.base.ResolveReference(ref)
 	if u.Host != c.base.Host || u.Scheme != c.base.Scheme {
 		// BMC が返したリンクで別のホストへ資格を送らない。
-		return 0, nil, &Error{Kind: KindUnreachable, Method: method, Path: path,
+		return 0, nil, nil, &Error{Kind: KindUnreachable, Method: method, Path: path,
 			Message: "link points outside the BMC endpoint"}
-	}
-	var rd io.Reader
-	if body != nil {
-		rd = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), rd)
 	if err != nil {
-		return 0, nil, fmt.Errorf("redfish: %s %s: %w", method, path, err)
+		return 0, nil, nil, fmt.Errorf("redfish: %s %s: %w", method, path, err)
 	}
 	password := c.password
 	if c.pwFunc != nil {
 		pw, err := c.pwFunc(ctx)
 		if err != nil {
-			return 0, nil, &Error{Kind: KindUnreachable, Method: method, Path: path,
+			return 0, nil, nil, &Error{Kind: KindUnreachable, Method: method, Path: path,
 				Message: "cannot resolve the password", Err: err}
 		}
 		password = pw
 	}
 	req.SetBasicAuth(c.username, password)
 	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 
-	resp, err := c.hc.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		kind := KindUnreachable
 		if isCertError(err) {
 			kind = KindCertificate
 		}
-		return 0, nil, &Error{Kind: kind, Method: method, Path: path, Err: err}
+		return 0, nil, nil, &Error{Kind: kind, Method: method, Path: path, Err: err}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return 0, nil, &Error{Kind: KindUnreachable, Method: method, Path: path, StatusCode: resp.StatusCode, Err: err}
+		return 0, nil, nil, &Error{Kind: KindUnreachable, Method: method, Path: path, StatusCode: resp.StatusCode, Err: err}
 	}
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return 0, nil, &Error{Kind: KindAuth, Method: method, Path: path, StatusCode: resp.StatusCode,
+		return 0, nil, nil, &Error{Kind: KindAuth, Method: method, Path: path, StatusCode: resp.StatusCode,
 			Message: errorMessage(data)}
 	case resp.StatusCode >= 500:
-		return 0, nil, &Error{Kind: KindUnreachable, Method: method, Path: path, StatusCode: resp.StatusCode,
+		return 0, nil, nil, &Error{Kind: KindUnreachable, Method: method, Path: path, StatusCode: resp.StatusCode,
 			Message: errorMessage(data)}
 	case resp.StatusCode >= 400:
-		return 0, nil, &Error{Kind: KindRequest, Method: method, Path: path, StatusCode: resp.StatusCode,
+		return 0, nil, nil, &Error{Kind: KindRequest, Method: method, Path: path, StatusCode: resp.StatusCode,
 			Message: errorMessage(data)}
 	}
-	return resp.StatusCode, data, nil
+	return resp.StatusCode, resp.Header, data, nil
 }
 
 func isCertError(err error) bool {

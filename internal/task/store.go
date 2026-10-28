@@ -39,9 +39,10 @@ const (
 	// halt 扱い: 人が cancel するまで再起動しない。
 	PhaseFailed Phase = "failed"
 	// PhaseAwaitingApproval は多相 Task が危険区間（Record.Critical）の中で止まり、
-	// 引き継いだデーモンが Observe で相の完了を確かめられなかった（#52）。人が
-	// 承認（sakutei task approve）するまで再開しない。却下とゲートのタイムアウトは
-	// PhaseFailed（halt）。
+	// 引き継いだデーモンが Observe で相の完了を確かめられなかった（#52）か、
+	// 承認の要る相（StepSpec.Approval、#148）の入口に来た（Record.Gate が
+	// GateApproval）。人が承認（sakutei task approve）するまで再開しない。却下と
+	// ゲートのタイムアウトは PhaseFailed（halt）。
 	PhaseAwaitingApproval Phase = "awaiting_approval"
 )
 
@@ -81,13 +82,28 @@ type Record struct {
 	// 消えた記録は、引き継ぐデーモンが Observe で相の完了を確かめられない限り
 	// 自動で再開せず、人手ゲート（PhaseAwaitingApproval）にする。
 	Critical bool `json:"critical,omitempty"`
+	// Awaiting は Await の相（StepSpec.Await。firmware の rebooting）の RunStep が
+	// 返り、あとは CheckStep が Done になるのを待つだけの印（#148）。引き継いだ
+	// デーモンは、この相では入口の Observe も RunStep もせずに待ちを続ける
+	// （再起動を二度送らない）。相が替われば下ろす。
+	Awaiting bool `json:"awaiting,omitempty"`
 	// GateOpenedAt・GateDeadline は人手ゲートを開いた時刻と、承認を待つ上限（#52）。
 	// 上限を記録に置くので、デーモンを起こし直しても待ちが延びない。
 	GateOpenedAt time.Time `json:"gate_opened_at,omitempty"`
 	GateDeadline time.Time `json:"gate_deadline,omitempty"`
 	// ApprovedBy は人手ゲートを承認した人（#52。承認の事実は S4 監査に残る）。
 	ApprovedBy string `json:"approved_by,omitempty"`
+	// Gate は開いている人手ゲートの種類。空は危険区間の中で止まったゲート（#52）、
+	// GateApproval は承認の要る相の入口のゲート（#148）。
+	Gate string `json:"gate,omitempty"`
+	// ApprovedStep は承認の要る相のうち、人が承認した相（#148）。その相の入口で
+	// 引き継いだときだけ、承認を待たずに RunStep を呼ぶ。
+	ApprovedStep string `json:"approved_step,omitempty"`
 }
+
+// GateApproval は Record.Gate の値: 承認の要る相（StepSpec.Approval）の入口の
+// ゲート（§6.4、#148）。
+const GateApproval = "approval"
 
 // Store は Task の進行フェーズの S2 ストア。
 type Store interface {
