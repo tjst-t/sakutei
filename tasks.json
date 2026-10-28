@@ -3941,7 +3941,7 @@
       "number": 169,
       "kind": "bug",
       "title": "List が返す ID の scope が宣言の scope と合わず、status の unmanaged と prune の突き合わせが外れる（scope 付きの宣言と claim）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -3956,7 +3956,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T06:24:09.355Z",
-      "updatedAt": "2026-10-28T06:24:09.355Z",
+      "updatedAt": "2026-10-28T06:24:18.120Z",
       "closedAt": null,
       "extra": {}
     }
