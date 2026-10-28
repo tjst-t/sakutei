@@ -4007,6 +4007,30 @@
       "updatedAt": "2026-10-28T09:41:45.283Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "m6-netconf-apply-base-chain-2-apply",
+      "number": 172,
+      "kind": "story",
+      "title": "M6：網の間の許可と NETCONF の Apply（base chain の既定の拒否・2 段の Apply）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "v2",
+        "network"
+      ],
+      "body": "網の設定を宣言で扱う節目。正しい状態は宣言に置き、ツールの中だけに持たない（設計の物差し）。\n\n1. **nftables の base chain の policy を管理に入れる**：既定で拒否（policy drop）を宣言できるようにする。自分を締め出さない守りとして、変更の前後に新しい ssh 接続で到達を確かめ、だめなら時間切れで元に戻す（commit confirmed と同じ考え）。到達性の最小の核は scope で外せる。\n2. **網の間の許可を抽象のリソースにする**：網（名前と CIDR）と、網から網への許可（proto・port）を intent に書く。検査（重なり・前の規則に隠れて効かない許可・宣言に無い網）・nftables のルールへの変換・展開の口（pkg/cli）は本体。実現先は境界の FW とホストの nftables。スイッチの ACL への変換は使う側の拡張（後回し）。\n3. **NETCONF の 2 段の Apply**：`:confirmed-commit:1.0` だけの機器を主に、同じセッションで commit confirmed → 新しい ssh 接続で到達と宣言どおりを確かめる → 同じセッションで確定。時間の上限の半分で打ち切る、確定の成否が分からなければ unknown、途中で落ちたら機器の自動の巻き戻しに任せる。1.1（persist-id）の流れは持つ機器のために残す。入れたら CommitConfirm を宣言し ObserveOnly を外す（設定で明示したときだけ）。\n4. **部分木だけに絞ったユーザーで動く**：観測も Apply も宣言した部分木の外を読まない・書かない。NACM で絞ったユーザーで統合試験を回す。\n\n順：1 → 2（同じ nftables を触るので順に）、3 → 4。1・2 の組と 3・4 の組は並べて流せる。",
+      "doneWhen": "子のタスクがすべて done。make check・make test-race と、nftables・netconf の統合試験が合格",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-28T09:48:21.195Z",
+      "updatedAt": "2026-10-28T09:48:21.195Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
