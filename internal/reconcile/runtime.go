@@ -37,7 +37,8 @@ import (
 //
 // Both are also in the daemon status (DaemonHealth).
 type RuntimeReport struct {
-	// Start is the runtime: the daemon started with (nil: none declared).
+	// Start is the runtime: the daemon started with, as the daemon takes it
+	// (runtimeargs.Declaration.For(Daemon); nil: none declared).
 	Start *runtimeargs.Declaration
 	// Unread means the intent could not be read at start (an --intent-repo
 	// not pulled yet, an intent that does not load): the daemon started on

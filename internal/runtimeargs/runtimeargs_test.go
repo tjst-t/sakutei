@@ -14,7 +14,10 @@
 
 package runtimeargs
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestResolve_Directions(t *testing.T) {
 	decl := &Declaration{File: "rt.yaml", Values: map[string]string{
@@ -75,6 +78,47 @@ func TestParse(t *testing.T) {
 	}
 	for _, bad := range []map[string]any{
 		{"intervl": "1m"}, {"interval": 30}, {"stuck_after": 0}, {"mode": "never"}, {"settle": "-1s"},
+	} {
+		if _, err := Parse(bad, "f.yaml"); err == nil {
+			t.Errorf("Parse(%v) accepted", bad)
+		}
+	}
+}
+
+// runtime.daemon: / runtime.oneshot:（#193）: 種類の欄にあればそれ、無ければ
+// 共通の値。旗と比べる相手は種類に効く値で、案内はその欄を指す。
+func TestParse_Kinds(t *testing.T) {
+	d, err := Parse(map[string]any{"mode": "auto", "max_changes_per_cycle": 20,
+		"daemon":  map[string]any{"mode": "alert-only", "interval": "1m"},
+		"oneshot": map[string]any{"max_changes_per_cycle": 5},
+	}, "f.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm, os := d.For(Daemon), d.For(Oneshot)
+	if dm.Values["mode"] != "alert-only" || dm.Values["interval"] != "1m0s" || dm.Values["max_changes_per_cycle"] != "20" {
+		t.Errorf("daemon = %v", dm.Values)
+	}
+	if os.Values["mode"] != "auto" || os.Values["max_changes_per_cycle"] != "5" || os.Values["interval"] != "" {
+		t.Errorf("oneshot = %v", os.Values)
+	}
+	if dm.Path("mode") != "runtime.daemon.mode" || dm.Path("max_changes_per_cycle") != "runtime.max_changes_per_cycle" {
+		t.Errorf("paths = %s, %s", dm.Path("mode"), dm.Path("max_changes_per_cycle"))
+	}
+	res := Resolve(os, map[string]string{"max_changes_per_cycle": "6"}, nil)
+	if len(res.Conflicts) != 1 || !strings.Contains(res.Conflicts[0].Error(), "change runtime.oneshot.max_changes_per_cycle in f.yaml") {
+		t.Errorf("conflicts = %+v", res.Conflicts)
+	}
+	res = Resolve(dm, map[string]string{"mode": "auto"}, nil)
+	if len(res.Conflicts) != 1 || !res.Conflicts[0].Loosens {
+		t.Errorf("--mode auto must loosen runtime.daemon.mode alert-only: %+v", res)
+	}
+	if (*Declaration)(nil).For(Daemon) != nil {
+		t.Error("For of no declaration must be nil")
+	}
+	for _, bad := range []map[string]any{
+		{"oneshot": map[string]any{"interval": "1m"}}, {"oneshot": map[string]any{"stuck_after": 3}},
+		{"daemon": map[string]any{"intervl": "1m"}}, {"daemon": "auto"}, {"daemon": map[string]any{"daemon": map[string]any{}}},
 	} {
 		if _, err := Parse(bad, "f.yaml"); err == nil {
 			t.Errorf("Parse(%v) accepted", bad)

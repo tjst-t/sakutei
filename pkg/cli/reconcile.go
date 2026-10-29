@@ -37,6 +37,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/remediation"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/internal/revision"
+	"github.com/tjst-t/sakutei/v2/internal/runtimeargs"
 	"github.com/tjst-t/sakutei/v2/internal/tracing"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
@@ -208,8 +209,9 @@ func runReconcile(args []string) {
 		exitAfterEvents(1)
 	}
 	// #183 (§26.7): the flags are checked against the intent's runtime:
-	// before any of them is read below.
-	runtimeTightened := applyRuntime("sakutei reconcile", fs, in.Runtime, runtimeReconcileKeys)
+	// before any of them is read below: the values a one-shot run takes
+	// (runtime.oneshot:, else runtime:, #193).
+	runtimeTightened := applyRuntime("sakutei reconcile", fs, in.Runtime.For(runtimeargs.Oneshot), runtimeReconcileKeys)
 	acFlags := applyCheck.flags("sakutei reconcile")
 	reobserveLimits := reobserve.limits("sakutei reconcile")
 

@@ -523,5 +523,14 @@ func runtimeSchema() schemaNode {
 	for _, a := range runtimeargs.Args {
 		props[a.Key] = schemaNode{"type": []any{"string", "integer"}}
 	}
+	// daemon: / oneshot:（#193）は同じ欄。種類に意味の無い欄は
+	// runtimeargs.Parse が断る。
+	kindProps := map[string]any{}
+	for k, v := range props {
+		kindProps[k] = v
+	}
+	for _, k := range runtimeargs.Kinds {
+		props[string(k)] = schemaNode{"type": "object", "additionalProperties": false, "properties": kindProps}
+	}
 	return schemaNode{"type": "object", "additionalProperties": false, "properties": props}
 }

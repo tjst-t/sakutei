@@ -666,7 +666,7 @@ func writeDaemonPlacement(sb *strings.Builder, h DaemonHealth) {
 	if len(h.RuntimeTightened) > 0 {
 		fmt.Fprintf(sb, "  注意: 起動の旗が intent の runtime: を一時的に締めている（§26.7）: %d 引数\n", len(h.RuntimeTightened))
 		for _, t := range h.RuntimeTightened {
-			fmt.Fprintf(sb, "    TIGHTENED %s: 旗 --%s=%s / intent runtime.%s=%s — 旗を外すと宣言に戻る\n", t.Key, t.Flag, t.FlagValue, t.Key, t.IntentValue)
+			fmt.Fprintf(sb, "    TIGHTENED %s: 旗 --%s=%s / intent %s=%s — 旗を外すと宣言に戻る\n", t.Key, t.Flag, t.FlagValue, t.IntentPath(), t.IntentValue)
 		}
 	}
 	if h.Freeze != nil {

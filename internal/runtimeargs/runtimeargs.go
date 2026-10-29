@@ -21,6 +21,16 @@
 //	  mode: auto
 //	  max_changes_per_cycle: 20
 //	  max_destructive_per_cycle: 3
+//	  daemon:
+//	    mode: alert-only
+//	  oneshot:
+//	    mode: auto
+//
+// runtime: の下の daemon: と oneshot:（#193）は実行の種類（常駐・一回性の
+// reconcile と plan）ごとの値で、中身は runtime: と同じ欄。種類に効く値は、
+// 種類の欄にあればそれ、無ければ共通の runtime: の値（Declaration.For）。
+// 種類に意味の無い欄（oneshot: の interval・stuck_after）は読み込みで断る。
+// 旗と比べる相手は、その種類に効く宣言の値。
 //
 // 正しい状態は宣言に置く（§1.7）。旗と宣言が食い違ったとき:
 //
@@ -81,11 +91,13 @@ type Arg struct {
 	// min は値の下限（整数・時間。時間は ns）。positive は 0 を許さない。
 	min      int64
 	positive bool
+	// daemonOnly は常駐にだけ意味のある引数（oneshot: に書けば断る）。
+	daemonOnly bool
 }
 
 // Args は runtime: に書ける引数の全部。
 var Args = []Arg{
-	{Key: "interval", Flag: "interval", Dir: NoDirection, kind: kindDuration, positive: true},
+	{Key: "interval", Flag: "interval", Dir: NoDirection, kind: kindDuration, positive: true, daemonOnly: true},
 	{Key: "mode", Flag: "mode", Dir: Ranked, kind: kindEnum, values: []string{"auto", "alert-only"}},
 	{Key: "max_changes_per_cycle", Flag: "max-changes-per-cycle", Dir: Limit, kind: kindInt},
 	{Key: "max_destructive_per_cycle", Flag: "max-destructive-per-cycle", Dir: Limit, kind: kindInt},
@@ -97,7 +109,7 @@ var Args = []Arg{
 	{Key: "max_ineffective_duration", Flag: "max-ineffective-duration", Dir: Limit, kind: kindDuration},
 	{Key: "reobserve_max", Flag: "reobserve-max", Dir: NoDirection, kind: kindInt},
 	{Key: "reobserve_time", Flag: "reobserve-time", Dir: NoDirection, kind: kindDuration, positive: true},
-	{Key: "stuck_after", Flag: "stuck-after", Dir: NoDirection, kind: kindInt, min: 1},
+	{Key: "stuck_after", Flag: "stuck-after", Dir: NoDirection, kind: kindInt, min: 1, daemonOnly: true},
 }
 
 // Lookup は runtime: のキーの Arg を返す。
@@ -200,12 +212,31 @@ func (a Arg) Show(v string) string {
 	return v
 }
 
+// Kind は実行の種類（#193）。runtime: の下に同じ名前の欄を書ける。
+type Kind string
+
+const (
+	// Daemon は常駐（sakutei）。
+	Daemon Kind = "daemon"
+	// Oneshot は一回性の reconcile と plan。
+	Oneshot Kind = "oneshot"
+)
+
+// Kinds は実行の種類の全部（runtime: の下の欄の順）。
+var Kinds = []Kind{Daemon, Oneshot}
+
 // Declaration は intent の runtime:（1 つのファイルに 1 回だけ書く）。
 type Declaration struct {
 	// File は runtime: を書いた intent のファイル（直し方の案内に出す）。
 	File string
-	// Values はキー → Normalize 済みの値。
+	// Values はキー → Normalize 済みの値。読み込んだ宣言では共通の
+	// runtime: の値、For が返す宣言ではその種類に効く値。
 	Values map[string]string
+	// Kinds は実行の種類ごとの欄（runtime.daemon: / runtime.oneshot:）の
+	// キー → 値。For が返す宣言では nil。
+	Kinds map[Kind]map[string]string
+	// from は For が返す宣言で、種類の欄から来たキー → 種類。
+	from map[string]Kind
 }
 
 // Parse は intent の runtime: の木を読む。v が nil なら nil（宣言なし）。
@@ -217,7 +248,46 @@ func Parse(v any, file string) (*Declaration, error) {
 	if !ok {
 		return nil, fmt.Errorf("runtime: オブジェクトでなければなりません")
 	}
-	d := &Declaration{File: file, Values: map[string]string{}}
+	d := &Declaration{File: file}
+	common := map[string]any{}
+	for k, x := range m {
+		if !isKind(k) {
+			common[k] = x
+			continue
+		}
+		sub, ok := x.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("runtime.%s: オブジェクトでなければなりません", k)
+		}
+		vals, err := parseValues(sub, "runtime."+k, Kind(k))
+		if err != nil {
+			return nil, err
+		}
+		if d.Kinds == nil {
+			d.Kinds = map[Kind]map[string]string{}
+		}
+		d.Kinds[Kind(k)] = vals
+	}
+	vals, err := parseValues(common, "runtime", "")
+	if err != nil {
+		return nil, err
+	}
+	d.Values = vals
+	return d, nil
+}
+
+func isKind(k string) bool {
+	for _, x := range Kinds {
+		if string(x) == k {
+			return true
+		}
+	}
+	return false
+}
+
+// parseValues は runtime:（kind が ""）か runtime.<kind>: の引数を読む。
+func parseValues(m map[string]any, where string, kind Kind) (map[string]string, error) {
+	out := map[string]string{}
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -226,7 +296,10 @@ func Parse(v any, file string) (*Declaration, error) {
 	for _, k := range keys {
 		a, ok := Lookup(k)
 		if !ok {
-			return nil, fmt.Errorf("runtime: unknown key %q (%s)", k, strings.Join(keyNames(), " / "))
+			return nil, fmt.Errorf("%s: unknown key %q (%s)", where, k, strings.Join(keyNames(kind), " / "))
+		}
+		if kind == Oneshot && a.daemonOnly {
+			return nil, fmt.Errorf("%s: %s means nothing to a one-shot run (only the daemon takes it); declare it in runtime: or runtime.daemon:", where, k)
 		}
 		var s string
 		switch x := m[k].(type) {
@@ -237,26 +310,64 @@ func Parse(v any, file string) (*Declaration, error) {
 		case int64:
 			s = strconv.FormatInt(x, 10)
 		default:
-			return nil, fmt.Errorf("runtime: %s %v: want a string or an integer", k, m[k])
+			return nil, fmt.Errorf("%s: %s %v: want a string or an integer", where, k, m[k])
 		}
 		if a.kind != kindInt {
 			if _, isStr := m[k].(string); !isStr {
-				return nil, fmt.Errorf("runtime: %s %v: want a string", k, m[k])
+				return nil, fmt.Errorf("%s: %s %v: want a string", where, k, m[k])
 			}
 		}
 		n, err := a.Normalize(s)
 		if err != nil {
-			return nil, fmt.Errorf("runtime: %w", err)
+			return nil, fmt.Errorf("%s: %w", where, err)
 		}
-		d.Values[k] = n
+		out[k] = n
 	}
-	return d, nil
+	return out, nil
 }
 
-func keyNames() []string {
-	out := make([]string, 0, len(Args))
+// For は実行の種類 k に効く宣言を返す: 種類の欄にあるキーはその値、無ければ
+// 共通の runtime: の値。d が nil なら nil。
+func (d *Declaration) For(k Kind) *Declaration {
+	if d == nil {
+		return nil
+	}
+	out := &Declaration{File: d.File, Values: map[string]string{}}
+	for key, v := range d.Values {
+		out.Values[key] = v
+	}
+	for key, v := range d.Kinds[k] {
+		out.Values[key] = v
+		if out.from == nil {
+			out.from = map[string]Kind{}
+		}
+		out.from[key] = k
+	}
+	return out
+}
+
+// Path は key の宣言を書いた場所（runtime.mode・runtime.daemon.mode）。
+func (d *Declaration) Path(key string) string {
+	if d != nil {
+		if k, ok := d.from[key]; ok {
+			return "runtime." + string(k) + "." + key
+		}
+	}
+	return "runtime." + key
+}
+
+func keyNames(kind Kind) []string {
+	out := make([]string, 0, len(Args)+len(Kinds))
 	for _, a := range Args {
+		if kind == Oneshot && a.daemonOnly {
+			continue
+		}
 		out = append(out, a.Key)
+	}
+	if kind == "" {
+		for _, k := range Kinds {
+			out = append(out, string(k)+":")
+		}
 	}
 	return out
 }
@@ -271,7 +382,8 @@ type Change struct {
 	Key, From, To string // 宣言の無いキーは ""
 }
 
-// Changes は d から o への違い（キーの順）。
+// Changes は d から o への違い（キーの順）。Values だけを比べるので、種類の
+// 欄のある宣言は For で効く値にしてから比べる。
 func (d *Declaration) Changes(o *Declaration) []Change {
 	var out []Change
 	for _, a := range Args {
@@ -298,18 +410,34 @@ type Tightening struct {
 	// IntentValue は宣言の値、File はそれを書いた intent のファイル。
 	IntentValue string `json:"intent_value"`
 	File        string `json:"file,omitempty"`
+	// IntentKey は宣言を書いた場所（runtime.daemon.mode）。共通の runtime:
+	// なら "" （runtime.<Key>）。
+	IntentKey string `json:"intent_key,omitempty"`
 }
+
+func intentPath(key, intentKey string) string {
+	if intentKey != "" {
+		return intentKey
+	}
+	return "runtime." + key
+}
+
+// IntentPath は宣言を書いた場所（runtime.max_changes_per_cycle・
+// runtime.daemon.mode）。
+func (t Tightening) IntentPath() string { return intentPath(t.Key, t.IntentKey) }
 
 // String は締めを 1 行で言う。
 func (t Tightening) String() string {
 	a, _ := Lookup(t.Key)
-	return fmt.Sprintf("--%s %s tightens the intent's runtime.%s %s for this run (temporary: remove --%s to return to the declaration)",
-		t.Flag, a.Show(t.FlagValue), t.Key, a.Show(t.IntentValue), t.Flag)
+	return fmt.Sprintf("--%s %s tightens the intent's %s %s for this run (temporary: remove --%s to return to the declaration)",
+		t.Flag, a.Show(t.FlagValue), intentPath(t.Key, t.IntentKey), a.Show(t.IntentValue), t.Flag)
 }
 
 // Conflict は起動を断る食い違い（旗が緩める、または向きの無い引数が違う）。
 type Conflict struct {
 	Key, Flag, FlagValue, IntentValue, File string
+	// IntentKey は宣言を書いた場所（Tightening.IntentKey と同じ）。
+	IntentKey string
 	// Loosens は大小のある引数を旗が緩める向き（false は向きの無い引数の違い）。
 	Loosens bool
 }
@@ -326,8 +454,9 @@ func (c Conflict) Error() string {
 	if c.Loosens {
 		what, why = "loosens", "a flag may only tighten the declaration"
 	}
-	return fmt.Sprintf("runtime: --%s %s %s the intent's runtime.%s %s (%s); remove --%s, or change runtime.%s in %s",
-		c.Flag, a.Show(c.FlagValue), what, c.Key, a.Show(c.IntentValue), why, c.Flag, c.Key, where)
+	path := intentPath(c.Key, c.IntentKey)
+	return fmt.Sprintf("runtime: --%s %s %s the intent's %s %s (%s); remove --%s, or change %s in %s",
+		c.Flag, a.Show(c.FlagValue), what, path, a.Show(c.IntentValue), why, c.Flag, path, where)
 }
 
 // Result は突き合わせた結果。
@@ -342,7 +471,7 @@ type Result struct {
 	Conflicts []Conflict
 }
 
-// Resolve は宣言 d と旗 flags（キー → Normalize 済みの値。旗で与えたものだけ）を
+// Resolve は宣言 d（For でその実行の種類に効く値にしたもの）と旗 flags（キー → Normalize 済みの値。旗で与えたものだけ）を
 // 突き合わせる。used は呼び手（動詞）が使うキーで、それ以外の宣言は見ない
 // （一回性の reconcile に間隔は無い）。nil は全部。
 func Resolve(d *Declaration, flags map[string]string, used []string) Result {
@@ -360,15 +489,18 @@ func Resolve(d *Declaration, flags map[string]string, used []string) Result {
 			if fv == iv {
 				continue
 			}
-			file := ""
+			file, ik := "", ""
 			if d != nil {
 				file = d.File
+				if _, ok := d.from[a.Key]; ok {
+					ik = d.Path(a.Key)
+				}
 			}
 			if a.Dir != NoDirection && a.rank(fv) > a.rank(iv) {
-				res.Tightened = append(res.Tightened, Tightening{Key: a.Key, Flag: a.Flag, FlagValue: fv, IntentValue: iv, File: file})
+				res.Tightened = append(res.Tightened, Tightening{Key: a.Key, Flag: a.Flag, FlagValue: fv, IntentValue: iv, File: file, IntentKey: ik})
 				continue
 			}
-			res.Conflicts = append(res.Conflicts, Conflict{Key: a.Key, Flag: a.Flag, FlagValue: fv, IntentValue: iv, File: file,
+			res.Conflicts = append(res.Conflicts, Conflict{Key: a.Key, Flag: a.Flag, FlagValue: fv, IntentValue: iv, File: file, IntentKey: ik,
 				Loosens: a.Dir != NoDirection})
 		case hasFlag:
 			res.Values[a.Key] = fv

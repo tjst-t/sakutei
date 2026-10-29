@@ -36,6 +36,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/remediation"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/internal/revision"
+	"github.com/tjst-t/sakutei/v2/internal/runtimeargs"
 	"github.com/tjst-t/sakutei/v2/internal/task"
 	"github.com/tjst-t/sakutei/v2/internal/tracing"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -200,8 +201,8 @@ func runPlan(args []string) {
 	}
 	// #183 (§26.7): the budget flags are checked against the intent's
 	// runtime: (a reconcile with the same flags would be refused, or run
-	// tightened).
-	runtimeTightened, rtErr := checkRuntime("sakutei plan", fs, in.Runtime, runtimeBudgetKeys)
+	// tightened): the one-shot values (runtime.oneshot:, else runtime:, #193).
+	runtimeTightened, rtErr := checkRuntime("sakutei plan", fs, in.Runtime.For(runtimeargs.Oneshot), runtimeBudgetKeys)
 	if rtErr != nil {
 		fail("%v", rtErr)
 	}

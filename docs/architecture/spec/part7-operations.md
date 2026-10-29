@@ -637,11 +637,21 @@ runtime:
   reobserve_max: 2                 # --reobserve-max
   reobserve_time: 30s              # --reobserve-time
   stuck_after: 5                   # --stuck-after（常駐だけ）
+  daemon:                          # 常駐だけに効く値（v3.63）
+    mode: alert-only
+  oneshot:                         # 一回性の reconcile と plan だけに効く値（v3.63）
+    mode: auto
 ```
 
 - **書く場所**：intent のファイルのどれか 1 つに 1 回だけ（2 つのファイルに書けば読み込みで断る）。inventory のファイルには書けない。
   知らないキー・形や範囲の外の値は読み込みで断る。`--freeze`・`--approve-large-change` はその場の操作なので `runtime:` に置かない。
-- **旗と宣言の突き合わせ**（起動のとき。`plan` は予算の引数、一回性の `reconcile` は `interval` と `stuck_after` を除く引数を見る）：
+- **実行の種類ごとの値**（v3.63、Backlog #193）：`runtime:` の下に `daemon:`（常駐）と `oneshot:`（一回性の `reconcile` と `plan`）を
+  書ける。中身は `runtime:` と同じ欄で、**その種類に効く値**は、種類の欄にあればそれ、無ければ共通の `runtime:` の値とする
+  （キーごとに決める）。常駐は alert-only・一回性は auto のように実行の種類で使い分ける運用を、旗に頼らず宣言に置くためである
+  （共通を auto にして常駐だけを旗で締めると、常駐の status と Event に `RuntimeTightened` がいつも出てしまい、mode を宣言に書かない
+  ことになる。§1.7）。種類に意味の無い欄（`oneshot:` の `interval`・`stuck_after`）・知らないキー・入れ子の種類は読み込みで断る。
+  常駐の途中の変化（下の `RuntimeDeclarationChanged`）も、常駐に効く値どうしで比べる。
+- **旗と宣言の突き合わせ**（起動のとき。比べる相手はその実行の種類に効く宣言の値。`plan` は予算の引数、一回性の `reconcile` は `interval` と `stuck_after` を除く引数を見る）：
   - 旗だけ・宣言だけなら、それを使う（宣言だけの値は旗で渡したのと同じに効く）。
   - **大小のある引数**（予算の上限の 3 つと `max_ineffective_*`）と **`mode`・`on_exceed`**：旗が宣言より**締める向き**（予算・上限が
     小さい、`mode` が `alert-only`、`on_exceed` が `halt-all`）なら旗を使い、**一時的な締め**として報告する。上限の `0` は上限なしで、
@@ -649,10 +659,12 @@ runtime:
   - **向きの無い引数**（`interval`・`settle`・`window_duration`・`reobserve_*`・`stuck_after`）：食い違えば起動を断る。settle は長くても
     短くても安全の向きが決まらず、観測し直しの上限と stuck の周数は手間と知らせの早さの釣り合いで、どれも締めの向きを持たない。
   - 断るときは、運用者がその場で直せるよう、引数ごとに **1 行**で、引数の名前・旗の値と宣言の値・直し方（旗を外すか、`runtime:` を
-    書いたファイルの宣言を変えるか）を出し、終了コード 1 で終わる。
+    書いたファイルの宣言を変えるか）を出し、終了コード 1 で終わる。種類の欄の値と比べたときは、その欄（`runtime.daemon.mode`）を指す。
+  - 一回性だからといって、明示した旗が宣言と食い違っても受ける、という扱いはしない（宣言より弱い側に寄せない）。一回性で別の値を
+    使いたいなら `oneshot:` に書く。
 - **締めている間の報告**：level の Event `RuntimeTightened`（warning。attrs の `keys` に締めている引数、`<key>.flag` と `<key>.intent` に
   旗の値と宣言の値）と、常駐の status（`--daemon-status` の `runtime_tightened`・`sakutei status` の表示・読み取りの口の /status）に
-  旗の値と宣言の値を両方載せる。締めは運用者が選んだものなので、続いても stuck に上げない。一回性の `reconcile` も同じ Event を出す。
+  旗の値と宣言の値を両方載せる（種類の欄の値なら、その欄の名前 `intent_key` も）。締めは運用者が選んだものなので、続いても stuck に上げない。一回性の `reconcile` も同じ Event を出す。
 - **常駐の途中で `runtime:` が変わったとき**：起動の引数は起動のときに決まり、常駐は起動したときの値で回り続ける。宣言が起動した
   ときと違う間は level の Event `RuntimeDeclarationChanged`（attrs の `<key>.started` と `<key>.intent`）と status の `runtime_changed`
   で「起こし直すと取り込む」と知らせ、宣言が戻れば resolved にする。`--intent-repo` の常駐は起動のときに 1 回取得して `runtime:` を

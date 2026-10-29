@@ -99,8 +99,8 @@ func containsString(xs []string, s string) bool {
 	return false
 }
 
-// daemonRuntime reads the runtime: the daemon starts with and checks the
-// flags against it.  With --intent-repo the intent is pulled once here (the
+// daemonRuntime reads the runtime: the daemon starts with (runtime.daemon:,
+// else runtime:, #193) and checks the flags against it.  With --intent-repo the intent is pulled once here (the
 // loop's first cycle takes that pull, src is primed with it); when the intent
 // cannot be read yet the daemon starts on the flags alone and reports any
 // runtime: it reads later as a change (RuntimeDeclarationChanged).
@@ -127,7 +127,7 @@ func daemonRuntime(fs *flag.FlagSet, intentDir string, src *gitdist.Source) (*re
 			load = loader.LoadIntentTree
 		}
 		if in, err := load(intentDir); err == nil {
-			rt.Start, rt.Unread = in.Runtime, false
+			rt.Start, rt.Unread = in.Runtime.For(runtimeargs.Daemon), false
 		}
 	}
 	rt.Tightened = applyRuntime("sakutei", fs, rt.Start, nil)
