@@ -22,7 +22,7 @@ import (
 func TestParseAndString(t *testing.T) {
 	cases := map[string]string{
 		"in ACCEPT iface=net1 source=172.16.1.0/24 dest=172.16.0.11 proto=tcp dport=443 comment=サービス側は 443 だけ": "",
-		"OUT accept   proto=udp iface=net0  dport=53,123 comment=  DNS  と NTP ":                                "out ACCEPT iface=net0 proto=udp dport=53,123 comment=DNS  と NTP",
+		"OUT accept   proto=udp iface=net0  dport=53,123 comment=  DNS  と NTP ":                                "out ACCEPT iface=net0 proto=udp dport=53,123 comment=DNS と NTP",
 		"in DROP enable=0":                      "",
 		"in ACCEPT enable=1 macro=SSH log=info": "in ACCEPT macro=SSH log=info",
 	}
@@ -111,5 +111,40 @@ func TestParamsAndFromAPI(t *testing.T) {
 	now, _ := Parse("in ACCEPT proto=tcp")
 	if got := now.Unset(was); strings.Join(got, ",") != "iface,dport" {
 		t.Errorf("Unset = %v", got)
+	}
+}
+
+// 宣言の comment は観測の側と同じに正規化される：宣言どおりに置いて読み戻しても
+// 同じ文になる（drift にならない）。
+func TestCommentSameOnBothSides(t *testing.T) {
+	long := strings.Repeat("長い理由", 30)
+	for _, in := range []string{
+		"in ACCEPT proto=tcp dport=22 comment=管理\tの  口",
+		"in ACCEPT proto=tcp dport=22 comment=  前後 と  中の   空白  ",
+		"in ACCEPT proto=tcp dport=22 comment=" + long,
+	} {
+		r, err := Parse(in)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", in, err)
+		}
+		if r.Comment != Comment(r.Comment) || len(r.Comment) > CommentMax {
+			t.Errorf("Parse(%q).Comment = %q, not normalized", in, r.Comment)
+		}
+		// Proxmox に書く値（Params）をそのまま読み戻す。
+		p := r.Params()
+		m := map[string]string{}
+		for k := range p {
+			m[k] = p.Get(k)
+		}
+		back, marked := FromAPI(m)
+		if !marked || back.String() != r.String() {
+			t.Errorf("declared %q, read back %q", r.String(), back.String())
+		}
+		if c, _ := Canonical(in); c != r.String() {
+			t.Errorf("Canonical(%q) = %q, want %q", in, c, r.String())
+		}
+	}
+	if err := (Rule{Type: "in", Action: "ACCEPT", Comment: "a  b"}).Validate(); err == nil {
+		t.Error("Validate accepted a comment that is not in the normal form")
 	}
 }

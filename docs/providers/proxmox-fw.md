@@ -45,7 +45,7 @@ providers:
 | `proto`・`dport`・`sport` | `tcp`・`udp`・`icmp`・`icmpv6` など。ポートは `80,443,8000:8100`（範囲は `:`）。ポートは `proto`（か `macro`）が要る |
 | `icmp-type`・`macro`・`log` | Proxmox の値（`macro=SSH`、`log=info` など） |
 | `enable=0` | 置くが効かせない（既定は効く。Sakutei は作るときにいつも `enable` を渡す。Proxmox の作るときの既定は 0） |
-| `comment=` | 最後に置き、行の終わりまで（空白を含めてよい。`;` は書けない）。**印は書かない**（provider が付け外す） |
+| `comment=` | 最後に置き、行の終わりまで（空白を含めてよい。`;` は書けない）。**印は書かない**（provider が付け外す）。宣言の comment も読み戻した comment も同じに正規化して比べる（タブ・改行・続く空白は 1 つの空白、前後の空白は落とす、200 バイトを超えれば文字の境目で切って `…`）ので、そう書いても毎周の drift にならない |
 
 ```yaml
 resources:

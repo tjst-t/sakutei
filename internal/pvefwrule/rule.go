@@ -24,7 +24,9 @@
 //
 // キーはこの順に並べたものが正規形（String）。comment は最後に置き、行の
 // 終わりまでがその値（空白を含めてよい）。規則の並びは Sep（" ; "）でつなぐ。
-// comment の ";" は Comment が "," に変える（区切りを作らない）。
+// comment は宣言の側（Parse）も観測の側（FromAPI）も Comment で正規化する
+// （続く空白・タブ・改行を 1 つの空白に、CommentMax バイトで切る）。宣言の
+// comment に ";" は書けない（Comment は観測の ";" を "," に変える）。
 //
 // Sakutei が置いた規則は、Proxmox の comment の頭に印（Marker）を付けて見分ける
 // （Mark・Unmark）。宣言の文の comment には印を書かない（provider が付け外す）。
@@ -123,10 +125,12 @@ func Parse(s string) (Rule, error) {
 		if head != "" && !strings.HasSuffix(head, " ") {
 			return Rule{}, fmt.Errorf("rule %q: comment= must be a key of its own", s)
 		}
-		r.Comment = strings.TrimSpace(comment)
-		if strings.Contains(r.Comment, ";") {
+		if strings.Contains(comment, ";") {
 			return Rule{}, fmt.Errorf("rule %q: a comment cannot hold ';' (it separates rules)", s)
 		}
+		// 観測の側（FromAPI）と同じ正規化をかける。宣言と読み戻しの値がずれて
+		// 毎周 drift にならないように（続く空白・タブ・長すぎる comment）。
+		r.Comment = Comment(comment)
 	}
 	toks := strings.Fields(head)
 	if len(toks) < 2 {
@@ -198,6 +202,9 @@ func (r Rule) Validate() error {
 	}
 	if strings.ContainsAny(r.Comment, "\n\r;") {
 		return fmt.Errorf("comment %q: no newline and no ';'", r.Comment)
+	}
+	if Comment(r.Comment) != r.Comment {
+		return fmt.Errorf("comment %q is not in the normal form %q (pass it through Comment)", r.Comment, Comment(r.Comment))
 	}
 	return nil
 }

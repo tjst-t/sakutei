@@ -23,6 +23,9 @@ NIC の firewall と VM の FW の options は v3.65・#196）。実現先の口
   - **Apply** は 1 手ずつ読み直して `digest` を付けて書く（全部を消して作り直さない）。Proxmox VE 9.2 で確かめた決まり（作ると先頭・
     `enable` の既定 0・`moveto` は元の位置の前・違う `digest` は断る）に合わせ、偽の Proxmox（`internal/proxmox/pvetest`）も同じに振る舞う。
   - **予算**：規則を置く・変える・外す Op は FW の変更として破壊的（§13）。
+  - **comment の正規化は宣言と観測で同じ**：宣言の規則の文（手で書いた `rules`・target の `before`・`after`）の comment も、読み戻した
+    comment と同じ関数で正規化する（続く空白・タブを 1 つの空白に、200 バイトで切る）。片方だけを正規化すると、置いた値と読み戻しが
+    ずれて毎周 drift になり、破壊的な Op が予算を食い続ける（oscillating）ため。
   - **realizer `proxmox-fw`**（§7.6）：許可が通る口と向きごとに `in`・`out` の規則と `iface=netN`（ホストは to が自分の網の口で in・from が
     自分の網の口で out、境界は from の口の in と to の口の out）、アドレスの族ごとに 1 規則、reason を comment に。口を書かないホストは口の無い
     `in`、口を書かない境界は断る。`settings` は受けない（既定の拒否は proxmox-vm の `firewall`、#196）。

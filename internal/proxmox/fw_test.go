@@ -264,3 +264,26 @@ func TestFW_DeleteRemovesOnlyMarkedRules(t *testing.T) {
 		t.Errorf("after delete: %v", got)
 	}
 }
+
+// 手で宣言した規則の comment にタブ・続く空白・長すぎる文があっても、宣言どおり
+// に置けば読み戻しと同じになり、次の周は drift にならない（毎周の PUT・予算の
+// 消費・oscillating を起こさない）。
+func TestFW_DeclaredCommentIsNotPerpetualDrift(t *testing.T) {
+	e := newFWEnv(t)
+	rules := "in ACCEPT proto=tcp dport=22 comment=管理\tの  口 ; " +
+		"out ACCEPT proto=udp dport=53 comment=  前後の   空白  ; " +
+		"in ACCEPT proto=tcp dport=443 comment=" + strings.Repeat("とても長い理由", 20)
+	e.converge(t, rules)
+	before := e.srv.Calls("fwrules")
+	for i := 0; i < 3; i++ {
+		if pl, obs := e.plan(t, rules); len(pl.Ops) != 0 {
+			t.Fatalf("cycle %d: drift after converging: observed %v; ops %+v", i, obs.State[proxmox.FieldRules].Value, pl.Ops)
+		}
+	}
+	if got := e.srv.Calls("fwrules") - before; got != 3 {
+		t.Errorf("rule calls in 3 converged cycles = %d, want 3 reads and no writes", got)
+	}
+	if got := e.texts(t); len(got) != 3 || !strings.HasSuffix(got[0], "#sakutei: 管理 の 口") || !strings.HasSuffix(got[2], "…") {
+		t.Errorf("rules = %v", got)
+	}
+}
