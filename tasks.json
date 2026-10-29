@@ -4891,7 +4891,7 @@
       "number": 211,
       "kind": "task",
       "title": "netconf-v2：宣言に知らない欄があれば読み込みの時点で欄の名前を挙げて断る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4903,7 +4903,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T22:03:32.799Z",
-      "updatedAt": "2026-10-29T22:03:32.799Z",
+      "updatedAt": "2026-10-29T22:04:08.033Z",
       "closedAt": null,
       "extra": {}
     },
