@@ -4496,6 +4496,27 @@
       "updatedAt": "2026-10-28T13:07:46.058Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "runtime",
+      "number": 193,
+      "kind": "task",
+      "title": "runtime: の値を実行の種類（常駐・一回性）ごとに宣言できるように",
+      "status": "ready",
+      "parent": "m7",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [],
+      "body": "## なぜ\nintent の `runtime:`（§26.7、v3.52）には mode を1つしか書けない。常駐のデーモンは alert-only、一回性の reconcile は auto のように、実行の種類で使い分ける運用では、宣言にどちらか片方しか書けない。「宣言は auto にして常駐だけ旗で締める」形は今の決まりで通るが、常駐の status と Event に `RuntimeTightened` がいつも出てしまう。そのため mode を宣言に書かずに旗のままにすることになり、§1.7（正しい状態は宣言に置く）に反する。\n\n## 何をするか\n- `runtime:` の下に `daemon:` と `oneshot:` を足す。中身は `runtime:` と同じ欄（mode・予算・settle など）。\n- 実行の種類ごとに効く値を決める：種類の欄にあればそれを使い、無ければ共通の `runtime:` の値を使う。\n- 種類に意味の無い欄は読み込みの時点で断る（例：`oneshot:` の周期 interval・stuck の周数）。\n- 旗との食い違いの扱いは §26.7 のまま変えない。比べる相手は、その実行の種類に効く宣言の値とする：\n  - 締める向きの旗は旗を使い、`RuntimeTightened` で知らせる。\n  - 緩める向きの旗と、向きの無い引数の食い違いは起動を断る。\n- 「一回性なら明示した旗を宣言と食い違っても受ける」形にはしない（宣言より弱い側に寄せない）。\n- 設計書の §26.7 と docs、CHANGELOG を改める。\n\n## 確かめ方\n受け入れテストで、次を確かめる：\n- 常駐と一回性で、それぞれ自分の種類の値が効くこと\n- 種類の欄が無ければ共通の値に戻ること\n- 締める旗と緩める旗の扱い\n- `oneshot:` の interval を読み込みで断ること",
+      "doneWhen": "runtime.daemon・runtime.oneshot が効く値の決め方どおりに働き、旗の締める・緩めるの扱いが種類ごとの値に対して働くことを受け入れテストで確かめ、設計書 §26.7 と docs を改め、make check と make test-race が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-29T02:01:22.392Z",
+      "updatedAt": "2026-10-29T02:01:22.392Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
