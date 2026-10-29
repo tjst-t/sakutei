@@ -4868,7 +4868,7 @@
       "number": 210,
       "kind": "task",
       "title": "Workflow：進めない常駐を静かにし、run と手を監査の鎖に残す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [
         "workflow-done-converge"
@@ -4882,7 +4882,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T16:57:16.011Z",
-      "updatedAt": "2026-10-29T16:57:16.011Z",
+      "updatedAt": "2026-10-29T22:03:03.638Z",
       "closedAt": null,
       "extra": {}
     }
