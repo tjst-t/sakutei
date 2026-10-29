@@ -59,6 +59,11 @@ type lab struct {
 func newLab(t *testing.T, cfg map[string]any) *lab {
 	t.Helper()
 	l := &lab{dir: t.TempDir()}
+	// 道具は設定の置き場が group・other から書けないことを求める。t.TempDir の
+	// 権限は umask で変わる（umask 002 だと 0775）ので、ここで締めておく。
+	if err := os.Chmod(l.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	nft := filepath.Join(l.dir, "nft")
 	if err := os.WriteFile(nft, []byte(fakeNFT), 0o755); err != nil {
 		t.Fatal(err)
