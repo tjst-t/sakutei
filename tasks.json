@@ -4544,7 +4544,7 @@
       "number": 195,
       "kind": "task",
       "title": "network_policy の網に domain（アドレスの空間）を足す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "domain-vm-fw-proxmox-fw",
       "dependsOn": [],
       "milestone": null,
@@ -4556,7 +4556,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T02:18:20.572Z",
-      "updatedAt": "2026-10-29T02:18:20.572Z",
+      "updatedAt": "2026-10-29T02:18:30.529Z",
       "closedAt": null,
       "extra": {}
     },
