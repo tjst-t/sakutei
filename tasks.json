@@ -4502,7 +4502,7 @@
       "number": 193,
       "kind": "task",
       "title": "runtime: の値を実行の種類（常駐・一回性）ごとに宣言できるように",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m7",
       "dependsOn": [],
       "milestone": null,
@@ -4514,7 +4514,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T02:01:22.392Z",
-      "updatedAt": "2026-10-29T02:01:22.392Z",
+      "updatedAt": "2026-10-29T02:01:31.923Z",
       "closedAt": null,
       "extra": {}
     }
