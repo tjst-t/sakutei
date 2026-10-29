@@ -4604,6 +4604,29 @@
       "updatedAt": "2026-10-29T02:18:20.572Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "netconf-apply-2",
+      "number": 198,
+      "kind": "story",
+      "title": "複数の台にまたがる NETCONF の Apply（まとめて確定・別の台からの確かめ・状態の比較）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "v2.10.0"
+      ],
+      "body": "## なぜ\n複数の台に同じ変更を入れる構成があります（例：同じセグメントを全部の leaf に足す）。いまの NETCONF の2段の Apply は台ごとに確定します。そのため、確かめが一部の台で落ちると、変更が片方の台にだけ残ることがあります。\nもう1つ、ある台への変更が効いたかどうかは、相手の台から見ないと分からないことがあります（例：相手の台で経路が見えること）。\n\n## 分け方\n1. まとめて確定（`commit_group`）\n2. confirm の先の `observe:` と `check:`（いつも「変えたあとだけ」の扱い）\n3. operational の状態を宣言と比べる（low、後回し）\n\n版：1 と 2 は v2.10.0 に入れ、#190 と合わせます。3 は v2.11.0 以降です。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-29T06:47:50.874Z",
+      "updatedAt": "2026-10-29T06:47:50.874Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
