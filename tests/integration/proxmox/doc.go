@@ -24,7 +24,9 @@
 // 出て（宣言が 0 件でも。触らない VM とテンプレートは出ない）消されない、消す、
 // scope 付きの宣言と --claim で API で直接作った VM だけが unmanaged に出る（#169）、
 // ciupgrade: false で作った VM の設定が 0 で、手で変えると戻る（#170）、
-// NIC の firewall・mtu と VM の FW の options が書いたときだけ合わさり、手で変えると戻る（#196）。
+// NIC の firewall・mtu と VM の FW の options が書いたときだけ合わさり、手で変えると戻る（#196）、
+// network_policy の実現先 proxmox-fw の許可が VM の FW の規則に口と向き（入りと出）で入り、comment に
+// reason が出て、手の規則は消さずに status の unmanaged に出る（#197）。
 //
 // テストは build tag integration_proxmox の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-proxmox

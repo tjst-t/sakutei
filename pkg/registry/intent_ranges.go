@@ -79,6 +79,7 @@ func registerIntentRanges(r *ProviderRegistry) {
 	r.RegisterIntentRanges("dnszone", scopeRanges{setting: "zone_scope"})
 	r.RegisterIntentRanges("nftables", nftablesRanges{})
 	r.RegisterIntentRanges(proxmox.Name, proxmox.IntentRanges{})
+	r.RegisterIntentRanges(proxmox.FWName, proxmox.IntentRanges{})
 	// Backlog #182: the rest of the built-in providers.
 	r.RegisterIntentRanges(netconf.Name, netconfRanges{})
 	r.RegisterIntentRanges(guestos.Name, guestosRanges{})

@@ -53,7 +53,7 @@
 //	      interfaces:
 //	        - { name: net0, domain: tenant-a }  # networks は既定でその domain の分
 //	        - { name: net1, domain: service }
-//	      id: lab/100
+//	      id: lab/gw-a/fw              # proxmox-fw provider の id（<cluster>/<VM 名>/fw）
 //
 // 既定は拒否で、書いた許可だけが通る。検査（Check）は網の CIDR の重なり・宣言に
 // 無い網・理由の無い例外・同じ許可の重複を断り（error）、前の許可に覆われて
@@ -61,9 +61,10 @@
 // 実現先ごとに、そこを通る許可だけを realizer に渡し、realizer が resource の
 // 宣言（nftables なら base chain、#173 の形）を作る。
 //
-// 本体の realizer は nftables だけ（NFTables）。使う側は Register（pkg/cli の
-// WithRealizer）で別の実現先（スイッチの ACL など）への変換を足す。realizer には
-// 各許可の reason と tags も渡る。
+// 本体の realizer は nftables（NFTables、既定）と proxmox-fw（ProxmoxFW、VM の
+// FW の規則、#197）。使う側は Register（pkg/cli の WithRealizer）で別の実現先
+// （スイッチの ACL など）への変換を足す。realizer には各許可の reason と tags も
+// 渡る。
 package netpolicy
 
 import (
@@ -981,7 +982,7 @@ func (f RealizerFunc) Realize(t Target, allows []Passing) (Output, error) { retu
 
 var (
 	regMu     sync.RWMutex
-	realizers = map[string]Realizer{DefaultRealizer: NFTables{}}
+	realizers = map[string]Realizer{DefaultRealizer: NFTables{}, ProxmoxFWRealizer: ProxmoxFW{}}
 )
 
 // Register は realizer を名前で足す（pkg/cli の WithRealizer が使う）。すでに
@@ -1068,7 +1069,7 @@ func Compile(p Policy) (*Result, error) {
 		}
 		r, ok := Lookup(t.Realizer)
 		if !ok {
-			return nil, fmt.Errorf("network_policy: %s: target %s: unknown realizer %q (the built-in one is %s; add others with cli.WithRealizer)", t.Ref, t.Name, t.Realizer, DefaultRealizer)
+			return nil, fmt.Errorf("network_policy: %s: target %s: unknown realizer %q (the built-in ones are %s and %s; add others with cli.WithRealizer)", t.Ref, t.Name, t.Realizer, DefaultRealizer, ProxmoxFWRealizer)
 		}
 		var passing []Passing
 		for _, a := range p.Allows {

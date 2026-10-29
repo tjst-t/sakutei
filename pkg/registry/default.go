@@ -583,6 +583,14 @@ func DefaultRegistry() *ProviderRegistry {
 		return proxmox.NewFromProviderConfig(config)
 	})
 
+	// "proxmox-fw" — Proxmox VE の VM の FW の規則（§29.1、#197）。proxmox-vm と
+	// 同じクラスタの一覧（--provider-config の proxmox-fw の proxmox_config）。
+	// Sakutei が置いた規則（comment の印）だけを書き換え、ほかの規則は List が
+	// unmanaged として返す。network_policy の実現先 proxmox-fw が使う。
+	r.Register(proxmox.FWName, func(config map[string]string) (provider.Provider, error) {
+		return proxmox.NewFWFromProviderConfig(config)
+	})
+
 	// "metrics-probe" — /metrics（Prometheus の text 形式）の値の観測だけ（§29.1、
 	// #149）。config["metrics_probe_config"] は endpoint と probe の一覧
 	// （--provider-config の metrics-probe の metrics_probe_config）。

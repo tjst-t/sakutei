@@ -161,13 +161,31 @@ func intentScopes(config map[string]string) (map[string]core.Scope, error) {
 // NewFromProviderConfig は registry の factory 用：config["proxmox_config"] の
 // クラスタの一覧に、intent から取ったクラスタの scope（§7.7）を重ねて Provider を作る。
 func NewFromProviderConfig(config map[string]string) (*Provider, error) {
+	cls, err := clustersFromProviderConfig(Name, config)
+	if err != nil {
+		return nil, err
+	}
+	return New(cls, Options{}), nil
+}
+
+// NewFWFromProviderConfig は proxmox-fw の factory 用（proxmox-vm と同じ
+// クラスタの一覧と、intent の providers.proxmox-fw のクラスタの scope、#197）。
+func NewFWFromProviderConfig(config map[string]string) (*FWProvider, error) {
+	cls, err := clustersFromProviderConfig(FWName, config)
+	if err != nil {
+		return nil, err
+	}
+	return NewFW(cls), nil
+}
+
+func clustersFromProviderConfig(name string, config map[string]string) (map[string]Cluster, error) {
 	path := config["proxmox_config"]
 	if path == "" {
-		return nil, fmt.Errorf("proxmox-vm: the cluster list is not set: proxmox_config in --provider-config")
+		return nil, fmt.Errorf("%s: the cluster list is not set: proxmox_config in --provider-config", name)
 	}
 	scopes, err := intentScopes(config)
 	if err != nil {
-		return nil, fmt.Errorf("proxmox-vm: %w", err)
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	cfg, err := loadFor(config, path)
 	if err != nil {
@@ -176,7 +194,7 @@ func NewFromProviderConfig(config map[string]string) (*Provider, error) {
 	for n, sc := range scopes {
 		cc, ok := cfg.Clusters[n]
 		if !ok {
-			return nil, fmt.Errorf("proxmox-vm: intent providers.proxmox-vm.clusters.%s: no such cluster in %s", n, path)
+			return nil, fmt.Errorf("%s: intent providers.%s.clusters.%s: no such cluster in %s", name, name, n, path)
 		}
 		cc.Scope = sc
 		cfg.Clusters[n] = cc
@@ -185,7 +203,7 @@ func NewFromProviderConfig(config map[string]string) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("proxmox config %s: %w", path, err)
 	}
-	return New(cls, Options{}), nil
+	return cls, nil
 }
 
 // loadFor は path の設定を、config の回の access（provider.ConfigAccess、§20.7、

@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -420,6 +421,66 @@ func (c *Client) FirewallOptions(ctx context.Context, node string, vmid int) (ma
 // そのまま）。要る権限は VM.Config.Network。
 func (c *Client) SetFirewallOptions(ctx context.Context, node string, vmid int, params url.Values) error {
 	return c.call(ctx, http.MethodPut, vmPath(node, vmid)+"/firewall/options", params, nil)
+}
+
+// FirewallRule は VM の FW の規則の 1 つ（GET /firewall/rules の項目）。
+type FirewallRule struct {
+	// Pos は並びの位置（0 が先頭）。
+	Pos int
+	// Digest は並び全体の digest（書き換えに渡すと、間に変わっていれば断られる）。
+	Digest string
+	// Fields は欄（type・action・iface・source・dest・proto・dport・sport・
+	// icmp-type・macro・log・enable・comment。書かれていない欄は無い）。
+	Fields map[string]string
+}
+
+// FirewallRules は VM の FW の規則を並びの順に返す。要る権限は VM.Audit。
+func (c *Client) FirewallRules(ctx context.Context, node string, vmid int) ([]FirewallRule, error) {
+	var raw []map[string]any
+	if err := c.call(ctx, http.MethodGet, vmPath(node, vmid)+"/firewall/rules", nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]FirewallRule, 0, len(raw))
+	for i, m := range raw {
+		r := FirewallRule{Pos: i, Fields: map[string]string{}}
+		for k, v := range m {
+			switch k {
+			case "pos":
+				if n, err := strconv.Atoi(scalar(v)); err == nil {
+					r.Pos = n
+				}
+			case "digest":
+				r.Digest = scalar(v)
+			case "ipversion":
+			default:
+				r.Fields[k] = scalar(v)
+			}
+		}
+		out = append(out, r)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Pos < out[j].Pos })
+	return out, nil
+}
+
+// CreateFirewallRule は規則を作る（POST、同期）。Proxmox はいつも並びの先頭に
+// 入れ、enable を渡さなければ 0 にする。要る権限は VM.Config.Network。
+func (c *Client) CreateFirewallRule(ctx context.Context, node string, vmid int, params url.Values) error {
+	return c.call(ctx, http.MethodPost, vmPath(node, vmid)+"/firewall/rules", params, nil)
+}
+
+// UpdateFirewallRule は pos の規則を書き換える・動かす（PUT、同期。moveto は
+// 「元の位置 moveto の規則の前」に入れる）。要る権限は VM.Config.Network。
+func (c *Client) UpdateFirewallRule(ctx context.Context, node string, vmid, pos int, params url.Values) error {
+	return c.call(ctx, http.MethodPut, vmPath(node, vmid)+"/firewall/rules/"+strconv.Itoa(pos), params, nil)
+}
+
+// DeleteFirewallRule は pos の規則を消す（DELETE、同期）。要る権限は VM.Config.Network。
+func (c *Client) DeleteFirewallRule(ctx context.Context, node string, vmid, pos int, digest string) error {
+	var params url.Values
+	if digest != "" {
+		params = url.Values{"digest": {digest}}
+	}
+	return c.call(ctx, http.MethodDelete, vmPath(node, vmid)+"/firewall/rules/"+strconv.Itoa(pos), params, nil)
 }
 
 // SetConfig は設定を書く（PUT、同期）。走っている VM で再起動が要る変更は

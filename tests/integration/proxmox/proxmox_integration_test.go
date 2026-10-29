@@ -1296,6 +1296,114 @@ cat /root/audit-token.json`)
 			t.Errorf("VM 540 net0 = %q, want the hand-set mtu left", cur540["net0"])
 		}
 	})
+
+	t.Run("network_policy の実現先 proxmox-fw（VM の FW の規則、入りと出）", func(t *testing.T) {
+		// #197: 関所の VM（前の段の 550、NIC は firewall=1・FW の options は enable=1）の
+		// 利用者側の口（net0）は出る向きの KDC・DNS・LDAP・NTP、サービス側の口（net1）は
+		// 入る向きの 443 だけ。許可は口と向きの規則になり、comment に印と reason が出る。
+		// 手で置いた規則は消さず書き換えず status の unmanaged に出し、宣言の規則は先頭に
+		// 宣言の順で保つ。観測は / に PVEAuditor のトークンでも読める（VM.Audit）。
+		pcFor := func(cfg string) string {
+			path := filepath.Join(l.dir, "provider-config-fw-"+cfg+".json")
+			c := map[string]any{"proxmox_config": filepath.Join(l.dir, cfg)}
+			pc, _ := json.Marshal(map[string]any{"providers": map[string]any{"proxmox-vm": c, "proxmox-fw": c}})
+			if err := os.WriteFile(path, pc, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}
+		rootPC := l.pc
+		defer func() { l.pc = rootPC }()
+		l.pc = pcFor("pve.yaml")
+		fwFile := "/etc/pve/firewall/550.fw"
+		if out, err := l.ssh(`pvesh create /nodes/` + pveNode + `/qemu/550/firewall/rules --type in --action ACCEPT --proto tcp --dport 22 --comment '手の管理' --enable 1`); err != nil {
+			t.Fatalf("a hand rule: %v\n%s", err, out)
+		}
+		gw := `{"resources": [{"provider": "proxmox-vm", "id": "it/it-vm4", "fields": {"vmid": "550", "template": "it-tmpl",
+		  "cores": "1", "memory": "512", "disks": "scsi0 storage=local-lvm size=4G",
+		  "nics": "net0 bridge=vmbr0 firewall=1 mtu=1450, net1 bridge=vmbr0 vlan=43 firewall=1",
+		  "firewall": "enable=1 policy_in=DROP policy_out=REJECT macfilter=0", "power": "stopped"}}],
+		  "network_policy": {
+		    "networks": [
+		      {"name": "a-infra",  "domain": "tenant-a", "cidrs": ["10.0.0.10", "10.0.0.11", "10.0.0.12", "10.0.0.13"]},
+		      {"name": "gw-a",     "domain": "tenant-a", "cidrs": ["10.0.0.1"]},
+		      {"name": "gw-a-svc", "domain": "service",  "cidrs": ["172.16.0.11", "2001:db8:16::11"]},
+		      {"name": "portal",   "domain": "service",  "cidrs": ["172.16.1.0/24", "2001:db8:17::/64"]}
+		    ],
+		    "allows": [
+		      {"from": "gw-a", "to": "a-infra", "proto": "udp", "ports": [53, 88, 123], "reason": "関所から DNS・KDC・NTP"},
+		      {"from": "gw-a", "to": "a-infra", "proto": "tcp", "ports": [53, 88, 389, 636], "reason": "関所から DNS・KDC・LDAP"},
+		      {"from": "portal", "to": "gw-a-svc", "proto": "tcp", "ports": [443], "reason": "サービス側は 443 だけ \"https\"; 古い口は閉じた"}
+		    ],
+		    "targets": [
+		      {"name": "gw-a", "realizer": "proxmox-fw", "kind": "host", "networks": ["gw-a", "gw-a-svc"],
+		       "interfaces": [{"name": "net0", "domain": "tenant-a"}, {"name": "net1", "domain": "service"}],
+		       "id": "it/it-vm4/fw"}
+		    ]}}`
+		out, code := l.sakutei(t, gw, "plan")
+		if code != 0 || !strings.Contains(out, "via:    net0 out") || !strings.Contains(out, "via:    net1 in") || !strings.Contains(out, "proxmox-fw//it/it-vm4/fw [DESTRUCTIVE]") {
+			t.Fatalf("plan exit %d:\n%s", code, out)
+		}
+		n := l.converge(t, gw, 5)
+		t.Logf("converged after %d reconcile(s)", n)
+		fw, err := l.ssh("cat " + fwFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%s:\n%s", fwFile, fw)
+		var rules []string
+		for _, line := range strings.Split(fw, "\n") {
+			if strings.HasPrefix(line, "IN ") || strings.HasPrefix(line, "OUT ") || strings.HasPrefix(line, "|") {
+				rules = append(rules, line)
+			}
+		}
+		want := []string{
+			"OUT ACCEPT -i net0 -source 10.0.0.1 -dest 10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13 -p udp -dport 53,88,123 # sakutei: 関所から DNS・KDC・NTP",
+			"OUT ACCEPT -i net0 -source 10.0.0.1 -dest 10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13 -p tcp -dport 53,88,389,636 # sakutei: 関所から DNS・KDC・LDAP",
+			`IN ACCEPT -i net1 -source 172.16.1.0/24 -dest 172.16.0.11 -p tcp -dport 443 # sakutei: サービス側は 443 だけ "https", 古い口は閉じた`,
+			`IN ACCEPT -i net1 -source 2001:db8:17::/64 -dest 2001:db8:16::11 -p tcp -dport 443 # sakutei: サービス側は 443 だけ "https", 古い口は閉じた`,
+			"IN ACCEPT -p tcp -dport 22 # 手の管理",
+		}
+		if strings.Join(rules, "\n") != strings.Join(want, "\n") {
+			t.Errorf("the rules of %s:\n%s\nwant:\n%s", fwFile, strings.Join(rules, "\n"), strings.Join(want, "\n"))
+		}
+		out, code = l.sakutei(t, gw, "status")
+		if code != 0 || !strings.Contains(out, "UNMANAGED proxmox-fw//it/it-vm4/fw/4") || !strings.Contains(out, "drifted=0") {
+			t.Errorf("status: exit %d:\n%s", code, out)
+		}
+
+		// 手で変える：置いた規則の port、先頭に手の規則。
+		if out, err := l.ssh(`set -e; P=/nodes/` + pveNode + `/qemu/550/firewall/rules
+pvesh set $P/2 --type in --action ACCEPT --dport 8443 --proto tcp
+pvesh create $P --type in --action DROP --proto udp --comment '手で先頭に' --enable 1`); err != nil {
+			t.Fatalf("hand changes: %v\n%s", err, out)
+		}
+		if _, err := os.Stat(filepath.Join(l.dir, "pve-ro.yaml")); err == nil {
+			l.pc = pcFor("pve-ro.yaml")
+			out, code := l.sakutei(t, gw, "status")
+			l.pc = pcFor("pve.yaml")
+			if code != 0 || !strings.Contains(out, "DRIFTED proxmox-fw//it/it-vm4/fw") || !strings.Contains(out, "(unmanaged) in DROP proto=udp comment=手で先頭に") {
+				t.Errorf("status with the audit token after the hand changes: exit %d:\n%s", code, out)
+			}
+		} else {
+			t.Error("the audit token's cluster list is missing (the stage of the audit token did not run)")
+		}
+		if out, code := l.sakutei(t, gw, "reconcile"); code != 0 || !strings.Contains(out, "1 change(s) applied") {
+			t.Fatalf("reconcile after the hand changes: exit %d:\n%s", code, out)
+		}
+		l.converge(t, gw, 2)
+		fw, _ = l.ssh("cat " + fwFile)
+		rules = rules[:0]
+		for _, line := range strings.Split(fw, "\n") {
+			if strings.HasPrefix(line, "IN ") || strings.HasPrefix(line, "OUT ") || strings.HasPrefix(line, "|") {
+				rules = append(rules, line)
+			}
+		}
+		want = append(want[:4:4], "IN DROP -p udp # 手で先頭に", "IN ACCEPT -p tcp -dport 22 # 手の管理")
+		if strings.Join(rules, "\n") != strings.Join(want, "\n") {
+			t.Errorf("the rules after putting back:\n%s\nwant:\n%s", strings.Join(rules, "\n"), strings.Join(want, "\n"))
+		}
+	})
 }
 
 func readFile(t *testing.T, path string) string {

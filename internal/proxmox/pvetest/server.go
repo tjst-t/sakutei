@@ -42,13 +42,22 @@
 //   - VM の FW の options（Backlog #196）：GET・PUT /firewall/options（enable・
 //     policy_in・policy_out・ipfilter・macfilter と delete・digest。ほかのキーと
 //     値の誤りは 400）。GET は書いたキーだけを返す（本物と同じく既定は返さない）。
+//   - VM の FW の規則（Backlog #197）：GET・POST /firewall/rules、PUT・DELETE
+//     /firewall/rules/<pos>。Proxmox VE 9.2 で確かめた決まりに合わせる：作ると
+//     いつも先頭（pos 0）に入り、enable を渡さなければ 0。PUT の moveto は「元の
+//     位置 moveto の規則の前」に入れる（後ろへ動かすと moveto-1 に着く、並びの
+//     外なら最後）。GET の項目は並び全体の digest を持ち、PUT・DELETE に渡した
+//     digest が違えば断る。PUT の delete は欄を消す。type・action・iface（netN）・
+//     知らないキーの誤りは 400。
 //
-// テストから: 現実を手で変える（SetConfig・SetFirewall・SetStatus・SetLock・SetPool）、ノードを落とす
+// テストから: 現実を手で変える（SetConfig・SetFirewall・SetRules・SetStatus・SetLock・SetPool）、ノードを落とす
 // （SetNodeOffline：資源の status が unknown、ノードの API が 595）、届かなく
 // する（SetUnreachable）、次の仕事を失敗させる（FailNextTask）。
 package pvetest
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -115,6 +124,8 @@ type VM struct {
 	PendingDelete map[string]bool
 	// Firewall は VM の FW の options（書いたキーだけ）。
 	Firewall map[string]string
+	// Rules は VM の FW の規則（並びの順。キー → 値、enable は "0"・"1"）。
+	Rules []map[string]string
 
 	// rrd は /cluster/resources に載せる写し（ResourceLag のとき）。
 	rrdName, rrdStatus string
@@ -205,7 +216,7 @@ func (s *Server) SetNodeOffline(node string, v bool) { s.mu.Lock(); s.offline[no
 func (s *Server) FailNextTask(kind, msg string) { s.mu.Lock(); s.failNext[kind] = msg; s.mu.Unlock() }
 
 // Calls は操作（"resources"・"pending"・"config"・"create"・"clone"・"resize"・
-// "start"・"shutdown"・"stop"・"reboot"・"reset"・"destroy"・"task"・"pools"・"firewall"）ごとの
+// "start"・"shutdown"・"stop"・"reboot"・"reset"・"destroy"・"task"・"pools"・"firewall"・"fwrules"）ごとの
 // 呼ばれた回数を返す。
 func (s *Server) Calls(op string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls[op] }
 
@@ -229,6 +240,7 @@ func (s *Server) AddVM(vm VM) {
 	vm.Config = c
 	vm.Pending, vm.PendingDelete = copyMap(vm.Pending), map[string]bool{}
 	vm.Firewall = copyMap(vm.Firewall)
+	vm.Rules = copyRules(vm.Rules)
 	vm.rrdName, vm.rrdStatus, vm.rrdTemplate = vm.Name, vm.Status, vm.Template
 	s.vms[vm.VMID] = &vm
 }
@@ -243,6 +255,7 @@ func (s *Server) VM(vmid int) (VM, bool) {
 	}
 	out := *v
 	out.Config, out.Pending, out.Firewall = copyMap(v.Config), copyMap(v.Pending), copyMap(v.Firewall)
+	out.Rules = copyRules(v.Rules)
 	out.PendingDelete = map[string]bool{}
 	for k := range v.PendingDelete {
 		out.PendingDelete[k] = true
@@ -292,6 +305,15 @@ func (s *Server) SetFirewall(vmid int, key, value string) {
 		} else {
 			v.Firewall[key] = value
 		}
+	}
+}
+
+// SetRules は VM の FW の規則を直に置き換える（手での変更）。
+func (s *Server) SetRules(vmid int, rules []map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.vms[vmid]; ok {
+		v.Rules = copyRules(rules)
 	}
 }
 
@@ -355,6 +377,17 @@ func (s *Server) RunningTasks() int {
 		}
 	}
 	return n
+}
+
+func copyRules(rules []map[string]string) []map[string]string {
+	if rules == nil {
+		return nil
+	}
+	out := make([]map[string]string, len(rules))
+	for i, r := range rules {
+		out[i] = copyMap(r)
+	}
+	return out
 }
 
 func copyMap(m map[string]string) map[string]string {
@@ -560,6 +593,19 @@ func (s *Server) route(tok *PoolToken, method, path string, form url.Values) (an
 	case rest == "/firewall/options" && method == http.MethodPut:
 		s.calls["firewall"]++
 		return nil, s.setFirewall(vm, form)
+	case rest == "/firewall/rules" && method == http.MethodGet:
+		s.calls["fwrules"]++
+		return s.listRules(vm), nil
+	case rest == "/firewall/rules" && method == http.MethodPost:
+		s.calls["fwrules"]++
+		return nil, s.createRule(vm, form)
+	case strings.HasPrefix(rest, "/firewall/rules/") && (method == http.MethodPut || method == http.MethodDelete):
+		s.calls["fwrules"]++
+		pos, err := strconv.Atoi(strings.TrimPrefix(rest, "/firewall/rules/"))
+		if err != nil || pos < 0 {
+			return nil, errf(http.StatusBadRequest, "pos: invalid integer value")
+		}
+		return nil, s.changeRule(vm, method, pos, form)
 	case rest == "/clone" && method == http.MethodPost:
 		s.calls["clone"]++
 		if aerr := s.checkPoolParam(tok, form.Get("pool")); aerr != nil {
@@ -883,6 +929,148 @@ func (s *Server) setFirewall(vm *VM, form url.Values) *apiError {
 	for _, k := range strings.Split(form.Get("delete"), ",") {
 		delete(vm.Firewall, strings.TrimSpace(k))
 	}
+	return nil
+}
+
+// ruleKeys は規則の欄（type・action のほか）。
+var ruleKeys = map[string]*regexp.Regexp{
+	"iface": netRe, "source": regexp.MustCompile(`^[A-Za-z0-9+_.:/,-]+$`), "dest": regexp.MustCompile(`^[A-Za-z0-9+_.:/,-]+$`),
+	"proto": regexp.MustCompile(`^[a-z0-9-]+$`), "dport": regexp.MustCompile(`^[A-Za-z0-9:,-]+$`), "sport": regexp.MustCompile(`^[A-Za-z0-9:,-]+$`),
+	"icmp-type": regexp.MustCompile(`^[a-z0-9-]+$`), "macro": regexp.MustCompile(`^[A-Za-z0-9_-]+$`),
+	"log": regexp.MustCompile(`^(emerg|alert|crit|err|warning|notice|info|debug|nolog)$`), "enable": regexp.MustCompile(`^[01]$`),
+	"comment": regexp.MustCompile(`^[^\n]*$`),
+}
+
+// rulesDigest は並び全体の digest（本物と同じく並びが変われば変わる）。
+func rulesDigest(rules []map[string]string) string {
+	h := sha1.New()
+	for _, r := range rules {
+		for _, k := range sortedKeysMap(r) {
+			fmt.Fprintf(h, "%s:%s\n", k, r[k])
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func (s *Server) listRules(vm *VM) []map[string]any {
+	digest := rulesDigest(vm.Rules)
+	out := []map[string]any{}
+	for i, r := range vm.Rules {
+		e := map[string]any{"pos": i, "digest": digest}
+		for k, v := range r {
+			if k == "enable" {
+				n, _ := strconv.Atoi(v)
+				e[k] = n
+			} else {
+				e[k] = v
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// setRuleFields は form の欄を r に写す（確かめてから）。
+func setRuleFields(r map[string]string, form url.Values) *apiError {
+	for _, k := range sortedKeys(form) {
+		v := form.Get(k)
+		switch k {
+		case "digest", "delete", "moveto", "pos":
+			continue
+		case "type":
+			if v != "in" && v != "out" && v != "group" {
+				return errf(http.StatusBadRequest, "type: value '%s' does not have a value in the enumeration 'in, out, forward, group'", v)
+			}
+		case "action":
+			if v != "ACCEPT" && v != "DROP" && v != "REJECT" {
+				return errf(http.StatusBadRequest, "action: value does not match the regex pattern")
+			}
+		default:
+			re, ok := ruleKeys[k]
+			if !ok {
+				return errf(http.StatusBadRequest, "property is not defined in schema and the schema does not allow additional properties: %s", k)
+			}
+			if !re.MatchString(v) {
+				return errf(http.StatusBadRequest, "%s: value '%s' does not match the format", k, v)
+			}
+		}
+	}
+	for _, k := range sortedKeys(form) {
+		switch k {
+		case "digest", "delete", "moveto", "pos":
+		default:
+			r[k] = form.Get(k)
+		}
+	}
+	if (r["dport"] != "" || r["sport"] != "") && r["proto"] == "" && r["macro"] == "" {
+		return errf(http.StatusBadRequest, "missing property - 'dport' requires 'proto'")
+	}
+	return nil
+}
+
+// createRule は POST /firewall/rules：先頭に入れる、enable の既定は 0。
+func (s *Server) createRule(vm *VM, form url.Values) *apiError {
+	if form.Get("type") == "" || form.Get("action") == "" {
+		return errf(http.StatusBadRequest, "type and action are required")
+	}
+	r := map[string]string{}
+	if aerr := setRuleFields(r, form); aerr != nil {
+		return aerr
+	}
+	if r["enable"] == "" {
+		r["enable"] = "0"
+	}
+	vm.Rules = append([]map[string]string{r}, vm.Rules...)
+	return nil
+}
+
+// changeRule は PUT・DELETE /firewall/rules/<pos>。
+func (s *Server) changeRule(vm *VM, method string, pos int, form url.Values) *apiError {
+	if d := form.Get("digest"); d != "" && d != rulesDigest(vm.Rules) {
+		return errf(http.StatusInternalServerError, "detected modified configuration - file changed by other user? Try again.")
+	}
+	if pos >= len(vm.Rules) {
+		return errf(http.StatusBadRequest, "no rule at position %d", pos)
+	}
+	if method == http.MethodDelete {
+		vm.Rules = append(vm.Rules[:pos:pos], vm.Rules[pos+1:]...)
+		return nil
+	}
+	if mv := form.Get("moveto"); mv != "" {
+		to, err := strconv.Atoi(mv)
+		if err != nil || to < 0 {
+			return errf(http.StatusBadRequest, "moveto: invalid integer value")
+		}
+		if to == pos {
+			return nil
+		}
+		moved := vm.Rules[pos]
+		var out []map[string]string
+		for i, r := range vm.Rules {
+			if i == pos {
+				continue
+			}
+			if i == to {
+				out = append(out, moved)
+			}
+			out = append(out, r)
+		}
+		if to >= len(vm.Rules) {
+			out = append(out, moved)
+		}
+		vm.Rules = out
+		return nil
+	}
+	r := copyMap(vm.Rules[pos])
+	if aerr := setRuleFields(r, form); aerr != nil {
+		return aerr
+	}
+	for _, k := range strings.Split(form.Get("delete"), ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			delete(r, k)
+		}
+	}
+	vm.Rules[pos] = r
 	return nil
 }
 

@@ -1,9 +1,9 @@
 # 網の間の許可（network_policy）
 
-網と網の間の通信の許可を、機器に依らない宣言として intent に書く（Backlog #174）。Sakutei は宣言を検査し、実現先（境界の FW・各ホスト）ごとに、そこを通る許可だけを nftables の base chain の宣言へ展開して収束させる。決まりの正は設計書 §7.6 と §29.1「網の間の許可を抽象のリソースにする」。ここは書き方の説明で、矛盾したら spec/ が優先する。
+網と網の間の通信の許可を、機器に依らない宣言として intent に書く（Backlog #174）。Sakutei は宣言を検査し、実現先（境界の FW・各ホスト・VM）ごとに、そこを通る許可だけを nftables の base chain の宣言か、Proxmox VE の VM の FW の規則（`proxmox-fw`、Backlog #197）へ展開して収束させる。決まりの正は設計書 §7.6 と §29.1「網の間の許可を抽象のリソースにする」。ここは書き方の説明で、矛盾したら spec/ が優先する。
 
 - **既定は拒否**。書いた許可だけが通る（展開した base chain の `policy` は既定 `drop`）。
-- 許可の行ごとに **なぜ許すか（`reason`）** と **印（`tags`）** を書く。reason は検査の結果・plan・nftables のルールの comment に出る。
+- 許可の行ごとに **なぜ許すか（`reason`）** と **印（`tags`）** を書く。reason は検査の結果・plan・nftables のルールと VM の FW の規則の comment に出る。
 - 正しい状態は宣言に置く（§1.7）。どの許可をどの実現先に出すかは intent に書き、provider の設定（`ruleset_target`・`ruleset_hosts`・鍵・時間）はつなぎ方だけを持つ。
 
 ## 書き方
@@ -68,10 +68,10 @@
 | `name` | 実現先の名前 |
 | `kind` | `boundary`（網と網の間の FW。`networks` の違う 2 つの網を from・to とする許可が通る）か `host`（そのホストに入る通信。to が `networks` にある許可が通る。同じ網の中からの通信も通る） |
 | `networks` | boundary はつなぐ網（2 つ以上）、host はホストのいる網。`interfaces` を書かなければ既定の domain の網だけ |
-| `interfaces` | 口ごとに見る domain（任意、Backlog #195）。`name`（口の名前）・`domain`（要る）・`networks`（その口にある／その口の向こうにある実現先の網。書かなければ `networks` のうちその domain のもの全部）。本体の nftables は受けない |
-| `realizer` | 変換の名前。既定 `nftables`（本体にあるのはこれだけ。下の「別の実現先へ変換する」） |
-| `id`・`scope` | 作る resource の id と scope。nftables は nftables provider の local id（`[<host>/]<family>/<table>/<chain>`、family は `ip`・`ip6`・`inet`） |
-| `before`・`after` | 許可の前と後に置くルール（1 要素に 1 ルール）。nftables なら `ct state established,related accept`・`iif "lo" accept`・最小の核への `jump mgmt` |
+| `interfaces` | 口ごとに見る domain（任意、Backlog #195）。`name`（口の名前）・`domain`（要る）・`networks`（その口にある／その口の向こうにある実現先の網。書かなければ `networks` のうちその domain のもの全部）。本体の nftables は受けない。proxmox-fw は VM の口の名前（`net0`・`net1`…） |
+| `realizer` | 変換の名前。既定 `nftables`。本体にはほかに `proxmox-fw`（VM の FW の規則、下の「展開（proxmox-fw）」）。ほかは下の「別の実現先へ変換する」 |
+| `id`・`scope` | 作る resource の id と scope。nftables は nftables provider の local id（`[<host>/]<family>/<table>/<chain>`、family は `ip`・`ip6`・`inet`）、proxmox-fw は proxmox-fw provider の id（`<クラスタ>/<VM 名>/fw`） |
+| `before`・`after` | 許可の前と後に置くルール（1 要素に 1 ルール。realizer の言葉で書く。proxmox-fw は [providers/proxmox-fw.md](providers/proxmox-fw.md) の規則の文）。nftables なら `ct state established,related accept`・`iif "lo" accept`・最小の核への `jump mgmt` |
 | `settings` | realizer に固有の値。nftables は `hook`（既定 boundary は `forward`、host は `input`）・`priority`（既定 `filter`）・`policy`（既定 `drop`）・`confirm`（base chain の確かめる先、[providers/nftables.md](providers/nftables.md) の「確かめる先を宣言する」。境界の forward を通る経路の先には `after:` の印を付ける。下の「確かめる先の注意」） |
 
 host の実現先で `policy drop` の input を作ると、Sakutei の管理の経路（ssh）も宣言どおりにしか通らない。**到達性の最小の核は Sakutei の外で保守し**、`before` にその chain への `jump` を書く（[providers/nftables.md](providers/nftables.md) の「到達性の最小の核は Sakutei の外で保守する」）。
@@ -193,11 +193,87 @@ Network policy (§7.6): 3 network(s), 3 allow(s), 2 target(s)
 
 - domain を書かない宣言は全部が `default` に入り、展開も plan の文も今までと同じ。
 - **口を書かない実現先は既定の domain の網だけを見る**。既定の外の網を名指すと断る。
-- 本体の nftables の realizer は口を受けない。口ごとの規則に変える実現先は `WithRealizer` で足す（下）。
+- 本体の nftables の realizer は口を受けない。VM の口ごとの FW の規則にするのは本体の `proxmox-fw`（下）、ほかの口ごとの実現先は `WithRealizer` で足す（下）。
+
+## 展開（proxmox-fw）
+
+`"realizer": "proxmox-fw"` の実現先 1 つが、Proxmox VE の VM 1 台の FW の規則の並び（[proxmox-fw provider](providers/proxmox-fw.md) の resource、id は `<クラスタ>/<VM 名>/fw`）になる（Backlog #197）。
+
+- 規則は `before`・許可・`after` の順で、**Sakutei の規則として VM の規則の並びの先頭に**置かれる。手で置いた規則（印の無い規則）は消さず、書き換えず、後ろに残り、`sakutei status` の unmanaged に出る。
+- 口を書いた実現先では、許可が通る**口と向きごとに規則 1 つ**：向き `in` は `in`、`out` は `out`、口は `iface=netN`。VM の FW は口ごとに「VM に入る」と「VM から出る」を見るので、ホスト（関所の VM）は to が自分の網の口で `in`・from が自分の網の口で `out`、境界（VM が網の間を渡す）は from の網の口で `in` と to の網の口で `out` の 2 つになる。
+- 口を書かないホストは口を付けない `in` の規則。口を書かない境界は断る（どの口で受けるか決まらない）。
+- 許可 1 つはアドレスの族ごとに 1 規則（Proxmox は 1 規則に IPv4 と IPv6 を混ぜられない。from と to の両方にその族の CIDR があるときだけ）。ポートは `80,443,8000:8100`。icmp は IPv4 だけ、icmpv6 は IPv6 だけ。
+- **comment** は reason（改行・続く空白は 1 つの空白、`;` は `,`、200 バイトを超えれば切って `…`）。Proxmox には印を付けて `sakutei: <reason>` で書く（印で Sakutei の規則を見分ける）。日本語・`"`・`#` はそのまま読み戻せる（Proxmox VE 9.2 で確かめた）。
+- `settings` は受けない。**既定の拒否は VM の FW の options**（proxmox-vm の `firewall: "enable=1 policy_in=DROP policy_out=DROP"`）、口の FW は NIC の `firewall=1`（[providers/proxmox-vm.md](providers/proxmox-vm.md)、#196）で書く。Proxmox の FW は状態を見るので、許した通信の戻りは通る。
+- 規則を置く・変える・外すのは FW の変更として破壊的（`[DESTRUCTIVE]`）に数え、変更の予算（§13）に入る。
+
+### 例：関所の VM
+
+利用者ごとに VM を 1 台置いて関所にし、片側の口（`net0`）を利用者の網、もう片側（`net1`）をサービスの網につなぐ。**利用者側の口は出る向きの KDC・DNS・LDAP・NTP だけ、サービス側の口は入る向きの 443 だけ**を許す:
+
+```json
+{
+  "resources": [
+    {"provider": "proxmox-vm", "id": "lab/gw-a", "fields": {
+      "vmid": "601", "template": "debian-13-cloud", "disks": "scsi0 storage=local-lvm size=8G",
+      "nics": "net0 bridge=vmbr0 vlan=101 firewall=1, net1 bridge=vmbr1 firewall=1",
+      "firewall": "enable=1 policy_in=DROP policy_out=DROP", "power": "running"}}
+  ],
+  "network_policy": {
+    "networks": [
+      {"name": "a-infra",  "domain": "tenant-a", "cidrs": ["10.0.0.10", "10.0.0.11"]},
+      {"name": "gw-a",     "domain": "tenant-a", "cidrs": ["10.0.0.1"]},
+      {"name": "gw-a-svc", "domain": "service",  "cidrs": ["172.16.0.11"]},
+      {"name": "portal",   "domain": "service",  "cidrs": ["172.16.1.0/24"]}
+    ],
+    "allows": [
+      {"from": "gw-a",   "to": "a-infra",  "proto": "udp", "ports": [53, 88, 123],      "reason": "関所から DNS・KDC・NTP"},
+      {"from": "gw-a",   "to": "a-infra",  "proto": "tcp", "ports": [53, 88, 389, 636], "reason": "関所から DNS・KDC・LDAP"},
+      {"from": "portal", "to": "gw-a-svc", "proto": "tcp", "ports": [443],              "reason": "サービス側は 443 だけ"}
+    ],
+    "targets": [
+      {"name": "gw-a", "realizer": "proxmox-fw", "kind": "host", "networks": ["gw-a", "gw-a-svc"],
+       "interfaces": [{"name": "net0", "domain": "tenant-a"}, {"name": "net1", "domain": "service"}],
+       "id": "lab/gw-a/fw"}
+    ]
+  }
+}
+```
+
+`sakutei plan` は口・向きと、なった規則を出す:
+
+```
+  target gw-a (host, proxmox-fw) → 3 allow(s) proxmox-fw/lab/gw-a/fw
+    interface net0 (domain tenant-a): [gw-a]
+    interface net1 (domain service): [gw-a-svc]
+    allow gw-a → a-infra udp 53,88,123 (net.json: network_policy.allows[0])
+      domain: tenant-a
+      via:    net0 out
+      reason: "関所から DNS・KDC・NTP"
+      → out ACCEPT iface=net0 source=10.0.0.1 dest=10.0.0.10,10.0.0.11 proto=udp dport=53,88,123 comment=関所から DNS・KDC・NTP
+    ...
+    allow portal → gw-a-svc tcp 443 (net.json: network_policy.allows[2])
+      domain: service
+      via:    net1 in
+      reason: "サービス側は 443 だけ"
+      → in ACCEPT iface=net1 source=172.16.1.0/24 dest=172.16.0.11 proto=tcp dport=443 comment=サービス側は 443 だけ
+```
+
+Proxmox の `/etc/pve/firewall/601.fw` には次の形で入る（手で置いた規則はこの後ろ）:
+
+```
+OUT ACCEPT -i net0 -source 10.0.0.1 -dest 10.0.0.10,10.0.0.11 -p udp -dport 53,88,123 # sakutei: 関所から DNS・KDC・NTP
+OUT ACCEPT -i net0 -source 10.0.0.1 -dest 10.0.0.10,10.0.0.11 -p tcp -dport 53,88,389,636 # sakutei: 関所から DNS・KDC・LDAP
+IN ACCEPT -i net1 -source 172.16.1.0/24 -dest 172.16.0.11 -p tcp -dport 443 # sakutei: サービス側は 443 だけ
+```
+
+- 利用者 B の関所は同じアドレス（`10.0.0.1`）でも domain が違えば別の網として書ける（上の「網の domain と実現先の口」）。
+- 関所のソフトウェアの中で何が何に渡るか（利用者の要求をサービスへ渡すこと）は Sakutei の外。
+- proxmox-vm の VM と proxmox-fw の規則は別の resource（id も別）。VM がまだ無い間、規則の Apply は一時の失敗になり、VM ができた後の回で置かれる。
 
 ## 別の実現先へ変換する（展開の口）
 
-本体の変換は nftables だけ。スイッチの ACL などへの変換は、使う側が `pkg/cli` の `WithRealizer` で足した自前のバイナリ（[§28.9](architecture/spec/part8-implementation.md) の外の provider と同じ作り方、`examples/external-provider/`）で持つ:
+本体の変換は nftables と proxmox-fw。スイッチの ACL などへの変換は、使う側が `pkg/cli` の `WithRealizer` で足した自前のバイナリ（[§28.9](architecture/spec/part8-implementation.md) の外の provider と同じ作り方、`examples/external-provider/`）で持つ:
 
 ```go
 package main
@@ -229,7 +305,7 @@ func main() {
 }
 ```
 
-target に `"realizer": "switch-acl"` を書くと、その実現先はこの変換を通る。`Output.Rules` は plan の展開に出る。同じ入力には同じ出力を返す（決定的）。すでにある名前（`nftables` を含む）は起動のエラー。
+target に `"realizer": "switch-acl"` を書くと、その実現先はこの変換を通る。`Output.Rules` は plan の展開に出る。同じ入力には同じ出力を返す（決定的）。すでにある名前（`nftables`・`proxmox-fw` を含む）は起動のエラー。
 
 ## 見送り
 
