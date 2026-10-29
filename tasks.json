@@ -4586,7 +4586,7 @@
       "number": 197,
       "kind": "task",
       "title": "network_policy の実現先 proxmox-fw（VM の FW の規則、入りと出）",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "domain-vm-fw-proxmox-fw",
       "dependsOn": [
         "netpolicy-domain",
@@ -4601,7 +4601,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T02:18:20.572Z",
-      "updatedAt": "2026-10-29T09:24:31.614Z",
+      "updatedAt": "2026-10-29T10:30:03.433Z",
       "closedAt": null,
       "extra": {}
     },
