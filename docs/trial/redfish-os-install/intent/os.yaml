@@ -32,6 +32,15 @@ workflows:
     applicant: trial
     target:
       provider: redfish-system
+    # 終わりの姿（#209）。workflow store が無い（一回性の reconcile に --workflow-store を
+    # 渡さない）・store を失ったときは、これが観測で満たされれば導入は済んだと見て、
+    # node1 と CD をふつうに宣言どおりに保つ（常駐は入れ直さずに done と書く）。
+    # 満たされない・ssh で届かない間は Workflow に任せて触らない
+    done_when:
+      resource: guest-os/{target}
+      fields:
+        os_id: alpine
+        marker.installed: sakutei-trial-1
     strategy:
       order: one-at-a-time
     stages:

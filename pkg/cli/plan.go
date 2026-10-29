@@ -484,7 +484,9 @@ func runPlan(args []string) {
 	// #89 (§6.3): the targets of a Workflow that is not done are driven by the
 	// Workflow; the daemon's loop neither Observes nor Applies them, so plan
 	// shows them as such instead of as a diff.
-	wfHeld := workflowHeld(in.Workflows, *workflowStore)
+	wfHeld := workflowHeld(in.Workflows, *workflowStore, in.PlannedChanges, func(id core.ID) provider.Provider {
+		return providers[id.Provider]
+	})
 	var heldShown []workflowHeldTarget
 
 	// #94 (§6.2): a diff of a strategy: task resource is never Applied; the

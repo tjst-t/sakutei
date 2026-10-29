@@ -16,6 +16,7 @@
 package filelock
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -25,20 +26,35 @@ import (
 // so that several processes sharing one file serialise their
 // read-modify-write.
 func lockFile(path string, exclusive bool) (func(), error) {
+	unlock, _, err := flockFile(path, exclusive, false)
+	return unlock, err
+}
+
+// tryLockFile takes the exclusive flock on path without waiting; ok is false
+// when another holder has it.
+func tryLockFile(path string) (func(), bool, error) { return flockFile(path, true, true) }
+
+func flockFile(path string, exclusive, try bool) (func(), bool, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("filelock: open %s: %w", path, err)
+		return nil, false, fmt.Errorf("filelock: open %s: %w", path, err)
 	}
 	how := syscall.LOCK_SH
 	if exclusive {
 		how = syscall.LOCK_EX
 	}
+	if try {
+		how |= syscall.LOCK_NB
+	}
 	if err := syscall.Flock(int(f.Fd()), how); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("filelock: lock %s: %w", path, err)
+		if try && errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("filelock: lock %s: %w", path, err)
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
-	}, nil
+	}, true, nil
 }

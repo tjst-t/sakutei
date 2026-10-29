@@ -4,6 +4,10 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 ## 未リリース
 
+### 追加
+
+- **done の Workflow の対象を一回性の reconcile でも保つ**（#209）：`sakutei reconcile` に `--workflow-store`（読むだけ。一回性は Workflow を進めない）を足し、done の Workflow の対象をふつうのリソースとして宣言どおりに戻す。store が無い・store に run が無いときは宣言と観測で決める：`trigger: reimage` は開いている `planned_change`（`kind: reimage`）が無ければ収束させ、Workflow の新しい欄 `done_when: { resource, fields }`（終わりの姿、`require` と同じ形）が観測で満たされれば済んだと見て収束させる。満たされない・観測できないものは触らず、理由を plan・status・reconcile に出す。store を失った常駐は done_when の満たされた Workflow を起こし直さず done と書く。Workflow を進めるのは store の排他のロック（`<store>.advance.lock`）を取った常駐だけ。halt の対象は触らず、理由を新しい level の Event `WorkflowTargetHeld` に出す。plan・status は `--workflow-store` が無くても同じ判定で段階を出す。
+
 ## v2.9.0（2026-10-29）
 
 網の許可を複数のアドレスの空間と VM の FW へ広げ、使ってみて分かった足りない点と不具合を直す版。network_policy の網に domain を足し、Proxmox VE の VM の FW を実現先にし、proxmox-vm の NIC の FW と MTU、postgresql の境界の外のロールの CONNECT、`runtime:` の実行の種類ごとの値、OTLP のトレースの出口を足した。一部の NETCONF サーバで収束しない不具合を直した。設計書は v3.61 → v3.68（`docs/architecture/CHANGELOG-v3.62.md`〜`v3.68.md`）。

@@ -69,3 +69,20 @@ func TestLock_ExcludesLockAndRLock(t *testing.T) {
 		t.Error("RLock waited for another RLock")
 	}
 }
+
+func TestTryLock_OneHolder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store")
+	unlock, ok, err := TryLock(path)
+	if err != nil || !ok {
+		t.Fatalf("first TryLock = %v, %v", ok, err)
+	}
+	if _, ok, err := TryLock(path); err != nil || ok {
+		t.Fatalf("second TryLock while held = %v, %v; want not taken", ok, err)
+	}
+	unlock()
+	unlock2, ok, err := TryLock(path)
+	if err != nil || !ok {
+		t.Fatalf("TryLock after release = %v, %v", ok, err)
+	}
+	unlock2()
+}

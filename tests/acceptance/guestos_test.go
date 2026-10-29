@@ -96,6 +96,10 @@ func newGuestRig(t *testing.T, resources string) *guestRig {
 }
 
 func (r *guestRig) restart() {
+	// #209: the old daemon's process "dies": its advance lock is released.
+	if r.d != nil {
+		r.d.Abandon()
+	}
 	r.d = reconcile.NewDaemon(reconcile.Config{
 		IntentDir:    r.dir,
 		GeneratedDir: filepath.Join(filepath.Dir(r.dir), "generated"),

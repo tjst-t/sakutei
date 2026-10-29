@@ -347,7 +347,9 @@ Exit codes:
 
 	// #89 (§6.3): a target of a Workflow that is not done is driven by the
 	// Workflow, not by the loop — reported as such, never as drifted.
-	wfHeld := workflowHeld(in.Workflows, *workflowStore)
+	wfHeld := workflowHeld(in.Workflows, *workflowStore, in.PlannedChanges, func(id core.ID) provider.Provider {
+		return providers[id.Provider]
+	})
 
 	// #188: a resource whose secret generation could not be read is unknown.
 	secretUnknown := map[string]string{}

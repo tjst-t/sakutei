@@ -114,6 +114,10 @@ func newWFRFWith(t *testing.T, nodes []string, opts redfishtest.Options, bc budg
 
 // restart は同じ intent・現実・S2・S4 で新しいデーモンを作る（起こし直し）。
 func (r *wfRF) restart() {
+	// #209: the old daemon's process "dies": its advance lock is released.
+	if r.d != nil {
+		r.d.Abandon()
+	}
 	r.d = reconcile.NewDaemon(reconcile.Config{
 		IntentDir:    r.dir,
 		GeneratedDir: filepath.Join(filepath.Dir(r.dir), "generated"),

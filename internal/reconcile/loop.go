@@ -95,6 +95,11 @@
 //     planned_change kind: reimage covers its target scope (the budget engine's
 //     lane: window, approval, cooling-off), once per declaration, and uses one
 //     of its max_count per target.  Until then its targets converge as usual.
+//   - #209: only the holder of the store's advance lock advances the
+//     Workflows; without a store (or without a run in it) a Workflow whose
+//     done_when is observed is done (the daemon records it as done without
+//     starting a run), others are held.  The targets of a halted run and those
+//     of unknown progress are a level Event (WorkflowTargetHeld).
 //
 // #79 additions (§22.3):
 //   - Drift, convergence failures and halts are level Events: the Daemon's
@@ -1292,10 +1297,24 @@ func (d *Daemon) Wait(timeout time.Duration) {
 
 // Shutdown stops the phased Tasks at their next safe point (releasing their
 // records for the next daemon, #51) and waits like Wait.  A simple Task and a
-// step in progress are never cut off.
+// step in progress are never cut off.  It then releases the workflow store's
+// advance lock (#209) for the next daemon.
 func (d *Daemon) Shutdown(timeout time.Duration) {
 	d.StopTasks()
 	d.Wait(timeout)
+	if d.workflows != nil {
+		d.workflows.Release()
+	}
+}
+
+// Abandon releases what the death of the daemon's process releases — the
+// workflow store's advance lock (#209, an flock) — without stopping anything.
+// A test that simulates a crash by building a new daemon in the same process
+// calls it on the old one.
+func (d *Daemon) Abandon() {
+	if d.workflows != nil {
+		d.workflows.Release()
+	}
 }
 
 // StopTasks is the first half of Shutdown: it asks the phased Tasks to stop at
@@ -1605,6 +1624,10 @@ type levelCoverage struct {
 	// cycle without a store error; disrupting: those among them whose
 	// disruptive update is notified and not done (#152).
 	wfTicked, disrupting map[string]bool
+	// wfJudged: the Workflow holds were decided this cycle; wfFlagged: the
+	// targets (ID.String()) held for a halt or unknown progress (#209).
+	wfJudged  bool
+	wfFlagged map[string]bool
 }
 
 // disruptionCoverage returns the targets of the Workflows advanced this cycle
@@ -1659,6 +1682,10 @@ func (c levelCoverage) resolves(ev core.Event, res CycleResult, cycleErr error) 
 		// reports the target as disrupting (its steps are done, or the run
 		// was cancelled).
 		return ev.HasResource() && c.wfTicked[ev.Resource.String()] && !c.disrupting[ev.Resource.String()]
+	case core.EventWorkflowTargetHeld:
+		// #209: gone when the cycle decided the holds and no longer holds the
+		// target for a halt or unknown progress.
+		return c.wfJudged && ev.HasResource() && !c.wfFlagged[ev.Resource.String()]
 	case core.EventVersionIncompatible:
 		// #151: gone when the compatibility check no longer holds it (the
 		// order or the table was fixed, or the group converged).
@@ -2042,14 +2069,23 @@ func runCycleAsync(
 	// #152: the targets of the Workflows advanced this cycle and those whose
 	// disruption is notified, for resolving the Disruption Events.
 	var wfTicked, wfDisrupting map[string]bool
+	// #209: the holds flagged by a level Event (halted, progress unknown).
+	var wfHolds []workflow.Hold
 	if len(in.Workflows) > 0 {
 		if workflows == nil {
-			for _, def := range in.Workflows {
-				for _, id := range def.Resources() {
-					wfHeld[id.Local] = def.Name
+			// #209 (§6.3): without a store the Workflows do not advance, and what
+			// is not done yet is decided by the declaration (an open planned_change
+			// for trigger: reimage) and observation (done_when).
+			judge := workflow.Judge{Lanes: budgetEngine, ProviderFor: func(id core.ID) provider.Provider {
+				return providers.provider(diff.DesiredResource{ID: id})
+			}}
+			wfHolds = judge.Holds(ctx, in.Workflows)
+			for _, h := range wfHolds {
+				for _, id := range h.Targets {
+					wfHeld[id.Local] = h.Workflow
 				}
-				wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventError, Workflow: def.Name,
-					Message: "no workflow store configured (--workflow-store); the Workflow does not advance and its targets are held (a gate needs S2, §6.4)"})
+				wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventError, Workflow: h.Workflow,
+					Message: "no workflow store configured (--workflow-store); the Workflow does not advance and its targets are held (" + h.Describe(false) + ")"})
 			}
 		} else {
 			var runnable []workflow.Definition
@@ -2065,21 +2101,49 @@ func runCycleAsync(
 					runnable = append(runnable, def)
 				}
 			}
-			if decision.IsAlertOnly() {
+			// #209: only the holder of the store's advance lock advances; the
+			// others hold the targets of what is not done.
+			locked, lockErr := workflows.AcquireAdvance()
+			switch {
+			case len(runnable) == 0:
+			case lockErr != nil || !locked:
+				why := "another process holds the advance lock of the workflow store (it advances the Workflows)"
+				if lockErr != nil {
+					why = fmt.Sprintf("the advance lock of the workflow store cannot be taken: %v", lockErr)
+				}
+				for _, def := range runnable {
+					wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventWaiting, Workflow: def.Name,
+						Message: why + "; not advancing (targets of what is not done stay held)"})
+				}
+			case decision.IsAlertOnly():
 				for _, def := range runnable {
 					wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventWaiting, Workflow: def.Name,
 						Message: fmt.Sprintf("remediation mode is alert-only (%s); not advancing", decision.Reason)})
 				}
-			} else {
+			default:
 				wfEvents = workflows.Tick(ctx, runnable)
 				wfTicked, wfDisrupting = disruptionCoverage(runnable, wfEvents)
 			}
-			held, err := workflows.Held(ctx, in.Workflows)
-			if err != nil {
-				fmt.Fprintf(cfg.ErrOut, "sakutei: workflow store: %v; holding every Workflow target\n", err)
+			wfHolds = workflows.Judge().Holds(ctx, in.Workflows)
+			for _, h := range wfHolds {
+				if h.Err != nil {
+					fmt.Fprintf(cfg.ErrOut, "sakutei: workflow store: %v; holding every Workflow target\n", h.Err)
+					break
+				}
 			}
-			wfHeld = held
+			for _, h := range wfHolds {
+				for _, id := range h.Targets {
+					wfHeld[id.Local] = h.Workflow
+				}
+			}
 		}
+	}
+	// #209: a halted run's targets and those of unknown progress are a level
+	// Event, resolved on the first cycle that no longer holds them for that.
+	wfFlagged := map[string]bool{}
+	for _, ev := range workflow.HeldEvents(wfHolds, workflows != nil) {
+		wfEvents = append(wfEvents, ev)
+		wfFlagged[ev.Resource.String()] = true
 	}
 	var wfHeldThisCycle []string
 
@@ -2216,7 +2280,7 @@ func runCycleAsync(
 
 	// §22.3: what this cycle sees, for the level report.
 	cov := levelCoverage{observed: true, settled: map[string]bool{}, desired: make(map[string]bool, len(desired)),
-		wfTicked: wfTicked, disrupting: wfDisrupting}
+		wfTicked: wfTicked, disrupting: wfDisrupting, wfJudged: true, wfFlagged: wfFlagged}
 	for _, r := range desired {
 		cov.desired[r.ID.String()] = true
 	}

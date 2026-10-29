@@ -132,6 +132,10 @@ func (r *wfRig) seed(local string, fields map[string]any) {
 
 // newDaemon は同じ intent・現実・S2・S4 で新しいデーモンを作る（＝再起動）。
 func (r *wfRig) newDaemon(store bool) *reconcile.Daemon {
+	// #209: the old daemon's process "dies": its advance lock is released.
+	if r.d != nil {
+		r.d.Abandon()
+	}
 	r.out = &syncBuf{}
 	cfg := reconcile.Config{
 		IntentDir:    r.intentDir,
@@ -773,8 +777,8 @@ func TestWorkflowPlanStatusShowHeldTargets(t *testing.T) {
 	}
 	store := []string{"--workflow-store", r.storePath}
 
-	// store を渡さなければ、Workflow の対象であることだけを出す。
-	check("no store", "stage unknown (no --workflow-store)")
+	// store を渡さなければ、進み具合が分からない理由を出す（#209: done_when も無い）。
+	check("no store", "progress unknown (no --workflow-store, and no done_when to confirm the end state by observation)")
 	// 未起動。plan・status は store を書かない。
 	check("not started", "not started", store...)
 	if _, err := os.Stat(r.storePath); !os.IsNotExist(err) {

@@ -108,6 +108,12 @@
 //     （Run.Reserved、ReimageLanes）、使い切った・取り下げられた・窓を過ぎたなら
 //     その対象の手前で halt する。入れ直しの中の破壊的な action はレーンの 1 回分に
 //     含まれ、通常予算に通さない。
+//   - done_when（#209）は終わりの姿を観測で確かめる条件: { resource, fields }（require
+//     と同じ形、timeout なし）。store が無い・store にその run が無いときに、全対象で
+//     満たされていれば済んだと見て対象を収束ループに返す（常駐は run を起こさず done と
+//     書く）。無い・満たされない・観測できなければ持つ（Judge）。定義のハッシュに入れず、
+//     trigger: reimage には書けない。進めるのは store の進めるロック（AdvanceLocker）を
+//     取った Engine だけで、一回性の reconcile・plan・status は読むだけ。
 //
 // 別の provider を触る手順と一度きりの操作の例（OS の導入: CD を差す → 差さった
 // ことを確かめる → 次の 1 回だけ CD から起動 → 再起動〈切れていれば電源 On〉→
@@ -503,6 +509,31 @@ func (d *Disruption) validate(def Definition) error {
 	return nil
 }
 
+// DoneWhen は Workflow の終わりの姿を観測で確かめる条件（§6.3、Backlog #209）。
+// 形は require と同じ（{ resource, fields }。resource を省けば対象そのもの、
+// {target} は対象の Local ID）。全対象で fields が観測されれば、その Workflow は
+// 済んでいる。S2（store）が無い・store にその run が無いときに、store の代わりに
+// 「まだ済んでいない」を宣言と観測で決めるのに使う（store を失っても導入を
+// やり直さない、§1.7）。定義のハッシュには入れない（書き足しても done の run を
+// 起こし直さない）。
+//
+//	done_when:
+//	  resource: guest-os/{target}
+//	  fields:
+//	    version: "24.04"
+type DoneWhen struct {
+	Resource string            `json:"resource,omitempty"`
+	Fields   map[string]string `json:"fields"`
+}
+
+// ResourceFor は対象 target のときに確かめるリソースの ID を返す。
+func (w DoneWhen) ResourceFor(target core.ID) core.ID {
+	if w.Resource == "" {
+		return target
+	}
+	return refFor(w.Resource, target)
+}
+
 // Definition は intent の workflows: の 1 件。
 type Definition struct {
 	Name string `json:"workflow"`
@@ -519,6 +550,9 @@ type Definition struct {
 	Steps     []Step    `json:"steps"`
 	// Disruption は全体を止める型の更新の宣言（#152）。nil なら止めない更新。
 	Disruption *Disruption `json:"disruption,omitempty"`
+	// DoneWhen は終わりの姿を観測で確かめる条件（#209）。nil なら観測では
+	// 済んだと言えない（store が無い・run が無いときは対象を持つ）。
+	DoneWhen *DoneWhen `json:"done_when,omitempty"`
 }
 
 // Scope は対象の scope（target.scope。全対象で同じ）。
@@ -705,6 +739,21 @@ func (d Definition) Validate() error {
 	if d.Disruption != nil {
 		if err := d.Disruption.validate(d); err != nil {
 			return fmt.Errorf("workflow %s: %w", d.Name, err)
+		}
+	}
+	if w := d.DoneWhen; w != nil {
+		if len(w.Fields) == 0 {
+			return fmt.Errorf("workflow %s: done_when: fields are required (the end state to observe)", d.Name)
+		}
+		if w.Resource != "" {
+			if err := validateRef(w.Resource); err != nil {
+				return fmt.Errorf("workflow %s: done_when: %w", d.Name, err)
+			}
+		}
+		if d.Trigger != "" {
+			// 入れ直しは今の姿が宣言どおりでもやり直すもの。「まだ済んでいない」は
+			// 開いている planned_change が決める（§6.3）。
+			return fmt.Errorf("workflow %s: done_when is not for trigger %s (a reimage redoes a target even when its end state is observed; the open planned_change says it is not done yet)", d.Name, d.Trigger)
 		}
 	}
 	return nil

@@ -39,6 +39,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/revision"
 	"github.com/tjst-t/sakutei/v2/internal/runtimeargs"
 	"github.com/tjst-t/sakutei/v2/internal/tracing"
+	"github.com/tjst-t/sakutei/v2/internal/workflow"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 	"github.com/tjst-t/sakutei/v2/pkg/sdk"
@@ -129,6 +130,11 @@ func runReconcile(args []string) {
 	auditLog := fs.String("audit-log", "",
 		"S4 audit log file (append-only, hash-chained JSON lines); every Apply and prune is recorded there (#187), and with it planned_change lanes open, holding max_count and the cooling-off across runs (§14.5, §23.7)")
 	auditSink := addAuditSinkFlags(fs)
+	// #209 (§6.3): the daemon's workflow store, read only — a one-shot run
+	// never advances a Workflow.  With it the targets of a done Workflow
+	// converge as declared.
+	workflowStore := fs.String("workflow-store", "",
+		"OPTIONAL path to the daemon's workflow store (§6.3), read only: the targets of a done Workflow converge as declared; the one-shot run never advances a Workflow")
 	generatedDir := fs.String("generated", "",
 		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
 	// S072a14-2: render phase 1 — external input resolver flags.
@@ -264,16 +270,10 @@ func runReconcile(args []string) {
 	} else if len(in.PlannedChanges) > 0 {
 		fmt.Fprintf(logErr, "sakutei reconcile: note: %d planned_change declaration(s) need --audit-log to open their lanes in a one-shot run (max_count and the cooling-off are held in S4 across runs); this run evaluates every change by the normal budget\n", len(in.PlannedChanges))
 	}
-	// #42 (§6.3): a Workflow target is driven only by its Workflow in the
-	// resident loop, where its progress (S2) is known.  The one-shot run cannot
-	// tell whether the Workflow is done, so it never Applies a target with a
-	// diff (conservative).
-	workflowOf := map[string]string{}
-	for _, def := range in.Workflows {
-		for _, id := range def.Resources() {
-			workflowOf[id.Local] = def.Name
-		}
-	}
+	// #42 / #209 (§6.3): a Workflow target that is not done is driven only by
+	// its Workflow in the resident loop.  What is not done is decided below,
+	// once the providers are resolved (done_when is observed through them).
+	workflowOf := map[string]workflow.Hold{}
 	var externalInputs []string
 	recomputeRendered := false
 	// #115: render phase 1 — inventory composition, as in the daemon.
@@ -477,6 +477,31 @@ func runReconcile(args []string) {
 	if resolveErr != nil {
 		fmt.Fprintln(logErr, resolveErr)
 		exitAfterEvents(1)
+	}
+
+	// #209 (§6.3): the Workflows that are not done.  The one-shot run never
+	// advances one; it reads --workflow-store when given, and otherwise (or
+	// when the store has no run) decides by the declaration (an open
+	// planned_change for trigger: reimage) and observation (done_when).  A
+	// target of what is not done is never Applied (conservative).
+	if len(in.Workflows) > 0 {
+		var lanes workflow.ReimageOpener = declaredReimage(in.PlannedChanges, time.Now)
+		if *auditLog != "" {
+			lanes = budgetEngine
+		}
+		holds, storeKnown := judgeWorkflows(context.Background(), in.Workflows, *workflowStore, lanes, func(id core.ID) provider.Provider {
+			return providers[id.Provider]
+		})
+		for _, h := range holds {
+			for _, id := range h.Targets {
+				workflowOf[id.Local] = h
+			}
+		}
+		for _, ev := range workflow.HeldEvents(holds, storeKnown) {
+			cev := ev.Core()
+			cev.Text = "sakutei reconcile: " + ev.String()
+			eventlog.Emit(logErr, cev)
+		}
 	}
 
 	// Build per-provider diff engines (each provider has its own Schema).
@@ -696,10 +721,10 @@ func runReconcile(args []string) {
 				nonCOps = append(nonCOps, op)
 			}
 		}
-		if wf, ok := workflowOf[res.ID.Local]; ok && len(nonCOps) > 0 {
+		if h, ok := workflowOf[res.ID.Local]; ok && len(nonCOps) > 0 {
 			fmt.Fprintf(logErr,
-				"sakutei reconcile: %s: target of workflow %s — not applying; the daemon drives it through the Workflow (§6.3)\n",
-				res.ID, wf)
+				"sakutei reconcile: %s: target of workflow %s — not applying; the daemon drives it through the Workflow (§6.3): %s\n",
+				res.ID, h.Workflow, h.Describe(*workflowStore != ""))
 			unobservable[res.ID.Local] = true
 			workflowHeld[res.ID.Local] = true
 		} else if len(nonCOps) > 0 && res.UpdatePolicy.IsTask() {

@@ -90,3 +90,23 @@ func RLock(path string) func() {
 		m.RUnlock()
 	}
 }
+
+// TryLock takes the exclusive lock for path without waiting (Backlog #209:
+// only one process advances the Workflows of a store).  ok is false, with
+// nothing held, when another goroutine of this process or another process
+// holds it.  An error (the lock file cannot be opened) leaves nothing held.
+func TryLock(path string) (unlock func(), ok bool, err error) {
+	m := mutexFor(path)
+	if !m.TryLock() {
+		return nil, false, nil
+	}
+	unlockFile, ok, err := tryLockFile(path + ".lock")
+	if err != nil || !ok {
+		m.Unlock()
+		return nil, false, err
+	}
+	return func() {
+		unlockFile()
+		m.Unlock()
+	}, true, nil
+}

@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/tjst-t/sakutei/v2/internal/filelock"
 )
 
 // Phase は Workflow の実行のフェーズ。
@@ -181,6 +183,15 @@ type Store interface {
 	List(ctx context.Context) ([]Run, error)
 }
 
+// AdvanceLocker は Workflow を進める処理を 1 つに絞る Store（Backlog #209、§6.3）。
+// 進める処理（常駐の Engine）は TryAdvance で排他のロックを取ってからだけ進め、
+// 取れなければ（別の常駐が進めている）進めずに done でない Workflow の対象を
+// 持つ。ロックは release を呼ぶか、持つプロセスが終わるまで続く。承認 API・
+// cancel・一回性の読み出しはこのロックを取らない（進めないので）。
+type AdvanceLocker interface {
+	TryAdvance() (release func(), ok bool, err error)
+}
+
 // FileStore は1つの JSON ファイルに記録を置く Store（task.FileStore と同じ形）。
 // 読み書きは隣の "<path>.lock"（O_EXCL で作るロックファイル）で直列化し、
 // 書き込みは一時ファイル + rename で原子的に行う。デーモン・承認 API・CLI の
@@ -197,6 +208,16 @@ const (
 	DefaultLockTimeout = 5 * time.Second
 	DefaultStaleLock   = 30 * time.Second
 )
+
+// TryAdvance implements AdvanceLocker: the flock on "<path>.advance.lock"
+// (released by the kernel when the holding process dies).
+func (s *FileStore) TryAdvance() (func(), bool, error) {
+	release, ok, err := filelock.TryLock(s.Path + ".advance")
+	if err != nil {
+		return nil, false, fmt.Errorf("workflow store advance lock: %w", err)
+	}
+	return release, ok, nil
+}
 
 // NewFileStore は path を使う FileStore を返す。
 func NewFileStore(path string) *FileStore { return &FileStore{Path: path} }

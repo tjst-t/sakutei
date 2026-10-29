@@ -116,6 +116,12 @@ const (
 	EventWorkflowHalted        EventKind = "WorkflowHalted"
 	EventWorkflowCompleted     EventKind = "WorkflowCompleted"
 	EventWorkflowError         EventKind = "WorkflowError"
+	// EventWorkflowTargetHeld は Workflow に任せて収束させない対象のうち、halt した
+	// run の対象と、進み具合が分からない（store が無い・store に run が無く
+	// done_when が満たされない）対象（level、§6.3、Backlog #209）。resource に対象、
+	// attrs の workflow と stage（止まった理由・分からない理由）。持たなくなった周
+	// （cancel・resume・done_when が満たされた）に resolved。
+	EventWorkflowTargetHeld EventKind = "WorkflowTargetHeld"
 )
 
 // IsLevel は k が level（継続状態）の Event かを返す（§22.3）。収束失敗・ずれ・
@@ -155,7 +161,10 @@ func (k EventKind) IsLevel() bool {
 		// process (or the declaration) does.
 		EventRuntimeTightened, EventRuntimeDeclarationChanged,
 		// Backlog #184: a global freeze lasts until it is ended or expires.
-		EventFrozen:
+		EventFrozen,
+		// Backlog #209: a Workflow target held for a halt (or unknown
+		// progress) stays held until a person cancels or resumes the run.
+		EventWorkflowTargetHeld:
 		return true
 	}
 	return false

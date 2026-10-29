@@ -114,6 +114,10 @@ func newCDRig(t *testing.T, defPath string, bc budget.Config, devices ...*clifak
 }
 
 func (r *cdRig) restart() {
+	// #209: the old daemon's process "dies": its advance lock is released.
+	if r.d != nil {
+		r.d.Abandon()
+	}
 	r.out, r.errOut, r.rec = &syncBuffer{}, &syncBuffer{}, &recordingSink{}
 	r.d = reconcile.NewDaemon(reconcile.Config{
 		IntentDir:    r.dir,

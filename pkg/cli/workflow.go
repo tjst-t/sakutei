@@ -26,8 +26,10 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v2/internal/audit"
+	"github.com/tjst-t/sakutei/v2/internal/budget"
 	"github.com/tjst-t/sakutei/v2/internal/workflow"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // runApprove implements "sakutei approve" and "sakutei reject" (#42, §6.4):
@@ -196,20 +198,54 @@ type workflowHeldTarget struct {
 }
 
 // workflowHeld returns the targets of the Workflows that are not done, keyed by
-// Local ID, with their run's stage read from storePath (empty = no store: only
-// the fact that they are Workflow targets is known).  Like the daemon it never
-// writes the store.
-func workflowHeld(defs []workflow.Definition, storePath string) map[string]workflowHeldTarget {
-	var store workflow.Store
-	if storePath != "" {
-		store = workflow.NewFileStore(storePath)
-	}
+// Local ID, with their run's stage read from storePath (empty = no store).
+// What is not done is decided as in a one-shot reconcile (#209): an open
+// planned_change (by its window, approval not checked: the side that holds)
+// for trigger: reimage, and done_when observed through providerFor.  Like
+// the daemon it never writes the store.
+func workflowHeld(defs []workflow.Definition, storePath string, planned []budget.PlannedChange, providerFor func(core.ID) provider.Provider) map[string]workflowHeldTarget {
+	holds, storeKnown := judgeWorkflows(context.Background(), defs, storePath, declaredReimage(planned, time.Now), providerFor)
 	held := map[string]workflowHeldTarget{}
-	for _, h := range workflow.Holds(context.Background(), store, defs) {
-		stage := h.Describe(store != nil)
+	for _, h := range holds {
+		stage := h.Describe(storeKnown)
 		for _, id := range h.Targets {
 			held[id.Local] = workflowHeldTarget{ID: id, Workflow: h.Workflow, Stage: stage}
 		}
 	}
 	return held
+}
+
+// judgeWorkflows returns the Workflows that are not done (§6.3, #209), reading
+// storePath when given (never writing it, never advancing a Workflow).
+// storeKnown reports whether a store was given.
+func judgeWorkflows(ctx context.Context, defs []workflow.Definition, storePath string, lanes workflow.ReimageOpener, providerFor func(core.ID) provider.Provider) (holds []workflow.Hold, storeKnown bool) {
+	j := workflow.Judge{Lanes: lanes, ProviderFor: providerFor}
+	if storePath != "" {
+		j.Store = workflow.NewFileStore(storePath)
+	}
+	return j.Holds(ctx, defs), storePath != ""
+}
+
+// declaredReimage opens a planned_change kind: reimage by its window alone
+// (#209): where the lanes are not evaluated (no S4 audit log, plan, status),
+// a declaration in its window covering a trigger: reimage Workflow's scope
+// leaves the targets to the reimage rather than converging them (the side
+// that holds; an unapproved declaration is counted as open).
+type declaredReimageLanes struct {
+	planned []budget.PlannedChange
+	now     func() time.Time
+}
+
+func declaredReimage(planned []budget.PlannedChange, now func() time.Time) workflow.ReimageOpener {
+	return declaredReimageLanes{planned: planned, now: now}
+}
+
+func (d declaredReimageLanes) OpenReimage(scope core.Scope) (key, name string, left, ok bool) {
+	now := d.now()
+	for _, p := range d.planned {
+		if p.Kind == budget.PlannedReimage && p.Active(now) && scope.Matches(p.Scope) {
+			return p.Key(), p.String(), true, true
+		}
+	}
+	return "", "", false, false
 }

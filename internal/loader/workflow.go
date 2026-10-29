@@ -128,6 +128,14 @@ func parseWorkflow(m map[string]any) (workflow.Definition, error) {
 		def.Steps = append(def.Steps, step)
 	}
 
+	if raw, ok := m["done_when"]; ok {
+		w, err := parseDoneWhen(raw)
+		if err != nil {
+			return def, fmt.Errorf("done_when: %w", err)
+		}
+		def.DoneWhen = w
+	}
+
 	if raw, ok := m["disruption"]; ok {
 		d, err := parseDisruption(raw)
 		if err != nil {
@@ -436,6 +444,33 @@ func parseStep(v any) (workflow.Step, error) {
 		return step, nil
 	}
 	return workflow.Step{}, nil
+}
+
+// parseDoneWhen reads the Workflow's `done_when: { resource, fields }` (#209):
+// the same form as require, without the timeout.
+func parseDoneWhen(raw any) (*workflow.DoneWhen, error) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("must be an object { resource, fields }")
+	}
+	for key := range m {
+		if key != "resource" && key != "fields" {
+			return nil, fmt.Errorf("%s is not supported (resource | fields)", key)
+		}
+	}
+	w := &workflow.DoneWhen{}
+	if v, ok := m["resource"]; ok {
+		ref, isString := v.(string)
+		if !isString || strings.TrimSpace(ref) == "" {
+			return nil, fmt.Errorf("resource must be \"<provider>/<id>\"")
+		}
+		w.Resource = strings.TrimSpace(ref)
+	}
+	if _, isMap := m["fields"].(map[string]any); !isMap {
+		return nil, fmt.Errorf("fields must be an object")
+	}
+	w.Fields = stringifyStringMap(m["fields"])
+	return w, nil
 }
 
 // parseStepResource reads the step's optional `resource: <provider>/<id>`.

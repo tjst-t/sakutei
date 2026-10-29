@@ -46,6 +46,8 @@ const (
 	EventError     = core.EventWorkflowError
 	// EventDisruption は全体を止める型の更新の知らせ（level、#152）。
 	EventDisruption = core.EventDisruption
+	// EventTargetHeld は halt・進み具合が分からないために持った対象（level、#209）。
+	EventTargetHeld = core.EventWorkflowTargetHeld
 )
 
 // Event は 1 周の Workflow の出来事。出すときは Core で core.Event にする。
@@ -67,7 +69,7 @@ func (e Event) String() string {
 func (e Event) Core() core.Event {
 	sev := core.SeverityInfo
 	switch e.Kind {
-	case EventHalted, EventError, EventBlocked, EventDisruption:
+	case EventHalted, EventError, EventBlocked, EventDisruption, EventTargetHeld:
 		sev = core.SeverityWarning
 	}
 	attrs := map[string]string{"workflow": e.Workflow}
@@ -118,6 +120,8 @@ type Engine struct {
 
 	// differs は provider 名ごとの diff エンジン（ProviderFor が nil なら "" の 1 つ）。
 	differs map[string]*diff.Engine
+	// advanceRelease は進めるロック（#209）を持っている間の放す関数。
+	advanceRelease func()
 }
 
 func (e *Engine) now() time.Time {
@@ -157,12 +161,19 @@ func (e *Engine) diff(id core.ID) *diff.Engine {
 	return d
 }
 
-// ReimageLanes は planned_change kind: reimage のレーン（§13.3、#88）。budget.Engine
-// が実装する（承認・cooling-off・窓・max_count はそちらが判定する）。
-type ReimageLanes interface {
+// ReimageOpener は trigger: reimage の Workflow を起こす宣言が開いているかを返す
+// （ReimageLanes の読む側。plan・status・一回性の reconcile は宣言の窓で見る形を
+// 渡す、#209）。
+type ReimageOpener interface {
 	// OpenReimage は scope を覆う、いま開いている（窓の中・承認済み）reimage の
 	// 宣言の Key と名前を返す。left は max_count がまだ残っているか。無ければ ok false。
 	OpenReimage(scope core.Scope) (key, name string, left, ok bool)
+}
+
+// ReimageLanes は planned_change kind: reimage のレーン（§13.3、#88）。budget.Engine
+// が実装する（承認・cooling-off・窓・max_count はそちらが判定する）。
+type ReimageLanes interface {
+	ReimageOpener
 	// ReserveReimage は宣言 key の max_count を target の入れ直し 1 回分使う。
 	// 宣言がもう開いていない・使い切っていればエラー。
 	ReserveReimage(key string, target core.ID, workflow string) (name string, err error)
@@ -174,7 +185,7 @@ type ReimageLanes interface {
 func (e *Engine) Held(ctx context.Context, defs []Definition) (map[string]string, error) {
 	held := map[string]string{}
 	var firstErr error
-	for _, h := range Holds(ctx, e.Store, defs) {
+	for _, h := range e.Judge().Holds(ctx, defs) {
 		if h.Err != nil && firstErr == nil {
 			firstErr = h.Err
 		}
@@ -183,6 +194,15 @@ func (e *Engine) Held(ctx context.Context, defs []Definition) (map[string]string
 		}
 	}
 	return held, firstErr
+}
+
+// Judge は Engine と同じ store・宣言・観測で done でない Workflow を決める判定を返す。
+func (e *Engine) Judge() Judge {
+	var lanes ReimageOpener
+	if e.Reimage != nil {
+		lanes = e.Reimage
+	}
+	return Judge{Store: e.Store, Lanes: lanes, ProviderFor: e.providerOf}
 }
 
 // Hold は done でない Workflow 1 つ（その対象は収束ループが触らない）と、その run。
@@ -196,44 +216,167 @@ type Hold struct {
 	Restart bool
 	// Err は Store を読めなかったこと（そのときも対象は持つ、原則 3）。
 	Err error
+	// Unknown は進み具合が分からない（#209）：store が無いか store にその run が無く、
+	// done_when が無い・満たされない・観測できない。Why にその理由。
+	Unknown bool
+	Why     string
+	// Reimage は trigger: reimage の Workflow を起こす開いている宣言の名前（run が
+	// まだ無い。常駐がこの宣言で run を起こす）。
+	Reimage string
 }
 
-// Holds は done でない Workflow を宣言順に返す（Engine.Held と plan・status が共有する
-// 判定、#89）。store が nil なら、どの Workflow も done と言えないので全部を返す。
-// trigger: reimage の Workflow（#88）は run が無いか done なら返さない（宣言が来る
-// までは対象を収束ループに任せる。宣言が来た周は Tick が先に run を起こす）。
-func Holds(ctx context.Context, store Store, defs []Definition) []Hold {
+// Halted は止まった run の対象か（#209：理由を status・plan・level の Event に出す）。
+func (h Hold) Halted() bool { return h.Run != nil && h.Run.Phase == PhaseHalted }
+
+// Judge は done でない Workflow を決める（§6.3、#89・#209）。「宣言した変更がまだ
+// 済んでいない」は宣言（開いている planned_change）と観測（done_when）で決め、
+// store の Run は写しと作業の記録として読む:
+//
+//   - store に run があれば、それに従う（done で定義のハッシュが同じなら持たない。
+//     halt・実行中・承認待ちは持つ。done で定義が変わったら持つ〈新しい run が起きる〉）。
+//   - trigger: reimage は、run が無いか done なら、対象の scope を覆う planned_change
+//     kind: reimage が開いていて max_count が残っているときだけ持つ（その宣言で
+//     もう走った run があれば持たない）。
+//   - store が無いか store にその run が無いときは、done_when が観測で満たされれば
+//     済んだと見て持たない。done_when が無い・満たされない・観測できなければ持つ
+//     （Unknown）。
+type Judge struct {
+	// Store は進み具合の S2。nil なら store が無い（一回性・plan・status で渡されない）。
+	Store Store
+	// Lanes は trigger: reimage を起こす宣言。nil なら開いている宣言は無い。
+	Lanes ReimageOpener
+	// ProviderFor は done_when の観測に使う provider を返す。nil（か nil を返す）なら
+	// done_when は観測できない（unknown ≠ 満たされた）。
+	ProviderFor func(id core.ID) provider.Provider
+
+	differs map[string]*diff.Engine
+}
+
+// Holds は done でない Workflow を宣言順に返す（Engine.Held と plan・status・一回性の
+// reconcile が共有する判定、#89・#209）。
+func (j Judge) Holds(ctx context.Context, defs []Definition) []Hold {
 	var out []Hold
 	for _, def := range defs {
 		h := Hold{Workflow: def.Name, Targets: def.Resources()}
-		if store != nil {
-			run, ok, err := store.Get(ctx, def.Name)
-			switch {
-			case err != nil:
+		var run Run
+		ok := false
+		if j.Store != nil {
+			var err error
+			run, ok, err = j.Store.Get(ctx, def.Name)
+			if err != nil {
 				h.Err = err
-			case def.Trigger != "" && (!ok || run.Phase == PhaseDone):
+				out = append(out, h)
 				continue
-			case ok && run.Phase == PhaseDone && run.DefHash == def.Hash():
-				continue
-			case ok && run.Phase == PhaseDone:
-				h.Restart = true
-			case ok:
-				h.Run = &run
 			}
 		}
+		if def.Trigger != "" {
+			if ok && run.Phase != PhaseDone {
+				h.Run = &run
+				out = append(out, h)
+				continue
+			}
+			// #88: 宣言が開いていなければ、done でない Workflow として持たない。
+			if j.Lanes == nil {
+				continue
+			}
+			// max_count を使い切った宣言・この宣言でもう走った run では起こさない。
+			key, name, left, open := j.Lanes.OpenReimage(def.Scope())
+			if !open || !left || (ok && run.Trigger == key) {
+				continue
+			}
+			h.Reimage = name
+			out = append(out, h)
+			continue
+		}
+		if ok {
+			switch {
+			case run.Phase == PhaseDone && run.DefHash == def.Hash():
+				continue
+			case run.Phase == PhaseDone:
+				h.Restart = true
+			default:
+				h.Run = &run
+			}
+			out = append(out, h)
+			continue
+		}
+		// store が無いか、store にその run が無い: 宣言と観測で決める。
+		done, why := j.DoneWhenObserved(ctx, def)
+		if done {
+			continue
+		}
+		h.Unknown, h.Why = true, why
 		out = append(out, h)
 	}
 	return out
 }
 
+// DoneWhenObserved は def の done_when が全対象で観測で満たされるかを返す。why は
+// 満たされない理由か、満たされたことの 1 行。
+func (j *Judge) DoneWhenObserved(ctx context.Context, def Definition) (bool, string) {
+	w := def.DoneWhen
+	if w == nil {
+		return false, "no done_when to confirm the end state by observation"
+	}
+	targets := def.Targets()
+	for _, target := range targets {
+		id := w.ResourceFor(target)
+		var p provider.Provider
+		if j.ProviderFor != nil {
+			p = j.ProviderFor(id)
+		}
+		if p == nil {
+			return false, fmt.Sprintf("done_when: %s is unobservable (provider %s is unavailable; unknown ≠ done)", id, id.Provider)
+		}
+		obs, err := p.Read(ctx, id.Local)
+		if err != nil {
+			return false, fmt.Sprintf("done_when: %s is unobservable (%s; unknown ≠ done)", id, shortReason(err))
+		}
+		if obs.Availability != core.AvailabilityOk {
+			return false, fmt.Sprintf("done_when: %s is unobservable (availability=%s; unknown ≠ done)", id, obs.Availability)
+		}
+		if !j.satisfied(p, obs, id, w.Fields) {
+			return false, fmt.Sprintf("done_when %v is not observed on %s", w.Fields, id)
+		}
+	}
+	return true, fmt.Sprintf("done_when %v observed on all %d target(s)", w.Fields, len(targets))
+}
+
+func (j *Judge) satisfied(p provider.Provider, obs core.Observation, id core.ID, fields map[string]string) bool {
+	if obs.State == nil && obs.Check == nil {
+		return false
+	}
+	if j.differs == nil {
+		j.differs = map[string]*diff.Engine{}
+	}
+	d, ok := j.differs[id.Provider]
+	if !ok {
+		d = diff.ForProvider(p)
+		j.differs[id.Provider] = d
+	}
+	plan, err := d.Plan(obs, diff.DesiredResource{ID: id, Fields: fields}, cause.CauseContext{})
+	return err == nil && len(plan.Ops) == 0
+}
+
+// Holds は store だけで判定する（宣言の窓も done_when の観測も渡さない）Judge.Holds。
+func Holds(ctx context.Context, store Store, defs []Definition) []Hold {
+	return Judge{Store: store}.Holds(ctx, defs)
+}
+
 // Describe は Hold の段階を 1 行で返す（plan・status の表示）。storeKnown は Store を
-// 渡されたか（渡されなければ段階は分からない）。
+// 渡されたか。
 func (h Hold) Describe(storeKnown bool) string {
 	switch {
-	case !storeKnown:
-		return "stage unknown (no --workflow-store)"
 	case h.Err != nil:
 		return fmt.Sprintf("stage unknown (workflow store unreadable: %v)", h.Err)
+	case h.Reimage != "" && !storeKnown:
+		return fmt.Sprintf("progress unknown (no --workflow-store; %s is open, so the target is left to the reimage)", h.Reimage)
+	case h.Reimage != "":
+		return fmt.Sprintf("not started (%s is open; the daemon starts the reimage)", h.Reimage)
+	case h.Unknown && !storeKnown:
+		return fmt.Sprintf("progress unknown (no --workflow-store, and %s)", h.Why)
+	case h.Unknown:
+		return fmt.Sprintf("not started (no run in the workflow store, and %s)", h.Why)
 	case h.Restart:
 		return "not started (the definition changed since the last done run; a new run starts)"
 	case h.Run == nil:
@@ -245,9 +388,56 @@ func (h Hold) Describe(storeKnown bool) string {
 		approvers, need := r.Tally()
 		return fmt.Sprintf("awaiting_approval (run %s, gate %s, %d of %d approval(s))", r.RunID, r.Gate, len(approvers), need)
 	case PhaseHalted:
-		return fmt.Sprintf("halted (run %s: %s)", r.RunID, r.Reason)
+		return fmt.Sprintf("halted (run %s: %s; targets stay held until `sakutei workflow cancel %s`)", r.RunID, r.Reason, h.Workflow)
 	default:
 		return fmt.Sprintf("%s (run %s, stage %d target %d step %d)", r.Phase, r.RunID, r.Stage, r.Target, r.Step)
+	}
+}
+
+// Flagged は level の Event（WorkflowTargetHeld）で知らせる Hold か：halt した run の
+// 対象と、進み具合が分からない対象（#209）。進んでいる・承認を待つ run は知らせない。
+func (h Hold) Flagged() bool { return h.Halted() || h.Unknown || h.Err != nil }
+
+// HeldEvents は Flagged な Hold の対象ごとの level の Event（WorkflowTargetHeld）。
+func HeldEvents(holds []Hold, storeKnown bool) []Event {
+	var out []Event
+	for _, h := range holds {
+		if !h.Flagged() {
+			continue
+		}
+		stage := h.Describe(storeKnown)
+		for _, id := range h.Targets {
+			out = append(out, Event{Kind: EventTargetHeld, Workflow: h.Workflow, Resource: id,
+				Message: fmt.Sprintf("%s: not converged (left to its Workflow): %s", id, stage),
+				Attrs:   map[string]string{"stage": stage}})
+		}
+	}
+	return out
+}
+
+// AcquireAdvance は Workflow を進めるロック（#209）を取る。取れたら（か Store が
+// AdvanceLocker でなければ）true。取ったロックは Release まで持ち続ける。
+func (e *Engine) AcquireAdvance() (bool, error) {
+	if e.advanceRelease != nil {
+		return true, nil
+	}
+	l, ok := e.Store.(AdvanceLocker)
+	if !ok {
+		return true, nil
+	}
+	release, ok, err := l.TryAdvance()
+	if err != nil || !ok {
+		return false, err
+	}
+	e.advanceRelease = release
+	return true, nil
+}
+
+// Release は AcquireAdvance で取ったロックを放す（常駐の終わり）。
+func (e *Engine) Release() {
+	if e.advanceRelease != nil {
+		e.advanceRelease()
+		e.advanceRelease = nil
 	}
 }
 
@@ -342,6 +532,27 @@ func (e *Engine) tick(ctx context.Context, def Definition) []Event {
 	}
 	hash := def.Hash()
 	start := !ok || (run.Phase == PhaseDone && run.DefHash != hash)
+	if !ok && def.Trigger == "" && def.DoneWhen != nil {
+		// #209: store にその run が無い（store を失った・初めて）。終わりの姿が観測で
+		// 満たされていれば、run を起こさず done として書く（導入をやり直さない）。
+		j := e.Judge()
+		if done, why := j.DoneWhenObserved(ctx, def); done {
+			s.run = Run{
+				Workflow:  def.Name,
+				RunID:     fmt.Sprintf("%s-observed-%d", def.Name, s.now.UnixNano()),
+				DefHash:   hash,
+				Applicant: def.Applicant,
+				Phase:     PhaseDone,
+				Reason:    why + " (no run in the store; not started)",
+				Holder:    e.Holder,
+				StartedAt: s.now.UTC(),
+			}
+			if s.save() {
+				s.emit(EventCompleted, "%s: recorded as done without starting a run (run %s)", why, s.run.RunID)
+			}
+			return s.events
+		}
+	}
 	trigger, by := "", ""
 	if def.Trigger != "" {
 		// #88: 宣言（planned_change kind: reimage）があるときだけ、宣言ごとに 1 回。

@@ -52,8 +52,8 @@ docs/trial/workflow-gates/run.sh            # 作業ディレクトリは /tmp/s
 | 8 | ゲートの timeout で halt。期限を過ぎた承認は受け付けない | §6.4 timeout |
 | 9 | 全承認者（ID・役割・署名）・却下・timeout・cancel が S4 監査に append される | §6.4「全承認者を S4 監査に記録」 |
 | 10 | 不変条件（min_active）を破る手順には進まず、現実が戻れば進む（level-triggered） | §6.3 invariant |
-| 11 | `sakutei workflow cancel` で run を消すと、次の周に最初のステージからやり直す | §6.3（v1.5 の実装） |
-| 12 | done になれば対象は収束に戻る（手でずらすと直す） | §6.3 |
+| 11 | `sakutei workflow cancel` で run を消すと、次の周に最初のステージからやり直す（Workflow に `done_when` を書き、終わりの姿が観測で満たされていれば、やり直さずに done と書く、#209） | §6.3（v1.5 の実装） |
+| 12 | done になれば対象は収束に戻る（手でずらすと直す）。一回性の `sakutei reconcile --workflow-store wf.json`（読むだけ）でも done の対象を宣言どおりに戻す（#209） | §6.3 |
 
 ## 結果（2026-10-23、run.sh の出力の抜粋）
 

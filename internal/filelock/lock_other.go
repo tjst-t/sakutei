@@ -18,3 +18,6 @@ package filelock
 // lockFile is a no-op where flock is unavailable: the in-process mutex still
 // serialises one process, but several processes must not share a file.
 func lockFile(string, bool) (func(), error) { return func() {}, nil }
+
+// tryLockFile always succeeds where flock is unavailable (one process only).
+func tryLockFile(string) (func(), bool, error) { return func() {}, true, nil }

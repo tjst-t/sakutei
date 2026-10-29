@@ -127,6 +127,15 @@ workflows:
     applicant: trial
     target:
       provider: redfish-system
+    # 終わりの姿（#209）。workflow store が無い（一回性の reconcile に --workflow-store を
+    # 渡さない）・store を失ったときは、これが観測で満たされれば導入は済んだと見て、
+    # node1 と CD をふつうに宣言どおりに保つ（常駐は入れ直さずに done と書く）。
+    # 満たされない・ssh で届かない間は Workflow に任せて触らない
+    done_when:
+      resource: guest-os/{target}
+      fields:
+        os_id: alpine
+        marker.installed: sakutei-trial-1
     strategy:
       order: one-at-a-time
     stages:
@@ -198,7 +207,9 @@ workflows:
 
 ## 回し方
 
-Workflow を進めるのは**常駐の sakutei だけ**（`plan`・`reconcile` は Workflow の対象を Apply せず「Workflow に任せている」と出す）。進み具合は `--workflow-store`（S2）に残るので、必ず指定する。
+Workflow を進めるのは**常駐の sakutei だけ**（`plan`・`reconcile` は Workflow を進めない）。進み具合は `--workflow-store`（S2）に残るので、必ず指定する。同じ store を 2 つの常駐に渡しても、進めるのは store の排他のロック（`wf.json.advance.lock`）を取った 1 つだけ（#209）。
+
+導入が済んだあとは、一回性の `reconcile` でも node1 と CD を宣言どおりに保てる（#209）。`--workflow-store wf.json` を渡せば読むだけに使い、done の Workflow の対象をふつうのリソースとして戻す。渡さなくても、intent の `done_when`（入れた OS の目印）が ssh で観測できれば済んだと見て戻す。目印が見えない・届かない間は「Workflow に任せる」として触らず、理由（`progress unknown (no --workflow-store, and done_when … is not observed on guest-os/node1)` など）を出す。halt した run の対象は、`sakutei workflow cancel` で片づけるまで触らない（理由は `status`・`plan` と level の Event `WorkflowTargetHeld`）。
 
 ```sh
 W=/tmp/sakutei-os
@@ -341,5 +352,5 @@ planned_change:
 | ~~完了は電源オフでしか判断できない~~（#86 で解消） | 2026-10-22 の試用では Workflow が見るのは BMC から見た `power: Off` だけで、インストーラが失敗しても電源を切れば成功と見なして先へ進んだ。今は手順 7 で入れた OS を ssh で観測し（`guest-os`）、目印が見えるまで進まない | 入れた OS に sshd と鍵を置けない（ssh で届かない）OS では使えない。agent を置く観測は持たない |
 | ~~起動先の上書きを戻す手順を書く~~（#139 で解消） | 当時は Continuous の上書きしか書けず、導入のあとに Disabled に戻す手順が要った。今は `action: boot_once` で 1 回だけ CD から起動し、BMC が使い切る | Once を使い切る時を BMC がどう決めるかは BMC 次第（qemu-bmc は電源 On のとき。上の「なぜ電源を切るのか」） |
 | ~~**入れ直しは手で cancel**~~（#88 で解消） | 当時は done の Workflow は二度と走らず、入れ直すには `sakutei workflow cancel --store wf.json os-install` で記録を消すしかなかった。今は Workflow に `trigger: reimage` を書き、`planned_change` の `kind: reimage` を宣言すると、承認されたその宣言ごとに 1 回走る（下の「入れ直し」） | 入れ直しは**ディスクを消す**。目印の値を変えておかないと、前の導入の OS を見て進んでしまう |
-| **workflow store を失うと、もう一度走る** | 進み具合（done）は `--workflow-store` のファイルにしか無い。消える・別のファイルを指すと、次の周に手順 1 から走り、**ディスクを消して入れ直す**。消えない場所に置く。`trigger: reimage` の Workflow は宣言が無ければ走らず、宣言の `max_count` の使用量は S4（`--audit-log`）に残るので、store を失っても同じ宣言で `max_count` を越えては入れ直さない | |
+| ~~**workflow store を失うと、もう一度走る**~~（#209 で解消） | 当時は進み具合（done）が `--workflow-store` のファイルにしか無く、消える・別のファイルを指すと次の周に手順 1 から走って**ディスクを消して入れ直した**。今は store にその run が無くても、`done_when`（入れた OS の目印）が観測で満たされていれば、常駐は run を起こさず done と書く。`trigger: reimage` の Workflow は宣言が無ければ走らず、宣言の `max_count` の使用量は S4（`--audit-log`）に残るので、store を失っても同じ宣言で `max_count` を越えては入れ直さない | `done_when` を書かない Workflow、目印が見えない（ssh で届かない）ときは今までどおり手順 1 から走る。store は消えない場所に置く |
 | **応答ファイルを届けるのは利用者** | `template-file` はファイルを書くだけ。HTTP で配る・ISO に入れるのは利用者の側（試用は `python3 -m http.server`）。Workflow は応答ファイルが書かれたことを確かめずに進む（収束ループが最初の周に書く。インストーラは取れるまで 2 分待つ） | |

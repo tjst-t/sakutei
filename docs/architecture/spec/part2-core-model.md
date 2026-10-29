@@ -576,6 +576,31 @@ planned_change:                              # この宣言が承認されると
       - alice
 ```
 
+**store が無いときの Workflow の対象と、まだ済んでいないことの判断（Backlog #209、v3.69）。** Workflow の進み具合（Run）は S2（`--workflow-store`）にあるが、それを正としない（§1.7：正しい状態は宣言に置く）。store の Run は写しと作業の記録で、「宣言した変更がまだ済んでいない」は**宣言（開いている `planned_change`）と観測（`done_when`）**で決める。これで、store を持たない一回性の `reconcile` も、store を失った常駐も、done の Workflow の対象を宣言どおりに保つ。
+
+- **終わりの姿 `done_when`**：Workflow に `done_when: { resource, fields }` を書ける（形は `require` と同じで timeout は無い。`resource` を省けば target、`{target}` の置き換えも同じ）。全 target で fields が観測されれば、その Workflow は済んでいる。定義のハッシュには入れない（書き足しても done の run を起こし直さない）。`trigger: reimage` には書けない（入れ直しは今の姿が宣言どおりでもやり直すもので、まだ済んでいないことは開いている宣言が決める。ロード時に断る）。
+
+```yaml
+workflows:
+  - workflow: os-install
+    target:
+      provider: redfish-system
+    done_when:                               # 終わりの姿（store が無い・run が無いときに観測で確かめる）
+      resource: guest-os/{target}
+      fields:
+        os.version: "24.04"
+    stages: …
+```
+
+- **決め方**（常駐・一回性の `reconcile`・`plan`・`status` が同じ判定を使う。`workflow.Judge`）：
+  1. store にその Workflow の run があれば、それに従う。done で定義のハッシュが同じなら持たない（対象はふつうのリソースとして宣言どおりに収束させる）。halt・実行中・承認待ちは持つ。done で定義が変わっていれば持つ（新しい run が起きる）。
+  2. `trigger: reimage` は、run が無いか done なら、対象の scope を覆う `planned_change` の `kind: reimage` が開いていて `max_count` が残っているときだけ持つ（その宣言でもう走った run があれば持たない）。開いていなければ、store が無くても対象はふつうに収束させる。
+  3. store が無いか、store にその run が無いときは、`done_when` が観測で満たされていれば済んだと見て持たない。`done_when` が無い・満たされない・観測できない（unknown ≠ 済んだ）ときは、今どおり「Workflow に任せる」として触らず、plan・status・一回性の reconcile の出力に理由（`progress unknown (no --workflow-store, and done_when … is not observed on …)` など）を出す。
+- **一回性の `reconcile` と `--workflow-store`（読むだけ）**：一回性は Workflow を進めない（進めるのは常駐と `sakutei workflow`・承認の口だけ）。`--workflow-store` を渡せば進み具合を読むためだけに使い（store は書かない）、done の Workflow の対象をふつうのリソースとして宣言どおりに戻す。渡さなければ 2・3 で決める。planned_change のレーンは `--audit-log` があるときだけ評価する（§13.3）ので、無いときは窓の中の宣言を開いているものとして数える（承認を見ない＝持つ側）。`plan`・`status` も同じ。一回性の Apply する口は `reconcile` だけ（`apply` は主 verb にしない、§26）。
+- **store を失った常駐**：store にその run が無く `done_when` が観測で満たされていれば、新しい run を起こさず、done の記録（RunID `<workflow>-observed-<時刻>`、理由に観測した done_when）を store に書いて `WorkflowCompleted` を出す。store を失っても導入をやり直さない。満たされなければ今どおり run を起こす。halt した run を `sakutei workflow cancel` で消したあとも同じで、終わりの姿が観測されていれば done と書く。
+- **二重に走らないこと**：Workflow を進める処理（常駐の Engine）は、store のファイルの排他のロック（`<store>.advance.lock` の flock。持つ常駐が終わるか落ちると放される）を取ってからだけ進める。取れない常駐（別の常駐が進めている）は進めず（`WorkflowWaiting`）、done でない Workflow の対象を持つ。一回性・plan・status・承認の口・cancel はこのロックを取らない（進めないので）。だから常駐と一回性が同時に動いても導入は二重に走らない。同じリソースに常駐と一回性の両方が Apply しうる点は、今の claim の決まり（§17）のまま。
+- **halt の扱い**：halt した Workflow の対象は触らない。止まった理由は plan・status・一回性の reconcile の出力と、level の Event `WorkflowTargetHeld`（対象ごと、warning。attrs の `workflow`・`stage` に段階と理由）に出す。halt は人が `sakutei workflow cancel` で片づけるまで保ち、持たなくなった周に `WorkflowTargetHeld` は resolved になる。`done_when` が観測で満たされていても、halt を宣言どおりに保つ向きへ自動で切り替えない（halt は導入の途中の姿のことがあり、収束させると途中の台を勝手に動かしうる）。store が無いときは halt かどうか分からないので 3 に従う（満たされなければ触らない）。進み具合が分からずに持つ対象（3 で持つもの）も同じ Event で知らせる。
+
 **全体を止める型の更新 `disruption`（Backlog #152、v3.44）。** 止めている間は下流が使えない更新（ゲートウェイのソフト更新など）は、いつ止めるか・どれだけ止めるか・誰が影響を受けるかを人に見せ、上流が溢れない時にだけ止めたい。Workflow に `disruption:` を宣言すると、対象ごとに最初の手順の前で次を通す（進みは Run の `disruption`〈S2〉に置き、上流の観測値は持たない）。
 
 1. **時間帯**：いまが `window`（`update_policy.window` と同じ書式）の中で、かつ `notify_before` と止める時間の見積もり `estimate` を足した時刻が時間帯の終わりまでに収まること（知らせてから止め終えるまでが時間帯に入る）。外なら待つ（起こさない）。remediation schedule（§14.2）が alert-only の間は Workflow 自体が進まないので、実際に止めるのは `window` と auto の重なりだけ。
