@@ -4847,7 +4847,7 @@
       "number": 209,
       "kind": "task",
       "title": "Workflow：done になった対象を一回性の reconcile でも宣言どおりに保つ（store に頼らず宣言と観測で決める）",
-      "status": "in-progress",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4859,7 +4859,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T13:38:55.263Z",
-      "updatedAt": "2026-10-29T13:39:08.086Z",
+      "updatedAt": "2026-10-29T16:57:26.960Z",
       "closedAt": null,
       "extra": {}
     },
