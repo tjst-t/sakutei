@@ -4740,7 +4740,7 @@
       "number": 204,
       "kind": "task",
       "title": "proxmox-vm：作り直すときにデータのディスクを引き継ぐ（keep の印と既存の volume を付ける欄）",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "postgresql-proxmox-vm-s3-object-lock-vm",
       "dependsOn": [],
       "milestone": null,
@@ -4752,7 +4752,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T09:20:13.880Z",
-      "updatedAt": "2026-10-29T16:57:44.231Z",
+      "updatedAt": "2026-10-29T22:02:45.890Z",
       "closedAt": null,
       "extra": {}
     },
