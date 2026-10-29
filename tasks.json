@@ -4455,7 +4455,7 @@
       "number": 189,
       "kind": "task",
       "title": "OTLP のトレースの出口",
-      "status": "ready",
+      "status": "done",
       "parent": "m7",
       "dependsOn": [
         "vault-kv-v2"
@@ -4465,12 +4465,12 @@
       "labels": [],
       "body": "OTLP/HTTP でトレースを出す：周・観測・plan・Apply・Workflow の段を span にする。既定は出さない（明示したときだけ）。宛先の TLS と認可は S7 と同じ考え。外の依存は入れない。",
       "doneWhen": "OpenTelemetry Collector（tag と digest で固定）へ span が届く統合試験と、出さないのが既定の受け入れテストが通る。make check・make test-race が通る",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-29T02:17:10.213Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-29T02:17:22.101Z",
+      "closedAt": "2026-10-29T02:17:22.101Z",
       "extra": {}
     },
     {
