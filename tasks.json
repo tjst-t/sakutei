@@ -4692,6 +4692,27 @@
       "updatedAt": "2026-10-29T06:48:22.777Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "postgresql-proxmox-vm-s3-object-lock-vm",
+      "number": 202,
+      "kind": "story",
+      "title": "使って分かった足りない点（postgresql の観測用ロール・proxmox-vm のディスクの引き継ぎ・s3 の Object Lock・採番の範囲・VM の置き場所と HA）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "## なぜ\n外部の利用者が v2.8.0 を使い、足りない点が5つ出ました。優先の向きは次のとおりです。\n1. 高：postgresql で、観測用ロールの CONNECT を宣言で付けられるようにする。v2.9.0 に入れる。\n2. 中〜高：proxmox-vm で、作り直すときにデータのディスクを引き継ぐ。v2.10.0 を目指す。\n3. 中：s3-bucket の Object Lock。v2.10.0 を目指し、重ければ次の版に回す。\n4. 中〜低：採番の区切った範囲と、再利用しない設定。空いた枠で進める。\n5. 低：proxmox-vm の置き場所と HA。設計のメモまでにし、着手は待つ。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-29T09:18:37.753Z",
+      "updatedAt": "2026-10-29T09:18:37.753Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
