@@ -4586,7 +4586,7 @@
       "number": 197,
       "kind": "task",
       "title": "network_policy の実現先 proxmox-fw（VM の FW の規則、入りと出）",
-      "status": "ready",
+      "status": "done",
       "parent": "domain-vm-fw-proxmox-fw",
       "dependsOn": [
         "netpolicy-domain",
@@ -4597,12 +4597,12 @@
       "labels": [],
       "body": "- 本体の realizer `proxmox-fw` を足す。\n  - 許可ごとに、VM の FW の規則（/nodes/<n>/qemu/<id>/firewall/rules）を置く。\n  - 規則には iface netN を付け、入りと出の両方を扱う。\n- 規則の comment には reason を入れる。sakutei が置いた規則と見分ける印も入れる。\n- 規則を保つ provider（または proxmox-vm の欄）は、宣言で管理する VM の規則だけを書き換える。\n  - 宣言の外の規則は status の unmanaged に出し、消さない。\n  - 規則の順も宣言どおりに保つ。\n- 規則を置く・変える・外すことは、FW の変更として予算に数える。\n- 観測用と書き込み用の資格（§20.7）、範囲は intent（§7.7）に従う。\n- 設計書と docs（関所の VM の例：利用者側の口は出る向きの KDC・DNS・LDAP・NTP、サービス側は 443 だけ）を書く。\n- 自前の入れ子の Proxmox VE 9.2 で統合試験を回す。",
       "doneWhen": "許可が VM の FW の規則に入りと出の両方で展開されること、comment に reason が出ること、宣言の外の規則を消さずに unmanaged に出すことを、受け入れテストと入れ子の Proxmox の統合試験で確かめる。make check・make test-race が通る",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T02:18:20.572Z",
-      "updatedAt": "2026-10-29T10:30:03.433Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-29T16:55:02.661Z",
+      "closedAt": "2026-10-29T16:55:02.661Z",
       "extra": {}
     },
     {
