@@ -4633,7 +4633,7 @@
       "number": 199,
       "kind": "task",
       "title": "NETCONF：commit_group で複数の台の変更をまとめて確定する",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "netconf-apply-2",
       "dependsOn": [],
       "milestone": null,
@@ -4645,7 +4645,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T06:48:14.609Z",
-      "updatedAt": "2026-10-29T06:48:14.609Z",
+      "updatedAt": "2026-10-29T16:57:41.597Z",
       "closedAt": null,
       "extra": {}
     },
