@@ -45,7 +45,10 @@
 //     すれば一覧どおりにする）、password（SecretRef。下の「パスワード」）。
 //   - データベース：owner・connection_limit、encoding・lc_collate・lc_ctype・
 //     template（作るときだけ。encoding・lc_collate・lc_ctype を後で変える宣言は
-//     計画の時点でエラー。template は観測できないので作った後は比べない）。
+//     計画の時点でエラー。template は観測できないので作った後は比べない）、
+//     connect_roles（管理の境界の外のロール（Sakutei がつなぐロール・pg_*）の
+//     うち、このデータベースに CONNECT を直に持たせるもの。下の「境界の外の
+//     ロールの CONNECT」）。
 //   - 権限：privileges（CONNECT・CREATE・TEMPORARY の一覧。空にはできない。
 //     全部を外すなら宣言から外して prune か明示の absent で消す＝REVOKE ALL）。
 //     PUBLIC に限り空の一覧（全部外す）を宣言できる。
@@ -55,6 +58,15 @@
 // し（足りない分を GRANT、余分を REVOKE）、明示の absent は REVOKE ALL。List には
 // 出さない（宣言していない PUBLIC の権限を prune で外さない）。
 //   - 拡張：version（宣言したときだけ ALTER EXTENSION ... UPDATE TO）。
+//
+// 境界の外のロールの CONNECT（#203）：観測用のロールは PUBLIC の CONNECT を
+// 外したデータベースに繋げず、拡張が観測できない（List が落ちて prune が
+// 止まる）。データベースの connect_roles に書いたロールには、CREATE DATABASE と
+// 同じ Apply の中で CONNECT を与える（PUBLIC の権限はデータベースが在ってから
+// 変えるので、必ずその前になる）。観測の値は、境界の外のロールのうち CONNECT を
+// 直に持つものの一覧で、宣言の一覧が含まれていれば同じとみなす。宣言から外して
+// も REVOKE しない（宣言していない境界の外のロールの権限は触らない。ロールの
+// 属性も触らない）。
 //   - server・role・database・extension：識別子（ID と同じ値。省略できる）。
 //
 // パスワード：PostgreSQL からは読めない（pg_authid は超ユーザだけが読め、読めても
@@ -131,6 +143,8 @@ const (
 	FieldLcCollate = "lc_collate"
 	FieldLcCtype   = "lc_ctype"
 	FieldTemplate  = "template"
+	// FieldConnectRoles は境界の外のロールに与えるデータベースの CONNECT（#203）。
+	FieldConnectRoles = "connect_roles"
 
 	FieldPrivileges = "privileges"
 	FieldVersion    = "version"
@@ -168,7 +182,7 @@ var kindFields = map[string]map[string]bool{
 	KindRole: {FieldServer: true, FieldRole: true, FieldLogin: true, FieldSuperuser: true, FieldCreateDB: true,
 		FieldCreateRole: true, FieldInherit: true, FieldBypassRLS: true, FieldReplication: true, FieldConnectionLimit: true, FieldMemberOf: true, FieldPassword: true},
 	KindDatabase: {FieldServer: true, FieldDatabase: true, FieldOwner: true, FieldEncoding: true, FieldLcCollate: true,
-		FieldLcCtype: true, FieldTemplate: true, FieldConnectionLimit: true},
+		FieldLcCtype: true, FieldTemplate: true, FieldConnectionLimit: true, FieldConnectRoles: true},
 	KindGrant:     {FieldServer: true, FieldDatabase: true, FieldRole: true, FieldPrivileges: true},
 	KindExtension: {FieldServer: true, FieldDatabase: true, FieldExtension: true, FieldVersion: true},
 }
@@ -239,11 +253,12 @@ func (p *Provider) Schema() provider.Schema {
 		FieldMemberOf:        set,
 		FieldPassword:        {Kind: core.FieldKindSecretRef, Secret: true},
 
-		FieldOwner:     str,
-		FieldEncoding:  str,
-		FieldLcCollate: str,
-		FieldLcCtype:   str,
-		FieldTemplate:  str,
+		FieldOwner:        str,
+		FieldEncoding:     str,
+		FieldLcCollate:    str,
+		FieldLcCtype:      str,
+		FieldTemplate:     str,
+		FieldConnectRoles: set,
 
 		FieldPrivileges: set,
 		FieldVersion:    str,
@@ -319,6 +334,28 @@ func (s *Server) outsideRole(role string) string {
 		return fmt.Sprintf(`%q is not a role (for the privileges of PUBLIC, write %s in a grant id)`, role, PublicGrantee)
 	}
 	return ""
+}
+
+// outsideGrantee は role が connect_roles に書ける（管理の境界の外のロール）か。
+// PUBLIC と取り違える名前は除く。
+func (s *Server) outsideGrantee(role string) bool {
+	return s.outsideRole(role) != "" && !strings.EqualFold(role, "public")
+}
+
+// outsideConnectors は d に CONNECT を直に持つ、管理の境界の外のロール（名前の順）。
+func (s *Server) outsideConnectors(d *DatabaseInfo) []string {
+	var out []string
+	for _, g := range d.grantees() {
+		if !s.outsideGrantee(g) {
+			continue
+		}
+		for _, pv := range d.privilegesOf(g) {
+			if pv == "CONNECT" {
+				out = append(out, g)
+			}
+		}
+	}
+	return out
 }
 
 // outsideDatabase は db が管理の境界の外なら理由を返す。
@@ -530,6 +567,7 @@ func (o *observer) state(ctx context.Context, t target) (core.State, error) {
 		base[FieldLcCollate] = sv(d.LcCollate)
 		base[FieldLcCtype] = sv(d.LcCtype)
 		base[FieldConnectionLimit] = core.TypedValue{Kind: core.FieldKindInt, Value: d.ConnectionLimit}
+		base[FieldConnectRoles] = core.TypedValue{Kind: core.FieldKindStringList, Value: strings.Join(o.srv.outsideConnectors(d), ListSep)}
 		return base, nil
 	case KindGrant:
 		d := o.snap.database(t.database)
@@ -758,6 +796,17 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 			return fail("owner: %s", why)
 		}
 	}
+	if v, ok := fields[FieldConnectRoles]; ok {
+		for _, m := range splitList(v) {
+			if why := validName("role", m); why != "" {
+				return fail("connect_roles: %s", why)
+			}
+			if !t.srv.outsideGrantee(m) {
+				return fail("connect_roles: %q is not a role outside what this provider manages (only a role Sakutei connects as or a pg_* role; for a declared role write %s, for PUBLIC %s)",
+					m, GrantID(t.server, t.database, m), GrantID(t.server, t.database, PublicGrantee))
+			}
+		}
+	}
 	if v, ok := fields[FieldTemplate]; ok {
 		if why := validName("database", v); why != "" {
 			return fail("template: %s", why)
@@ -871,6 +920,19 @@ func sameValue(field, declared, observed string) bool {
 		a, err1 := canonPrivilegeSet(declared)
 		b, err2 := canonPrivilegeSet(observed)
 		return err1 == nil && err2 == nil && a == b
+	case FieldConnectRoles:
+		// 宣言の一覧が観測に含まれていれば同じ（宣言していない境界の外のロールの
+		// CONNECT は触らない、#203）。
+		have := map[string]bool{}
+		for _, m := range splitList(observed) {
+			have[m] = true
+		}
+		for _, m := range splitList(declared) {
+			if !have[m] {
+				return false
+			}
+		}
+		return true
 	case FieldMemberOf:
 		a, b := splitList(declared), splitList(observed)
 		sort.Strings(a)
@@ -889,6 +951,7 @@ var createOnly = map[string]bool{FieldEncoding: true, FieldLcCollate: true, Fiel
 //   - encoding・lc_collate・lc_ctype は同じ意味なら落とし、違えば計画の
 //     エラー（作った後は変えられない）。
 //   - privileges・member_of は同じ意味（大文字小文字・TEMP・順）なら落とす。
+//   - connect_roles は宣言の一覧が観測に含まれていれば落とす。
 func (p *Provider) RefinePlan(localID string, observed core.State, desired map[string]string, ops []core.Op) ([]core.Op, error) {
 	out := make([]core.Op, 0, len(ops))
 	for _, op := range ops {

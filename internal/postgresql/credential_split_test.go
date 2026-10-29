@@ -265,3 +265,162 @@ func TestCredentialSplit_ConfigErrors(t *testing.T) {
 		t.Errorf("inherited keys: %+v", s)
 	}
 }
+
+// splitCycle は 1 周を真似る：全部を観測用のロールで観測して計画し、宣言の順に
+// 書き込み用のロールで Apply する（観測できないものは飛ばす。同じ周にできないもの（まだ無いデータベースの
+// 権限）は Transient で次の周に回る）。
+func splitCycle(t *testing.T, p *postgresql.Provider, want []struct {
+	local  string
+	fields map[string]string
+}) (applied int) {
+	t.Helper()
+	plans := make([]core.Plan, len(want))
+	for i, w := range want {
+		obs, err := p.Read(context.Background(), w.local)
+		if err != nil || obs.Availability != core.AvailabilityOk {
+			continue // 観測できないものはその周は飛ばす（unknown ≠ absent）。
+		}
+		plans[i] = splitPlan(t, p, w.local, w.fields)
+	}
+	for i, pl := range plans {
+		if len(pl.Ops) == 0 {
+			continue
+		}
+		if err := p.Apply(provider.WithWrite(context.Background()), pl); err != nil {
+			var te *provider.TransientError
+			if !errors.As(err, &te) {
+				t.Fatalf("Apply %s: %v", want[i].local, err)
+			}
+			continue
+		}
+		applied++
+	}
+	return applied
+}
+
+func TestCredentialSplit_ConnectRolesKeepsTheObserveRoleConnected(t *testing.T) {
+	// [AC-203-1-1] PUBLIC の CONNECT を外したデータベースを空から宣言しても、
+	// connect_roles に観測用のロールを書けば、データベースを作る Apply の中で
+	// CONNECT が付き、次の周の List（拡張の観測）が通る。宣言の順に依らない。
+	// 書かなければ List が落ちる（prune が止まる）。
+	for _, c := range []struct {
+		name    string
+		connect bool
+		reverse bool
+	}{{"declared", true, false}, {"declared, PUBLIC first", true, true}, {"not declared", false, false}} {
+		t.Run(c.name, func(t *testing.T) {
+			_, p, err := splitRig(t, allSecrets, "", postgresql.LoadOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			db := map[string]string{postgresql.FieldOwner: "app"}
+			if c.connect {
+				db[postgresql.FieldConnectRoles] = roUser
+			}
+			want := []struct {
+				local  string
+				fields map[string]string
+			}{
+				{"main/role/app", map[string]string{postgresql.FieldLogin: "true"}},
+				{"main/database/appdb", db},
+				{"main/database/appdb/extension/hstore", map[string]string{}},
+				{"main/database/appdb/grant/PUBLIC", map[string]string{postgresql.FieldPrivileges: ""}},
+			}
+			if c.reverse {
+				for i, j := 0, len(want)-1; i < j; i, j = i+1, j-1 {
+					want[i], want[j] = want[j], want[i]
+				}
+			}
+			listOK := true
+			for cycle := 0; cycle < 4; cycle++ {
+				applied := splitCycle(t, p, want)
+				if _, err := p.List(context.Background(), core.NewScope(nil)); err != nil {
+					listOK = false
+					if c.connect {
+						t.Fatalf("List after cycle %d: %v", cycle+1, err)
+					}
+					if !strings.Contains(err.Error(), "CONNECT") {
+						t.Errorf("List: %v; want the reason", err)
+					}
+				}
+				if applied == 0 {
+					break
+				}
+			}
+			if !c.connect {
+				if listOK {
+					t.Fatal("without connect_roles, List passed; want it to fail (the observe role cannot connect)")
+				}
+				return
+			}
+			for _, w := range want {
+				if pl := splitPlan(t, p, w.local, w.fields); len(pl.Ops) != 0 {
+					t.Errorf("%s not converged: %+v", w.local, pl.Ops)
+				}
+			}
+		})
+	}
+}
+
+func TestCredentialSplit_ConnectRolesDriftAndBoundary(t *testing.T) {
+	// [AC-203-1-2] 手の REVOKE はずれとして見え、Apply で戻る。宣言していない
+	// 境界の外のロールの CONNECT は触らない（ずれにもしない）。境界の内のロール・
+	// PUBLIC は connect_roles に書けない。
+	srv, p, err := splitRig(t, allSecrets, "", postgresql.LoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const local = "main/database/appdb"
+	fields := map[string]string{postgresql.FieldConnectRoles: roUser}
+	if err := p.ValidateIntent(local, fields); err != nil {
+		t.Fatalf("ValidateIntent: %v", err)
+	}
+	if err := p.Apply(context.Background(), splitPlan(t, p, local, fields)); err != nil {
+		t.Fatal(err)
+	}
+	srv.Do(func(st *pgtest.State) {
+		acl := st.Databases["appdb"].ACL
+		acl[roUser] = nil
+		delete(acl, roUser)
+		acl["pg_monitor"] = []string{"CONNECT"}
+	})
+	pl := splitPlan(t, p, local, fields)
+	if len(pl.Ops) != 1 || len(pl.Ops[0].Fields) != 1 || pl.Ops[0].Fields[0].Field != postgresql.FieldConnectRoles {
+		t.Fatalf("after a REVOKE by hand: %+v; want connect_roles out of sync", pl.Ops)
+	}
+	if err := p.Apply(context.Background(), pl); err != nil {
+		t.Fatal(err)
+	}
+	if pl := splitPlan(t, p, local, fields); len(pl.Ops) != 0 {
+		t.Fatalf("not back: %+v", pl.Ops)
+	}
+	srv.Do(func(st *pgtest.State) {
+		acl := st.Databases["appdb"].ACL
+		if strings.Join(acl[roUser], ",") != "CONNECT" || strings.Join(acl["pg_monitor"], ",") != "CONNECT" {
+			t.Errorf("ACL = %v; want CONNECT for %s and pg_monitor kept", acl, roUser)
+		}
+	})
+	// 宣言から外しても REVOKE しない。
+	if pl := splitPlan(t, p, local, map[string]string{}); len(pl.Ops) != 0 {
+		t.Errorf("without connect_roles: %+v; want nothing to do", pl.Ops)
+	}
+	res, err := p.List(context.Background(), core.NewScope(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range res.IDs {
+		if strings.Contains(i.Local, "/grant/") {
+			t.Errorf("List shows %s; the CONNECT of a role outside the boundary is not pruned", i.Local)
+		}
+	}
+	for _, bad := range []string{"app", "PUBLIC", "public"} {
+		if err := p.ValidateIntent(local, map[string]string{postgresql.FieldConnectRoles: bad}); err == nil || !strings.Contains(err.Error(), "connect_roles") {
+			t.Errorf("connect_roles: %s: %v; want refused", bad, err)
+		}
+	}
+	for _, ok := range []string{"sakutei", "pg_monitor", roUser + ",sakutei"} {
+		if err := p.ValidateIntent(local, map[string]string{postgresql.FieldConnectRoles: ok}); err != nil {
+			t.Errorf("connect_roles: %s: %v", ok, err)
+		}
+	}
+}

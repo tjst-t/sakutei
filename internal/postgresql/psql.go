@@ -187,7 +187,7 @@ var (
 	// sqlErrorLine は VERBOSITY verbose のエラーの行（"ERROR:  42710: role ..."）。
 	sqlErrorLine = regexp.MustCompile(`(?m)(?:ERROR|FATAL|PANIC):\s+([0-9A-Z]{5}):\s*(.*)$`)
 	// authFailure は接続の時点で断られたことを示す文。
-	authFailure = regexp.MustCompile(`password authentication failed|no pg_hba\.conf entry|authentication failed|role "[^"]*" does not exist|pg_hba\.conf rejects|no password supplied|is not permitted to log in|SSL error|certificate`)
+	authFailure = regexp.MustCompile(`password authentication failed|no pg_hba\.conf entry|authentication failed|role "[^"]*" does not exist|pg_hba\.conf rejects|no password supplied|is not permitted to log in|SSL error|certificate|permission denied for database`)
 	// redactions はエラーの文から消すもの（SCRAM・md5 の検証値）。
 	redactions = regexp.MustCompile(`SCRAM-SHA-256\$[^'\s]*|md5[0-9a-f]{32}`)
 )

@@ -241,7 +241,22 @@ func (p *Provider) convergeDatabase(ctx context.Context, t target, want map[stri
 			b.raw(" CONNECTION LIMIT ", v)
 		}
 		b.end()
-		return p.exec(ctx, admin(t), &b)
+		if err := p.exec(ctx, admin(t), &b); err != nil {
+			return err
+		}
+		// 境界の外のロールの CONNECT は同じ Apply の中で与える（PUBLIC の CONNECT を
+		// 外すのはデータベースが在ってからなので、それより前になる、#203）。
+		roles := splitList(want[FieldConnectRoles])
+		if len(roles) == 0 {
+			return nil
+		}
+		var g sqlBuilder
+		g.raw("BEGIN;\n")
+		for _, r := range roles {
+			g.raw("GRANT CONNECT ON DATABASE ").ident(t.database).raw(" TO ").ident(r).end()
+		}
+		g.raw("COMMIT;\n")
+		return p.exec(ctx, admin(t), &g)
 	}
 	observed := map[string]string{FieldEncoding: d.Encoding, FieldLcCollate: d.LcCollate, FieldLcCtype: d.LcCtype}
 	for _, f := range []string{FieldEncoding, FieldLcCollate, FieldLcCtype} {
@@ -259,6 +274,19 @@ func (p *Provider) convergeDatabase(ctx context.Context, t target, want map[stri
 	if v, ok := want[FieldConnectionLimit]; ok {
 		b.raw("ALTER DATABASE ").ident(t.database).raw(" CONNECTION LIMIT ", v).end()
 		n++
+	}
+	if v, ok := want[FieldConnectRoles]; ok {
+		// 足りない分だけ GRANT する。宣言に無い境界の外のロールの CONNECT は外さない。
+		have := map[string]bool{}
+		for _, r := range t.srv.outsideConnectors(d) {
+			have[r] = true
+		}
+		for _, r := range splitList(v) {
+			if !have[r] {
+				b.raw("GRANT CONNECT ON DATABASE ").ident(t.database).raw(" TO ").ident(r).end()
+				n++
+			}
+		}
 	}
 	if n == 0 {
 		return nil

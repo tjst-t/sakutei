@@ -753,6 +753,21 @@ func TestPostgreSQLCredentialSplitIntegration(t *testing.T) {
 		if code != 3 || s.Summary.Unobservable != 1 || s.Summary.Drift != 0 || !strings.Contains(errOut, "pg_authid") {
 			t.Errorf("status with verify_passwords as the read-only role: exit %d %+v\n%s", code, s.Summary, errOut)
 		}
+		// pg_authid の列の権限（#203）：列の権限はデータベースごと（pg_attribute）なので、
+		// 管理用の DB（ここでは postgres）で与えないと効かない。
+		admin(t, "splitdb", `GRANT SELECT (rolname, rolpassword) ON pg_authid TO `+roUser+`;`)
+		if s, code, errOut := status(t); code != 3 || s.Summary.Unobservable != 1 {
+			t.Errorf("status with the pg_authid columns granted in another database: exit %d %+v\n%s", code, s.Summary, errOut)
+		}
+		admin(t, "postgres", `GRANT SELECT (rolname, rolpassword) ON pg_authid TO `+roUser+`;`)
+		if s, code, errOut := status(t); code != 0 || s.Summary.Conformant != n {
+			t.Errorf("status with the pg_authid columns granted in the admin database: exit %d %+v\n%s", code, s.Summary, errOut)
+		}
+		admin(t, "postgres", `REVOKE SELECT (rolname, rolpassword) ON pg_authid FROM `+roUser+`;`)
+		admin(t, "splitdb", `REVOKE SELECT (rolname, rolpassword) ON pg_authid FROM `+roUser+`;`)
+		if s, code, _ := status(t); code != 3 || s.Summary.Unobservable != 1 {
+			t.Errorf("status after the REVOKE of the pg_authid columns: exit %d %+v", code, s.Summary)
+		}
 		// pg_read_all_data は pg_authid も読める（全部の表も読める）。
 		admin(t, "postgres", `GRANT pg_read_all_data TO `+roUser+`;`)
 		if s, code, errOut := status(t); code != 0 || s.Summary.Conformant != n {
@@ -760,6 +775,73 @@ func TestPostgreSQLCredentialSplitIntegration(t *testing.T) {
 		}
 		admin(t, "postgres", `REVOKE pg_read_all_data FROM `+roUser+`;`)
 		lab.config = splitConfig(t, false)
+	})
+
+	t.Run("connect_roles keeps the observe role connected to a database PUBLIC cannot connect to", func(t *testing.T) {
+		// #203：PUBLIC の CONNECT を外すデータベースを空から宣言する。観測用のロールの
+		// CONNECT は connect_roles で宣言し、手では GRANT しない。PUBLIC の権限を
+		// データベースより先に書いても、CONNECT はデータベースを作る Apply の中で付く。
+		locked := append(append([]resource(nil), rs...),
+			r("database/lockeddb/grant/PUBLIC", map[string]string{"privileges": ""}),
+			r("database/lockeddb", map[string]string{"owner": "split_app", "connect_roles": roUser}),
+			r("database/lockeddb/extension/hstore", map[string]string{}),
+		)
+		writeIntent(t, withPrune(locked))
+		var logs []string
+		for i := 0; i < 3; i++ {
+			out, code := sakutei(t, "reconcile")
+			logs = append(logs, out)
+			if code != 0 {
+				t.Fatalf("reconcile #%d exited %d:\n%s", i+1, code, out)
+			}
+			if strings.Contains(out, "prune halted") {
+				t.Errorf("reconcile #%d halted prune (the observe role could not connect?):\n%s", i+1, out)
+			}
+		}
+		t.Logf("reconcile:\n%s", strings.Join(logs, "\n"))
+		if got := publicPrivileges(t, "lockeddb"); got != "" {
+			t.Errorf("PUBLIC on lockeddb = %q; want nothing", got)
+		}
+		if got := admin(t, "postgres", `SELECT has_database_privilege('`+roUser+`', 'lockeddb', 'CONNECT');`); got != "t" {
+			t.Errorf("%s CONNECT on lockeddb = %q", roUser, got)
+		}
+		s, code, errOut := status(t)
+		if code != 0 || !s.Complete || s.Summary.Conformant != len(locked) || s.Summary.Unobservable != 0 || s.Summary.Drift != 0 {
+			t.Fatalf("status: exit %d %+v\n%s", code, s.Summary, errOut)
+		}
+		// 拡張は観測用のロールで観測できる（lockeddb に繋げる）。
+		var connected bool
+		for _, l := range roStatements(t, roUser) {
+			if strings.Contains(l, "sakutei:extensions") {
+				connected = true
+			}
+		}
+		if !connected {
+			t.Error("the observe role did not read the extensions")
+		}
+
+		// 手の REVOKE はずれとして見え、1 周で戻る。
+		admin(t, "postgres", `REVOKE CONNECT ON DATABASE lockeddb FROM `+roUser+`;`)
+		s, code, errOut = status(t)
+		if code == 0 || s.Summary.Drift != 1 || s.Summary.Unobservable != 1 {
+			// lockeddb の拡張は観測できない（繋げない）。データベースはずれ。
+			t.Errorf("status after a REVOKE by hand: exit %d %+v %v\n%s", code, s.Summary, drifted(s), errOut)
+		}
+		if got := drifted(s); !strings.Contains(strings.Join(got, " "), "main/database/lockeddb=drift") {
+			t.Errorf("drifted = %v; want lockeddb", got)
+		}
+		// この周は lockeddb の拡張が観測できないので、その拡張は飛ばし prune は止まる。
+		out, code := sakutei(t, "reconcile")
+		t.Logf("reconcile after the REVOKE (exit %d):\n%s", code, out)
+		if !strings.Contains(out, "main/database/lockeddb") {
+			t.Errorf("reconcile after the REVOKE did not apply lockeddb:\n%s", out)
+		}
+		if s, code, errOut := status(t); code != 0 || s.Summary.Conformant != len(locked) {
+			t.Errorf("status after one reconcile: exit %d %+v %v\n%s", code, s.Summary, drifted(s), errOut)
+		}
+		if out, _ := sakutei(t, "reconcile"); strings.Contains(out, "prune halted") {
+			t.Errorf("prune halted after the CONNECT came back:\n%s", out)
+		}
 	})
 
 	t.Run("clean up", func(t *testing.T) {

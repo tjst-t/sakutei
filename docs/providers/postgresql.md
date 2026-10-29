@@ -5,7 +5,7 @@ PostgreSQL のロール・データベース・データベースの権限・拡
 | provider 名 | ID | 扱うもの |
 | --- | --- | --- |
 | `postgresql` | `<server>/role/<name>` | ロール（属性・所属・パスワード） |
-| | `<server>/database/<name>` | データベース（所有者・符号化・照合順序・接続数の上限） |
+| | `<server>/database/<name>` | データベース（所有者・符号化・照合順序・接続数の上限・境界の外のロールの CONNECT） |
 | | `<server>/database/<db>/grant/<role>` | あるロールがあるデータベースに直に持つ権限（CONNECT・CREATE・TEMPORARY） |
 | | `<server>/database/<db>/grant/PUBLIC` | PUBLIC（全員）があるデータベースに持つ権限（後述「PUBLIC の権限」） |
 | | `<server>/database/<db>/extension/<name>` | あるデータベースの拡張と版 |
@@ -42,7 +42,7 @@ $ sakutei reconcile --intent intent/ --postgresql-config pg.yaml
 $ sakutei status --intent intent/ --postgresql-config pg.yaml --json
 ```
 
-- 管理用のロールには、作る・変えるものに見合う権限が要る（ロールなら CREATEROLE、superuser 属性を宣言するなら超ユーザ、データベースなら CREATEDB、拡張は拡張による）。`verify_passwords` には超ユーザが要る（`pg_authid` を読むため）。
+- 管理用のロールには、作る・変えるものに見合う権限が要る（ロールなら CREATEROLE、superuser 属性を宣言するなら超ユーザ、データベースなら CREATEDB、拡張は拡張による）。`verify_passwords` には `pg_authid` を読めること（超ユーザか、**管理用の DB で**与えた `pg_authid` の列の SELECT。下の「読むだけのロールで観測するとき」）が要る。
 - `password` は **SecretRef でしか書けない**（`"secretref:file/<path>"` か `{"$secret": "<path>", "backend": "file"}`）。生の値を書くとエラーになり、その値は文言にも出ない。読み込みの時点では store にその path があることだけを確かめる。
 - 未知のキーはエラー（書き間違いを黙って無視しない）。
 
@@ -72,7 +72,7 @@ servers:
 
 - **観測は観測用のロールだけ**でつなぐ：`plan`・`status`・読み取りの口・常駐の毎周の観測。**書き込み用のロールは Apply の中だけ**（文を流すのも、Apply の中の読み直しも）で、パスワードは psql を起動する直前に store から取り出す。
 - **書かない回は書き込み用のパスワードを取り出さない**：`plan`・`status`・`import`・`sync`・`graph` と、`--mode alert-only`・`--freeze` の `reconcile` などは、`write.password` を store にあるか確かめず、無くても起動する。その回に書こうとすれば psql を起動せずに断る（`provider.ErrNoWriteAccess`）。書く回（`reconcile`・常駐の既定）は、書き込み用のパスワードが store に無ければ起動しない（何もしない）。
-- 2 つのロールはどちらも**管理の境界の外**：List に出さず（prune で消えない）、宣言（ロール・権限）もできない。
+- 2 つのロールはどちらも**管理の境界の外**：List に出さず（prune で消えない）、ロールとしても `grant/<role>` としても宣言できない。データベースへの CONNECT だけは、データベースの `connect_roles` で宣言できる（#203、下の「境界の外のロールの CONNECT」）。
 - sqlmigrate の `engine: postgresql`（同じサーバの一覧を `postgresql_config` で読む）は、Task の実行を書き込み用のロールで、版の観測（Read）を観測用のロールで流す。観測用のロールに版の表（`schema_migrations`）の SELECT が無ければ、その観測は unknown になる。
 
 ### 読むだけのロールで観測するとき
@@ -83,8 +83,23 @@ servers:
 CREATE ROLE sakutei_ro LOGIN PASSWORD '...';
 ```
 
-- 拡張を読むために、観測用のロールは**境界の内の各データベースに接続できる**必要がある。PUBLIC の CONNECT を宣言で外すデータベース（`grant/PUBLIC` の `privileges: ""`）では、観測用のロールに手で `GRANT CONNECT ON DATABASE <db> TO sakutei_ro` する（このロールの権限は宣言できず、List にも出ないので prune で外れない）。接続できなければ拡張は観測できない（unknown）、List は失敗して prune はその周止まる。
-- **`verify_passwords` は観測用のロールで `pg_authid` を読む**。読むだけのロールでは読めない（`permission denied for table pg_authid`）ので、パスワードを宣言したロールは**観測できない（unknown）として報告し、「違う」とはしない**（§3 第3原則。書き直さない）。手で変えたパスワードを見たいなら、観測用のロールを超ユーザにするか `pg_read_all_data` に入れる（`pg_authid` も読めるが、**全部の表の中身も読める**）。読み込みの時点では断らない（観測用のロールの権限は起動の時点では分からないため）。
+- 拡張を読むために、観測用のロールは**境界の内の各データベースに接続できる**必要がある。PUBLIC の CONNECT を宣言で外すデータベース（`grant/PUBLIC` の `privileges: ""`）では、**そのデータベースの `connect_roles` に観測用のロールを書く**（#203。手で `GRANT CONNECT` しない）。CONNECT はデータベースを作る Apply の中で付くので、空から作る周でも、次の周の List は落ちない。書かなければ観測用のロールは接続できず（`permission denied for database`）、拡張は観測できない（unknown）、List は失敗して prune はその周止まる。
+
+```json
+{"provider": "postgresql", "id": "main/database/appdb",
+ "fields": {"owner": "app", "connect_roles": "sakutei_ro"}},
+{"provider": "postgresql", "id": "main/database/appdb/grant/PUBLIC",
+ "fields": {"privileges": ""}}
+```
+
+- **`verify_passwords` は観測用のロールで `pg_authid` を読む**。読むだけのロールでは読めない（`permission denied for table pg_authid`）ので、パスワードを宣言したロールは**観測できない（unknown）として報告し、「違う」とはしない**（§3 第3原則。書き直さない）。手で変えたパスワードを見たいなら、観測が読む 2 つの列だけを与えるのがいちばん狭い:
+
+  ```sql
+  -- Sakutei がつなぐ DB（サーバの dbname。既定 postgres）につないで流す
+  GRANT SELECT (rolname, rolpassword) ON pg_authid TO sakutei_ro;
+  ```
+
+  **この GRANT は管理用の DB（設定の `dbname`）で流す**。`pg_authid` はサーバで 1 つの共有カタログだが、列の権限はデータベースごと（`pg_attribute`）に持つので、ほかのデータベースで与えても観測には効かない（統合テストで確かめた）。表・列の権限はこの provider が持たないので、これは宣言できない（手か Task で与える）。ほかに、観測用のロールを超ユーザにするか `pg_read_all_data` に入れてもよい（`pg_authid` も読めるが、**全部の表の中身も読める**）。読み込みの時点では断らない（観測用のロールの権限は起動の時点では分からないため）。
 - 書き込み用のロールには、1 本の資格のときと同じ権限が要る（ロールなら CREATEROLE、superuser 属性を宣言するなら超ユーザ、データベースなら CREATEDB、拡張は拡張による）。Apply の中の読み戻しは書き込み用のロールで流すので、`verify_passwords` の読み戻しには書き込み用のロールが `pg_authid` を読める（超ユーザ）必要がある。
 
 ## 範囲を intent に書く（`providers:`、Backlog #182）
@@ -148,6 +163,7 @@ providers:
 | データベース | `encoding` | `UTF8` など | 英数字だけを小文字にして比べる（`UTF-8` と `utf8` は同じ）。**作るときだけ**：後で違う値を宣言すると計画のエラー |
 | データベース | `lc_collate`・`lc_ctype` | `C.UTF-8` など | codeset の部分を同じく正規化（`en_US.UTF-8` と `en_US.utf8` は同じ）。**作るときだけ** |
 | データベース | `template` | データベースの名前 | **作るときだけ**。観測できないので作った後は比べない。`encoding`・照合順序を template1 と違う値にするなら `template0` を書く |
+| データベース | `connect_roles` | 管理の境界の外のロール（Sakutei がつなぐロール・`pg_*`）の一覧 | このデータベースに CONNECT を**直に**持たせる。宣言の一覧が観測に**含まれていれば**同じ（足りない分だけ GRANT、外さない）。下の「境界の外のロールの CONNECT」 |
 | 権限 | `privileges` | `CONNECT`・`CREATE`・`TEMPORARY`（`TEMP`）の一覧 | 大文字小文字・`TEMP`・順を問わない。**必須・空にできない**（全部外すなら宣言から外し、prune か明示の absent で消す＝`REVOKE ALL`）。**PUBLIC に限り空（`""`）を書ける**＝全部外す |
 | 拡張 | `version` | 版 | 宣言したときだけ比べ、違えば `ALTER EXTENSION ... UPDATE TO` |
 | すべて | `server`・`role`・`database`・`extension` | ID と同じ値（省略可） | identity |
@@ -156,6 +172,17 @@ providers:
 - データベースの所有者は暗に全部の権限を持つので、所有者の権限は List に出さない（宣言はできる）。
 - **通常のロールの権限を空にする宣言はできない**（`"privileges": ""` はエラー）。空にできるのは PUBLIC だけ（#133、下の「PUBLIC の権限」）。あるロールの権限を全部外すには、次のとおり宣言から外して prune か明示の absent を使う。
 - **宣言から外した権限は、それだけでは REVOKE しない**。権限のリソース（`.../grant/<role>`）を intent から消しても、その権限はサーバに残る（原則 3：確信が持てないときは減らさない）。外れるのは、PruneWithinScope の prune がそれを宣言の外の権限として消すとき、か明示の absent を宣言したとき（どちらも `REVOKE ALL`）だけ。宣言を残したまま `privileges` の一覧から 1 つ除いたときは、上のとおり一覧ちょうどにする（除いた分は REVOKE される）。
+
+### 境界の外のロールの CONNECT（`connect_roles`、Backlog #203）
+
+観測用のロールのように Sakutei が作らない（管理の境界の外の）ロールに、宣言したデータベースの CONNECT を intent で与える。PUBLIC の CONNECT を外したデータベースでも観測用のロールが拡張を読めるようにするためのもの（§1.7：正しい状態は宣言に置く）。
+
+- 形は**データベースの欄**（`<server>/database/<db>` の `connect_roles`）。`grant/<role>` を境界の外のロールに開かないのは、(1) データベースを作る Apply の中で CONNECT を付けられ、宣言の順や depends_on に依らず、PUBLIC の CONNECT を外す前（PUBLIC の権限はデータベースが在ってから変える）に必ず付くこと、(2) 境界の外のロールの権限を「一覧ちょうど」に揃えない（足すだけ）ことを、別のリソースを置かずに言えるため。
+- 書けるのは管理の境界の外のロールだけ：サーバの一覧で Sakutei がつなぐロール（`user`・`observe.user`・`write.user`）と `pg_*` のロール。境界の内のロールは `grant/<role>`、PUBLIC は `grant/PUBLIC` で書く（`connect_roles` に書くと読み込みで断る）。
+- 観測：境界の外のロールのうち、そのデータベースに CONNECT を直に持つものの一覧（名前の順）。宣言の一覧が**含まれていれば**適合で、宣言していない境界の外のロールの CONNECT（手で与えた `pg_monitor` など）はずれにしない。
+- Apply：データベースを作るときは `CREATE DATABASE` の直後、同じ Apply の中で `GRANT CONNECT ... TO <role>`。在るデータベースでは、CONNECT を持たない宣言のロールにだけ `GRANT CONNECT`。**REVOKE はしない**：`connect_roles` から外しても、欄を消しても、その CONNECT は残る。境界の外のロールの権限は List にも出ないので、prune でも外れない。ロール自体（属性・所属・パスワード）は触らない。
+- 手で `REVOKE CONNECT ... FROM sakutei_ro` すると、データベースが `~ UPDATE`（`connect_roles` が 1 field out of sync）として見え、1 周で戻る。その周は観測用のロールがそのデータベースに繋げないので拡張は観測できず、prune はその周だけ止まる。
+- CONNECT だけを扱う。CREATE・TEMPORARY を境界の外のロールに与えることはしない。
 
 ### PUBLIC の権限
 
@@ -186,7 +213,7 @@ PostgreSQL からパスワードは読めない（`pg_authid` は超ユーザだ
   - 権限：`REVOKE ALL`（PUBLIC は `REVOKE ALL ... FROM PUBLIC`）。別のロールが与えた権限が残れば PermanentError。
   - 拡張：`DROP EXTENSION`。ほかのオブジェクトが頼っていれば PostgreSQL が断る（2BP01、PermanentError）。
 - **観測できないもの**：届かない・時間切れ・認証の失敗・接続を許されない・psql が無い・管理用のパスワードを解決できない・出力が読めないは Unknown（absent にしない。作りも消しもしない）。
-- **List**：全サーバの snapshot と、全データベース（境界の内）の拡張が読めたときだけ complete。1 つでも失敗すれば error で、prune はその周止まる。接続を許さないデータベースがあると拡張が読めないので List は失敗する。
+- **List**：全サーバの snapshot と、全データベース（境界の内）の拡張が読めたときだけ complete。1 つでも失敗すれば error で、prune はその周止まる。接続を許さないデータベース（`datallowconn` が false、または観測用のロールに CONNECT が無い）があると拡張が読めないので List は失敗する。PUBLIC の CONNECT を外すなら `connect_roles` に観測用のロールを書く。
 - **BulkObserve**：サーバごとに snapshot 1 回、データベースごとに拡張 1 回（Read と等価）。止まったサーバのリソース・拡張を読めないデータベースの拡張は結果に入れず、SDK がそれだけを Read に回して Unknown にする。**1 つのサーバが止まっても、ほかのサーバは観測と収束を続ける**。
 
 ### 管理の境界（§7）
@@ -195,7 +222,7 @@ List は次を返さない（prune で消えない）。これらに向けた宣
 
 - `pg_` で始まるロール、管理用のロール（`user`）、接続しているロール。`member_of` に `pg_*` のロールを書くのはよい。
 - `template0`・`template1`・`postgres`、管理用の DB（`dbname`）。これらの中の権限・拡張も。
-- データベースの所有者の権限、PUBLIC の権限、`plpgsql`（どのデータベースにも template1 から入る。宣言はできる）。
+- データベースの所有者の権限、PUBLIC の権限、境界の外のロールの権限（`connect_roles` で宣言した CONNECT も）、`plpgsql`（どのデータベースにも template1 から入る。宣言はできる）。
 
 それ以外は PruneWithinScope の「閉じた世界」に入る。例えば公式の docker イメージが `POSTGRES_USER` の名前で作るデータベースも、宣言しなければ（空なら）prune で消える。残したいものは宣言するか、PruneWithinScope を使わない。
 
@@ -226,7 +253,8 @@ $ make integration-postgresql
 | a database with user tables is not pruned | 表のある orphan DB・空の orphan DB（拡張あり）・orphan ロールを手で作り、PruneWithinScope で reconcile → 空の DB と orphan ロールは消える（`[DESTRUCTIVE]`）、表のある DB は「user table(s), so it is not dropped」の PermanentError で残り、表の行も残る。`postgres`・`template0`・`template1`・`pg_monitor`・管理用のロールは残る |
 | a stopped server | `docker stop` → status は 9 つとも観測できない（終了コード 3）、reconcile は何もせず（`prune halted`・`9 resource(s) skipped`）。`docker start` の後は適合 9 |
 | clean up through prune | 宣言を `app` だけにして PruneWithinScope → データベース・権限・拡張は 1 周目、それらを持っていたロールは 2 周目に消える。残るのは `postgres`・`template0`・`template1` と `app`・管理用のロール |
-| 観測用と書き込み用の資格（#186、`TestPostgreSQLCredentialSplitIntegration`） | LOGIN だけの `sakutei_ro` を作り、`observe:` に `sakutei_ro`、`write:` に管理用のロールを書いた一覧で回す（`log_statement = all` でロールごとの文をサーバのログから数える）。`sakutei_ro` の `CREATE ROLE`・`CREATE DATABASE` は permission denied。書き込み用のパスワードの無い store で `status` は通り（missing 4）、`reconcile` は `servers.main.write.password` で断って何もしない。両方の store で reconcile → 適合 4、`sakutei_ro` が流したのは `/* sakutei:... */` の読む問い合わせだけで、`CREATE DATABASE` は管理用のロールが流した。PruneWithinScope でも 2 つのロールは status に出ず消えない。`verify_passwords: true` では、パスワードを宣言したロールは観測できない 1（drift 0、終了コード 3、文言に `pg_authid`）、`GRANT pg_read_all_data TO sakutei_ro` の後は適合 4 |
+| 観測用と書き込み用の資格（#186、`TestPostgreSQLCredentialSplitIntegration`） | LOGIN だけの `sakutei_ro` を作り、`observe:` に `sakutei_ro`、`write:` に管理用のロールを書いた一覧で回す（`log_statement = all` でロールごとの文をサーバのログから数える）。`sakutei_ro` の `CREATE ROLE`・`CREATE DATABASE` は permission denied。書き込み用のパスワードの無い store で `status` は通り（missing 4）、`reconcile` は `servers.main.write.password` で断って何もしない。両方の store で reconcile → 適合 4、`sakutei_ro` が流したのは `/* sakutei:... */` の読む問い合わせだけで、`CREATE DATABASE` は管理用のロールが流した。PruneWithinScope でも 2 つのロールは status に出ず消えない。`verify_passwords: true` では、パスワードを宣言したロールは観測できない 1（drift 0、終了コード 3、文言に `pg_authid`）、管理用の DB でない `splitdb` で `GRANT SELECT (rolname, rolpassword) ON pg_authid` しても観測できない 1 のまま、管理用の DB（`postgres`）で同じ GRANT をすると適合 4（REVOKE で観測できない 1 に戻る）、`GRANT pg_read_all_data TO sakutei_ro` の後も適合 4 |
+| 境界の外のロールの CONNECT（#203、同じテストの `connect_roles keeps the observe role connected ...`） | 上と同じ分けた資格で、PUBLIC の CONNECT を外す `lockeddb`（`connect_roles: sakutei_ro`、拡張 hstore、PUBLIC の権限をデータベースより先に書く）を PruneWithinScope で空から宣言し、**手で GRANT しない**。reconcile 3 周のどれも `prune halted` を出さない（1 周目でデータベースと CONNECT と拡張、PUBLIC はデータベースが無いので Transient で 2 周目に REVOKE）。PUBLIC の権限は空、`has_database_privilege('sakutei_ro', 'lockeddb', 'CONNECT')` が真、status は complete で全部適合、拡張は `sakutei_ro` で読まれた。手で `REVOKE CONNECT ... FROM sakutei_ro` → status はデータベースが drift 1・拡張が観測できない 1 → reconcile 1 周で戻り（その周は prune が止まる）、次の周は prune が止まらない |
 
 ### 結果
 
@@ -245,7 +273,7 @@ $ make integration-postgresql
 PASS
 ```
 
-観測用と書き込み用の資格の段（#186、2026-10-28、PostgreSQL 17.11）:
+観測用と書き込み用の資格の段（#186、2026-10-28、PostgreSQL 17.11。#203 の段は 2026-10-29 に足した）:
 
 ```
 --- PASS: TestPostgreSQLCredentialSplitIntegration (20.42s)
@@ -253,12 +281,14 @@ PASS
     --- PASS: TestPostgreSQLCredentialSplitIntegration/an_observe-only_run_starts_without_the_write_password (0.93s)
     --- PASS: TestPostgreSQLCredentialSplitIntegration/observe_as_the_read-only_role,_write_as_the_admin_role (5.64s)
     --- PASS: TestPostgreSQLCredentialSplitIntegration/the_two_roles_are_not_listed_or_pruned (3.78s)
-    --- PASS: TestPostgreSQLCredentialSplitIntegration/verify_passwords_needs_pg_authid_and_is_unknown_without_it (3.26s)
-    --- PASS: TestPostgreSQLCredentialSplitIntegration/clean_up (5.09s)
+    --- PASS: TestPostgreSQLCredentialSplitIntegration/verify_passwords_needs_pg_authid_and_is_unknown_without_it (8.58s)
+    --- PASS: TestPostgreSQLCredentialSplitIntegration/connect_roles_keeps_the_observe_role_connected_to_a_database_PUBLIC_cannot_connect_to (18.78s)
+    --- PASS: TestPostgreSQLCredentialSplitIntegration/clean_up (7.31s)
 ```
 
 分かったこと:
 
+- 境界の外のロールの CONNECT（#203）：観測用のロールが CONNECT の無いデータベースにつなぐと、psql は `FATAL: permission denied for database "lockeddb"`（DETAIL `User does not have CONNECT privilege.`）で終了コード 2。これは届かない（unreachable）ではなく「authentication failed or connection not allowed」（接続が許されない）として知らせる。`connect_roles` の Apply の文は `GRANT CONNECT ON DATABASE "lockeddb" TO "sakutei_ro"` で、書き込み用のロールが流す。
 - PUBLIC の権限（#133）：空から作る周では、データベースがまだ無いので PUBLIC の権限は absent（`+ CREATE .../grant/PUBLIC`）で、データベースを作った後に既定の CONNECT・TEMPORARY を REVOKE する。手で `GRANT ... TO PUBLIC` すると `~ UPDATE .../grant/PUBLIC`（1 field out of sync）として見え、1 周で戻る。
 - 空から 1 周で 9 つすべてができる（データベースの後に権限・拡張が流れる順になった。順が逆でも、まだ無いデータベース・ロールは Transient で次の周に回る）。
 - 手で変えたパスワードは `verify_passwords` で drift として見える（`~ password "***" → "secretref:file/pg/app#gen1"`。観測の側は空なので `***` と出る）。
@@ -275,5 +305,6 @@ PASS
 - SCRAM-SHA-256：RFC 7677 の例と同じ検証値になる。md5 の形も確かめられる。
 - 契約テスト（`sdk.ContractTester`、ロール・データベース・権限・拡張の 4 種類で、届かないのを absent にしないことを含む）・BulkObserve 等価性テスト・管理の境界・パスワード（平文が引数・環境変数・SQL・plan に出ない、passfile が残らない、世代を上げれば設定し直す、`verify_passwords` で手の変更が見える）・作るときだけのフィールド・権限と所属の集合・拡張の版・Delete（表のある DB・オブジェクトを持つロール・頼られている拡張は消さない）・観測できないもの（届かない・パスワード違い・secret が無い・psql が無い）・読み戻しの不一致・本物の exec の経路（テストのバイナリを偽の psql として起動）・設定ファイルの検査（`internal/postgresql/*_test.go`）。
 - 受け入れテスト（`tests/acceptance/postgresql_test.go`、`[AC-125-*]`）：偽の psql を実行ファイルにして、DefaultRegistry から作って契約テスト、PruneWithinScope で表のある DB が残ること、届かないと prune が止まり何もしないこと、`sakutei reconcile`・`status --json` で空から適合になりパスワードが出力に出ないこと。
-- 観測用と書き込み用の資格（`internal/postgresql/credential_split_test.go`、`[AC-186-5-*]`）：偽の psql に読むだけのロール（読む問い合わせは流せ、変える文は 42501 で断られる）を足し、ロールごとの文の数を数える。読むだけのロールで観測・管理用のロールで Apply して収束し、読むだけのロールは読むだけ、2 つのロールは List に出ず宣言できない。書かない回は書き込み用のパスワードが無くても読み込めて観測し、Apply は `provider.ErrNoWriteAccess` で psql を起動しない。書く回はパスワードが無ければ読み込みで断る。`verify_passwords` で `pg_authid` を読めなければ unknown。`observe:`・`write:` の書き誤り。
+- 観測用と書き込み用の資格（`internal/postgresql/credential_split_test.go`、`[AC-186-5-*]`）：偽の psql に読むだけのロール（読む問い合わせは流せ、変える文は 42501 で断られる）を足し、ロールごとの文の数を数える。読むだけのロールで観測・管理用のロールで Apply して収束し、読むだけのロールは読むだけ、2 つのロールは List に出ず宣言できない。書かない回は書き込み用のパスワードが無くても読み込めて観測し、Apply は `provider.ErrNoWriteAccess` で psql を起動しない。書く回はパスワードが無ければ読み込みで断る。`verify_passwords` で `pg_authid` を読めなければ unknown。`observe:`・`write:` の書き誤り。偽の psql の読むだけのロールは、本物と同じく CONNECT の無いデータベースには繋げない。
+- 境界の外のロールの CONNECT（同じファイル、`[AC-203-1-*]`）：PUBLIC の CONNECT を外すデータベースを空から宣言して周を真似ると、`connect_roles` があれば宣言の順（PUBLIC の権限が先でも）に依らずどの周の List も通り、無ければ List が落ちる。手の REVOKE はずれで Apply で戻り、宣言していない `pg_monitor` の CONNECT は残り、欄を外しても REVOKE しない。境界の内のロール・`PUBLIC` は書けない。
 - 受け入れテスト（`tests/acceptance/postgresql_secret_test.go`、`[AC-137-*]`）：常駐のように provider を作った後で管理用の秘密が store から消えると、Read は unknown・Apply は Transient（Permanent ではない）で何も変えず、秘密が戻れば同じ Apply が通ること。起動の時点で秘密が無ければ `plan`・`reconcile` が何もせずに 0 でない終了コードで止まり、戻せば収束すること。

@@ -293,6 +293,9 @@ func runCounted(st *State, args []string, env map[string]string, stdin string, c
 	if !db.AllowConn {
 		return "", fmt.Sprintf("psql: error: connection to server at %q failed: FATAL:  55000: database %q is not currently accepting connections\n", host, dbName), 2, nil
 	}
+	if readOnly && !canConnect(db, user) {
+		return "", fmt.Sprintf("psql: error: connection to server at %q failed: FATAL:  42501: permission denied for database %q\nDETAIL:  User does not have CONNECT privilege.\n", host, dbName), 2, nil
+	}
 	x := &execCtx{st: st, user: user, db: dbName, readOnly: readOnly, counts: counts}
 	var out strings.Builder
 	for i, stmt := range splitStatements(stdin) {
@@ -1264,6 +1267,17 @@ func (x *execCtx) snapshot() map[string]any {
 		})
 	}
 	return map[string]any{"current_user": x.user, "roles": roles, "databases": dbs}
+}
+
+// canConnect は超ユーザでないロール user が db に接続できるか（所有者か、CONNECT を
+// 直に・PUBLIC から持つ。本物と同じく、PUBLIC の CONNECT を外したデータベースには
+// 読むだけのロールは繋げない、#203）。
+func canConnect(db *Database, user string) bool {
+	acl := db.ACL
+	if acl == nil {
+		acl = DefaultACL(db.Owner)
+	}
+	return db.Owner == user || contains(acl[user], "CONNECT") || contains(acl[""], "CONNECT")
 }
 
 // DefaultACL は datacl が NULL のときの権限（acldefault('d', 所有者)）：所有者が
