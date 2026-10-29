@@ -44,9 +44,15 @@
 //     slot だけを比べる。大きくするのはよい（resize）、小さくするのと
 //     ストレージを変えるのは計画のエラー。無い slot は足す。宣言しない
 //     ディスクは消さない。
-//   - nics: "<slot> bridge=<bridge> [vlan=<tag>] [mac=<mac>] [model=<model>]"。
-//     宣言した slot だけを比べる。bridge と vlan（書かなければタグ無し）は
-//     いつも、mac と model は書いたときだけ比べる。
+//   - nics: "<slot> bridge=<bridge> [vlan=<tag>] [mac=<mac>] [model=<model>]
+//     [firewall=<0|1>] [mtu=<mtu>]"。宣言した slot だけを比べる。bridge と
+//     vlan（書かなければタグ無し）はいつも、mac・model・firewall・mtu は書いた
+//     ときだけ比べる（Backlog #196。書かなければ今の値を残す）。
+//   - firewall: VM の FW の options（/firewall/options、Backlog #196）。
+//     "enable=<0|1> policy_in=<ACCEPT|DROP|REJECT> policy_out=<...>
+//     ipfilter=<0|1> macfilter=<0|1>" のうち書いたキーだけを比べて合わせる。
+//     書かなければ触らない。観測はいつも 5 つのキー（書かれていなければ
+//     Proxmox の既定）。FW の規則と、datacenter の FW を有効にするのは扱わない。
 //   - ci_user・ci_ssh_keys（改行で区切る）・ci_ip（dhcp か CIDR、ipconfig0）・
 //     ci_gateway・ci_dns: cloud-init。
 //   - ciupgrade: true / false。cloud-init の初回の起動でパッケージを更新するか
@@ -113,7 +119,7 @@ const (
 	Name = "proxmox-vm"
 
 	// ProviderVersion は diff / 正規化の版（§10.4）。正規形の作り方を変えたら上げる。
-	ProviderVersion = Name + "-v1"
+	ProviderVersion = Name + "-v2"
 )
 
 // フィールド名。
@@ -134,6 +140,7 @@ const (
 	FieldCIGateway     = "ci_gateway"
 	FieldCIDNS         = "ci_dns"
 	FieldCIUpgrade     = "ciupgrade"
+	FieldFirewall      = "firewall"
 	FieldPower         = "power"
 	FieldPowerOff      = "power_off"
 	FieldForceAfter    = "force_after"
@@ -272,6 +279,7 @@ func (p *Provider) Schema() provider.Schema {
 		FieldCIGateway:     s(),
 		FieldCIDNS:         s(),
 		FieldCIUpgrade:     {Kind: core.FieldKindBool},
+		FieldFirewall:      s(),
 		FieldPower:         s(),
 		FieldPowerOff:      s(),
 		FieldForceAfter:    s(),
@@ -494,11 +502,17 @@ func (p *Provider) observeVM(ctx context.Context, c Cluster, localID, vm string,
 	if cur["lock"] != "" {
 		return obsOf(core.AvailabilityConverging), nil
 	}
+	fw, err := c.Client.FirewallOptions(ctx, r.Node, r.VMID)
+	if err != nil {
+		return obsOf(core.AvailabilityUnknown), classify(fmt.Errorf("%s: Read %q: the firewall options: %w", Name, localID, err))
+	}
 	if r.Status == PowerStopped {
 		p.forget(localID)
 	}
 	clusterName, _, _ := strings.Cut(localID, "/")
-	return core.Observation{Availability: core.AvailabilityOk, State: toState(clusterName, r, cur, next), ObservedAt: time.Now()}, nil
+	st := toState(clusterName, r, cur, next)
+	st[FieldFirewall] = core.TypedValue{Kind: core.FieldKindString, Value: observedFirewall(fw)}
+	return core.Observation{Availability: core.AvailabilityOk, State: st, ObservedAt: time.Now()}, nil
 }
 
 // splitPending は /pending を今の設定と、再起動の後の設定に分ける。
@@ -833,6 +847,11 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 			return fail("%w", err)
 		}
 	}
+	if v, ok := fields[FieldFirewall]; ok {
+		if _, err := ParseFirewall(v); err != nil {
+			return fail("%w", err)
+		}
+	}
 	if v, ok := fields[FieldCIIP]; ok && v != "" {
 		if _, err := CanonIP(v); err != nil {
 			return fail("%w", err)
@@ -1017,6 +1036,9 @@ func fieldMatches(field, want, have string) (bool, error) {
 			}
 		}
 		return true, nil
+	case FieldFirewall:
+		ws, err := ParseFirewall(want)
+		return err == nil && len(firewallDiff(ws, have)) == 0, nil
 	case FieldCISSHKeys:
 		return CanonSSHKeys(want) == have, nil
 	case FieldCIIP:
@@ -1038,10 +1060,16 @@ func fieldMatches(field, want, have string) (bool, error) {
 	return want == have, nil
 }
 
-// nicMatches は宣言の NIC w が観測 h と同じか（mac・model は書いたときだけ）。
+// nicMatches は宣言の NIC w が観測 h と同じか（mac・model・firewall・mtu は
+// 書いたときだけ。観測の firewall の "" は 0）。
 func nicMatches(w, h NIC) bool {
+	hfw := h.Firewall
+	if hfw == "" {
+		hfw = "0"
+	}
 	return w.Bridge == h.Bridge && w.VLAN == h.VLAN &&
-		(w.MAC == "" || w.MAC == h.MAC) && (w.Model == "" || w.Model == h.Model)
+		(w.MAC == "" || w.MAC == h.MAC) && (w.Model == "" || w.Model == h.Model) &&
+		(w.Firewall == "" || w.Firewall == hfw) && (w.MTU == 0 || w.MTU == h.MTU)
 }
 
 // parseObservedDisks は観測の正規形の disks を slot → Disk にする。
@@ -1062,12 +1090,13 @@ func parseObservedDisks(s string) (map[string]Disk, error) {
 func parseObservedNICs(s string) map[string]NIC {
 	out := map[string]NIC{}
 	for _, e := range splitEntries(s) {
-		slot, kv, err := entryKV(e, "bridge", "vlan", "mac", "model")
+		slot, kv, err := entryKV(e, nicKeys...)
 		if err != nil {
 			continue
 		}
-		n := NIC{Slot: slot, Bridge: kv["bridge"], MAC: kv["mac"], Model: kv["model"]}
+		n := NIC{Slot: slot, Bridge: kv["bridge"], MAC: kv["mac"], Model: kv["model"], Firewall: kv["firewall"]}
 		n.VLAN, _ = strconv.Atoi(kv["vlan"])
+		n.MTU, _ = strconv.Atoi(kv["mtu"])
 		out[slot] = n
 	}
 	return out
@@ -1540,6 +1569,29 @@ func (p *Provider) update(ctx context.Context, c Cluster, localID string, vm Res
 	if len(params) > 0 {
 		if err := c.Client.SetConfig(ctx, vm.Node, vm.VMID, params); err != nil {
 			return classify(fail("set config: %w", err))
+		}
+	}
+	if v, ok := want[FieldFirewall]; ok {
+		ws, err := ParseFirewall(v)
+		if err != nil {
+			return provider.NewPermanentError(fail("%w", err))
+		}
+		fw, err := c.Client.FirewallOptions(ctx, vm.Node, vm.VMID)
+		if err != nil {
+			return classify(fail("the firewall options: %w", err))
+		}
+		if d := firewallDiff(ws, observedFirewall(fw)); len(d) > 0 {
+			fp := url.Values{}
+			for k, x := range d {
+				fp.Set(k, x)
+			}
+			if err := c.Client.SetFirewallOptions(ctx, vm.Node, vm.VMID, fp); err != nil {
+				err = fail("set the firewall options: %w", err)
+				if KindOf(err) == KindAuth {
+					return provider.NewPermanentError(fmt.Errorf("%w (the token needs VM.Config.Network on the VM)", err))
+				}
+				return classify(err)
+			}
 		}
 	}
 	for _, r := range resizes {

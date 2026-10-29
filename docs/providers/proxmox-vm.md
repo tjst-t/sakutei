@@ -1,12 +1,12 @@
 # Proxmox VE の VM provider（proxmox-vm）
 
-Proxmox VE のクラスタの VM（qemu）を宣言で作り、pool・CPU・メモリ・ディスク・NIC・cloud-init・電源を合わせる provider（Backlog #143、設計書 §29.1「Proxmox VE の VM provider」）。
+Proxmox VE のクラスタの VM（qemu）を宣言で作り、pool・CPU・メモリ・ディスク・NIC・VM の FW の options・cloud-init・電源を合わせる provider（Backlog #143、設計書 §29.1「Proxmox VE の VM provider」）。
 REST API（既定の前置きは `/api2/json`。設定の `api_base_path` で変えられる）を Go の標準ライブラリの net/http で叩く。認証は API トークン（`Authorization: PVEAPIToken=<user>@<realm>!<tokenname>=<secret>`）。
 
 - 完全の階級：Read・Apply・List・BulkObserve（`/cluster/resources` を 1 回と VM ごとの設定）。
 - VM は破壊的な型なので **prune しない**（`Pruneable: false`、§12.3）。宣言から外しても消えない。消すのは intent の **`ensure: absent`**（宣言で消す、§12.2、Backlog #163。下の「宣言で消す」）だけで、Delete は破壊的として予算（§13）に数え、planned_change（`kind: delete`）のレーンが開いているときだけ走る（承認）。
 - **触らない VM**（Sakutei 自身が動く VM など段0 のもの、§23）は intent の `external_owners:`（§7.3、Backlog #158。下の「触らない VM を intent に書く」）に書く。設定の `protected_vmids`・`protected_names` は最後の安全の網として残り、それらは List に出さず、Read・Apply もしない。宣言すれば計画のエラー。
-- コンテナ（LXC）・ストレージ・ネットワーク（ブリッジ）・HA・バックアップの設定は扱わない。ゲスト OS の中は離れたホストの層（[docs/remote.md](../remote.md)）と [Ansible provider](ansible.md) で合わせる。
+- コンテナ（LXC）・ストレージ・ネットワーク（ブリッジ）・HA・バックアップの設定と、FW の規則・datacenter とノードの FW の設定は扱わない（VM の FW は options だけ）。ゲスト OS の中は離れたホストの層（[docs/remote.md](../remote.md)）と [Ansible provider](ansible.md) で合わせる。
 
 ## クラスタの一覧（proxmox_config）
 
@@ -102,7 +102,7 @@ external_owners:
 
 ## トークンの権限
 
-トークンに要るのは、VM の作成・複製・設定・電源・削除（`VM.Allocate`・`VM.Clone`・`VM.Config.*`・`VM.PowerMgmt`・`VM.Audit`）、ストレージの領域の割り当て（`Datastore.AllocateSpace`）、bridge を使うこと（`SDN.Use`）、テンプレートから複製するならそのテンプレートに `VM.Clone`。
+トークンに要るのは、VM の作成・複製・設定・電源・削除（`VM.Allocate`・`VM.Clone`・`VM.Config.*`・`VM.PowerMgmt`・`VM.Audit`。VM の FW の options を書くのは `VM.Config.Network`）、ストレージの領域の割り当て（`Datastore.AllocateSpace`）、bridge を使うこと（`SDN.Use`）、テンプレートから複製するならそのテンプレートに `VM.Clone`。
 仕事（UPID）の状態は、そのトークンが始めた仕事なら権限なしで読める。privsep のあるトークン（`--privsep 1`）の権限は、利用者とトークンの両方に付けた ACL の重なりなので、同じ ACL を両方に付ける。
 
 ### pool に絞ったトークン（Backlog #165）
@@ -123,7 +123,7 @@ VM に `pool` を宣言すると、作るときにその pool に入るので、
 
 | ACL | ロール | 何のため |
 | --- | --- | --- |
-| `/pool/<pool>` | `PVEVMAdmin` | pool の中の VM の作成（`pool` を渡した作成・複製は `/vms/<vmid>` でなく `/pool/<pool>` の `VM.Allocate` で通る）・設定・resize・電源・削除・読み |
+| `/pool/<pool>` | `PVEVMAdmin` | pool の中の VM の作成（`pool` を渡した作成・複製は `/vms/<vmid>` でなく `/pool/<pool>` の `VM.Allocate` で通る）・設定・resize・電源・削除・読み・VM の FW の options（読みは `VM.Audit`、書きは `VM.Config.Network`） |
 | `/pool/<pool>` | `PVEPoolUser`（`Pool.Audit`） | **pool を観測するため**。これが無いと `/cluster/resources` に `pool` が載らず、VM が「pool に無い」に見える（pool の drift になり、移そうとして権限で断られる） |
 | `/storage/<storage>` | `PVEDatastoreUser` | 宣言したディスク・複製の先のストレージ |
 | `/sdn/zones/localnetwork`（か bridge ごと） | `PVESDNUser` | NIC の bridge |
@@ -154,7 +154,7 @@ VM に `pool` を宣言すると、作るときにその pool に入るので、
 # pveum acl modify / --roles PVEAuditor --tokens 'sakutei-ro@pve!audit'
 ```
 
-- `VM.Audit` で `/cluster/resources`・`/status/current`・`/pending` が読める。`Pool.Audit` が無いと `/cluster/resources` に `pool` が
+- `VM.Audit` で `/cluster/resources`・`/status/current`・`/pending`・`/firewall/options`（VM の FW の options、Backlog #196）が読める。`Pool.Audit` が無いと `/cluster/resources` に `pool` が
   載らない（pool を宣言した VM が「pool に無い」に見える。上の pool に絞ったトークンの表と同じ）。観測を pool に絞るなら、
   `/` でなく `/pool/<pool>` と複製の元のテンプレートに `PVEAuditor` を付ける（見える VM は pool の中だけになる）。
 - Apply が待ち切れなかった仕事（UPID）の状態は、次の周の観測が観測用のトークンで読む。他人の始めた仕事の状態を読むには
@@ -179,7 +179,8 @@ resources:
       cores: "2"
       memory: 4G                      # MiB の整数（4096）でもよい
       disks: "scsi0 storage=local-lvm size=32G"
-      nics: "net0 bridge=vmbr0 vlan=20"
+      nics: "net0 bridge=vmbr0 vlan=20 firewall=1"
+      firewall: "enable=1 policy_in=DROP policy_out=ACCEPT"   # VM の FW の options（書いたキーだけ）
       ci_user: ops
       ci_ssh_keys: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... sakutei@ctl"
       ci_ip: 192.0.2.21/24
@@ -202,7 +203,8 @@ resources:
 | `cores` | 正の整数 | |
 | `memory` | `2048`（MiB）・`2048M`・`2G` | |
 | `disks` | `<slot> storage=<storage> size=<大きさ>` を `,` でつなぐ | slot は `scsiN`・`virtioN`・`sataN`・`ideN`。大きさは GiB で割り切れること。**宣言した slot だけ**を比べる。大きくするのはよい（resize）、**小さくするのと、ストレージを変えるのは計画のエラー**。無い slot は足す。宣言から外したディスクは消さない |
-| `nics` | `<slot> bridge=<bridge> [vlan=<1-4094>] [mac=<MAC>] [model=<型>]` を `,` でつなぐ | **宣言した slot だけ**を比べる。`bridge` と `vlan`（書かなければタグ無し）はいつも、`mac` と `model`（virtio・e1000・e1000e・rtl8139・vmxnet3）は書いたときだけ比べる。書き換えるときも、宣言しない MAC・型とほかのキー（`firewall=1` など）は残す |
+| `nics` | `<slot> bridge=<bridge> [vlan=<1-4094>] [mac=<MAC>] [model=<型>] [firewall=<0\|1>] [mtu=<1-65520>]` を `,` でつなぐ | **宣言した slot だけ**を比べる。`bridge` と `vlan`（書かなければタグ無し）はいつも、`mac`・`model`（virtio・e1000・e1000e・rtl8139・vmxnet3）・`firewall`（口の FW、Backlog #196）・`mtu`（`1` は bridge の MTU を使う、#196）は書いたときだけ比べる。書き換えるときも、宣言しない MAC・型・firewall・mtu とほかのキー（`rate` など）は残す。`mtu` は virtio の口だけに効くので、`model` に virtio 以外を書いて `mtu` も書くと読み込みで断る |
+| `firewall` | `enable=<0\|1> policy_in=<ACCEPT\|DROP\|REJECT> policy_out=<…> ipfilter=<0\|1> macfilter=<0\|1>` のうち書くものを空白（かカンマ）でつなぐ | VM の FW の options（`/nodes/<node>/qemu/<vmid>/firewall/options`、Backlog #196）。**書いたキーだけ**を比べ、違うキーだけを書く（書かないキー・`dhcp`・`ndp`・`log_level_in` などは触らない）。書かなければ読むだけで比べない。観測はいつも 5 つのキーで、書かれていないキーは Proxmox の既定（`enable=0`・`policy_in=DROP`・`policy_out=ACCEPT`・`ipfilter=0`・`macfilter=1`）と見る。設定ではないので pending にならず、走っている VM にもすぐ効く |
 | `ci_user` | ユーザ名 | cloud-init（`ciuser`） |
 | `ci_ssh_keys` | 公開鍵（改行で区切る） | `sshkeys`。Proxmox は URL エンコードして持つ |
 | `ci_ip` | `dhcp` か CIDR（IPv4） | `ipconfig0` の `ip`。`ip6` などほかのキーは残す |
@@ -227,7 +229,8 @@ Proxmox が書き戻す表記と、宣言の書き方の違いは比べる前に
 - 大きさ：`32G`・`32768M`・`33554432K` は同じ（割り切れる一番大きい単位で持つ）。
 - メモリ：`2048`・`2048M`・`2G` は同じ。観測の `current=2048,...`（新しい版の書き方）も同じ。
 - ディスク：設定の `local-lvm:vm-100-disk-0,iothread=1,size=32G` から storage と size だけを取る。CD-ROM・cloud-init のドライブ・unused は入れない。
-- NIC：設定の `virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,tag=10,firewall=1` から。MAC は大文字小文字を区別しない。
+- NIC：設定の `virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,tag=10,firewall=1,mtu=1450` から。MAC は大文字小文字を区別しない。観測の正規形の `firewall` は 1 のときだけ出す（`firewall=0` と書かれていないのは同じ。`firewall=0` の宣言はどちらとも適合する）。`mtu` は書かれていれば出す。
+- VM の FW の options：`GET /firewall/options` は書かれたキーだけを返す（Proxmox VE 9.2 で確かめた）ので、書かれていないキーは既定（pve-firewall が VM の口に使う値：入りは DROP、出は ACCEPT、MAC の filter は有効）で埋め、`enable=… policy_in=… policy_out=… ipfilter=… macfilter=…` の順に並べる。
 - ssh の公開鍵：URL エンコードを戻し、行ごとに前後の空白を落とし、空行を除く。
 - `ci_ip`・`ci_gateway`・`ci_dns`：アドレスの書き方をそろえる。
 
@@ -235,7 +238,7 @@ Proxmox が書き戻す表記と、宣言の書き方の違いは比べる前に
 
 ### 観測
 
-`Read` は `/cluster/resources` で名前の VM を探し、`/nodes/<node>/qemu/<vmid>/status/current` で電源と lock を、`/nodes/<node>/qemu/<vmid>/pending` で設定を読む（今の値と、再起動を待つ値が 1 回で取れる）。
+`Read` は `/cluster/resources` で名前の VM を探し、`/nodes/<node>/qemu/<vmid>/status/current` で電源と lock を、`/nodes/<node>/qemu/<vmid>/pending` で設定を読む（今の値と、再起動を待つ値が 1 回で取れる）。VM の FW の options は `/nodes/<node>/qemu/<vmid>/firewall/options` で読む（宣言に依らずいつも読む。読めなければ設定と同じく Unknown）。
 
 - `/cluster/resources` の vmid・ノードはクラスタの設定（pmxcfs）から来るが、**名前・status・template は pvestatd が約 10 秒ごとに写したもの**で、作った直後の VM は名前が空、status が古いことがある（本物の Proxmox VE の統合テストで見つけた）。
   名前が空の項目は VM の設定（`/config`）で名前とテンプレートかを確かめる（「無い」と見てもう一度作らないように）。電源と lock はいつも `/status/current` で読む（古い `stopped` を見て、走っている VM に start を重ねないように）。
@@ -261,6 +264,7 @@ Apply が成功を返したら、読み直して宣言どおりになったか�
 ### 再起動が要る変更（pending）
 
 走っている VM の設定の一部（hotplug できない `cores`・`memory` など）は、Proxmox が pending に置いて次の起動で効かせる。
+NIC の `firewall` は走っている VM にすぐ効く（Proxmox VE 9.2 で確かめた）。NIC の `mtu` を走っている VM で変えると、Proxmox は口を抜き差し（hot-unplug）し、ゲストが応じなければ `hotplug problem` で断る（Apply のエラー。止めてから変える）。
 
 - 観測の値は**設定が言う値**（pending があればその値）。宣言どおりの値が pending にあれば差分にならず、**重ねて書かない**。そのフィールドの名前が `pending` に出る。
 - 走っている VM を手で変えると、その変更も pending に置かれる。今効いている値は宣言どおりでも、手の変更が pending にあれば差分にして宣言の値を書き戻す（Proxmox は今の値と同じ pending を消す）。
@@ -352,6 +356,24 @@ $ make integration-proxmox
 | scope 付きの宣言と `--claim` | 設定に `scope` を書かず、it-vm2 を `scope: {node: mgmt}` で宣言し、API で直接 VM（vmid 530、`it-hand`）を作る。`status --json --claim node=mgmt` と claim なしの `status --json` は it-hand だけを `node=mgmt` の unmanaged に出し、it-vm2 は適合で注記は無い。`--claim node=edge` は何も出さない。`reconcile --claim node=mgmt` は `Converged (no changes)` で it-hand を消さない（#169）。クラスタの scope を intent の `providers.proxmox-vm.clusters.it.scope`（`node: mgmt`）に書いても `status --json` は警告なしに it-hand を出し、`reconcile` は `Converged (no changes)`。設定に無いクラスタの名前を書くと `plan` が断る（#181） |
 | ciupgrade: false | `ciupgrade: false` の VM（vmid 540、止めたまま）をテンプレートから作り、`Converged (no changes)` まで。API で見た設定の `ciupgrade` が `0` で、`qm cloudinit dump 540 user` に `package_upgrade` が無い（Proxmox は 1 のときだけ `package_upgrade: true` を書く）。`ciupgrade` を書かない VM（520）の設定には `ciupgrade` が無い。API で 1 にすると `status` が ciupgrade の drift を出し、`reconcile` が 0 に戻す（#170）。出口の無い網で起動が待たされないことは確かめない（テストの網は slirp で外に出られる） |
 | 観測用（PVEAuditor）と書き込み用のトークン | root で `sakutei-ro@pve!audit`（privsep、`/` に `PVEAuditor`）を作る。そのトークンは `/cluster/resources` を読めて、VM の設定を変えられない（403）。観測用にそれ、書き込み用に root のトークンを書いた設定で、API で手で `cores` を変えた VM（540）に対し、書き込み用の secret の無い store で `status`・`plan`・`reconcile --mode alert-only` が drift を出し、書く `reconcile` は `write.token_secret` が store に無いと言って起動せず VM は変わらない。両方の secret の store の `reconcile` が `1 change(s) applied` で戻し、次は `Converged (no changes)`（#186） |
+| NIC の firewall・mtu と VM の FW の options | `nics: "net0 bridge=vmbr0 firewall=1 mtu=1450, net1 bridge=vmbr0 vlan=43 firewall=1"` と `firewall: "enable=1 policy_in=DROP policy_out=REJECT macfilter=0"` の VM（vmid 550、止めたまま）をテンプレートから作り、`Converged (no changes)` まで。API で見た net0・net1 に `firewall=1`（net0 に `mtu=1450`）、options は `enable`・`policy_out`・`macfilter` だけが書かれ（`policy_in=DROP` は既定と同じなので書かない）、`/etc/pve/firewall/550.fw` に `enable: 1`。API で net0 を `firewall=0,mtu=1500`、options を `enable=0`・`ipfilter=1`（書かないキー）にすると、観測用のトークン（`PVEAuditor`）でも `status` が nics と firewall の drift を出し、`reconcile` が `1 change(s) applied` で戻して `ipfilter=1` は残す。書かない VM（540）は options が空のままで、手で net0 に `firewall=1,mtu=1400`・options に `enable=1` を書いても `reconcile` は `Converged (no changes)`（#196） |
+
+### 結果（2026-10-29、Backlog #196 の「NIC の firewall・mtu と VM の FW の options」）
+
+同じ開発機・同じキャッシュで、`make integration-proxmox` が PASS（全段で約 2 分 20 秒）。最後の段に、NIC の `firewall`・`mtu` と
+VM の FW の options を書いた VM を複製して合わせ、手の変更を戻し、書かないキーと書かない VM は比べない段を足した。
+あわせて手で確かめたこと（Proxmox VE 9.2）：`GET /firewall/options` は書かれたキーだけを返す（作った直後は `digest` だけ）、
+pve-firewall は書かれていない `policy_in` を DROP・`policy_out` を ACCEPT・`macfilter` を有効として使う、
+走っている VM の NIC の `firewall` の変更は pending にならずすぐ効く、`mtu` の変更は口の抜き差しになり、ゲストの無い VM では
+`hotplug problem` で断られる。options の読みは `VM.Audit`、書きは `VM.Config.Network`（`PVE/API2/Firewall/VM.pm` の権限の検査）:
+
+```
+--- PASS: TestProxmoxVM (136.10s)
+    ...
+    --- PASS: TestProxmoxVM/観測用（PVEAuditor）と書き込み用のトークン (2.18s)
+    --- PASS: TestProxmoxVM/NIC_の_firewall・mtu_と_VM_の_FW_の_options (9.94s)
+ok  	github.com/tjst-t/sakutei/v2/tests/integration/proxmox	136.108s
+```
 
 ### 結果（2026-10-28、Backlog #186 の「観測用（PVEAuditor）と書き込み用のトークン」）
 

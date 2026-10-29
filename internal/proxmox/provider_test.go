@@ -434,6 +434,97 @@ func TestCIUpgrade(t *testing.T) {
 	}
 }
 
+// NIC の firewall・mtu と VM の FW の options（Backlog #196）：書けば作るときに
+// 渡して合わせ（空から作る・複製）、手で変えれば戻す。書かなければ渡さず、
+// 観測の値が何でも比べない（今までと同じ）。
+func TestNICFirewallAndFirewallOptions(t *testing.T) {
+	e := newEnv(t, pvetest.Options{}, time.Second)
+
+	// 空から作る：NIC の firewall・mtu は作るときの設定に、FW の options は作った後に。
+	want := web1()
+	want[proxmox.FieldNICs] = "net0 bridge=vmbr0 vlan=10 firewall=1 mtu=1450"
+	want[proxmox.FieldFirewall] = "enable=1 policy_in=DROP policy_out=REJECT macfilter=0"
+	e.converge(t, "lab/web1", want, 3)
+	vm, _ := e.srv.VM(200)
+	if !strings.Contains(vm.Config["net0"], "firewall=1") || !strings.Contains(vm.Config["net0"], "mtu=1450") {
+		t.Fatalf("after create: net0 = %q", vm.Config["net0"])
+	}
+	// policy_in=DROP は既定と同じなので書かない（書いたキーだけを、違うときだけ書く）。
+	if fw := vm.Firewall; len(fw) != 3 || fw["enable"] != "1" || fw["policy_out"] != "REJECT" || fw["macfilter"] != "0" {
+		t.Fatalf("after create: firewall options = %v", fw)
+	}
+	_, obs, _ := e.plan(t, "lab/web1", want)
+	if got := obs.State[proxmox.FieldFirewall].Value; got != "enable=1 policy_in=DROP policy_out=REJECT ipfilter=0 macfilter=0" {
+		t.Errorf("observed firewall = %v", got)
+	}
+	if got := obs.State[proxmox.FieldNICs].Value; got != "net0 bridge=vmbr0 vlan=10 mac=bc:24:11:00:00:01 model=virtio firewall=1 mtu=1450" {
+		t.Errorf("observed nics = %v", got)
+	}
+
+	// 手で変える → 戻す。
+	e.srv.SetConfig(200, "net0", "virtio=BC:24:11:00:00:01,bridge=vmbr0,tag=10,firewall=0,mtu=1500")
+	e.srv.SetFirewall(200, "enable", "0")
+	e.srv.SetFirewall(200, "policy_in", "ACCEPT")
+	ops := e.cycle(t, "lab/web1", want)
+	if len(ops) != 1 || len(ops[0].Fields) != 2 {
+		t.Fatalf("ops = %+v, want nics and firewall", ops)
+	}
+	vm, _ = e.srv.VM(200)
+	if vm.Config["net0"] != "virtio=BC:24:11:00:00:01,bridge=vmbr0,tag=10,firewall=1,mtu=1450" {
+		t.Errorf("after Apply: net0 = %q", vm.Config["net0"])
+	}
+	if vm.Firewall["enable"] != "1" || vm.Firewall["policy_in"] != "DROP" {
+		t.Errorf("after Apply: firewall options = %v", vm.Firewall)
+	}
+	if ops := e.cycle(t, "lab/web1", want); len(ops) != 0 {
+		t.Errorf("ops = %+v, want none", ops)
+	}
+	// 書かないキー（ipfilter）を手で変えても比べない。
+	e.srv.SetFirewall(200, "ipfilter", "1")
+	if pl, _, err := e.plan(t, "lab/web1", want); err != nil || len(pl.Ops) != 0 {
+		t.Errorf("undeclared ipfilter: ops %+v, %v; want none", pl.Ops, err)
+	}
+
+	// 複製：作った後、走らせる前に書く。
+	app := map[string]string{
+		proxmox.FieldVMID: "201", proxmox.FieldTemplate: "debian-tmpl", proxmox.FieldDisks: "scsi0 storage=local-lvm size=4G",
+		proxmox.FieldNICs: "net0 bridge=vmbr0 firewall=1", proxmox.FieldFirewall: "enable=1", proxmox.FieldPower: "running",
+	}
+	e.converge(t, "lab/app1", app, 3)
+	if vm, _ := e.srv.VM(201); !strings.Contains(vm.Config["net0"], "firewall=1") || vm.Firewall["enable"] != "1" || vm.Status != "running" {
+		t.Errorf("clone: net0 %q, firewall options %v, status %s", vm.Config["net0"], vm.Firewall, vm.Status)
+	}
+
+	// 書かなければ渡さず、観測の値を比べない。
+	plain := web1()
+	plain[proxmox.FieldName], plain[proxmox.FieldVMID] = "web2", "202"
+	e.converge(t, "lab/web2", plain, 3)
+	if vm, _ := e.srv.VM(202); strings.Contains(vm.Config["net0"], "firewall") || strings.Contains(vm.Config["net0"], "mtu") || len(vm.Firewall) != 0 {
+		t.Errorf("firewall・mtu were passed without being declared: net0 %q, firewall options %v", vm.Config["net0"], vm.Firewall)
+	}
+	e.srv.SetConfig(202, "net0", "virtio=BC:24:11:00:00:01,bridge=vmbr0,tag=10,firewall=1,mtu=9000")
+	e.srv.SetFirewall(202, "enable", "1")
+	if pl, _, err := e.plan(t, "lab/web2", plain); err != nil || len(pl.Ops) != 0 {
+		t.Errorf("undeclared firewall・mtu: ops %+v, %v; want none", pl.Ops, err)
+	}
+	// ほかの NIC の欄を書き換えても、書かない firewall・mtu は残る。
+	plain[proxmox.FieldNICs] = "net0 bridge=vmbr1 vlan=10"
+	e.converge(t, "lab/web2", plain, 3)
+	if vm, _ := e.srv.VM(202); vm.Config["net0"] != "virtio=BC:24:11:00:00:01,bridge=vmbr1,tag=10,firewall=1,mtu=9000" || vm.Firewall["enable"] != "1" {
+		t.Errorf("after changing the bridge: net0 %q, firewall options %v", vm.Config["net0"], vm.Firewall)
+	}
+
+	// 宣言の誤りは読み込みで断る。
+	for _, bad := range []map[string]string{
+		{proxmox.FieldFirewall: "enable=yes"}, {proxmox.FieldFirewall: "policy_in=ALLOW"}, {proxmox.FieldFirewall: ""},
+		{proxmox.FieldNICs: "net0 bridge=vmbr0 firewall=on"}, {proxmox.FieldNICs: "net0 bridge=vmbr0 model=e1000 mtu=1450"},
+	} {
+		if err := e.p.ValidateIntent("lab/web3", bad); err == nil {
+			t.Errorf("ValidateIntent(%v) succeeded", bad)
+		}
+	}
+}
+
 func TestDisks(t *testing.T) {
 	e := newEnv(t, pvetest.Options{}, time.Second)
 	want := web1()

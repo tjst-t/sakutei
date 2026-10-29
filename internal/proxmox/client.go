@@ -402,6 +402,26 @@ func (c *Client) CurrentStatus(ctx context.Context, node string, vmid int) (VMSt
 	return VMStatus{Status: scalar(raw["status"]), Lock: scalar(raw["lock"])}, nil
 }
 
+// FirewallOptions は VM の FW の options（/firewall/options。書かれていない
+// キーは返らない）を返す。要る権限は VM.Audit。
+func (c *Client) FirewallOptions(ctx context.Context, node string, vmid int) (map[string]string, error) {
+	var raw map[string]any
+	if err := c.call(ctx, http.MethodGet, vmPath(node, vmid)+"/firewall/options", nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		out[k] = scalar(v)
+	}
+	return out, nil
+}
+
+// SetFirewallOptions は VM の FW の options を書く（PUT、同期。渡さないキーは
+// そのまま）。要る権限は VM.Config.Network。
+func (c *Client) SetFirewallOptions(ctx context.Context, node string, vmid int, params url.Values) error {
+	return c.call(ctx, http.MethodPut, vmPath(node, vmid)+"/firewall/options", params, nil)
+}
+
 // SetConfig は設定を書く（PUT、同期）。走っている VM で再起動が要る変更は
 // Proxmox が pending に置く。
 func (c *Client) SetConfig(ctx context.Context, node string, vmid int, params url.Values) error {

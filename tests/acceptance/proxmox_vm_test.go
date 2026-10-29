@@ -46,6 +46,13 @@
 //	          a VM the token cannot see instead of creating another
 //	AC-165-3  the daemon refuses --cause-state, saying it keeps the previous
 //	          cycle in memory
+//	AC-196-1  the firewall and mtu of a NIC and the VM's firewall options
+//	          (enable, policy_in, policy_out, ipfilter, macfilter) are passed
+//	          when the VM is created, compared only when declared, and put
+//	          back by reconcile after a hand change; a VM that declares none
+//	          of them gets none, and its hand-set values are not drift
+//	AC-196-2  a bad firewall or NIC firewall/mtu declaration is refused when
+//	          the intent is loaded, and nothing is sent to the cluster
 package acceptance
 
 import (
@@ -396,5 +403,72 @@ func TestDaemon_RefusesCauseState(t *testing.T) {
 	o, code := runBin(t, bin, "--intent", t.TempDir(), "--cause-state", filepath.Join(t.TempDir(), "cause.json"))
 	if code != 1 || !strings.Contains(o, "in memory") || !strings.Contains(o, "one-shot") {
 		t.Errorf("[AC-165-3] the daemon with --cause-state: exit %d, want 1 and a message that it keeps the previous cycle in memory:\n%s", code, o)
+	}
+}
+
+func TestProxmoxVM_NICFirewallAndFirewallOptions(t *testing.T) {
+	// [AC-196-1]
+	srv, cfg := pveRig(t)
+	bin := buildBinary(t)
+	common := pveIntent(t, cfg, `{"provider": "proxmox-vm", "id": "lab/gw1", "fields": {
+	  "vmid": "501", "template": "debian-tmpl", "disks": "scsi0 storage=local-lvm size=8G",
+	  "nics": "net0 bridge=vmbr0 vlan=20 firewall=1, net1 bridge=vmbr1 firewall=1 mtu=1450",
+	  "firewall": "enable=1 policy_in=DROP policy_out=DROP ipfilter=1", "power": "running"}},
+	  {"provider": "proxmox-vm", "id": "lab/plain1", "fields": {
+	  "vmid": "502", "template": "debian-tmpl", "disks": "scsi0 storage=local-lvm size=8G",
+	  "nics": "net0 bridge=vmbr0 vlan=20", "power": "running"}}`)
+	for i := 0; i < 3; i++ {
+		if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 {
+			t.Fatalf("[AC-196-1] reconcile %d exit %d:\n%s", i, code, o)
+		}
+	}
+	gw, _ := srv.VM(501)
+	if !strings.Contains(gw.Config["net0"], "firewall=1") || !strings.Contains(gw.Config["net1"], "firewall=1") || !strings.Contains(gw.Config["net1"], "mtu=1450") {
+		t.Fatalf("[AC-196-1] gw1 NICs: net0 %q, net1 %q", gw.Config["net0"], gw.Config["net1"])
+	}
+	if gw.Firewall["enable"] != "1" || gw.Firewall["policy_out"] != "DROP" || gw.Firewall["ipfilter"] != "1" || gw.Status != "running" {
+		t.Fatalf("[AC-196-1] gw1 firewall options %v, status %s", gw.Firewall, gw.Status)
+	}
+	plain, _ := srv.VM(502)
+	if strings.Contains(plain.Config["net0"], "firewall") || strings.Contains(plain.Config["net0"], "mtu") || len(plain.Firewall) != 0 {
+		t.Fatalf("[AC-196-1] plain1 got what it does not declare: net0 %q, firewall options %v", plain.Config["net0"], plain.Firewall)
+	}
+	if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 || !strings.Contains(o, "Converged (no changes)") {
+		t.Fatalf("[AC-196-1] reconcile after convergence exit %d, want converged:\n%s", code, o)
+	}
+
+	// 手で変える：宣言した gw1 は drift で戻り、宣言しない plain1 は drift にならない。
+	srv.SetConfig(501, "net1", strings.Replace(gw.Config["net1"], "firewall=1", "firewall=0", 1))
+	srv.SetFirewall(501, "enable", "0")
+	srv.SetConfig(502, "net0", plain.Config["net0"]+",firewall=1,mtu=9000")
+	srv.SetFirewall(502, "enable", "1")
+	o, _ := runBin(t, bin, append([]string{"status"}, common...)...)
+	if !strings.Contains(o, "drifted=1") || !strings.Contains(o, "firewall") || !strings.Contains(o, "nics") {
+		t.Errorf("[AC-196-1] status after the hand changes, want gw1 drifted in nics and firewall only:\n%s", o)
+	}
+	if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 || !strings.Contains(o, "1 change(s) applied") {
+		t.Fatalf("[AC-196-1] reconcile after the hand changes exit %d:\n%s", code, o)
+	}
+	if gw, _ := srv.VM(501); !strings.Contains(gw.Config["net1"], "firewall=1") || gw.Firewall["enable"] != "1" {
+		t.Errorf("[AC-196-1] gw1 not put back: net1 %q, firewall options %v", gw.Config["net1"], gw.Firewall)
+	}
+	if p, _ := srv.VM(502); !strings.Contains(p.Config["net0"], "mtu=9000") || p.Firewall["enable"] != "1" {
+		t.Errorf("[AC-196-1] plain1 was changed: net0 %q, firewall options %v", p.Config["net0"], p.Firewall)
+	}
+	if o, code := runBin(t, bin, append([]string{"reconcile"}, common...)...); code != 0 || !strings.Contains(o, "Converged (no changes)") {
+		t.Fatalf("[AC-196-1] reconcile after putting back exit %d, want converged:\n%s", code, o)
+	}
+
+	// [AC-196-2]
+	for _, bad := range []string{`"firewall": "enable=on"`, `"firewall": "policy_in=ALLOW"`, `"nics": "net0 bridge=vmbr0 firewall=2"`,
+		`"nics": "net0 bridge=vmbr0 model=e1000 mtu=1450"`, `"nics": "net0 bridge=vmbr0 mtu=70000"`} {
+		args := pveIntent(t, cfg, `{"provider": "proxmox-vm", "id": "lab/bad1", "fields": {"vmid": "503", `+bad+`}}`)
+		before := srv.Calls("resources")
+		if o, code := runBin(t, bin, append([]string{"plan"}, args...)...); code == 0 || !strings.Contains(o, "bad1") {
+			t.Errorf("[AC-196-2] plan with %s: exit %d, want a refusal:\n%s", bad, code, o)
+		}
+		if srv.Calls("resources") != before {
+			t.Errorf("[AC-196-2] plan with %s reached the cluster", bad)
+		}
 	}
 }

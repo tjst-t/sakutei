@@ -39,8 +39,11 @@
 //     挙げたテンプレートだけが見え、触れる（ほかは 403）。作成・複製はその pool を
 //     渡したときだけ。/cluster/resources の pool は PoolAudit のときだけ載り、
 //     PUT /pools は PoolAllocate のときだけその pool に。
+//   - VM の FW の options（Backlog #196）：GET・PUT /firewall/options（enable・
+//     policy_in・policy_out・ipfilter・macfilter と delete・digest。ほかのキーと
+//     値の誤りは 400）。GET は書いたキーだけを返す（本物と同じく既定は返さない）。
 //
-// テストから: 現実を手で変える（SetConfig・SetStatus・SetLock・SetPool）、ノードを落とす
+// テストから: 現実を手で変える（SetConfig・SetFirewall・SetStatus・SetLock・SetPool）、ノードを落とす
 // （SetNodeOffline：資源の status が unknown、ノードの API が 595）、届かなく
 // する（SetUnreachable）、次の仕事を失敗させる（FailNextTask）。
 package pvetest
@@ -110,6 +113,8 @@ type VM struct {
 	// Pending は再起動を待つ値、PendingDelete は再起動で消えるキー。
 	Pending       map[string]string
 	PendingDelete map[string]bool
+	// Firewall は VM の FW の options（書いたキーだけ）。
+	Firewall map[string]string
 
 	// rrd は /cluster/resources に載せる写し（ResourceLag のとき）。
 	rrdName, rrdStatus string
@@ -200,7 +205,7 @@ func (s *Server) SetNodeOffline(node string, v bool) { s.mu.Lock(); s.offline[no
 func (s *Server) FailNextTask(kind, msg string) { s.mu.Lock(); s.failNext[kind] = msg; s.mu.Unlock() }
 
 // Calls は操作（"resources"・"pending"・"config"・"create"・"clone"・"resize"・
-// "start"・"shutdown"・"stop"・"reboot"・"reset"・"destroy"・"task"・"pools"）ごとの
+// "start"・"shutdown"・"stop"・"reboot"・"reset"・"destroy"・"task"・"pools"・"firewall"）ごとの
 // 呼ばれた回数を返す。
 func (s *Server) Calls(op string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls[op] }
 
@@ -223,6 +228,7 @@ func (s *Server) AddVM(vm VM) {
 	}
 	vm.Config = c
 	vm.Pending, vm.PendingDelete = copyMap(vm.Pending), map[string]bool{}
+	vm.Firewall = copyMap(vm.Firewall)
 	vm.rrdName, vm.rrdStatus, vm.rrdTemplate = vm.Name, vm.Status, vm.Template
 	s.vms[vm.VMID] = &vm
 }
@@ -236,7 +242,7 @@ func (s *Server) VM(vmid int) (VM, bool) {
 		return VM{}, false
 	}
 	out := *v
-	out.Config, out.Pending = copyMap(v.Config), copyMap(v.Pending)
+	out.Config, out.Pending, out.Firewall = copyMap(v.Config), copyMap(v.Pending), copyMap(v.Firewall)
 	out.PendingDelete = map[string]bool{}
 	for k := range v.PendingDelete {
 		out.PendingDelete[k] = true
@@ -269,6 +275,22 @@ func (s *Server) SetConfig(vmid int, key, value string) {
 			delete(v.Config, key)
 		} else {
 			v.Config[key] = value
+		}
+	}
+}
+
+// SetFirewall は VM の FW の options を直に書く（手での変更）。"" は消す。
+func (s *Server) SetFirewall(vmid int, key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.vms[vmid]; ok {
+		if v.Firewall == nil {
+			v.Firewall = map[string]string{}
+		}
+		if value == "" {
+			delete(v.Firewall, key)
+		} else {
+			v.Firewall[key] = value
 		}
 	}
 }
@@ -524,6 +546,20 @@ func (s *Server) route(tok *PoolToken, method, path string, form url.Values) (an
 	case rest == "/config" && method == http.MethodPut:
 		s.calls["config"]++
 		return nil, s.setConfig(vm, form)
+	case rest == "/firewall/options" && method == http.MethodGet:
+		s.calls["firewall"]++
+		out := map[string]any{"digest": "0000"}
+		for k, v := range vm.Firewall {
+			if n, err := strconv.Atoi(v); err == nil {
+				out[k] = n
+			} else {
+				out[k] = v
+			}
+		}
+		return out, nil
+	case rest == "/firewall/options" && method == http.MethodPut:
+		s.calls["firewall"]++
+		return nil, s.setFirewall(vm, form)
 	case rest == "/clone" && method == http.MethodPost:
 		s.calls["clone"]++
 		if aerr := s.checkPoolParam(tok, form.Get("pool")); aerr != nil {
@@ -813,6 +849,39 @@ func (s *Server) setConfig(vm *VM, form url.Values) *apiError {
 			continue
 		}
 		delete(vm.Config, k)
+	}
+	return nil
+}
+
+var fwKeys = map[string]*regexp.Regexp{
+	"enable": regexp.MustCompile(`^[01]$`), "ipfilter": regexp.MustCompile(`^[01]$`), "macfilter": regexp.MustCompile(`^[01]$`),
+	"policy_in": regexp.MustCompile(`^(ACCEPT|DROP|REJECT)$`), "policy_out": regexp.MustCompile(`^(ACCEPT|DROP|REJECT)$`),
+}
+
+// setFirewall は PUT /firewall/options（同期。渡さないキーはそのまま）。
+func (s *Server) setFirewall(vm *VM, form url.Values) *apiError {
+	if vm.Firewall == nil {
+		vm.Firewall = map[string]string{}
+	}
+	for _, k := range sortedKeys(form) {
+		if k == "delete" || k == "digest" {
+			continue
+		}
+		re, ok := fwKeys[k]
+		if !ok {
+			return errf(http.StatusBadRequest, "property is not defined in schema and the schema does not allow additional properties: %s", k)
+		}
+		if !re.MatchString(form.Get(k)) {
+			return errf(http.StatusBadRequest, "%s: value '%s' does not have a value in the enumeration", k, form.Get(k))
+		}
+	}
+	for _, k := range sortedKeys(form) {
+		if k != "delete" && k != "digest" {
+			vm.Firewall[k] = form.Get(k)
+		}
+	}
+	for _, k := range strings.Split(form.Get("delete"), ",") {
+		delete(vm.Firewall, strings.TrimSpace(k))
 	}
 	return nil
 }

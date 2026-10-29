@@ -1207,6 +1207,95 @@ cat /root/audit-token.json`)
 		}
 		l.converge(t, vm3, 2)
 	})
+
+	t.Run("NIC の firewall・mtu と VM の FW の options", func(t *testing.T) {
+		// #196: 宣言した NIC の firewall・mtu と FW の options（/firewall/options）は
+		// 複製の後に書かれ、手で変えれば戻る。書かないキー・書かない VM（540）の
+		// 値は比べない。観測は / に PVEAuditor だけのトークンでも読める（VM.Audit）。
+		// FW の options は止めた VM で確かめる（走っている VM の mtu の変更は Proxmox が
+		// 口を抜き差しし、ゲストが応じないと断る。firewall は走ったままで効く）。
+		vm4 := `{"resources": [{"provider": "proxmox-vm", "id": "it/it-vm4", "fields": {"vmid": "550", "template": "it-tmpl",
+		  "cores": "1", "memory": "512", "disks": "scsi0 storage=local-lvm size=4G",
+		  "nics": "net0 bridge=vmbr0 firewall=1 mtu=1450, net1 bridge=vmbr0 vlan=43 firewall=1",
+		  "firewall": "enable=1 policy_in=DROP policy_out=REJECT macfilter=0", "power": "stopped"}}]}`
+		n := l.converge(t, vm4, 10)
+		t.Logf("converged after %d reconcile(s)", n)
+		cur, _ := l.config(t, 550)
+		if !strings.Contains(cur["net0"], "firewall=1") || !strings.Contains(cur["net0"], "mtu=1450") || !strings.Contains(cur["net1"], "firewall=1") || !strings.Contains(cur["net1"], "tag=43") {
+			t.Errorf("VM 550 NICs: net0 %q, net1 %q", cur["net0"], cur["net1"])
+		}
+		fw, err := l.api.FirewallOptions(ctx, pveNode, 550)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// policy_in=DROP は Proxmox の既定と同じなので書かない（違うキーだけを書く）。
+		if fw["enable"] != "1" || fw["policy_out"] != "REJECT" || fw["macfilter"] != "0" || fw["policy_in"] != "" {
+			t.Errorf("VM 550 firewall options = %v", fw)
+		}
+		if out, err := l.ssh("cat /etc/pve/firewall/550.fw"); err != nil || !strings.Contains(out, "enable: 1") {
+			t.Errorf("/etc/pve/firewall/550.fw (%v):\n%s", err, out)
+		}
+		for i := 0; i < 2; i++ {
+			if out, code := l.sakutei(t, vm4, "reconcile"); code != 0 || !strings.Contains(out, "Converged (no changes)") {
+				t.Fatalf("reconcile %d exit %d:\n%s", i, code, out)
+			}
+		}
+
+		// 手で変える（書いた firewall・mtu・enable と、書かない ipfilter）。
+		if err := l.api.SetConfig(provider.WithWrite(ctx), pveNode, 550, url.Values{"net0": {strings.NewReplacer("firewall=1", "firewall=0", "mtu=1450", "mtu=1500").Replace(cur["net0"])}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.api.SetFirewallOptions(provider.WithWrite(ctx), pveNode, 550, url.Values{"enable": {"0"}, "ipfilter": {"1"}}); err != nil {
+			t.Fatal(err)
+		}
+		// 観測用のトークン（前の段の pve-ro.yaml、/ に PVEAuditor）でも drift が見える。
+		if _, err := os.Stat(filepath.Join(l.dir, "pve-ro.yaml")); err == nil {
+			rootPC := l.pc
+			l.pc = filepath.Join(l.dir, "provider-config-pve-ro.yaml.json")
+			out, code := l.sakutei(t, vm4, "status")
+			l.pc = rootPC
+			if code != 0 || !strings.Contains(out, "drifted=1") || !strings.Contains(out, "firewall") || !strings.Contains(out, "nics") {
+				t.Errorf("status with the audit token after the hand changes: exit %d:\n%s", code, out)
+			}
+		} else {
+			t.Error("the audit token's cluster list is missing (the stage of the audit token did not run)")
+		}
+		if out, code := l.sakutei(t, vm4, "status"); code != 0 || !strings.Contains(out, "drifted=1") {
+			t.Errorf("status after the hand changes: exit %d:\n%s", code, out)
+		}
+		if out, code := l.sakutei(t, vm4, "reconcile"); code != 0 || !strings.Contains(out, "1 change(s) applied") {
+			t.Fatalf("reconcile exit %d:\n%s", code, out)
+		}
+		cur, _ = l.config(t, 550)
+		fw, _ = l.api.FirewallOptions(ctx, pveNode, 550)
+		if !strings.Contains(cur["net0"], "firewall=1") || !strings.Contains(cur["net0"], "mtu=1450") || fw["enable"] != "1" || fw["ipfilter"] != "1" {
+			t.Errorf("after reconcile: net0 %q, firewall options %v (want firewall=1, mtu=1450, enable 1, and ipfilter left at 1)", cur["net0"], fw)
+		}
+		l.converge(t, vm4, 2)
+
+		// 書かない VM（540、nics は "net0 bridge=vmbr0" だけ）は、手の firewall・mtu・
+		// enable を比べない。
+		vm3 := `{"resources": [{"provider": "proxmox-vm", "id": "it/it-vm3", "fields": {"vmid": "540", "template": "it-tmpl",
+		  "cores": "1", "memory": "512", "disks": "scsi0 storage=local-lvm size=4G", "nics": "net0 bridge=vmbr0",
+		  "ci_user": "ops", "ci_ssh_keys": "` + itKey + `", "ci_ip": "10.0.2.52/24", "ci_gateway": "10.0.2.2",
+		  "ciupgrade": false, "power": "stopped"}}]}`
+		if fw, err := l.api.FirewallOptions(ctx, pveNode, 540); err != nil || len(fw) > 1 {
+			t.Errorf("VM 540 (firewall not declared) firewall options = %v, %v; want none", fw, err)
+		}
+		cur540, _ := l.config(t, 540)
+		if err := l.api.SetConfig(provider.WithWrite(ctx), pveNode, 540, url.Values{"net0": {cur540["net0"] + ",firewall=1,mtu=1400"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.api.SetFirewallOptions(provider.WithWrite(ctx), pveNode, 540, url.Values{"enable": {"1"}}); err != nil {
+			t.Fatal(err)
+		}
+		if out, code := l.sakutei(t, vm3, "reconcile"); code != 0 || !strings.Contains(out, "Converged (no changes)") {
+			t.Errorf("reconcile of VM 540 after the hand changes it does not declare: exit %d:\n%s", code, out)
+		}
+		if cur540, _ = l.config(t, 540); !strings.Contains(cur540["net0"], "mtu=1400") {
+			t.Errorf("VM 540 net0 = %q, want the hand-set mtu left", cur540["net0"])
+		}
+	})
 }
 
 func readFile(t *testing.T, path string) string {

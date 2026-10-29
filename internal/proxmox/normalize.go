@@ -25,8 +25,13 @@ package proxmox
 //     の順）。設定の "local-lvm:vm-100-disk-0,iothread=1,size=32G" から storage
 //     と size だけを取る。CD-ROM（media=cdrom）・cloud-init のドライブ・
 //     unused は入れない。
-//   - NIC: "<slot> bridge=<bridge> [vlan=<tag>] mac=<mac> model=<model>"。MAC は
-//     小文字。設定の "virtio=BC:24:11:..,bridge=vmbr0,tag=10,firewall=1" から。
+//   - NIC: "<slot> bridge=<bridge> [vlan=<tag>] mac=<mac> model=<model>
+//     [firewall=1] [mtu=<mtu>]"。MAC は小文字。設定の
+//     "virtio=BC:24:11:..,bridge=vmbr0,tag=10,firewall=1" から。firewall は 1 の
+//     ときだけ出す（既定 0）、mtu は書かれていれば出す。
+//   - VM の FW の options: "enable=<0|1> policy_in=<policy> policy_out=<policy>
+//     ipfilter=<0|1> macfilter=<0|1>"。書かれていないキーは Proxmox の既定
+//     （enable=0・policy_in=DROP・policy_out=ACCEPT・ipfilter=0・macfilter=1）。
 //   - ssh の公開鍵: Proxmox は URL エンコードして持つ。行ごとに前後の空白を
 //     落とし、空行を除いて "\n" でつなぐ。
 //   - DNS: 空白かカンマで区切ったアドレスを空白 1 つでつなぐ（順は意味がある）。
@@ -268,13 +273,18 @@ func diskFromConfig(slot, raw string) (Disk, bool) {
 // NICModels は NIC の型。
 var NICModels = []string{"virtio", "e1000", "e1000e", "rtl8139", "vmxnet3"}
 
-// NIC は 1 つの NIC。宣言では MAC と型は書いたときだけ比べる。
+// NIC は 1 つの NIC。宣言では MAC・型・firewall・mtu は書いたときだけ比べる。
 type NIC struct {
 	Slot   string
 	Bridge string
 	VLAN   int // 0 はタグ無し。
 	MAC    string
 	Model  string
+	// Firewall は口の FW（"0"・"1"）。宣言では "" は書いていない、観測では
+	// "" は 0（Proxmox の既定）。
+	Firewall string
+	// MTU は口の MTU（0 は書いていない。1 は bridge の MTU を使う）。
+	MTU int
 }
 
 func (n NIC) String() string {
@@ -288,8 +298,17 @@ func (n NIC) String() string {
 	if n.Model != "" {
 		s += " model=" + n.Model
 	}
+	if n.Firewall != "" {
+		s += " firewall=" + n.Firewall
+	}
+	if n.MTU != 0 {
+		s += " mtu=" + strconv.Itoa(n.MTU)
+	}
 	return s
 }
+
+// nicKeys は nics の項目のキー。
+var nicKeys = []string{"bridge", "vlan", "mac", "model", "firewall", "mtu"}
 
 var macRe = regexp.MustCompile(`^[0-9a-f]{2}(:[0-9a-f]{2}){5}$`)
 
@@ -298,7 +317,7 @@ func ParseNICs(s string) ([]NIC, error) {
 	var out []NIC
 	seen := map[string]bool{}
 	for _, e := range splitEntries(s) {
-		slot, kv, err := entryKV(e, "bridge", "vlan", "mac", "model")
+		slot, kv, err := entryKV(e, nicKeys...)
 		if err != nil {
 			return nil, fmt.Errorf("nics: %w", err)
 		}
@@ -309,7 +328,7 @@ func ParseNICs(s string) ([]NIC, error) {
 			return nil, fmt.Errorf("nics: slot %s is declared twice", slot)
 		}
 		seen[slot] = true
-		n := NIC{Slot: slot, Bridge: kv["bridge"], MAC: strings.ToLower(kv["mac"]), Model: kv["model"]}
+		n := NIC{Slot: slot, Bridge: kv["bridge"], MAC: strings.ToLower(kv["mac"]), Model: kv["model"], Firewall: kv["firewall"]}
 		if n.Bridge == "" {
 			return nil, fmt.Errorf("nics: %q: bridge is required", e)
 		}
@@ -325,6 +344,19 @@ func ParseNICs(s string) ([]NIC, error) {
 		}
 		if n.Model != "" && !contains(NICModels, n.Model) {
 			return nil, fmt.Errorf("nics: %q: model %q: want one of %s", e, n.Model, strings.Join(NICModels, ", "))
+		}
+		if _, ok := kv["firewall"]; ok && n.Firewall != "0" && n.Firewall != "1" {
+			return nil, fmt.Errorf("nics: %q: firewall %q: want 0 or 1", e, n.Firewall)
+		}
+		if v, ok := kv["mtu"]; ok {
+			mtu, err := strconv.Atoi(v)
+			if err != nil || mtu < 1 || mtu > 65520 {
+				return nil, fmt.Errorf("nics: %q: mtu %q: want 1-65520 (1 uses the MTU of the bridge)", e, v)
+			}
+			if n.Model != "" && n.Model != "virtio" {
+				return nil, fmt.Errorf("nics: %q: mtu is only for model=virtio (Proxmox VE sets the MTU of virtio NICs only)", e)
+			}
+			n.MTU = mtu
 		}
 		out = append(out, n)
 	}
@@ -373,7 +405,8 @@ func joinKVs(kvs []kv) string {
 	return strings.Join(parts, ",")
 }
 
-// nicFromConfig は設定の NIC の値を読む。
+// nicFromConfig は設定の NIC の値を読む。firewall は 1 のときだけ "1"（0 と
+// 書かれていないのは ""）。
 func nicFromConfig(slot, raw string) NIC {
 	n := NIC{Slot: slot}
 	for _, x := range parseKVs(raw) {
@@ -388,13 +421,28 @@ func nicFromConfig(slot, raw string) NIC {
 			n.Bridge = x.v
 		case x.k == "tag":
 			n.VLAN, _ = strconv.Atoi(x.v)
+		case x.k == "firewall":
+			if observedBool01(x.v) == "1" {
+				n.Firewall = "1"
+			}
+		case x.k == "mtu":
+			n.MTU, _ = strconv.Atoi(x.v)
 		}
 	}
 	return n
 }
 
+// observedBool01 は Proxmox の真偽値（0・1・true など）を "0"・"1" にする。
+func observedBool01(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "0", "false", "off", "no":
+		return "0"
+	}
+	return "1"
+}
+
 // nicConfig は宣言の NIC を設定の値にする。old（今の設定の値。無ければ ""）の
-// ほかのキー（firewall など）・宣言しない MAC と型は残す。
+// ほかのキー（rate・queues など）・宣言しない MAC・型・firewall・mtu は残す。
 func nicConfig(want NIC, old string) string {
 	cur := nicFromConfig(want.Slot, old)
 	model, mac := want.Model, want.MAC
@@ -411,14 +459,117 @@ func nicConfig(want NIC, old string) string {
 	if want.VLAN != 0 {
 		out = append(out, kv{"tag", strconv.Itoa(want.VLAN)})
 	}
+	if want.Firewall != "" {
+		out = append(out, kv{"firewall", want.Firewall})
+	}
+	if want.MTU != 0 {
+		out = append(out, kv{"mtu", strconv.Itoa(want.MTU)})
+	}
 	for _, x := range parseKVs(old) {
 		switch {
 		case contains(NICModels, x.k), x.k == "model", x.k == "macaddr", x.k == "bridge", x.k == "tag":
+		case x.k == "firewall" && want.Firewall != "", x.k == "mtu" && want.MTU != 0:
 		default:
 			out = append(out, x)
 		}
 	}
 	return joinKVs(out)
+}
+
+// ---- VM の FW の options ----
+
+// FirewallKeys は VM の FW の options のキー（正規形の順）。
+var FirewallKeys = []string{"enable", "policy_in", "policy_out", "ipfilter", "macfilter"}
+
+// FirewallPolicies は policy_in・policy_out の値。
+var FirewallPolicies = []string{"ACCEPT", "DROP", "REJECT"}
+
+// firewallDefaults は書かれていないキーの Proxmox の既定（pve-firewall が使う値）。
+var firewallDefaults = map[string]string{"enable": "0", "policy_in": "DROP", "policy_out": "ACCEPT", "ipfilter": "0", "macfilter": "1"}
+
+// ParseFirewall は宣言の firewall（"enable=1 policy_in=DROP ..."、空白かカンマで
+// 区切る）を読む。書いたキーだけを返す。
+func ParseFirewall(s string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, t := range strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == ',' || r == '\t' || r == '\n' }) {
+		k, v, ok := strings.Cut(t, "=")
+		if !ok || v == "" {
+			return nil, fmt.Errorf("firewall: %q is not key=value", t)
+		}
+		if !contains(FirewallKeys, k) {
+			return nil, fmt.Errorf("firewall: unknown key %q (want %s)", k, strings.Join(FirewallKeys, ", "))
+		}
+		if _, dup := out[k]; dup {
+			return nil, fmt.Errorf("firewall: duplicate key %q", k)
+		}
+		switch k {
+		case "policy_in", "policy_out":
+			if !contains(FirewallPolicies, v) {
+				return nil, fmt.Errorf("firewall: %s %q: want one of %s", k, v, strings.Join(FirewallPolicies, ", "))
+			}
+		default:
+			if v != "0" && v != "1" {
+				return nil, fmt.Errorf("firewall: %s %q: want 0 or 1", k, v)
+			}
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("firewall: no option is declared (want key=value of %s)", strings.Join(FirewallKeys, ", "))
+	}
+	return out, nil
+}
+
+// FormatFirewall は options を正規形にする（書かれていないキーは既定）。
+func FormatFirewall(opts map[string]string) string {
+	parts := make([]string, len(FirewallKeys))
+	for i, k := range FirewallKeys {
+		v, ok := opts[k]
+		if !ok || v == "" {
+			v = firewallDefaults[k]
+		}
+		parts[i] = k + "=" + v
+	}
+	return strings.Join(parts, " ")
+}
+
+// observedFirewall は /firewall/options の値を正規形にする。
+func observedFirewall(raw map[string]string) string {
+	opts := map[string]string{}
+	for _, k := range FirewallKeys {
+		v, ok := raw[k]
+		if !ok || v == "" {
+			continue
+		}
+		if k == "policy_in" || k == "policy_out" {
+			opts[k] = strings.ToUpper(v)
+		} else {
+			opts[k] = observedBool01(v)
+		}
+	}
+	return FormatFirewall(opts)
+}
+
+// firewallDiff は宣言 want（書いたキーだけ）のうち、観測の正規形 have と違う
+// キー → 宣言の値を返す。
+func firewallDiff(want map[string]string, have string) map[string]string {
+	cur := map[string]string{}
+	for _, t := range strings.Fields(have) {
+		if k, v, ok := strings.Cut(t, "="); ok {
+			cur[k] = v
+		}
+	}
+	out := map[string]string{}
+	for k, v := range want {
+		h, ok := cur[k]
+		if !ok {
+			h = firewallDefaults[k]
+		}
+		if h != v {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // ---- cloud-init ----

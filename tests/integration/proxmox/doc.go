@@ -23,7 +23,8 @@
 // 届かない（qemu を止める）と unknown、宣言から外した VM が status の unmanaged に
 // 出て（宣言が 0 件でも。触らない VM とテンプレートは出ない）消されない、消す、
 // scope 付きの宣言と --claim で API で直接作った VM だけが unmanaged に出る（#169）、
-// ciupgrade: false で作った VM の設定が 0 で、手で変えると戻る（#170）。
+// ciupgrade: false で作った VM の設定が 0 で、手で変えると戻る（#170）、
+// NIC の firewall・mtu と VM の FW の options が書いたときだけ合わさり、手で変えると戻る（#196）。
 //
 // テストは build tag integration_proxmox の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-proxmox
