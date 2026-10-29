@@ -4565,7 +4565,7 @@
       "number": 196,
       "kind": "task",
       "title": "proxmox-vm：NIC の firewall・mtu と VM の FW の options",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "domain-vm-fw-proxmox-fw",
       "dependsOn": [],
       "milestone": null,
@@ -4577,7 +4577,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T02:18:20.572Z",
-      "updatedAt": "2026-10-29T02:18:20.572Z",
+      "updatedAt": "2026-10-29T02:18:33.445Z",
       "closedAt": null,
       "extra": {}
     },
