@@ -4723,7 +4723,7 @@
       "parent": "postgresql-proxmox-vm-s3-object-lock-vm",
       "dependsOn": [],
       "milestone": null,
-      "priority": "normal",
+      "priority": "high",
       "labels": [],
       "body": "## なぜ\nPUBLIC の CONNECT を宣言で外した DB（`grant/PUBLIC` の `privileges: \"\"`）には、観測用のロールが繋げません。そのため拡張が unknown になり、List が失敗して prune がその周止まります（PruneHalted）。\nいまは docs のとおり手で `GRANT CONNECT` するしかなく、宣言に書けません。これは #186 で観測用の資格を分けた流れの穴です。また、正しい状態は宣言に置くという原則にも反します。\n\n## 何をするか\n- 管理の境界の外のロール（Sakutei が作らない観測用のロールなど）にも、宣言した DB の権限（少なくとも CONNECT）を intent で付けられるようにする。\n  - 形は、今の `<server>/database/<db>/grant/<role>` を境界の外のロールにも書けるようにするか、データベースの欄にするか。設計書に決めて書く。\n  - 宣言した分だけを扱い、宣言していない境界の外のロールの権限は、prune で外さない。\n  - 観測用のロールは外にあるため、ロール自体の属性は触らない。\n- 空から作る周でも、DB を作って PUBLIC の CONNECT を外したあと、同じ回のうちに観測用ロールの CONNECT を付ける。PUBLIC を外す前に付けられるなら、その順にする。こうして、次の周の List が落ちないようにする。\n- docs：`pg_authid` の列を読む権限は、Sakutei がつなぐ DB（管理用の DB）で与える必要がある。このことを docs/providers/postgresql.md に書き、手で GRANT するように案内している箇所を宣言で書く形に改める。\n- 設計書・CHANGELOG を改める。\n\n## 確かめ方\n- 統合試験（make integration-postgresql）で次を確かめる。\n  - 観測用と書き込み用で資格を分けた設定で、PUBLIC の CONNECT を外した DB を空から宣言する。\n  - 手で GRANT せずに、次の周で List が通り、prune が止まらず、拡張が観測できる。\n  - 手で REVOKE するとずれとして見え、1周で戻る。",
       "doneWhen": "観測用と書き込み用を分けた設定で、PUBLIC の CONNECT を外した DB を空から宣言したとき、手の GRANT 無しで次の周の List が通り prune が止まらないことを、make integration-postgresql で確かめる。docs に pg_authid の列の権限の注意がある。make check と make test-race が通る。",
@@ -4731,7 +4731,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T09:20:13.880Z",
-      "updatedAt": "2026-10-29T09:20:13.880Z",
+      "updatedAt": "2026-10-29T09:20:22.780Z",
       "closedAt": null,
       "extra": {}
     },
