@@ -4455,7 +4455,7 @@
       "number": 189,
       "kind": "task",
       "title": "OTLP のトレースの出口",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "m7",
       "dependsOn": [
         "vault-kv-v2"
@@ -4469,7 +4469,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T16:57:20.201Z",
+      "updatedAt": "2026-10-29T02:17:10.213Z",
       "closedAt": null,
       "extra": {}
     },
