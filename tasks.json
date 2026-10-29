@@ -4517,6 +4517,27 @@
       "updatedAt": "2026-10-29T02:01:31.923Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "domain-vm-fw-proxmox-fw",
+      "number": 194,
+      "kind": "story",
+      "title": "アドレスの重なる網を宣言から守る（網の domain・VM の FW・Proxmox の FW の実現先）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [],
+      "body": "## なぜ\n次のような網の形を、宣言から当てて守れるようにする。\n- 利用者ごとに網を分け、網どうしのアドレスの重なりを許す。\n- 利用者ごとに VM を1台置き、関所にする。片側の口は利用者の網、もう片側はサービスの網につながる。\n- 守りは、VM の口ごとの Proxmox の FW で行う。\n\nいまの network_policy（§7.6）は、網の重なりを読み込みで断る。proxmox-vm は VM の FW を扱わない。実現先は nftables しかない。そのため、この形を宣言で書けない。\n\n## タスク\n- 網に domain（アドレスの空間）を足す。\n- proxmox-vm の NIC の firewall・mtu と、VM の FW の options を扱う。\n- network_policy の実現先 proxmox-fw（VM の FW の規則。入りと出の両方）を足す。\n\n## 本体に入れないもの\n機種に固有の変換（例：スイッチの ACL）は、使う側が `WithRealizer` で足す。本体では、その変換が netconf の2段の Apply と部分木の管理を使えることを確かめ、足りない口を足す。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-29T02:17:57.547Z",
+      "updatedAt": "2026-10-29T02:17:57.547Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
