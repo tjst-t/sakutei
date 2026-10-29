@@ -4862,6 +4862,29 @@
       "updatedAt": "2026-10-29T13:39:08.086Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "workflow-observer-quiet-audit",
+      "number": 210,
+      "kind": "task",
+      "title": "Workflow：進めない常駐を静かにし、run と手を監査の鎖に残す",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [
+        "workflow-done-converge"
+      ],
+      "milestone": null,
+      "priority": "high",
+      "labels": [],
+      "body": "## なぜ\n1. Workflow を宣言すると、store を渡さない常駐（alert-only など、Workflow を進めない役）が、周ごとに「WorkflowError: no workflow store configured (--workflow-store)」を出し続ける。Apply はしないので害は無いが、Event と status が汚れる。\n2. Workflow で何かをしても、監査（`--audit-log`）に残るのは手から出た `resource.apply` だけで、cause も B になる。Workflow の名前・一度きりの操作（`boot_once`・`reset`）・手の順番・待ちの結果が残らない。そのため「どの Workflow のどの手で何をしたか」を監査から追えない。\n\n## 何をするか\n- **進めない常駐を静かにする。**\n  - 常駐にも、#209 と同じく読むだけの store を渡せるようにする（alert-only を含む）。\n  - store を渡さない常駐、または進めない役の常駐では、エラーにしない。「Workflow は別の処理が進める」として扱う。\n  - その旨は status に1行だけ出し、Event は最初の周に1回だけ出す（level）。毎周は出さない。\n  - 対象の扱いは #209 の決まり（読むだけの store・`done_when`・開いている planned_change）に従う。\n- **監査に Workflow を残す（S4、#187 の鎖）。** 次の種別を足す。\n  - `workflow.run.start`：Workflow の名前・run の id・起こした理由（定義・trigger の宣言）。\n  - `workflow.step`：手ごとに1行。run の id、stage・target・手の番号、手の種類（resource・action・wait・require・gate）、action の op と args、結果。待ちの手は、満たしたか時間切れか、かかった時間も残す。\n  - `workflow.run.end`：done・halt・cancel と、その理由。\n  - Workflow の手から出た `resource.apply` には、run の id と手の番号を付ける。\n  - `sakutei audit verify` で鎖が切れないことを確かめる。\n- **docs（Workflow・OS の導入の例）に、一般的な事実として次を書く。**\n  - BMC によっては、ゲストの中からの再起動で、また CD から起動して導入が繰り返されることがある。導入の終わりは電源 Off にし、Off を待ってから On にする形を勧める。\n  - 導入中の GracefulRestart は無視されることがある。時間切れの扱いを決めておく（ForceRestart か電源の操作に切り替える）。\n- 設計書（§6.3・§26.3）・docs・CHANGELOG を改める。\n\n## 確かめ方\n受け入れテストで次を確かめる。\n- store を渡さない alert-only の常駐が、毎周 WorkflowError を出さない。\n- status に「Workflow は別の処理が進める」が1行だけ出る。\n- Workflow の run の始まり・手ごと（action と待ちの結果を含む）・終わりが、名前と run の id つきで監査に残る。\n- 手から出た `resource.apply` に、run の id と手の番号が付く。\n- `audit verify` が通る。",
+      "doneWhen": "store を渡さない alert-only の常駐が WorkflowError を毎周出さず、status に一度だけ見える形で出ること。Workflow の run の始まり・手ごと（action・待ちの結果）・終わり（done・halt と理由）が、名前と run の id つきで監査の鎖に残り、手から出た resource.apply に run の id と手の番号が付き、audit verify が通ること。これらを受け入れテストで確かめる。docs に BMC の注意2点がある。make check と make test-race が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-29T16:57:16.011Z",
+      "updatedAt": "2026-10-29T16:57:16.011Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
