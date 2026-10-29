@@ -4803,19 +4803,21 @@
       "number": 207,
       "kind": "task",
       "title": "設計のメモ：proxmox-vm の置き場所の移動と HA（置けるノードの集合・HA の資源・HA の下の電源・共有でない置き場の検査）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "postgresql-proxmox-vm-s3-object-lock-vm",
       "dependsOn": [],
       "milestone": null,
-      "priority": "normal",
-      "labels": [],
+      "priority": "low",
+      "labels": [
+        "deferred"
+      ],
       "body": "着手を待つ設計のメモです。共有の置き場をどうするかが決まってから設計に入ります。\n\n- P1：置けるノードの集合を宣言できるようにする。その中でいまどのノードにいるかは、ずれにしない。\n- P2：HA の資源（VM を HA の下に置く）と、HA の決まり（グループ・親和性）を扱う。\n- P3：HA の下にある VM の電源は、HA の state で変える。移っている途中は Apply しない。\n- P4：共有でない置き場に HA を宣言したら、計画のエラーにする。",
       "doneWhen": "着手を決めたときに、P1〜P4 の設計を設計書に書き、タスクに分ける。",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T09:20:13.880Z",
-      "updatedAt": "2026-10-29T09:20:13.880Z",
+      "updatedAt": "2026-10-29T09:20:35.948Z",
       "closedAt": null,
       "extra": {}
     }
