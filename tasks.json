@@ -4826,7 +4826,7 @@
       "number": 208,
       "kind": "bug",
       "title": "netconf：属性つきの configuration と空の configuration を返すサーバで収束しない",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4838,7 +4838,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T10:29:50.963Z",
-      "updatedAt": "2026-10-29T10:29:50.963Z",
+      "updatedAt": "2026-10-29T10:30:06.198Z",
       "closedAt": null,
       "extra": {}
     }
