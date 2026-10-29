@@ -74,10 +74,16 @@ func netPolicyReport(res *netpolicy.Result) *planreport.NetworkPolicy {
 		for _, r := range z.Output.Resources {
 			t.Resources = append(t.Resources, r.Provider+"/"+r.ID)
 		}
+		for _, itf := range z.Target.Interfaces {
+			t.Interfaces = append(t.Interfaces, planreport.NetworkPolicyInterface{Name: itf.Name, Domain: itf.Domain, Networks: itf.Networks})
+		}
 		for _, p := range z.Allows {
 			a := p.Allow
 			pa := planreport.NetworkPolicyAllow{Allow: a.Ref, From: a.From, To: a.To, Proto: a.Proto,
-				Reason: a.Reason, Tags: a.Tags, Rules: []string{}}
+				Reason: a.Reason, Tags: a.Tags, Domain: p.Domain, Rules: []string{}}
+			for _, v := range p.Via {
+				pa.Via = append(pa.Via, planreport.NetworkPolicyVia{Interface: v.Interface, Direction: v.Direction})
+			}
 			for _, pr := range a.Ports {
 				pa.Ports = append(pa.Ports, pr.String())
 			}
@@ -108,6 +114,9 @@ func printNetPolicy(w io.Writer, np *planreport.NetworkPolicy) {
 			fmt.Fprintf(w, " %s", r)
 		}
 		fmt.Fprintln(w)
+		for _, itf := range t.Interfaces {
+			fmt.Fprintf(w, "    interface %s (domain %s): %v\n", itf.Name, itf.Domain, itf.Networks)
+		}
 		for _, a := range t.Allows {
 			ports := ""
 			for i, p := range a.Ports {
@@ -119,6 +128,12 @@ func printNetPolicy(w io.Writer, np *planreport.NetworkPolicy) {
 				ports += p
 			}
 			fmt.Fprintf(w, "    allow %s → %s %s%s (%s)\n", a.From, a.To, a.Proto, ports, a.Allow)
+			if a.Domain != netpolicy.DefaultDomain {
+				fmt.Fprintf(w, "      domain: %s\n", a.Domain)
+			}
+			for _, v := range a.Via {
+				fmt.Fprintf(w, "      via:    %s %s\n", v.Interface, v.Direction)
+			}
 			reason := a.Reason
 			if reason == "" {
 				reason = "(none)"

@@ -164,7 +164,7 @@ plan は reconcile と同じ判定を、何も消費せずに評価する。reco
      "resources": ["nftables/fw1/inet/filter/forward"],
      "allows": [
        {"allow": "net.json: network_policy.allows[2]", "from": "office", "to": "db", "proto": "tcp", "ports": ["23"],
-        "reason": "古い装置は telnet しか話さない", "tags": ["exception"],
+        "reason": "古い装置は telnet しか話さない", "tags": ["exception"], "domain": "default",
         "rules": ["ip saddr 10.1.0.0/24 ip daddr 10.2.0.10/31 tcp dport 23 accept comment \"古い装置は telnet しか話さない\""]}
      ]}
   ]
@@ -175,4 +175,4 @@ plan は reconcile と同じ判定を、何も消費せずに評価する。reco
 | --- | --- |
 | `networks`・`allows` | 宣言した網と許可の数 |
 | `findings` | 検査の結果（warning）。`severity`・`kind`（`shadowed`・`unreached`）・`allow`（行の場所）・`reason`・`tags`（その行のもの）・`message`（文の出力と同じ 1 行） |
-| `targets` | 実現先ごとに `name`・`realizer`・`kind`・`resources`（作った resource の `<provider>/<id>`）・`allows`（そこを通る許可。`allow`・`from`・`to`・`proto`・`ports`・`reason`・`tags`・`rules`〈その許可がなった規則。族ごとに 1 つ、どの族も合わなければ空〉） |
+| `targets` | 実現先ごとに `name`・`realizer`・`kind`・`resources`（作った resource の `<provider>/<id>`）・`interfaces`（口を書いた実現先だけ。口ごとに `name`・`domain`・`networks`、Backlog #195）・`allows`（そこを通る許可。`allow`・`from`・`to`・`proto`・`ports`・`reason`・`tags`・`domain`〈許可の domain。書かない網は `default`〉・`via`〈口を書いた実現先だけ。通る口ごとに `interface`・`direction`（`in`・`out`）〉・`rules`〈その許可がなった規則。族ごとに 1 つ、どの族も合わなければ空〉） |

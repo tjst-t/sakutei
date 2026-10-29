@@ -34,6 +34,8 @@ package netpolicy
 //     ` ; ` を作らない）、制御文字と続く空白は 1 つの空白にし、128 バイトを
 //     超えれば文字の境目で切って `…` を付ける。読み戻しでも同じ文字列になる
 //     （統合テストで確かめた）。
+//   - 口（Target.Interfaces、#195）は受けない。本体の realizer は既定の domain
+//     の網だけを見る（口を書かない実現先は Check がそう確かめる）。
 
 import (
 	"fmt"
@@ -59,6 +61,9 @@ var nftSettings = map[string]bool{"hook": true, "priority": true, "policy": true
 
 // Realize は実現先を nftables の base chain の宣言 1 つにする。
 func (NFTables) Realize(t Target, allows []Passing) (Output, error) {
+	if len(t.Interfaces) > 0 {
+		return Output{}, fmt.Errorf("interfaces: the nftables realizer sees only domain %s and does not take interfaces (use a realizer that matches per interface, added with cli.WithRealizer)", DefaultDomain)
+	}
 	parts := strings.Split(t.ID, "/")
 	if len(parts) != 3 && len(parts) != 4 {
 		return Output{}, fmt.Errorf("id %q: want [<host>/]<family>/<table>/<chain> (the nftables resource id)", t.ID)

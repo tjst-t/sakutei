@@ -348,3 +348,103 @@ func TestRegister(t *testing.T) {
 		t.Errorf("[AC-174-1-4] an unknown realizer must be refused, got %v", err)
 	}
 }
+
+const domainNets = `"networks": [
+  {"name": "users-a", "domain": "tenant-a", "cidrs": ["10.0.0.0/24"]},
+  {"name": "users-b", "domain": "tenant-b", "cidrs": ["10.0.0.0/24"]},
+  {"name": "svc", "domain": "service", "cidrs": ["172.16.0.0/24"]},
+  {"name": "svc2", "domain": "service", "cidrs": ["172.16.1.0/24"]},
+  {"name": "office", "cidrs": ["10.1.0.0/24"]}
+]`
+
+func TestCheck_Domains(t *testing.T) {
+	// [AC-195-1-2] [AC-195-1-3]
+	if fs := findings(t, `{`+domainNets+`}`); len(fs) != 0 {
+		t.Errorf("networks overlapping in different domains must pass, got %v", fs)
+	}
+	cases := []struct{ name, in, kind, contains string }{
+		{"cross-domain allow", `{` + domainNets + `, "allows": [{"from": "users-a", "to": "svc"}]}`,
+			FindingCrossDomain, "from users-a is in domain tenant-a and to svc is in domain service"},
+		{"overlap in a domain", `{"networks": [{"name": "a", "domain": "x", "cidrs": ["10.0.0.0/24"]}, {"name": "b", "domain": "x", "cidrs": ["10.0.0.5"]}]}`,
+			FindingOverlap, "overlap in domain x"},
+		{"a target without interfaces outside the default domain", `{` + domainNets + `, "targets": [
+			{"name": "fw", "kind": "boundary", "networks": ["svc", "svc2"], "id": "inet/f/c"}]}`,
+			FindingTarget, "names network svc of domain service but has no interfaces"},
+		{"an interface of an undeclared domain", `{` + domainNets + `, "targets": [
+			{"name": "fw", "kind": "host", "networks": ["svc"], "interfaces": [{"name": "p0", "domain": "service"}, {"name": "p1", "domain": "nowhere"}], "id": "x"}]}`,
+			FindingTarget, "interface p1 sees domain nowhere, where no network is declared"},
+		{"an interface naming a network of another domain", `{` + domainNets + `, "targets": [
+			{"name": "fw", "kind": "host", "networks": ["svc", "office"], "interfaces": [{"name": "p0", "domain": "service", "networks": ["svc", "office"]}], "id": "x"}]}`,
+			FindingTarget, "interface p0 sees domain service but names network office of domain default"},
+		{"a network on no interface", `{` + domainNets + `, "targets": [
+			{"name": "fw", "kind": "host", "networks": ["svc", "office"], "interfaces": [{"name": "p0", "domain": "service"}], "id": "x"}]}`,
+			FindingTarget, "network office (domain default) is on no interface"},
+		{"a network on two interfaces", `{` + domainNets + `, "targets": [
+			{"name": "fw", "kind": "host", "networks": ["svc"], "interfaces": [{"name": "p0", "domain": "service"}, {"name": "p1", "domain": "service"}], "id": "x"}]}`,
+			FindingTarget, "network svc is on both interfaces p0 and p1"},
+		{"an interface named twice", `{` + domainNets + `, "targets": [
+			{"name": "fw", "kind": "host", "networks": ["svc"], "interfaces": [{"name": "p0", "domain": "service"}, {"name": "p0", "domain": "tenant-a"}], "id": "x"}]}`,
+			FindingTarget, "names interface p0 twice"},
+	}
+	for _, c := range cases {
+		if fs := findings(t, c.in); !hasFinding(fs, SeverityError, c.kind, c.contains) {
+			t.Errorf("%s: want error %s containing %q, got %v", c.name, c.kind, c.contains, fs)
+		}
+	}
+	if _, err := Parse(tree(t, `{"targets": [{"name": "fw", "kind": "host", "networks": ["svc"], "interfaces": [{"name": "p0"}], "id": "x"}]}`), "np.json"); err == nil {
+		t.Error("an interface without domain must be refused")
+	}
+}
+
+func TestCompile_InterfacesAndDirections(t *testing.T) {
+	// [AC-195-1-4] 境界は from の網の口で in・to の網の口で out。ホストは to が
+	// 自分の網なら in・from が自分の網なら out。口の networks は埋めて渡る。
+	var got = map[string][]Passing{}
+	var targets = map[string]Target{}
+	if err := Register("test-per-port", RealizerFunc(func(t Target, allows []Passing) (Output, error) {
+		got[t.Name], targets[t.Name] = allows, t
+		return Output{Resources: []Resource{{Provider: "fake", ID: t.ID}}}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	p := mustParse(t, `{`+domainNets+`, "allows": [
+		{"from": "svc", "to": "svc2", "proto": "tcp", "ports": [5432], "reason": "db"},
+		{"from": "users-a", "to": "users-a", "proto": "icmp"},
+		{"from": "office", "to": "office"}], "targets": [
+		{"name": "router", "realizer": "test-per-port", "kind": "boundary", "networks": ["svc", "svc2"],
+		 "interfaces": [{"name": "eth0", "domain": "service", "networks": ["svc"]}, {"name": "eth1", "domain": "service", "networks": ["svc2"]}], "id": "r"},
+		{"name": "vm", "realizer": "test-per-port", "kind": "host", "networks": ["users-a", "svc2", "office"],
+		 "interfaces": [{"name": "net0", "domain": "tenant-a"}, {"name": "net1", "domain": "service"}, {"name": "net2", "domain": "default"}], "id": "vm"}]}`)
+	if _, err := Compile(p); err != nil {
+		t.Fatal(err)
+	}
+	r := got["router"]
+	if len(r) != 1 || r[0].Domain != "service" ||
+		len(r[0].Via) != 2 || r[0].Via[0] != (Via{"eth0", "service", DirectionIn}) || r[0].Via[1] != (Via{"eth1", "service", DirectionOut}) {
+		t.Errorf("router got %+v", r)
+	}
+	vm := got["vm"]
+	if len(vm) != 3 {
+		t.Fatalf("vm got %+v", vm)
+	}
+	// svc → svc2 は vm の svc2（net1）に入る。users-a → users-a は net0 で入りも出も。
+	if vm[0].Via[0] != (Via{"net1", "service", DirectionIn}) || len(vm[0].Via) != 1 {
+		t.Errorf("vm svc→svc2 via %+v", vm[0].Via)
+	}
+	if len(vm[1].Via) != 2 || vm[1].Via[0].Direction != DirectionIn || vm[1].Via[1].Direction != DirectionOut || vm[1].Domain != "tenant-a" {
+		t.Errorf("vm users-a→users-a via %+v", vm[1].Via)
+	}
+	if itf, ok := targets["vm"].Interface("net1"); !ok || len(itf.Networks) != 1 || itf.Networks[0] != "svc2" {
+		t.Errorf("net1 networks must be filled from the target's networks of its domain: %+v", itf)
+	}
+	by := ByInterface(targets["vm"], vm)
+	if len(by) != 3 || by[0].Interface.Name != "net0" || len(by[0].In) != 1 || len(by[0].Out) != 1 ||
+		len(by[1].In) != 1 || len(by[1].Out) != 0 || len(by[2].In) != 1 || by[2].In[0].Domain != DefaultDomain {
+		t.Errorf("ByInterface = %+v", by)
+	}
+
+	// 本体の nftables は口を受けない。
+	if _, err := (NFTables{}).Realize(Target{ID: "inet/f/c", Interfaces: []Interface{{Name: "eth0", Domain: "default"}}}, nil); err == nil {
+		t.Error("the nftables realizer must refuse interfaces")
+	}
+}

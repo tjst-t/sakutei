@@ -290,8 +290,10 @@ func networkPolicySchema() schemaNode {
 					"additionalProperties": false,
 					"required":             []any{"name", "cidrs"},
 					"properties": map[string]any{
-						"name":  schemaNode{"type": "string"},
-						"cidrs": schemaNode{"type": "array", "minItems": 1, "items": schemaNode{"type": "string"}},
+						"name": schemaNode{"type": "string"},
+						// domain はアドレスの空間（#195）。書かなければ既定の domain。
+						"domain": schemaNode{"type": "string"},
+						"cidrs":  schemaNode{"type": "array", "minItems": 1, "items": schemaNode{"type": "string"}},
 					},
 				},
 			},
@@ -322,10 +324,24 @@ func networkPolicySchema() schemaNode {
 						"realizer": schemaNode{"type": "string"},
 						"kind":     schemaNode{"type": "string", "enum": []any{"boundary", "host"}},
 						"networks": strList,
-						"id":       schemaNode{"type": "string"},
-						"scope":    schemaNode{"type": "object", "additionalProperties": true},
-						"before":   strList,
-						"after":    strList,
+						// 口ごとにどの domain の網を見るか（#195）。
+						"interfaces": schemaNode{
+							"type": "array",
+							"items": schemaNode{
+								"type":                 "object",
+								"additionalProperties": false,
+								"required":             []any{"name", "domain"},
+								"properties": map[string]any{
+									"name":     schemaNode{"type": "string"},
+									"domain":   schemaNode{"type": "string"},
+									"networks": strList,
+								},
+							},
+						},
+						"id":     schemaNode{"type": "string"},
+						"scope":  schemaNode{"type": "object", "additionalProperties": true},
+						"before": strList,
+						"after":  strList,
 						// realizer に固有の値（nftables は hook・priority・policy・confirm）。
 						"settings": schemaNode{"type": "object", "additionalProperties": true},
 					},

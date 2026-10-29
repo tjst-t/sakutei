@@ -159,11 +159,26 @@ type NetworkPolicyFinding struct {
 
 // NetworkPolicyTarget は 1 つの実現先と、そこを通る許可と、作った resource。
 type NetworkPolicyTarget struct {
-	Name      string               `json:"name"`
-	Realizer  string               `json:"realizer"`
-	Kind      string               `json:"kind"`
-	Resources []string             `json:"resources"`
-	Allows    []NetworkPolicyAllow `json:"allows"`
+	Name      string   `json:"name"`
+	Realizer  string   `json:"realizer"`
+	Kind      string   `json:"kind"`
+	Resources []string `json:"resources"`
+	// Interfaces は口ごとに見る domain と網（実現先が口を書いたときだけ、#195）。
+	Interfaces []NetworkPolicyInterface `json:"interfaces,omitempty"`
+	Allows     []NetworkPolicyAllow     `json:"allows"`
+}
+
+// NetworkPolicyInterface は実現先の 1 つの口と、そこで見る domain の網。
+type NetworkPolicyInterface struct {
+	Name     string   `json:"name"`
+	Domain   string   `json:"domain"`
+	Networks []string `json:"networks"`
+}
+
+// NetworkPolicyVia は許可が通る 1 つの口と向き（in・out）。
+type NetworkPolicyVia struct {
+	Interface string `json:"interface"`
+	Direction string `json:"direction"`
 }
 
 // NetworkPolicyAllow は実現先を通る 1 つの許可と、それが何の規則になったか。
@@ -175,7 +190,11 @@ type NetworkPolicyAllow struct {
 	Ports  []string `json:"ports,omitempty"`
 	Reason string   `json:"reason,omitempty"`
 	Tags   []string `json:"tags,omitempty"`
-	Rules  []string `json:"rules"`
+	// Domain は許可の domain（#195。書かない網は default）。
+	Domain string `json:"domain"`
+	// Via は許可が通る口と向き（実現先が口を書いたときだけ）。
+	Via   []NetworkPolicyVia `json:"via,omitempty"`
+	Rules []string           `json:"rules"`
 }
 
 // Claim は --claim で絞った計画の範囲（§17.1）。

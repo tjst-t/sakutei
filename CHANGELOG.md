@@ -8,6 +8,7 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 - **トレースの出口**（#189）：`--otlp-endpoint <url>` を渡すと（常駐・`plan`・`reconcile`）、周・観測の段と Read・BulkObserve・plan の段・Apply（prune を含む）・Workflow とその手順を span にして OTLP/HTTP（JSON の形、`/v1/traces`）で出す。既定は出さない（`OTEL_*` の環境変数は読まない）。span には欄の値を載せない。送れなくても収束は止めず、1 度だけ知らせる。宛先の TLS と認可は `--otlp-config`（TLS 1.2+・CA・クライアント証明書と bearer トークンは SecretRef）で、loopback 以外へ TLS と認可を欠いて送るのは `--otlp-insecure` のときだけ。外の依存は増やしていない。文書は `docs/tracing.md`、統合テストは `make integration-otlp`（OpenTelemetry Collector contrib 0.163.2）。
 - **`runtime:` の値を実行の種類ごとに宣言する**（#193）：`runtime:` の下に `daemon:`（常駐）と `oneshot:`（一回性の `reconcile` と `plan`）を書ける。中身は `runtime:` と同じ欄で、種類の欄にあればそれ、無ければ共通の値が効く。旗はその種類に効く値と突き合わせる（締める旗は使って `RuntimeTightened` で知らせ、緩める旗と向きの無い食い違いは起動を断る）。`oneshot:` の `interval`・`stuck_after` は読み込みで断る。設計書 v3.63。
+- **network_policy の網の domain と実現先の口**（#195）：網に `domain:`（アドレスの空間）を書け、書かなければ既定の domain（`default`）に入る（domain を書かない宣言の展開は今までと同じ）。網の重なりは同じ domain の中でだけ断り、domain をまたぐ許可は読み込みで断る（2 つの domain をつなぐ関所は片側ずつの許可で書く）。target に `interfaces:`（口ごとの `name`・`domain`・`networks`）を書け、口ごとに通る許可が入りと出の向きつきで realizer に渡る（`Passing.Domain`・`Passing.Via`・`netpolicy.ByInterface`、外の `cli.WithRealizer` にも）。口を書かない実現先は既定の domain の網だけを見る。本体の nftables の realizer は口を受けない。plan の文と `--json` に口・domain・向きを出す。文書は `docs/network-policy.md`。
 
 ## v2.8.0（2026-10-28）
 
