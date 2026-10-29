@@ -4841,6 +4841,27 @@
       "updatedAt": "2026-10-29T13:38:01.195Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "workflow-done-converge",
+      "number": 209,
+      "kind": "task",
+      "title": "Workflow：done になった対象を一回性の reconcile でも宣言どおりに保つ（store に頼らず宣言と観測で決める）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [],
+      "body": "## なぜ\n一回性の `reconcile` と `apply` は、Workflow の進み具合の store（S2、`--workflow-store`）を持たない。そのため、Workflow の対象（台の電源・起動先・仮想メディアなど）は、Workflow が done になったあとも「Workflow に任せる」に見え、触られない。終わりの姿を保てるのは、Workflow を進める常駐が動いている間だけになっている。\n`trigger: reimage` の Workflow も同じ。store が無いと、planned_change が開いていないときも対象を持ってしまう。§6.3 では、開いていなければふつうに収束させる決まりになっている。\n進み具合を store の中にだけ持つと、store を失ったときの振る舞いが決まらない。これは §1.7（正しい状態は宣言に置く）に反する。\n\n## 決めた形\n1. **一回性の `reconcile`・`apply` に `--workflow-store` を足す（読むだけ）。**\n   - 渡されたら、Workflow の進み具合を読むためだけに使う。一回性は Workflow を進めない。進めるのは今どおり常駐と `sakutei workflow` の口だけ。\n   - done の Workflow（定義の hash が同じもの）の対象は、ふつうのリソースとして宣言どおりに保つ。\n2. **store が無い・失われたときは、宣言と観測で決める。**\n   - `trigger: reimage` の Workflow：対象の scope を覆う `planned_change`（`kind: reimage`）が開いていなければ、done でない Workflow として持たない。対象はふつうに収束させる。\n   - Workflow に、終わりの姿を観測で確かめる条件 `done_when: { resource, fields }` を書けるようにする。形は `require` と同じ。\n     - 例：ゲスト OS の版が宣言の版になっている。\n   - store が無いか、store にその run が無いときは、次のように決める。\n     - `done_when` が観測で満たされていれば、その Workflow は済んだと見て、対象をふつうに収束させる。常駐は、そのとき新しい run を起こさず、done として store に書く。これで store を失っても導入をやり直さない。\n     - `done_when` が無い、満たされない、観測できない（unknown）ときは、今どおり「Workflow に任せる」として触らない。status と plan に、理由「進み具合が分からない（store が無い・done_when が満たされない）」を出す。\n   - 「宣言した変更がまだ済んでいない」の判断は、宣言（開いている planned_change）と観測（`done_when`）で行う。store の Run は写しと作業の記録とする。\n3. **二重に走らないこと。**\n   - Workflow を進める処理は、store のファイルの排他のロックを取ってからだけ進める。ロックを取れない処理（別の常駐が進めている）は進めず、done でない Workflow の対象を持つ。\n   - 一回性は Workflow を進めないので、常駐と一回性が同時に動いても、導入は二重に走らない。\n   - 同じリソースに常駐と一回性が両方 Apply しうる点は、今の claim の決まりのまま。\n4. **halt の扱い。**\n   - halt した Workflow の対象は、既定では触らない。止まった理由は status・plan と level の Event に出す。\n   - halt は、人が `sakutei workflow cancel` か resume で片づけるまで保つ。\n   - store が無いときは halt かどうか分からないので、2 の決まりに従う。`done_when` が満たされなければ触らない。\n   - 宣言どおりに保つ向きへ自動で切り替えることはしない。halt は途中の姿のことがあり、収束させると導入の途中の台を勝手に動かしうるため。\n\n## 何をするか\n- 上の 1〜4 を実装する。\n- 設計書 §6.3 に、次を書く。\n  - store が無いとき、一回性が Workflow の対象をどう扱うか。\n  - まだ済んでいないことを何で判断するか。\n  - 二重に走らないこと。\n  - halt の扱い。\n- docs（Workflow・OS の導入の例）・CHANGELOG を改める。\n\n## 確かめ方\n受け入れテストで、次を確かめる。\n- store を渡した一回性の reconcile が、done の Workflow の対象を宣言どおりに戻す。\n- store が無いとき、開いていない `trigger: reimage` の対象は収束させる。\n- `done_when` が満たされた Workflow の対象は収束させる。\n- 満たされないものは触らない。\n- store を消した常駐が、`done_when` の満たされた Workflow を起こし直さない。\n- 2 つの処理がロックを取り合ったとき、片方だけが進める。\n- halt の対象は触らず、理由が出る。",
+      "doneWhen": "一回性の reconcile・apply が --workflow-store（読むだけ）で done の対象を宣言どおりに保つこと、store が無いときは開いていない trigger: reimage と done_when の満たされた Workflow の対象を収束させること、store を失った常駐が done_when の満たされた Workflow を起こし直さないこと、ロックで二重に進まないこと、halt の対象は触らず理由を出すことを、受け入れテストで確かめる。設計書 §6.3 に決まりがある。make check と make test-race が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-29T13:38:55.263Z",
+      "updatedAt": "2026-10-29T13:38:55.263Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
