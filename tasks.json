@@ -4719,7 +4719,7 @@
       "number": 203,
       "kind": "task",
       "title": "postgresql：宣言して作った DB に、観測用ロールの CONNECT を宣言で付ける",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "postgresql-proxmox-vm-s3-object-lock-vm",
       "dependsOn": [],
       "milestone": null,
@@ -4731,7 +4731,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T09:20:13.880Z",
-      "updatedAt": "2026-10-29T09:20:42.528Z",
+      "updatedAt": "2026-10-29T10:30:00.974Z",
       "closedAt": null,
       "extra": {}
     },
