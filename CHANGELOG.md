@@ -13,6 +13,10 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 - **postgresql の境界の外のロールの CONNECT**（#203）：データベースの欄 `connect_roles` に、管理の境界の外のロール（Sakutei がつなぐ観測用・書き込み用のロールと `pg_*`）を書くと、そのデータベースに CONNECT を与える。作るときは `CREATE DATABASE` と同じ Apply の中で付くので、PUBLIC の CONNECT を宣言で外したデータベースを空から作っても、観測用のロールが繋げずに List が落ちて prune が止まることがない（手の `GRANT CONNECT` が要らなくなった）。宣言の一覧が含まれていれば適合で、足りない分だけ GRANT し、外さない。CONNECT の無いデータベースへの接続は「接続が許されない」と知らせる。`verify_passwords` の `pg_authid` の列の権限は管理用の DB で与えることを docs/providers/postgresql.md に書いた。`make integration-postgresql` に段を足した。設計書 v3.66（`docs/architecture/CHANGELOG-v3.66.md`）。
 - **network_policy の実現先 proxmox-fw と provider `proxmox-fw`（VM の FW の規則、入りと出）**（#197）：target に `"realizer": "proxmox-fw"`・`"id": "<クラスタ>/<VM 名>/fw"` を書くと、許可が通る口と向きごとに Proxmox VE の VM の FW の規則（`in`・`out` と `iface=netN`、アドレスの族ごと）になり、comment に `sakutei: <reason>` が出る。新しい provider `proxmox-fw`（`--provider-config` の `proxmox-fw` に proxmox-vm と同じ `proxmox_config`）は印のある規則だけを書き換えて宣言の順に先頭に保ち、印の無い規則は消さず書き換えず status の unmanaged（`<クラスタ>/<VM 名>/fw/<pos>`）に出す。規則を置く・変える・外すのは破壊的として予算に数える。読みは `VM.Audit`、書きは `VM.Config.Network`。`make integration-proxmox` に段を足した（関所の VM の例）。設計書 v3.67（`docs/architecture/CHANGELOG-v3.67.md`）。
 
+### 修正
+
+- **netconf：属性つきの configuration と空の configuration を返すサーバで収束しない**（#208）：比べる属性を宣言に書いたものだけにした（get-config の返りの最上位の要素に機器が付ける commit の時刻・利用者などの印で drift にせず、2 段の Apply の確かめも通る）。子も値も無い最上位の要素（名前空間の無い空の `<configuration/>` など）は absent と見て、plan は `CREATE` になる（中身の無い要素の宣言は読み込みで断る）。宣言に書いた属性だけが違うときは、理由にどの要素のどの属性が違うかを出す。ProviderVersion は `netconf-v2`。docs/providers/netconf.md に機器の側の注意（非 ASCII の崩れ・NACM の無いサーバ・filter の最上位の名前空間）を書いた。
+
 ## v2.8.0（2026-10-28）
 
 本番に向けて権限と記録を固める版。観測用と書き込み用の資格を分け、nftables で root で走るものを決まった道具 1 つに絞り、監査の記録を鎖にして外へすぐ送れるようにし、秘密の取り出し先に Vault 形（KV v2）と外のコマンドを足す。設計書は v3.55 → v3.61（`docs/architecture/CHANGELOG-v3.56.md`〜`v3.61.md`）。

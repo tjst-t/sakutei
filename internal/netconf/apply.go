@@ -245,6 +245,7 @@ func (a *applyRun) run(ctx context.Context) error {
 	if err != nil {
 		return abandon("read the running subtree", err)
 	}
+	current = contentNodes(current)
 	edit, err := buildEdit(a.filter, a.want, current, a.ordered)
 	if err != nil {
 		_ = s.Unlock(ctx, "candidate")
@@ -361,7 +362,11 @@ func (a *applyRun) observeNew(ctx context.Context) ([]*node, error) {
 		return nil, err
 	}
 	_ = s.Close(ctx)
-	return parseXML(data)
+	top, err := parseXML(data)
+	if err != nil {
+		return nil, err
+	}
+	return contentNodes(top), nil
 }
 
 // pollInterval は確かめの間隔。
@@ -377,9 +382,12 @@ func (a *applyRun) pollInterval() time.Duration {
 }
 
 // verify は deadline まで新しい接続で部分木を読み、want と同じになるのを
-// 待つ。同じなら ""、そうでなければ最後に見た理由。
+// 待つ。同じなら ""、そうでなければ最後に見た理由。比べるのは観測と同じく
+// 宣言に書いた属性だけ（読むたびに変わる commit の時刻などの印で確かめを
+// 落とさない、#208）。
 func (a *applyRun) verify(ctx context.Context, deadline time.Time, want []*node, label string) string {
-	wantCanon := canonical(want, true, a.ordered)
+	attrs := declaredAttrs(a.want)
+	wantCanon := canonical(onlyDeclaredAttrs(want, attrs), true, a.ordered)
 	last := "not checked"
 	for {
 		vctx, cancel := context.WithDeadline(ctx, deadline)
@@ -391,7 +399,7 @@ func (a *applyRun) verify(ctx context.Context, deadline time.Time, want []*node,
 			// The attempt was cut by the deadline: the earlier reason stands.
 		case err != nil:
 			last = fmt.Sprintf("a new connection could not read the subtree (%v)", err)
-		case canonical(got, true, a.ordered) != wantCanon:
+		case canonical(onlyDeclaredAttrs(got, attrs), true, a.ordered) != wantCanon:
 			last = "the running subtree is not " + label
 		default:
 			return ""

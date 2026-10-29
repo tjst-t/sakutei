@@ -110,6 +110,7 @@ resources:
 - 読み込みの時点で、ID の形・ホストと部分木があること・`config` が XML として読めて、最上位の要素が filter の最上位の要素のどれかであること・`ordered` の書式を確かめる（エラーに `config` の中身は出さない）。
 - 宣言に edit-config の属性（`nc:operation`・`yang:insert`）は書けない（どう当てるかは provider が決める）。
 - 部分木が機器に無い（`<data>` が空）のは観測の事実（absent）。plan には `CREATE` として出る。観測だけなら当てない。Apply を許していれば、2 段の Apply で作る。
+- **中身の無い要素だけの `<data>` も absent**（Backlog #208）。部分木が無いとき、名前空間の無い空の `<configuration/>`（rpc-reply の base:1.0 の名前空間を受け継ぐ）を返す機器がある。子も値も無い最上位の要素は、名前空間の有無も属性も問わず「無い」と見る。同じ理由で、中身の無い要素を `config` に宣言するのは読み込みで断る（宣言しても観測はいつも absent になり、収束しない）。
 
 ## 比べ方（正規形）
 
@@ -120,11 +121,29 @@ resources:
 | 名前空間 | 接頭辞でなく名前空間の URI で比べる（`xmlns:if="…"` と `xmlns="…"` は同じ） |
 | 値の中の接頭辞 | identityref などの `prefix:name` は、その接頭辞がその場で宣言されていれば URI に解決して比べる（機器は自分の接頭辞で返す）。宣言されていない接頭辞の値（時刻・IPv6 など）はそのまま |
 | 空白 | 要素の間の空白は捨て、値の前後の空白を落とす。`<a/>` と `<a></a>` は同じ |
-| 属性 | 名前空間の宣言は捨て、残りは並べ替えて比べる |
+| 属性 | 名前空間の宣言は捨て、残りは並べ替えて比べる。**比べるのは宣言に書いた属性だけ**（Backlog #208）：機器の側の属性は、宣言の同じ道（`ordered` と同じ、部分木の頭からの要素の名前を `/` でつないだもの）の要素に同じ名前（名前空間と名前）の属性があるときだけ比べる。機器が付ける印（最上位の要素の commit の時刻・利用者など、読むたびに値が変わるもの）は drift にしない。宣言に書いた属性が機器に無い・値が違うのは drift |
 | 兄弟の順 | **既定では順を問わない**。`ordered` で名指しした道の要素だけ、同じ名前の兄弟の間で順を比べる（ordered-by user のリストなど） |
 | コメント・処理命令 | 捨てる |
 
-ずれていれば、plan と status に「道 = 値」の行で、機器にだけある行と宣言にだけある行（それぞれ頭から 3 つ）を出す。行が同じで順だけ違うときは `the order of an ordered list differs`。
+ずれていれば、plan と status に「道 = 値」の行で、機器にだけある行と宣言にだけある行（それぞれ頭から 3 つ）を出す。行が同じで宣言に書いた属性だけが違うときは、「道 @属性 = 値」の行で、どの要素のどの属性が違うかを出す（名前空間つきの属性は `{URI}名前`）:
+
+```
+netconf sw1/if-uplink: the attributes of the device's subtree differ from the declaration (1 attribute(s) only on the device, 1 only declared; only the attributes written in the declaration are compared)
+  device: interfaces/interface @inactive = no
+  declared: interfaces/interface @inactive = inactive
+```
+
+行も属性も同じで順だけ違うときは `the order of an ordered list differs`。
+
+2 段の Apply の確かめ（新しい接続で読み直して宣言どおりかを見る）も同じ比べ方をする。読むたびに属性の値が変わる機器でも、中身が宣言どおりなら確定まで通る。
+
+## 機器の側の事実（注意）
+
+機器の NETCONF サーバによって、次のことがある。
+
+- **文字列の非 ASCII が崩れて返るサーバがある**：設定した値の非 ASCII の文字が、文字参照の形（`&#…;` を文字として書いたもの）などに変わって get-config に返り、宣言と合わなくなる（いつまでも drift で、2 段の Apply は確かめに通らない）。`config` の値（description など）は ASCII に限る運用を勧める。
+- **NACM を持たないサーバでは、書き込み用の利用者を部分木だけに絞り切れない**：機器の側で部分木の外の書き込みを断れないので、その利用者の資格は機器の設定の全体を書ける。そのため、Sakutei が filter の選ぶ部分木だけを置き換える（外には触れない、上の「部分木の置き換え」）ことが守りの一つになる。部分木の一覧の filter は狭く書き、書き込み用の資格は観測用と分ける（下の「観測用と書き込み用の資格」）。
+- **filter の最上位の要素に、サーバ固有の名前空間が要るサーバがある**：標準の YANG の名前空間でなく、サーバの設定の木の根（例：`<configuration xmlns="…">`）を、そのサーバの名前空間で書かないと何も選ばないサーバがある。部分木の一覧の filter と `config` の最上位の要素は、機器が get-config で返す名前空間に合わせて書く。
 
 ## 観測できないとき
 
@@ -396,4 +415,5 @@ sakutei: skip netconf//sw1/group: held: its provider observes only (§23.4)
 - `internal/remote`: ssh のサブシステム（偽の ssh で、`-s` で開き双方向に流れる・多重化しない・sudo を付けない・鍵の一時ファイルが残らない・ssh の失敗が `*ConnError`、[AC-141-3-*]）。
 - `internal/netconf`（絞ったユーザー、#176）: 偽のサーバの `Scope`（読み書きできる所を subtree filter の形で）・`ScopeOps`（許す rpc）で NACM の近似をし、観測と 2 段の Apply（1.0・1.1）が通って外を読む・書く・ほかの rpc を送るが 1 つも無いこと、許されていない部分木は absent に見えて Apply が access-denied で permanent（何も確定せず、candidate を捨て lock を放す）、get-config・lock の access-denied、discard-changes の失敗の知らせ（[AC-176-1-*]）。
 - `tests/acceptance/netconf_apply_test.go`: Apply を許したデーモンの周（ずれを 2 段で直し、次の周は適合・確かめの失敗は確定せず時間切れで戻り、同じ宣言を当て直さない・alert-only の周は当てない）と registry（`netconf_apply` の有無と誤った設定、[AC-175-3-*]）。
+- `tests/acceptance/netconf_attrs_test.go`（#208）: 偽のサーバの `TopAttrs`（get-config の返りの最上位の要素に読むたびに値の変わる属性を付ける）・`EmptyData`（部分木が無いときに名前空間の無い空の `<configuration/>` を返す）で、属性だけの違いは drift にならない・2 段の Apply が確定まで通り次の周は適合・部分木が無いときの plan が `CREATE`・宣言に書いた属性が違えばその要素と属性を名指しした理由で drift（[AC-208-1-*]）。
 - `tests/acceptance/netconf_test.go`: デーモンの周（ずれを毎周知らせ、Apply は 0、ほかの provider は同じ周で収束する、止めると unknown、GET /plan の `blocked_by: observe_only`）、ObserveOnly を型で止める（executor・起動時の検査）、CLI の plan・reconcile・status（偽の ssh の先でテストのバイナリが偽のサーバになる）、registry（[AC-141-4-*]）。

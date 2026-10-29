@@ -27,7 +27,13 @@ package netconf
 //     落とす。<a/> と <a></a> は同じ。
 //   - 属性: xmlns の宣言は捨て、残りを（名前空間, 名前）の順に並べる。名前空間
 //     つきの属性は、その要素で a0・a1… の接頭辞を宣言して書く（正規形も XML
-//     として読み直せる）。
+//     として読み直せる）。比べるのは宣言に書いた属性だけ（Backlog #208）:
+//     機器の側の属性は、宣言の同じ道（ordered と同じ書き方）の要素に同じ名前
+//     （名前空間, 名前）の属性があるときだけ残す（onlyDeclaredAttrs）。機器が
+//     付ける印（commit の時刻・利用者など）でずれにしない。
+//   - 中身の無い最上位の要素（子も値も無い。名前空間の有無も属性も問わない）は
+//     部分木が無いことを表す（contentNodes）。部分木が無いときに空の
+//     <configuration/> を返す機器がある。
 //   - 兄弟の順: 既定では順を問わない（比べるときに並べ替える）。順に意味の
 //     ある列（ordered-by user のリストなど）は ordered で名指しした道
 //     （"acl/aces/ace" のように、部分木の頭からの要素の名前を / でつなぐ）の
@@ -312,6 +318,100 @@ func leafLines(top []*node, ordered orderedSet) []string {
 			if len(c.n.children) == 0 {
 				out = append(out, c.path+" = "+c.n.text)
 				continue
+			}
+			walk(c.n.children, c.path, c.n.name.Space)
+		}
+	}
+	walk(top, "", "")
+	return out
+}
+
+// hasContent は n が子か値を持つか（属性だけの要素は中身が無い）。
+func hasContent(n *node) bool { return len(n.children) > 0 || n.text != "" }
+
+// contentNodes は最上位の要素のうち中身のあるものだけを返す。部分木が機器に
+// 無いとき、名前空間の無い（rpc-reply の base:1.0 を受け継ぐ）空の
+// <configuration/> を返す機器がある（#208）。中身の無い要素は、名前空間の
+// 有無を問わず「無い」と見る。
+func contentNodes(top []*node) []*node {
+	var out []*node
+	for _, n := range top {
+		if hasContent(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// attrSet は宣言に書いた属性（要素の道と属性の名前空間・名前）の集合。
+type attrSet map[string]bool
+
+func attrKey(path string, name xml.Name) string {
+	return path + "\x00" + name.Space + "\x00" + name.Local
+}
+
+// declaredAttrs は宣言 declared に書いた属性の集合。
+func declaredAttrs(declared []*node) attrSet {
+	set := attrSet{}
+	var walk func(nodes []*node, parentPath string)
+	walk = func(nodes []*node, parentPath string) {
+		for _, n := range nodes {
+			path := joinPath(parentPath, n.name.Local)
+			for _, a := range n.attrs {
+				set[attrKey(path, a.Name)] = true
+			}
+			walk(n.children, path)
+		}
+	}
+	walk(declared, "")
+	return set
+}
+
+// onlyDeclaredAttrs は nodes の写しで、属性を set にあるものだけに絞る
+// （宣言に無い属性は比べない、#208）。nodes は変えない。
+func onlyDeclaredAttrs(nodes []*node, set attrSet) []*node {
+	var cp func(nodes []*node, parentPath string) []*node
+	cp = func(nodes []*node, parentPath string) []*node {
+		if nodes == nil {
+			return nil
+		}
+		out := make([]*node, len(nodes))
+		for i, n := range nodes {
+			path := joinPath(parentPath, n.name.Local)
+			c := &node{name: n.name, text: n.text}
+			for _, a := range n.attrs {
+				if set[attrKey(path, a.Name)] {
+					c.attrs = append(c.attrs, a)
+				}
+			}
+			c.children = cp(n.children, path)
+			out[i] = c
+		}
+		return out
+	}
+	return cp(nodes, "")
+}
+
+// attrLines は top の属性を「道 @名前 = 値」の行の列にする（属性だけのずれの
+// 説明に使う）。名前空間つきの属性の名前は {URI}名前。
+func attrLines(top []*node, ordered orderedSet) []string {
+	var out []string
+	var walk func(nodes []*node, parentPath, parentNS string)
+	walk = func(nodes []*node, parentPath, parentNS string) {
+		for _, c := range arrange(nodes, parentPath, parentNS, true, ordered) {
+			attrs := append([]xml.Attr(nil), c.n.attrs...)
+			sort.Slice(attrs, func(i, j int) bool {
+				if attrs[i].Name.Space != attrs[j].Name.Space {
+					return attrs[i].Name.Space < attrs[j].Name.Space
+				}
+				return attrs[i].Name.Local < attrs[j].Name.Local
+			})
+			for _, a := range attrs {
+				name := a.Name.Local
+				if a.Name.Space != "" {
+					name = "{" + a.Name.Space + "}" + name
+				}
+				out = append(out, c.path+" @"+name+" = "+a.Value)
 			}
 			walk(c.n.children, c.path, c.n.name.Space)
 		}

@@ -32,6 +32,9 @@
 //   - Scope・ScopeOps で、部分木だけに絞ったユーザー（NACM）のように振る舞う
 //     （外の読みは黙って省き、外の書き込み・許さない操作は access-denied。
 //     Denials に残す。scope.go）。
+//   - TopAttrs・EmptyData で、get-config の返りの最上位の要素に（読むたびに
+//     変わる）属性を付ける機器・部分木が無いときに空の <configuration/> を返す
+//     機器のように振る舞う（#208）。
 //   - 止める（Down）・セッションを切る（Drop）・hello を壊す・rpc-error を返す
 //     （SetRPCError・SetOpError）・行う前・応答の前に切る（SetDropBefore・
 //     SetDropAfter）・running
@@ -79,6 +82,13 @@ type Server struct {
 	Scope string
 	// ScopeOps があれば、その操作の名前だけを許す（ほかは access-denied）。
 	ScopeOps []string
+	// TopAttrs があれば、get-config の返りの最上位の要素ごとに、その返す
+	// 属性（xmlns:p="…" p:x="…" の形の XML の断片）を付ける（commit の時刻
+	// などの印を付ける機器、#208）。get-config のたびに呼ぶ。
+	TopAttrs func() string
+	// EmptyData があれば、filter が何も選ばないとき <data> の中にこれを返す
+	// （部分木が無いときに空の <configuration/> を返す機器、#208）。
+	EmptyData string
 
 	mu        sync.Mutex
 	running   string
@@ -501,8 +511,15 @@ func (s *Server) handle(sid int, msg []byte) (string, bool) {
 		data = s.readScoped(data)
 		var b strings.Builder
 		b.WriteString(`<rpc-reply message-id="` + mid + `" xmlns="` + netconf.BaseNS + `"><data>`)
+		if len(data) == 0 {
+			b.WriteString(s.EmptyData)
+		}
 		for _, n := range data {
-			n.write(&b, netconf.BaseNS)
+			extra := ""
+			if s.TopAttrs != nil {
+				extra = " " + s.TopAttrs()
+			}
+			n.writeWith(&b, netconf.BaseNS, extra)
 		}
 		b.WriteString(`</data></rpc-reply>`)
 		return b.String(), false
@@ -577,8 +594,11 @@ func parse(data []byte) ([]*elem, error) {
 }
 
 // write は e を書く（名前空間は親と違うときだけ xmlns で）。
-func (e *elem) write(b *strings.Builder, parentNS string) {
-	b.WriteString("<" + e.Name.Local)
+func (e *elem) write(b *strings.Builder, parentNS string) { e.writeWith(b, parentNS, "") }
+
+// writeWith は write に、e の開始タグへ足す属性の断片 extra を付けたもの。
+func (e *elem) writeWith(b *strings.Builder, parentNS, extra string) {
+	b.WriteString("<" + e.Name.Local + extra)
 	if e.Name.Space != parentNS {
 		b.WriteString(` xmlns="` + e.Name.Space + `"`)
 	}

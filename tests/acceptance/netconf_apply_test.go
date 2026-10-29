@@ -51,7 +51,7 @@ type ncApplyRig struct {
 	cycle func() reconcile.CycleResult
 }
 
-func newNCApplyRig(t *testing.T, running, declaredConfig string, rem remediation.Config) *ncApplyRig {
+func newNCApplyRig(t *testing.T, running, declaredConfig string, rem remediation.Config, opts ...func(*netconffake.Server)) *ncApplyRig {
 	t.Helper()
 	root := t.TempDir()
 	intentDir := filepath.Join(root, "intent")
@@ -62,6 +62,9 @@ func newNCApplyRig(t *testing.T, running, declaredConfig string, rem remediation
 		{"provider": netconf.Name, "id": "sw1/if-uplink", "fields": map[string]string{"config": declaredConfig}}}})
 	srv := netconffake.New(running, true)
 	srv.Caps = []string{netconf.CapCandidate, netconf.CapConfirmedCommit10, netconf.CapValidate11}
+	for _, o := range opts {
+		o(srv)
+	}
 	st, err := netconf.NewSubtree("if-uplink", ncFilter)
 	if err != nil {
 		t.Fatal(err)
