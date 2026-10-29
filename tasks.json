@@ -4677,11 +4677,11 @@
       "number": 201,
       "kind": "task",
       "title": "NETCONF：operational の状態を宣言と比べる観測だけの resource",
-      "status": "ready",
+      "status": "backlog",
       "parent": "netconf-apply-2",
       "dependsOn": [],
       "milestone": null,
-      "priority": "normal",
+      "priority": "low",
       "labels": [],
       "body": "## 何をするか\n- 観測だけの resource の型を足す（名前の案：netconf-state）。汎用の `<get>` に subtree filter を付けて読み、期待する値の宣言と比べて、ずれを level の Event に出す。Apply は型で止める。\n- 読みは観測用の資格と、部分木・NACM の範囲で行う。\n\n## 確かめ方\nnetopeer2 と偽のサーバで、ずれが出ることと、ずれが消えたら resolved になることを確かめる。",
       "doneWhen": "netconf-state が状態のずれを level の Event に出し、Apply を型で止めることを、受け入れテストと netopeer2 の統合試験で確かめる。make check と make test-race が通る。",
@@ -4689,7 +4689,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T06:48:14.609Z",
-      "updatedAt": "2026-10-29T06:48:14.609Z",
+      "updatedAt": "2026-10-29T06:48:22.777Z",
       "closedAt": null,
       "extra": {}
     }
