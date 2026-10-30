@@ -4912,7 +4912,7 @@
       "number": 212,
       "kind": "task",
       "title": "docs：provider の版を上げた直後の ProviderUpgradeDiff（最初の1回の safe-stop）と進め方を手引きに書く",
-      "status": "in-progress",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4924,7 +4924,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T22:03:40.686Z",
-      "updatedAt": "2026-10-30T12:05:27.569Z",
+      "updatedAt": "2026-10-30T12:24:57.592Z",
       "closedAt": null,
       "extra": {}
     },
