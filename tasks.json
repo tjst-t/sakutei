@@ -4933,7 +4933,7 @@
       "number": 213,
       "kind": "task",
       "title": "runtime：同じ intent の中で常駐の役ごとに runtime の値を宣言できるようにする",
-      "status": "in-progress",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4945,7 +4945,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T22:03:48.976Z",
-      "updatedAt": "2026-10-30T12:50:00.394Z",
+      "updatedAt": "2026-10-30T13:29:28.810Z",
       "closedAt": null,
       "extra": {}
     }
