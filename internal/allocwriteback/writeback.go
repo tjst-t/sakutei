@@ -38,6 +38,12 @@
 //     (ErrReleaseAwaitingReview), lifted by taking the removal in — not as a
 //     lost store, which `sakutei allocator import` would rebuild (the import
 //     would refuse the cooling value anyway, #167).
+//   - a pool with reuse: false (#206) also writes back the last value it
+//     handed out per block (the file's last:), which a release leaves as it
+//     is.  While the store's last value is below the file's — the store was
+//     lost or rebuilt from an older copy — the pool hands out nothing new:
+//     it would hand out a released value again; `sakutei allocator import`
+//     raises the store's last value to the file's.
 //
 // The decisions are taken from the file and the store every time — nothing
 // of them is kept here — so one-shot runs and the daemon behave the same.
@@ -155,12 +161,48 @@ func (a *Authority) WriteBackPools() []loader.Pool {
 	return out
 }
 
-// IsWriteBack reports whether pool is written back.
+// IsWriteBack reports whether pool (or a block ref of it) is written back.
 func (a *Authority) IsWriteBack(pool string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, ok := a.pools[pool]
+	base, _ := allocation.SplitBlockRef(pool)
+	_, ok := a.pools[base]
 	return ok
+}
+
+// ref is the pool argument the store is asked with for value v of pool: its
+// block's ref (#206), so the Lookup cache in front of the store answers the
+// same key reconcile allocated with.
+func (a *Authority) ref(pool string, v int) string {
+	b, _ := a.pools[pool].Spec().BlockOf(v)
+	return allocation.BlockRef(pool, b)
+}
+
+// raiseLast records in f the last values of a reuse: false pool: at least
+// every value f holds and the extra ones (#206).  A pool that reuses keeps
+// no last value.
+func (a *Authority) raiseLast(pool string, f *loader.AllocationFile, extra ...int) {
+	p := a.pools[pool]
+	if !p.NoReuse {
+		return
+	}
+	spec := p.Spec()
+	values := extra
+	for _, e := range f.Allocations {
+		values = append(values, e.Value)
+	}
+	for _, v := range values {
+		b, ok := spec.BlockOf(v)
+		if !ok {
+			continue
+		}
+		if f.Last == nil {
+			f.Last = map[string]int{}
+		}
+		if cur, ok := f.Last[b]; !ok || v > cur {
+			f.Last[b] = v
+		}
+	}
 }
 
 // FilePath is the allocation file of pool.
@@ -195,7 +237,7 @@ func (a *Authority) verify(ctx context.Context, pool string, f loader.Allocation
 	var missing, released, differ []string
 	var cooling map[int]bool
 	for _, e := range f.Allocations {
-		v, ok, err := a.inner.Lookup(ctx, pool, e.Owner)
+		v, ok, err := a.inner.Lookup(ctx, a.ref(pool, e.Value), e.Owner)
 		if err != nil && !errors.Is(err, allocation.ErrUnknownPool) {
 			return err // unavailable: not evidence either way; not remembered
 		}
@@ -213,13 +255,35 @@ func (a *Authority) verify(ctx context.Context, pool string, f loader.Allocation
 			differ = append(differ, fmt.Sprintf("%s=%d (store: %s)", e.Owner, e.Value, v))
 		}
 	}
+	var behind []string
+	if len(f.Last) > 0 && a.pools[pool].NoReuse {
+		if storeLast, listed := a.storeLast(ctx, pool); listed {
+			for _, b := range sortedBlocks(f.Last) {
+				if sl, ok := storeLast[b]; !ok || sl < f.Last[b] {
+					got := "none"
+					if ok {
+						got = strconv.Itoa(sl)
+					}
+					behind = append(behind, fmt.Sprintf("%s=%d (store: %s)", blockLabel(b), f.Last[b], got))
+				}
+			}
+		}
+	}
 	var err error
 	switch {
-	case len(missing) > 0:
+	case len(missing) > 0 || len(behind) > 0:
+		if len(missing) == 0 {
+			err = held(ErrNotInStore, "pool %q (reuse: false): the store's last value is below %s's on %s; no value is handed out from this pool until `sakutei allocator import` raises it from the file — it would hand out a released value again (§19.7, #206)",
+				pool, a.FilePath(pool), strings.Join(behind, ", "))
+			break
+		}
 		also := ""
 		if len(released) > 0 {
 			also = fmt.Sprintf("; %s were released in the store and still wait for the removal to be %s — do that first, the import refuses a value cooling down",
 				strings.Join(released, ", "), a.releaseRemedy())
+		}
+		if len(behind) > 0 {
+			also += fmt.Sprintf("; its last value is behind the file's on %s (reuse: false, #206)", strings.Join(behind, ", "))
 		}
 		err = held(ErrNotInStore, "pool %q: the store lacks %d allocation(s) of %s (%s); no value is handed out from this pool until `sakutei allocator import` rebuilds the store from the file (§19.7)%s",
 			pool, len(missing), a.FilePath(pool), strings.Join(missing, ", "), also)
@@ -236,7 +300,7 @@ func (a *Authority) verify(ctx context.Context, pool string, f loader.Allocation
 
 // check is the file-first rule for an owner the file holds.
 func (a *Authority) check(ctx context.Context, pool, owner string, e loader.AllocationEntry) (string, error) {
-	v, ok, err := a.inner.Lookup(ctx, pool, owner)
+	v, ok, err := a.inner.Lookup(ctx, a.ref(pool, e.Value), owner)
 	if errors.Is(err, allocation.ErrUnknownPool) {
 		ok, err = false, nil
 	}
@@ -258,26 +322,62 @@ func (a *Authority) check(ctx context.Context, pool, owner string, e loader.Allo
 }
 
 // cooling returns the values of pool cooling down in the store, i.e. released
-// (§19.5 (b)).  A store that cannot list them, or fails to, gives none: the
-// entry is then reported as lost, as before #167.
+// (§19.5 (b)) — or retired, released with reuse: false (#206).  A store that
+// cannot list them, or fails to, gives none: the entry is then reported as
+// lost, as before #167.
 func (a *Authority) cooling(ctx context.Context, pool string) map[int]bool {
-	l, ok := a.inner.(interface {
-		List(ctx context.Context, pool string) ([]allocator.Record, error)
-	})
-	if !ok {
-		return map[int]bool{}
-	}
-	recs, err := l.List(ctx, pool)
-	if err != nil {
-		return map[int]bool{}
-	}
+	recs, _ := a.records(ctx, pool)
 	out := map[int]bool{}
 	for _, r := range recs {
-		if r.State == allocator.StateCooldown {
+		if r.State == allocator.StateCooldown || r.State == allocator.StateRetired {
 			out[r.Value] = true
 		}
 	}
 	return out
+}
+
+// storeLast returns the store's last value per block of pool (#206); listed
+// is false when the store cannot list its records.
+func (a *Authority) storeLast(ctx context.Context, pool string) (map[string]int, bool) {
+	recs, listed := a.records(ctx, pool)
+	out := map[string]int{}
+	for _, r := range recs {
+		if r.State == allocator.StateLast {
+			out[r.Block] = r.Value
+		}
+	}
+	return out, listed
+}
+
+// records lists pool's records in the store (listed false when it cannot).
+func (a *Authority) records(ctx context.Context, pool string) ([]allocator.Record, bool) {
+	l, ok := a.inner.(interface {
+		List(ctx context.Context, pool string) ([]allocator.Record, error)
+	})
+	if !ok {
+		return nil, false
+	}
+	recs, err := l.List(ctx, pool)
+	if err != nil {
+		return nil, false
+	}
+	return recs, true
+}
+
+func sortedBlocks(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func blockLabel(b string) string {
+	if b == "" {
+		return "the pool"
+	}
+	return "block " + strconv.Quote(b)
 }
 
 // releaseRemedy says what lifts a hold on a released owner the file still
@@ -296,12 +396,14 @@ func conflict(path, owner string, file int, store string) error {
 		path, file, owner, store)
 }
 
-// Allocate implements allocation.AllocationAuthority.
-func (a *Authority) Allocate(ctx context.Context, pool, owner string) (string, error) {
+// Allocate implements allocation.AllocationAuthority.  ref is the pool, or a
+// block of it ("pool/block", #206).
+func (a *Authority) Allocate(ctx context.Context, ref, owner string) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	pool, block := allocation.SplitBlockRef(ref)
 	if _, ok := a.pools[pool]; !ok {
-		return a.inner.Allocate(ctx, pool, owner)
+		return a.inner.Allocate(ctx, ref, owner)
 	}
 	f, err := a.readFile(pool)
 	if err != nil {
@@ -314,7 +416,7 @@ func (a *Authority) Allocate(ctx context.Context, pool, owner string) (string, e
 		}
 		// Allocate the same owner again (idempotent: the same value) so a
 		// Lookup cache in front of the store keeps the fact (§19.6).
-		v2, err := a.inner.Allocate(ctx, pool, owner)
+		v2, err := a.inner.Allocate(ctx, a.ref(pool, e.Value), owner)
 		if err != nil {
 			return "", err
 		}
@@ -326,13 +428,21 @@ func (a *Authority) Allocate(ctx context.Context, pool, owner string) (string, e
 	if err := a.verify(ctx, pool, f); err != nil {
 		return "", err
 	}
-	v, err := a.inner.Allocate(ctx, pool, owner)
+	v, err := a.inner.Allocate(ctx, ref, owner)
 	if err != nil {
 		return "", err
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
 		return "", fmt.Errorf("allocwriteback: pool %q: value %q is not an integer", pool, v)
+	}
+	if last, ok := f.Last[block]; ok && n <= last && a.pools[pool].NoReuse {
+		// The store is behind the file's last value and could not tell
+		// (verify needs its records).  Retire the value at once — it was
+		// handed out to nobody — and hold until the store is rebuilt.
+		_ = a.inner.Release(ctx, ref, owner)
+		return "", held(ErrNotInStore, "the store handed %d to %s, at or below the last value %d %s records for %s (reuse: false): Apply of this resource is stopped; run `sakutei allocator import` to raise the store's last value from the file (§19.7, #206)",
+			n, owner, last, a.FilePath(pool), blockLabel(block))
 	}
 	for _, e := range f.Allocations {
 		if e.Value == n {
@@ -350,6 +460,7 @@ func (a *Authority) Allocate(ctx context.Context, pool, owner string) (string, e
 	}
 	// commit / file: written back before it is used.
 	f.Allocations = append(f.Allocations, loader.AllocationEntry{Owner: owner, Value: n, AllocatedAt: a.now().UTC().Truncate(time.Second)})
+	a.raiseLast(pool, &f)
 	if err := a.writeFile(pool, f); err != nil {
 		return "", fmt.Errorf("%w: pool %q: write back %d for %s: %v", allocation.ErrWriteBackHeld, pool, n, owner, err)
 	}
@@ -358,11 +469,12 @@ func (a *Authority) Allocate(ctx context.Context, pool, owner string) (string, e
 
 // Lookup implements allocation.AllocationAuthority: the read-only verbs see
 // the same holds as reconcile.  It never writes.
-func (a *Authority) Lookup(ctx context.Context, pool, owner string) (string, bool, error) {
+func (a *Authority) Lookup(ctx context.Context, ref, owner string) (string, bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	pool, _ := allocation.SplitBlockRef(ref)
 	if _, ok := a.pools[pool]; !ok {
-		return a.inner.Lookup(ctx, pool, owner)
+		return a.inner.Lookup(ctx, ref, owner)
 	}
 	f, err := a.readFile(pool)
 	if err != nil {
@@ -372,7 +484,7 @@ func (a *Authority) Lookup(ctx context.Context, pool, owner string) (string, boo
 		v, err := a.check(ctx, pool, owner, e)
 		return v, err == nil, err
 	}
-	v, ok, err := a.inner.Lookup(ctx, pool, owner)
+	v, ok, err := a.inner.Lookup(ctx, ref, owner)
 	if errors.Is(err, allocation.ErrUnknownPool) {
 		ok, err = false, nil
 	}
@@ -405,10 +517,11 @@ func (a *Authority) Confirm(ctx context.Context, pool, owner string) error {
 // Release implements allocation.AllocationAuthority: the store releases the
 // value (and keeps its cooldown, a working record), then the owner leaves the
 // file the same way an allocation enters it.
-func (a *Authority) Release(ctx context.Context, pool, owner string) error {
-	if err := a.inner.Release(ctx, pool, owner); err != nil {
+func (a *Authority) Release(ctx context.Context, ref, owner string) error {
+	if err := a.inner.Release(ctx, ref, owner); err != nil {
 		return err
 	}
+	pool, _ := allocation.SplitBlockRef(ref)
 	return a.Forget(ctx, pool, owner)
 }
 
@@ -416,10 +529,12 @@ func (a *Authority) Release(ctx context.Context, pool, owner string) error {
 // human `sakutei allocator release` calls it after the store's release).
 // commit writes and commits at once, review commits the removal to the review
 // branch, file writes.  A pool without write_back, or an owner the file does
-// not hold, is a no-op.
+// not hold, is a no-op.  A pool with reuse: false keeps the owner's value
+// in its last values (#206): the release does not lower them.
 func (a *Authority) Forget(ctx context.Context, pool, owner string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	pool, _ = allocation.SplitBlockRef(pool)
 	if _, ok := a.pools[pool]; !ok {
 		return nil
 	}
@@ -431,6 +546,7 @@ func (a *Authority) Forget(ctx context.Context, pool, owner string) error {
 	if err != nil {
 		return err
 	}
+	a.raiseLast(pool, &f) // before the owner leaves: its value stays behind
 	kept := f.Allocations[:0]
 	found := false
 	for _, e := range f.Allocations {
@@ -450,10 +566,17 @@ func (a *Authority) Forget(ctx context.Context, pool, owner string) error {
 	return a.commitWritten(ctx)
 }
 
-// EnsurePool passes the pool declaration through to the store.
+// EnsurePool is DeclarePool of a pool without blocks.
 func (a *Authority) EnsurePool(name string, lo, hi int) error {
-	if pe, ok := a.inner.(interface{ EnsurePool(string, int, int) error }); ok {
-		return pe.EnsurePool(name, lo, hi)
+	return a.DeclarePool(name, allocation.PoolSpec{Lo: lo, Hi: hi})
+}
+
+// DeclarePool passes the pool declaration through to the store.
+func (a *Authority) DeclarePool(name string, spec allocation.PoolSpec) error {
+	if pe, ok := a.inner.(interface {
+		DeclarePool(string, allocation.PoolSpec) error
+	}); ok {
+		return pe.DeclarePool(name, spec)
 	}
 	return nil
 }
@@ -499,6 +622,9 @@ func (a *Authority) Flush(ctx context.Context) []string {
 
 func (a *Authority) writeFile(pool string, f loader.AllocationFile) error {
 	f.SchemaVersion, f.Pool = loader.AllocationFileSchemaVersion, pool
+	if !a.pools[pool].NoReuse {
+		f.Last = nil // last values belong to reuse: false pools only (#206)
+	}
 	path := a.FilePath(pool)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -625,6 +751,10 @@ func (a *Authority) updateReviewBranch(ctx context.Context, pool string, add map
 		}
 		f.Allocations = append(f.Allocations, loader.AllocationEntry{Owner: o, Value: add[o], AllocatedAt: a.now().UTC().Truncate(time.Second)})
 		byValue[add[o]] = o
+	}
+	a.raiseLast(pool, &f) // the removed owner's value too: it stays behind
+	if !a.pools[pool].NoReuse {
+		f.Last = nil
 	}
 	if remove != "" {
 		kept := f.Allocations[:0]

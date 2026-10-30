@@ -16,6 +16,7 @@ package allocator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -58,7 +59,7 @@ type Cache struct {
 
 	mu     sync.Mutex
 	values map[cacheKey]cacheEntry
-	pools  map[string][2]int // pools declared through EnsurePool → range
+	pools  map[string]string // pools declared through DeclarePool → their spec (JSON)
 
 	calls atomic.Int64
 
@@ -87,7 +88,7 @@ var _ allocation.AllocationAuthority = (*Cache)(nil)
 // NewCache wraps inner with the Lookup cache (DefaultLookupTTL; set c.TTL
 // after construction to change it).
 func NewCache(inner allocation.AllocationAuthority) *Cache {
-	return &Cache{inner: inner, values: map[cacheKey]cacheEntry{}, pools: map[string][2]int{}}
+	return &Cache{inner: inner, values: map[cacheKey]cacheEntry{}, pools: map[string]string{}}
 }
 
 // InnerCalls returns how many calls reached the wrapped authority — the
@@ -238,28 +239,34 @@ func (c *Cache) List(ctx context.Context, pool string) ([]Record, error) {
 	return l.List(ctx, pool)
 }
 
-// EnsurePool declares the pool to the wrapped authority when it accepts pool
-// declarations, once per range: an unchanged declaration is not repeated
-// every cycle.
+// EnsurePool is DeclarePool of a pool without blocks.
 func (c *Cache) EnsurePool(name string, lo, hi int) error {
+	return c.DeclarePool(name, allocation.PoolSpec{Lo: lo, Hi: hi})
+}
+
+// DeclarePool declares the pool to the wrapped authority when it accepts pool
+// declarations, once per spec: an unchanged declaration is not repeated
+// every cycle.
+func (c *Cache) DeclarePool(name string, spec allocation.PoolSpec) error {
 	pe, ok := c.inner.(interface {
-		EnsurePool(name string, lo, hi int) error
+		DeclarePool(name string, spec allocation.PoolSpec) error
 	})
 	if !ok {
 		return nil
 	}
+	key, _ := json.Marshal(spec)
 	c.mu.Lock()
 	r, done := c.pools[name]
 	c.mu.Unlock()
-	if done && r == [2]int{lo, hi} {
+	if done && r == string(key) {
 		return nil
 	}
 	c.calls.Add(1)
-	if err := pe.EnsurePool(name, lo, hi); err != nil {
+	if err := pe.DeclarePool(name, spec); err != nil {
 		return err
 	}
 	c.mu.Lock()
-	c.pools[name] = [2]int{lo, hi}
+	c.pools[name] = string(key)
 	c.mu.Unlock()
 	return nil
 }

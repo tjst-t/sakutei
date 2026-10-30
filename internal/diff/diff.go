@@ -134,6 +134,9 @@ type ApplyCheck struct {
 type AllocationTemplate struct {
 	Template string
 	Kind     string
+	// Block is the block of the pool the value is taken from (`block:`,
+	// #206); empty for a pool without blocks.
+	Block string
 }
 
 // Engine holds the provider schema used to drive the diff.

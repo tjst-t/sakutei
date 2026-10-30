@@ -4,6 +4,10 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 ## 未リリース
 
+### 追加
+
+- **採番の区切った範囲（block）と、上がるだけで再利用しない設定**（#206）：プールに `blocks:`（`name`・`range`。プールの範囲の中で互いに重ならない）を書け、要求は `block:` で 1 つを名指しして、その block の中からだけ払う。block が尽きたら他の block へはみ出さず、理由（block の名前と範囲）つきの waiting-allocation で止める。`reuse: false` は block ごとに最後に払った値を記録してその上からだけ払い、解放した値は cooldown でなく退役させて二度と払わない（cooldown は使わない）。`write_back: true` なら最後の値を書き戻しのファイルの `last:` に載せ、`sakutei allocator import` で store を作り直しても解放した値を払い直さない（store の最後の値がファイルより小さいあいだは新しい値を配らず import を案内する）。`sakutei allocator list` は最後の値（`last`）と退役した値（`retired`）を出す。設計書 v3.76（§19.8）。
+
 ## v2.11.0（2026-10-30）
 
 s3-bucket に Object Lock（作るときの有効化と既定の保持の mode・期間）を足し、同じ intent の中で常駐の役ごとに `runtime:` の値を宣言できるようにした版。設計書は v3.73 → v3.75（`docs/architecture/CHANGELOG-v3.74.md`・`v3.75.md`）。

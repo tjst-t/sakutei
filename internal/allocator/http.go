@@ -56,6 +56,19 @@ type request struct {
 	Hi         int     `json:"hi,omitempty"`
 	// Entries is the "import" request (#157).
 	Entries []ImportEntry `json:"entries,omitempty"`
+	// Spec declares the pool in full (blocks, reuse: false, #206) for
+	// "ensure-pool" and "import"; Lo / Hi alone when absent (older clients).
+	Spec *allocation.PoolSpec `json:"spec,omitempty"`
+	// Last is the write-back file's last value per block ("import", #206).
+	Last map[string]int `json:"last,omitempty"`
+}
+
+// spec is the pool the request declares.
+func (r request) spec() allocation.PoolSpec {
+	if r.Spec != nil {
+		return *r.Spec
+	}
+	return allocation.PoolSpec{Lo: r.Lo, Hi: r.Hi}
 }
 
 type response struct {
@@ -166,10 +179,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "lookup":
 		resp.Value, resp.OK, err = s.auth.Lookup(ctx, req.Pool, req.Owner)
 	case "ensure-pool":
-		err = s.auth.EnsurePool(req.Pool, req.Lo, req.Hi)
+		err = s.auth.DeclarePool(req.Pool, req.spec())
 	case "import":
 		// #157: rebuild a pool from its write-back file; all or nothing.
-		resp.Imported, err = s.auth.Import(ctx, req.Pool, req.Lo, req.Hi, req.Entries)
+		resp.Imported, err = s.auth.ImportPool(ctx, req.Pool, req.spec(), req.Entries, req.Last)
 	default:
 		writeJSON(w, http.StatusNotFound, response{Error: "unknown operation " + op, Code: codeInternal})
 		return
@@ -362,13 +375,24 @@ func (c *Client) Lookup(ctx context.Context, pool, owner string) (string, bool, 
 
 // EnsurePool declares a pool to the active allocator (intent `pools:`, §19.8).
 func (c *Client) EnsurePool(name string, lo, hi int) error {
-	_, err := c.call(context.Background(), "ensure-pool", request{Pool: name, Lo: lo, Hi: hi})
+	return c.DeclarePool(name, allocation.PoolSpec{Lo: lo, Hi: hi})
+}
+
+// DeclarePool declares a pool with its blocks and reuse setting (#206).
+func (c *Client) DeclarePool(name string, spec allocation.PoolSpec) error {
+	_, err := c.call(context.Background(), "ensure-pool", request{Pool: name, Lo: spec.Lo, Hi: spec.Hi, Spec: &spec})
 	return err
 }
 
 // Import calls `POST /v1/import` (#157): FileAuthority.Import on the active
 // allocator.
 func (c *Client) Import(ctx context.Context, pool string, lo, hi int, entries []ImportEntry) (int, error) {
-	resp, err := c.call(ctx, "import", request{Pool: pool, Lo: lo, Hi: hi, Entries: entries})
+	return c.ImportPool(ctx, pool, allocation.PoolSpec{Lo: lo, Hi: hi}, entries, nil)
+}
+
+// ImportPool is Import of a pool declared as spec, with the file's last
+// values (#206): FileAuthority.ImportPool on the active allocator.
+func (c *Client) ImportPool(ctx context.Context, pool string, spec allocation.PoolSpec, entries []ImportEntry, last map[string]int) (int, error) {
+	resp, err := c.call(ctx, "import", request{Pool: pool, Lo: spec.Lo, Hi: spec.Hi, Spec: &spec, Entries: entries, Last: last})
 	return resp.Imported, err
 }

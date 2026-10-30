@@ -39,12 +39,36 @@ allocations:
 | `owner` | 誰に配ったか。`<provider>/<local id>#<field>`（下を見る） |
 | `value` | 配った整数（テンプレート `template: "192.0.2.{n}"` を通す前の値） |
 | `allocated_at` | 書き戻した時刻（RFC 3339、UTC）。読むときは省いてよい |
+| `last` | `reuse: false` のプールだけ（#206）。最後に払った値の一覧。`block`（block の無いプールは書かない）と `value` |
 
 - **並び**は `value` の小さい順（同じ割当なら同じバイト列になり、差分は来た値・去った値として読める）。
 - 文字列は二重引用符で書く（owner の `#` を YAML がコメントと読まないように）。
 - 先頭の `# sakutei:generated ...` の行は YAML のコメントで、読むときには関わらない。本文のハッシュは持たない
   （Sync Mode のスナップショットと違い、このファイルは正なので、人が直してよい。直した内容は store と照らされる）。
 - 読めないファイル（壊れた YAML・owner や value の重複・整数でない値）は推し量らず、そのプールの要求をすべて止める。
+
+### 上がるだけで再利用しないプールの `last`（#206）
+
+`reuse: false` のプール（設計書 §19.8）は、block ごとに最後に払った値も書き戻す。解放して owner が `allocations`
+から消えても `last` は下がらないので、store を失ってこのファイルから作り直しても、解放した値を再び払わない。
+
+```yaml
+schema_version: 1
+pool: "user-ids"
+allocations:
+  - owner: "fake/user-alice#uid"
+    value: 1000
+    allocated_at: "2026-10-30T09:00:00Z"
+# reuse: false の pool が最後に払った値。解放しても下がらず、store を作り直してもこの上から払います。
+last:
+  - block: "guests"
+    value: 1102
+  - block: "staff"
+    value: 1001
+```
+
+- `last` が無い（`reuse: true` から変えたばかり）ときは、次に書き戻すときに今の割当の最大から書く。
+- `reuse: true` のプールのファイルには書かない（あれば次の書き戻しで消える）。
 
 ### owner の書き方
 
@@ -91,7 +115,8 @@ committer_email: sakutei-sync@localhost
 | ある | 同じ値 | そのまま使う |
 | ある | 違う値 | その owner を使う Apply を止めて知らせる（`AllocationHeld`）。どちらにも勝手に寄せない。人がどちらかを直す |
 | ある | 無い | Apply を止め、`sakutei allocator import` を案内する |
-| ある | 無い（その値が cooldown 中＝解放済み） | Apply を止め、「解放の取り込み待ち」と知らせる。import は案内しない（下の「解放」） |
+| ある | 無い（その値が cooldown 中＝解放済み、`reuse: false` なら退役） | Apply を止め、「解放の取り込み待ち」と知らせる。import は案内しない（下の「解放」） |
+| `last` | 最後の値がファイルより小さい・無い | そのプールから新しい値を配らず、`sakutei allocator import` を案内する（解放した値を払い直さないため） |
 | 無い | 配った（または今配る） | `commit`・`file` は書き戻してから使う。`review` は取り込まれるまで止める |
 
 - ファイルの割当のうち 1 つでも store に無い・store と食い違うあいだは、そのプールから**新しい値を配らない**
@@ -108,13 +133,16 @@ pool vm-ids: imported 2 allocation(s) from generated/allocations/vm-ids.yaml (0 
 
 - intent の `write_back: true` のプール（`--pool` でその 1 つ）のファイルから store を作り直す。サービスなら `--url`。
 - 既に store にある記録と同じなら何もしない。食い違う（owner が別の値を持つ・値を別の owner が持つ・値が cooldown 中＝
-  解放済み・範囲の外）なら、**そのプールには何も書かずに断る**（終了コード 1）。
+  解放済み・退役済み・範囲の外・どの block にも入らない・宣言に無い block の `last`）なら、**そのプールには何も書かずに
+  断る**（終了コード 1）。
+- `reuse: false` のプールは、store の最後の値を、ファイルの `last` と取り込んだ値の大きい方へ上げる。
 - 作り直したことを S4 の監査（`--audit-log`、kind `allocation.imported`）に残す。
 
 ## 解放
 
 人の `sakutei allocator release` に `--intent`（と `--alloc-write-back`）を付けると、store の解放のあと、同じ仕方
-（commit / review / file）でファイルから owner を消す。store は cooldown（作業の記録）を持ち続ける。宣言から消えた
+（commit / review / file）でファイルから owner を消す。store は cooldown（作業の記録）を持ち続ける。`reuse: false` の
+プールは cooldown でなく値を退役させ、ファイルの `last` はそのまま残す。宣言から消えた
 ことによる解放も、authority の Release を通る限り同じ道でファイルから消える（v1 には自動の解放の経路は無い、§19.5）。
 `--intent` を付けずに解放すると、ファイルにはその owner が残り、そのプールは「store に無い」として止まる（import は
 cooldown 中の値を断るので、誤って戻ることはない）。

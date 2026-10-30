@@ -33,7 +33,7 @@ import (
 //   - external_owners は触らない宣言（owner / provider / scope / id / id_prefix / fields、§7.3・#158）。
 //   - providers は provider のインスタンスごとの範囲（scope・管理する表など、§7.7・#181）。
 //   - compatibility は部品の版の互換の表（name / components / allow、§29.1・#151）。
-//   - pools は採番プールの宣言（name / range / claim / space、§19.8）。
+//   - pools は採番プールの宣言（name / range / claim / space / write_back / reuse / blocks、§19.8・#206）。
 //   - scopes は scope ごとの mode（converge / sync）と sync.target_path（§24.5）、
 //     scope 明示の remediation（auto / alert-only、§14.3）。
 //   - remediation は時間帯連動の修復 mode（default / schedule[{window, mode}] / tz、§14.2）。
@@ -212,6 +212,21 @@ func intentSchema() schemaNode {
 						// write_back は払い出した結果を宣言の側のファイルへ書き戻し、
 						// それを正として読むか（§19.7、#157）。
 						"write_back": schemaNode{"type": "boolean"},
+						// reuse: false は上がるだけで再利用しない（#206）。
+						"reuse": schemaNode{"type": "boolean"},
+						// blocks は区切った範囲（name / range、#206）。
+						"blocks": schemaNode{
+							"type": "array",
+							"items": schemaNode{
+								"type":                 "object",
+								"additionalProperties": false,
+								"required":             []any{"name", "range"},
+								"properties": map[string]any{
+									"name":  schemaNode{"type": "string"},
+									"range": schemaNode{"type": "string"},
+								},
+							},
+						},
 					},
 				},
 			},

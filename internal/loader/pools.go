@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/tjst-t/sakutei/v2/internal/diff"
+	"github.com/tjst-t/sakutei/v2/pkg/allocation"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 )
 
@@ -42,6 +43,16 @@ import (
 // source of truth: the store becomes its copy plus the working records
 // (cooldowns), so losing the store loses nothing that cannot be rebuilt from
 // the intent (§19.7).
+//
+// Blocks (`blocks: [{ name, range }]`, #206) split the range into named
+// sub-ranges — the user IDs of each use, say.  A pool with blocks is asked
+// for a value of one block (`{ from_pool: user-ids, block: staff }`); the
+// blocks are disjoint and lie inside the range.  NoReuse (`reuse: false`,
+// #206) hands out values upwards only: the last value handed out (per block)
+// is recorded and never gone back to, so a released value is never handed
+// out again — the cooldown has no meaning then.  With write_back the last
+// value is written back too, so a store rebuilt from the file does not reuse
+// either (§19.7).
 type Pool struct {
 	Name      string
 	Range     string
@@ -50,6 +61,35 @@ type Pool struct {
 	Claim     map[string]string
 	Space     string
 	WriteBack bool
+	Blocks    []PoolBlock
+	NoReuse   bool
+}
+
+// PoolBlock is one block of a pool (#206).
+type PoolBlock struct {
+	Name  string
+	Range string
+	Lo    int
+	Hi    int
+}
+
+// Spec is the pool as the authority is told it (EnsurePool, §19.8).
+func (p Pool) Spec() allocation.PoolSpec {
+	s := allocation.PoolSpec{Lo: p.Lo, Hi: p.Hi, NoReuse: p.NoReuse}
+	for _, b := range p.Blocks {
+		s.Blocks = append(s.Blocks, allocation.Block{Name: b.Name, Lo: b.Lo, Hi: b.Hi})
+	}
+	return s
+}
+
+// Block returns the block named name.
+func (p Pool) Block(name string) (PoolBlock, bool) {
+	for _, b := range p.Blocks {
+		if b.Name == name {
+			return b, true
+		}
+	}
+	return PoolBlock{}, false
 }
 
 func parsePools(v any) ([]Pool, error) {
@@ -68,8 +108,67 @@ func parsePools(v any) ([]Pool, error) {
 		}
 		space, _ := m["space"].(string)
 		writeBack, _ := m["write_back"].(bool)
-		out = append(out, Pool{Name: strings.TrimSpace(name), Range: rng, Lo: lo, Hi: hi,
-			Claim: stringifyStringMap(m["claim"]), Space: strings.TrimSpace(space), WriteBack: writeBack})
+		p := Pool{Name: strings.TrimSpace(name), Range: rng, Lo: lo, Hi: hi,
+			Claim: stringifyStringMap(m["claim"]), Space: strings.TrimSpace(space), WriteBack: writeBack}
+		if raw, ok := m["reuse"]; ok {
+			reuse, isBool := raw.(bool)
+			if !isBool {
+				return nil, fmt.Errorf("pools[%d] (%s): reuse must be true or false", i, name)
+			}
+			p.NoReuse = !reuse
+		}
+		if p.Blocks, err = parseBlocks(m["blocks"], p); err != nil {
+			return nil, fmt.Errorf("pools[%d] (%s): %w", i, name, err)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// parseBlocks reads the blocks of pool p (#206): each has a name, unique and
+// without "/", and a range inside the pool's; the blocks must not overlap
+// (one value, one block).
+func parseBlocks(v any, p Pool) ([]PoolBlock, error) {
+	if v == nil {
+		return nil, nil
+	}
+	raw, ok := v.([]any)
+	if !ok || len(raw) == 0 {
+		return nil, fmt.Errorf("blocks must be a list of { name, range }")
+	}
+	out := make([]PoolBlock, 0, len(raw))
+	for j, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("blocks[%d] must be an object { name, range }", j)
+		}
+		name, _ := m["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" || strings.Contains(name, allocation.BlockSeparator) {
+			return nil, fmt.Errorf("blocks[%d]: name must be non-empty and hold no %q", j, allocation.BlockSeparator)
+		}
+		for k := range m {
+			if k != "name" && k != "range" {
+				return nil, fmt.Errorf("block %q: unknown key %q (name / range)", name, k)
+			}
+		}
+		rng := scalarToString(m["range"])
+		lo, hi, err := parseRange(rng)
+		if err != nil {
+			return nil, fmt.Errorf("block %q: %w", name, err)
+		}
+		if lo < p.Lo || hi > p.Hi {
+			return nil, fmt.Errorf("block %q: range %s is outside the pool's range %s", name, rng, p.Range)
+		}
+		for _, b := range out {
+			if b.Name == name {
+				return nil, fmt.Errorf("block %q declared twice", name)
+			}
+			if lo <= b.Hi && b.Lo <= hi {
+				return nil, fmt.Errorf("blocks %q (%s) and %q (%s) overlap: a value belongs to one block", b.Name, b.Range, name, rng)
+			}
+		}
+		out = append(out, PoolBlock{Name: name, Range: rng, Lo: lo, Hi: hi})
 	}
 	return out, nil
 }
@@ -103,6 +202,9 @@ func validatePools(pools []Pool, resources []diff.DesiredResource) error {
 		if p.Name == "" {
 			return fmt.Errorf("pool with empty name")
 		}
+		if strings.Contains(p.Name, allocation.BlockSeparator) {
+			return fmt.Errorf("pool %q: a pool name holds no %q (it separates the block of a request, #206)", p.Name, allocation.BlockSeparator)
+		}
 		if _, dup := byName[p.Name]; dup {
 			return fmt.Errorf("pool %q declared twice", p.Name)
 		}
@@ -131,7 +233,22 @@ func validatePools(pools []Pool, resources []diff.DesiredResource) error {
 			if !r.ID.Scope.Matches(core.NewScope(p.Claim)) {
 				return fmt.Errorf("resource %s: field %q requests pool %q of claim %v from outside that claim (pools split by claim, §19.8)", r.ID, field, pool, p.Claim)
 			}
-			if t, ok := r.AllocationTemplates[field]; ok {
+			t := r.AllocationTemplates[field]
+			switch {
+			case t.Block == "" && len(p.Blocks) > 0:
+				return fmt.Errorf("resource %s: field %q requests pool %q, which is split into blocks: name one (block: %s, #206)", r.ID, field, pool, blockNames(p))
+			case t.Block != "" && len(p.Blocks) == 0:
+				return fmt.Errorf("resource %s: field %q requests block %q of pool %q, which declares no blocks", r.ID, field, t.Block, pool)
+			case t.Block != "":
+				b, ok := p.Block(t.Block)
+				if !ok {
+					return fmt.Errorf("resource %s: field %q requests block %q, which pool %q does not declare (%s)", r.ID, field, t.Block, pool, blockNames(p))
+				}
+				// the template's kind is checked against the block's range:
+				// only its values are handed out to this request.
+				p.Lo, p.Hi, p.Range = b.Lo, b.Hi, b.Range
+			}
+			if t.Kind != "" {
 				if err := checkTemplateKind(t, p); err != nil {
 					return fmt.Errorf("resource %s: field %q: %w", r.ID, field, err)
 				}
@@ -139,6 +256,14 @@ func validatePools(pools []Pool, resources []diff.DesiredResource) error {
 		}
 	}
 	return nil
+}
+
+func blockNames(p Pool) string {
+	names := make([]string, len(p.Blocks))
+	for i, b := range p.Blocks {
+		names[i] = b.Name
+	}
+	return strings.Join(names, " | ")
 }
 
 // templateVar is the one variable an allocation template knows: the

@@ -122,11 +122,11 @@ func (s *switchableAuthority) Lookup(ctx context.Context, pool, owner string) (s
 	return s.inner.Lookup(ctx, pool, owner)
 }
 
-func (s *switchableAuthority) EnsurePool(name string, lo, hi int) error {
+func (s *switchableAuthority) DeclarePool(name string, spec allocation.PoolSpec) error {
 	if err := s.gate(); err != nil {
 		return err
 	}
-	return s.inner.(render.PoolEnsurer).EnsurePool(name, lo, hi)
+	return s.inner.(render.PoolEnsurer).DeclarePool(name, spec)
 }
 
 func TestAllocatorHA_LookupCache(t *testing.T) {

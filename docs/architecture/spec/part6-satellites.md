@@ -79,7 +79,8 @@ type AllocationAuthority interface {
   よい。
 - **ファイル版 authority の振る舞い**：`Allocate` は owner ごとに冪等で、空いている値を小さい順に払い出す。枯渇は
   エラー。`Reserve` は TTL 付きで、期限切れの仮予約は解放される。`Release` 後の値は **cooldown（既定 24h）** の
-  あいだ再払い出ししない（§19.5（b））。
+  あいだ再払い出ししない（§19.5（b））。`reuse: false` のプール（§19.8、v3.76）は、解放した値を cooldown でなく
+  **退役**（retired）にして二度と払わない。
 - **自動で Release する経路（§19.5）はまだ作っていない**。§19.5 の「下流の削除を List で確かめてから」を満たす経路が
   要るためで、宣言から外しても収束は割当を解放しない（保守側）。**人は CLI で解放できる**（#116）：
   `sakutei allocator release --pool <p> --owner <o>`（`--store <file>` はファイル版を flock で直に、`--url` は
@@ -107,6 +108,9 @@ PR 生成時   ： TTL 付き Reserve（仮予約）→ PR diff に具体 ID が
 
 - **（a） desired からの消滅では Release を発火させない。下流リソースの削除完了を確認してから**実行する（「理想から消えた」ではなく「**現実から消えた**」を根拠にする）。
 - **（b） 返却後に cooldown / 検疫 TTL**（即時再払い出しをしない。DHCP のリース再利用猶予と同型）。
+  利用者の番号のように**一度払った値を二度と払ってはならない**プールは、cooldown でなく「上がるだけで再利用しない」
+  （`reuse: false`、§19.8、v3.76）で宣言する。cooldown は「いつか再利用する」ための猶予なので、再利用しないプールでは
+  意味を持たず、使わない。
 - **（c） `pruneable:false` 等で下位が残存する間は Release 保留**。
 
 **「現実から消えた」を何で確認するか**：`Observation` の三値（`ok`/`unknown`/`converging`・§4）には **absent（消えた）を積極的に表す値が無く**、`Read` が `unknown` を返す状態と「本当に消えた」を区別できない。個別 `Read` に第4値を足すと全 provider に波及するため、**Release の削除完了確認は `Read` ではなく `List`（集合演算）を根拠にする**。
@@ -159,6 +163,10 @@ authority は state を持つ（§19.1）ゆえに **喪失と分断の設計が
   - 解放（人の `sakutei allocator release`・宣言から消えたことによる Release）も同じ仕方でファイルから消す。store は
     cooldown を持ち続ける。
   - 止めた要求は waiting-allocation（§19.9）と同じく、そのリソースと下流だけを skip する。
+  - **`reuse: false` のプール（v3.76、#206）は、最後に払った値（区切った範囲（block）ごと）もファイルに書き戻す**
+    （`last:`）。解放してもこの値は下がらない。store を失って import で作り直すと、store の最後の値はファイルの最後の値
+    （と取り込んだ値）の大きい方に上がるので、作り直したあとも解放した値を再び払わない。store の最後の値がファイルより
+    小さいあいだ（store を失った・古い写しから戻した）は、そのプールから新しい値を配らず import を案内する。
   - 旧版（v3.31 まで）の「**現実から逆引きして再構築する手順**」（Backlog #108 の 3）は、この書き戻しで**置き換えた**。
     逆引きは機器ごとに読み方が要り、復元できない分が残るが、書き戻しは宣言を読むだけで同じ値に戻り、付け替わらない。
     `write_back` の無いプールは今までどおり store が正で、喪失は事故のまま（§25.3）。
@@ -199,7 +207,48 @@ pools:
 - **`pools:` の書式（v1b）**：各要素は `name`（必須）・`range`（必須。`"下限-上限"` の整数・両端を含む）・`claim`
   （任意。プールが属する scope-selector）・`space`（任意。番号空間の名前。既定は共通の 1 空間）を持つ。v1b のプールは
   整数（VLAN ID 等）のみ。YAML サブセットはフロースタイルを受け付けないので、上のようにブロックで書く（JSON なら
-  `{"name": ..., "claim": {...}}` と書ける）。`pools:` だけのファイルも書ける。
+  `{"name": ..., "claim": {...}}` と書ける）。`pools:` だけのファイルも書ける。ほかに `write_back`（§19.7）・
+  `blocks`・`reuse`（次項）を書ける。
+- **区切った範囲（block）と、上がるだけで再利用しない設定（v3.76、Backlog #206）**：
+
+  ```yaml
+  pools:
+    - name: user-ids
+      range: "1000-1999"
+      reuse: false              # 一度払った値は、解放しても二度と払わない
+      write_back: true          # 最後に払った値も書き戻す（§19.7）
+      blocks:                   # 用途ごとの範囲
+        - name: staff
+          range: "1000-1099"
+        - name: guests
+          range: "1100-1999"
+  resources:
+    - provider: fake
+      id: user-alice
+      fields:
+        uid:
+          from_pool: user-ids
+          block: staff          # この block の中から払う
+  ```
+
+  - **block**：`blocks:` の各要素は `name`・`range` を持ち、プールの範囲の中に収まり、互いに重ならない（1 値 1 block）。
+    block を持つプールへの要求は `block:` で 1 つを名指しする（名指しの無い要求・宣言に無い block・block を持たない
+    プールへの `block:` はロード時に拒否する）。値はその block の中からだけ払い、block が尽きたら他の block へはみ出さず、
+    その要求を理由（block の名前と範囲）つきの waiting-allocation（§19.9）にする。plan・status の割り当て待ちは block を
+    `<pool>/<block>` と出し、空きは block ごとに数える。owner は block によらず同じで（§19.3）、払ったあとに要求の
+    `block:` を書き換えても値は動かない（払い出しは冪等。動かしたければ解放して払い直す）。block の範囲の変更・block を
+    消す変更は、その block から払った使用中の値を外すなら断る。プールの範囲の変更と同じ。プール名と block 名は `/` を
+    含まない（authority への要求は `<pool>/<block>` で block を伝える。`AllocationAuthority` の interface は変えない）。
+    `template`・`kind` の確かめ（前項）は要求の block の範囲で行う。
+  - **`reuse: false`（既定 `true`）**：authority は block ごと（block の無いプールはプール全体で 1 つ）に**最後に払った値**
+    を記録し、次の値はその上から小さい順に払う。解放した値は cooldown に入れず**退役**させ、二度と払わない（仮予約の
+    期限切れも同じく、最後の値は下がらない）。範囲の上まで払えば、空いた値が下にあっても枯渇として止める（理由に最後の値
+    を出す。範囲を広げるか block を足す）。再利用しないので **cooldown（§19.5 (b)）は意味を持たず、使わない**。
+    `reuse: true` のプールを `false` に変えると、最後の値は使用中・cooldown 中の値の最大から始まる（それより下は以後払わない）。
+  - 最後の値は store の作業の記録にとどめず、`write_back: true` なら宣言の側のファイルに載せる（§19.7。§1.7 の「正しい
+    状態は宣言に置く」）。`write_back` の無い `reuse: false` のプールは、store を失うと最後の値も失う（store が正のプールの
+    喪失は事故のまま、§25.3）。利用者の番号のように再利用が事故になる番号は、`write_back: true` と組み合わせて宣言する。
+  - `sakutei allocator list` は block ごとの最後の値（状態 `last`）と退役した値（状態 `retired`）も出す。
 - **値の写し方：テンプレート（v3.26、Backlog #145・#108 の 1）**：プールは整数のままにし、IP アドレスなどの文字列は
   要求の側で整数を埋め込んで作る。要求に `template` を書くと、render のフェーズ1（§9.1）が払い出した整数（10 進）で
   `{n}` を置き換えた文字列をそのフィールドに入れる。
@@ -269,7 +318,8 @@ fencing 世代（§19.8）も持たせる。SQLite を採らなかった理由�
 **store の位置づけ（v3.34、Backlog #157）**：`write_back: true` のプールでは、store（ファイル版・サービス版とも）は
 **宣言の写しと作業の記録**である。割当の正は宣言の側のファイル（§19.7）にあり、store を失っても宣言から作り直せる
 （`sakutei allocator import`）。store が持ち続ける作業の記録は、cooldown（§19.5 (b)）・仮予約（§19.4）・fencing 世代
-（§19.8）で、これらは失っても安全側に倒れる（cooldown の代わりに import が解放済みの値を断る、など）。書き戻しの層は
+（§19.8）で、これらは失っても安全側に倒れる（cooldown の代わりに import が解放済みの値を断る、など）。`reuse: false`
+のプールの最後に払った値（§19.8、v3.76）は作業の記録でなく正しい状態なので、ファイルの側に置く（§19.7）。書き戻しの層は
 `AllocationAuthority` の前に置く包み（store の前の Lookup キャッシュ（§19.6）のさらに前）で、ファイルは毎周読む（手元の
 ファイルなので allocator のコールは増えない。定常収束は衛星コールゼロのまま、§3.8）。
 
@@ -500,7 +550,7 @@ JSON Schema の `additionalProperties: false` で閉じており、未知のキ�
 | トップレベルのキー | 内容 | 正 |
 |---|---|---|
 | `resources` | resource の配列（任意。`pools:` などだけのファイルも書ける） | 下表 |
-| `pools` | 採番プール（`name` / `range` / `claim` / `space`）。要求は `{ from_pool, template, kind }` | §19.8 |
+| `pools` | 採番プール（`name` / `range` / `claim` / `space` / `write_back` / `reuse` / `blocks`）。要求は `{ from_pool, template, kind, block }` | §19.8 |
 | `scopes` | scope ごとの mode（`scope` / `mode: converge \| sync` / `sync.target_path`） | §24.5 |
 | `observe_tiers` | Observe 頻度の tier（`name` / `observe_every`） | §16.5 |
 | `planned_change` | 大量正当作業の宣言（`scope` / `kind` / `max_count` / `window` / `approval`）。1 件はオブジェクト、複数は配列（v1.5） | §13.3 |

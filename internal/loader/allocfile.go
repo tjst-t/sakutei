@@ -44,10 +44,18 @@ const AllocationFileHeader = "# sakutei:generated allocation-write-back"
 //	  - owner: "proxmox-vm/web-1#vmid"
 //	    value: 101
 //	    allocated_at: "2026-10-28T09:00:00Z"
+//	last:                       # reuse: false only (#206)
+//	  - block: "staff"          # omitted for a pool without blocks
+//	    value: 1003
 type AllocationFile struct {
 	SchemaVersion int
 	Pool          string
 	Allocations   []AllocationEntry
+	// Last is the last value handed out per block ("" for a pool without
+	// blocks) of a pool with reuse: false (#206).  It stays when the owner is
+	// released, so a store rebuilt from the file hands out above it and a
+	// released value never comes back.
+	Last map[string]int
 }
 
 // AllocationEntry is one allocation: owner holds value since allocated_at
@@ -98,9 +106,9 @@ func ParseAllocationFile(data []byte, path, pool string) (f AllocationFile, err 
 	}
 	for k := range tree {
 		switch k {
-		case "schema_version", "pool", "allocations":
+		case "schema_version", "pool", "allocations", "last":
 		default:
-			return AllocationFile{}, fmt.Errorf("%s: unknown key %q (schema_version, pool, allocations)", path, k)
+			return AllocationFile{}, fmt.Errorf("%s: unknown key %q (schema_version, pool, allocations, last)", path, k)
 		}
 	}
 	ver, ok := asInt(tree["schema_version"])
@@ -150,6 +158,28 @@ func ParseAllocationFile(data []byte, path, pool string) (f AllocationFile, err 
 		f.Allocations = append(f.Allocations, e)
 	}
 	sortAllocations(f.Allocations)
+	rawLast, isList := tree["last"].([]any)
+	if tree["last"] != nil && !isList {
+		return AllocationFile{}, fmt.Errorf("%s: last must be a list of { block, value }", path)
+	}
+	for i, item := range rawLast {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return AllocationFile{}, fmt.Errorf("%s: last[%d] must be an object", path, i)
+		}
+		block, _ := m["block"].(string)
+		v, ok := asInt(m["value"])
+		if !ok {
+			return AllocationFile{}, fmt.Errorf("%s: last[%d]: value is missing or not an integer", path, i)
+		}
+		if _, dup := f.Last[block]; dup {
+			return AllocationFile{}, fmt.Errorf("%s: last value of block %q appears twice", path, block)
+		}
+		if f.Last == nil {
+			f.Last = map[string]int{}
+		}
+		f.Last[block] = v
+	}
 	return f, nil
 }
 
@@ -200,6 +230,23 @@ func EmitAllocationFile(f AllocationFile) []byte {
 		fmt.Fprintf(&b, "    value: %d\n", e.Value)
 		if !e.AllocatedAt.IsZero() {
 			fmt.Fprintf(&b, "    allocated_at: %s\n", strconv.Quote(e.AllocatedAt.UTC().Format(time.RFC3339)))
+		}
+	}
+	if len(f.Last) > 0 {
+		blocks := make([]string, 0, len(f.Last))
+		for k := range f.Last {
+			blocks = append(blocks, k)
+		}
+		sort.Strings(blocks)
+		b.WriteString("# reuse: false の pool が最後に払った値。解放しても下がらず、store を作り直してもこの上から払います。\n")
+		b.WriteString("last:\n")
+		for _, k := range blocks {
+			if k == "" {
+				fmt.Fprintf(&b, "  - value: %d\n", f.Last[k])
+				continue
+			}
+			fmt.Fprintf(&b, "  - block: %s\n", strconv.Quote(k))
+			fmt.Fprintf(&b, "    value: %d\n", f.Last[k])
 		}
 	}
 	return []byte(b.String())

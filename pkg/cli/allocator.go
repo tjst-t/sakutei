@@ -107,7 +107,7 @@ type allocAdmin interface {
 	allocation.AllocationAuthority
 	ReleaseOwner(ctx context.Context, pool, owner string) (string, bool, error)
 	List(ctx context.Context, pool string) ([]allocator.Record, error)
-	Import(ctx context.Context, pool string, lo, hi int, entries []allocator.ImportEntry) (int, error)
+	ImportPool(ctx context.Context, pool string, spec allocation.PoolSpec, entries []allocator.ImportEntry, last map[string]int) (int, error)
 }
 
 // runAllocatorAdmin implements the thin admin CLI of the allocator (#116):
@@ -215,8 +215,11 @@ func runAllocatorAdmin(verb string, args []string) {
 			}
 		}
 		line := fmt.Sprintf("released value %s of pool %s from owner %s", value, *pool, *owner)
-		if !until.IsZero() {
+		switch {
+		case !until.IsZero():
 			line += fmt.Sprintf("; cooling down until %s, not reused before", until.UTC().Format(time.RFC3339))
+		case retired(ctx, auth, *pool, value):
+			line += "; retired (reuse: false): never handed out again"
 		}
 		fmt.Fprintln(os.Stdout, line)
 	case "list":
@@ -239,7 +242,10 @@ func runAllocatorAdmin(verb string, args []string) {
 			if r.Until != nil {
 				left = r.Until.Sub(now).Truncate(time.Second).String()
 			}
-			fmt.Fprintf(os.Stdout, "%-16s %-32s %-8d %-10s %s\n", r.Pool, owner, r.Value, r.State, left)
+			if r.State == allocator.StateRetired {
+				left = "-" // released at Until; never comes back
+			}
+			fmt.Fprintf(os.Stdout, "%-16s %-32s %-8d %-10s %s\n", allocation.BlockRef(r.Pool, r.Block), owner, r.Value, r.State, left)
 		}
 	}
 }
@@ -283,7 +289,9 @@ func runAllocatorImport(ctx context.Context, prefix string, auth allocAdmin, wb 
 		for _, e := range f.Allocations {
 			entries = append(entries, allocator.ImportEntry{Owner: e.Owner, Value: e.Value})
 		}
-		added, err := auth.Import(ctx, p.Name, p.Lo, p.Hi, entries)
+		// the pool's blocks and reuse: false come along, and so do the file's
+		// last values: a rebuilt store hands out above them (#206).
+		added, err := auth.ImportPool(ctx, p.Name, p.Spec(), entries, f.Last)
 		if errors.Is(err, allocation.ErrFenced) {
 			err = fmt.Errorf("%w (the store is served by `sakutei allocator`: import through --url)", err)
 		}
@@ -302,6 +310,21 @@ func runAllocatorImport(ctx context.Context, prefix string, auth allocAdmin, wb 
 		fmt.Fprintf(os.Stdout, "pool %s: imported %d allocation(s) from %s (%d already in the store)\n", p.Name, added, wb.FilePath(p.Name), len(entries)-added)
 	}
 	return code
+}
+
+// retired reports whether the released value of pool is retired (reuse:
+// false, #206).
+func retired(ctx context.Context, auth allocAdmin, pool, value string) bool {
+	recs, err := auth.List(ctx, pool)
+	if err != nil {
+		return false
+	}
+	for _, r := range recs {
+		if r.State == allocator.StateRetired && fmt.Sprint(r.Value) == value {
+			return true
+		}
+	}
+	return false
 }
 
 // cooldownUntil reads back when the released value of pool comes out of its

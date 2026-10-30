@@ -250,8 +250,8 @@ func splitFields(v any) (fields, allocs map[string]string, tmpls map[string]diff
 			return nil, nil, nil, fmt.Errorf("field %q: a map value must be { from_pool: <pool> } (allocation request, §19.1), optionally with template / kind", k)
 		}
 		for key := range sub {
-			if key != "from_pool" && key != "template" && key != "kind" {
-				return nil, nil, nil, fmt.Errorf("field %q: unknown key %q in the allocation request (from_pool / template / kind, §19.1・§19.8)", k, key)
+			if key != "from_pool" && key != "template" && key != "kind" && key != "block" {
+				return nil, nil, nil, fmt.Errorf("field %q: unknown key %q in the allocation request (from_pool / template / kind / block, §19.1・§19.8)", k, key)
 			}
 		}
 		tmpl, err := parseAllocationTemplate(sub)
@@ -262,7 +262,13 @@ func splitFields(v any) (fields, allocs map[string]string, tmpls map[string]diff
 			allocs = map[string]string{}
 		}
 		allocs[k] = strings.TrimSpace(pool)
-		if tmpl.Template != "" {
+		if raw, ok := sub["block"]; ok {
+			b, _ := raw.(string)
+			if tmpl.Block = strings.TrimSpace(b); tmpl.Block == "" {
+				return nil, nil, nil, fmt.Errorf("field %q: block must name a block of the pool (#206)", k)
+			}
+		}
+		if tmpl.Template != "" || tmpl.Block != "" {
 			if tmpls == nil {
 				tmpls = map[string]diff.AllocationTemplate{}
 			}

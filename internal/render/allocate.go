@@ -55,6 +55,8 @@ type PendingAllocation struct {
 	ID    core.ID
 	Field string
 	Pool  string
+	// Block is the block of Pool the request names (#206); "" when none.
+	Block string
 	Err   error
 	// FreeKnown is set by a LookupOnly RenderAllocations when the authority
 	// can count its free values (FreeCounter, #111).  Free is then the number
@@ -146,20 +148,24 @@ func ResolveAllocations(ctx context.Context, auth allocation.AllocationAuthority
 		}
 		for _, field := range sortedKeys(r.Allocations) {
 			pool := r.Allocations[field]
+			block := r.AllocationTemplates[field].Block
+			// a request from a block asks the authority for "pool/block"
+			// (#206); the owner stays the same either way.
+			ref := allocation.BlockRef(pool, block)
 			owner := AllocationOwner(r.ID, field)
 			var value string
 			var ok bool
 			var err error
 			if mode == AllocAllocate {
-				value, err = auth.Allocate(ctx, pool, owner)
+				value, err = auth.Allocate(ctx, ref, owner)
 				if err != nil {
-					fields[field] = WaitingPrefix + pool + ">"
-					res.Waiting = append(res.Waiting, PendingAllocation{ID: r.ID, Field: field, Pool: pool, Err: err})
+					fields[field] = WaitingPrefix + ref + ">"
+					res.Waiting = append(res.Waiting, PendingAllocation{ID: r.ID, Field: field, Pool: pool, Block: block, Err: err})
 					continue
 				}
 				ok = true
 			} else {
-				value, ok, err = auth.Lookup(ctx, pool, owner)
+				value, ok, err = auth.Lookup(ctx, ref, owner)
 				var reason error
 				switch {
 				case errors.Is(err, allocation.ErrUnknownPool):
@@ -170,11 +176,11 @@ func ResolveAllocations(ctx context.Context, auth allocation.AllocationAuthority
 					ok, err, reason = false, nil, err
 				}
 				if err != nil {
-					return AllocationResult{}, fmt.Errorf("render: look up %s in pool %q: %w", owner, pool, err)
+					return AllocationResult{}, fmt.Errorf("render: look up %s in pool %q: %w", owner, ref, err)
 				}
 				if !ok {
-					fields[field] = PendingPrefix + pool + ">"
-					res.Pending = append(res.Pending, PendingAllocation{ID: r.ID, Field: field, Pool: pool, Err: reason})
+					fields[field] = PendingPrefix + ref + ">"
+					res.Pending = append(res.Pending, PendingAllocation{ID: r.ID, Field: field, Pool: pool, Block: block, Err: reason})
 					continue
 				}
 			}
@@ -212,8 +218,9 @@ func sortedKeys(m map[string]string) []string {
 // PoolEnsurer is implemented by authorities whose pools are declared from
 // intent (`pools:`, §19.8) — e.g. the file authority.  External authorities
 // (NetBox, Infoblox) own their pool definitions and need not implement it.
+// The spec carries the range, the blocks and reuse: false (#206).
 type PoolEnsurer interface {
-	EnsurePool(name string, lo, hi int) error
+	DeclarePool(name string, spec allocation.PoolSpec) error
 }
 
 // FreeCounter is implemented by authorities that can say, without writing,
@@ -264,7 +271,7 @@ func RenderAllocations(ctx context.Context, auth allocation.AllocationAuthority,
 				if !PoolInClaim(p, claim) {
 					continue
 				}
-				if err := pe.EnsurePool(p.Name, p.Lo, p.Hi); err != nil {
+				if err := pe.DeclarePool(p.Name, p.Spec()); err != nil {
 					if errors.Is(err, allocation.ErrUnavailable) {
 						warnings = append(warnings, fmt.Sprintf("declare pool %q: %v (requests from it wait for the allocator)", p.Name, err))
 						continue
@@ -309,27 +316,38 @@ func countFree(ctx context.Context, auth allocation.AllocationAuthority, pools [
 	for _, p := range pools {
 		byName[p.Name] = p
 	}
+	// a block is counted on its own: its requests take from it alone (#206).
 	perPool := map[string]int{}
 	for _, pa := range pending {
-		perPool[pa.Pool]++
+		perPool[allocation.BlockRef(pa.Pool, pa.Block)]++
 	}
 	free := map[string]int{}
-	for name := range perPool {
+	for ref := range perPool {
+		name, block := allocation.SplitBlockRef(ref)
 		p, ok := byName[name]
 		if !ok {
 			continue
 		}
-		n, err := fc.FreeCount(ctx, name, p.Lo, p.Hi)
+		lo, hi := p.Lo, p.Hi
+		if block != "" {
+			b, ok := p.Block(block)
+			if !ok {
+				continue
+			}
+			lo, hi = b.Lo, b.Hi
+		}
+		n, err := fc.FreeCount(ctx, ref, lo, hi)
 		if err != nil {
 			continue
 		}
-		free[name] = n
+		free[ref] = n
 	}
 	for i := range pending {
-		if n, ok := free[pending[i].Pool]; ok {
+		ref := allocation.BlockRef(pending[i].Pool, pending[i].Block)
+		if n, ok := free[ref]; ok {
 			pending[i].FreeKnown = true
 			pending[i].Free = n
-			pending[i].PendingInPool = perPool[pending[i].Pool]
+			pending[i].PendingInPool = perPool[ref]
 		}
 	}
 }

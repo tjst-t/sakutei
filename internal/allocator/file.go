@@ -52,6 +52,9 @@ type entry struct {
 	Value     int        `json:"value"`
 	State     string     `json:"state"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"` // reservations only
+	// Block is the block the value was taken from (#206); "" for a pool
+	// without blocks.
+	Block string `json:"block,omitempty"`
 }
 
 // expired reports whether e is a reservation whose TTL has passed.
@@ -64,6 +67,15 @@ type pool struct {
 	Hi          int                  `json:"hi"`
 	Allocations map[string]entry     `json:"allocations"`
 	Cooldown    map[string]time.Time `json:"cooldown"` // value → usable again at
+	// Blocks are the pool's blocks (#206), name → inclusive range.
+	Blocks map[string][2]int `json:"blocks,omitempty"`
+	// NoReuse: values go upwards only (`reuse: false`, #206).  Last is the
+	// last value handed out per block ("" for the whole pool) — the high
+	// water mark the next value is taken above — and Retired the values
+	// released since, which never come back (released at).
+	NoReuse bool                 `json:"no_reuse,omitempty"`
+	Last    map[string]int       `json:"last,omitempty"`
+	Retired map[string]time.Time `json:"retired,omitempty"`
 }
 
 type store struct {
@@ -167,31 +179,125 @@ func (a *FileAuthority) fence(s *store) error {
 	return nil
 }
 
-// EnsurePool declares pool name with the inclusive range [lo, hi], creating
-// it or changing its range.  A range change that would leave an existing
-// allocation outside the range is refused (the value is in use).
+// EnsurePool declares pool name with the inclusive range [lo, hi] and no
+// blocks (DeclarePool).
 func (a *FileAuthority) EnsurePool(name string, lo, hi int) error {
+	return a.DeclarePool(name, allocation.PoolSpec{Lo: lo, Hi: hi})
+}
+
+// DeclarePool declares pool name as spec says, creating it or changing it.
+// A change that would leave an existing allocation outside the range, or
+// outside the block it was taken from, is refused (the value is in use).
+// Turning reuse off starts the last value of each block at the highest
+// value it holds or cools down: nothing below that is handed out again.
+func (a *FileAuthority) DeclarePool(name string, spec allocation.PoolSpec) error {
 	return a.update(func(s *store) error {
 		p, ok := s.Pools[name]
 		if !ok {
-			s.Pools[name] = &pool{Lo: lo, Hi: hi, Allocations: map[string]entry{}, Cooldown: map[string]time.Time{}}
-			return nil
+			p = newPool()
 		}
-		for owner, e := range p.Allocations {
-			if e.Value < lo || e.Value > hi {
-				return fmt.Errorf("allocator: pool %q: new range %d-%d would exclude %d, allocated to %q", name, lo, hi, e.Value, owner)
-			}
+		if err := p.declare(name, spec); err != nil {
+			return err
 		}
-		p.Lo, p.Hi = lo, hi
+		s.Pools[name] = p
 		return nil
 	})
 }
 
+func newPool() *pool {
+	return &pool{Allocations: map[string]entry{}, Cooldown: map[string]time.Time{}}
+}
+
+// declare sets the pool's spec, refusing one that would exclude a value in
+// use.
+func (p *pool) declare(name string, spec allocation.PoolSpec) error {
+	blocks := map[string][2]int{}
+	for _, b := range spec.Blocks {
+		blocks[b.Name] = [2]int{b.Lo, b.Hi}
+	}
+	for owner, e := range p.Allocations {
+		if e.Value < spec.Lo || e.Value > spec.Hi {
+			return fmt.Errorf("allocator: pool %q: new range %d-%d would exclude %d, allocated to %q", name, spec.Lo, spec.Hi, e.Value, owner)
+		}
+		if e.Block == "" {
+			continue
+		}
+		r, ok := blocks[e.Block]
+		if !ok {
+			return fmt.Errorf("allocator: pool %q: block %q would go, but %d of it is allocated to %q", name, e.Block, e.Value, owner)
+		}
+		if e.Value < r[0] || e.Value > r[1] {
+			return fmt.Errorf("allocator: pool %q: block %q's new range %d-%d would exclude %d, allocated to %q", name, e.Block, r[0], r[1], e.Value, owner)
+		}
+	}
+	p.Lo, p.Hi = spec.Lo, spec.Hi
+	p.Blocks = nil
+	if len(blocks) > 0 {
+		p.Blocks = blocks
+	}
+	if spec.NoReuse && !p.NoReuse {
+		// from now on upwards only: start each block above what it holds or
+		// cools down (the cooldown ends, the value still stays behind).
+		if p.Last == nil {
+			p.Last = map[string]int{}
+		}
+		held := make([]int, 0, len(p.Allocations)+len(p.Cooldown))
+		for _, e := range p.Allocations {
+			held = append(held, e.Value)
+		}
+		for v := range p.Cooldown {
+			if n, err := strconv.Atoi(v); err == nil {
+				held = append(held, n)
+			}
+		}
+		for _, v := range held {
+			b := p.blockOf(v)
+			if last, ok := p.Last[b]; !ok || v > last {
+				p.Last[b] = v
+			}
+		}
+	}
+	p.NoReuse = spec.NoReuse
+	return nil
+}
+
+// blockOf returns the block holding v ("" when the pool has no blocks or
+// none holds v).
+func (p *pool) blockOf(v int) string {
+	for name, r := range p.Blocks {
+		if v >= r[0] && v <= r[1] {
+			return name
+		}
+	}
+	return ""
+}
+
+// rangeOf returns the range a new value of block is taken from: the block's,
+// or the pool's when block is "".  A pool with blocks needs one named.
+func (p *pool) rangeOf(poolName, block string) (int, int, error) {
+	if block == "" {
+		if len(p.Blocks) > 0 {
+			return 0, 0, fmt.Errorf("%w: pool %q is split into blocks; a request names one (#206)", allocation.ErrUnknownPool, poolName)
+		}
+		return p.Lo, p.Hi, nil
+	}
+	r, ok := p.Blocks[block]
+	if !ok {
+		return 0, 0, fmt.Errorf("%w: pool %q has no block %q", allocation.ErrUnknownPool, poolName, block)
+	}
+	return r[0], r[1], nil
+}
+
 // Allocate implements allocation.AllocationAuthority.
+//
+// poolName may name a block of the pool ("pool/block",
+// allocation.BlockRef, #206): a new value is then taken from the block alone.
+// An owner already holding a value keeps it (idempotent), whichever block it
+// names now.
 func (a *FileAuthority) Allocate(_ context.Context, poolName, owner string) (string, error) {
 	var value int
 	err := a.update(func(s *store) error {
-		p, err := s.pool(poolName)
+		p, block, err := s.blockPool(poolName)
 		if err != nil {
 			return err
 		}
@@ -203,11 +309,11 @@ func (a *FileAuthority) Allocate(_ context.Context, poolName, owner string) (str
 			value = e.Value
 			return nil
 		}
-		v, err := p.free(now)
+		v, err := p.take(poolName, block, now)
 		if err != nil {
-			return fmt.Errorf("%w: %q", err, poolName)
+			return err
 		}
-		p.Allocations[owner] = entry{Value: v, State: stateAllocated}
+		p.Allocations[owner] = entry{Value: v, State: stateAllocated, Block: block}
 		value = v
 		return nil
 	})
@@ -221,7 +327,7 @@ func (a *FileAuthority) Allocate(_ context.Context, poolName, owner string) (str
 func (a *FileAuthority) Reserve(_ context.Context, poolName, owner string, ttl time.Duration) (string, error) {
 	var value int
 	err := a.update(func(s *store) error {
-		p, err := s.pool(poolName)
+		p, block, err := s.blockPool(poolName)
 		if err != nil {
 			return err
 		}
@@ -236,12 +342,12 @@ func (a *FileAuthority) Reserve(_ context.Context, poolName, owner string, ttl t
 			value = e.Value
 			return nil
 		}
-		v, err := p.free(now)
+		v, err := p.take(poolName, block, now)
 		if err != nil {
-			return fmt.Errorf("%w: %q", err, poolName)
+			return err
 		}
 		exp := now.Add(ttl)
-		p.Allocations[owner] = entry{Value: v, State: stateReserved, ExpiresAt: &exp}
+		p.Allocations[owner] = entry{Value: v, State: stateReserved, ExpiresAt: &exp, Block: block}
 		value = v
 		return nil
 	})
@@ -270,8 +376,9 @@ func (a *FileAuthority) Confirm(_ context.Context, poolName, owner string) error
 }
 
 // Release implements allocation.AllocationAuthority.  The value enters the
-// cooldown and is not handed out again before it ends.  Releasing an owner
-// that holds nothing is a no-op.
+// cooldown and is not handed out again before it ends — or, in a pool with
+// reuse: false, is retired and never handed out again (#206).  Releasing an
+// owner that holds nothing is a no-op.
 func (a *FileAuthority) Release(ctx context.Context, poolName, owner string) error {
 	_, _, err := a.ReleaseOwner(ctx, poolName, owner)
 	return err
@@ -294,6 +401,13 @@ func (a *FileAuthority) ReleaseOwner(_ context.Context, poolName, owner string) 
 		}
 		delete(p.Allocations, owner)
 		value, released = strconv.Itoa(e.Value), true
+		if p.NoReuse {
+			if p.Retired == nil {
+				p.Retired = map[string]time.Time{}
+			}
+			p.Retired[value] = a.now()
+			return nil
+		}
 		p.Cooldown[value] = a.now().Add(a.cooldown())
 		return nil
 	})
@@ -328,9 +442,12 @@ func (a *FileAuthority) Lookup(_ context.Context, poolName, owner string) (strin
 }
 
 // FreeCount reports how many values of the range lo-hi pool could still hand
-// out: neither allocated, reserved nor cooling down.  The range is the one the
-// intent declares (EnsurePool sets it before the next Allocate), so a pool not
-// created yet has the whole range free.  It never writes (plan / status, #111).
+// out: neither allocated, reserved nor cooling down (nor, with reuse: false,
+// at or below the last value handed out).  The range is the one the intent
+// declares (EnsurePool sets it before the next Allocate), so a pool not
+// created yet has the whole range free.  poolName may name a block
+// ("pool/block", #206), whose range lo-hi then is.  It never writes (plan /
+// status, #111).
 func (a *FileAuthority) FreeCount(_ context.Context, poolName string, lo, hi int) (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -343,7 +460,8 @@ func (a *FileAuthority) FreeCount(_ context.Context, poolName string, lo, hi int
 	if err != nil {
 		return 0, err
 	}
-	p, ok := s.Pools[poolName]
+	base, block := allocation.SplitBlockRef(poolName)
+	p, ok := s.Pools[base]
 	if !ok {
 		return hi - lo + 1, nil
 	}
@@ -351,7 +469,7 @@ func (a *FileAuthority) FreeCount(_ context.Context, poolName string, lo, hi int
 	p.expire(now)
 	used := p.used(now)
 	n := 0
-	for v := lo; v <= hi; v++ {
+	for v := p.start(block, lo); v <= hi; v++ {
 		if !used[v] {
 			n++
 		}
@@ -437,12 +555,28 @@ func (a *FileAuthority) save(s *store) error {
 	return nil
 }
 
+// pool returns the pool name refers to.  name may name a block
+// ("pool/block", #206): owners are unique across the pool's blocks, so
+// Lookup, Confirm and Release need no more than the pool.
 func (s *store) pool(name string) (*pool, error) {
-	p, ok := s.Pools[name]
+	p, _, err := s.blockPool(name)
+	return p, err
+}
+
+// blockPool returns the pool and the block name refers to.  A block the pool
+// does not declare is an unknown pool.
+func (s *store) blockPool(name string) (*pool, string, error) {
+	base, block := allocation.SplitBlockRef(name)
+	p, ok := s.Pools[base]
 	if !ok {
-		return nil, fmt.Errorf("%w: %q", allocation.ErrUnknownPool, name)
+		return nil, "", fmt.Errorf("%w: %q", allocation.ErrUnknownPool, base)
 	}
-	return p, nil
+	if block != "" {
+		if _, ok := p.Blocks[block]; !ok {
+			return nil, "", fmt.Errorf("%w: pool %q has no block %q", allocation.ErrUnknownPool, base, block)
+		}
+	}
+	return p, block, nil
 }
 
 // expire drops reservations whose TTL has passed and cooldowns that ended.
@@ -461,23 +595,77 @@ func (p *pool) expire(now time.Time) {
 	}
 }
 
-// free returns the lowest value in range that is neither allocated, reserved
-// nor cooling down.  Lowest-first keeps allocation deterministic.
-func (p *pool) free(now time.Time) (int, error) {
+// take hands out a new value of block (the whole pool when ""), recording it
+// as the block's last value in a pool with reuse: false.
+func (p *pool) take(poolName, block string, now time.Time) (int, error) {
+	v, err := p.free(poolName, block, now)
+	if err != nil {
+		return 0, err
+	}
+	if p.NoReuse {
+		if p.Last == nil {
+			p.Last = map[string]int{}
+		}
+		p.Last[block] = v
+	}
+	return v, nil
+}
+
+// free returns the lowest value of block's range (the pool's when "") that
+// is neither allocated, reserved nor cooling down — and, with reuse: false,
+// above the block's last value.  Lowest-first keeps allocation
+// deterministic.  An exhausted pool or block says why.
+func (p *pool) free(poolName, block string, now time.Time) (int, error) {
+	lo, hi, err := p.rangeOf(poolName, block)
+	if err != nil {
+		return 0, err
+	}
+	start := p.start(block, lo)
 	used := p.used(now)
-	for v := p.Lo; v <= p.Hi; v++ {
+	for v := start; v <= hi; v++ {
 		if !used[v] {
 			return v, nil
 		}
 	}
-	return 0, allocation.ErrPoolExhausted
+	where := fmt.Sprintf("pool %q", poolName)
+	if block != "" {
+		base, _ := allocation.SplitBlockRef(poolName)
+		where = fmt.Sprintf("block %q of pool %q", block, base)
+	}
+	if p.NoReuse {
+		last := "none yet"
+		if l, ok := p.Last[block]; ok {
+			last = strconv.Itoa(l)
+		}
+		return 0, fmt.Errorf("%w: %s (range %d-%d): the last value handed out is %s, and with reuse: false no value at or below it is handed out again; widen the range or declare a new block",
+			allocation.ErrPoolExhausted, where, lo, hi, last)
+	}
+	return 0, fmt.Errorf("%w: %s (range %d-%d): every value is allocated, reserved or cooling down", allocation.ErrPoolExhausted, where, lo, hi)
 }
 
-// used is the set of values allocated, reserved or cooling down at now.
+// start is the lowest value block may still hand out: lo, or above the
+// block's last value with reuse: false.
+func (p *pool) start(block string, lo int) int {
+	if !p.NoReuse {
+		return lo
+	}
+	if last, ok := p.Last[block]; ok && last+1 > lo {
+		return last + 1
+	}
+	return lo
+}
+
+// used is the set of values allocated, reserved, cooling down or retired at
+// now.
 func (p *pool) used(now time.Time) map[int]bool {
-	used := make(map[int]bool, len(p.Allocations)+len(p.Cooldown))
+	used := make(map[int]bool, len(p.Allocations)+len(p.Cooldown)+len(p.Retired))
 	for _, e := range p.Allocations {
 		used[e.Value] = true
+	}
+	for v := range p.Retired {
+		if n, err := strconv.Atoi(v); err == nil {
+			used[n] = true
+		}
 	}
 	for v, until := range p.Cooldown {
 		if now.Before(until) {
@@ -508,12 +696,25 @@ var ErrImportConflict = errors.New("allocator: import conflicts with the store")
 // is a conflict.  On any conflict nothing is written and every conflict is
 // reported: the store is never made to agree by guessing which side is right.
 // It returns how many entries were added.
-func (a *FileAuthority) Import(_ context.Context, poolName string, lo, hi int, entries []ImportEntry) (int, error) {
+func (a *FileAuthority) Import(ctx context.Context, poolName string, lo, hi int, entries []ImportEntry) (int, error) {
+	return a.ImportPool(ctx, poolName, allocation.PoolSpec{Lo: lo, Hi: hi}, entries, nil)
+}
+
+// ImportPool is Import of a pool declared as spec (blocks, reuse: false,
+// #206).  An entry's block is the one its value lies in; a value in no block
+// of a pool with blocks is a conflict, as is a value the store has retired
+// (released with reuse: false).  last is the file's last value per block
+// ("" for the whole pool): the store's last value becomes the highest of its
+// own, the file's and the values imported, so a store rebuilt from the file
+// never hands out a released value again.  A last value of a block the pool
+// does not declare is a conflict.
+func (a *FileAuthority) ImportPool(_ context.Context, poolName string, spec allocation.PoolSpec, entries []ImportEntry, last map[string]int) (int, error) {
+	lo, hi := spec.Lo, spec.Hi
 	added := 0
 	err := a.update(func(s *store) error {
 		p, ok := s.Pools[poolName]
 		if !ok {
-			p = &pool{Lo: lo, Hi: hi, Allocations: map[string]entry{}, Cooldown: map[string]time.Time{}}
+			p = newPool()
 		}
 		now := a.now()
 		p.expire(now)
@@ -526,6 +727,10 @@ func (a *FileAuthority) Import(_ context.Context, poolName string, lo, hi int, e
 		for _, in := range entries {
 			if in.Value < lo || in.Value > hi {
 				conflicts = append(conflicts, fmt.Sprintf("%s: value %d is outside the range %d-%d", in.Owner, in.Value, lo, hi))
+				continue
+			}
+			if _, ok := spec.BlockOf(in.Value); !ok {
+				conflicts = append(conflicts, fmt.Sprintf("%s: value %d lies in no block of the pool", in.Owner, in.Value))
 				continue
 			}
 			if e, ok := p.Allocations[in.Owner]; ok {
@@ -542,20 +747,47 @@ func (a *FileAuthority) Import(_ context.Context, poolName string, lo, hi int, e
 				conflicts = append(conflicts, fmt.Sprintf("%s: value %d was released and cools down until %s in the store", in.Owner, in.Value, until.UTC().Format(time.RFC3339)))
 				continue
 			}
+			if at, ok := p.Retired[strconv.Itoa(in.Value)]; ok {
+				conflicts = append(conflicts, fmt.Sprintf("%s: value %d was released at %s and is retired in the store (reuse: false)", in.Owner, in.Value, at.UTC().Format(time.RFC3339)))
+				continue
+			}
 			add = append(add, in)
+		}
+		blocks := map[string]bool{}
+		for _, b := range spec.Blocks {
+			blocks[b.Name] = true
+		}
+		for b := range last {
+			if (b == "" && len(blocks) > 0) || (b != "" && !blocks[b]) {
+				conflicts = append(conflicts, fmt.Sprintf("last value %d of block %q: the pool declares no such block", last[b], b))
+			}
 		}
 		if len(conflicts) > 0 {
 			sort.Strings(conflicts)
 			return fmt.Errorf("%w: pool %q: %s", ErrImportConflict, poolName, strings.Join(conflicts, "; "))
 		}
-		for owner, e := range p.Allocations {
-			if e.Value < lo || e.Value > hi {
-				return fmt.Errorf("allocator: pool %q: range %d-%d would exclude %d, allocated to %q", poolName, lo, hi, e.Value, owner)
-			}
+		if err := p.declare(poolName, spec); err != nil {
+			return err
 		}
-		p.Lo, p.Hi = lo, hi
 		for _, in := range add {
-			p.Allocations[in.Owner] = entry{Value: in.Value, State: stateAllocated}
+			b, _ := spec.BlockOf(in.Value)
+			p.Allocations[in.Owner] = entry{Value: in.Value, State: stateAllocated, Block: b}
+		}
+		if p.NoReuse {
+			if p.Last == nil {
+				p.Last = map[string]int{}
+			}
+			raise := func(b string, v int) {
+				if cur, ok := p.Last[b]; !ok || v > cur {
+					p.Last[b] = v
+				}
+			}
+			for b, v := range last {
+				raise(b, v)
+			}
+			for _, e := range p.Allocations {
+				raise(e.Block, e.Value)
+			}
 		}
 		s.Pools[poolName] = p
 		added = len(add)
@@ -567,24 +799,35 @@ func (a *FileAuthority) Import(_ context.Context, poolName string, lo, hi int, e
 	return added, nil
 }
 
-// StateCooldown is the Record state besides allocated and reserved: a
-// released value cooling down (§19.5 (b)).  It has no owner any more.
-const StateCooldown = "cooldown"
+// The Record states besides allocated and reserved.  None has an owner.
+const (
+	// StateCooldown: a released value cooling down (§19.5 (b)).
+	StateCooldown = "cooldown"
+	// StateRetired: a value released in a pool with reuse: false, never
+	// handed out again (#206).  Until is when it was released.
+	StateRetired = "retired"
+	// StateLast: the last value a block of a pool with reuse: false handed
+	// out (#206) — the next one is taken above it.
+	StateLast = "last"
+)
 
 // Record is one row of List: a value in use (allocated or reserved, with its
-// owner) or cooling down.  Until is when a reservation expires or a cooldown
-// ends.
+// owner), cooling down or retired, or the last value of a block.  Until is
+// when a reservation expires or a cooldown ends (when a retired value was
+// released).  Block is the block the value lies in (#206).
 type Record struct {
 	Pool  string     `json:"pool"`
+	Block string     `json:"block,omitempty"`
 	Owner string     `json:"owner,omitempty"`
 	Value int        `json:"value"`
 	State string     `json:"state"`
 	Until *time.Time `json:"until,omitempty"`
 }
 
-// List returns the records of poolName (every pool when empty), sorted by
-// pool and value.  Expired reservations and ended cooldowns are left out.  It
-// never writes (`sakutei allocator list`, #116).
+// List returns the records of poolName (every pool when empty; a block ref
+// gives its pool's), sorted by pool and value.  Expired reservations and
+// ended cooldowns are left out.  It never writes (`sakutei allocator list`,
+// #116).
 func (a *FileAuthority) List(_ context.Context, poolName string) ([]Record, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -602,7 +845,8 @@ func (a *FileAuthority) List(_ context.Context, poolName string) ([]Record, erro
 		if _, err := s.pool(poolName); err != nil {
 			return nil, err
 		}
-		names = append(names, poolName)
+		base, _ := allocation.SplitBlockRef(poolName)
+		names = append(names, base)
 	} else {
 		for n := range s.Pools {
 			names = append(names, n)
@@ -618,7 +862,20 @@ func (a *FileAuthority) List(_ context.Context, poolName string) ([]Record, erro
 			if e.expired(now) {
 				continue
 			}
-			rows = append(rows, Record{Pool: n, Owner: owner, Value: e.Value, State: e.State, Until: e.ExpiresAt})
+			rows = append(rows, Record{Pool: n, Block: e.Block, Owner: owner, Value: e.Value, State: e.State, Until: e.ExpiresAt})
+		}
+		for v, at := range p.Retired {
+			n2, err := strconv.Atoi(v)
+			if err != nil {
+				continue
+			}
+			u := at
+			rows = append(rows, Record{Pool: n, Block: p.blockOf(n2), Value: n2, State: StateRetired, Until: &u})
+		}
+		if p.NoReuse {
+			for b, v := range p.Last {
+				rows = append(rows, Record{Pool: n, Block: b, Value: v, State: StateLast})
+			}
 		}
 		for v, until := range p.Cooldown {
 			n2, err := strconv.Atoi(v)
@@ -626,11 +883,14 @@ func (a *FileAuthority) List(_ context.Context, poolName string) ([]Record, erro
 				continue
 			}
 			u := until
-			rows = append(rows, Record{Pool: n, Value: n2, State: StateCooldown, Until: &u})
+			rows = append(rows, Record{Pool: n, Block: p.blockOf(n2), Value: n2, State: StateCooldown, Until: &u})
 		}
 		sort.Slice(rows, func(i, j int) bool {
 			if rows[i].Value != rows[j].Value {
 				return rows[i].Value < rows[j].Value
+			}
+			if rows[i].State != rows[j].State {
+				return rows[i].State < rows[j].State
 			}
 			return rows[i].Owner < rows[j].Owner
 		})

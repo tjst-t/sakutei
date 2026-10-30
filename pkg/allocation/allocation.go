@@ -27,6 +27,7 @@ package allocation
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -81,3 +82,61 @@ var (
 	// stopped and reported, never resolved by preferring either side.
 	ErrWriteBackHeld = errors.New("allocation: held by the write-back file")
 )
+
+// PoolSpec is a pool as the intent declares it (`pools:`, §19.8): the
+// inclusive range Lo-Hi, the blocks it is split into (#206) and whether a
+// value handed out is never handed out again (`reuse: false`, #206).
+type PoolSpec struct {
+	Lo     int     `json:"lo"`
+	Hi     int     `json:"hi"`
+	Blocks []Block `json:"blocks,omitempty"`
+	// NoReuse makes the pool hand out values upwards only: the authority
+	// records the last value handed out (per block) and never goes back to
+	// it or below, so a released value is never handed out again.  The
+	// cooldown of a release (§19.5 (b)) has no meaning then.
+	NoReuse bool `json:"no_reuse,omitempty"`
+}
+
+// Block is a named sub-range of a pool (`blocks: [{ name, range }]`, #206),
+// e.g. the user IDs of one use.  A request naming the block gets a value
+// from it alone; blocks of a pool are disjoint and lie inside its range.
+type Block struct {
+	Name string `json:"name"`
+	Lo   int    `json:"lo"`
+	Hi   int    `json:"hi"`
+}
+
+// BlockOf returns the block of s holding v ("" and true when s has no
+// blocks; false when it has some and none holds v).
+func (s PoolSpec) BlockOf(v int) (string, bool) {
+	if len(s.Blocks) == 0 {
+		return "", v >= s.Lo && v <= s.Hi
+	}
+	for _, b := range s.Blocks {
+		if v >= b.Lo && v <= b.Hi {
+			return b.Name, true
+		}
+	}
+	return "", false
+}
+
+// BlockSeparator joins a pool and a block into the pool argument of the
+// AllocationAuthority methods: a request from block "staff" of pool
+// "user-ids" asks for "user-ids/staff" (#206).  Pool and block names never
+// hold it.
+const BlockSeparator = "/"
+
+// BlockRef is the pool argument for block of pool (pool itself when block
+// is empty).
+func BlockRef(pool, block string) string {
+	if block == "" {
+		return pool
+	}
+	return pool + BlockSeparator + block
+}
+
+// SplitBlockRef is BlockRef reversed.
+func SplitBlockRef(ref string) (pool, block string) {
+	pool, block, _ = strings.Cut(ref, BlockSeparator)
+	return pool, block
+}
