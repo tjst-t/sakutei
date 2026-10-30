@@ -316,12 +316,31 @@ func TestChaosPlannedChange_ReimageNotCountedAsDelete(t *testing.T) {
 		"--max-destructive-per-cycle=1", "--max-destructive-per-window=1", "--window-duration=1h")
 
 	// keep-other + 5 gen2 = 6, and stray-1 deleted by the normal budget.
-	end := time.Now().Add(10 * time.Second)
-	for time.Now().Before(end) {
-		if countResourcesInState(t, statePath) == 6 && !resourceExistsInState(t, statePath, "stray-1") {
-			break
+	// Wait for exactly that reality (keep-other + the 5 gen1 is also 6
+	// without stray-1, while the re-images are still in flight), then for a
+	// cycle that found nothing to do: the daemon's Applies rewrite the state
+	// file, and one still in flight would overwrite the stray-2 added below.
+	settled := func() bool {
+		if countResourcesInState(t, statePath) != 6 || resourceExistsInState(t, statePath, "stray-1") {
+			return false
 		}
+		for i := 1; i <= 5; i++ {
+			if resourceExistsInState(t, statePath, fmt.Sprintf("node-%02d-gen1", i)) ||
+				!resourceExistsInState(t, statePath, fmt.Sprintf("node-%02d-gen2", i)) {
+				return false
+			}
+		}
+		return true
+	}
+	end := time.Now().Add(10 * time.Second)
+	for time.Now().Before(end) && !settled() {
 		time.Sleep(20 * time.Millisecond)
+	}
+	if settled() {
+		converged := countLog(logPath, "converged (no changes)")
+		if !waitForLogFileCount(logPath, "converged (no changes)", converged+1, 10*time.Second) {
+			t.Fatalf("[AC-39-3] the daemon did not settle after the re-images; log:\n%s", readFileString(logPath))
+		}
 	}
 	for i := 1; i <= 5; i++ {
 		if resourceExistsInState(t, statePath, fmt.Sprintf("node-%02d-gen1", i)) {
