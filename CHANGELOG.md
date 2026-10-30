@@ -4,6 +4,10 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 ## 未リリース
 
+## v2.12.0（2026-10-30）
+
+nftables の confirm の先に netconf と同じ `observe:`・`check:` を書けるようにし、採番に区切った範囲（block）と再利用しない設定を足した版。受け入れテストがまれに落ちる不具合（テスト用の provider の排他）も直した。設計書は v3.75 → v3.77（`docs/architecture/CHANGELOG-v3.76.md`・`v3.77.md`）。
+
 ### 追加
 
 - **nftables の confirm の先に `observe:` と `check:`**（#214）：nftables の base chain の欄 `confirm` に、netconf と同じ書き方で別のリソースの観測 `observe:<provider>/<scope>/<id> [expect:{…}]`（intent が宣言するリソースを、その provider で観測用の資格とふだんの範囲のまま読み、期待する欄の値の部分集合になるまで繰り返す）と、名前で登録した確かめの関数 `check:<name>`（`pkg/cli.WithConfirmCheck`、network_policy の realizer の `Output.Checks`）を書けるようにした。どちらもいつも変えたあと（到達の先に届いてから、巻き戻しの上限の半分の中）だけ確かめ、通らなければ仕掛けを取り消さず元の規則に戻す。「全部に `after:`」の決まりは到達の先（`self`・`ssh://`・`tcp://`）だけで数え、到達の先が 1 つも無い confirm は読み込みで断る。読み方・繰り返し・時間の上限・知らせ方は netconf と共通の口（`internal/confirmafter`）にした。統合試験（`make integration-nftables` の `TestNFTablesConfirmObserve`）を足した。設計書 v3.77。
