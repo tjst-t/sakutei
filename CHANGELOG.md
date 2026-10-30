@@ -4,6 +4,10 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 ## 未リリース
 
+## v2.10.0（2026-10-30）
+
+Workflow・NETCONF・proxmox-vm を使ってみて分かった足りない点を埋め、本番の構成の手引きを足す版。done の Workflow の対象を一回性の reconcile でも宣言どおりに保ち、Workflow を進めない常駐を静かにして run と手を監査の鎖に残す。NETCONF に複数の台をまとめて確定する `commit_group` と、確定の前の確かめ `observe:`・`check:` を足し、宣言の知らない欄を読み込みで断るようにした。proxmox-vm は作り直すときにデータのディスクを引き継げるようになった。provider の版を上げるときの注意と本番の構成の手引きを足した。設計書は v3.68 → v3.73（`docs/architecture/CHANGELOG-v3.69.md`〜`v3.73.md`）。
+
 ### 追加
 
 - **NETCONF の confirm の先に `observe:` と `check:`**（#200）：netconf のリソースの欄 `confirm` に、`self`（機器そのもの）のほか、別のリソースの観測 `observe:<provider>/<scope>/<id> [expect:{…}]`（期待する欄の値の部分集合。intent が宣言するリソースを、その provider で観測用の資格とふだんの範囲のまま読む）と、名前で登録した確かめの関数 `check:<name>`（`pkg/cli.WithConfirmCheck`、network_policy の realizer の `Output.Checks`）を書けるようにした。どちらも変えたあと（commit confirmed のあと、確定の前）に時間の上限の中で繰り返し確かめ、通らなければ確定しない。`self` の無い confirm は読み込みで断る。commit_group では全部の台の commit confirmed のあとに全部の台の observe:・check: を待つ。netopeer2 2 台の統合試験（`make integration-netconf`）を足した。設計書 v3.73。
