@@ -26,7 +26,10 @@
 // ciupgrade: false で作った VM の設定が 0 で、手で変えると戻る（#170）、
 // NIC の firewall・mtu と VM の FW の options が書いたときだけ合わさり、手で変えると戻る（#196）、
 // network_policy の実現先 proxmox-fw の許可が VM の FW の規則に口と向き（入りと出）で入り、comment に
-// reason が出て、手の規則は消さずに status の unmanaged に出る（#197）。
+// reason が出て、手の規則は消さずに status の unmanaged に出る（#197）、
+// 作り直しで keep のデータのディスクを新しい VM に付け替えて中身が残り、keep でない
+// ディスクは前の VM と一緒に消え、外したままの volume が unmanaged に出て、承認が
+// 無ければ付け替えない（#204）。
 //
 // テストは build tag integration_proxmox の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-proxmox

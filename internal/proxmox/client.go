@@ -511,9 +511,26 @@ func (c *Client) PowerAction(ctx context.Context, node string, vmid int, action 
 	return c.task(ctx, http.MethodPost, vmPath(node, vmid)+"/status/"+action, params)
 }
 
-// Destroy は VM を消す（UPID を返す）。ディスクと、ジョブ・HA の設定も消す。
-func (c *Client) Destroy(ctx context.Context, node string, vmid int) (string, error) {
-	return c.task(ctx, http.MethodDelete, vmPath(node, vmid), url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}})
+// Destroy は VM を消す（UPID を返す）。設定にあるディスク（unused を含む）と、
+// ジョブ・HA の設定も消す。unreferenced なら、設定に無いがその vmid の名前の
+// volume も消す（destroy-unreferenced-disks）。
+func (c *Client) Destroy(ctx context.Context, node string, vmid int, unreferenced bool) (string, error) {
+	params := url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"0"}}
+	if unreferenced {
+		params.Set("destroy-unreferenced-disks", "1")
+	}
+	return c.task(ctx, http.MethodDelete, vmPath(node, vmid), params)
+}
+
+// MoveDiskToVM は vmid の disk（slot か unusedN）を targetVMID の targetDisk に
+// 付け替える（Proxmox の reassign、POST /move_disk の target-vmid。UPID を
+// 返す、Backlog #204）。volume は消さずに targetVMID の名前に変わり、元の VM の
+// 設定から外れる。2 つの VM は同じノードにあること、元の VM が走っていれば
+// disk は unusedN であること（Proxmox の決まり）。
+func (c *Client) MoveDiskToVM(ctx context.Context, node string, vmid int, disk string, targetVMID int, targetDisk string) (string, error) {
+	return c.task(ctx, http.MethodPost, vmPath(node, vmid)+"/move_disk", url.Values{
+		"disk": {disk}, "target-vmid": {strconv.Itoa(targetVMID)}, "target-disk": {targetDisk},
+	})
 }
 
 // SetPool は VM を pool に入れる（ほかの pool にあれば移す、allow-move）。

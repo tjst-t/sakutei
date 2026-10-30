@@ -21,10 +21,11 @@ package proxmox
 //     大きい単位（T・G・M・K、どれでも割り切れなければバイト数）。
 //   - メモリ: MiB の整数。宣言は "2048"（MiB）・"2048M"・"2G"。観測は
 //     "2048" か "current=2048,..."（新しい版の書き方）。
-//   - ディスク: "<slot> storage=<storage> size=<大きさ>" を ", " でつなぐ（slot
-//     の順）。設定の "local-lvm:vm-100-disk-0,iothread=1,size=32G" から storage
-//     と size だけを取る。CD-ROM（media=cdrom）・cloud-init のドライブ・
-//     unused は入れない。
+//   - ディスク: "<slot> storage=<storage> size=<大きさ> [keep]" を ", " でつなぐ
+//     （slot の順）。設定の "local-lvm:vm-100-disk-0,iothread=1,size=32G" から
+//     storage と size だけを取り（volume の名前は入れない：付け替えで変わる）、
+//     keep は VM の tags の印（KeepTag）があるときだけ出す。CD-ROM
+//     （media=cdrom）・cloud-init のドライブ・unused は入れない。
 //   - NIC: "<slot> bridge=<bridge> [vlan=<tag>] mac=<mac> model=<model>
 //     [firewall=1] [mtu=<mtu>]"。MAC は小文字。設定の
 //     "virtio=BC:24:11:..,bridge=vmbr0,tag=10,firewall=1" から。firewall は 1 の
@@ -181,24 +182,87 @@ func entryKV(e string, allowed ...string) (string, map[string]string, error) {
 
 // ---- ディスク ----
 
-// Disk は 1 つのディスク（slot・ストレージ・大きさ）。
+// Disk は 1 つのディスク（slot・ストレージ・大きさ、Backlog #204 の volume・keep）。
 type Disk struct {
 	Slot    string
 	Storage string
 	Size    int64
+	// Volume は宣言の volume の ID（"<storage>:<volume>"）：「この slot が空なら
+	// この既にある volume を付ける」（Backlog #204）。観測では空。
+	Volume string
+	// Keep は「消さない」の印（Backlog #204）。VM の tags の KeepTag(slot)。
+	Keep bool
 }
 
 func (d Disk) String() string {
-	return d.Slot + " storage=" + d.Storage + " size=" + FormatSize(d.Size)
+	s := d.Slot + " storage=" + d.Storage
+	if d.Size > 0 {
+		s += " size=" + FormatSize(d.Size)
+	}
+	if d.Volume != "" {
+		s += " volume=" + d.Volume
+	}
+	if d.Keep {
+		s += " " + KeepFlag
+	}
+	return s
+}
+
+// KeepFlag は disks の項目の「消さない」の印（値を取らない語）。
+const KeepFlag = "keep"
+
+// KeepTagPrefix は keep の印を VM の tags に置くときの頭（Backlog #204）。
+// "sakutei-keep-scsi1" のように slot を足す。
+const KeepTagPrefix = "sakutei-keep-"
+
+// KeepTag は slot の keep の印の tag。
+func KeepTag(slot string) string { return KeepTagPrefix + slot }
+
+// volumeRe は volume の ID（"<storage>:<volume>"）。
+var volumeRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9._-]*:[a-zA-Z0-9._/+-]+$`)
+
+// volumeOwnerRe は volume の名前から持ち主の vmid を読む（Proxmox の決まり：
+// "vm-<vmid>-…"・"base-<vmid>-…"、dir のストレージは "<vmid>/vm-<vmid>-…"）。
+var volumeOwnerRe = regexp.MustCompile(`(?:^|/)(?:vm|base)-([0-9]+)-`)
+
+// VolumeOwner は volume の ID の持ち主の vmid（読めなければ 0）。
+func VolumeOwner(volume string) int {
+	_, name, _ := strings.Cut(volume, ":")
+	m := volumeOwnerRe.FindStringSubmatch(name)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+
+// diskEntry は disks の項目を slot・key=value・keep の印に読む。
+func diskEntry(e string, allowed ...string) (string, map[string]string, bool, error) {
+	var toks []string
+	keep := false
+	for _, t := range strings.Fields(e) {
+		if t == KeepFlag && len(toks) > 0 {
+			if keep {
+				return "", nil, false, fmt.Errorf("%q: duplicate %s", e, KeepFlag)
+			}
+			keep = true
+			continue
+		}
+		toks = append(toks, t)
+	}
+	slot, kv, err := entryKV(strings.Join(toks, " "), allowed...)
+	return slot, kv, keep, err
 }
 
 // ParseDisks は宣言の disks を読む。大きさは GiB で割り切れること（新しい
-// ディスクは GiB で切り出すため）。
+// ディスクは GiB で切り出すため）。項目は "<slot> storage=<storage>
+// size=<大きさ> [keep]" か、既にある volume を付ける "<slot>
+// volume=<storage>:<volume> [size=<大きさ>] [keep]"（Backlog #204）。
 func ParseDisks(s string) ([]Disk, error) {
 	var out []Disk
 	seen := map[string]bool{}
 	for _, e := range splitEntries(s) {
-		slot, kv, err := entryKV(e, "storage", "size")
+		slot, kv, keep, err := diskEntry(e, "storage", "size", "volume")
 		if err != nil {
 			return nil, fmt.Errorf("disks: %w", err)
 		}
@@ -209,17 +273,30 @@ func ParseDisks(s string) ([]Disk, error) {
 			return nil, fmt.Errorf("disks: slot %s is declared twice", slot)
 		}
 		seen[slot] = true
-		if kv["storage"] == "" || kv["size"] == "" {
-			return nil, fmt.Errorf("disks: %q: want \"<slot> storage=<storage> size=<size>\"", e)
+		d := Disk{Slot: slot, Storage: kv["storage"], Keep: keep}
+		if v := kv["volume"]; v != "" {
+			if !volumeRe.MatchString(v) {
+				return nil, fmt.Errorf("disks: %q: volume %q: want <storage>:<volume> (such as local-lvm:vm-120-disk-1)", e, v)
+			}
+			st, _, _ := strings.Cut(v, ":")
+			if d.Storage != "" && d.Storage != st {
+				return nil, fmt.Errorf("disks: %q: storage %s is not the storage of volume %s", e, d.Storage, v)
+			}
+			d.Storage, d.Volume = st, v
+		} else if kv["storage"] == "" || kv["size"] == "" {
+			return nil, fmt.Errorf("disks: %q: want \"<slot> storage=<storage> size=<size> [keep]\" or \"<slot> volume=<storage>:<volume> [keep]\"", e)
 		}
-		size, err := ParseSize(kv["size"])
-		if err != nil {
-			return nil, fmt.Errorf("disks: %q: %w", e, err)
+		if kv["size"] != "" {
+			size, err := ParseSize(kv["size"])
+			if err != nil {
+				return nil, fmt.Errorf("disks: %q: %w", e, err)
+			}
+			if size <= 0 || size%(1<<30) != 0 {
+				return nil, fmt.Errorf("disks: %q: the size must be a whole number of GiB (such as 32G)", e)
+			}
+			d.Size = size
 		}
-		if size <= 0 || size%(1<<30) != 0 {
-			return nil, fmt.Errorf("disks: %q: the size must be a whole number of GiB (such as 32G)", e)
-		}
-		out = append(out, Disk{Slot: slot, Storage: kv["storage"], Size: size})
+		out = append(out, d)
 	}
 	sortDisks(out)
 	return out, nil

@@ -1007,7 +1007,7 @@ cat /root/pool-token.json`)
 		  "cores": "1", "memory": "1G", "disks": "scsi0 storage=local-lvm size=4G", "nics": "net0 bridge=vmbr0, net1 bridge=vmbr0 vlan=42",
 		  "ci_user": "ops", "ci_ssh_keys": "` + itKey + `", "ci_ip": "10.0.2.51/24", "ci_gateway": "10.0.2.2", "power": "running"}}]}`
 		l.task(t)(l.api.Create(ctx, pveNode, url.Values{"vmid": {"530"}, "name": {"it-hand"}, "memory": {"128"}}))
-		defer func() { l.task(t)(l.api.Destroy(ctx, pveNode, 530)) }()
+		defer func() { l.task(t)(l.api.Destroy(ctx, pveNode, 530, true)) }()
 
 		type report struct {
 			Resources []struct {
@@ -1402,6 +1402,175 @@ pvesh create $P --type in --action DROP --proto udp --comment '手で先頭に' 
 		want = append(want[:4:4], "IN DROP -p udp # 手で先頭に", "IN ACCEPT -p tcp -dport 22 # 手の管理")
 		if strings.Join(rules, "\n") != strings.Join(want, "\n") {
 			t.Errorf("the rules after putting back:\n%s\nwant:\n%s", strings.Join(rules, "\n"), strings.Join(want, "\n"))
+		}
+	})
+
+	t.Run("作り直しでデータのディスクを引き継ぐ（keep と volume=）", func(t *testing.T) {
+		// #204: 前の VM（560）の keep のデータのディスクに書き、新しい VM（561）を
+		// volume= で作って付け替え、前の VM を消す。中身が新しい VM で読め、keep で
+		// ないディスクは前の VM と一緒に消える。承認（planned_change）が無ければ
+		// 付け替えない。手で外したままの volume は status の unmanaged に出る。
+		now := time.Now().UTC()
+		lanes := func(kinds ...string) string {
+			var out []string
+			for _, k := range kinds {
+				out = append(out, fmt.Sprintf(`{"scope": {"site": "it"}, "kind": "%s", "max_count": 2, "window": "%s .. %s", "approval": {"pr": 204, "approvers": ["alice"]}}`,
+					k, now.Add(-time.Hour).Format(time.RFC3339), now.Add(2*time.Hour).Format(time.RFC3339)))
+			}
+			if len(out) == 0 {
+				return ""
+			}
+			return `"planned_change": [` + strings.Join(out, ", ") + `], `
+		}
+		vm := func(name, vmid, disks, power string) string {
+			return `{"provider": "proxmox-vm", "scope": {"site": "it"}, "id": "it/` + name + `", "fields": {"vmid": "` + vmid + `", "template": "it-tmpl",
+			  "cores": "1", "memory": "1G", "disks": "` + disks + `", "nics": "net0 bridge=vmbr0",
+			  "ci_user": "ops", "ci_ssh_keys": "` + itKey + `", "ci_ip": "` + vmAddr + `/24", "ci_gateway": "10.0.2.2", "ciupgrade": false, "power": "` + power + `"}}`
+		}
+		absentOld := `{"provider": "proxmox-vm", "scope": {"site": "it"}, "id": "it/it-old", "ensure": "absent"}`
+		intent := func(lane string, resources ...string) string {
+			return `{` + lane + `"resources": [` + strings.Join(resources, ", ") + `]}`
+		}
+		volumes := func() string {
+			out, err := l.ssh("pvesm list local-lvm --content images | awk 'NR>1{print $1}'")
+			if err != nil {
+				t.Fatalf("pvesm list: %v\n%s", err, out)
+			}
+			return out
+		}
+		// dataDisk は VM の中の 1 GiB のディスク（データのディスク）の名前を出す sh。
+		const dataDisk = `D=/dev/$(lsblk -bdno NAME,SIZE | awk '$2==1073741824{print $1; exit}'); test "$D" != /dev/ || { lsblk; exit 1; }`
+
+		// 前の VM：データ（scsi1、keep）と keep でないディスク（scsi2）。
+		oldDisks := "scsi0 storage=local-lvm size=4G, scsi1 storage=local-lvm size=1G keep, scsi2 storage=local-lvm size=2G"
+		n := l.converge(t, intent("", vm("it-old", "560", oldDisks, "running")), 10)
+		t.Logf("the old VM converged after %d reconcile(s)", n)
+		cur, _ := l.config(t, 560)
+		dataVol, _, _ := strings.Cut(cur["scsi1"], ",")
+		plainVol, _, _ := strings.Cut(cur["scsi2"], ",")
+		if !strings.Contains(cur["tags"], "sakutei-keep-scsi1") || dataVol == "" || plainVol == "" {
+			t.Fatalf("VM 560 config = %v", cur)
+		}
+		token := fmt.Sprintf("sakutei-204-%d", now.UnixNano())
+		out := l.vmSSH(t, dataDisk+`; sudo mkfs.ext4 -q -F $D && sudo mount $D /mnt && echo `+token+` | sudo tee /mnt/token && sync && sudo umount /mnt && echo written`, 5*time.Minute)
+		if !strings.Contains(out, "written") {
+			t.Fatalf("writing the data disk:\n%s", out)
+		}
+
+		// keep のディスクを持ったまま absent にすると、止めて消さない。
+		out, _ = l.sakutei(t, intent(lanes("delete"), absentOld), "reconcile", "--audit-log", filepath.Join(l.dir, "audit-204.jsonl"))
+		if s := l.status(t, 560); s != "stopped" || !strings.Contains(out, "keep volume(s) scsi1="+dataVol) {
+			t.Fatalf("absent of the VM holding its keep disk: status %s:\n%s", s, out)
+		}
+		if !strings.Contains(volumes(), dataVol) {
+			t.Fatal("the keep volume was destroyed")
+		}
+
+		// 新しい VM が volume= で付ける。承認が無ければ作らず、付け替えない。
+		newDisks := func(vol string) string { return "scsi0 storage=local-lvm size=4G, scsi1 volume=" + vol + " keep" }
+		step := func(lane string) string {
+			return intent(lane, vm("it-old", "560", "scsi0 storage=local-lvm size=4G", "stopped"), vm("it-new", "561", newDisks(dataVol), "running"))
+		}
+		audit := filepath.Join(l.dir, "audit-204.jsonl")
+		out, code := l.sakutei(t, step(""), "reconcile", "--audit-log", audit)
+		if code != 0 || !strings.Contains(out, "ChangeAwaitingApproval") || !strings.HasPrefix(l.status(t, 561), "absent") {
+			t.Fatalf("reconcile without a lane: exit %d, VM 561 %s:\n%s", code, l.status(t, 561), out)
+		}
+		if cur, _ := l.config(t, 560); !strings.HasPrefix(cur["scsi1"], dataVol) {
+			t.Fatalf("the disk moved without approval: %v", cur)
+		}
+
+		// 承認のあるレーン（create）で作って付け替える。
+		for i := 0; i < 10; i++ {
+			out, code := l.sakutei(t, step(lanes("create", "update")), "reconcile", "--audit-log", audit)
+			t.Logf("reconcile %d with the create lane: exit %d\n%s", i, code, out)
+			if code == 0 && strings.Contains(out, "Converged (no changes)") {
+				break
+			}
+			time.Sleep(3 * time.Second)
+		}
+		cur, _ = l.config(t, 561)
+		movedVol, _, _ := strings.Cut(cur["scsi1"], ",")
+		if !strings.Contains(movedVol, "vm-561-") || !strings.Contains(cur["tags"], "sakutei-keep-scsi1") || l.status(t, 561) != "running" {
+			t.Fatalf("VM 561 config = %v, status %s", cur, l.status(t, 561))
+		}
+		if old, _ := l.config(t, 560); old["scsi1"] != "" {
+			t.Errorf("VM 560 still has scsi1: %v", old)
+		}
+		out = l.vmSSH(t, dataDisk+`; sudo mount $D /mnt && cat /mnt/token && sudo umount /mnt`, 5*time.Minute)
+		if !strings.Contains(out, token) {
+			t.Fatalf("the data disk on the new VM does not hold what was written (%s):\n%s", token, out)
+		}
+
+		// 前の VM を消す（delete のレーン）。keep でないディスクは一緒に消え、付け替えた
+		// ディスクは残る。
+		withNew := func(vol string) string { return vm("it-new", "561", newDisks(vol), "running") }
+		for i := 0; i < 10 && !strings.HasPrefix(l.status(t, 560), "absent"); i++ {
+			out, code := l.sakutei(t, intent(lanes("delete"), withNew(dataVol), absentOld), "reconcile", "--audit-log", audit)
+			t.Logf("reconcile %d with the delete lane: exit %d\n%s", i, code, out)
+			time.Sleep(3 * time.Second)
+		}
+		if s := l.status(t, 560); !strings.HasPrefix(s, "absent") {
+			t.Fatalf("the old VM after the approved delete: %s", s)
+		}
+		vols := volumes()
+		if strings.Contains(vols, plainVol) || !strings.Contains(vols, movedVol) {
+			t.Errorf("volumes after the delete (want %s gone and %s kept):\n%s", plainVol, movedVol, vols)
+		}
+		if out, code := l.sakutei(t, intent("", withNew(dataVol)), "reconcile"); code != 0 || !strings.Contains(out, "Converged (no changes)") {
+			t.Errorf("reconcile of the new VM after the delete: exit %d:\n%s", code, out)
+		}
+
+		// 手で外したままの volume（unused0）は status の unmanaged に出る。
+		if out, err := l.ssh("qm set 561 --delete scsi1 && qm config 561 | grep unused"); err != nil {
+			t.Fatalf("detaching by hand: %v\n%s", err, out)
+		}
+		type report struct {
+			Resources []struct {
+				LocalID string `json:"local_id"`
+				State   string `json:"state"`
+			} `json:"resources"`
+		}
+		states := func(in string) map[string]string {
+			out, _ := l.sakutei(t, in, "status", "--json")
+			var doc report
+			if i := strings.Index(out, "{"); i >= 0 {
+				_ = json.Unmarshal([]byte(out[i:]), &doc)
+			}
+			m := map[string]string{}
+			for _, r := range doc.Resources {
+				m[r.LocalID] = r.State
+			}
+			if len(m) == 0 {
+				t.Logf("status --json:\n%s", out)
+			}
+			return m
+		}
+		if st := states(intent("", withNew(dataVol))); st["it/it-new/unused0"] != "unmanaged" {
+			t.Errorf("status after detaching by hand = %v; want it/it-new/unused0 unmanaged", st)
+		}
+		// 承認が無ければ付け直さない。update のレーンで付け直すと unmanaged から消え、中身は残る。
+		reattach := withNew(movedVol)
+		if out, code := l.sakutei(t, intent("", reattach), "reconcile", "--audit-log", audit); code != 0 || !strings.Contains(out, "ChangeAwaitingApproval") {
+			t.Errorf("reattach without a lane: exit %d:\n%s", code, out)
+		}
+		if c, _ := l.config(t, 561); c["scsi1"] != "" {
+			t.Errorf("reattached without approval: %v", c)
+		}
+		for i := 0; i < 5; i++ {
+			out, code := l.sakutei(t, intent(lanes("update"), reattach), "reconcile", "--audit-log", audit)
+			t.Logf("reconcile %d with the update lane: exit %d\n%s", i, code, out)
+			if code == 0 && strings.Contains(out, "Converged (no changes)") {
+				break
+			}
+			time.Sleep(3 * time.Second)
+		}
+		if st := states(intent("", reattach)); st["it/it-new/unused0"] != "" || st["it/it-new"] != "conformant" {
+			t.Errorf("status after the reattach = %v", st)
+		}
+		out = l.vmSSH(t, dataDisk+`; sudo mount $D /mnt && cat /mnt/token && sudo umount /mnt`, 5*time.Minute)
+		if !strings.Contains(out, token) {
+			t.Errorf("the reattached data disk does not hold what was written:\n%s", out)
 		}
 	})
 }

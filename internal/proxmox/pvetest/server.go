@@ -49,6 +49,15 @@
 //     外なら最後）。GET の項目は並び全体の digest を持ち、PUT・DELETE に渡した
 //     digest が違えば断る。PUT の delete は欄を消す。type・action・iface（netN）・
 //     知らないキーの誤りは 400。
+//   - volume（Backlog #204）：ディスクの volume を台帳に持つ（作る・複製で
+//     切り出し、在る volume を指すドライブは台帳に無ければ 500）。本物と同じく、
+//     VM の持ち物（vm-<vmid>-…）の slot を設定から外すと unusedN になり（ほかの VM
+//     の volume は外れるだけ）、unusedN を消すと volume も消える。unusedN の
+//     volume を slot に付け直すと unusedN は消える。POST /move_disk の
+//     target-vmid（reassign）は volume を消さずに付け先の vmid の名前に変えて
+//     付け替える（同じノード、元が走っていれば unusedN だけ、付け先の slot が
+//     空いていること）。VM を消すと設定にある持ち物の volume（unused を含む）を
+//     消し、destroy-unreferenced-disks=1 なら設定に無い持ち物も消す。
 //
 // テストから: 現実を手で変える（SetConfig・SetFirewall・SetRules・SetStatus・SetLock・SetPool）、ノードを落とす
 // （SetNodeOffline：資源の status が unknown、ノードの API が 595）、届かなく
@@ -158,6 +167,8 @@ type Server struct {
 	calls       map[string]int
 	resCalls    int
 	byToken     map[string]map[string]int // トークン → "GET"・"WRITE" → 回数
+	// volumes は在る volume（"<storage>:<name>" → 大きさのバイト数、#204）。
+	volumes map[string]int64
 }
 
 // New は偽サーバを立てる（HTTP）。
@@ -179,7 +190,7 @@ func New(opts Options) *Server {
 		opts.ColdKeys = []string{"cores", "memory"}
 	}
 	s := &Server{opts: opts, vms: map[int]*VM{}, pools: map[string]bool{}, tasks: map[string]*task{}, offline: map[string]bool{},
-		failNext: map[string]string{}, calls: map[string]int{}, byToken: map[string]map[string]int{}}
+		failNext: map[string]string{}, calls: map[string]int{}, byToken: map[string]map[string]int{}, volumes: map[string]int64{}}
 	for _, p := range opts.Pools {
 		s.pools[p] = true
 	}
@@ -216,7 +227,7 @@ func (s *Server) SetNodeOffline(node string, v bool) { s.mu.Lock(); s.offline[no
 func (s *Server) FailNextTask(kind, msg string) { s.mu.Lock(); s.failNext[kind] = msg; s.mu.Unlock() }
 
 // Calls は操作（"resources"・"pending"・"config"・"create"・"clone"・"resize"・
-// "start"・"shutdown"・"stop"・"reboot"・"reset"・"destroy"・"task"・"pools"・"firewall"・"fwrules"）ごとの
+// "start"・"shutdown"・"stop"・"reboot"・"reset"・"destroy"・"task"・"pools"・"firewall"・"fwrules"・"move_disk"）ごとの
 // 呼ばれた回数を返す。
 func (s *Server) Calls(op string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls[op] }
 
@@ -242,7 +253,148 @@ func (s *Server) AddVM(vm VM) {
 	vm.Firewall = copyMap(vm.Firewall)
 	vm.Rules = copyRules(vm.Rules)
 	vm.rrdName, vm.rrdStatus, vm.rrdTemplate = vm.Name, vm.Status, vm.Template
+	for k, v := range vm.Config {
+		s.registerVolume(k, v)
+	}
 	s.vms[vm.VMID] = &vm
+}
+
+// Volume は volume が在るか（と大きさ）を返す（#204）。
+func (s *Server) Volume(volid string) (int64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.volumes[volid]
+	return n, ok
+}
+
+// AddVolume は volume を台帳に置く（持ち主の VM の無い volume を手で作る）。
+func (s *Server) AddVolume(volid string, size int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.volumes[volid] = size
+}
+
+// registerVolume は設定のドライブ（slot か unusedN）の volume を台帳に置く。
+func (s *Server) registerVolume(key, value string) {
+	if !diskRe.MatchString(key) && !unusedRe.MatchString(key) {
+		return
+	}
+	vol, opts, _ := strings.Cut(value, ",")
+	if !strings.Contains(vol, ":") || strings.Contains(vol, "cloudinit") || strings.Contains(opts, "media=cdrom") {
+		return
+	}
+	size := int64(1 << 30)
+	for _, o := range strings.Split(opts, ",") {
+		if v, ok := strings.CutPrefix(o, "size="); ok {
+			size = bytes(v)
+		}
+	}
+	if _, ok := s.volumes[vol]; !ok {
+		s.volumes[vol] = size
+	}
+}
+
+// volumeOwner は volume の名前の持ち主の vmid（読めなければ 0）。
+func volumeOwner(vol string) int {
+	m := ownerRe.FindStringSubmatch(vol)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+
+// freeDiskName は vmid の storage の次の空いた "vm-<vmid>-disk-<n>"。
+func (s *Server) freeDiskName(storage string, vmid int) string {
+	for n := 0; ; n++ {
+		v := fmt.Sprintf("%s:vm-%d-disk-%d", storage, vmid, n)
+		if _, used := s.volumes[v]; !used {
+			return v
+		}
+	}
+}
+
+// addUnused は vm の設定に volume を次の空いた unusedN で足す。
+func addUnused(vm *VM, vol string) {
+	for n := 0; ; n++ {
+		k := fmt.Sprintf("unused%d", n)
+		if _, used := vm.Config[k]; !used {
+			vm.Config[k] = vol
+			return
+		}
+	}
+}
+
+// detachDrive は vm の設定から key のドライブを外す（本物と同じく、vm の持ち物の
+// volume は unusedN に、unusedN は volume ごと消す）。
+func (s *Server) detachDrive(vm *VM, key string) {
+	value, ok := vm.Config[key]
+	if !ok {
+		return
+	}
+	delete(vm.Config, key)
+	vol, opts, _ := strings.Cut(value, ",")
+	switch {
+	case unusedRe.MatchString(key):
+		delete(s.volumes, vol)
+	case diskRe.MatchString(key) && !strings.Contains(opts, "media=cdrom") && !strings.Contains(vol, "cloudinit") && volumeOwner(vol) == vm.VMID:
+		addUnused(vm, vol)
+	}
+}
+
+// moveDisk は POST /move_disk の target-vmid（reassign）。
+func (s *Server) moveDisk(vm *VM, form url.Values) (any, *apiError) {
+	disk, targetDisk := form.Get("disk"), form.Get("target-disk")
+	if targetDisk == "" {
+		targetDisk = disk
+	}
+	tid, err := strconv.Atoi(form.Get("target-vmid"))
+	if err != nil {
+		return nil, errf(http.StatusNotImplemented, "moving to another storage is not supported here")
+	}
+	target, ok := s.vms[tid]
+	switch {
+	case !ok:
+		return nil, errf(http.StatusInternalServerError, "Configuration file 'nodes/%s/qemu-server/%d.conf' does not exist", vm.Node, tid)
+	case tid == vm.VMID:
+		return nil, errf(http.StatusBadRequest, "target-vmid: must be different than source VMID to reassign disk")
+	case target.Node != vm.Node:
+		return nil, errf(http.StatusInternalServerError, "Both VMs need to be on the same node (%s != %s)", vm.Node, target.Node)
+	case vm.Lock != "" || target.Lock != "":
+		return nil, errf(http.StatusInternalServerError, "VM is locked")
+	case vm.Template || target.Template:
+		return nil, errf(http.StatusInternalServerError, "Can't move disks from or to template VMs")
+	}
+	value, ok := vm.Config[disk]
+	if !ok {
+		return nil, errf(http.StatusInternalServerError, "Disk '%s' for VM '%d' does not exist", disk, vm.VMID)
+	}
+	if _, used := target.Config[targetDisk]; used {
+		return nil, errf(http.StatusInternalServerError, "Target disk key '%s' is already in use for VM '%d'", targetDisk, tid)
+	}
+	if vm.Status == "running" && !unusedRe.MatchString(disk) {
+		return nil, errf(http.StatusInternalServerError, "Cannot move disk to another VM while the source VM is running - detach first")
+	}
+	vol, opts, _ := strings.Cut(value, ",")
+	size, ok := s.volumes[vol]
+	if !ok {
+		return nil, errf(http.StatusInternalServerError, "volume '%s' does not exist", vol)
+	}
+	st, _, _ := strings.Cut(vol, ":")
+	return s.newTask(vm.Node, "qmmove", vm.VMID, func() {
+		nv := s.freeDiskName(st, tid)
+		delete(s.volumes, vol)
+		s.volumes[nv] = size
+		delete(vm.Config, disk)
+		if unusedRe.MatchString(disk) {
+			opts = "size=" + fmtSize(size)
+		}
+		if unusedRe.MatchString(targetDisk) {
+			target.Config[targetDisk] = nv
+		} else {
+			target.Config[targetDisk] = nv + "," + opts
+		}
+	}), nil
 }
 
 // VM は vmid の VM の写しを返す。
@@ -413,8 +565,11 @@ var (
 	vmRe   = regexp.MustCompile(`^/nodes/([^/]+)/qemu/([0-9]+)(/.*)?$`)
 	taskRe = regexp.MustCompile(`^/nodes/([^/]+)/tasks/([^/]+)/status$`)
 	diskRe = regexp.MustCompile(`^(scsi|virtio|sata|ide)[0-9]+$`)
-	netRe  = regexp.MustCompile(`^net[0-9]+$`)
-	models = []string{"virtio", "e1000", "e1000e", "rtl8139", "vmxnet3"}
+	// unusedRe・ownerRe は外したままの volume のキーと volume の持ち主（#204）。
+	unusedRe = regexp.MustCompile(`^unused[0-9]+$`)
+	ownerRe  = regexp.MustCompile(`:(?:[0-9]+/)?(?:vm|base)-([0-9]+)-`)
+	netRe    = regexp.MustCompile(`^net[0-9]+$`)
+	models   = []string{"virtio", "e1000", "e1000e", "rtl8139", "vmxnet3"}
 )
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
@@ -612,6 +767,9 @@ func (s *Server) route(tok *PoolToken, method, path string, form url.Values) (an
 			return nil, aerr
 		}
 		return s.clone(vm, form)
+	case rest == "/move_disk" && method == http.MethodPost:
+		s.calls["move_disk"]++
+		return s.moveDisk(vm, form)
 	case rest == "/resize" && method == http.MethodPut:
 		s.calls["resize"]++
 		return s.resize(vm, form)
@@ -627,7 +785,23 @@ func (s *Server) route(tok *PoolToken, method, path string, form url.Values) (an
 		if vm.Lock != "" {
 			return nil, errf(http.StatusInternalServerError, "VM is locked (%s)", vm.Lock)
 		}
-		return s.newTask(vm.Node, "qmdestroy", vm.VMID, func() { delete(s.vms, vmid) }), nil
+		unreferenced := form.Get("destroy-unreferenced-disks") == "1"
+		return s.newTask(vm.Node, "qmdestroy", vm.VMID, func() {
+			for k, v := range vm.Config {
+				vol, _, _ := strings.Cut(v, ",")
+				if (diskRe.MatchString(k) || unusedRe.MatchString(k)) && volumeOwner(vol) == vmid {
+					delete(s.volumes, vol)
+				}
+			}
+			if unreferenced {
+				for vol := range s.volumes {
+					if volumeOwner(vol) == vmid {
+						delete(s.volumes, vol)
+					}
+				}
+			}
+			delete(s.vms, vmid)
+		}), nil
 	}
 	return nil, errf(http.StatusNotImplemented, "Method '%s %s' not implemented", method, path)
 }
@@ -791,17 +965,22 @@ func (s *Server) normalize(vm *VM, key, value string) (string, *apiError) {
 			return fmt.Sprintf("%s:vm-%d-cloudinit,media=cdrom", st, vm.VMID), nil
 		}
 		if n, err := strconv.Atoi(size); err == nil {
-			disk := 0
-			for _, v := range vm.Config {
-				if strings.Contains(v, fmt.Sprintf("vm-%d-disk-", vm.VMID)) {
-					disk++
-				}
-			}
-			out := fmt.Sprintf("%s:vm-%d-disk-%d", st, vm.VMID, disk)
+			out := s.freeDiskName(st, vm.VMID)
+			s.volumes[out] = int64(n) << 30
 			if opts != "" {
 				out += "," + opts
 			}
 			return out + fmt.Sprintf(",size=%dG", n), nil
+		}
+		if !strings.Contains(opts, "media=cdrom") {
+			// 在る volume を付ける（#204）。本物と同じく大きさを書き足す。
+			bytesOf, ok := s.volumes[vol]
+			if !ok {
+				return "", errf(http.StatusInternalServerError, "%s: volume '%s' does not exist", key, vol)
+			}
+			if !strings.Contains(opts, "size=") {
+				value += ",size=" + fmtSize(bytesOf)
+			}
 		}
 		return value, nil
 	case netRe.MatchString(key):
@@ -870,6 +1049,18 @@ func (s *Server) setConfig(vm *VM, form url.Values) *apiError {
 		if aerr != nil {
 			return aerr
 		}
+		if diskRe.MatchString(k) {
+			// #204: 付け直した volume の unusedN は消え、置き換えた持ち物は unusedN へ。
+			vol, _, _ := strings.Cut(v, ",")
+			for uk, uv := range vm.Config {
+				if unusedRe.MatchString(uk) && uv == vol {
+					delete(vm.Config, uk)
+				}
+			}
+			if old, ok := vm.Config[k]; ok && !strings.HasPrefix(old, vol+",") && old != vol {
+				s.detachDrive(vm, k)
+			}
+		}
 		if cold(k) {
 			// 本物と同じく、今の値と同じ pending は残さない（cleanup_pending）。
 			if vm.Config[k] == v {
@@ -892,6 +1083,10 @@ func (s *Server) setConfig(vm *VM, form url.Values) *apiError {
 		if cold(k) {
 			vm.PendingDelete[k] = true
 			delete(vm.Pending, k)
+			continue
+		}
+		if diskRe.MatchString(k) || unusedRe.MatchString(k) {
+			s.detachDrive(vm, k)
 			continue
 		}
 		delete(vm.Config, k)
@@ -1133,6 +1328,7 @@ func (s *Server) clone(src *VM, form url.Values) (any, *apiError) {
 			v = nv
 		}
 		vm.Config[k] = v
+		s.registerVolume(k, v)
 	}
 	s.vms[newid] = vm
 	return s.newTask(src.Node, "qmclone", src.VMID, func() { vm.Lock = "" }), nil
@@ -1162,6 +1358,11 @@ func (s *Server) resize(vm *VM, form url.Values) (any, *apiError) {
 	}
 	parts = append(parts, "size="+fmtSize(n))
 	vm.Config[disk] = strings.Join(parts, ",")
+	if vol, _, _ := strings.Cut(cur, ","); s.volumes != nil {
+		if _, ok := s.volumes[vol]; ok {
+			s.volumes[vol] = n
+		}
+	}
 	return s.newTask(vm.Node, "resize", vm.VMID, func() {}), nil
 }
 

@@ -103,6 +103,7 @@ external_owners:
 ## トークンの権限
 
 トークンに要るのは、VM の作成・複製・設定・電源・削除（`VM.Allocate`・`VM.Clone`・`VM.Config.*`・`VM.PowerMgmt`・`VM.Audit`。VM の FW の options を書くのは `VM.Config.Network`）、ストレージの領域の割り当て（`Datastore.AllocateSpace`）、bridge を使うこと（`SDN.Use`）、テンプレートから複製するならそのテンプレートに `VM.Clone`。
+keep の印（VM の tags）を書くのは `VM.Config.Options`、volume を付け替える（`move_disk` の reassign）のは元と付け先の両方の VM の `VM.Config.Disk` とストレージの `Datastore.AllocateSpace`（Backlog #204）。
 仕事（UPID）の状態は、そのトークンが始めた仕事なら権限なしで読める。privsep のあるトークン（`--privsep 1`）の権限は、利用者とトークンの両方に付けた ACL の重なりなので、同じ ACL を両方に付ける。
 
 ### pool に絞ったトークン（Backlog #165）
@@ -202,7 +203,7 @@ resources:
 | `pool` | pool の名前（入れ子は `親/子`）か `""` | 作るときに渡す（複製・作成の `pool`）。観測と違えば移す（`""` は pool から外す）。宣言しなければ触らない。pool は作らない（下の「pool」） |
 | `cores` | 正の整数 | |
 | `memory` | `2048`（MiB）・`2048M`・`2G` | |
-| `disks` | `<slot> storage=<storage> size=<大きさ>` を `,` でつなぐ | slot は `scsiN`・`virtioN`・`sataN`・`ideN`。大きさは GiB で割り切れること。**宣言した slot だけ**を比べる。大きくするのはよい（resize）、**小さくするのと、ストレージを変えるのは計画のエラー**。無い slot は足す。宣言から外したディスクは消さない |
+| `disks` | `<slot> storage=<storage> size=<大きさ> [keep]` か `<slot> volume=<storage>:<volume> [size=<大きさ>] [keep]` を `,` でつなぐ | slot は `scsiN`・`virtioN`・`sataN`・`ideN`。大きさは GiB で割り切れること。**宣言した slot だけ**を比べる。大きくするのはよい（resize）、**小さくするのと、ストレージを変えるのは計画のエラー**。無い slot は足す。宣言から外したディスクは消さない。`keep` は「消さない」の印、`volume=` は既にある volume を付ける（Backlog #204、下の「作り直すときにデータのディスクを引き継ぐ」） |
 | `nics` | `<slot> bridge=<bridge> [vlan=<1-4094>] [mac=<MAC>] [model=<型>] [firewall=<0\|1>] [mtu=<1-65520>]` を `,` でつなぐ | **宣言した slot だけ**を比べる。`bridge` と `vlan`（書かなければタグ無し）はいつも、`mac`・`model`（virtio・e1000・e1000e・rtl8139・vmxnet3）・`firewall`（口の FW、Backlog #196）・`mtu`（`1` は bridge の MTU を使う、#196）は書いたときだけ比べる。書き換えるときも、宣言しない MAC・型・firewall・mtu とほかのキー（`rate` など）は残す。`mtu` は virtio の口だけに効くので、`model` に virtio 以外を書いて `mtu` も書くと読み込みで断る |
 | `firewall` | `enable=<0\|1> policy_in=<ACCEPT\|DROP\|REJECT> policy_out=<…> ipfilter=<0\|1> macfilter=<0\|1>` のうち書くものを空白（かカンマ）でつなぐ | VM の FW の options（`/nodes/<node>/qemu/<vmid>/firewall/options`、Backlog #196）。**書いたキーだけ**を比べ、違うキーだけを書く（書かないキー・`dhcp`・`ndp`・`log_level_in` などは触らない）。書かなければ読むだけで比べない。観測はいつも 5 つのキーで、書かれていないキーは Proxmox の既定（`enable=0`・`policy_in=DROP`・`policy_out=ACCEPT`・`ipfilter=0`・`macfilter=1`）と見る。設定ではないので pending にならず、走っている VM にもすぐ効く |
 | `ci_user` | ユーザ名 | cloud-init（`ciuser`） |
@@ -228,7 +229,7 @@ Proxmox が書き戻す表記と、宣言の書き方の違いは比べる前に
 
 - 大きさ：`32G`・`32768M`・`33554432K` は同じ（割り切れる一番大きい単位で持つ）。
 - メモリ：`2048`・`2048M`・`2G` は同じ。観測の `current=2048,...`（新しい版の書き方）も同じ。
-- ディスク：設定の `local-lvm:vm-100-disk-0,iothread=1,size=32G` から storage と size だけを取る。CD-ROM・cloud-init のドライブ・unused は入れない。
+- ディスク：設定の `local-lvm:vm-100-disk-0,iothread=1,size=32G` から storage と size だけを取る（volume の名前は入れない：付け替えで変わる）。VM の tags に keep の印（`sakutei-keep-<slot>`）があれば ` keep` を足す。CD-ROM・cloud-init のドライブ・unused は入れない。
 - NIC：設定の `virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,tag=10,firewall=1,mtu=1450` から。MAC は大文字小文字を区別しない。観測の正規形の `firewall` は 1 のときだけ出す（`firewall=0` と書かれていないのは同じ。`firewall=0` の宣言はどちらとも適合する）。`mtu` は書かれていれば出す。
 - VM の FW の options：`GET /firewall/options` は書かれたキーだけを返す（Proxmox VE 9.2 で確かめた）ので、書かれていないキーは既定（pve-firewall が VM の口に使う値：入りは DROP、出は ACCEPT、MAC の filter は有効）で埋め、`enable=… policy_in=… policy_out=… ipfilter=… macfilter=…` の順に並べる。
 - ssh の公開鍵：URL エンコードを戻し、行ごとに前後の空白を落とし、空行を除く。
@@ -247,6 +248,7 @@ Proxmox が書き戻す表記と、宣言の書き方の違いは比べる前に
 - 届かない・5xx（落ちたノードの 595 を含む）・ノードが落ちて status が `unknown`・認証の失敗（401・403）は **Unknown**（absent にしない）。認証の失敗は設定を直すまで治らないエラー（PermanentError）。エラーの文言にトークンの secret は出ない。
 - VM に lock がある間（複製・移行・バックアップ・スナップショットなど）は **Converging**。
 - `List` は全クラスタの `/cluster/resources` が取れ、どの VM も名前で一意に引けるときだけ complete。テンプレートと触らない VM は出さない。名前の無い・重なる VM があればエラー（名前を付けるか、`protected_vmids` に入れる）。
+  VM の付け先の無い volume（設定の `unusedN`）も `<クラスタ>/<VM 名>/unusedN` の ID で返す（status の unmanaged に出る、Backlog #204）。そのため List は VM ごとに設定（`/config`）も読む。
 - `List`・`BulkObserve` の ID の scope は設定の `scope`（無ければ root）で、宣言の scope とは別に決まる。コアは status の
   宣言外（unmanaged）と prune で突き合わせる前に、これを宣言に合わせる（Backlog #169、§5.4）：
   - 宣言した VM は宣言の scope に合わせる（設定に `scope` を書かず、宣言に `scope: {node: mgmt}` と書いてよい。`--claim node=mgmt`
@@ -279,6 +281,7 @@ NIC の `firewall` は走っている VM にすぐ効く（Proxmox VE 9.2 で確
 
 - 作る：`template` があれば full clone（`/nodes/<テンプレートのノード>/qemu/<vmid>/clone`、`target` はこの VM のノード）、無ければ空から（`POST /nodes/<node>/qemu`。scsi のディスクがあれば `scsihw: virtio-scsi-single`）。`pool` を宣言していればどちらにも渡す。終わったら同じ Apply で残りを合わせて、`power: running` なら起動する。
 - 消す（`ensure: absent` の Delete、破壊的）：走っていれば止めて（stop）から、ディスクごと消す（`purge=1`・`destroy-unreferenced-disks=1`）。触らない VM・テンプレートは消さない。
+  keep の印のある VM は、keep のディスクか unused が残る間は消さず、`destroy-unreferenced-disks=0` で消す（下の「作り直すときにデータのディスクを引き継ぐ」）。
 
 ### pool（Backlog #165）
 
@@ -313,6 +316,55 @@ resources:
 - **電源**：走っている VM は stop（強制の停止）で止めてから消す。ディスクごと消すので正常停止は待たない（`power_off` の決まりはここには効かない）。中のサービスを正常に止めてから消したいときは、先に `power: stopped`（要れば `power_off`）を宣言して止め、そのあとで `ensure: absent` にする。
 - 触らない VM（`protected_names`）を `ensure: absent` にすると読み込みで断る。`protected_vmids` の VM は名前では分からないので、Read・Apply が触らないことで守る（Unknown のまま消さない）。
 - 採番（`vmid: { from_pool: … }`）の owner だった VM を消しても、値は自動では返さない。返すのは今の決まりどおり `sakutei allocator release`（cooldown のあと再び配る、§19.5）。
+
+### 作り直すときにデータのディスクを引き継ぐ（`keep` と `volume=`、Backlog #204）
+
+VM を新しいイメージ（テンプレート）から作り直して OS を更新するとき、データのディスクを消さずに新しい VM へ付け替える。
+
+- **`keep`**：`disks` の項目の「消さない」の印（`scsi1 storage=local-lvm size=100G keep`）。VM の **tags** に `sakutei-keep-<slot>` として置き、観測して比べる（手で外せば drift で、`reconcile` が戻す。宣言から `keep` を外せば印も外す。宣言しない slot の印とほかの tags は触らない）。印を Proxmox の側に置くのは、`ensure: absent` が欄を持たないので、消す VM のどのディスクを残すかを現実の側で分かる必要があるため（Sakutei の中に持たない、§1.7）。
+- **`volume=<storage>:<volume>`**：その slot が空のとき、既にある volume を付ける（`scsi1 volume=local-lvm:vm-120-disk-1 keep`。`storage` は volume から決まり、`size` は書けば比べる）。
+  - volume がほかの VM（名前の `vm-<vmid>-…` の持ち主）の設定にあれば、Proxmox の **reassign**（`POST /nodes/<node>/qemu/<vmid>/move_disk` の `target-vmid`・`target-disk`）で付け替える：volume は消えず、付け先の VM の名前（`vm-<新しい vmid>-disk-N`）に変わり、元の VM の設定から外れる。2 つの VM は**同じノード**にあること、元の VM の slot のディスクは**元の VM が止まっている**ときだけ動かす（走っている VM から抜くのはゲストが使っているディスクを抜くことになる。Proxmox も断る）。走っていれば何も変えずに一時の失敗で待つ（止めるのは元の VM の `power: stopped` か `ensure: absent`）。
+  - 同じ VM の unused にあれば付け直す（Proxmox は unused の項目を消す）。持ち主の VM が無い volume（外したまま残ったもの）はそのまま付ける。
+  - 付いたあとは volume の名前を比べない（付け替えで名前が変わる）。宣言はそのままでよい。テンプレートにある slot に `volume=` を書くと、複製でその slot が埋まるので付けない（テンプレートに無い slot に書く）。
+  - 触らない VM・テンプレートの volume、別のノードの VM の volume、持ち主の設定に無い volume（`qm disk rescan --vmid <vmid>` で unused に戻せる）は付けない（設定を直すまで繰り返さないエラー）。
+- **承認と予算**：volume を付ける（付け替える）Op は**承認の要る壊す変更**（`provider.ApprovalRequirer`、§13・§14.4）：予算に数え、その種類の planned_change のレーンが開いているときだけ走る（作る VM なら `kind: create`、今ある VM なら `kind: update`）。レーンが無ければ `ChangeAwaitingApproval` を出して付け替えない。付いたあとは承認を求めない。
+- **消すときの守り**：keep の印のある VM は、keep の slot にディスクがある間と、unused がある間（どの slot から外れたかは分からないので消さない側に倒す）は**消さない**。`ensure: absent` の Delete は、走っていれば止めて（承認された Delete なので。止まれば付け替えられる）、「keep の volume が残るので消さない」と残る volume を挙げて一時の失敗で返す。何も消さない。keep のディスクも消したいときは、先に `keep` を外した宣言を収束させてから `ensure: absent` にする。
+- **付け先の無い volume**：VM の設定の `unusedN`（手で外したディスクなど）は `<クラスタ>/<VM 名>/unusedN` の ID で `status` の **unmanaged** に出る（知らせるための ID で、宣言はできず、`Read` は観測できないと断る（`sakutei import` は書き出さない）。`volume=` で付けるか、Proxmox で消す）。
+- **途中で落ちたら**：どこまで進んだか（「VM N は作った」「volume は消していない：VM M に残る」など）をエラーの文言に出す。ディスクは消さない。次の周は現実から計画し直す（作った VM は Update として続け、付け替えはそのときも承認を通る）。
+
+手順の例（前の VM `lab/app1`（vmid 120）のデータのディスクを、新しいテンプレートから作る `lab/app2`（vmid 121）へ）：
+
+```yaml
+# 1. 前の VM は宣言で keep を付けて使っている
+#    disks: "scsi0 storage=local-lvm size=32G, scsi1 storage=local-lvm size=100G keep"
+
+# 2. 作り直し：前の VM を止め（宣言から scsi1 を外す。印は残る）、新しい VM が volume= で付け替える
+planned_change:
+  scope: { site: lab }
+  kind: create                         # 付け替えの承認（作り直す VM の作成）
+  max_count: 1
+  window: "2026-11-01 00:00 .. 2026-11-02 00:00"
+  approval: { pr: 204, approvers: [alice] }
+resources:
+  - provider: proxmox-vm
+    scope: { site: lab }
+    id: lab/app1
+    fields: { vmid: "120", disks: "scsi0 storage=local-lvm size=32G", power: stopped }
+  - provider: proxmox-vm
+    scope: { site: lab }
+    id: lab/app2
+    fields:
+      vmid: "121"
+      template: debian-14-cloud
+      disks: "scsi0 storage=local-lvm size=32G, scsi1 volume=local-lvm:vm-120-disk-1 keep"
+      power: running
+
+# 3. 前の VM を消す（kind: delete のレーン）。keep のディスクはもう無いので消え、
+#    keep でないディスクは一緒に消える。付け替えたディスク（vm-121-disk-1）は残る。
+#    - { provider: proxmox-vm, scope: { site: lab }, id: lab/app1, ensure: absent }
+```
+
+前の VM が走ったまま 2 を流すと、新しい VM は作られ（作成の承認）、付け替えは前の VM が止まるまで待つ（次の周は Update になるので `kind: update` のレーンも要る）。2 で前の VM に `power: stopped` を書けば、止まってから付け替えるので 1 回で済む（`depends_on: [lab/app1]` を足すと順序が決まる）。
 
 ### 一度きりの操作（Workflow の action）
 
@@ -358,6 +410,15 @@ $ make integration-proxmox
 | 観測用（PVEAuditor）と書き込み用のトークン | root で `sakutei-ro@pve!audit`（privsep、`/` に `PVEAuditor`）を作る。そのトークンは `/cluster/resources` を読めて、VM の設定を変えられない（403）。観測用にそれ、書き込み用に root のトークンを書いた設定で、API で手で `cores` を変えた VM（540）に対し、書き込み用の secret の無い store で `status`・`plan`・`reconcile --mode alert-only` が drift を出し、書く `reconcile` は `write.token_secret` が store に無いと言って起動せず VM は変わらない。両方の secret の store の `reconcile` が `1 change(s) applied` で戻し、次は `Converged (no changes)`（#186） |
 | NIC の firewall・mtu と VM の FW の options | `nics: "net0 bridge=vmbr0 firewall=1 mtu=1450, net1 bridge=vmbr0 vlan=43 firewall=1"` と `firewall: "enable=1 policy_in=DROP policy_out=REJECT macfilter=0"` の VM（vmid 550、止めたまま）をテンプレートから作り、`Converged (no changes)` まで。API で見た net0・net1 に `firewall=1`（net0 に `mtu=1450`）、options は `enable`・`policy_out`・`macfilter` だけが書かれ（`policy_in=DROP` は既定と同じなので書かない）、`/etc/pve/firewall/550.fw` に `enable: 1`。API で net0 を `firewall=0,mtu=1500`、options を `enable=0`・`ipfilter=1`（書かないキー）にすると、観測用のトークン（`PVEAuditor`）でも `status` が nics と firewall の drift を出し、`reconcile` が `1 change(s) applied` で戻して `ipfilter=1` は残す。書かない VM（540）は options が空のままで、手で net0 に `firewall=1,mtu=1400`・options に `enable=1` を書いても `reconcile` は `Converged (no changes)`（#196） |
 | network_policy の実現先 proxmox-fw | 550 に手の規則（`in ACCEPT -p tcp -dport 22`）を置いてから、関所の VM の network_policy（利用者側の `net0` は出る向きの KDC・DNS・LDAP・NTP、サービス側の `net1` は入る向きの 443、IPv4 と IPv6）を `realizer: proxmox-fw` で当てる。`plan` が `via: net0 out`・`via: net1 in` と `[DESTRUCTIVE]` を出し、`reconcile` の後の `/etc/pve/firewall/550.fw` に `OUT ACCEPT -i net0 … # sakutei: 関所から DNS・KDC・NTP` などが宣言の順に先頭に入り、手の規則が後ろに残る。`status` は手の規則を `UNMANAGED proxmox-fw//it/it-vm4/fw/4` に出し drifted=0。置いた規則の port を手で変え、先頭に手の規則を置くと、観測用のトークン（`PVEAuditor`）の `status` でも drift（`(unmanaged) in DROP …` を含む）になり、`reconcile` が宣言の順に戻して手の規則 2 つを後ろに残す（#197、[proxmox-fw.md](proxmox-fw.md)） |
+| 作り直しでデータのディスクを引き継ぐ | 前の VM（vmid 560、`scsi1 … size=1G keep`・keep でない `scsi2 … size=2G`）を作り、tags に `sakutei-keep-scsi1`。VM の中で 1 GiB のディスクに ext4 を作って印の文字列を書く。前の VM を `ensure: absent`（`kind: delete` のレーン）にすると、止まって消えず、`reconcile` が `keep volume(s) scsi1=local-lvm:vm-560-disk-1` と知らせ、volume は残る。新しい VM（vmid 561、`scsi1 volume=local-lvm:vm-560-disk-1 keep`）と止めた前の VM を宣言すると、レーンが無い `reconcile` は `ChangeAwaitingApproval` で作らず付け替えない。`kind: create` のレーンで作って reassign で付け替え（`vm-561-disk-1`、tags に印）、`Converged (no changes)`。新しい VM の中で同じディスクを mount すると印の文字列が読める。前の VM を `kind: delete` のレーンで消すと、keep でない `vm-560-disk-2` は消え、`vm-561-disk-1` は残る。`qm set 561 --delete scsi1`（手で外す）で `unused0` になると、`status --json` が `it/it-new/unused0` を unmanaged に出す。レーンが無ければ付け直さず、`kind: update` のレーンで `volume=` で付け直すと unmanaged から消え、中身も読める（#204） |
+
+### 結果（2026-10-29、Backlog #204 の「作り直しでデータのディスクを引き継ぐ」）
+
+同じ開発機・同じキャッシュで、最後に足した段（`-run 'TestProxmoxVM/作り直し'`）が PASS（段だけで約 100 秒）。`make integration-proxmox` の全段も PASS（約 5 分 40 秒、今回の段は約 130 秒）。
+あわせて確かめたこと（Proxmox VE 9.2）：持ち主の VM の止まった slot からの reassign（`move_disk` の `target-vmid`）は volume を消さずに
+`vm-<新しい vmid>-disk-N` に名前を変え、元の VM の設定から外し、走っている付け先にも付く（hotplug）。手で外した（`--delete scsi1`）
+走っている VM のディスクは `unused0` になり、同じ volume を slot に書くと `unused0` は消える。keep の印のある VM の Delete は
+`destroy-unreferenced-disks=0` で、付け替えたあとの前の VM と keep でないディスクだけが消えた。
 
 ### 結果（2026-10-29、Backlog #196 の「NIC の firewall・mtu と VM の FW の options」）
 

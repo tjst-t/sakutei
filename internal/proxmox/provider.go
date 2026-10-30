@@ -40,10 +40,18 @@
 //     のエラー）。pool は /cluster/resources で読み、トークンにその pool の
 //     Pool.Audit が無ければ「pool に無い」に見える。
 //   - cores・memory（MiB の整数か "2G" など）。
-//   - disks: "<slot> storage=<storage> size=<大きさ>" を "," でつなぐ。宣言した
-//     slot だけを比べる。大きくするのはよい（resize）、小さくするのと
+//   - disks: "<slot> storage=<storage> size=<大きさ> [keep]" を "," でつなぐ。
+//     宣言した slot だけを比べる。大きくするのはよい（resize）、小さくするのと
 //     ストレージを変えるのは計画のエラー。無い slot は足す。宣言しない
-//     ディスクは消さない。
+//     ディスクは消さない。keep（Backlog #204）は「消さない」の印で、VM の
+//     tags に KeepTag（"sakutei-keep-<slot>"）として置き、観測して比べる。
+//     "<slot> volume=<storage>:<volume> [keep]" は既にある volume をその slot が
+//     空のときに付ける（ほかの VM の volume なら、その VM から外して付け替える。
+//     付いたあとは volume の名前を比べない：付け替えで Proxmox が名前を変える）。
+//     volume を付ける Op は承認の要る壊す変更（provider.ApprovalRequirer）。
+//     keep のディスク（と、keep の印のある VM の unused）が残る VM は消さない。
+//     VM の unused（付け先の無い、外したままの volume）は List が
+//     "<クラスタ>/<VM 名>/unusedN" の ID で返す（status の unmanaged に出る）。
 //   - nics: "<slot> bridge=<bridge> [vlan=<tag>] [mac=<mac>] [model=<model>]
 //     [firewall=<0|1>] [mtu=<mtu>]"。宣言した slot だけを比べる。bridge と
 //     vlan（書かなければタグ無し）はいつも、mac・model・firewall・mtu は書いた
@@ -214,7 +222,7 @@ type Options struct {
 }
 
 // Provider は provider.Provider・Lister・BulkObserver・IntentValidator・
-// PlanRefiner・Actioner を実装する。
+// PlanRefiner・Actioner・ApprovalRequirer を実装する。
 type Provider struct {
 	clusters map[string]Cluster
 	now      func() time.Time
@@ -235,6 +243,8 @@ var (
 	_ provider.AbsentValidator = (*Provider)(nil)
 	_ provider.PlanRefiner     = (*Provider)(nil)
 	_ provider.Actioner        = (*Provider)(nil)
+	// #204: volume を付ける（付け替える）Op は承認の要る壊す変更。
+	_ provider.ApprovalRequirer = (*Provider)(nil)
 	// §7.3 (#158): intent の external_owners から vmid などで選べ、設定の
 	// protected_vmids・protected_names を intent と突き合わせられる。
 	_ provider.OwnerFieldSelector = (*Provider)(nil)
@@ -379,6 +389,9 @@ func obsOf(a core.Availability) core.Observation {
 
 // Read は VM を観測する。desired を見ない（ADR-0002）。
 func (p *Provider) Read(ctx context.Context, localID string) (core.Observation, error) {
+	if _, _, ok := splitUnusedID(localID); ok {
+		return obsOf(core.AvailabilityUnknown), provider.NewPermanentError(unusedIDError(localID))
+	}
 	_, c, vm, err := p.coords(localID)
 	if err != nil {
 		return obsOf(core.AvailabilityUnknown), provider.NewPermanentError(fmt.Errorf("%s: Read: %w", Name, err))
@@ -554,6 +567,10 @@ func configState(cfg map[string]string) map[string]string {
 			nics = append(nics, nicFromConfig(k, v))
 		}
 	}
+	keep := keepSlots(cfg)
+	for i := range disks {
+		disks[i].Keep = keep[disks[i].Slot]
+	}
 	sortDisks(disks)
 	sortNICs(nics)
 	out[FieldDisks] = FormatDisks(disks)
@@ -625,9 +642,11 @@ func toState(cluster string, r Resource, cur, next map[string]string) core.State
 	return st
 }
 
-// List は全クラスタの VM（テンプレートと触らない VM を除く）を返す。全
-// クラスタの一覧が取れ、どの VM も名前で一意に引けるときだけ ListComplete、
-// そうでなければ error（complete-or-error、§5.4）。
+// List は全クラスタの VM（テンプレートと触らない VM を除く）と、その VM の
+// 付け先の無い volume（unusedN、"<クラスタ>/<VM 名>/unusedN"、Backlog #204。
+// status の unmanaged に出る）を返す。全クラスタの一覧と VM の設定が取れ、
+// どの VM も名前で一意に引けるときだけ ListComplete、そうでなければ error
+// （complete-or-error、§5.4）。
 func (p *Provider) List(ctx context.Context, _ core.Scope) (core.ListResult, error) {
 	var ids []core.ID
 	for _, name := range p.clusterNames() {
@@ -643,6 +662,11 @@ func (p *Provider) List(ctx context.Context, _ core.Scope) (core.ListResult, err
 		for _, r := range vms {
 			ids = append(ids, core.NewID(Name, c.Scope, LocalID(name, r.Name)))
 		}
+		unused, err := listUnused(ctx, c, name, vms)
+		if err != nil {
+			return core.ListResult{}, classify(fmt.Errorf("%s: List %s: %w", Name, name, err))
+		}
+		ids = append(ids, unused...)
 	}
 	return core.ListResult{IDs: ids, Status: core.ListComplete}, nil
 }
@@ -763,6 +787,9 @@ func (p *Provider) ConfigExclusions() []provider.ConfigExclusion {
 // 動く VM など段0 のもの、§23）を消す宣言。protected_vmids の VM は名前では
 // 分からないので、Read・Apply が触らないことで守る（消さずに Unknown）。
 func (p *Provider) ValidateAbsent(localID string) error {
+	if _, _, ok := splitUnusedID(localID); ok {
+		return unusedIDError(localID)
+	}
 	name, c, vm, err := p.coords(localID)
 	if err != nil {
 		return fmt.Errorf("%s: %w", Name, err)
@@ -775,6 +802,9 @@ func (p *Provider) ValidateAbsent(localID string) error {
 
 // ValidateIntent は現実を見ずに決まる誤りを、読み込みの時点で断る（§28.4）。
 func (p *Provider) ValidateIntent(localID string, fields map[string]string) error {
+	if _, _, ok := splitUnusedID(localID); ok {
+		return unusedIDError(localID)
+	}
 	name, c, vm, err := p.coords(localID)
 	if err != nil {
 		return fmt.Errorf("%s: %w", Name, err)
@@ -1015,10 +1045,12 @@ func fieldMatches(field, want, have string) (bool, error) {
 			if h.Storage != w.Storage {
 				return false, fmt.Errorf("disk %s is on storage %s but %s is declared; moving a disk is not managed (move it by hand, or declare storage=%s)", w.Slot, h.Storage, w.Storage, h.Storage)
 			}
-			if w.Size < h.Size {
+			if w.Size > 0 && w.Size < h.Size {
 				return false, fmt.Errorf("disk %s is %s but %s is declared; a disk is never shrunk (declare size=%s or larger)", w.Slot, FormatSize(h.Size), FormatSize(w.Size), FormatSize(h.Size))
 			}
-			if w.Size > h.Size {
+			// volume= は slot が空のときに付けるものなので、付いたあとは比べない
+			// （付け替えで Proxmox が volume の名前を変える、#204）。
+			if w.Size > h.Size || w.Keep != h.Keep {
 				match = false
 			}
 		}
@@ -1076,12 +1108,12 @@ func nicMatches(w, h NIC) bool {
 func parseObservedDisks(s string) (map[string]Disk, error) {
 	out := map[string]Disk{}
 	for _, e := range splitEntries(s) {
-		slot, kv, err := entryKV(e, "storage", "size")
+		slot, kv, keep, err := diskEntry(e, "storage", "size", "volume")
 		if err != nil {
 			return nil, err
 		}
 		size, _ := ParseSize(kv["size"])
-		out[slot] = Disk{Slot: slot, Storage: kv["storage"], Size: size}
+		out[slot] = Disk{Slot: slot, Storage: kv["storage"], Size: size, Volume: kv["volume"], Keep: keep}
 	}
 	return out, nil
 }
@@ -1149,6 +1181,9 @@ func (p *Provider) applyOp(ctx context.Context, op core.Op) error {
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("%s: Apply %q: "+format, append([]any{Name, localID}, args...)...)
 	}
+	if _, _, ok := splitUnusedID(localID); ok {
+		return provider.NewPermanentError(unusedIDError(localID))
+	}
 	_, c, vm, err := p.coords(localID)
 	if err != nil {
 		return provider.NewPermanentError(fail("%w", err))
@@ -1195,6 +1230,7 @@ func (p *Provider) applyOp(ctx context.Context, op core.Op) error {
 	for _, f := range op.Fields {
 		want[f.Field] = f.To
 	}
+	created := false
 	if cur == nil {
 		if op.Kind != core.OpKindCreate {
 			return provider.NewTransientError(fail("the VM disappeared"))
@@ -1214,11 +1250,19 @@ func (p *Provider) applyOp(ctx context.Context, op core.Op) error {
 		if err := c.powerOf(ctx, cur); err != nil {
 			return classify(fail("%w", err))
 		}
+		created = true
 	}
 	if cur.Status != PowerRunning && cur.Status != PowerStopped {
 		return provider.NewTransientError(fail("VM %d has status %q", cur.VMID, cur.Status))
 	}
-	return p.update(ctx, c, localID, *cur, want, op)
+	if err := p.update(ctx, c, localID, *cur, want, op, res); err != nil {
+		if created {
+			// 途中で落ちた：どこまで進んだかを知らせる（次の周は Update で続ける）。
+			return withNote(err, fmt.Sprintf("VM %d was created; the next cycle continues the rest as an update", cur.VMID))
+		}
+		return err
+	}
+	return nil
 }
 
 // create は VM を作る（テンプレートの複製か、空から）。仕事が task_wait の
@@ -1282,7 +1326,7 @@ func (p *Provider) create(ctx context.Context, c Cluster, localID, vm string, wa
 			}
 		}
 		params := url.Values{"newid": {strconv.Itoa(vmid)}, "name": {vm}, "target": {node}, "full": {"1"}}
-		if st := oneStorage(disks); st != "" {
+		if st := oneStorage(newDisks(disks)); st != "" {
 			params.Set("storage", st)
 		}
 		if pool != "" {
@@ -1310,7 +1354,10 @@ func (p *Provider) create(ctx context.Context, c Cluster, localID, vm string, wa
 		}
 		scsi := false
 		for _, d := range disks {
-			params.Set(d.Slot, d.Storage+":"+strconv.FormatInt(d.Size>>30, 10))
+			// volume= のディスクは作ったあとに付ける（update、#204）。
+			if d.Volume == "" {
+				params.Set(d.Slot, d.Storage+":"+strconv.FormatInt(d.Size>>30, 10))
+			}
 			scsi = scsi || strings.HasPrefix(d.Slot, "scsi")
 		}
 		if scsi {
@@ -1383,6 +1430,17 @@ func movePool(ctx context.Context, c Cluster, vm Resource, to string, fail func(
 	return classify(err)
 }
 
+// newDisks は disks のうち新しく切り出すもの（volume= でないもの）。
+func newDisks(disks []Disk) []Disk {
+	var out []Disk
+	for _, d := range disks {
+		if d.Volume == "" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // oneStorage は disks が全部同じストレージならそれを返す（複製の先）。
 func oneStorage(disks []Disk) string {
 	st := ""
@@ -1449,6 +1507,9 @@ func ciParams(params url.Values, want map[string]string, next map[string]string)
 		set("ciupgrade", map[bool]string{true: "1", false: "0"}[b])
 	}
 	if len(del) > 0 {
+		if prev := params.Get("delete"); prev != "" {
+			del = append([]string{prev}, del...)
+		}
 		params.Set("delete", strings.Join(del, ","))
 	}
 	return nil
@@ -1456,7 +1517,7 @@ func ciParams(params url.Values, want map[string]string, next map[string]string)
 
 // update は今ある VM を want に合わせる。設定は再起動の後の値（pending を
 // 含む）と比べ、違うものだけを書く（重ねて pending を作らない）。
-func (p *Provider) update(ctx context.Context, c Cluster, localID string, vm Resource, want map[string]string, op core.Op) error {
+func (p *Provider) update(ctx context.Context, c Cluster, localID string, vm Resource, want map[string]string, op core.Op, res []Resource) error {
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("%s: Apply %q: "+format, append([]any{Name, localID}, args...)...)
 	}
@@ -1501,6 +1562,8 @@ func (p *Provider) update(ctx context.Context, c Cluster, localID string, vm Res
 	}
 	type resize struct{ slot, size string }
 	var resizes []resize
+	type attach struct{ slot, volume string }
+	var attaches []attach
 	if v, ok := want[FieldDisks]; ok {
 		ws, err := ParseDisks(v)
 		if err != nil {
@@ -1514,13 +1577,25 @@ func (p *Provider) update(ctx context.Context, c Cluster, localID string, vm Res
 				if _, used := next[w.Slot]; used {
 					return provider.NewPermanentError(fail("slot %s holds something that is not a disk (a CD-ROM or the cloud-init drive)", w.Slot))
 				}
+				if w.Volume != "" {
+					attaches = append(attaches, attach{w.Slot, w.Volume})
+					continue
+				}
 				params.Set(w.Slot, w.Storage+":"+strconv.FormatInt(w.Size>>30, 10))
 			case h.Storage != w.Storage:
 				return provider.NewPermanentError(fail("disk %s is on storage %s, not %s (moving a disk is not managed)", w.Slot, h.Storage, w.Storage))
-			case w.Size < h.Size:
+			case w.Size > 0 && w.Size < h.Size:
 				return provider.NewPermanentError(fail("disk %s is %s; it is never shrunk to %s", w.Slot, FormatSize(h.Size), FormatSize(w.Size)))
 			case w.Size > h.Size:
 				resizes = append(resizes, resize{w.Slot, FormatSize(w.Size)})
+			}
+		}
+		// keep の印（#204）：宣言した slot の印だけを VM の tags で合わせる。
+		if tags, changed := keepTagsFor(next["tags"], ws); changed {
+			if tags == "" {
+				params.Add("delete", "tags")
+			} else {
+				params.Set("tags", tags)
 			}
 		}
 		if _, ok := next["scsihw"]; !ok {
@@ -1594,6 +1669,11 @@ func (p *Provider) update(ctx context.Context, c Cluster, localID string, vm Res
 			}
 		}
 	}
+	for _, a := range attaches {
+		if err := p.attachVolume(ctx, c, localID, vm, a.slot, a.volume, next, res); err != nil {
+			return err
+		}
+	}
 	for _, r := range resizes {
 		upid, err := c.Client.Resize(ctx, vm.Node, vm.VMID, r.slot, r.size)
 		if err != nil {
@@ -1664,13 +1744,18 @@ func (p *Provider) update(ctx context.Context, c Cluster, localID string, vm Res
 }
 
 // destroy は VM を消す。走っていれば先に止める（Delete は破壊的として予算を
-// 通っている）。
+// 通っている）。keep のディスクが残る VM は消さない（keepGuard、#204）。
 func (p *Provider) destroy(ctx context.Context, c Cluster, localID string, vm Resource) error {
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("%s: Apply %q: delete: "+format, append([]any{Name, localID}, args...)...)
 	}
 	if vm.Lock != "" {
 		return provider.NewTransientError(fail("VM %d is locked (%s)", vm.VMID, vm.Lock))
+	}
+	// #204: keep の volume が残る VM は消さない（止めて待つ）。
+	unreferenced, err := p.keepGuard(ctx, c, localID, vm)
+	if err != nil {
+		return err
 	}
 	if vm.Status == PowerRunning {
 		upid, err := c.Client.PowerAction(ctx, vm.Node, vm.VMID, "stop", nil)
@@ -1681,7 +1766,7 @@ func (p *Provider) destroy(ctx context.Context, c Cluster, localID string, vm Re
 			return err
 		}
 	}
-	upid, err := c.Client.Destroy(ctx, vm.Node, vm.VMID)
+	upid, err := c.Client.Destroy(ctx, vm.Node, vm.VMID, unreferenced)
 	if err != nil {
 		return classify(fail("%w", err))
 	}
