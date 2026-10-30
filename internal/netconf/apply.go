@@ -186,7 +186,7 @@ func (p *Provider) newRun(op core.Op) (*applyRun, error) {
 	if err != nil {
 		return nil, provider.NewPermanentError(err)
 	}
-	var cfg, ord string
+	var cfg, ord, conf string
 	hasCfg := false
 	for _, f := range op.Fields {
 		switch f.Field {
@@ -194,6 +194,8 @@ func (p *Provider) newRun(op core.Op) (*applyRun, error) {
 			cfg, hasCfg = f.To, true
 		case FieldOrdered:
 			ord = f.To
+		case FieldConfirm:
+			conf = f.To
 		}
 	}
 	if !hasCfg {
@@ -207,6 +209,10 @@ func (p *Provider) newRun(op core.Op) (*applyRun, error) {
 	if err != nil {
 		return nil, provider.NewPermanentError(fmt.Errorf("%s %s: config is not XML: %v", Name, id, err))
 	}
+	confirm, err := ParseConfirm(conf)
+	if err != nil {
+		return nil, provider.NewPermanentError(fmt.Errorf("%s %s: confirm: %w", Name, id, err))
+	}
 	filter, err := parseXML([]byte(st.Filter))
 	if err != nil {
 		return nil, provider.NewPermanentError(fmt.Errorf("%s %s: filter: %v", Name, id, err))
@@ -215,7 +221,8 @@ func (p *Provider) newRun(op core.Op) (*applyRun, error) {
 	if d, ok := p.apply.HostConfirmTimeouts[h.name]; ok {
 		cfgOf.ConfirmTimeout = d
 	}
-	return &applyRun{p: p, h: h, st: st, id: id, filter: filter, want: want, ordered: ordered, cfg: cfgOf}, nil
+	return &applyRun{p: p, h: h, st: st, id: id, filter: filter, want: want, ordered: ordered, cfg: cfgOf,
+		confirm: confirm, target: op.Target, fields: confirmFields(op)}, nil
 }
 
 // applyRun は 1 つの部分木の 2 段の Apply。
@@ -228,6 +235,11 @@ type applyRun struct {
 	want    []*node
 	ordered orderedSet
 	cfg     ApplyConfig
+	// confirm は宣言の確かめる先（nil なら self だけ、#200）。target・fields は
+	// check: の関数に渡す変えたリソースと宣言の値。
+	confirm []ConfirmTarget
+	target  core.ID
+	fields  map[string]string
 }
 
 func (a *applyRun) errf(format string, args ...any) error {
@@ -254,8 +266,14 @@ func (a *applyRun) run(ctx context.Context) error {
 		return err
 	}
 	timeout := a.cfg.ConfirmTimeout
-	// Check over a new connection, for at most half of the timeout.
-	why := a.verify(ctx, st.committedAt.Add(timeout/2), a.want, "as declared")
+	// Check over a new connection, for at most half of the timeout; then the
+	// checks made only after the change (observe:, check:, #200), within the
+	// same limit.
+	deadline := st.committedAt.Add(timeout / 2)
+	why := a.verify(ctx, deadline, a.want, "as declared")
+	if why == "" {
+		why = a.afterChecks(ctx, deadline)
+	}
 	if why != "" {
 		// Not confirmed: the device rolls back at the timeout. Keep the
 		// session until then, so the rollback is the device's clock alone.

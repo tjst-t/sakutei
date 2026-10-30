@@ -116,12 +116,17 @@ type Provider struct {
 	subtrees map[string]Subtree
 	// apply は 2 段の Apply の設定（nil なら観測だけ）。
 	apply *ApplyConfig
+
+	// conf は変えたあとの確かめ（observe:・check:）のコアの口（#200）。
+	confMu sync.RWMutex
+	conf   provider.Confirmer
 }
 
 var (
 	_ provider.Provider        = (*Provider)(nil)
 	_ provider.IntentValidator = (*Provider)(nil)
 	_ provider.PlanRefiner     = (*Provider)(nil)
+	_ provider.ConfirmUser     = (*Provider)(nil)
 )
 
 // host は 1 台の機器とのセッション。
@@ -179,6 +184,7 @@ func (p *Provider) Schema() provider.Schema {
 		FieldConfig:       {Kind: core.FieldKindString, Required: true},
 		FieldOrdered:      {Kind: core.FieldKindString},
 		FieldCommitGroup:  {Kind: core.FieldKindString},
+		FieldConfirm:      {Kind: core.FieldKindString},
 		FieldCapabilities: {Kind: core.FieldKindString, Computed: true},
 	}}
 }
@@ -360,6 +366,9 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	if err := validateCommitGroupField(localID, fields); err != nil {
 		return err
 	}
+	if err := p.validateConfirmField(localID, fields); err != nil {
+		return err
+	}
 	for _, f := range []string{FieldHost, FieldSubtree} {
 		if v, ok := fields[f]; ok {
 			want := strings.SplitN(localID, "/", 2)[0]
@@ -410,13 +419,16 @@ func (p *Provider) knownFields(localID string, fields map[string]string) error {
 		return nil
 	}
 	sort.Strings(unknown)
-	return fmt.Errorf("%s %q: unknown field(s) %q (remove them from the fields; a netconf resource declares only %s, %s, %s, %s)",
-		Name, localID, unknown, FieldConfig, FieldOrdered, FieldHost, FieldSubtree)
+	return fmt.Errorf("%s %q: unknown field(s) %q (remove them from the fields; a netconf resource declares only %s, %s, %s, %s, %s, %s)",
+		Name, localID, unknown, FieldConfig, FieldOrdered, FieldCommitGroup, FieldConfirm, FieldHost, FieldSubtree)
 }
 
 // RefinePlan は比べ方の宣言を差分に当てる:
 //
 //   - commit_group（機器に無い「どう確定するか」、#199）の差分は落とす。
+//   - confirm（機器に無い「どう確かめるか」、#200）の差分は落とす。ただし
+//     Apply を許していてほかの差分があるときは残す（Apply が確かめる先を
+//     知るのに使う）。
 //   - ordered（機器に無い「どう比べるか」）の差分は落とす。ただし Apply を
 //     許していて config も違うときは残す（Apply が順を並べ直し、宣言どおりかを
 //     同じ比べ方で確かめるのに使う）。
@@ -435,7 +447,7 @@ func (p *Provider) RefinePlan(localID string, observed core.State, desired map[s
 	var out []core.Op
 	for _, op := range ops {
 		var fields []core.FieldDiff
-		var orderedDiff *core.FieldDiff
+		var orderedDiff, confirmDiff *core.FieldDiff
 		diag := ""
 		for _, f := range op.Fields {
 			switch f.Field {
@@ -445,6 +457,11 @@ func (p *Provider) RefinePlan(localID string, observed core.State, desired map[s
 			case FieldOrdered:
 				od := f
 				orderedDiff = &od
+				continue
+			case FieldConfirm:
+				// How to confirm, not on the device (#200).
+				cd := f
+				confirmDiff = &cd
 				continue
 			case FieldConfig:
 				// The core refines only a present resource (observed != nil).
@@ -463,8 +480,12 @@ func (p *Provider) RefinePlan(localID string, observed core.State, desired map[s
 			}
 			fields = append(fields, f)
 		}
-		if p.apply != nil && orderedDiff != nil && len(fields) > 0 {
-			fields = append(fields, *orderedDiff)
+		if p.apply != nil && len(fields) > 0 {
+			for _, d := range []*core.FieldDiff{orderedDiff, confirmDiff} {
+				if d != nil {
+					fields = append(fields, *d)
+				}
+			}
 		}
 		op.Fields = fields
 		op.Diagnostic = diag

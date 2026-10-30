@@ -45,6 +45,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/reconcile"
 	"github.com/tjst-t/sakutei/v2/internal/s3bucket"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/netpolicy"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 	"github.com/tjst-t/sakutei/v2/pkg/sdk"
 )
@@ -62,6 +63,7 @@ import (
 // §10.4, ADR-0008) and exits 1 via exitOnValidationFail when validation fails.
 func resolveProviders(
 	reg *providerSet,
+	np *netpolicy.Result,
 	resources []diff.DesiredResource,
 	baseConfig map[string]string,
 	commandName string,
@@ -86,6 +88,11 @@ func resolveProviders(
 			os.Exit(1)
 		}
 		result[name] = p
+	}
+	// #200: the checks after a change (observe:, check:) are validated with
+	// the intent below, so the providers get the Confirmer first.
+	if err := installConfirmer(np, resources, result); err != nil {
+		return nil, fmt.Errorf("%s: %w", commandName, err)
 	}
 	// §28.4 (#69): an id the provider would never List (e.g. a relative DNS
 	// name) is rejected before the first Read, so it can neither be Created a
@@ -128,6 +135,7 @@ func resolveProviders(
 func resolveIntentProviders(
 	reg *providerSet,
 	ranges map[string]map[string]any,
+	np *netpolicy.Result,
 	resources []diff.DesiredResource,
 	baseConfig map[string]string,
 	commandName string,
@@ -136,7 +144,7 @@ func resolveIntentProviders(
 	if err := reg.useIntent(ranges, commandName, w); err != nil {
 		return nil, err
 	}
-	return resolveProviders(reg, resources, baseConfig, commandName)
+	return resolveProviders(reg, np, resources, baseConfig, commandName)
 }
 
 // checkExternalOwners runs the load-time external_owners check (§7.3, #158):

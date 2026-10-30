@@ -26,7 +26,8 @@ package netconf
 //     commit confirmed を送らない（candidate を捨てる）。
 //  2. 全部の台に、それぞれのセッションで commit confirmed を送る（並べて）。
 //  3. 全部の台で、新しい ssh 接続で届くこと・宣言どおりなことを確かめる
-//     （並べて）。#200 の confirm の先の確かめもここに入る。
+//     （並べて）。全部の台で通ったら、全部の台の confirm の observe: と
+//     check:（変えたあとだけの確かめ、confirm.go、#200）を待つ（並べて）。
 //  4. 全部が通ったときだけ、各台に確定の commit を送る（並べて）。
 //
 // 時間の上限は group の中で一番短い confirm-timeout を基準にし、最初の
@@ -189,6 +190,19 @@ func (p *Provider) applyGroup(ctx context.Context, group string, ops []core.Op) 
 	if why == "" && time.Now().Before(deadline) {
 		each(members, func(m *groupMember) {
 			if r := m.run.verify(ctx, deadline, m.run.want, "as declared"); r != "" {
+				m.err = provider.NewPermanentError(m.run.errf("not confirmed: %s within %s (half of the shortest confirm-timeout %s of commit group %q); no member was confirmed",
+					r, timeout/2, timeout, group))
+			}
+		})
+		if bad = firstFailed(members); bad != nil {
+			why = fmt.Sprintf("%s was not confirmed", bad.run.id)
+		}
+	}
+	// 3b. Every member committed confirmed and reached: now the checks made
+	// only after the change (observe:, check:, #200) of every member.
+	if why == "" && time.Now().Before(deadline) {
+		each(members, func(m *groupMember) {
+			if r := m.run.afterChecks(ctx, deadline); r != "" {
 				m.err = provider.NewPermanentError(m.run.errf("not confirmed: %s within %s (half of the shortest confirm-timeout %s of commit group %q); no member was confirmed",
 					r, timeout/2, timeout, group))
 			}

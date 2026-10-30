@@ -83,6 +83,10 @@ func Main(opts ...Option) {
 		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
 		os.Exit(1)
 	}
+	if err := registerConfirmChecks(o.confirmChecks); err != nil {
+		fmt.Fprintf(os.Stderr, "sakutei: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Route to the daemon loop when:
 	//   (a) no arguments at all, or
@@ -540,6 +544,7 @@ func runDaemon() {
 			return reg.Get(name, providerConfig)
 		},
 		IntentProviders:       intentResolver{set: reg, base: providerConfig},
+		ConfirmChecks:         baseConfirmChecks,
 		Interval:              interval,
 		BudgetConfig:          budgetCfg,
 		CapacityGates:         capacityGates,

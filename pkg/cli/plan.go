@@ -409,7 +409,7 @@ func runPlan(args []string) {
 	if *ansibleConfig != "" {
 		providerConfig["ansible_config"] = *ansibleConfig
 	}
-	providers, resolveErr := resolveIntentProviders(reg, in.Providers, desired, providerConfig, "sakutei plan", logErr)
+	providers, resolveErr := resolveIntentProviders(reg, in.Providers, in.NetworkPolicy, desired, providerConfig, "sakutei plan", logErr)
 	if resolveErr == nil {
 		resolveErr = checkExternalOwners(in.ExternalOwners, desired, providers, "sakutei plan", logErr)
 	}

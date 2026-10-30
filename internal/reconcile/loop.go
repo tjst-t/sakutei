@@ -178,6 +178,10 @@ type Config struct {
 	// name that cannot be resolved leaves its resources unobservable for the
 	// cycle (no Apply, no prune) and is retried next cycle.
 	Providers ProviderResolver
+	// ConfirmChecks are the check functions a declaration names with check:
+	// in its confirm (pkg/cli.WithConfirmCheck, Backlog #200); the
+	// network_policy realizers' Output.Checks are added each cycle.
+	ConfirmChecks map[string]provider.ConfirmCheck
 	// IntentProviders, when set, is used instead of Providers: it resolves
 	// each provider with the intent's providers.<name>: entry (§7.7, Backlog
 	// #181).  A provider whose entry changes is rebuilt; an entry that
@@ -1982,6 +1986,21 @@ func runCycleAsync(
 				fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): %w", err)
 		}
 	}
+
+	// #200: the checks after a change (observe:, check:) are validated with
+	// the intent below, so the providers get this intent's Confirmer first.
+	confirmChecks, err := ConfirmChecks(cfg.ConfirmChecks, in.NetworkPolicy)
+	if err != nil {
+		return CycleResult{ExcludedByClaim: excludedByClaim},
+			fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): %w", err)
+	}
+	InstallConfirmer(desired, func(name string) provider.Provider {
+		e, err := providers.get(name)
+		if err != nil {
+			return nil
+		}
+		return e.p
+	}, confirmChecks)
 
 	// §28.4 (#69): an id the provider would never List (e.g. a relative DNS
 	// name) skips the whole cycle, before any Observe/Apply/prune: left in,

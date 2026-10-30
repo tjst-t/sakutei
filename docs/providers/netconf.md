@@ -92,6 +92,7 @@ ID は `<ホスト名>/<部分木の名前>`（例 `sw1/if-uplink`）。
 | `config` | 部分木の中身の XML（**宣言、必須**）。観測の値は機器の running の正規形（下）で、機器の順のまま |
 | `ordered` | 順に意味のある列の道（`nacm/rule-list/rule` のように、部分木の頭からの要素の名前を `/` でつなぐ。カンマで複数）。比べ方の宣言で、機器には無い（それだけでは差分にならない）。Apply を許していて `config` が違うときは、Apply が順を並べ直して確かめるのに使うので plan に `+ ordered` と出る |
 | `commit_group` | まとめて確定する group の名前（英小文字・数字・`_`・`.`・`-`。下の「commit_group」、#199）。どう確定するかの宣言で、機器には無い（差分にならない）。書かなければ台ごとに確定する |
+| `confirm` | 確かめる先の一覧（`self`・`observe:…`・`check:…` を「, 」で区切る。下の「confirm の先」、#200）。どう確かめるかの宣言で、機器には無い（それだけでは差分にならない）。書かなければ `self` だけ |
 | `host`・`subtree` | ホストの名前と部分木の名前（ID から、identity）。書かなくてよい |
 | `capabilities` | 機器の hello の NETCONF の capability（短い名前を空白で区切る。例 `base:1.0 base:1.1 candidate:1.0 confirmed-commit:1.1 validate:1.1 …`）。観測だけ（Computed） |
 
@@ -110,7 +111,7 @@ resources:
 
 - 宣言は **filter が選ぶ部分木の全体**。機器の側にだけある葉（明示的に設定された値）もずれになる。既定値の扱いは機器の with-defaults の基本の振る舞いに従う（多くは明示した値だけを返す）。
 - 読み込みの時点で、ID の形・ホストと部分木があること・`config` が XML として読めて、最上位の要素が filter の最上位の要素のどれかであること・`ordered` の書式を確かめる（エラーに `config` の中身は出さない）。
-- **知らない欄は読み込みで断る**（Backlog #211）。`fields` に書けるのは上の表の `config`・`ordered`・`host`・`subtree` だけ。それ以外の欄（宣言を組み立てる道具が足した `name` など）は、`validate`（provider の `ValidateIntent`）・`plan`・`reconcile`・常駐の読み込みで、欄の名前とリソースの ID を挙げて断る（例 `netconf "sw1/if-uplink": unknown field(s) ["name"] (remove them from the fields; …)`）。直し方はその欄を宣言から外すこと。観測だけの `capabilities` を宣言に書いたときも同じく断る。以前は知らない欄が drift になり、Apply が「the operation carries no config」の permanent で断っていて原因が分かりにくかった。機器には何も送らない。
+- **知らない欄は読み込みで断る**（Backlog #211）。`fields` に書けるのは上の表の `config`・`ordered`・`commit_group`・`confirm`・`host`・`subtree` だけ。それ以外の欄（宣言を組み立てる道具が足した `name` など）は、`validate`（provider の `ValidateIntent`）・`plan`・`reconcile`・常駐の読み込みで、欄の名前とリソースの ID を挙げて断る（例 `netconf "sw1/if-uplink": unknown field(s) ["name"] (remove them from the fields; …)`）。直し方はその欄を宣言から外すこと。観測だけの `capabilities` を宣言に書いたときも同じく断る。以前は知らない欄が drift になり、Apply が「the operation carries no config」の permanent で断っていて原因が分かりにくかった。機器には何も送らない。
 - 宣言に edit-config の属性（`nc:operation`・`yang:insert`）は書けない（どう当てるかは provider が決める）。
 - 部分木が機器に無い（`<data>` が空）のは観測の事実（absent）。plan には `CREATE` として出る。観測だけなら当てない。Apply を許していれば、2 段の Apply で作る。
 - **中身の無い要素だけの `<data>` も absent**（Backlog #208）。部分木が無いとき、名前空間の無い空の `<configuration/>`（rpc-reply の base:1.0 の名前空間を受け継ぐ）を返す機器がある。子も値も無い最上位の要素は、名前空間の有無も属性も問わず「無い」と見る。同じ理由で、中身の無い要素を `config` に宣言するのは読み込みで断る（宣言しても観測はいつも absent になり、収束しない）。
@@ -237,7 +238,7 @@ resources:
 
 1. group の全部の台で、それぞれの Apply のセッションを開き、candidate に部分木を当てる（上の 1・2）。**1 台でも送れなければ、どの台にも commit confirmed を送らない**（candidate を捨てる）。
 2. 全部の台に、それぞれのセッションで commit confirmed（並べて送る）。
-3. 全部の台で、新しい ssh 接続での到達と宣言どおりかを確かめる（並べて。confirm の先の確かめ、#200 もここに入る）。
+3. 全部の台で、新しい ssh 接続での到達と宣言どおりかを確かめる（並べて）。全部の台で通ったら、全部の台の `confirm` の `observe:`・`check:` を待つ（並べて。下の「confirm の先」、#200）。
 4. **全部が通ったときだけ**、各台に確定の `<commit>`（並べて送る）。
 
 **時間の上限は group の中で一番短い confirm-timeout を基準にする**（台ごとの値は `netconf_confirm_timeouts`）。最初の commit confirmed から、その半分までに 4 に入れなければ確定しない。
@@ -256,6 +257,35 @@ NETCONF には複数の機器をまたぐ確定が無い。4 の確定は台ご�
 | 機器が確定の `<commit>` を断った（rpc-error） | not_committed（confirm-timeout で戻る） | 次の周に group で当て直す（確定した台は差分が無いので送らない） |
 
 窓は 4 の rpc を送っている間（並べて送るので、台ごとの 1 往復ほど）に限られる。窓に落ちた group は、台ごとの Event で、どの台が確定し、どの台が分からないかを示す。
+
+## confirm の先：別のリソースの観測（`observe:`）と確かめの関数（`check:`）（Backlog #200）
+
+ある台への変更が効いたかは、相手の台から見ないと分からないことがある（例：相手の台で経路が見えること）。欄 `confirm` に、変えたあと（commit confirmed のあと、確定の前）に確かめる先を「, 」で区切って書く。書かなければ `self` だけ（今までどおり）。
+
+```yaml
+resources:
+  - provider: netconf
+    id: sw1/if-uplink
+    fields:
+      config: '<interfaces xmlns="urn:ietf:params:xml:ns:yang:ietf-interfaces">…</interfaces>'
+      confirm: 'self, observe:netconf//sw2/if-peer expect:{"config":"<interfaces xmlns=\"urn:ietf:params:xml:ns:yang:ietf-interfaces\">…</interfaces>"}, check:route-seen'
+  - provider: netconf
+    id: sw2/if-peer          # observe: で読むリソースは intent に宣言する
+    fields: {config: '…'}
+```
+
+| 先 | 確かめること |
+| --- | --- |
+| `self` | 機器そのもの（新しい ssh 接続で届くこと・部分木が宣言どおりなこと）。**`self` の無い `confirm` は読み込みで断る**（到達の先が無い。`after:self` も断る） |
+| `observe:<provider>/<scope>/<id> [expect:{…}]` | 別のリソースを観測し直し、`expect:`（JSON の object、欄 → 値）に書いた**欄の部分集合**が期待どおりになるまで繰り返し読む。`expect:` を書かなければ、観測できて在ることだけ。ID は `<provider>/<scope>/<id>`（scope が無ければ `netconf//sw2/if-peer`。scope は `site=a,rack=1` の形）。ID の中に空白は書けない |
+| `check:<name>` | 名前で登録した確かめの関数を、nil を返すまで繰り返し呼ぶ。何をどう読んで判定するかは関数を渡す側が持つ |
+
+- **`observe:` の読み方**：コアが、そのリソースの provider の `Read` を**観測用の資格**（Apply の中でも書き込みの文脈を外す。#185・#186）で、**ふだんの範囲のまま**呼ぶ。読めるのは **intent が宣言するリソースだけ**（宣言に無い ID・`ensure: absent` は読み込みで断る）で、netconf のリソースなら部分木の filter の `get-config` だけ、機器の NACM の外は読まない（#176）。比べ方はふだんの収束と同じ（そのリソースの宣言に `expect` を重ね、diff と PlanRefiner に通して `expect` の欄の差分だけを見る。netconf の `config` なら正規形と `ordered`）。`expect` に computed・managed・secret の欄は書けない。リソースそのものは書けない（`self` が読む）。
+- **`check:` の関数の渡し方**：自前のバイナリ（§28.9）で `cli.Main(cli.WithConfirmCheck("route-seen", func(ctx context.Context, t provider.ConfirmTarget) error { … }))`。network_policy の realizer（`cli.WithRealizer`、§7.6）は `netpolicy.Output` の `Checks`（名前 → 関数）でも渡せる（返すリソースの `Fields` の `confirm` に `check:<名前>` と書く）。同じ名前を 2 度登録すると断る。登録の無い名前は読み込みで断る。関数には変えたリソースの ID（`t.ID`）と宣言の値（`t.Fields`）が渡り、`ctx` は観測の文脈（`provider.Writing(ctx)` は false。書き込み用の資格を使わない）で、期限は時間の上限。
+- **いつも変えたあとだけ**：`observe:` と `check:` は commit confirmed と `self` の確かめのあとに確かめる（`after:` の印は書いても書かなくても同じ）。時間の上限は `self` と同じ（commit confirmed から confirm-timeout の半分）。
+- **通らなければ確定しない**：`self` が落ちたときと同じ（確定の commit を送らず機器の巻き戻しに任せ、permanent で同じ宣言は変わるまで当て直さない）。知らせには通らなかった先と最後に見た理由を出す（例 `not confirmed: observe:netconf//sw2/if-peer: config not as expected (…) within 5s …`。`expect` の値そのものは出さない）。
+- **commit_group** では、group の全部の台が commit confirmed を終え、全部の台の `self` が通ってから、全部の台の `observe:`・`check:` を待つ。1 つでも通らなければ、どの台も確定しない。
+- 限界：netconf の観測は `get-config` の部分木なので、`observe:` で機器の operational の状態（経路表など）は読めない（#201）。それを見たいときは `check:` の関数で読む。
 
 ## 部分木だけに絞ったユーザー（NACM）
 
@@ -325,7 +355,7 @@ NETCONF のユーザーは、機器の側の NACM（RFC 8341）で**宣言する
 
 ## 統合テスト
 
-公開の NETCONF サーバ（netopeer2 のコンテナ）を相手に回す（Backlog #141・#175・#176・#199）。build tag `integration_netconf` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
+公開の NETCONF サーバ（netopeer2 のコンテナ）を相手に回す（Backlog #141・#175・#176・#199・#200）。build tag `integration_netconf` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
 
 ```console
 $ make integration-netconf
@@ -355,6 +385,8 @@ $ make integration-netconf
 | 絞ったユーザー（NACM） | 手で変えた 2 つを、絞ったユーザーの設定の status が drift と見て、reconcile が 2 段で当てる（`2 change(s) applied`）→ conformant、機器は宣言どおりで confirm-timeout の後も残る。その間の netopeer2 のログに断った rpc（`Operation not authorized`・`User callback failed`・`denied`）が無い（外を触る rpc を送っていない）。部分木の外（`sw1/admin-rules`）を変える宣言は、観測では absent に見え（NACM が黙って省く）、Apply が `edit-config on the candidate: … access-denied at /ietf-netconf-acm:nacm/rule-list[name='sakutei-it-admin']/…` で断られて permanent、`the candidate was discarded, nothing was committed`。機器の NACM は変わらない。そのあとも絞ったユーザーで部分木の中は当てられる（lock と candidate が残っていない） |
 | commit_group：全部が通る | 3 台の rule の順を手で入れ替え、group の reconcile → plan の 3 つの操作に `commit_group: leafs`、`3 change(s) applied`、台ごとに `CommitGroupApplied` の committed。3 台とも宣言どおりで、confirm-timeout の後も戻らない。次の reconcile は Converged |
 | commit_group：1 台の確かめが落ちる | g1・g2 の rule の順と g3 の `deny-read-nacm` を同じ group で reconcile → g3 は新しい接続で宣言どおりと確かめられず（5 秒で打ち切る）、どの台も確定しない（3 台とも not committed）。netopeer2 は `:confirmed-commit:1.1` を持つので、3 台に `<cancel-commit>` を送ってすぐ戻す。g1・g2 は手で変えたまま、g3 に `deny-read-nacm` は無い |
+| confirm の observe:：相手が期待どおり（#200） | g1 の rule の順を手で入れ替え、g2 は r1, r2 の順にして、g1 の `acl-rules` を `confirm: self, observe:netconf//g2/acl-rules expect:{"config": <r1, r2 の順>}` で reconcile → `1 change(s) applied`、g1 は宣言どおりで confirm-timeout の後も戻らない |
+| confirm の observe:：相手が期待と違う（#200） | g1・g2 とも逆の順にして（g2 の宣言は今の running どおりなので変えない）同じ confirm で reconcile → `not confirmed: observe:netconf//g2/acl-rules: config not as expected … the confirming commit was not sent; the device rolled back at the timeout`。g1 は手で変えたまま、g2 は変わらない（読むだけ） |
 | 止める | `docker stop` → status で 2 つとも unobservable（unreachable）、drift は 0、reconcile は 0 以外で終わる（観測できないものがある） |
 
 netopeer2 2.1.49 で見たこと（試験の組み立ての理由）: netconf ユーザを NACM の group から外す宣言で締め出すと、confirm-timeout の巻き戻しで running は元に戻るのに、そのあとも netconf ユーザの読み書きが断られ続けた（サーバを立て直すまで）。このため確かめの失敗は「読むのだけを断る規則を足す」宣言で起こしている。また ietf-netconf-server の `local-address` を変えても待ち受けは変わらず、締め出しにならなかった。
@@ -492,6 +524,15 @@ sakutei: skip netconf//sw1/group: held: its provider observes only (§23.4)
     理由: observe error: transient: netconf: Read "sw1/acl-rules": remote sw1: unreachable: ssh: connect to host 127.0.0.1 port 45825: Connection refused
 ```
 
+### 結果（2026-10-30、confirm の observe:、#200）
+
+`make integration-netconf` は全部の段が通った（`TestNetconfConfirmObserveIntegration` の 2 段、`TestNetconfCommitGroupIntegration`、`TestNetconfIntegration`）。g2 が期待と違うときの `sakutei reconcile`（抜粋）:
+
+```
+Reconcile: not converged: 1 resource(s) failed to apply (no changes applied)
+sakutei: apply netconf//g1/acl-rules: permanent: netconf: Apply "g1/acl-rules": not confirmed: observe:netconf//g2/acl-rules: config not as expected (netconf g2/acl-rules: the device's subtree differs from the declaration (0 line(s) only on the device, 0 only declared): the order of an ordered list differs) within 5s (half of the confirm-timeout 10s); the confirming commit was not sent; the device rolled back at the timeout (observed over a new connection)
+```
+
 ## 通常のテスト
 
 `make check` に入るもの（ネットワークにも docker にも出ない）:
@@ -502,4 +543,5 @@ sakutei: skip netconf//sw1/group: held: its provider observes only (§23.4)
 - `internal/netconf`（絞ったユーザー、#176）: 偽のサーバの `Scope`（読み書きできる所を subtree filter の形で）・`ScopeOps`（許す rpc）で NACM の近似をし、観測と 2 段の Apply（1.0・1.1）が通って外を読む・書く・ほかの rpc を送るが 1 つも無いこと、許されていない部分木は absent に見えて Apply が access-denied で permanent（何も確定せず、candidate を捨て lock を放す）、get-config・lock の access-denied、discard-changes の失敗の知らせ（[AC-176-1-*]）。
 - `tests/acceptance/netconf_apply_test.go`: Apply を許したデーモンの周（ずれを 2 段で直し、次の周は適合・確かめの失敗は確定せず時間切れで戻り、同じ宣言を当て直さない・alert-only の周は当てない）と registry（`netconf_apply` の有無と誤った設定、[AC-175-3-*]）。
 - `tests/acceptance/netconf_attrs_test.go`（#208）: 偽のサーバの `TopAttrs`（get-config の返りの最上位の要素に読むたびに値の変わる属性を付ける）・`EmptyData`（部分木が無いときに名前空間の無い空の `<configuration/>` を返す）で、属性だけの違いは drift にならない・2 段の Apply が確定まで通り次の周は適合・部分木が無いときの plan が `CREATE`・宣言に書いた属性が違えばその要素と属性を名指しした理由で drift（[AC-208-1-*]）。
+- `tests/acceptance/netconf_confirm_test.go`（#200）: confirm の `observe:` の先が期待どおりなら確定し、違えば確定せず元に戻る・`observe:` は観測用の資格（書き込みの文脈でない）と範囲（部分木の filter の get-config だけ、NACM の外を読まない）で読み、宣言に無いリソースは読み込みで断る・外の realizer の `Output.Checks` の `check:` を nil になるまで繰り返し呼ぶ（nil にならなければ確定しない）・commit_group では全部の台が commit confirmed を終えてから `check:` を待つ・`self` の無い confirm や登録の無い `check:` を読み込みで断る（[AC-200-1]〜[AC-200-6]）。`internal/netconf` の confirm の書式、`internal/reconcile` の `provider.Confirmer` の実装も。
 - `tests/acceptance/netconf_test.go`: デーモンの周（ずれを毎周知らせ、Apply は 0、ほかの provider は同じ周で収束する、止めると unknown、GET /plan の `blocked_by: observe_only`）、ObserveOnly を型で止める（executor・起動時の検査）、CLI の plan・reconcile・status（偽の ssh の先でテストのバイナリが偽のサーバになる）、registry（[AC-141-4-*]）。

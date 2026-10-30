@@ -41,6 +41,8 @@ type options struct {
 	realizers []namedRealizer
 	// secretTypes are the secret backend types WithSecretBackend adds (#188).
 	secretTypes []namedSecretType
+	// confirmChecks are the check functions WithConfirmCheck adds (#200).
+	confirmChecks []namedConfirmCheck
 }
 
 // WithRegistry adds every provider registered in reg to the built-in ones

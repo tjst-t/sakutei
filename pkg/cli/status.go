@@ -259,7 +259,7 @@ Exit codes:
 	}
 	providerConfig["ruleset_scope"] = rScope
 	rulesetTarget.put(providerConfig)
-	providers, resolveErr := resolveIntentProviders(reg, in.Providers, desired, providerConfig, "sakutei status", os.Stderr)
+	providers, resolveErr := resolveIntentProviders(reg, in.Providers, in.NetworkPolicy, desired, providerConfig, "sakutei status", os.Stderr)
 	if resolveErr == nil {
 		resolveErr = checkExternalOwners(in.ExternalOwners, desired, providers, "sakutei status", os.Stderr)
 	}

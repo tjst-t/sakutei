@@ -75,6 +75,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // TagException は「弱い方式をその機器だけ例外として許す」行の印。この印の
@@ -964,6 +966,10 @@ type Rule struct {
 type Output struct {
 	Resources []Resource
 	Rules     []Rule
+	// Checks は確かめの関数（名前 → 関数、#200）。返すリソースの confirm の
+	// 先に check:<名前> と書けば、変えたあとにその関数が呼ばれる。名前は
+	// cli.WithConfirmCheck とほかの実現先のものと重ならないこと。
+	Checks map[string]provider.ConfirmCheck
 }
 
 // Realizer は許可を 1 つの実現先の宣言に変換する。allows はその実現先を通る

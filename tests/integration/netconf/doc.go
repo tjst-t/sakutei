@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Package netconf は netconf provider（Backlog #141 の観測、#175 の 2 段の
-// Apply、#176 の部分木だけに絞ったユーザー、#199 の commit_group）の統合テスト。
+// Apply、#176 の部分木だけに絞ったユーザー、#199 の commit_group、#200 の
+// confirm の observe:）の統合テスト。
 // docker で公開の NETCONF サーバ（netopeer2 のコンテナ。イメージは tag と
 // digest で固定）を 127.0.0.1 の空いたポートに立て、手元の sakutei の CLI
 // （plan・reconcile・status）から ssh の netconf サブシステムで設定の部分木を
@@ -28,6 +29,8 @@
 // access-denied で断られて機器は変わらない。commit_group（#199）は別の 3 台
 // （g1〜g3）で、全部の台で確かめが通れば 3 台とも確定し、1 台の確かめが
 // 落ちればどの台も確定しない（cancel-commit ですぐ戻る）ことを確かめる。
+// confirm の observe:（#200）は g1・g2 で、g1 の変更を g2 の観測を条件に
+// 確定し、g2 が期待と違えば確定しないことを確かめる。
 //
 // テストは build tag integration_netconf の付いたファイルにあり、make check・
 // make test（go test ./...）には入らない。回すのは make integration-netconf
