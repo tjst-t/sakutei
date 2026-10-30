@@ -4782,7 +4782,7 @@
       "number": 206,
       "kind": "task",
       "title": "採番：区切った範囲（block）と、上がるだけで再利用しない設定",
-      "status": "backlog",
+      "status": "ready",
       "parent": "postgresql-proxmox-vm-s3-object-lock-vm",
       "dependsOn": [],
       "milestone": null,
@@ -4794,7 +4794,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T09:20:13.880Z",
-      "updatedAt": "2026-10-29T09:20:29.743Z",
+      "updatedAt": "2026-10-30T13:35:40.965Z",
       "closedAt": null,
       "extra": {}
     },
