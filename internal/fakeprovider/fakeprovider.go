@@ -545,6 +545,8 @@ func (p *Provider) List(_ context.Context, _ core.Scope) (core.ListResult, error
 // an incomplete List (triggering prune-halt safety guard, §12.4c).
 // This is a test-only helper for Scf7762-1 ([AC-Scf7762-1-2]).
 func (p *Provider) SetListPartial(partial bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	sf, err := p.load()
 	if err != nil {
 		return fmt.Errorf("fakeprovider: load state for list partial: %w", err)
@@ -559,6 +561,8 @@ func (p *Provider) SetListPartial(partial bool) error {
 // Default (unset) is false — destructive types are not pruneable unless the
 // author opts in.  This is a test-only helper for Scf7762-1.
 func (p *Provider) SetPruneable(pruneable bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	sf, err := p.load()
 	if err != nil {
 		return fmt.Errorf("fakeprovider: load state for pruneable capability: %w", err)
@@ -605,6 +609,8 @@ func (p *Provider) SetProviderVersion(version string) error {
 // state file.  Pass nil or an empty map to clear all injected failures.
 // This is a test-only helper; production code must not call it.
 func (p *Provider) SetFailInject(failMap map[string]string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	sf, err := p.load()
 	if err != nil {
 		return fmt.Errorf("fakeprovider: load state for fail inject: %w", err)
@@ -631,6 +637,8 @@ func (p *Provider) SetApplyIgnore(ignore map[string]bool) error {
 // Pass nil or an empty map to clear all delays.
 // This is a test-only helper for S94f1f9-3 ([AC-S94f1f9-3-1]).
 func (p *Provider) SetApplyDelay(delayMap map[string]string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	sf, err := p.load()
 	if err != nil {
 		return fmt.Errorf("fakeprovider: load state for apply delay: %w", err)
@@ -642,6 +650,8 @@ func (p *Provider) SetApplyDelay(delayMap map[string]string) error {
 // GetApplyCount reads and returns the apply_count map from the state file.
 // This is a test-only helper for S94f1f9-3 ([AC-S94f1f9-3-2]).
 func (p *Provider) GetApplyCount() (map[string]int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	sf, err := p.load()
 	if err != nil {
 		return nil, fmt.Errorf("fakeprovider: load state for apply count: %w", err)
@@ -677,7 +687,14 @@ func (p *Provider) GetReadCount() (map[string]int, error) {
 // SeedResource writes a resource directly into the state file.  This is a
 // test-helper that simulates "reality already has this resource" without going
 // through Apply, so that acceptance tests can seed initial state.
+//
+// Like every read-modify-write of the state file it holds mu: a Task or Apply
+// goroutine left running by a cycle (e.g. RunTask counting its run) would
+// otherwise load the file before the seed and save it after, losing the seed
+// (#171: a test's setActive vanished and the Workflow did not halt).
 func (p *Provider) SeedResource(local string, fields map[string]any) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	sf, err := p.load()
 	if err != nil {
 		return fmt.Errorf("fakeprovider: load state for seed: %w", err)
