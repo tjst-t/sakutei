@@ -4654,7 +4654,7 @@
       "number": 200,
       "kind": "task",
       "title": "NETCONF：confirm の先に別の resource の観測（observe:）と確かめの関数（check:）を書く",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "netconf-apply-2",
       "dependsOn": [
         "netconf-commit-group"
@@ -4668,7 +4668,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T06:48:14.609Z",
-      "updatedAt": "2026-10-30T11:28:57.412Z",
+      "updatedAt": "2026-10-30T12:04:37.902Z",
       "closedAt": null,
       "extra": {}
     },
