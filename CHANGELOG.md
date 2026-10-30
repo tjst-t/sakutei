@@ -18,6 +18,10 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 - **netconf：宣言の知らない欄を読み込みで断る**（#211）：netconf の宣言に provider の知らない欄（道具が足した `name` など）や観測だけの `capabilities` があれば、`plan`・`reconcile`・常駐の読み込みの時点で欄の名前とリソースの ID、直し方（欄を外す）を挙げて断る。以前は drift になり、Apply が「the operation carries no config」の permanent で断っていた。知っている欄（`config`・`ordered`・`host`・`subtree`）だけの宣言は今までどおり。
 
+### 文書
+
+- **provider の版を上げるときの注意**（#212）：`docs/provider-upgrade.md` を足した。動いている環境で provider の版を上げると（例 `netconf-v1` → `netconf-v2`）、`--cause-state` を渡した最初の `reconcile` が差分を当てずに `ProviderUpgradeDiff`（原因タグ C）で 1 回止まること（終了コードは 0、作り直した環境では出ない、1 つの provider の版が上がった回はほかの provider の差分も C になる）、`status`（cause-state を書かない）と `plan --json` で差分が版の違いだけかを確かめる手順、確かめてから進める道（2 回目の `reconcile` は同じ差分を B として当てる・宣言を合わせる・版を戻す）、常駐は起こし直すと C が出ないので起こし直す前に `plan` で確かめるか `--mode alert-only` で回すことを書いた。docs/README.md・docs/exit-codes.md・docs/trial/README.md から指した。
+
 ## v2.9.0（2026-10-29）
 
 網の許可を複数のアドレスの空間と VM の FW へ広げ、使ってみて分かった足りない点と不具合を直す版。network_policy の網に domain を足し、Proxmox VE の VM の FW を実現先にし、proxmox-vm の NIC の FW と MTU、postgresql の境界の外のロールの CONNECT、`runtime:` の実行の種類ごとの値、OTLP のトレースの出口を足した。一部の NETCONF サーバで収束しない不具合を直した。設計書は v3.61 → v3.68（`docs/architecture/CHANGELOG-v3.62.md`〜`v3.68.md`）。

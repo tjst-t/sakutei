@@ -69,6 +69,8 @@ ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
 
 デーモンは `--cause-state` を受けない。原因タグを付けるための前の周の revision はメモリに持つので要らない（`--cause-state` は一回性の `plan`・`reconcile`・`status` が回をまたいで持ち越すためのもの。渡すと理由を言って終了コード 1 で断る、#165）。
 
+Sakutei を新しい版に入れ替えて provider の版が上がると、`--cause-state` を渡した最初の `reconcile` は差分を当てずに `ProviderUpgradeDiff`（原因タグ C）で 1 回止まる。確かめ方と進め方は [../provider-upgrade.md](../provider-upgrade.md)。
+
 ### D1. 収束と自己修復（2026-10-21 に確かめた）
 
 初期状態（`docs/trial/v1/initial/`）から `--interval 1s` で起動する。
