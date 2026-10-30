@@ -4761,7 +4761,7 @@
       "number": 205,
       "kind": "task",
       "title": "s3-bucket：Object Lock（作るときの有効化と、既定の保持の mode・期間）",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "postgresql-proxmox-vm-s3-object-lock-vm",
       "dependsOn": [],
       "milestone": null,
@@ -4773,7 +4773,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-29T09:20:13.880Z",
-      "updatedAt": "2026-10-30T12:50:03.259Z",
+      "updatedAt": "2026-10-30T13:23:13.529Z",
       "closedAt": null,
       "extra": {}
     },
