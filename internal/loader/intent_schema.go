@@ -550,5 +550,7 @@ func runtimeSchema() schemaNode {
 	for _, k := range runtimeargs.Kinds {
 		props[string(k)] = schemaNode{"type": "object", "additionalProperties": false, "properties": kindProps}
 	}
+	// roles:（#213）は役の名前 → 同じ欄。中身は runtimeargs.Parse が確かめる。
+	props[runtimeargs.RolesKey] = schemaNode{"type": "object", "additionalProperties": true}
 	return schemaNode{"type": "object", "additionalProperties": false, "properties": props}
 }

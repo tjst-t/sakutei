@@ -161,6 +161,7 @@ func Main(opts ...Option) {
 //	--sqlmigrate-config <file>  database list of the sqlmigrate provider (path, migrations, sqlite3, engine: postgresql, §29.1)
 //	--interval <dur>     convergence cycle period (default: 10s; use short values in tests)
 //	--claim <selector>   converge only the matching scopes (§17.1)
+//	--runtime-role <name>  run with the runtime: values of runtime.roles.<name> (§26.7, #213)
 //	--fencing-store <f>  fencing generation store shared by all shards (§15.2)
 //	--shard-id <id>      fencing holder ID of this shard
 //	--task-store <f>     S2 store of strategy: task progress phases (§6.2)
@@ -225,6 +226,8 @@ func runDaemon() {
 	rulesetTarget := rulesetTargetFlag(fs)
 	intervalStr := fs.String("interval", "",
 		"convergence cycle interval, e.g. 200ms or 30s (default: 10s)")
+	runtimeRole := fs.String("runtime-role", "",
+		"run as the named daemon role of the intent: its runtime: values are runtime.roles.<name> over runtime.daemon: over runtime: (§26.7, #213); an undeclared role refuses the start")
 	// S072a14-3: render pipeline flags for the daemon.
 	generatedDir := fs.String("generated", "",
 		"directory to write render phase 2 output (default: sibling of --intent named 'generated')")
@@ -355,7 +358,7 @@ func runDaemon() {
 	// #183 (§26.7): the long-lived start arguments may be declared in the
 	// intent's runtime:; the flags are checked against it here, before any
 	// of them is read below.
-	runtimeReport, primedSrc := daemonRuntime(fs, *intentDir, src)
+	runtimeReport, primedSrc := daemonRuntime(fs, *intentDir, src, *runtimeRole)
 
 	interval := reconcile.DefaultInterval
 	if *intervalStr != "" {
@@ -406,6 +409,10 @@ func runDaemon() {
 	// so a start that fails leaves no freeze in the audit log.
 	// --freeze-state is read every cycle.
 	auditLg := auditSink.mustOpen("sakutei", *auditLog)
+	if auditLg != nil {
+		// #213: every record this daemon writes names the role it runs as.
+		auditLg.RuntimeRole = runtimeReport.Role
+	}
 	freezeControl := freezeFl.control("sakutei", auditLg)
 	remCfg.Freeze = freezeControl != nil && freezeControl.Flag != nil
 

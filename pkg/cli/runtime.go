@@ -99,13 +99,16 @@ func containsString(xs []string, s string) bool {
 	return false
 }
 
-// daemonRuntime reads the runtime: the daemon starts with (runtime.daemon:,
-// else runtime:, #193) and checks the flags against it.  With --intent-repo the intent is pulled once here (the
+// daemonRuntime reads the runtime: the daemon starts with (runtime.roles.<role>:
+// when a role is chosen (#213), else runtime.daemon:, else runtime:, #193) and
+// checks the flags against it.  A role the intent does not declare, or a role
+// chosen when the intent cannot be read at start, refuses the start (exit 1):
+// the role's values are unknown, and the start would not be what was asked.  With --intent-repo the intent is pulled once here (the
 // loop's first cycle takes that pull, src is primed with it); when the intent
 // cannot be read yet the daemon starts on the flags alone and reports any
 // runtime: it reads later as a change (RuntimeDeclarationChanged).
-func daemonRuntime(fs *flag.FlagSet, intentDir string, src *gitdist.Source) (*reconcile.RuntimeReport, reconcile.Source) {
-	rt := &reconcile.RuntimeReport{Unread: true}
+func daemonRuntime(fs *flag.FlagSet, intentDir string, src *gitdist.Source, role string) (*reconcile.RuntimeReport, reconcile.Source) {
+	rt := &reconcile.RuntimeReport{Unread: true, Role: role}
 	var source reconcile.Source
 	if src != nil {
 		p := &primedSource{Source: src}
@@ -127,8 +130,20 @@ func daemonRuntime(fs *flag.FlagSet, intentDir string, src *gitdist.Source) (*re
 			load = loader.LoadIntentTree
 		}
 		if in, err := load(intentDir); err == nil {
-			rt.Start, rt.Unread = in.Runtime.For(runtimeargs.Daemon), false
+			start, rerr := in.Runtime.ForRole(role)
+			if rerr != nil {
+				fmt.Fprintf(logErr, "sakutei: %v\n", rerr)
+				exitAfterEvents(1)
+			}
+			rt.Start, rt.Unread = start, false
 		}
+	}
+	if rt.Unread && role != "" {
+		fmt.Fprintf(logErr, "sakutei: runtime: --runtime-role %s needs the intent's runtime.%s at start, but the intent could not be read; start again once it can be read (§26.7)\n", role, runtimeargs.RolesKey)
+		exitAfterEvents(1)
+	}
+	if role != "" {
+		fmt.Fprintf(logErr, "sakutei: runtime: running as role %s (runtime.%s.%s)\n", role, runtimeargs.RolesKey, role)
 	}
 	rt.Tightened = applyRuntime("sakutei", fs, rt.Start, nil)
 	if rt.Unread {

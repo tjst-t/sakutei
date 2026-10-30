@@ -480,6 +480,7 @@ Event を永続化（S4・§4）し、**append-only + 連鎖ハッシュ**で改
     Workflow の名前と run の id つきで残す。Workflow の手から出た `resource.apply` には run の id と手の番号（stage・target）が
     付き、「どの Workflow のどの手で何をしたか」を監査だけから追える（形は §6.3）。同じ鎖に書くので `sakutei audit verify` で
     たどれる。
+  - **常駐の役（v3.75、#213）**：`--runtime-role` で役を選んだ常駐が書く記録には、その役の名前 `runtime_role` が付く（§26.7）。
   - **鎖**：各行は通し番号 `seq`（ファイルをまたいで 1 から）と、前の行（書かれたとおりのバイト列）の SHA-256 である `prev` を
     持つ。行の書き換え・抜き取り・差し込みは次の行の `prev` か `seq` で分かる。`sakutei audit verify` がたどり、見つければ終了コード
     3（`--json` でも出す）。鎖より前の版で書いた先頭の行は legacy として受け、鎖が始まったあとの `seq` の無い行は差し込みとして
@@ -663,6 +664,9 @@ runtime:
     mode: alert-only
   oneshot:                         # 一回性の reconcile と plan だけに効く値（v3.63）
     mode: auto
+  roles:                           # 名前のついた常駐の役ごとの値（v3.75。--runtime-role で選ぶ）
+    os-install:
+      mode: auto
 ```
 
 - **書く場所**：intent のファイルのどれか 1 つに 1 回だけ（2 つのファイルに書けば読み込みで断る）。inventory のファイルには書けない。
@@ -673,6 +677,24 @@ runtime:
   （共通を auto にして常駐だけを旗で締めると、常駐の status と Event に `RuntimeTightened` がいつも出てしまい、mode を宣言に書かない
   ことになる。§1.7）。種類に意味の無い欄（`oneshot:` の `interval`・`stuck_after`）・知らないキー・入れ子の種類は読み込みで断る。
   常駐の途中の変化（下の `RuntimeDeclarationChanged`）も、常駐に効く値どうしで比べる。
+- **常駐の役ごとの値**（v3.75、Backlog #213）：同じ宣言に対して、ふだんの常駐（alert-only）と、一部の台だけを claim して一時的に
+  auto で動く常駐（例：OS の導入の間だけ）を並べたいことがある。旗で auto を渡すのは緩める向きなので断られ、宣言を写した別の intent
+  を作ると宣言が 2 つに分かれる（§1.7）。そこで `runtime:` の下に `roles:`（役の名前 → `runtime:` と同じ欄）を書けるようにし、常駐は
+  起動の旗 **`--runtime-role <name>`** で役を 1 つ選ぶ。
+  - **効く値**：キーごとに、役の欄にあればそれ、無ければ `daemon:`、それも無ければ共通の `runtime:` の値。役は常駐の値なので
+    `interval`・`stuck_after` も書ける。役を選ばない常駐・一回性の `reconcile` と `plan` には役の値は効かない（一回性は `oneshot:`）。
+  - **役の値は宣言**：役の値が共通の値や `daemon:` より緩くても断らない。役を足すのも役の値を変えるのも intent の変更（PR）であり、
+    「緩めるには宣言を変える」の決まりとぶつからない。旗との突き合わせは、**その役に効く値**に対して上の決まりをそのまま当てる
+    （締める旗は使って `RuntimeTightened`、緩める旗と向きの無い食い違いは断る。断りと知らせは役の欄 `runtime.roles.<name>.<key>` を指す）。
+  - **断る**：宣言に無い役で起動すれば、宣言にある役の名前と直し方（役を宣言するか、`--runtime-role` を外すか）を 1 行で出して終了
+    コード 1 で断る（`runtime:` や `roles:` が無いときも同じ）。役を選んだのに起動のとき intent が読めない（`--intent-repo` をまだ取得
+    できない）ときも、役の値が分からないので断る。役の名前は英小文字・数字・`-`・`_`（先頭は英小文字か数字、63 字まで）で、形の外・
+    知らないキー・役の中の `daemon:`・`oneshot:`・`roles:` は読み込みで断る。
+  - **報告**：常駐の status（`--daemon-status` と読み取りの口の /status の `runtime_role`、`sakutei status` の「runtime の役」の行）と、
+    S4 監査の記録（その常駐が書く Apply・prune・Workflow・freeze などの各行の `runtime_role`）に役の名前を出す。どの変更がどの役の
+    常駐から来たかを監査で辿れるようにするためである。
+  - **途中の変化**：起動したあとに役の値が変われば、ほかの値と同じく `RuntimeDeclarationChanged` で知らせる。役そのものが宣言から
+    消えたときも同じ Event（attrs の `role`）で知らせ、常駐は起動したときの役の値で回り続ける（起こし直すと断られる）。
 - **旗と宣言の突き合わせ**（起動のとき。比べる相手はその実行の種類に効く宣言の値。`plan` は予算の引数、一回性の `reconcile` は `interval` と `stuck_after` を除く引数を見る）：
   - 旗だけ・宣言だけなら、それを使う（宣言だけの値は旗で渡したのと同じに効く）。
   - **大小のある引数**（予算の上限の 3 つと `max_ineffective_*`）と **`mode`・`on_exceed`**：旗が宣言より**締める向き**（予算・上限が

@@ -576,7 +576,7 @@ func TestProductionGuideExamples(t *testing.T) {
 }
 
 // runtimeFor resolves the runtime arguments of a daemon command against the
-// guide's runtime: for the daemon.
+// guide's runtime: for the daemon (and its --runtime-role, #213).
 func runtimeFor(t *testing.T, in loader.Intent, args []string) runtimeargs.Result {
 	t.Helper()
 	flags := map[string]string{}
@@ -591,7 +591,12 @@ func runtimeFor(t *testing.T, in loader.Intent, args []string) runtimeargs.Resul
 		}
 		flags[a.Key] = n
 	}
-	return runtimeargs.Resolve(in.Runtime.For(runtimeargs.Daemon), flags, nil)
+	// #213: a daemon started with --runtime-role takes its role's values.
+	decl, err := in.Runtime.ForRole(flagValues(args)["runtime-role"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtimeargs.Resolve(decl, flags, nil)
 }
 
 func countRuntimeFlags(args []string) int {

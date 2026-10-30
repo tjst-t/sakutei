@@ -46,6 +46,9 @@ type RuntimeReport struct {
 	Unread bool
 	// Tightened are the flags tightening Start.
 	Tightened []runtimeargs.Tightening
+	// Role is the daemon role chosen with --runtime-role (#213; "" none):
+	// Start is runtime.roles.<Role>: over runtime.daemon: over runtime:.
+	Role string
 
 	// changed is the latest cycle's account of a changed runtime: ("" when
 	// none); checked the cycle (Daemon.cycle) it was last compared on.
@@ -67,23 +70,30 @@ func EmitRuntimeTightened(w io.Writer, prefix string, ts []runtimeargs.Tightenin
 	})
 }
 
-// observe raises the cycle's runtime Events for the runtime: decl just
-// loaded.
-func (r *RuntimeReport) observe(w io.Writer, decl *runtimeargs.Declaration, cycle int) {
+// observe raises the cycle's runtime Events for the runtime: just loaded
+// (the whole declaration; the daemon's values are taken for its role).
+func (r *RuntimeReport) observe(w io.Writer, full *runtimeargs.Declaration, cycle int) {
 	r.checked = cycle
 	EmitRuntimeTightened(w, "sakutei: ", r.Tightened)
+	decl, roleErr := full.ForRole(r.Role)
 	var changes []runtimeargs.Change
 	if r.Unread {
 		changes = (*runtimeargs.Declaration)(nil).Changes(decl)
 	} else {
 		changes = r.Start.Changes(decl)
 	}
-	if len(changes) == 0 {
+	if len(changes) == 0 && roleErr == nil {
 		r.changed = ""
 		return
 	}
 	attrs := map[string]string{}
-	parts := make([]string, 0, len(changes))
+	parts := make([]string, 0, len(changes)+1)
+	if roleErr != nil {
+		// #213: the role this daemon runs as is gone from the intent; it
+		// keeps the role's values it started with.
+		attrs["role"] = r.Role
+		parts = append(parts, fmt.Sprintf("role %s: no longer declared in runtime.%s", r.Role, runtimeargs.RolesKey))
+	}
 	for _, c := range changes {
 		from, to := c.From, c.To
 		if r.Unread {

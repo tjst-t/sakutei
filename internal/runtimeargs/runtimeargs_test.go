@@ -15,6 +15,7 @@
 package runtimeargs
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -123,5 +124,44 @@ func TestParse_Kinds(t *testing.T) {
 		if _, err := Parse(bad, "f.yaml"); err == nil {
 			t.Errorf("Parse(%v) accepted", bad)
 		}
+	}
+}
+
+// #213: a role's values win over runtime.daemon:, which win over runtime:.
+func TestForRole_Precedence(t *testing.T) {
+	d, err := Parse(map[string]any{
+		"mode": "alert-only", "max_changes_per_cycle": 20, "settle": "1s",
+		"daemon": map[string]any{"interval": "30s", "settle": "2s"},
+		"roles": map[string]any{
+			"os-install": map[string]any{"mode": "auto", "interval": "5s", "stuck_after": 3},
+		},
+	}, "rt.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.ForRole("os-install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"mode": "auto", "max_changes_per_cycle": "20", "settle": "2s", "interval": "5s", "stuck_after": "3"}
+	for k, v := range want {
+		if got.Values[k] != v {
+			t.Errorf("%s = %q, want %q", k, got.Values[k], v)
+		}
+	}
+	if got.Role != "os-install" || got.Path("mode") != "runtime.roles.os-install.mode" ||
+		got.Path("settle") != "runtime.daemon.settle" || got.Path("max_changes_per_cycle") != "runtime.max_changes_per_cycle" {
+		t.Errorf("paths: role %q mode %s settle %s budget %s", got.Role, got.Path("mode"), got.Path("settle"), got.Path("max_changes_per_cycle"))
+	}
+	if plain, err := d.ForRole(""); err != nil || plain.Values["mode"] != "alert-only" || plain.Role != "" {
+		t.Errorf("no role: %+v %v", plain, err)
+	}
+	_, err = d.ForRole("canary")
+	var ue *UnknownRoleError
+	if !errors.As(err, &ue) || !strings.Contains(err.Error(), "declared: os-install") {
+		t.Errorf("unknown role: %v", err)
+	}
+	if _, err := (*Declaration)(nil).ForRole("os-install"); err == nil || !strings.Contains(err.Error(), "none is declared") {
+		t.Errorf("nil declaration with a role: %v", err)
 	}
 }

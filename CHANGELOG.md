@@ -7,6 +7,7 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 ### 追加
 
 - **s3-bucket の Object Lock**（#205）：欄 `object_lock`（`{"enable_on_create": true, "mode": "COMPLIANCE", "years": 7}`）で、作るときの有効化と、バケットの既定の保持（GOVERNANCE・COMPLIANCE、Days・Years）を宣言で持てるようにした。endpoint の設定の `fields` に `object_lock` を書いたときだけ扱う。作るときの有効化は書いたときだけ送り、既定の保持は PutObjectLockConfiguration だけで掛け（versioning は読まない）、期間は Days にそろえて比べる（years は 365 倍）。既にあるバケットの保持の設定を変える Apply（有効にする・mode を変える・延ばす・短くする・外す）は向きによらず予算に数え、承認ゲート（planned_change のレーン kind `update`）を通す。実装が受けない mode・既にあるバケットに有効にできない実装・API を持たない実装、既にあるバケットと食い違う宣言は理由つきで止める。観測用の資格に `s3:GetBucketObjectLockConfiguration` が要る（`fields` に書いたときだけ）。SeaweedFS 4.51・MinIO の統合試験（`make integration-s3`）と、作るときの有効化が無い偽サーバの受け入れテストで確かめた。設計書 v3.74。
+- **常駐の役ごとの `runtime:`**（#213）：`runtime:` の下に `roles:`（役の名前 → `runtime:` と同じ欄）を書け、常駐は `--runtime-role <name>` で役を選ぶ。効く値は役の欄 → `daemon:` → 共通の順。役の値は宣言なので共通の値より緩くてよく（同じ intent でふだんの alert-only の常駐と、一部の台を claim して auto で動く常駐を並べられる）、旗は役に効く値と今の決まりで突き合わせる（締める旗は `RuntimeTightened`、緩める旗は断る）。宣言に無い役は起動を断る。常駐の status と S4 監査の各記録に `runtime_role` を出す。設計書 v3.75。
 
 ## v2.10.0（2026-10-30）
 

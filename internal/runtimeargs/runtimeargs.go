@@ -25,12 +25,21 @@
 //	    mode: alert-only
 //	  oneshot:
 //	    mode: auto
+//	  roles:
+//	    os-install:
+//	      mode: auto
 //
 // runtime: の下の daemon: と oneshot:（#193）は実行の種類（常駐・一回性の
 // reconcile と plan）ごとの値で、中身は runtime: と同じ欄。種類に効く値は、
 // 種類の欄にあればそれ、無ければ共通の runtime: の値（Declaration.For）。
 // 種類に意味の無い欄（oneshot: の interval・stuck_after）は読み込みで断る。
 // 旗と比べる相手は、その種類に効く宣言の値。
+//
+// runtime: の下の roles:（#213）は名前のついた常駐の役ごとの値で、中身は
+// runtime: と同じ欄。常駐は起動の旗 --runtime-role で役を 1 つ選び、効く値は
+// 役の欄にあればそれ、無ければ daemon:、それも無ければ共通の runtime: の値
+// （Declaration.ForRole）。役の値も宣言なので、共通の値より緩くてもよい。
+// 知らない役を選べば起動を断る。
 //
 // 正しい状態は宣言に置く（§1.7）。旗と宣言が食い違ったとき:
 //
@@ -225,6 +234,25 @@ const (
 // Kinds は実行の種類の全部（runtime: の下の欄の順）。
 var Kinds = []Kind{Daemon, Oneshot}
 
+// RolesKey は runtime: の下の常駐の役の欄（#213）。
+const RolesKey = "roles"
+
+// validRole は役の名前の形（英小文字・数字・- と _、先頭は英小文字か数字）。
+func validRole(name string) bool {
+	if name == "" || len(name) > 63 {
+		return false
+	}
+	for i, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case (c == '-' || c == '_') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Declaration は intent の runtime:（1 つのファイルに 1 回だけ書く）。
 type Declaration struct {
 	// File は runtime: を書いた intent のファイル（直し方の案内に出す）。
@@ -235,8 +263,14 @@ type Declaration struct {
 	// Kinds は実行の種類ごとの欄（runtime.daemon: / runtime.oneshot:）の
 	// キー → 値。For が返す宣言では nil。
 	Kinds map[Kind]map[string]string
-	// from は For が返す宣言で、種類の欄から来たキー → 種類。
-	from map[string]Kind
+	// Roles は常駐の役ごとの欄（runtime.roles.<name>:、#213）の役 → キー →
+	// 値。For が返す宣言では nil。
+	Roles map[string]map[string]string
+	// Role は ForRole が返す宣言で、選んだ役（"" は役なし）。
+	Role string
+	// from は For が返す宣言で、種類か役の欄から来たキー → 欄（daemon・
+	// roles.os-install）。
+	from map[string]string
 }
 
 // Parse は intent の runtime: の木を読む。v が nil なら nil（宣言なし）。
@@ -251,6 +285,14 @@ func Parse(v any, file string) (*Declaration, error) {
 	d := &Declaration{File: file}
 	common := map[string]any{}
 	for k, x := range m {
+		if k == RolesKey {
+			roles, err := parseRoles(x)
+			if err != nil {
+				return nil, err
+			}
+			d.Roles = roles
+			continue
+		}
 		if !isKind(k) {
 			common[k] = x
 			continue
@@ -274,6 +316,31 @@ func Parse(v any, file string) (*Declaration, error) {
 	}
 	d.Values = vals
 	return d, nil
+}
+
+// parseRoles は runtime.roles: を読む: 役の名前 → runtime: と同じ欄（常駐の
+// 値なので interval・stuck_after も書ける。種類と役の入れ子は書けない）。
+func parseRoles(x any) (map[string]map[string]string, error) {
+	m, ok := x.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("runtime.%s: オブジェクトでなければなりません（役の名前 → runtime: と同じ欄）", RolesKey)
+	}
+	out := map[string]map[string]string{}
+	for name, v := range m {
+		if !validRole(name) {
+			return nil, fmt.Errorf("runtime.%s: role name %q: use lower-case letters, digits, - and _ (starting with a letter or a digit, at most 63)", RolesKey, name)
+		}
+		sub, ok := v.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("runtime.%s.%s: オブジェクトでなければなりません", RolesKey, name)
+		}
+		vals, err := parseValues(sub, "runtime."+RolesKey+"."+name, Daemon)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = vals
+	}
+	return out, nil
 }
 
 func isKind(k string) bool {
@@ -336,21 +403,85 @@ func (d *Declaration) For(k Kind) *Declaration {
 	for key, v := range d.Values {
 		out.Values[key] = v
 	}
-	for key, v := range d.Kinds[k] {
-		out.Values[key] = v
-		if out.from == nil {
-			out.from = map[string]Kind{}
-		}
-		out.from[key] = k
-	}
+	out.overlay(d.Kinds[k], string(k))
 	return out
 }
 
-// Path は key の宣言を書いた場所（runtime.mode・runtime.daemon.mode）。
+func (d *Declaration) overlay(vals map[string]string, where string) {
+	for key, v := range vals {
+		d.Values[key] = v
+		if d.from == nil {
+			d.from = map[string]string{}
+		}
+		d.from[key] = where
+	}
+}
+
+// UnknownRoleError は宣言に無い役を選んだこと（#213）。
+type UnknownRoleError struct {
+	Role, File string
+	// Declared は宣言にある役（名前の順）。
+	Declared []string
+}
+
+func (e *UnknownRoleError) Error() string {
+	where := "the intent"
+	if e.File != "" {
+		where = e.File
+	}
+	known := "none is declared"
+	if len(e.Declared) > 0 {
+		known = "declared: " + strings.Join(e.Declared, ", ")
+	}
+	return fmt.Sprintf("runtime: --runtime-role %s is not declared in runtime.%s (%s); declare runtime.%s.%s in %s, or start without --runtime-role",
+		e.Role, RolesKey, known, RolesKey, e.Role, where)
+}
+
+// RoleNames は宣言にある役の名前（名前の順）。
+func (d *Declaration) RoleNames() []string {
+	if d == nil {
+		return nil
+	}
+	out := make([]string, 0, len(d.Roles))
+	for name := range d.Roles {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ForRole は役 role で動く常駐に効く宣言を返す（#213）: 役の欄にあるキーは
+// その値、無ければ daemon: の値、それも無ければ共通の runtime: の値。role が
+// "" なら For(Daemon) と同じ。宣言に無い役なら *UnknownRoleError と、役を除いた
+// 常駐の宣言を返す。
+func (d *Declaration) ForRole(role string) (*Declaration, error) {
+	out := d.For(Daemon)
+	if role == "" {
+		return out, nil
+	}
+	var vals map[string]string
+	ok := false
+	if d != nil {
+		vals, ok = d.Roles[role]
+	}
+	if !ok {
+		file := ""
+		if d != nil {
+			file = d.File
+		}
+		return out, &UnknownRoleError{Role: role, File: file, Declared: d.RoleNames()}
+	}
+	out.Role = role
+	out.overlay(vals, RolesKey+"."+role)
+	return out, nil
+}
+
+// Path は key の宣言を書いた場所（runtime.mode・runtime.daemon.mode・
+// runtime.roles.os-install.mode）。
 func (d *Declaration) Path(key string) string {
 	if d != nil {
-		if k, ok := d.from[key]; ok {
-			return "runtime." + string(k) + "." + key
+		if where, ok := d.from[key]; ok {
+			return "runtime." + where + "." + key
 		}
 	}
 	return "runtime." + key
@@ -368,6 +499,7 @@ func keyNames(kind Kind) []string {
 		for _, k := range Kinds {
 			out = append(out, string(k)+":")
 		}
+		out = append(out, RolesKey+":")
 	}
 	return out
 }
@@ -410,8 +542,8 @@ type Tightening struct {
 	// IntentValue は宣言の値、File はそれを書いた intent のファイル。
 	IntentValue string `json:"intent_value"`
 	File        string `json:"file,omitempty"`
-	// IntentKey は宣言を書いた場所（runtime.daemon.mode）。共通の runtime:
-	// なら "" （runtime.<Key>）。
+	// IntentKey は宣言を書いた場所（runtime.daemon.mode・
+	// runtime.roles.os-install.mode）。共通の runtime: なら "" （runtime.<Key>）。
 	IntentKey string `json:"intent_key,omitempty"`
 }
 

@@ -78,6 +78,9 @@ type DaemonHealth struct {
 	// （一時的な締め、#183、§26.7）: 引数ごとに旗の値と宣言の値。締めている
 	// ものがあるときだけ。
 	RuntimeTightened []runtimeargs.Tightening `json:"runtime_tightened,omitempty"`
+	// RuntimeRole は常駐が --runtime-role で選んだ役（#213、§26.7）: 起動の
+	// 引数は intent の runtime.roles.<役>: の値。役を選ばなければ空。
+	RuntimeRole string `json:"runtime_role,omitempty"`
 	// RuntimeChanged は起動したあとに intent の runtime: が変わったこと（この
 	// デーモンは起動したときの値で回る。起こし直すと取り込む）。変わっていない
 	// ときは空。

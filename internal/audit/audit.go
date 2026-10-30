@@ -196,6 +196,9 @@ type Record struct {
 	Args     map[string]string `json:"args,omitempty"`
 	Elapsed  string            `json:"elapsed,omitempty"`
 	Detail   string            `json:"detail,omitempty"`
+	// RuntimeRole は記録を書いた常駐の役（--runtime-role、#213、§26.7）。役を
+	// 選んだ常駐の Log が入れる。
+	RuntimeRole string `json:"runtime_role,omitempty"`
 }
 
 // StepRef は Workflow の手（#210）：その手から出た Apply の記録に付ける。
@@ -232,7 +235,9 @@ type Log struct {
 	MaxBytes int64
 	// Forwarder は書いた記録を外（syslog）へ送る（nil は送らない）。
 	Forwarder *Forwarder
-	mu        sync.Mutex
+	// RuntimeRole は常駐の役（#213）: 空でなければ、役の無い記録に入れる。
+	RuntimeRole string
+	mu          sync.Mutex
 }
 
 // NewLog は path に追記する Log を返す。
@@ -246,6 +251,9 @@ func (l *Log) Append(rec Record) error {
 		rec.Time = time.Now()
 	}
 	rec.Time = rec.Time.UTC()
+	if rec.RuntimeRole == "" {
+		rec.RuntimeRole = l.RuntimeRole
+	}
 	if err := l.append(rec); err != nil {
 		return err
 	}

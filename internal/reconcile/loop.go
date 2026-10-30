@@ -138,7 +138,6 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/remediation"
 	"github.com/tjst-t/sakutei/v2/internal/render"
 	"github.com/tjst-t/sakutei/v2/internal/revision"
-	"github.com/tjst-t/sakutei/v2/internal/runtimeargs"
 	"github.com/tjst-t/sakutei/v2/internal/statusreport"
 	"github.com/tjst-t/sakutei/v2/internal/task"
 	"github.com/tjst-t/sakutei/v2/internal/tracing"
@@ -572,6 +571,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		if cfg.Runtime != nil {
 			h.RuntimeTightened = cfg.Runtime.Tightened
+			h.RuntimeRole = cfg.Runtime.Role
 			h.RuntimeChanged = cfg.Runtime.changed
 		}
 		// #184: the global freeze in effect.
@@ -1844,7 +1844,7 @@ func runCycleAsync(
 	}
 	rev := in.Revision
 	if cfg.Runtime != nil {
-		cfg.Runtime.observe(eventlog.Stamp(cfg.ErrOut, cfg.cycleBase+cycle, rev), in.Runtime.For(runtimeargs.Daemon), cycle)
+		cfg.Runtime.observe(eventlog.Stamp(cfg.ErrOut, cfg.cycleBase+cycle, rev), in.Runtime, cycle)
 	}
 
 	// #31 render phase 1: inventory composition (§9.1) with the

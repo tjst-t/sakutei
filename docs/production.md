@@ -257,7 +257,7 @@ $ sakutei freeze end --state /var/lib/sakutei/freeze.json --audit-log /var/lib/s
   alert-only の常駐を立てるときなどに使う。期限の無い `--freeze` の常駐は書かない回なので、書き込み用の鍵が要らない。
 - 時間帯で決まる止め（保守の窓の外は直さない）は freeze でなく intent の remediation schedule に書く。freeze は予定の外の判断に使う。
 
-## intent の `runtime:` と起動の旗（§26.7、#183・#193）
+## intent の `runtime:` と起動の旗（§26.7、#183・#193・#213）
 
 予算・既定の mode・settle・上限・周期のように起動のたびに同じ値を渡す引数は、intent の `runtime:` に書く。systemd のユニットの
 旗にだけ置くと、回り方の正が宣言の外に残る。
@@ -275,6 +275,10 @@ runtime:
   stuck_after: 5
   oneshot:                         # 一回性の reconcile と plan だけに効く値
     max_changes_per_cycle: 50
+  roles:                           # 名前のついた常駐の役（--runtime-role で選ぶ）
+    os-install:
+      mode: auto
+      max_destructive_per_cycle: 5
 ```
 
 - 書くのは intent のファイルのどれか 1 つに 1 回だけ（inventory のファイルには書けない）。知らないキー・範囲の外の値は読み込みで断る。
@@ -293,6 +297,16 @@ $ sakutei --intent /srv/sakutei/intent --provider-config /etc/sakutei/provider-c
 <!-- check: runtime-refused daemon -->
 ```console
 $ sakutei --intent /srv/sakutei/intent --provider-config /etc/sakutei/provider-config.yaml --max-destructive-per-cycle 0 --interval 10s
+```
+
+- 同じ intent で、ふだんの常駐と、一部の台だけを claim して一時的に別の値で動く常駐を並べるときは、`roles:` に役を書き、その常駐を
+  `--runtime-role` で起こす（#213）。役の値は、役の欄にあればそれ、無ければ `daemon:`、それも無ければ共通の `runtime:` の値。役の値は
+  宣言なので共通の値より緩くてよく、旗との突き合わせは役に効く値に対して上と同じ決まりで行う。宣言に無い役は起動を断る。どの役で
+  動いているかは status の `runtime_role` と監査の各記録の `runtime_role` に出る:
+
+<!-- check: flags -->
+```console
+$ sakutei --intent /srv/sakutei/intent --provider-config /etc/sakutei/provider-config.yaml --runtime-role os-install --claim site=a,rack=r3
 ```
 
 - 常駐は起動したときの値で回り続ける。動いている間に `runtime:` が変われば level の Event `RuntimeDeclarationChanged` で「起こし直すと

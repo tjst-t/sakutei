@@ -663,6 +663,9 @@ func writeDaemonPlacement(sb *strings.Builder, h DaemonHealth) {
 			fmt.Fprintf(sb, "    OSCILLATING %s: %s — %s（%s から）\n", a.Resource, a.Diff, a.Note, a.Since.UTC().Format(time.RFC3339))
 		}
 	}
+	if h.RuntimeRole != "" {
+		fmt.Fprintf(sb, "  runtime の役: %s — 起動の引数は intent の runtime.roles.%s: の値（§26.7）\n", h.RuntimeRole, h.RuntimeRole)
+	}
 	if len(h.RuntimeTightened) > 0 {
 		fmt.Fprintf(sb, "  注意: 起動の旗が intent の runtime: を一時的に締めている（§26.7）: %d 引数\n", len(h.RuntimeTightened))
 		for _, t := range h.RuntimeTightened {
