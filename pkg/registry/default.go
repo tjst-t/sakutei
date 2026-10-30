@@ -97,7 +97,8 @@ import (
 //     only (Capabilities.ObserveOnly, §23.4) unless config["netconf_apply"] is
 //     "true" (Backlog #175): then it declares CommitConfirm and applies in two
 //     steps with commit confirmed (config["netconf_confirm_timeout"], default
-//     2m; config["netconf_commit_flow"] "1.0" (default) or "1.1" for persist).
+//     2m; config["netconf_confirm_timeouts"] per host, "sw1=60s,sw2=90s", #199;
+//     config["netconf_commit_flow"] "1.0" (default) or "1.1" for persist).
 //
 //   - "ldap": entries of LDAP directories (Backlog #144), only the declared
 //     attributes, through the OpenLDAP clients ldapsearch / ldapmodify.
@@ -773,6 +774,19 @@ func netconfApplyConfig(config map[string]string) (netconf.ApplyConfig, bool, er
 		}
 		ac.ConfirmTimeout = d
 	}
+	if v := config["netconf_confirm_timeouts"]; v != "" {
+		// #199: per host ("sw1=60s,sw2=90s"); a commit group's time limit is
+		// the shortest of its members'.
+		ac.HostConfirmTimeouts = map[string]time.Duration{}
+		for _, part := range strings.Split(v, ",") {
+			h, ds, ok := strings.Cut(strings.TrimSpace(part), "=")
+			d, err := time.ParseDuration(strings.TrimSpace(ds))
+			if !ok || h == "" || err != nil {
+				return ac, false, fmt.Errorf("netconf: netconf_confirm_timeouts %q: want <host>=<duration>,... such as \"sw1=60s,sw2=90s\"", v)
+			}
+			ac.HostConfirmTimeouts[strings.TrimSpace(h)] = d
+		}
+	}
 	switch v := config["netconf_commit_flow"]; v {
 	case "", "1.0":
 	case "1.1":
@@ -780,8 +794,8 @@ func netconfApplyConfig(config map[string]string) (netconf.ApplyConfig, bool, er
 	default:
 		return ac, false, fmt.Errorf("netconf: netconf_commit_flow %q: want \"1.0\" or \"1.1\"", v)
 	}
-	if !allow && (config["netconf_confirm_timeout"] != "" || config["netconf_commit_flow"] != "") {
-		return ac, false, errors.New("netconf: netconf_confirm_timeout / netconf_commit_flow are set but netconf_apply is not \"true\" (the provider observes only)")
+	if !allow && (config["netconf_confirm_timeout"] != "" || config["netconf_confirm_timeouts"] != "" || config["netconf_commit_flow"] != "") {
+		return ac, false, errors.New("netconf: netconf_confirm_timeout / netconf_confirm_timeouts / netconf_commit_flow are set but netconf_apply is not \"true\" (the provider observes only)")
 	}
 	return ac, allow, nil
 }

@@ -167,6 +167,9 @@ func printGateLines(r *planreport.Report) {
 // printOpGate prints an op's planned_change lane and, when a gate would block
 // it, by what and why.
 func printOpGate(o planreport.Operation) {
+	if o.CommitGroup != "" {
+		fmt.Fprintf(logOut, "  commit_group: %s (committed all or none, #199)\n", o.CommitGroup)
+	}
 	if o.Lane == planreport.LanePlannedChange {
 		fmt.Fprintf(logOut, "  lane:   %s\n", o.PlannedChange)
 	}

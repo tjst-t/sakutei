@@ -96,6 +96,14 @@ BMC・スイッチ管理ポートへ到達するための**管理NW**は段0 の
 - **確定の成否が分からない**（commit confirmed・確定の commit の応答の前に切れた等）ときは unknown として次の周の観測に任せる（TransientError）。**途中で落ちたら機器の巻き戻しに任せる**（1.0 の機器はセッションの終わりで、そうでなくても confirm-timeout で戻す）。
 - lock の取り合いは TransientError、機器が受けない宣言（edit-config・validate の rpc-error）は candidate を discard して PermanentError。
 
+**NETCONF の commit_group（複数の台の変更をまとめて確定、Backlog #199）**：同じ変更を複数の台に入れる構成（例：同じセグメントを全部の leaf に足す）で、確かめが一部の台で落ちて変更が片方の台にだけ残ることを避ける。netconf のリソースの欄 `commit_group: <名前>`（intent にも、外の realizer が返すリソースの Fields にも書ける）に同じ名前を書いたリソースは、全部の台で確かめが通ったときだけ確定する。**書かなければ今どおり台ごとに確定する**（暗黙にはまとめない）。
+
+- **コアの受け持ち**（provider の口 `provider.CommitGrouper`）：読み込みの時点で group を割り当て、**group の中の依存の辺（直接でも間接でも）・scope をまたぐ group・`strategy: task` の member を断る**。netconf は 1 台に 1 つの member まで（1 台の candidate は 1 つのセッションしか持てない）。member は**同じ波に並ぶ**（各 member が全 member の依存先を待つ）。差分のある member の op は**まとめて 1 回の Apply**（op の `CommitGroup`）。**1 つでも行けない member**（観測できない・止めている・上流が落ちた・backoff・in-flight・予算で止まった・承認待ち）があれば、**どの member も行かない**（承認ゲートは group 単位で、一部だけの承認はさせない）。予算は今どおり台ごとの変更として数える。早期収束パスと #177 の観測し直しの回は group の member を当てず、group の全部を見る周に任せる。
+- **流れ**：(1) group の全部の台で、それぞれの Apply のセッションを開き candidate に部分木を当てる（1 台でも送れなければ、どの台にも commit confirmed を送らない）。(2) 全部の台に、それぞれのセッションで commit confirmed。(3) 全部の台で、新しい ssh 接続での到達と宣言どおりかを確かめる（confirm の先の確かめ、#200 も入る）。(4) 全部が通ったときだけ、各台に確定の commit。
+- **時間の上限は group の中で一番短い confirm-timeout を基準にする**（台ごとの confirm-timeout は `netconf_confirm_timeouts`）。最初の commit confirmed から、その半分までに (4) に入れなければ確定しない。
+- **1 台でも送れない・確かめに落ちる・時間の上限の半分に届く、のどれかなら、どの台も確定しない**：candidate を discard し、`:confirmed-commit:1.1` を持つ台には `<cancel-commit>` も送ってすぐ戻し、ほかは機器の confirm-timeout の巻き戻しに任せる（その時間までセッションを開いたまま待ち、新しい接続で戻ったかを見る）。
+- **残る窓（全部か何もしないかにならない場合）**：(4) の確定は台ごとの rpc で、NETCONF に複数の機器をまたぐ確定は無い。**確定の rpc を送っている途中で切れた台は成否が分からない**ので unknown にする（確定していれば残り、届いていなければ confirm-timeout で戻る。次の周の観測に任せる）。機器が確定を断った台は confirm-timeout で戻る。どちらの場合も、ほかの台は確定している。provider は台ごとの結果（committed・not_committed・unknown）を返し（`provider.CommitGroupError`）、コアは**台ごとに Event `CommitGroupApplied`** を出し、確定しなかった台・分からない台をその台の Apply の失敗として扱う。plan は操作ごとに `commit_group` を出し、止まった member のある group の残りを `blocked_by: commit_group` にする。
+
 **OOB（帯域外）= ネットワーク版 Break Glass**：管理NW そのものが死んだときの経路として、コンソールサーバ（シリアル集約）/ OOB 専用NW を持つ。これは Sakutei の管理対象外に置き、Break Glass の経路（§20）として扱う。
 
 **管理系とデータ系は別系統である。** 上記は管理系（BMC アクセス・reconciler から全機器への到達性）の話であり、実運用ではデータ系（VM トラフィック・分散ストレージのレプリケーション・live migration）がもう一系統存在する。両者は帯域も経路も異なる。データ系が全断しても reconciler は管理系経由で機器を制御でき自分で直せる（single point of blindness にならない）ため、**データ系は全て段1**とする。データ系スイッチ自体の設定変更も管理系経由で行い、「データ系を壊しても、データ系を直す経路は生きている」を保証する。

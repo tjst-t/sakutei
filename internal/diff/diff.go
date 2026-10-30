@@ -105,6 +105,10 @@ type DesiredResource struct {
 	// applying it.  Nil when the resource declares none (the type's
 	// declaration, the flags and the defaults decide, reconcile.ResolveApplyCheck).
 	ApplyCheck *ApplyCheck
+	// CommitGroup is the commit group the resource's provider names for it
+	// (provider.CommitGrouper, Backlog #199), set at load time by
+	// reconcile.AssignCommitGroups.  Empty: committed on its own.
+	CommitGroup string
 }
 
 // ApplyCheck is an `apply_check:` declaration of the intent (§11.1 Tier2 /

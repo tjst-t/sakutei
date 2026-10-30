@@ -1013,6 +1013,13 @@ func runReconcile(args []string) {
 		fmt.Fprintf(logErr, "sakutei reconcile: note: a change awaiting approval (ensure: absent, or one the provider requires approval for) needs an open planned_change lane, and a one-shot reconcile opens lanes only with --audit-log (§13.3)\n")
 	}
 
+	commitGroupOf := map[string]string{}
+	for _, r := range desired {
+		if r.CommitGroup != "" {
+			commitGroupOf[r.ID.Local] = r.CommitGroup
+		}
+	}
+
 	// Filter per-resource plans through the budget decision.
 	filteredPlans := make(map[string]core.Plan, len(plans))
 	for local, plan := range plans {
@@ -1031,6 +1038,9 @@ func runReconcile(args []string) {
 			filteredPlans[local] = core.Plan{Ops: allowed}
 		}
 	}
+	// #199: a commit group part of which the budget holds (or awaits its
+	// approval) is held whole: no partial approval.
+	reconcile.HoldPartialCommitGroups(desired, plans, filteredPlans, unobservable, logErr, "sakutei reconcile: ")
 
 	// §13.3 / §14.5: the lane ops that passed the gates consume their lanes
 	// up front, and the usage is recorded in S4 before anything is dispatched:
@@ -1329,6 +1339,12 @@ func runReconcile(args []string) {
 			recPlans := map[string]core.Plan{}
 			for local := range recovered {
 				if plan, ok := plans[local]; ok && roots[local] {
+					if g := commitGroupOf[local]; g != "" {
+						// #199: its group was decided at the head of the
+						// run; a member alone is not committed.
+						fmt.Fprintf(logErr, "sakutei reconcile: reobserve %s: in commit_group %q; left to the next run (a commit group goes all or none)\n", local, g)
+						continue
+					}
 					recPlans[local] = plan
 				}
 			}

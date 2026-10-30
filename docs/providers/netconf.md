@@ -47,10 +47,11 @@ providers:
     # 2 段の Apply を許すときだけ（書かなければ観測だけ）
     netconf_apply: "true"
     netconf_confirm_timeout: 2m         # commit confirmed の confirm-timeout（既定 2m、下限 2s、秒に切り上げる）
+    netconf_confirm_timeouts: sw2=5m    # 台ごとの confirm-timeout（無い台は上の値。commit_group の上限は一番短いもの、#199）
     netconf_commit_flow: "1.0"          # "1.0"（既定）か "1.1"（:confirmed-commit:1.1 を持つ機器で persist の流れ）
 ```
 
-- `netconf_apply` は `"true"` か `"false"`（書かないのと同じ）。ほかの値はエラー。`netconf_apply` を `"true"` にしないまま `netconf_confirm_timeout`・`netconf_commit_flow` を書くのもエラー（Apply しないのに Apply の設定があるのは書き間違い）。
+- `netconf_apply` は `"true"` か `"false"`（書かないのと同じ）。ほかの値はエラー。`netconf_apply` を `"true"` にしないまま `netconf_confirm_timeout`・`netconf_confirm_timeouts`・`netconf_commit_flow` を書くのもエラー（Apply しないのに Apply の設定があるのは書き間違い）。
 
 - `filter` か `filter_file` のどちらか 1 つ。中身は `<filter type="subtree">` の子にそのまま入る（RFC 6241 §6）。最上位の要素はどれも**名前空間を持つこと**（名前空間の無い subtree filter はすべての名前空間に当たるので断る）。
 - 「どこ」は観測（Read）が知るべきこと（Read は宣言の `config` を見ない、ADR-0002）なので、provider を組み立てるときに渡す。部分木の一覧のファイルの代わりに intent の `providers.netconf.subtrees` にも書ける（下の「範囲を intent に書く」、#182）。provider はそれを組み立ての前に受け取り、Read が resources の宣言を見ないことは変わらない。
@@ -90,6 +91,7 @@ ID は `<ホスト名>/<部分木の名前>`（例 `sw1/if-uplink`）。
 | --- | --- |
 | `config` | 部分木の中身の XML（**宣言、必須**）。観測の値は機器の running の正規形（下）で、機器の順のまま |
 | `ordered` | 順に意味のある列の道（`nacm/rule-list/rule` のように、部分木の頭からの要素の名前を `/` でつなぐ。カンマで複数）。比べ方の宣言で、機器には無い（それだけでは差分にならない）。Apply を許していて `config` が違うときは、Apply が順を並べ直して確かめるのに使うので plan に `+ ordered` と出る |
+| `commit_group` | まとめて確定する group の名前（英小文字・数字・`_`・`.`・`-`。下の「commit_group」、#199）。どう確定するかの宣言で、機器には無い（差分にならない）。書かなければ台ごとに確定する |
 | `host`・`subtree` | ホストの名前と部分木の名前（ID から、identity）。書かなくてよい |
 | `capabilities` | 機器の hello の NETCONF の capability（短い名前を空白で区切る。例 `base:1.0 base:1.1 candidate:1.0 confirmed-commit:1.1 validate:1.1 …`）。観測だけ（Computed） |
 
@@ -201,6 +203,59 @@ YANG を持たないので、どこで置き換えるかは filter の形で決�
 
 例: filter `<nacm xmlns="…"><rule-list><name>sakutei-it</name></rule-list></nacm>` なら、rule-list `sakutei-it` を丸ごと置き換える（ほかの rule-list には触れない）。
 
+## commit_group（複数の台の変更をまとめて確定する、Backlog #199）
+
+同じ変更を複数の台に入れる構成（例：同じセグメントを全部の leaf に足す）で、台ごとに確定すると、確かめが一部の台で落ちたときに変更が片方の台にだけ残る。`commit_group` に同じ名前を書いた部分木は、**全部の台で確かめが通ったときだけ確定し、1 台でも落ちればどの台も確定しない**。書かなければ今どおり台ごとに確定する（暗黙にはまとめない）。
+
+```yaml
+resources:
+  - provider: netconf
+    id: leaf1/vlan-100
+    fields: {config: '<vlans xmlns="…">…</vlans>', commit_group: vlan-100}
+  - provider: netconf
+    id: leaf2/vlan-100
+    fields: {config: '<vlans xmlns="…">…</vlans>', commit_group: vlan-100}
+```
+
+外の realizer（`pkg/cli.WithRealizer`、§7.6）が返すリソースの `Fields` に `commit_group` を入れても同じ。
+
+読み込みの時点で断るもの:
+
+- group の中の依存の辺（`depends_on` が直接でも間接でも group の別の member に届く）。まとめて確定するものの間に順序は付けられない。
+- scope をまたぐ group、`update_policy.strategy: task` の member。
+- 1 台に 2 つの member（1 台の candidate は 1 つのセッションしか持てない）。
+
+収束ループでの扱い:
+
+- member は**同じ波に並ぶ**（各 member が全 member の依存先を待つ）。差分のある member はまとめて **1 回の Apply** で渡る（差分の無い member は送らない）。
+- **1 つでも行けない member**（観測できない・止めている・上流が落ちた・backoff・in-flight・予算で止まった・承認待ち）があれば、**どの member も行かない**（`skip …: commit_group "…": held with … (…)`）。承認ゲートは group 単位で、一部だけの承認はさせない。plan は操作ごとに `commit_group` を出し、止まった member のある group の残りを `blocked_by: commit_group` にする。
+- 予算は今どおり台ごとの変更として数える。
+- 早期収束パスと一回性の reconcile の観測し直しの回（#177）は group の member を当てない（group の全部を見る周・次の run に任せる）。
+
+流れ（2 段の Apply を台ごとでなく group で回す）:
+
+1. group の全部の台で、それぞれの Apply のセッションを開き、candidate に部分木を当てる（上の 1・2）。**1 台でも送れなければ、どの台にも commit confirmed を送らない**（candidate を捨てる）。
+2. 全部の台に、それぞれのセッションで commit confirmed（並べて送る）。
+3. 全部の台で、新しい ssh 接続での到達と宣言どおりかを確かめる（並べて。confirm の先の確かめ、#200 もここに入る）。
+4. **全部が通ったときだけ**、各台に確定の `<commit>`（並べて送る）。
+
+**時間の上限は group の中で一番短い confirm-timeout を基準にする**（台ごとの値は `netconf_confirm_timeouts`）。最初の commit confirmed から、その半分までに 4 に入れなければ確定しない。
+
+1 台でも**送れない・確かめに落ちる・時間の上限の半分に届く**、のどれかなら、どの台も確定しない: candidate を `<discard-changes>` し、**`:confirmed-commit:1.1` を持つ台には `<cancel-commit>` も送ってすぐ戻す**。ほかの台は機器の confirm-timeout の巻き戻しに任せ、その時間までセッションを開いたまま待ち、新しい接続で戻ったかを見る。落ちた台は permanent（同じ宣言は変わるまで当て直さない）、ほかの台は transient（理由に落ちた台の名前）。
+
+結果は台ごとに Event `CommitGroupApplied`（attrs の `group` と `outcome`: `committed`・`not_committed`・`unknown`）で出す。確定しなかった台・分からない台は、その台の Apply の失敗（`ApplyFailed`）にもなる。
+
+### 残る窓（全部か何もしないかにならない場合）
+
+NETCONF には複数の機器をまたぐ確定が無い。4 の確定は台ごとの rpc なので、4 に入ってからは次のことが起こりうる。どちらの場合も、**ほかの台は確定している**。
+
+| 起きたこと | その台 | 答え |
+| --- | --- | --- |
+| 確定の `<commit>` を送っている途中で切れた（応答が来ない） | **unknown**（確定していれば残り、届いていなければ confirm-timeout で戻る） | 成否が分からないので、次の周の観測に任せる。宣言どおりと見えれば適合、戻っていれば次の周にもう一度 group で当てる |
+| 機器が確定の `<commit>` を断った（rpc-error） | not_committed（confirm-timeout で戻る） | 次の周に group で当て直す（確定した台は差分が無いので送らない） |
+
+窓は 4 の rpc を送っている間（並べて送るので、台ごとの 1 往復ほど）に限られる。窓に落ちた group は、台ごとの Event で、どの台が確定し、どの台が分からないかを示す。
+
 ## 部分木だけに絞ったユーザー（NACM）
 
 NETCONF のユーザーは、機器の側の NACM（RFC 8341）で**宣言する部分木だけ**を読み書きできるよう絞って運用できる（Backlog #176）。Sakutei が送るものは決まっていて、どれも部分木の外を読み書きしない。
@@ -269,7 +324,7 @@ NETCONF のユーザーは、機器の側の NACM（RFC 8341）で**宣言する
 
 ## 統合テスト
 
-公開の NETCONF サーバ（netopeer2 のコンテナ）を相手に回す（Backlog #141・#175・#176）。build tag `integration_netconf` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
+公開の NETCONF サーバ（netopeer2 のコンテナ）を相手に回す（Backlog #141・#175・#176・#199）。build tag `integration_netconf` の付いたファイルにあり、`make check`・`make test`・CI には入らない。
 
 ```console
 $ make integration-netconf
@@ -283,6 +338,7 @@ $ make integration-netconf
 - 2 段の Apply は、`netconf_apply: "true"`・`netconf_confirm_timeout: 10s` の provider の設定で回す（1.0 の流れと、`netconf_commit_flow: "1.1"` の persist の流れ）。netopeer2 の hello は `:candidate`・`:confirmed-commit:1.1`・`:validate:1.1` を出す（1.0 の流れは 1.1 の機器でも同じに動く）。
 - 確かめの失敗は「Sakutei が自分を締め出す宣言」で起こす: 部分木 `sw1/admin-rules`（rule-list `sakutei-it-admin`）の頭に、ietf-netconf-acm を読むのを断る規則 `deny-read-nacm` を足す。当てると、新しい接続からは NACM の部分木が読めなくなる（`<data/>` が返り、宣言どおりと確かめられない）。書き込みは許したままにする。
 - **部分木だけに絞ったユーザー**（#176）: コンテナに 2 人目の利用者 `sakutei` を作り（同じ鍵）、準備のときに sysrepocfg で NACM の group `sakutei-scoped` と rule-list `sakutei-scoped` を入れる。許すのは `sw1/acl-rules`・`sw1/group` の 2 つの部分木の読み書き（`path` の規則）と、`get-config`・`lock`・`unlock`・`edit-config`・`validate`・`commit`・`discard-changes` の実行だけで、最後の `deny-rest` でほかの読み・書き・実行をすべて断る（上の「絞り方の例」と同じ形）。このユーザーで Apply を許した設定（1.0 の流れ）を回す。
+- **commit_group**（#199）: 別に 3 台（`sakutei-ncit-g1`〜`g3`）を立て、3 台の部分木 `acl-rules` を `commit_group: leafs` にまとめる。confirm-timeout は g1・g3 が 10 秒、g2 が 20 秒（`netconf_confirm_timeouts: g2=20s`）で、時間の上限は一番短い 10 秒の半分。確かめの失敗は、g3 だけを Sakutei 自身が NACM を読めなくなる宣言（`g3/admin-rules` に `deny-read-nacm`）にして起こす。
 - 終われば（落ちても）コンテナを消す。Makefile も残ったコンテナを消す。
 
 確かめること:
@@ -296,6 +352,8 @@ $ make integration-netconf
 | 2 段の Apply（1.1 の persist） | 同じく手で変えたものを persist の流れで当てる → conformant、confirm-timeout の後も宣言どおり |
 | 確かめの失敗 | `sw1/admin-rules` に `deny-read-nacm` を足す宣言の reconcile → 新しい接続で宣言どおりと確かめられず（confirm-timeout の半分の 5 秒で打ち切る）、確定の commit を送らず、confirm-timeout まで待つ（reconcile は 10 秒以上かかる）。機器が巻き戻し、`deny-read-nacm` は無く NACM がまた読める。Apply は失敗として `not confirmed … the confirming commit was not sent; the device rolled back at the timeout` を知らせる |
 | 絞ったユーザー（NACM） | 手で変えた 2 つを、絞ったユーザーの設定の status が drift と見て、reconcile が 2 段で当てる（`2 change(s) applied`）→ conformant、機器は宣言どおりで confirm-timeout の後も残る。その間の netopeer2 のログに断った rpc（`Operation not authorized`・`User callback failed`・`denied`）が無い（外を触る rpc を送っていない）。部分木の外（`sw1/admin-rules`）を変える宣言は、観測では absent に見え（NACM が黙って省く）、Apply が `edit-config on the candidate: … access-denied at /ietf-netconf-acm:nacm/rule-list[name='sakutei-it-admin']/…` で断られて permanent、`the candidate was discarded, nothing was committed`。機器の NACM は変わらない。そのあとも絞ったユーザーで部分木の中は当てられる（lock と candidate が残っていない） |
+| commit_group：全部が通る | 3 台の rule の順を手で入れ替え、group の reconcile → plan の 3 つの操作に `commit_group: leafs`、`3 change(s) applied`、台ごとに `CommitGroupApplied` の committed。3 台とも宣言どおりで、confirm-timeout の後も戻らない。次の reconcile は Converged |
+| commit_group：1 台の確かめが落ちる | g1・g2 の rule の順と g3 の `deny-read-nacm` を同じ group で reconcile → g3 は新しい接続で宣言どおりと確かめられず（5 秒で打ち切る）、どの台も確定しない（3 台とも not committed）。netopeer2 は `:confirmed-commit:1.1` を持つので、3 台に `<cancel-commit>` を送ってすぐ戻す。g1・g2 は手で変えたまま、g3 に `deny-read-nacm` は無い |
 | 止める | `docker stop` → status で 2 つとも unobservable（unreachable）、drift は 0、reconcile は 0 以外で終わる（観測できないものがある） |
 
 netopeer2 2.1.49 で見たこと（試験の組み立ての理由）: netconf ユーザを NACM の group から外す宣言で締め出すと、confirm-timeout の巻き戻しで running は元に戻るのに、そのあとも netconf ユーザの読み書きが断られ続けた（サーバを立て直すまで）。このため確かめの失敗は「読むのだけを断る規則を足す」宣言で起こしている。また ietf-netconf-server の `local-address` を変えても待ち受けは変わらず、締め出しにならなかった。
@@ -336,6 +394,33 @@ PASS
 ```
 Reconcile: not converged: 1 resource(s) failed to apply (no changes applied)
 sakutei: apply netconf//sw1/admin-rules: permanent: netconf: Apply "sw1/admin-rules": edit-config on the candidate: netconf: rpc-error: protocol access-denied (error) at /ietf-netconf-acm:nacm/rule-list[name='sakutei-it-admin']/rule[name='outside']: Access to the data model "ietf-netconf-acm" is denied because "sakutei" NACM authorization failed.; the device refused it for the user (access-denied): the user may not write this part, or may not execute the rpc. Sakutei writes only inside the subtree; it needs the user to read and write the subtree and to execute lock, unlock, get-config, edit-config, validate, commit and discard-changes (NACM, RFC 8341). A subtree the user may not read is observed as absent; the candidate was discarded, nothing was committed
+```
+
+commit_group の段を足したあと（#199、2026-10-29、同じ開発機・同じ版。機器を 4 台に）:
+
+```
+--- PASS: TestNetconfCommitGroupIntegration (22.01s)
+    --- PASS: TestNetconfCommitGroupIntegration/every_check_passes:_all_three_confirmed (15.24s)
+    --- PASS: TestNetconfCommitGroupIntegration/g3's_check_fails:_no_device_confirmed (6.77s)
+--- PASS: TestNetconfIntegration (53.50s)
+    --- PASS: TestNetconfIntegration/conformant (0.50s)
+    --- PASS: TestNetconfIntegration/changed_by_hand:_drift,_never_applied (0.67s)
+    --- PASS: TestNetconfIntegration/restored_by_hand:_conformant,_no_drift_in_any_cycle (0.33s)
+    --- PASS: TestNetconfIntegration/apply_1.0:_commit_confirmed,_checked,_confirmed (13.03s)
+    --- PASS: TestNetconfIntegration/apply_1.1:_persist (12.85s)
+    --- PASS: TestNetconfIntegration/scoped_user_(NACM):_observed_and_applied_inside,_refused_outside (14.00s)
+    --- PASS: TestNetconfIntegration/apply:_the_check_fails,_the_device_rolls_back_at_the_timeout (10.44s)
+    --- PASS: TestNetconfIntegration/stopped:_unknown (1.60s)
+PASS
+```
+
+g3 の確かめが落ちたときの `sakutei reconcile`（抜粋）:
+
+```
+Reconcile: not converged: 3 resource(s) failed to apply (no changes applied)
+sakutei: commit_group "leafs": netconf//g1/acl-rules: not committed: transient: netconf: Apply "g1/acl-rules": not committed: commit group "leafs": g3/admin-rules was not confirmed; no member was confirmed; cancel-commit was sent; the device rolled back at once (observed over a new connection)
+sakutei: commit_group "leafs": netconf//g2/acl-rules: not committed: transient: … (g1 と同じ)
+sakutei: commit_group "leafs": netconf//g3/admin-rules: not committed: permanent: netconf: Apply "g3/admin-rules": not confirmed: the running subtree is not as declared within 5s (half of the shortest confirm-timeout 10s of commit group "leafs"); no member was confirmed; cancel-commit was sent; the device rolled back at once (observed over a new connection)
 ```
 
 netopeer2 2.1.49 で見たこと（#176）: `get-config` は rpc の規則で断っても通った（読みはデータの規則で絞られる）。断った rpc はログに `Operation not authorized`、断った書き込みは `User callback failed` と出る。読みで省いたデータはログに出ない（外を読んでいないことは、偽のサーバの単体テストで確かめる）。

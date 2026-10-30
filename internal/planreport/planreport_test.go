@@ -69,3 +69,21 @@ func TestReport_SummarizeAndJSON(t *testing.T) {
 		t.Errorf("an op of the root scope must carry scope {}: %v", ops[1])
 	}
 }
+
+// TestHoldCommitGroups: a commit group goes all or none (#199) — a member
+// blocked by a gate blocks the others of its group, not other groups.
+func TestHoldCommitGroups(t *testing.T) {
+	ops := []Operation{
+		{Target: Target{Provider: "netconf", LocalID: "sw1/x"}, CommitGroup: "g"},
+		{Target: Target{Provider: "netconf", LocalID: "sw2/x"}, CommitGroup: "g", Blocked: true, BlockedBy: BlockedByBudget},
+		{Target: Target{Provider: "netconf", LocalID: "sw3/x"}, CommitGroup: "h"},
+		{Target: Target{Provider: "netconf", LocalID: "sw4/x"}},
+	}
+	HoldCommitGroups(ops)
+	if !ops[0].Blocked || ops[0].BlockedBy != BlockedByCommitGroup || !strings.Contains(ops[0].BlockReason, "held with sw2/x (budget)") {
+		t.Fatalf("sw1: %+v", ops[0])
+	}
+	if ops[1].BlockedBy != BlockedByBudget || ops[2].Blocked || ops[3].Blocked {
+		t.Fatalf("others: %+v", ops[1:])
+	}
+}

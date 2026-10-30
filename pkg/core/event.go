@@ -105,6 +105,11 @@ const (
 	// あるとき）。freeze を解いた周（sakutei freeze end・期限切れ）に resolved。
 	// freeze は運用者が選んだものなので、続いても stuck に上げない。
 	EventFrozen EventKind = "Frozen"
+	// EventCommitGroupApplied は commit_group（Backlog #199）の Apply の台ごとの
+	// 結果（edge、その Apply の周に 1 回）。Resource は group の 1 つ、attrs の
+	// group と outcome（committed・not_committed・unknown）。unknown は確定の
+	// rpc の途中で切れて成否が分からない台（次の周の観測に任せる）。
+	EventCommitGroupApplied EventKind = "CommitGroupApplied"
 
 	// Workflow の Event（edge、§6.3, §6.4）。internal/workflow はこの kind を使う。
 	EventWorkflowStarted       EventKind = "WorkflowStarted"

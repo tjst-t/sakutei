@@ -80,8 +80,9 @@ func (a *Audited) Execute(ctx context.Context, p provider.Provider, plan core.Pl
 		for _, f := range op.Fields {
 			rec.Fields = append(rec.Fields, f.Field)
 		}
-		if err != nil {
-			rec.Result, rec.Error = audit.ResultFailed, err.Error()
+		// #199: a commit group's Apply has a result per member.
+		if merr := provider.MemberError(err, op.Target); merr != nil {
+			rec.Result, rec.Error = audit.ResultFailed, merr.Error()
 		}
 		if approval != nil {
 			rec.PlannedChange, rec.Actor = approval(op)

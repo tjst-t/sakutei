@@ -154,6 +154,25 @@ func applyWaves(
 		wave := queue
 		queue = nil
 
+		// #199: a commit group goes all or none, in one Apply.
+		gw := planWaveGroups(desired, wave, plans, func(idx int) string {
+			r := desired[idx]
+			if unobservable[r.ID.Local] {
+				if why := held[r.ID.Local]; why != "" {
+					return why
+				}
+				return "unobservable this cycle"
+			}
+			if up := upstreamFailed(r.DependsOn, failed); up != "" {
+				return fmt.Sprintf("upstream %q failed", up)
+			}
+			if dep, cond := unreadyUpstream(r, ready); dep != "" {
+				return fmt.Sprintf("waiting for upstream %q ready_condition %q", dep, cond)
+			}
+			return ""
+		})
+		groupErr := map[string]error{}
+
 		// Apply nodes in this wave sequentially.
 		// (Wave-internal parallelism is S94f1f9-3.)
 		for _, idx := range wave {
@@ -215,6 +234,20 @@ func applyWaves(
 				continue
 			}
 
+			// #199: held with another member of its commit group.
+			if why := gw.hold[idx]; why != "" {
+				skipped = append(skipped, local)
+				fmt.Fprintf(errOut, "sakutei: skip %s: %s\n", r.ID, why)
+				failed[local] = true
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
 			// Check whether this node has ops to apply.
 			plan, hasPlan := plans[local]
 			if !hasPlan || len(plan.Ops) == 0 {
@@ -228,8 +261,21 @@ func applyWaves(
 				continue
 			}
 
-			// Apply.
-			if applyErr := exec.Execute(ctx, fp, plan); applyErr != nil {
+			// Apply (#199: a commit group's members in one Apply).
+			var applyErr error
+			if k := commitGroupKey(r); gw.launch[k] != nil {
+				err, done := groupErr[k]
+				if !done {
+					members := gw.launch[k]
+					err = exec.Execute(ctx, fp, groupPlan(desired, members, plans))
+					groupErr[k] = err
+					EmitCommitGroupApplied(errOut, "sakutei: ", desired, members, err)
+				}
+				applyErr = provider.MemberError(err, r.ID)
+			} else {
+				applyErr = exec.Execute(ctx, fp, plan)
+			}
+			if applyErr != nil {
 				EmitApplyFailed(errOut, "sakutei: ", "apply", r.ID, applyErr)
 				failed[local] = true
 				// Still advance downstream so they can be evaluated (and skipped).
@@ -296,6 +342,35 @@ func buildDAG(desired []diff.DesiredResource) (localIdx map[string]int, inDeg []
 			}
 			adj[j] = append(adj[j], i)
 			inDeg[i]++
+		}
+	}
+	// #199: the members of a commit group go in the same wave: each takes the
+	// dependencies of all (none depends on another, AssignCommitGroups).
+	for _, members := range commitGroupMembers(desired) {
+		if len(members) < 2 {
+			continue
+		}
+		deps := map[int]bool{}
+		for _, m := range members {
+			for _, dep := range desired[m].DependsOn {
+				if j, ok := localIdx[dep]; ok {
+					deps[j] = true
+				}
+			}
+		}
+		for _, m := range members {
+			own := map[int]bool{}
+			for _, dep := range desired[m].DependsOn {
+				if j, ok := localIdx[dep]; ok {
+					own[j] = true
+				}
+			}
+			for j := 0; j < n; j++ {
+				if deps[j] && !own[j] {
+					adj[j] = append(adj[j], m)
+					inDeg[m]++
+				}
+			}
 		}
 	}
 	return localIdx, inDeg, adj

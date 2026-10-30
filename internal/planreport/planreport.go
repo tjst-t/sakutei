@@ -69,6 +69,9 @@ const (
 	// #166）の操作: 同じ Diff の Apply が成功を返しても現実が変わらないまま上限に
 	// 達した。デーモンの GET /plan と、一回性の reconcile の状態のファイルが使う。
 	BlockedByApplyStopped = "apply_stopped"
+	// BlockedByCommitGroup は commit_group（#199）の別の member が止まったので
+	// 一緒に止めた操作（group は全部か何もしないか。一部だけの承認はさせない）。
+	BlockedByCommitGroup = "commit_group"
 )
 
 // AbsentApprovalReason は承認待ちで止めた ensure: absent の削除の理由（#163）。
@@ -272,6 +275,34 @@ type Operation struct {
 	BlockReason string `json:"block_reason,omitempty"`
 
 	Task *Task `json:"task,omitempty"`
+
+	// CommitGroup は commit_group（#199）の名前: 同じ provider の同じ group の
+	// 操作は 1 つの Apply で、全部の台で確かめが通ったときだけ確定する。
+	CommitGroup string `json:"commit_group,omitempty"`
+}
+
+// HoldCommitGroups は、止まった操作のある commit_group の、止まっていない
+// 操作も止める（BlockedByCommitGroup、#199）。
+func HoldCommitGroups(ops []Operation) {
+	blocked := map[string]string{}
+	key := func(o Operation) string { return o.Provider + "/" + o.CommitGroup }
+	for _, o := range ops {
+		if o.CommitGroup != "" && o.Blocked {
+			if _, ok := blocked[key(o)]; !ok {
+				blocked[key(o)] = o.LocalID + " (" + o.BlockedBy + ")"
+			}
+		}
+	}
+	for i := range ops {
+		o := &ops[i]
+		if o.CommitGroup == "" || o.Blocked {
+			continue
+		}
+		if by, ok := blocked[key(*o)]; ok {
+			o.Blocked, o.BlockedBy = true, BlockedByCommitGroup
+			o.BlockReason = fmt.Sprintf("commit_group %q: held with %s; a commit group goes all or none", o.CommitGroup, by)
+		}
+	}
 }
 
 // Field はフィールドの前と後。From が現実（無いときは空）、To が宣言（消すときは空）。

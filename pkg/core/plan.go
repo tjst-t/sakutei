@@ -124,6 +124,11 @@ type Op struct {
 	// the ChangeAwaitingApproval Event.  Empty for the explicit absent's
 	// Delete, the core's own.
 	ApprovalReason string
+	// CommitGroup is the commit group the op is committed with
+	// (provider.CommitGrouper, Backlog #199): set by the core on the ops of a
+	// group's members, which come to the provider in one Apply.  Empty for
+	// an op committed on its own.
+	CommitGroup string
 }
 
 // Plan is the output of the Diff phase (§4.4).  It is an ephemeral,

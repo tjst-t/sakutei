@@ -270,6 +270,18 @@ func (s *Session) Commit(ctx context.Context, persistID string) error {
 	return err
 }
 
+// CancelCommit は確定を待つ commit confirmed を取り消す（:confirmed-commit:1.1、
+// RFC 6241 §8.4.4.1）。persistID が空でなければ <persist-id> を付ける（persist
+// で始めたもの）。空なら commit confirmed を送ったセッションから送る。
+func (s *Session) CancelCommit(ctx context.Context, persistID string) error {
+	body := `<cancel-commit/>`
+	if persistID != "" {
+		body = `<cancel-commit><persist-id>` + persistID + `</persist-id></cancel-commit>`
+	}
+	_, err := s.rpc(ctx, body)
+	return err
+}
+
 // DiscardChanges は candidate を running に戻す。
 func (s *Session) DiscardChanges(ctx context.Context) error {
 	_, err := s.rpc(ctx, `<discard-changes/>`)

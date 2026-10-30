@@ -663,10 +663,19 @@ func runPlan(args []string) {
 	// planned_change lanes (§13) and the capacity gates (§13.4).  Like
 	// reconcile, the budget sees only the ops a reconcile would Apply: not a
 	// ghost diff (cause C), not the op of a strategy: task resource.
+	commitGroupOf := map[string]string{}
+	for _, r := range desired {
+		if r.CommitGroup != "" {
+			commitGroupOf[r.ID.String()] = r.CommitGroup
+		}
+	}
 	for i, op := range allOps {
 		o := planreport.NewOperation(op, i >= diffOpCount)
 		if pol, ok := taskPolicies[op.Target.String()]; ok && op.Kind != core.OpKindDelete {
 			o.Task = planreport.NewTask(pol)
+		}
+		if i < diffOpCount {
+			o.CommitGroup = commitGroupOf[op.Target.String()] // #199
 		}
 		report.Operations = append(report.Operations, o)
 	}
@@ -690,6 +699,8 @@ func runPlan(args []string) {
 			return p
 		},
 	}, fail)
+	// #199: a commit group goes all or none.
+	planreport.HoldCommitGroups(report.Operations)
 	report.Summarize()
 
 	// Print plan output.

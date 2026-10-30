@@ -1990,6 +1990,13 @@ func runCycleAsync(
 		}
 	}
 
+	// #199: the commit groups the providers name; a group whose members
+	// depend on each other (or that its provider refuses) skips the cycle.
+	if err := AssignCommitGroups(desired, providers.provider); err != nil {
+		return CycleResult{ExcludedByClaim: excludedByClaim},
+			fmt.Errorf("invalid intent; cycle skipped (no Observe/Apply/prune): %w", err)
+	}
+
 	// §7.3 (#158): the intent's external_owners against the desired (after
 	// render) and the providers' own config exclusions: a disagreement skips
 	// the cycle; an exclusion only in a provider config is reported once.
@@ -2904,6 +2911,9 @@ func runCycleAsync(
 	// plans to remove destructive ops before passing them to applyWavesAsync.
 	// When budget fires with halt-all, we pass an empty plans map.
 	filteredPlans := filterPlansByBudget(plans, budgetDecision)
+	// #199: a commit group part of which the budget holds (or awaits its
+	// approval) is held whole.
+	HoldPartialCommitGroups(desired, plans, filteredPlans, unobservable, cfg.ErrOut, "sakutei: ")
 	for local, plan := range plans {
 		if !unobservable[local] {
 			held += len(plan.Ops) - len(filteredPlans[local].Ops)
@@ -3480,6 +3490,35 @@ func applyWavesAsync(
 		wave := queue
 		queue = nil
 
+		// #199: a commit group goes all or none, in one Apply.
+		gw := planWaveGroups(desired, wave, plans, func(idx int) string {
+			r := desired[idx]
+			local := r.ID.Local
+			switch {
+			case unobservable[local]:
+				if why := held[local]; why != "" {
+					return why
+				}
+				if _, ok := wfHeld[local]; ok {
+					return "target of a Workflow"
+				}
+				return "in-flight or unobservable this cycle"
+			case upstreamFailed(r.DependsOn, failed) != "":
+				return fmt.Sprintf("upstream %q failed/in-flight", upstreamFailed(r.DependsOn, failed))
+			}
+			if dep, cond := unreadyUpstream(r, ready); dep != "" {
+				return fmt.Sprintf("waiting for upstream %q ready_condition %q", dep, cond)
+			}
+			if len(plans[local].Ops) > 0 && r.UpdatePolicy.IsTask() {
+				return "strategy: task"
+			}
+			if len(plans[local].Ops) > 0 && ifl.InBackoff(local) {
+				return "its last Apply failed; in cooldown"
+			}
+			return ""
+		})
+		groupLaunched := map[string]bool{}
+
 		for _, idx := range wave {
 			r := desired[idx]
 			local := r.ID.Local
@@ -3525,6 +3564,42 @@ func applyWavesAsync(
 				skipped = append(skipped, local)
 				fmt.Fprintf(errOut, "sakutei: skip %s: waiting for upstream %q ready_condition %q (not satisfied this cycle)\n", r.ID, dep, cond)
 				failed[local] = true
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
+			// #199: held with another member of its commit group.
+			if why := gw.hold[idx]; why != "" {
+				skipped = append(skipped, local)
+				fmt.Fprintf(errOut, "sakutei: skip %s: %s\n", r.ID, why)
+				failed[local] = true
+				for _, m := range adj[idx] {
+					inDeg[m]--
+					if inDeg[m] == 0 {
+						queue = append(queue, m)
+					}
+				}
+				continue
+			}
+
+			// #199: the members of a commit group in one Apply (one goroutine).
+			// Decided at the head of the wave (planWaveGroups checked each
+			// member's task strategy and backoff), so before the per-resource
+			// checks below: a member's goroutine may already have failed. (A
+			// member without a diff is not sent: it is converged.)
+			if k := commitGroupKey(r); gw.launch[k] != nil && len(plans[local].Ops) > 0 {
+				if !groupLaunched[k] {
+					groupLaunched[k] = true
+					members := gw.launch[k]
+					launched += len(members)
+					launchCommitGroup(ctx, fp, exec, ifl, desired, members, plans, errOut, dispatchFn, commitFn, verifyFn, failFn)
+				}
+				failed[local] = true // #12: the same-cycle wave barrier
 				for _, m := range adj[idx] {
 					inDeg[m]--
 					if inDeg[m] == 0 {
@@ -3650,6 +3725,62 @@ func applyWavesAsync(
 	// launched counts goroutines started; backedOff and skipped are reported.
 	_ = applied // keep return signature consistent with sync path
 	return 0, launched, backedOff, skipped, nil
+}
+
+// launchCommitGroup launches the Apply of a commit group's members (#199):
+// each member is in flight (and its lane consumed) before the one goroutine
+// starts; the outcome is the member's own (provider.MemberError), and each
+// member's result is reported as a CommitGroupApplied Event.
+func launchCommitGroup(
+	ctx context.Context,
+	fp provider.Provider,
+	exec executor.Executor,
+	ifl *InFlightSet,
+	desired []diff.DesiredResource,
+	members []int,
+	plans map[string]core.Plan,
+	errOut io.Writer,
+	dispatchFn func(local string, ops []core.Op),
+	commitFn func([]core.Op),
+	verifyFn func(context.Context, diff.DesiredResource, core.Plan),
+	failFn func(diff.DesiredResource, core.Plan, error),
+) {
+	for _, idx := range members {
+		local := desired[idx].ID.Local
+		ifl.Add(local, hasDestructive(plans[local].Ops))
+		if dispatchFn != nil {
+			dispatchFn(local, plans[local].Ops)
+		}
+	}
+	gplan := groupPlan(desired, members, plans)
+	go func() {
+		defer func() {
+			for _, idx := range members {
+				ifl.Remove(desired[idx].ID.Local)
+			}
+		}()
+		err := exec.Execute(ctx, fp, gplan)
+		EmitCommitGroupApplied(errOut, "sakutei: ", desired, members, err)
+		for _, idx := range members {
+			r := desired[idx]
+			plan := plans[r.ID.Local]
+			if merr := provider.MemberError(err, r.ID); merr != nil {
+				EmitApplyFailed(errOut, "sakutei: ", "apply", r.ID, merr)
+				ifl.RecordFailure(r.ID.Local, merr)
+				if failFn != nil {
+					failFn(r, plan, merr)
+				}
+				continue
+			}
+			ifl.ClearBackoff(r.ID.Local)
+			if commitFn != nil {
+				commitFn(plan.Ops)
+			}
+			if verifyFn != nil {
+				verifyFn(ctx, r, plan)
+			}
+		}
+	}()
 }
 
 // hasDestructive reports whether ops contains at least one destructive op; it

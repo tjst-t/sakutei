@@ -56,6 +56,9 @@
 //   - セッションはホストごとに 1 本を使い回し、1 度に 1 つの rpc。使い回した
 //     セッションが切れていたら（機器が idle で切った等）1 度だけ開き直す。
 //     rpc-error ではセッションを捨てない。
+//   - intent の commit_group（#199、group.go）に同じ名前を書いた部分木は、
+//     コアが 1 つの Apply にまとめて渡し、全部の台で確かめが通ったときだけ
+//     確定する（1 台でも落ちれば、どの台も確定しない）。
 //   - hello の capability（base:1.0・1.1、candidate、confirmed-commit:1.0・1.1、
 //     validate など）は観測の capabilities（Computed）に記録する。2 段の Apply
 //     は Apply のセッションの hello で道を選ぶ。
@@ -174,6 +177,7 @@ func (p *Provider) Schema() provider.Schema {
 		FieldSubtree:      {Kind: core.FieldKindString, Identity: true},
 		FieldConfig:       {Kind: core.FieldKindString, Required: true},
 		FieldOrdered:      {Kind: core.FieldKindString},
+		FieldCommitGroup:  {Kind: core.FieldKindString},
 		FieldCapabilities: {Kind: core.FieldKindString, Computed: true},
 	}}
 }
@@ -349,6 +353,9 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	if _, err := ParseOrdered(fields[FieldOrdered]); err != nil {
 		return fmt.Errorf("%s %q: %w", Name, localID, err)
 	}
+	if err := validateCommitGroupField(localID, fields); err != nil {
+		return err
+	}
 	for _, f := range []string{FieldHost, FieldSubtree} {
 		if v, ok := fields[f]; ok {
 			want := strings.SplitN(localID, "/", 2)[0]
@@ -381,6 +388,7 @@ func noEditAttrs(nodes []*node) error {
 
 // RefinePlan は比べ方の宣言を差分に当てる:
 //
+//   - commit_group（機器に無い「どう確定するか」、#199）の差分は落とす。
 //   - ordered（機器に無い「どう比べるか」）の差分は落とす。ただし Apply を
 //     許していて config も違うときは残す（Apply が順を並べ直し、宣言どおりかを
 //     同じ比べ方で確かめるのに使う）。
@@ -403,6 +411,9 @@ func (p *Provider) RefinePlan(localID string, observed core.State, desired map[s
 		diag := ""
 		for _, f := range op.Fields {
 			switch f.Field {
+			case FieldCommitGroup:
+				// How to commit, not on the device (#199).
+				continue
 			case FieldOrdered:
 				od := f
 				orderedDiff = &od

@@ -75,7 +75,13 @@ const (
 var lab struct {
 	dir, bin, image, config, key, knownHosts, ctrl string
 	port                                           int
+	// group は commit_group の 3 台（#199）の名前 → ポート。
+	group map[string]int
 }
+
+// groupDevices は commit_group（#199）を確かめる 3 台（コンテナは
+// sakutei-ncit-<名前>）。
+var groupDevices = []string{"g1", "g2", "g3"}
 
 func TestMain(m *testing.M) {
 	os.Exit(runMain(m))
@@ -168,19 +174,9 @@ func setup() error {
 	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "sakutei-it", "-f", lab.key).CombinedOutput(); err != nil {
 		return fmt.Errorf("ssh-keygen: %v\n%s", err, out)
 	}
-	if lab.port, err = freePort(); err != nil {
+	var known strings.Builder
+	if lab.port, err = startDevice(name, &known); err != nil {
 		return err
-	}
-	if out, err := docker("run", "-d", "--name", name, "-p", fmt.Sprintf("127.0.0.1:%d:830", lab.port), lab.image); err != nil {
-		return fmt.Errorf("docker run: %v\n%s", err, out)
-	}
-	for _, f := range []struct{ local, remote string }{{lab.key + ".pub", "/home/netconf/.ssh/authorized_keys"}} {
-		if out, err := docker("cp", f.local, name+":"+f.remote); err != nil {
-			return fmt.Errorf("docker cp: %v\n%s", err, out)
-		}
-	}
-	if out, err := docker("exec", name, "chmod", "644", "/home/netconf/.ssh/authorized_keys"); err != nil {
-		return fmt.Errorf("chmod: %v\n%s", err, out)
 	}
 	// The scoped user: a system user with the same key (netopeer2 checks the
 	// user's authorized_keys).
@@ -189,21 +185,29 @@ func setup() error {
 		" && chown -R "+scopedUser+" /home/"+scopedUser+"/.ssh && chmod 600 /home/"+scopedUser+"/.ssh/authorized_keys"); err != nil {
 		return fmt.Errorf("useradd: %v\n%s", err, out)
 	}
-	if err := waitServer(); err != nil {
-		return err
+	lab.group = map[string]int{}
+	for _, g := range groupDevices {
+		port, err := startDevice("sakutei-ncit-"+g, &known)
+		if err != nil {
+			return err
+		}
+		lab.group[g] = port
 	}
-	if err := writeKnownHosts(); err != nil {
+	lab.knownHosts = filepath.Join(lab.dir, "known_hosts")
+	if err := os.WriteFile(lab.knownHosts, []byte(known.String()), 0o600); err != nil {
 		return err
 	}
 	nacm := filepath.Join(dir, "nacm.xml")
 	if err := os.WriteFile(nacm, []byte(adminNACM), 0o644); err != nil {
 		return err
 	}
-	if out, err := docker("cp", nacm, name+":/tmp/sakutei-it-nacm.xml"); err != nil {
-		return fmt.Errorf("docker cp: %v\n%s", err, out)
-	}
-	if out, err := docker("exec", name, "sysrepocfg", "--edit=/tmp/sakutei-it-nacm.xml", "-d", "running", "-f", "xml", "-m", "ietf-netconf-acm"); err != nil {
-		return fmt.Errorf("sysrepocfg: %v\n%s", err, out)
+	for _, c := range append([]string{name}, groupContainers()...) {
+		if out, err := docker("cp", nacm, c+":/tmp/sakutei-it-nacm.xml"); err != nil {
+			return fmt.Errorf("docker cp: %v\n%s", err, out)
+		}
+		if out, err := docker("exec", c, "sysrepocfg", "--edit=/tmp/sakutei-it-nacm.xml", "-d", "running", "-f", "xml", "-m", "ietf-netconf-acm"); err != nil {
+			return fmt.Errorf("sysrepocfg %s: %v\n%s", c, err, out)
+		}
 	}
 	if err := os.WriteFile(nacm, []byte(scopedNACM), 0o644); err != nil {
 		return err
@@ -224,14 +228,21 @@ func setup() error {
 		return err
 	}
 	for file, user := range map[string]string{"hosts.json": "netconf", "hosts-scoped.json": scopedUser} {
+		hosts := map[string]any{"sw1": map[string]any{
+			"address": "127.0.0.1", "port": lab.port, "user": user,
+			"private_key": "secretref:file/ssh/netconf", "connect_timeout": "3s",
+		}}
+		for g, port := range lab.group {
+			hosts[g] = map[string]any{
+				"address": "127.0.0.1", "port": port, "user": user,
+				"private_key": "secretref:file/ssh/netconf", "connect_timeout": "3s",
+			}
+		}
 		if err := writeJSON(filepath.Join(dir, file), map[string]any{
 			"secret_store": "secrets.json",
 			"known_hosts":  "known_hosts",
 			"control_dir":  lab.ctrl,
-			"hosts": map[string]any{"sw1": map[string]any{
-				"address": "127.0.0.1", "port": lab.port, "user": user,
-				"private_key": "secretref:file/ssh/netconf", "connect_timeout": "3s",
-			}},
+			"hosts":        hosts,
 		}); err != nil {
 			return err
 		}
@@ -267,6 +278,20 @@ func setup() error {
 			return err
 		}
 	}
+	// #199: the three devices of the commit group; g2's confirm-timeout is
+	// longer (the group's limit is the shortest).
+	if err := writeJSON(filepath.Join(dir, "providers-group.json"), map[string]any{"providers": map[string]any{
+		"netconf": map[string]string{
+			"remote_config":            filepath.Join(dir, "hosts.json"),
+			"netconf_hosts":            strings.Join(groupDevices, ","),
+			"netconf_subtrees":         filepath.Join(dir, "subtrees.json"),
+			"netconf_apply":            "true",
+			"netconf_confirm_timeout":  confirmTimeout.String(),
+			"netconf_confirm_timeouts": "g2=" + (2 * confirmTimeout).String(),
+		},
+	}}); err != nil {
+		return err
+	}
 	if err := writeJSON(filepath.Join(dir, "providers-scoped.json"), map[string]any{"providers": map[string]any{
 		"netconf": map[string]string{
 			"remote_config":           filepath.Join(dir, "hosts-scoped.json"),
@@ -287,44 +312,70 @@ func setup() error {
 	return nil
 }
 
+// startDevice runs a netopeer2 container on a free port, lets the netconf
+// user in with the key, waits for the server and adds its host keys (read
+// from inside the container, not trusted on first use over the published
+// port) to known.
+func startDevice(container string, known *strings.Builder) (int, error) {
+	port, err := freePort()
+	if err != nil {
+		return 0, err
+	}
+	if out, err := docker("run", "-d", "--name", container, "-p", fmt.Sprintf("127.0.0.1:%d:830", port), lab.image); err != nil {
+		return 0, fmt.Errorf("docker run %s: %v\n%s", container, err, out)
+	}
+	if out, err := docker("cp", lab.key+".pub", container+":/home/netconf/.ssh/authorized_keys"); err != nil {
+		return 0, fmt.Errorf("docker cp: %v\n%s", err, out)
+	}
+	if out, err := docker("exec", container, "chmod", "644", "/home/netconf/.ssh/authorized_keys"); err != nil {
+		return 0, fmt.Errorf("chmod: %v\n%s", err, out)
+	}
+	if err := waitServer(container); err != nil {
+		return 0, err
+	}
+	out, err := docker("exec", container, "sh", "-c", "ssh-keyscan -p 830 127.0.0.1 2>/dev/null")
+	if err != nil {
+		return 0, fmt.Errorf("host keys: %v\n%s", err, out)
+	}
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 3 && strings.HasPrefix(f[1], "ssh-") {
+			fmt.Fprintf(known, "[127.0.0.1]:%d %s %s\n", port, f[1], f[2])
+			n++
+		}
+	}
+	if n == 0 {
+		return 0, fmt.Errorf("no host key in %q", out)
+	}
+	return port, nil
+}
+
 // waitServer waits until netopeer2 answers on its port inside the container.
-func waitServer() error {
+func waitServer(container string) error {
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		out, err := docker("exec", name, "sh", "-c", "ssh-keyscan -p 830 127.0.0.1 2>/dev/null")
+		out, err := docker("exec", container, "sh", "-c", "ssh-keyscan -p 830 127.0.0.1 2>/dev/null")
 		if err == nil && strings.Contains(out, "ssh-") {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("netopeer2 did not start: %v\n%s", err, out)
+			return fmt.Errorf("netopeer2 (%s) did not start: %v\n%s", container, err, out)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 }
 
-// writeKnownHosts writes the server's host keys, read from inside the
-// container (not trusted on first use over the published port).
-func writeKnownHosts() error {
-	out, err := docker("exec", name, "sh", "-c", "ssh-keyscan -p 830 127.0.0.1 2>/dev/null")
-	if err != nil {
-		return fmt.Errorf("host keys: %v\n%s", err, out)
+func groupContainers() []string {
+	var out []string
+	for _, g := range groupDevices {
+		out = append(out, "sakutei-ncit-"+g)
 	}
-	var b strings.Builder
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) == 3 && strings.HasPrefix(f[1], "ssh-") {
-			fmt.Fprintf(&b, "[127.0.0.1]:%d %s %s\n", lab.port, f[1], f[2])
-		}
-	}
-	if b.Len() == 0 {
-		return fmt.Errorf("no host key in %q", out)
-	}
-	lab.knownHosts = filepath.Join(lab.dir, "known_hosts")
-	return os.WriteFile(lab.knownHosts, []byte(b.String()), 0o600)
+	return out
 }
 
 func teardown() {
-	_, _ = docker("rm", "-f", "-v", name)
+	_, _ = docker(append([]string{"rm", "-f", "-v", name}, groupContainers()...)...)
 	if lab.dir != "" {
 		os.RemoveAll(lab.dir)
 	}
@@ -342,6 +393,12 @@ func teardown() {
 // replies (in order).
 func netconfByHand(t *testing.T, rpcs ...string) []string {
 	t.Helper()
+	return netconfByHandOn(t, lab.port, rpcs...)
+}
+
+// netconfByHandOn is netconfByHand on the device published on port.
+func netconfByHandOn(t *testing.T, port int, rpcs ...string) []string {
+	t.Helper()
 	var in strings.Builder
 	in.WriteString(`<?xml version="1.0" encoding="UTF-8"?><hello xmlns="` + baseNS + `"><capabilities><capability>urn:ietf:params:netconf:base:1.0</capability></capabilities></hello>]]>]]>`)
 	for i, r := range rpcs {
@@ -350,7 +407,7 @@ func netconfByHand(t *testing.T, rpcs ...string) []string {
 	fmt.Fprintf(&in, `<rpc message-id="close" xmlns="%s"><close-session/></rpc>]]>]]>`, baseNS)
 	cmd := exec.Command("ssh", "-F", os.DevNull, "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile="+lab.knownHosts, "-o", "IdentitiesOnly=yes", "-i", lab.key,
-		"-p", fmt.Sprint(lab.port), "-l", "netconf", "-s", "127.0.0.1", "netconf")
+		"-p", fmt.Sprint(port), "-l", "netconf", "-s", "127.0.0.1", "netconf")
 	cmd.Stdin = strings.NewReader(in.String())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

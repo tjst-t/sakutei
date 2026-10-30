@@ -42,6 +42,7 @@ import (
 	"github.com/tjst-t/sakutei/v2/internal/nftables"
 	"github.com/tjst-t/sakutei/v2/internal/postgresql"
 	"github.com/tjst-t/sakutei/v2/internal/prune"
+	"github.com/tjst-t/sakutei/v2/internal/reconcile"
 	"github.com/tjst-t/sakutei/v2/internal/s3bucket"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
@@ -109,6 +110,13 @@ func resolveProviders(
 		if err := prune.ValidatePrunePolicy([]diff.DesiredResource{r}, result[r.ID.Provider]); err != nil {
 			return nil, fmt.Errorf("%s: %w", commandName, err)
 		}
+	}
+	// #199: the commit groups the providers name (written into resources);
+	// a group whose members depend on each other is refused here.
+	if err := reconcile.AssignCommitGroups(resources, func(r diff.DesiredResource) provider.Provider {
+		return result[r.ID.Provider]
+	}); err != nil {
+		return nil, fmt.Errorf("%s: %w", commandName, err)
 	}
 	return result, nil
 }

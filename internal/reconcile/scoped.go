@@ -284,6 +284,13 @@ func ScopedReconcile(
 			fmt.Fprintf(errOut, "sakutei: scoped: skip %s: in-flight (定期経路と排他共有)\n", r.ID)
 			continue
 		}
+		// commit_group（#199）の member は、group の全部を見る定期経路に任せる
+		// （影響サブ DAG に group の一部しか入らないことがあり、一部だけ確定しない）。
+		if g := provider.CommitGroupOf(fp, local, r.Fields); g != "" {
+			unobservable[local] = true
+			fmt.Fprintf(errOut, "sakutei: scoped: skip %s: in commit_group %q (left to the periodic cycle, which sees the whole group)\n", r.ID, g)
+			continue
+		}
 
 		obs, readErr := provider.ReadFor(ctx, fp, local, r.Fields)
 		if readErr != nil {

@@ -37,7 +37,7 @@
 //     機器のように振る舞う（#208）。
 //   - 止める（Down）・セッションを切る（Drop）・hello を壊す・rpc-error を返す
 //     （SetRPCError・SetOpError）・行う前・応答の前に切る（SetDropBefore・
-//     SetDropAfter）・running
+//     SetDropAfter）・答える前に待つ（SetDelay）・running
 //     しだいで新しい接続を断る（RefuseDialsWhen）、を切り替えられる。
 package netconffake
 
@@ -110,6 +110,7 @@ type Server struct {
 	opErrors   map[string]string
 	dropAfter  map[string]int
 	dropBefore map[string]int
+	delays     map[string]time.Duration
 	denials    []string
 }
 
@@ -188,6 +189,16 @@ func (s *Server) SetDropAfter(op string, n int) {
 		s.dropAfter = map[string]int{}
 	}
 	s.dropAfter[op] = n
+}
+
+// SetDelay は op の rpc に答える前に d だけ待つ（遅い機器、#199）。0 で戻す。
+func (s *Server) SetDelay(op string, d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.delays == nil {
+		s.delays = map[string]time.Duration{}
+	}
+	s.delays[op] = d
 }
 
 // SetDropBefore は、これから n 回目に受ける操作 op を行わずに、その接続を
@@ -453,7 +464,11 @@ func (s *Server) handle(sid int, msg []byte) (string, bool) {
 	dropBefore := countdown(s.dropBefore, name)
 	drop := !dropBefore && countdown(s.dropAfter, name)
 	denied := !dropBefore && s.opDenied(name)
+	delay := s.delays[name]
 	s.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	if dropBefore {
 		return "", true
 	}
