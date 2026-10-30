@@ -12,6 +12,10 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 > **振る舞いの変化**（#204）：proxmox-vm の Delete は、keep の印の無い VM ではこれまでどおり（`destroy-unreferenced-disks=1`）。keep の印のある VM は `destroy-unreferenced-disks=0` で消す。
 
+### 修正
+
+- **netconf：宣言の知らない欄を読み込みで断る**（#211）：netconf の宣言に provider の知らない欄（道具が足した `name` など）や観測だけの `capabilities` があれば、`plan`・`reconcile`・常駐の読み込みの時点で欄の名前とリソースの ID、直し方（欄を外す）を挙げて断る。以前は drift になり、Apply が「the operation carries no config」の permanent で断っていた。知っている欄（`config`・`ordered`・`host`・`subtree`）だけの宣言は今までどおり。
+
 ## v2.9.0（2026-10-29）
 
 網の許可を複数のアドレスの空間と VM の FW へ広げ、使ってみて分かった足りない点と不具合を直す版。network_policy の網に domain を足し、Proxmox VE の VM の FW を実現先にし、proxmox-vm の NIC の FW と MTU、postgresql の境界の外のロールの CONNECT、`runtime:` の実行の種類ごとの値、OTLP のトレースの出口を足した。一部の NETCONF サーバで収束しない不具合を直した。設計書は v3.61 → v3.68（`docs/architecture/CHANGELOG-v3.62.md`〜`v3.68.md`）。

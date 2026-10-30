@@ -69,6 +69,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -321,6 +322,9 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	if err != nil {
 		return err
 	}
+	if err := p.knownFields(localID, fields); err != nil {
+		return err
+	}
 	cfg, ok := fields[FieldConfig]
 	if !ok {
 		return fmt.Errorf("%s %q: config is required (the XML of the subtree's content)", Name, localID)
@@ -384,6 +388,30 @@ func noEditAttrs(nodes []*node) error {
 		}
 	}
 	return nil
+}
+
+// knownFields は宣言の欄が Schema にあり、観測だけの欄（capabilities）でない
+// ことを確かめる（#211）。知らない欄は Schema の比べ方で drift になり、Apply は
+// config を持たない操作として断るので、原因の分かる読み込みの時点で断る。
+func (p *Provider) knownFields(localID string, fields map[string]string) error {
+	schema := p.Schema().Fields
+	var unknown []string
+	for k := range fields {
+		spec, ok := schema[k]
+		if !ok {
+			unknown = append(unknown, k)
+			continue
+		}
+		if spec.Computed {
+			return fmt.Errorf("%s %q: field %q is observed only and cannot be declared (remove it from the fields)", Name, localID, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("%s %q: unknown field(s) %q (remove them from the fields; a netconf resource declares only %s, %s, %s, %s)",
+		Name, localID, unknown, FieldConfig, FieldOrdered, FieldHost, FieldSubtree)
 }
 
 // RefinePlan は比べ方の宣言を差分に当てる:

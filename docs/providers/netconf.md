@@ -110,6 +110,7 @@ resources:
 
 - 宣言は **filter が選ぶ部分木の全体**。機器の側にだけある葉（明示的に設定された値）もずれになる。既定値の扱いは機器の with-defaults の基本の振る舞いに従う（多くは明示した値だけを返す）。
 - 読み込みの時点で、ID の形・ホストと部分木があること・`config` が XML として読めて、最上位の要素が filter の最上位の要素のどれかであること・`ordered` の書式を確かめる（エラーに `config` の中身は出さない）。
+- **知らない欄は読み込みで断る**（Backlog #211）。`fields` に書けるのは上の表の `config`・`ordered`・`host`・`subtree` だけ。それ以外の欄（宣言を組み立てる道具が足した `name` など）は、`validate`（provider の `ValidateIntent`）・`plan`・`reconcile`・常駐の読み込みで、欄の名前とリソースの ID を挙げて断る（例 `netconf "sw1/if-uplink": unknown field(s) ["name"] (remove them from the fields; …)`）。直し方はその欄を宣言から外すこと。観測だけの `capabilities` を宣言に書いたときも同じく断る。以前は知らない欄が drift になり、Apply が「the operation carries no config」の permanent で断っていて原因が分かりにくかった。機器には何も送らない。
 - 宣言に edit-config の属性（`nc:operation`・`yang:insert`）は書けない（どう当てるかは provider が決める）。
 - 部分木が機器に無い（`<data>` が空）のは観測の事実（absent）。plan には `CREATE` として出る。観測だけなら当てない。Apply を許していれば、2 段の Apply で作る。
 - **中身の無い要素だけの `<data>` も absent**（Backlog #208）。部分木が無いとき、名前空間の無い空の `<configuration/>`（rpc-reply の base:1.0 の名前空間を受け継ぐ）を返す機器がある。子も値も無い最上位の要素は、名前空間の有無も属性も問わず「無い」と見る。同じ理由で、中身の無い要素を `config` に宣言するのは読み込みで断る（宣言しても観測はいつも absent になり、収束しない）。
