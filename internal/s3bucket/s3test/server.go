@@ -14,7 +14,7 @@
 
 // Package s3test は s3-bucket provider のテスト用の偽の S3 互換サーバ
 // （httptest）。バケットの操作（ListBuckets・CreateBucket・DeleteBucket と、
-// バージョニング・ポリシー・ライフサイクル・タグ）だけを持ち、要求の SigV4 の
+// バージョニング・ポリシー・ライフサイクル・タグ・Object Lock）だけを持ち、要求の SigV4 の
 // 署名（Authorization・x-amz-content-sha256・Content-MD5）を検証する。
 //
 // テストから: API を NotImplemented にする（Options.NotImplemented）、GET を
@@ -23,6 +23,16 @@
 // する（SetUnreachable：接続を切る）、5xx を返す（SetFailStatus）、中身を入れる
 // （PutObject）、現実を手で変える（SetPolicy など）、読むだけのキーを受ける
 // （Options.ReadOnlyAccessKey、#186）、キーごとの読み・書きの回数を見る（KeyCalls）。
+//
+// Object Lock（#205）は AWS の形に沿う: PutObjectLockConfiguration の成功は 200
+// で本文は空、Get の XML は ObjectLockEnabled と Rule/DefaultRetention、一度も
+// 設定していないバケットの Get は 404 ObjectLockConfigurationNotFoundError。PUT
+// を断るのは、Days と Years の両方・どちらも無い・ObjectLockEnabled が Enabled
+// 以外（400 MalformedXML）、値が 0 以下・受けない mode（400 InvalidArgument）、
+// 持ち主でない（403 AccessDenied、SetForeign）。作るときの
+// x-amz-bucket-object-lock-enabled: true は Object Lock を有効にしバージョニングを
+// Enabled にする。実装ごとの違いは Options.NoObjectLockOnCreate・
+// ObjectLockModes・ObjectLockYearsAsDays で再現する。
 package s3test
 
 import (
@@ -51,6 +61,7 @@ const (
 	APIPolicy     = "policy"
 	APILifecycle  = "lifecycle"
 	APITagging    = "tagging"
+	APIObjectLock = "object-lock"
 )
 
 // Options は偽サーバの設定。
@@ -80,6 +91,15 @@ type Options struct {
 	StorageClassRewrite map[string]string
 	// Now は作成日時の時刻（nil なら time.Now）。
 	Now func() time.Time
+	// NoObjectLockOnCreate なら、作るときの x-amz-bucket-object-lock-enabled を
+	// 黙って無視する（作るときの有効化を持たない実装の再現、#205）。
+	NoObjectLockOnCreate bool
+	// ObjectLockModes が nil でなければ、PutObjectLockConfiguration はこの mode
+	// だけを受け付ける（ほかは 400 InvalidArgument）。
+	ObjectLockModes []string
+	// ObjectLockYearsAsDays なら、Years で PUT した既定の保持を 365 倍の Days で
+	// 持って返す。
+	ObjectLockYearsAsDays bool
 	// BasePath が空でなければ、API をこのパスの下に置く（"/s3" なら
 	// "/s3/<bucket>"）。前置きの外の要求は 404（前置きの違う模擬の再現、#160）。
 	BasePath string
@@ -92,6 +112,15 @@ type bucket struct {
 	lifecycle  []byte
 	tags       map[string]string
 	objects    int
+	foreign    bool
+	// lock は Object Lock の設定（nil なら一度も設定していない）。
+	lock *objectLock
+}
+
+// objectLock は Object Lock の設定（Mode が "" なら既定の保持が無い）。
+type objectLock struct {
+	Mode        string
+	Days, Years int
 }
 
 // storageClassRE は lifecycle の本文の StorageClass の要素。
@@ -107,6 +136,7 @@ type Server struct {
 	unreachable bool
 	failStatus  int
 	calls       map[string]int
+	lockPuts    []string                  // PutObjectLockConfiguration の本文（受け付けたもの）
 	byKey       map[string]map[string]int // access key → "READ"・"WRITE" → 回数
 }
 
@@ -207,6 +237,34 @@ func (s *Server) with(name string, f func(*bucket)) {
 	}
 }
 
+// SetForeign はバケットをほかのアカウントの持ち物にする（Object Lock の
+// 読み書きは 403 AccessDenied）。
+func (s *Server) SetForeign(name string) { s.with(name, func(b *bucket) { b.foreign = true }) }
+
+// SetObjectLock は手で Object Lock の設定を置く（mode が "" なら有効で既定の
+// 保持が無い）。
+func (s *Server) SetObjectLock(name, mode string, days, years int) {
+	s.with(name, func(b *bucket) { b.lock = &objectLock{Mode: mode, Days: days, Years: years} })
+}
+
+// ObjectLock はバケットの Object Lock の設定を返す（ok は有効か）。
+func (s *Server) ObjectLock(name string) (mode string, days, years int, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, found := s.buckets[name]
+	if !found || b.lock == nil {
+		return "", 0, 0, false
+	}
+	return b.lock.Mode, b.lock.Days, b.lock.Years, true
+}
+
+// LockPuts は受け付けた PutObjectLockConfiguration の本文を返す。
+func (s *Server) LockPuts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.lockPuts...)
+}
+
 // Has はバケットがあるかを返す。
 func (s *Server) Has(name string) bool {
 	s.mu.Lock()
@@ -299,7 +357,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	name = strings.TrimSuffix(name, "/")
 	q := r.URL.Query()
 	sub := ""
-	for _, k := range []string{APIVersioning, APIPolicy, APILifecycle, APITagging} {
+	for _, k := range []string{APIVersioning, APIPolicy, APILifecycle, APITagging, APIObjectLock} {
 		if _, ok := q[k]; ok {
 			sub = k
 		}
@@ -344,7 +402,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "InvalidBucketName", "The specified bucket is not valid.")
 			return
 		}
-		s.buckets[name] = &bucket{created: s.opts.Now().UTC(), tags: map[string]string{}}
+		nb := &bucket{created: s.opts.Now().UTC(), tags: map[string]string{}}
+		if strings.EqualFold(r.Header.Get("X-Amz-Bucket-Object-Lock-Enabled"), "true") && !s.opts.NoObjectLockOnCreate {
+			nb.lock = &objectLock{}
+			nb.versioning = "Enabled"
+		}
+		s.buckets[name] = nb
 		w.WriteHeader(http.StatusOK)
 	case sub == "" && r.Method == http.MethodDelete:
 		s.calls["DeleteBucket"]++
@@ -474,9 +537,86 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case sub == APITagging && r.Method == http.MethodDelete:
 		b.tags = map[string]string{}
 		w.WriteHeader(http.StatusNoContent)
+	case sub == APIObjectLock && r.Method == http.MethodGet:
+		s.calls["GetObjectLockConfiguration"]++
+		if b.foreign {
+			writeError(w, http.StatusForbidden, "AccessDenied", "Access Denied.")
+			return
+		}
+		if b.lock == nil {
+			writeError(w, http.StatusNotFound, "ObjectLockConfigurationNotFoundError", "Object Lock configuration does not exist for this bucket")
+			return
+		}
+		rule := ""
+		if l := b.lock; l.Mode != "" {
+			rule = "<Rule><DefaultRetention><Mode>" + l.Mode + "</Mode>"
+			if l.Years > 0 {
+				rule += fmt.Sprintf("<Years>%d</Years>", l.Years)
+			} else {
+				rule += fmt.Sprintf("<Days>%d</Days>", l.Days)
+			}
+			rule += "</DefaultRetention></Rule>"
+		}
+		writeXML(w, `<ObjectLockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ObjectLockEnabled>Enabled</ObjectLockEnabled>`+rule+`</ObjectLockConfiguration>`)
+	case sub == APIObjectLock && r.Method == http.MethodPut:
+		s.calls["PutObjectLockConfiguration"]++
+		if b.foreign {
+			writeError(w, http.StatusForbidden, "AccessDenied", "Access Denied.")
+			return
+		}
+		l, status, code, msg := s.parseObjectLock(body)
+		if status != 0 {
+			writeError(w, status, code, msg)
+			return
+		}
+		b.lock = l
+		s.lockPuts = append(s.lockPuts, string(body))
+		w.WriteHeader(http.StatusOK)
 	default:
 		writeError(w, http.StatusNotImplemented, "NotImplemented", "not implemented by the fake")
 	}
+}
+
+// parseObjectLock は PutObjectLockConfiguration の本文を AWS の決まりで読む。
+// 断るなら状態コードと Code を返す。
+func (s *Server) parseObjectLock(body []byte) (*objectLock, int, string, string) {
+	var doc struct {
+		XMLName xml.Name
+		Enabled string `xml:"ObjectLockEnabled"`
+		Rule    *struct {
+			Mode  string  `xml:"DefaultRetention>Mode"`
+			Days  *string `xml:"DefaultRetention>Days"`
+			Years *string `xml:"DefaultRetention>Years"`
+		} `xml:"Rule"`
+	}
+	if xml.Unmarshal(body, &doc) != nil || doc.XMLName.Local != "ObjectLockConfiguration" || doc.Enabled != "Enabled" {
+		return nil, http.StatusBadRequest, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema"
+	}
+	if doc.Rule == nil {
+		return &objectLock{}, 0, "", ""
+	}
+	if (doc.Rule.Days == nil) == (doc.Rule.Years == nil) {
+		return nil, http.StatusBadRequest, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema"
+	}
+	mode := doc.Rule.Mode
+	if mode != "GOVERNANCE" && mode != "COMPLIANCE" {
+		return nil, http.StatusBadRequest, "InvalidArgument", "Unknown retention mode: " + mode
+	}
+	if s.opts.ObjectLockModes != nil && !containsStr(s.opts.ObjectLockModes, mode) {
+		return nil, http.StatusBadRequest, "InvalidArgument", "This endpoint does not support the retention mode " + mode
+	}
+	l := &objectLock{Mode: mode}
+	raw, n := doc.Rule.Days, &l.Days
+	if doc.Rule.Years != nil {
+		raw, n = doc.Rule.Years, &l.Years
+	}
+	if _, err := fmt.Sscanf(strings.TrimSpace(*raw), "%d", n); err != nil || *n <= 0 {
+		return nil, http.StatusBadRequest, "InvalidArgument", "Default retention period must be a positive integer value"
+	}
+	if l.Years > 0 && s.opts.ObjectLockYearsAsDays {
+		l.Days, l.Years = l.Years*365, 0
+	}
+	return l, 0, "", ""
 }
 
 // authenticate は SigV4 の署名を検証し、署名したキーを返す。問題があれば S3 の

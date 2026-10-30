@@ -16,7 +16,8 @@ package s3bucket
 
 // client.go — S3 互換の API の HTTP クライアント（stdlib だけ：net/http・
 // encoding/xml）。使うのはバケットの操作だけ（ListBuckets・CreateBucket・
-// DeleteBucket と、バージョニング・ポリシー・ライフサイクル・タグの読み書き）。
+// DeleteBucket と、バージョニング・ポリシー・ライフサイクル・タグ・Object Lock の
+// 読み書き）。
 // オブジェクトを読み書き・削除する操作は持たない。
 //
 // 決まり:
@@ -50,6 +51,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -322,6 +324,11 @@ type response struct {
 
 // do は 1 要求を署名して送る。query は "versioning" のような生のクエリ。
 func (s *Session) do(ctx context.Context, op, method, bucket, query string, body []byte, contentType string) (response, error) {
+	return s.doWith(ctx, op, method, bucket, query, body, contentType, nil)
+}
+
+// doWith は do に要求のヘッダ（署名に含める）を足したもの。
+func (s *Session) doWith(ctx context.Context, op, method, bucket, query string, body []byte, contentType string, header map[string]string) (response, error) {
 	u := *s.c.base
 	switch {
 	case bucket == "":
@@ -342,6 +349,9 @@ func (s *Session) do(ctx context.Context, op, method, bucket, query string, body
 		return response{}, &Error{Kind: KindRequest, Op: op, Bucket: bucket, Err: err}
 	}
 	ph := hashHex(body)
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
 	req.Header.Set("X-Amz-Content-Sha256", ph)
 	if body != nil {
 		sum := md5.Sum(body)
@@ -476,11 +486,22 @@ func (s *Session) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 
 // CreateBucket はバケットを作る。既に自分のものなら成功（冪等）。
 func (s *Session) CreateBucket(ctx context.Context, bucket string) error {
+	return s.CreateBucketWith(ctx, bucket, false)
+}
+
+// CreateBucketWith はバケットを作る。objectLock なら作るときに Object Lock を
+// 有効にする（x-amz-bucket-object-lock-enabled: true。持たない実装は黙って
+// 無視することがあるので、確かめは GetObjectLockConfiguration で行う）。
+func (s *Session) CreateBucketWith(ctx context.Context, bucket string, objectLock bool) error {
 	var body []byte
 	if s.c.region != DefaultRegion {
 		body = []byte(`<CreateBucketConfiguration xmlns="` + s3NS + `"><LocationConstraint>` + xmlEscape(s.c.region) + `</LocationConstraint></CreateBucketConfiguration>`)
 	}
-	_, err := s.do(ctx, "CreateBucket", http.MethodPut, bucket, "", body, "application/xml")
+	var header map[string]string
+	if objectLock {
+		header = map[string]string{"X-Amz-Bucket-Object-Lock-Enabled": "true"}
+	}
+	_, err := s.doWith(ctx, "CreateBucket", http.MethodPut, bucket, "", body, "application/xml", header)
 	if CodeOf(err) == "BucketAlreadyOwnedByYou" {
 		return nil
 	}
@@ -637,6 +658,77 @@ func (s *Session) DeleteTagging(ctx context.Context, bucket string) error {
 	if CodeOf(err) == "NoSuchTagSet" {
 		return nil
 	}
+	return err
+}
+
+// ---- Object Lock ----
+
+// ObjectLock は GetObjectLockConfiguration の結果（と PutObjectLockConfiguration
+// の中身）。
+type ObjectLock struct {
+	// Enabled は ObjectLockEnabled が Enabled か。
+	Enabled bool
+	// Mode は既定の保持の mode（GOVERNANCE・COMPLIANCE）。"" は既定の保持が無い。
+	Mode string
+	// Days・Years は既定の保持の期間（どちらか一方）。
+	Days, Years int
+}
+
+// GetObjectLock はバケットの Object Lock の設定を返す。一度も設定していない
+// （404 ObjectLockConfigurationNotFoundError）なら空（Enabled が false）。Rule の
+// 無い応答は既定の保持が無い（Mode が ""）。
+func (s *Session) GetObjectLock(ctx context.Context, bucket string) (ObjectLock, error) {
+	resp, err := s.do(ctx, "GetObjectLockConfiguration", http.MethodGet, bucket, "object-lock", nil, "")
+	if CodeOf(err) == "ObjectLockConfigurationNotFoundError" {
+		return ObjectLock{}, nil
+	}
+	if err != nil {
+		return ObjectLock{}, err
+	}
+	if len(bytes.TrimSpace(resp.body)) == 0 {
+		return ObjectLock{}, nil
+	}
+	var doc struct {
+		Enabled string `xml:"ObjectLockEnabled"`
+		Mode    string `xml:"Rule>DefaultRetention>Mode"`
+		Days    string `xml:"Rule>DefaultRetention>Days"`
+		Years   string `xml:"Rule>DefaultRetention>Years"`
+	}
+	if err := xml.Unmarshal(resp.body, &doc); err != nil {
+		return ObjectLock{}, &Error{Kind: KindUnreachable, Op: "GetObjectLockConfiguration", Bucket: bucket, Message: "unreadable response", Err: err}
+	}
+	out := ObjectLock{Enabled: strings.TrimSpace(doc.Enabled) == "Enabled", Mode: strings.TrimSpace(doc.Mode)}
+	for _, x := range []struct {
+		s string
+		n *int
+	}{{doc.Days, &out.Days}, {doc.Years, &out.Years}} {
+		if v := strings.TrimSpace(x.s); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return ObjectLock{}, &Error{Kind: KindUnreachable, Op: "GetObjectLockConfiguration", Bucket: bucket, Message: "unreadable retention period " + strconv.Quote(v)}
+			}
+			*x.n = n
+		}
+	}
+	return out, nil
+}
+
+// PutObjectLock は Object Lock を有効にし、既定の保持を置き換える（Mode が ""
+// なら Rule を送らず、既定の保持を外す）。
+func (s *Session) PutObjectLock(ctx context.Context, bucket string, ol ObjectLock) error {
+	var b strings.Builder
+	b.WriteString(`<ObjectLockConfiguration xmlns="` + s3NS + `"><ObjectLockEnabled>Enabled</ObjectLockEnabled>`)
+	if ol.Mode != "" {
+		b.WriteString("<Rule><DefaultRetention><Mode>" + xmlEscape(ol.Mode) + "</Mode>")
+		if ol.Years > 0 {
+			b.WriteString("<Years>" + strconv.Itoa(ol.Years) + "</Years>")
+		} else {
+			b.WriteString("<Days>" + strconv.Itoa(ol.Days) + "</Days>")
+		}
+		b.WriteString("</DefaultRetention></Rule>")
+	}
+	b.WriteString("</ObjectLockConfiguration>")
+	_, err := s.do(ctx, "PutObjectLockConfiguration", http.MethodPut, bucket, "object-lock", []byte(b.String()), "application/xml")
 	return err
 }
 

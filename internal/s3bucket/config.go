@@ -39,7 +39,7 @@ package s3bucket
 //	    insecure_skip_verify: true        # 明示したときだけ（既定 false）
 //	    timeout: 10s                      # 省略可（既定 10s）
 //	    fields:                           # 省略可（扱う設定。既定は versioning・
-//	      - policy                        #   policy・lifecycle・tags の全部）
+//	      - policy                        #   policy・lifecycle・tags。object_lock は書いたときだけ）
 //	      - lifecycle
 //	    storage_class_aliases:            # 省略可（endpoint が返す StorageClass の
 //	      <実装の名前>: GLACIER           #   名前 → 標準の名前）

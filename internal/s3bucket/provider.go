@@ -31,6 +31,10 @@
 //   - lifecycle: ルールの一覧（JSON の配列、各ルールは S3 の XML の Rule を JSON に
 //     した形で ID と Status が必須）。正規形で比べる。"" か [] はルールが無いこと。
 //   - tags: バケットのタグ（JSON のオブジェクト）。"" か {} はタグが無いこと。
+//   - object_lock: Object Lock（JSON のオブジェクト、objectlock.go。Backlog
+//     #205）。endpoint の設定の fields に書いたときだけ扱う（既定の fields には
+//     入らない）。既にあるバケットの保持の設定を変える Update は承認の要る壊す
+//     変更（provider.ApprovalRequirer）。
 //   - endpoint・bucket: 識別子（ID と同じ値。省略できる）。
 //
 // 観測だけの値（Computed）: creation_date（ListBuckets の CreationDate）と
@@ -55,6 +59,7 @@ package s3bucket
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -82,6 +87,7 @@ const (
 	FieldPolicy       = "policy"
 	FieldLifecycle    = "lifecycle"
 	FieldTags         = "tags"
+	FieldObjectLock   = "object_lock"
 	FieldCreationDate = "creation_date"
 	FieldUnsupported  = "unsupported"
 )
@@ -101,6 +107,7 @@ var apiOf = map[string]string{
 	FieldPolicy:     "GetBucketPolicy",
 	FieldLifecycle:  "GetBucketLifecycleConfiguration",
 	FieldTags:       "GetBucketTagging",
+	FieldObjectLock: "GetObjectLockConfiguration",
 }
 
 // Endpoint は 1 つの endpoint（Client と、扱うバケットの接頭辞）。
@@ -109,8 +116,8 @@ type Endpoint struct {
 	// BucketPrefix が空でなければ、この接頭辞のバケットだけを扱う（List もこれ
 	// だけを返す。prune の閉じた世界をこの接頭辞に限る）。
 	BucketPrefix string
-	// Fields はこの endpoint で扱う設定（FieldVersioning・FieldPolicy・
-	// FieldLifecycle・FieldTags）。nil なら 4 つ全部。無いものの Get は呼ばず、
+	// Fields はこの endpoint で扱う設定（SettingFields のうち）。nil なら
+	// DefaultFields（object_lock は入らない）。無いものの Get は呼ばず、
 	// unsupported と同じに扱う。
 	Fields []string
 	// StorageClassAliases は endpoint が返す lifecycle の StorageClass の名前 →
@@ -118,12 +125,21 @@ type Endpoint struct {
 	StorageClassAliases map[string]string
 }
 
-// SettingFields は endpoint の fields に書ける設定（既定はこの全部）。
-var SettingFields = []string{FieldVersioning, FieldPolicy, FieldLifecycle, FieldTags}
+// SettingFields は endpoint の fields に書ける設定。
+var SettingFields = []string{FieldVersioning, FieldPolicy, FieldLifecycle, FieldTags, FieldObjectLock}
+
+// DefaultFields は fields を書かない endpoint で扱う設定。object_lock は入れない
+// （書いたときだけ扱う。GetObjectLockConfiguration を持たないことを 501 以外で
+// 知らせる実装や、その許可の無い観測用の資格で、バケット全体が観測できなく
+// ならないように、#205）。
+var DefaultFields = []string{FieldVersioning, FieldPolicy, FieldLifecycle, FieldTags}
 
 // handles は endpoint が field を扱うか（fields にあるか）を返す。
 func (e Endpoint) handles(field string) bool {
-	return e.Fields == nil || contains(e.Fields, field)
+	if e.Fields == nil {
+		return contains(DefaultFields, field)
+	}
+	return contains(e.Fields, field)
 }
 
 // aliasStorageClass は rules の StorageClass（Transition・
@@ -164,18 +180,19 @@ type Options struct {
 }
 
 // Provider は provider.Provider・Lister・BulkObserver・IntentValidator・
-// PlanRefiner を実装する。
+// PlanRefiner・ApprovalRequirer を実装する。
 type Provider struct {
 	endpoints map[string]Endpoint
 	scope     core.Scope
 }
 
 var (
-	_ provider.Provider        = (*Provider)(nil)
-	_ provider.Lister          = (*Provider)(nil)
-	_ provider.BulkObserver    = (*Provider)(nil)
-	_ provider.IntentValidator = (*Provider)(nil)
-	_ provider.PlanRefiner     = (*Provider)(nil)
+	_ provider.Provider         = (*Provider)(nil)
+	_ provider.Lister           = (*Provider)(nil)
+	_ provider.BulkObserver     = (*Provider)(nil)
+	_ provider.IntentValidator  = (*Provider)(nil)
+	_ provider.PlanRefiner      = (*Provider)(nil)
+	_ provider.ApprovalRequirer = (*Provider)(nil)
 )
 
 // New は endpoints（名前 → Endpoint）を使う Provider を返す。
@@ -196,6 +213,7 @@ func (p *Provider) Schema() provider.Schema {
 		FieldPolicy:       {Kind: core.FieldKindString},
 		FieldLifecycle:    {Kind: core.FieldKindString},
 		FieldTags:         {Kind: core.FieldKindString},
+		FieldObjectLock:   {Kind: core.FieldKindString},
 		FieldCreationDate: {Kind: core.FieldKindString, Computed: true},
 		FieldUnsupported:  {Kind: core.FieldKindStringList, Computed: true, ListSep: ListSep},
 	}}
@@ -301,7 +319,9 @@ func observeBucket(ctx context.Context, sess *Session, endpoint string, ep Endpo
 		FieldCreationDate: str(b.CreationDate),
 	}
 	var unsupported []string
-	for _, f := range SettingFields {
+	// object_lock は書いたときだけ扱う設定なので、fields に無くても挙げない
+	// （今までの観測の形を変えない）。
+	for _, f := range DefaultFields {
 		if !ep.handles(f) {
 			unsupported = append(unsupported, f)
 		}
@@ -364,6 +384,15 @@ func observeBucket(ctx context.Context, sess *Session, endpoint string, ep Endpo
 			return nil, err
 		} else if !s {
 			st[FieldTags] = str(CanonTagMap(tags))
+		}
+	}
+
+	if ep.handles(FieldObjectLock) {
+		ol, err := sess.GetObjectLock(ctx, b.Name)
+		if s, err := skip(FieldObjectLock, err); err != nil {
+			return nil, err
+		} else if !s {
+			st[FieldObjectLock] = str(lockFromObserved(ol).canon())
 		}
 	}
 
@@ -502,6 +531,11 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 			}
 		}
 	}
+	if v, ok := fields[FieldObjectLock]; ok {
+		if _, err := ParseObjectLock(v); err != nil {
+			return fmt.Errorf("%s %q: %w", Name, localID, err)
+		}
+	}
 	return nil
 }
 
@@ -516,8 +550,12 @@ func excludedFields(localID, name string, ep Endpoint, desired map[string]string
 	if len(excluded) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%s %q: cannot manage %s: endpoint %s does not handle it (not in the endpoint's fields in the s3 config); remove the field from the intent or add it to fields",
-		Name, localID, strings.Join(excluded, ", "), name)
+	hint := ""
+	if contains(excluded, FieldObjectLock) && ep.Fields == nil {
+		hint = " (object_lock is handled only when it is listed in fields: list it with the other settings the endpoint handles)"
+	}
+	return fmt.Errorf("%s %q: cannot manage %s: endpoint %s does not handle it (not in the endpoint's fields in the s3 config); remove the field from the intent or add it to fields%s",
+		Name, localID, strings.Join(excluded, ", "), name, hint)
 }
 
 // canonField は宣言の値の正規形（versioning などはそのまま）。
@@ -529,6 +567,8 @@ func canonField(field, v string) (string, error) {
 		return CanonLifecycle(v)
 	case FieldTags:
 		return CanonTags(v)
+	case FieldObjectLock:
+		return CanonObjectLock(v)
 	}
 	return v, nil
 }
@@ -540,8 +580,10 @@ func canonField(field, v string) (string, error) {
 //     RefinePlan に来ないので、作る前はそちらで分かる）。
 //   - 宣言したフィールドの API を endpoint が持たない（観測の unsupported に
 //     ある）なら、観測できないとしてエラー（このリソースはこの周、何もしない）。
-//   - policy・lifecycle・tags は正規形が観測と同じなら差分から落とす（キー順・
-//     空白・書き方の違いを drift にしない）。
+//   - policy・lifecycle・tags・object_lock は正規形が観測と同じなら差分から
+//     落とす（キー順・空白・書き方の違い、years と days を drift にしない）。
+//   - object_lock が既にあるバケットと食い違い、宣言どおりにできないなら
+//     エラー（Object Lock は外せない。enable_on_create は作るときだけ）。
 func (p *Provider) RefinePlan(localID string, observed core.State, desired map[string]string, ops []core.Op) ([]core.Op, error) {
 	if name, ep, _, err := p.coords(localID); err == nil {
 		if err := excludedFields(localID, name, ep, desired); err != nil {
@@ -573,10 +615,58 @@ func (p *Provider) RefinePlan(localID string, observed core.State, desired map[s
 				fields = append(fields, f)
 			}
 			op.Fields = fields
+			for _, f := range fields {
+				if f.Field == FieldObjectLock {
+					if err := lockConflict(localID, f.From, desired[FieldObjectLock]); err != nil {
+						return nil, err
+					}
+				}
+			}
 		}
 		out = append(out, op)
 	}
 	return out, nil
+}
+
+// lockConflict は既にあるバケットの Object Lock（観測の正規形 observed）を
+// 宣言 v にできないときのエラーを返す。作り直しはしない。
+func lockConflict(localID, observed, v string) error {
+	want, err := ParseObjectLock(v)
+	if err != nil {
+		return fmt.Errorf("%s %q: %w", Name, localID, err)
+	}
+	switch {
+	case observed != "" && !want.Enabled:
+		return fmt.Errorf("%s %q: object_lock: the bucket has Object Lock on and it cannot be turned off; declare the bucket's Object Lock (or leave object_lock out)", Name, localID)
+	case observed == "" && want.EnableOnCreate:
+		return fmt.Errorf("%s %q: object_lock: enable_on_create applies only when the bucket is created, and this bucket exists without Object Lock; Sakutei does not re-create it: remove enable_on_create to turn Object Lock on with PutObjectLockConfiguration (an approved change), or create a new bucket", Name, localID)
+	}
+	return nil
+}
+
+// ApprovalRequired は既にあるバケットの Object Lock の保持の設定を変える Update
+// を、向きによらず承認の要る壊す変更とする（provider.ApprovalRequirer、Backlog
+// #205）。延ばす・COMPLIANCE へ変える向きは戻せず、短くする・外す向きは
+// endpoint に断られずに通って、これから書く版の守りが弱まる。新しく作る
+// バケット（Create）はふつうの作成。I/O はしない。
+func (p *Provider) ApprovalRequired(localID string, observed core.State, desired map[string]string, op core.Op) string {
+	if op.Kind != core.OpKindUpdate {
+		return ""
+	}
+	for _, f := range op.Fields {
+		if f.Field != FieldObjectLock {
+			continue
+		}
+		from, ok := lockFromCanon(f.From)
+		to, err := ParseObjectLock(desired[FieldObjectLock])
+		if !ok || err != nil {
+			return "changes the Object Lock configuration of an existing bucket (Backlog #205)"
+		}
+		if c := lockChange(from, to); c != "" {
+			return "object_lock: " + c + " (Backlog #205)"
+		}
+	}
+	return ""
 }
 
 func observedList(s core.State, field string) []string {
@@ -636,7 +726,13 @@ func (p *Provider) applyOp(ctx context.Context, op core.Op) error {
 		}
 		return nil
 	case core.OpKindCreate:
-		if err := sess.CreateBucket(ctx, bucket); err != nil {
+		var lock LockSpec
+		for _, f := range op.Fields {
+			if f.Field == FieldObjectLock {
+				lock, _ = ParseObjectLock(f.To)
+			}
+		}
+		if err := sess.CreateBucketWith(ctx, bucket, lock.EnableOnCreate); err != nil {
 			if CodeOf(err) == "BucketAlreadyExists" {
 				return provider.NewPermanentError(fail("the bucket name is taken by another account: %w", err))
 			}
@@ -719,8 +815,39 @@ func (p *Provider) applyField(ctx context.Context, sess *Session, ep Endpoint, b
 			return classify(err)
 		}
 		return readBack(field, CanonTagMap(tags), CanonTagMap(got), nil)
+	case FieldObjectLock:
+		return applyObjectLock(ctx, sess, bucket, to)
 	}
 	return provider.NewPermanentError(fmt.Errorf("unknown field %q", field))
+}
+
+// applyObjectLock は object_lock を宣言 to にする。今の設定を読み、正規形が
+// 同じなら何も送らない（作るときの有効化で済んだときなど）。違えば
+// PutObjectLockConfiguration だけで掛け（versioning は読まない）、読み戻して
+// 確かめる。Object Lock を外す宣言は、有効なら PermanentError（外せない）。
+func applyObjectLock(ctx context.Context, sess *Session, bucket, to string) error {
+	want, err := ParseObjectLock(to)
+	if err != nil {
+		return provider.NewPermanentError(err)
+	}
+	cur, err := sess.GetObjectLock(ctx, bucket)
+	if err != nil {
+		return putErr(err)
+	}
+	if lockFromObserved(cur).canon() == want.canon() {
+		return nil
+	}
+	if !want.Enabled {
+		return provider.NewPermanentError(errors.New("the bucket has Object Lock on and it cannot be turned off"))
+	}
+	if err := lockPutErr(sess.PutObjectLock(ctx, bucket, ObjectLock{Enabled: true, Mode: want.Mode, Days: want.Days, Years: want.Years})); err != nil {
+		return err
+	}
+	got, err := sess.GetObjectLock(ctx, bucket)
+	if err != nil {
+		return classify(err)
+	}
+	return readBack(FieldObjectLock, want.canon(), lockFromObserved(got).canon(), nil)
 }
 
 // readBack は設定した後に読み戻した値（正規形）を宣言の正規形と比べる。

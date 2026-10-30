@@ -4,7 +4,7 @@
 
 | provider 名 | ID | 扱うもの |
 | --- | --- | --- |
-| `s3-bucket` | `<endpoint の名前>/<bucket>`（例 `minio/app-logs`） | バケット 1 つ（バージョニング・ポリシー・ライフサイクル・タグ） |
+| `s3-bucket` | `<endpoint の名前>/<bucket>`（例 `minio/app-logs`） | バケット 1 つ（バージョニング・ポリシー・ライフサイクル・タグ・Object Lock） |
 
 - 完全階級（Read・Apply・List・BulkObserve）。prune できる（`pruneable: true`）が、**中身のあるバケットは消さない**（後述）。
 - 持たないもの：アカウント・利用者・アクセスキーの管理（製品ごとに違う。要れば外の provider で足す、§28.9）、オブジェクトの読み書き・削除。
@@ -36,7 +36,7 @@ endpoints:
     ca_file: ca.pem                   # 省略可。この CA だけで証明書を検証する
     insecure_skip_verify: false       # 明示したときだけ true（ca_file とは排他）
     timeout: 10s                      # 省略可。1 要求あたり（既定 10s）
-    fields:                           # 省略可。この endpoint で扱う設定（既定は 4 つ全部。下の「S3 互換実装との差異への対応」）
+    fields:                           # 省略可。この endpoint で扱う設定（既定は object_lock の外の 4 つ。下の「S3 互換実装との差異への対応」）
       - policy
       - lifecycle
       - tags
@@ -89,6 +89,8 @@ endpoint に観測用（`observe:`）と書き込み用（`write:`）のキー�
 ```
 
 - `fields` で扱う設定を絞った endpoint では、外した設定の Get の許可は要らない（Get を呼ばない）。
+- `fields` に `object_lock` を書いた endpoint（下の「Object Lock」）では、観測用のキーに `s3:GetBucketObjectLockConfiguration` も要る
+  （書かなければ要らない。既定の `fields` には入らないので、上の 5 つのままで今までどおり観測できる）。
 - **許可の足りない Get は「設定が無い」と読まない**。Get が 403（`AccessDenied`）なら、そのバケットはその周は観測できない
   （Unknown。absent にしない、§3 第3原則）。設定が無いこと（`NoSuchBucketPolicy`・`NoSuchLifecycleConfiguration`・
   `NoSuchTagSet`。404）だけを空の値として読む。`s3:ListAllMyBuckets` が無ければ ListBuckets が 403 で、List も error（prune は止まる）。
@@ -115,6 +117,14 @@ endpoint に観測用（`observe:`）と書き込み用（`write:`）のキー�
 }
 ```
 
+- `object_lock` を扱う endpoint では、書き込み用のキーに `s3:PutBucketObjectLockConfiguration` と `s3:GetBucketObjectLockConfiguration`
+  （Apply の中の今の設定の読みと読み戻し）も要る。作るときに有効にする（`enable_on_create`）なら、AWS の決まりでは
+  `s3:PutBucketVersioning` も要る（作るときの有効化はバージョニングを Enabled にする）。
+- **Object Lock の設定の PUT は管理用（書き込み用）の権限、Get は観測用の権限でもできる**前提で分ける（MinIO
+  RELEASE.2026-08-04T00-00-00Z で、`s3:GetBucketObjectLockConfiguration` だけを足した観測用の利用者の Get が通り、PUT が 403 で
+  断られることを確かめた）。ただし、実装によっては Object Lock の設定について観測用と書き込み用の権限をまだ分けられないものがある
+  （利用者の権限を粗い組でしか持てないなど）。その実装では観測用のキーにも書き込みのできる権限を渡すことになるので、その endpoint の
+  観測用のキーの扱いに気をつける。
 - ライフサイクル・タグを外す（DeleteBucketLifecycle・DeleteBucketTagging）は、それぞれ `s3:PutLifecycleConfiguration`・
   `s3:PutBucketTagging` の許可で通る（AWS と同じ）。
 - 書き込み用に読むだけのキーを書き違えると、Apply は endpoint の 403（`AccessDenied`）の PermanentError で止まり、何も変わらない。
@@ -172,6 +182,7 @@ providers:
 | `policy` | バケットのポリシー（JSON のオブジェクト） | 正規形（下）。`""` は「ポリシーが無い」で、宣言すれば外す |
 | `lifecycle` | ルールの JSON の配列。各ルールは S3 の XML の `Rule` をそのまま JSON にした形（`Filter`・`Expiration`・`Transition`・`NoncurrentVersionExpiration` など。繰り返す要素は配列）。**`ID` と `Status` は必須** | 正規形（下）。`""` か `[]` は「ルールが無い」 |
 | `tags` | JSON のオブジェクト（値は文字列。50 個まで） | キー順。`""` か `{}` は「タグが無い」 |
+| `object_lock` | Object Lock（JSON のオブジェクト。下の「Object Lock」）。**endpoint の `fields` に書いたときだけ** | 期間を Days にそろえた正規形。`""` は「Object Lock が無い」 |
 | `endpoint`・`bucket` | ID と同じ値（省略可） | identity |
 | `creation_date`（観測だけ） | ListBuckets の CreationDate | 比べない |
 | `unsupported`（観測だけ） | endpoint がその API を持たない（NotImplemented）か、endpoint の `fields` に無いフィールドの一覧 | 比べない |
@@ -183,6 +194,60 @@ endpoint はポリシーやルールを書かれたとおりには持たない�
 - **policy**：キー順・空白を捨てる。`Statement` が 1 つのオブジェクトなら配列に。`Action`・`NotAction`・`Resource`・`NotResource` と、`Principal`・`NotPrincipal`・`Condition` の値の文字列は、並べて重複を落とした配列に。`Principal` の `"*"` は `{"AWS": ["*"]}` と同じ。`Statement` の順は変えない。
 - **lifecycle**：値をすべて文字列に（`30` と `"30"` は同じ）、日時は RFC 3339 の UTC に（`2027-01-01T00:00:00.000Z` と `2027-01-01T00:00:00Z` は同じ）、空の値（`"Filter": {}`・`<Prefix></Prefix>`）を落とし、1 要素の配列は中身だけに、ルールと配列の並びは正規形の順に。
 - 正規形にしてもそろわない形で endpoint が持つとき（endpoint が文を足すなど）、Apply は読み戻して気づき、**endpoint の持っている形を添えた PermanentError** にする（Apply を繰り返さない）。その形で宣言し直せば適合する。
+
+## Object Lock（Backlog #205）
+
+書き換えを禁じたい版（監査の記録・バックアップ）を置くバケットに、Object Lock とバケットの既定の保持を宣言で持たせる。
+扱うのは、作るときの有効化と、既定の保持（mode と期間）だけ。オブジェクトごとの保持・Legal Hold は扱わない（オブジェクトを扱わない）。
+
+```yaml
+# s3.yaml（endpoint の一覧）：object_lock は fields に書いたときだけ扱う
+endpoints:
+  minio:
+    endpoint: https://s3.example.net:9000
+    access_key: secretref:file/s3/minio/access_key
+    secret_key: secretref:file/s3/minio/secret_key
+    fields:
+      - versioning
+      - policy
+      - lifecycle
+      - tags
+      - object_lock
+```
+
+```json
+{"provider": "s3-bucket", "id": "minio/audit-archive",
+ "fields": {"object_lock": "{\"enable_on_create\": true, \"mode\": \"COMPLIANCE\", \"years\": 7}"}}
+```
+
+| キー | 値 | 意味 |
+| --- | --- | --- |
+| `enable_on_create` | `true` / `false`（省略は false） | 作るときに `x-amz-bucket-object-lock-enabled: true` を送る。**書いたときだけ送る**（持たない実装でも宣言どおりにできるように、既定は送らず PutObjectLockConfiguration で有効にする）。作る手順の引数で、比べない |
+| `mode` | `GOVERNANCE` / `COMPLIANCE` | バケットの既定の保持の mode。期間と組で書く |
+| `days` / `years` | 正の整数（どちらか一方。days は 36500、years は 100 まで） | 既定の保持の期間 |
+
+- `object_lock` を宣言すれば Object Lock を有効にする。`mode` と期間を書かなければ（`{}`・`{"enable_on_create": true}`）既定の保持は無い（有れば外す）。
+  `""` は「Object Lock が無い」。宣言しなければ比べない（書いたときだけ比べて合わせる）。
+- **期間は Days にそろえて比べる**。`years` は 365 倍した `days` と同じ（7 年は 2555 日）。Years で PUT しても Get で Days を返す実装があるため。
+  観測の値は、Object Lock が無ければ `""`、有れば `{"days":2555,"mode":"COMPLIANCE"}`、既定の保持が無ければ `{}`。
+- **既定の保持は PutObjectLockConfiguration だけで掛ける**。versioning を読んで有効かを確かめる手順は踏まない（versioning の Get を持た
+  ない実装でも動く。versioning を宣言していなければ、その Get が 501 でもエラーにならない）。Apply は今の設定を Get で読み、同じなら
+  PUT を送らず（作るときの有効化で済んだときなど）、違えば PUT して読み戻して確かめる。
+- **Get の読み方**：404 `ObjectLockConfigurationNotFoundError` は「設定が無い」、Rule の無い応答は「既定の保持が無い」。403 は今までどおり
+  観測できない（Unknown。「設定が無い」と読まない）。501・NotImplemented は、宣言していれば観測できないとして計画の時点で止める。
+- **実装が受けない設定は理由つきで止める**。PUT が 400（`InvalidArgument`・`MalformedXML` など。受けない mode・期間）なら
+  「the endpoint refused the Object Lock configuration …」の PermanentError（黙って流さない）。既にあるバケットに有効にできない実装
+  （SeaweedFS・MinIO は 409 `InvalidBucketState`）は「the endpoint refused to turn Object Lock on for this existing bucket …」。
+- **既にあるバケットの保持の設定を変える Apply は、向きによらず全部、予算に数え、承認ゲートを通す**（設計の決定）。有効にする・mode を
+  変える・期間を延ばす・期間を短くする・既定の保持を外す、のどれも。延ばす向きと COMPLIANCE へ変える向きは戻せず、短くする向きと
+  外す向きは実装に断られずに上書きされ、これから書く版の守りが弱まるため。宣言を既定で断る形にはせず、正しい変更も宣言で書け、人の
+  承認で止める。承認は planned_change のレーン（kind `update`、§13.3）で、レーンが無ければ `ChangeAwaitingApproval` で持ち越し、
+  `plan` は `blocked: approval` と向き（例「shortens the default retention 2555 → 30 days」）を出す。**新しく作るバケットに初めて
+  掛けるのはふつうの作成**（承認は要らない）。
+- **既にあるバケットと食い違う宣言は理由つきで止め、作り直さない**：Object Lock が有効なバケットに `""`（外せない）と、Object Lock の
+  無い既にあるバケットに `enable_on_create: true`（作るときだけの引数）は計画の時点のエラー。後者は `enable_on_create` を外せば
+  PutObjectLockConfiguration で有効にする変更（承認が要る）になる。
+- Object Lock の有効なバケットも、中身が無ければ prune で消える（中身のあるバケットは今までどおり消えない）。
 
 ## 動き方
 
@@ -266,10 +331,30 @@ $ make integration-s3
 | after the server is back | unpause → reconcile → main がすべて適合 |
 | an endpoint without the API | 今の minio・seaweedfs は 4 つの GET をどれも持つことを確かめる。seaweedfs-old に versioning・tags を宣言 → バケットは作られ、Apply が NotImplemented の PermanentError で止まり、status は drift。フィールドを宣言しなければ適合 |
 | fields leave out settings | 同じ seaweedfs を別の名前 `seaweedfs-compat`（`bucket_prefix: sk-compat-`、`fields` は policy・tags だけ）でも登録。policy・tags を宣言したバケットが適合し、versioning は触らない。versioning を宣言すると `plan` が `fields` を名指したエラーで止まる。`storage_class_aliases` は SeaweedFS では再現できない（この版は Transition を含む lifecycle の PUT が 501、古い版は受け付けるが読み戻すと Transition が無い）ので、偽サーバの単体・受け入れテストで確かめる |
+| Object Lock（#205、`TestS3ObjectLock`） | seaweedfs（と使えれば minio）に `fields` に `object_lock` を書いた endpoint（`bucket_prefix: sk-lock-`、scope `site=it`）を足す。`enable_on_create` つきで GOVERNANCE 1 日・COMPLIANCE 1 年のバケットを作り、Get が宣言どおり・status が適合・3 周 converged。GOVERNANCE を 2 日に延ばす宣言はレーンが無ければ `ChangeAwaitingApproval` で変わらず、承認つきの update のレーンで変わる。既定の保持を外すのも同じ。Object Lock の無い既にあるバケットに `enable_on_create` は `plan` が「does not re-create」で止まり、外すと（承認つき）PUT が 409 `InvalidBucketState` で理由つきで止まる。minio では Get の許可だけの利用者の Get が通り PUT が 403 |
 | clean up through prune | 宣言を 1 つだけにして PruneWithinScope で reconcile → 空のバケットが prune で消える（中身のあるものは残る）。コンテナは teardown で消す |
 | 観測用と書き込み用の資格（#186、`TestS3CredentialSplit`、minio が要る） | minio の中の `mc admin` で、上の読むだけのポリシーの利用者 `sakutei-ro` と書き込み用のポリシーの利用者 `sakutei-rw` を作り、`observe:`・`write:` に書いた endpoint の一覧（`bucket_prefix: sk-split-`）を使う。観測用のキーだけの store で `status --json`（complete・drift 1）と `plan` が通り、`reconcile`（書く回）は `endpoints.minio.write.access_key` が無いと断ってバケットを作らない。`sakutei-ro` の CreateBucket・PutBucketTagging・PutBucketVersioning・DeleteBucket は 403 で断られる。両方のキーの store の `reconcile` で収束し（空の orphan の prune を含む）、4 つの設定を外す・付け直すのも通る。読むだけのポリシーから 1 つずつ外した利用者では、そのバケットの Read が Unknown（absent にならない） |
 
 ### 結果
+
+Object Lock の段（#205、2026-10-30。SeaweedFS 4.51・MinIO RELEASE.2026-08-04T00-00-00Z。TestS3Integration・TestS3CredentialSplit も同じ回で全段 PASS）:
+
+```
+--- PASS: TestS3ObjectLock (1.21s)
+    --- PASS: TestS3ObjectLock/create_with_Object_Lock_and_observe_it (0.20s)
+    --- PASS: TestS3ObjectLock/changing_the_retention_needs_approval (0.16s)
+    --- PASS: TestS3ObjectLock/an_existing_bucket_without_Object_Lock (0.06s)
+    --- PASS: TestS3ObjectLock/the_observe_user_reads_with_GetBucketObjectLockConfiguration (0.78s)
+    --- PASS: TestS3ObjectLock/clean_up (0.01s)
+```
+
+- SeaweedFS 4.51・MinIO のどちらも、作るときの有効化を持ち（バージョニングも Enabled になる）、Years で掛けた保持を Years のまま返す
+  （Days で返す実装の振る舞いは偽サーバで確かめる）。どちらも Object Lock の無い既にあるバケットへの有効化を 409 `InvalidBucketState`
+  で断る（MinIO は「Object Lock configuration cannot be enabled on existing buckets」）。受けない mode は SeaweedFS が 400
+  `MalformedXML`、MinIO が 400 `InvalidArgument`、0 日は SeaweedFS が 400 `InvalidRetentionPeriod`、MinIO が 400 `InvalidArgument`。
+  保持を短くする PUT・外す PUT はどちらも断らない（承認ゲートで止める理由）。
+
+それより前の段:
 
 既定のイメージ（SeaweedFS 4.51・MinIO RELEASE.2026-08-04T00-00-00Z・SeaweedFS 3.80）で回した結果（全段 PASS、2026-10-27）:
 
@@ -323,4 +408,11 @@ PASS
 - SigV4：AWS の公開のテストベクタ（Signature Version 4 の test suite の get-vanilla、S3 の文書の GET Object・PUT Object・GET Bucket Lifecycle・ListObjects の例、署名鍵の導出の例）と同じ値になる（`internal/s3bucket/sigv4_test.go`）。
 - 契約テスト（`sdk.ContractTester`、届かないのを absent にしないことを含む）・BulkObserve 等価性テスト（`sdk.BulkEquivalenceTester`）・正規形・NotImplemented・中身のあるバケットの Delete・観測できないもの（届かない・5xx・鍵の誤り・資格を解決できない）・ListBuckets のページ送りと `bucket_prefix`・path-style と virtual-host のアドレス・設定ファイルの検査（`internal/s3bucket/*_test.go`）。
 - 観測用と書き込み用のキー（`internal/s3bucket/credential_split_test.go`、`[AC-186-6-*]`）：偽サーバに読むだけのキー（GET・HEAD だけ。ほかは 403 `AccessDenied`）を足し、キーごとの読み・書きの回数を数える。観測は読むだけのキーだけ・書き込みは書き込み用のキーだけで収束すること、書かない回は書き込み用のキーが store に無くても起動して書き込みを `provider.ErrNoWriteAccess` で断ること（書き込み用のキーの要求は 0）、書く回は無ければ読み込みで断ること、設定の誤り、4 つの Get のどれが 403 でも Unknown（absent にしない）こと。
+- Object Lock（`internal/s3bucket/objectlock_test.go`、`tests/acceptance/s3bucket_object_lock_test.go` の `[AC-205-*]`）：偽サーバに AWS の形の
+  Object Lock の口（PUT の成功は 200 で本文は空、Get は ObjectLockEnabled と Rule/DefaultRetention、設定していなければ 404
+  `ObjectLockConfigurationNotFoundError`、Days と Years の両方・どちらも無い・ObjectLockEnabled が Enabled 以外は 400 `MalformedXML`、
+  0 以下・受けない mode は 400 `InvalidArgument`、持ち主でないは 403）と、作るときの有効化が無い・versioning の Get が 501・COMPLIANCE
+  だけ・Years を Days で返す振る舞い（`Options.NoObjectLockOnCreate`・`ObjectLockModes`・`ObjectLockYearsAsDays`）を持たせ、CLI で
+  PutObjectLockConfiguration だけで宣言どおりになる・years の宣言が Days の観測と合う・versioning を宣言しなければエラーにならない・
+  GOVERNANCE は理由つきで止まる・短くする・外すは承認が無ければ流れないことを確かめる。
 - 受け入れテスト（`tests/acceptance/s3bucket_test.go`、`[AC-122-*]`）：DefaultRegistry から作って契約テスト、PruneWithinScope の prune で空の orphan だけが消えること、届かないと prune が止まり何もしないこと。
