@@ -4954,7 +4954,7 @@
       "number": 214,
       "kind": "task",
       "title": "nftables：confirm の先に別の resource の観測（observe:）と確かめの関数（check:）を書く",
-      "status": "ready",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4962,12 +4962,12 @@
       "labels": [],
       "body": "## なぜ\nいま `observe:` と `check:`（#200）を confirm の先に書けるのは netconf だけで、nftables の base chain の confirm（#173・#179・#192）で書けるのは `self`・`ssh://`・`tcp://` と `after:` の印だけ。境界の FW の規則を変えたあと、そのホスト自身への到達ではなく「転送の経路で向こう側に届くか」を、別の資源の観測や外から渡した確かめの関数で確かめたい。\n\n## 何をするか\n- nftables の confirm の先に、netconf と同じ書き方で次を書けるようにする。\n  - `observe:<provider>/<scope>/<id> expect:{…}`：その resource を、ふだん観測するときと同じ資格（観測用）と範囲で観測し直し、期待する欄の値の部分集合になるまで時間の上限の中で繰り返し読む。範囲の外は読まない。\n  - `check:<name>`：`pkg/cli.WithConfirmCheck` で名前で登録した確かめの関数（network_policy の realizer の `Output.Checks` からも）を呼ぶ。\n- netconf と口を共通にする（読み方・繰り返し・時間の上限・知らせ方を同じにする）。\n- どちらも、いつも「変えたあとだけ確かめる」扱い（`after:` は書いても書かなくても同じ）。「全部の先に after: の印が付いた宣言は断る」決まりは到達の先（ssh・tcp）についてだけ数え、到達の先が1つも無い宣言は読み込みで断る（締め出しの守りを弱めない）。\n- 通らなければ、今の締め出しの守りと同じく時間切れで元の規則に戻す。\n- 設計書・docs/providers の nftables・CHANGELOG を改める。\n\n## 確かめ方\n- 受け入れテストで、nftables の confirm から `check:`（外の realizer が渡す）と `observe:`（観測用の資格と範囲だけで読む）が働き、通らなければ確定せず元に戻ることを確かめる。\n- 到達の先が無い宣言が断られることを確かめる。\n- nftables の統合試験で、規則を変えたあと別の resource の観測を条件に確定する場合と、条件が満たされず戻る場合を確かめる。",
       "doneWhen": "nftables の confirm の先で observe:（観測用の資格と範囲だけで読む）と check:（外から渡せる）が変えたあとの確かめとして働き、通らなければ確定せず元の規則に戻ること、到達の先の無い宣言は断られることを、受け入れテストと nftables の統合試験で確かめる。make check と make test-race が通る。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-30T17:03:20.300Z",
-      "updatedAt": "2026-10-30T17:35:44.906Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-30T17:35:47.941Z",
+      "closedAt": "2026-10-30T17:35:47.941Z",
       "extra": {}
     }
   ]
