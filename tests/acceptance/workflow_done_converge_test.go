@@ -283,7 +283,7 @@ func TestWorkflowDone_AdvanceLockOneAdvances(t *testing.T) {
 		t.Fatal(err)
 	}
 	d2.Wait(5 * time.Second)
-	if !hasEvent(res2, workflow.EventWaiting, "another process holds the advance lock") {
+	if !hasEvent(res2, workflow.EventElsewhere, "another process holds the advance lock") {
 		t.Fatalf("[AC-209-5] the second daemon must not advance while the first holds the lock: %v", res2.WorkflowEvents)
 	}
 	if run, _ := r.run(); run.Version != run1.Version || run.Step != run1.Step {

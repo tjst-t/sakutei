@@ -499,7 +499,7 @@ func TestDisruptiveUpdate_RemediationAlertOnlyDoesNotStart(t *testing.T) {
 	r.q.set("10", false)
 	r.clock.Set(time.Date(2026, 10, 28, 2, 10, 0, 0, time.UTC))
 	res := r.step()
-	if !hasEvent(res, workflow.EventWaiting, "alert-only") {
+	if !hasEvent(res, workflow.EventElsewhere, "alert-only") {
 		t.Fatalf("[AC-152-1] no alert-only waiting event: %+v", res.WorkflowEvents)
 	}
 	if run := r.wfRun(); run.Gate != "" {

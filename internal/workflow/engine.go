@@ -48,7 +48,20 @@ const (
 	EventDisruption = core.EventDisruption
 	// EventTargetHeld は halt・進み具合が分からないために持った対象（level、#209）。
 	EventTargetHeld = core.EventWorkflowTargetHeld
+	// EventElsewhere はこの常駐が Workflow を進めず別の処理に任せること（level、#210）。
+	EventElsewhere = core.EventWorkflowAdvancedElsewhere
 )
+
+// ElsewhereEvent は Workflow を進めない常駐の level の Event（#210、§6.3）。names は
+// 進めない Workflow、why はその理由。誤りではない（WorkflowError にしない）。
+func ElsewhereEvent(names []string, why string) Event {
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	list := strings.Join(sorted, ",")
+	return Event{Kind: EventElsewhere, Workflow: list,
+		Message: fmt.Sprintf("Workflow(s) %s are advanced by another process: %s; this daemon does not advance them, and the targets of what is not done stay held (§6.3)", list, why),
+		Attrs:   map[string]string{"reason": why}}
+}
 
 // Event は 1 周の Workflow の出来事。出すときは Core で core.Event にする。
 type Event struct {
@@ -498,6 +511,28 @@ func (s *stepper) emit(kind EventKind, format string, args ...any) {
 	s.events = append(s.events, Event{Kind: kind, Workflow: s.def.Name, Message: fmt.Sprintf(format, args...)})
 }
 
+// record は Workflow の記録（run の始まり・手・終わり、#210）を S4 監査に 1 件書く。
+// Workflow と run の id は今の run から入れる。書けなければ知らせるが、手は戻さない
+// （もう起きたことを無かったことにはできない）。
+func (s *stepper) record(rec audit.Record) {
+	if s.e.Audit == nil {
+		return
+	}
+	rec.Time = s.now
+	rec.Workflow, rec.RunID = s.def.Name, s.run.RunID
+	if err := s.e.Audit.Append(rec); err != nil {
+		s.emit(EventError, "S4 audit append failed: %v", err)
+	}
+}
+
+// shortHash は監査に書く定義のハッシュの頭。
+func shortHash(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
+}
+
 // save は run を S2 に書く。失敗（競合を含む）なら false：この周はここで止め、
 // 次の周に Store と現実を読み直す。
 func (s *stepper) save() bool {
@@ -519,6 +554,7 @@ func (s *stepper) halt(format string, args ...any) {
 	s.run.Phase = PhaseHalted
 	s.run.Reason = fmt.Sprintf(format, args...)
 	if s.save() {
+		s.record(audit.Record{Kind: audit.KindWorkflowRunEnd, Result: audit.ResultHalted, Detail: s.run.Reason})
 		s.emit(EventHalted, "%s (on_failure: halt; targets stay held until `sakutei workflow cancel`)", s.run.Reason)
 	}
 }
@@ -548,6 +584,9 @@ func (e *Engine) tick(ctx context.Context, def Definition) []Event {
 				StartedAt: s.now.UTC(),
 			}
 			if s.save() {
+				s.record(audit.Record{Kind: audit.KindWorkflowRunStart,
+					Detail: fmt.Sprintf("no run in the workflow store and %s: recorded as done without running its steps (definition %s)", why, shortHash(hash))})
+				s.record(audit.Record{Kind: audit.KindWorkflowRunEnd, Result: audit.ResultDone, Detail: s.run.Reason})
 				s.emit(EventCompleted, "%s: recorded as done without starting a run (run %s)", why, s.run.RunID)
 			}
 			return s.events
@@ -576,6 +615,14 @@ func (e *Engine) tick(ctx context.Context, def Definition) []Event {
 		}
 	}
 	if start {
+		// #210: why the run starts, for the S4 audit.
+		reason := fmt.Sprintf("declared: no run in the workflow store (definition %s)", shortHash(hash))
+		switch {
+		case trigger != "":
+			reason = fmt.Sprintf("trigger %s:%s (definition %s)", def.Trigger, by, shortHash(hash))
+		case ok:
+			reason = fmt.Sprintf("the definition changed since run %s was done (definition %s)", run.RunID, shortHash(hash))
+		}
 		s.run = Run{
 			Workflow:      def.Name,
 			RunID:         fmt.Sprintf("%s-%d", def.Name, s.now.UnixNano()),
@@ -591,6 +638,7 @@ func (e *Engine) tick(ctx context.Context, def Definition) []Event {
 		if !s.save() {
 			return s.events
 		}
+		s.record(audit.Record{Kind: audit.KindWorkflowRunStart, Detail: reason})
 		s.emit(EventStarted, "run %s started (%d stage(s), %d target(s))%s", s.run.RunID, len(def.Stages), len(def.Targets()), by)
 	} else {
 		s.run = run
@@ -629,6 +677,8 @@ func (s *stepper) gate(ctx context.Context) bool {
 	}
 	approvers, need := run.Tally()
 	if len(approvers) >= need {
+		s.record(audit.Record{Kind: audit.KindWorkflowStep, Stage: run.Gate, StepKind: "gate", Result: audit.ResultApproved,
+			Detail: fmt.Sprintf("gate %s approved by %s (%d of %d required)", run.Gate, strings.Join(approvers, ", "), len(approvers), need)})
 		s.emit(EventApproved, "gate %s approved by %s (%d of %d required)", run.Gate, strings.Join(approvers, ", "), len(approvers), need)
 		s.run.Phase = PhaseRunning
 		disruptGate := s.isDisruptionGate(run.Gate)
@@ -652,6 +702,8 @@ func (s *stepper) gate(ctx context.Context) bool {
 				s.emit(EventError, "S4 audit append failed: %v", err)
 			}
 		}
+		s.record(audit.Record{Kind: audit.KindWorkflowStep, Stage: run.Gate, StepKind: "gate", Result: audit.ResultTimedOut,
+			Elapsed: s.now.Sub(run.GateOpenedAt).Round(time.Second).String(), Detail: reason})
 		s.halt("%s", reason)
 		return false
 	}
@@ -672,6 +724,8 @@ func (s *stepper) nextStage() bool {
 	if s.run.Stage >= len(s.def.Stages) {
 		s.run.Phase = PhaseDone
 		if s.save() {
+			s.record(audit.Record{Kind: audit.KindWorkflowRunEnd, Result: audit.ResultDone,
+				Detail: fmt.Sprintf("run completed: %d stage(s) done; targets return to convergence", len(s.def.Stages))})
 			s.emit(EventCompleted, "run %s completed; targets return to convergence", s.run.RunID)
 		}
 		return false
@@ -771,6 +825,9 @@ func (s *stepper) advance(ctx context.Context) {
 			tracing.Int(tracing.AttrStep, s.run.Step+1), tracing.String(tracing.AttrStepKind, string(step.Kind)),
 			tracing.String(tracing.AttrResource, res.String()))
 		s.failWhy = ""
+		// #210: an Apply of this step is audited with its run and step.
+		stepCtx = audit.WithStep(stepCtx, audit.StepRef{Workflow: s.def.Name, RunID: s.run.RunID,
+			Stage: stage.Name, Target: target.String(), Step: s.run.Step + 1})
 		status, msg := s.exec(stepCtx, step, res, resObs)
 		span.SetAttributes(tracing.String(tracing.AttrOutcome, status.String()))
 		if status == stepFailed {
@@ -778,6 +835,9 @@ func (s *stepper) advance(ctx context.Context) {
 			span.Fail(fmt.Errorf("%s step failed: %s", step.Kind, s.failWhy))
 		}
 		span.End()
+		if status == stepDone || status == stepFailed {
+			s.recordStep(stage, target, res, step, status, msg)
+		}
 		switch status {
 		case stepPending:
 			s.wait(EventWaiting, "%s: %s", where, msg)
@@ -839,6 +899,31 @@ func (s *stepper) advance(ctx context.Context) {
 		}
 	}
 	s.emit(EventWaiting, "step limit per cycle reached; continuing next cycle")
+}
+
+// recordStep は済んだ・失敗した手を S4 監査に 1 行書く（#210）。待ちの周は書かない。
+func (s *stepper) recordStep(stage Stage, target, res core.ID, step Step, status stepStatus, msg string) {
+	rec := audit.Record{Kind: audit.KindWorkflowStep, Stage: stage.Name, Target: target.String(), Step: s.run.Step + 1,
+		StepKind: string(step.Kind), Resource: res.String(), Result: audit.ResultOK, Detail: msg}
+	for k := range step.Fields {
+		rec.Fields = append(rec.Fields, k)
+	}
+	sort.Strings(rec.Fields)
+	switch step.Kind {
+	case StepAction:
+		rec.Action, rec.Args = step.Op, step.Args
+		rec.Result = audit.ResultSent
+	case StepWait, StepRequire:
+		rec.Elapsed = s.now.Sub(s.run.StepStartedAt).Round(time.Second).String()
+		rec.Result = audit.ResultSatisfied
+	}
+	if status == stepFailed {
+		rec.Result = audit.ResultFailed
+		if s.failWhy == "timed out" {
+			rec.Result = audit.ResultTimedOut
+		}
+	}
+	s.record(rec)
 }
 
 // wait は進めない理由を記録する（変わったときだけ S2 に書く）。
@@ -906,6 +991,11 @@ func (s *stepper) exec(ctx context.Context, step Step, target core.ID, obs core.
 		plan, err := d.Plan(obs, diff.DesiredResource{ID: target, Fields: step.Fields}, cause.CauseContext{})
 		if err != nil {
 			return s.fail("plan error", fmt.Sprintf("plan %v: %v", step.Fields, err))
+		}
+		// #210: the step's fields are declared in the Workflow (intent), not a
+		// drift of reality: the Apply is cause A.
+		for i := range plan.Ops {
+			plan.Ops[i].Cause = core.CauseTagA
 		}
 		if err := s.e.execute(ctx, plan); err != nil {
 			return s.fail("apply error", fmt.Sprintf("apply %v: %v", step.Fields, err))

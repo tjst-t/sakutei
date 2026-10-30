@@ -217,10 +217,11 @@ func (l *Level) classify(ev core.Event, count int) core.EventClass {
 		}
 		return core.EventTransient
 	}
-	if ev.Kind == core.EventRuntimeTightened || ev.Kind == core.EventFrozen {
+	if ev.Kind == core.EventRuntimeTightened || ev.Kind == core.EventFrozen || ev.Kind == core.EventWorkflowAdvancedElsewhere {
 		// #183: a tightening flag is the operator's choice for this run; it
 		// lasts as long as the process and is not a failure to escalate.
 		// #184: nor is a freeze, which lasts until it is ended or expires.
+		// #210: nor is a daemon's role of not advancing the Workflows.
 		return core.EventTransient
 	}
 	if permanent(ev) || count >= l.stuckAfter {

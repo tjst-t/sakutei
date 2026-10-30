@@ -319,6 +319,11 @@ type Config struct {
 	// advances and every Workflow target is held (a gate without S2 would
 	// forget it was waiting across a restart).
 	WorkflowStore workflow.Store
+	// WorkflowObserveOnly makes the daemon read WorkflowStore only (#210,
+	// §6.3): it never advances a Workflow nor writes the store, as a one-shot
+	// reconcile (#209).  The targets of what is not done stay held; another
+	// daemon (the holder of the store's advance lock) advances them.
+	WorkflowObserveOnly bool
 	// Audit is the S4 audit log (append-only).  The daemon records gate
 	// timeouts there; approvals are recorded by the approval API.
 	Audit *audit.Log
@@ -556,6 +561,10 @@ func Run(ctx context.Context, cfg Config) error {
 		if d != nil {
 			// #166: the resources whose Apply is stopped (oscillating).
 			h.ApplyStopped = ApplyStoppedHealth(d.checker.Stopped())
+		}
+		if d != nil {
+			// #210: the Workflows this daemon leaves to another process.
+			h.WorkflowsElsewhere = d.wfElsewhere
 		}
 		if cfg.Runtime != nil {
 			h.RuntimeTightened = cfg.Runtime.Tightened
@@ -1031,6 +1040,10 @@ type Daemon struct {
 	// workflows advances the intent's Workflows (§6.3).  Nil when no
 	// WorkflowStore is configured.
 	workflows *workflow.Engine
+	// wfElsewhere is the last decided account of why this daemon leaves the
+	// Workflows to another process (#210), for the daemon status.  Empty when
+	// it advances them (or there is none).
+	wfElsewhere string
 	// level keeps the level Events that are firing (§22.3, S3): cfg.Out /
 	// cfg.ErrOut pass every Event through it.  A new Daemon (restart, claim
 	// handoff) starts empty, so what still holds fires afresh.
@@ -1260,9 +1273,18 @@ func (d *Daemon) RunCycle(ctx context.Context) (CycleResult, error) {
 		w := eventlog.Stamp(d.cfg.ErrOut, d.cfg.cycleBase+d.cycle, d.prevRev)
 		d.cfg.Remediation.Freeze = d.cfg.Freeze.Check(w, "sakutei: ", d.cfg.cycleBase+d.cycle)
 	}
-	return runCycleAsync(ctx, d.providers, d.budgetEngine, d.exec, d.ifl, d.lsRing,
+	res, err := runCycleAsync(ctx, d.providers, d.budgetEngine, d.exec, d.ifl, d.lsRing,
 		&d.prevRev, &d.prevParentRevs, d.prevProviderVersions, d.sched, d.cycle, d.cfg, d.tasks, d.tasksOff, d.workflows, d.view, d.checker, d.wake)
+	if res.level.wfJudged {
+		d.wfElsewhere = res.level.wfElsewhere
+	}
+	return res, err
 }
+
+// WorkflowsElsewhere is why this daemon leaves the Workflows to another
+// process (#210, the one line of the daemon status); empty when it advances
+// them or there is none.
+func (d *Daemon) WorkflowsElsewhere() string { return d.wfElsewhere }
 
 // EndCycle closes the level report of the cycle that returned res and
 // cycleErr (§22.3): a level Event firing before that did not recur this cycle
@@ -1628,6 +1650,9 @@ type levelCoverage struct {
 	// targets (ID.String()) held for a halt or unknown progress (#209).
 	wfJudged  bool
 	wfFlagged map[string]bool
+	// wfElsewhere: why this daemon left the Workflows to another process this
+	// cycle (#210; empty = it advanced them, or there is none).
+	wfElsewhere string
 }
 
 // disruptionCoverage returns the targets of the Workflows advanced this cycle
@@ -1682,6 +1707,10 @@ func (c levelCoverage) resolves(ev core.Event, res CycleResult, cycleErr error) 
 		// reports the target as disrupting (its steps are done, or the run
 		// was cancelled).
 		return ev.HasResource() && c.wfTicked[ev.Resource.String()] && !c.disrupting[ev.Resource.String()]
+	case core.EventWorkflowAdvancedElsewhere:
+		// #210: gone when the cycle decided the Workflows and did not leave
+		// them to another process.
+		return c.wfJudged && c.wfElsewhere == ""
 	case core.EventWorkflowTargetHeld:
 		// #209: gone when the cycle decided the holds and no longer holds the
 		// target for a halt or unknown progress.
@@ -2078,8 +2107,17 @@ func runCycleAsync(
 	var wfTicked, wfDisrupting map[string]bool
 	// #209: the holds flagged by a level Event (halted, progress unknown).
 	var wfHolds []workflow.Hold
+	// #210: why this daemon leaves the Workflows to another process, and which
+	// (no store, observe-only, alert-only, another holds the advance lock).
+	// Not an error: one level Event and one line in the daemon status.
+	var wfElsewhere string
+	var wfElsewhereNames []string
 	if len(in.Workflows) > 0 {
 		if workflows == nil {
+			wfElsewhere = "no workflow store is given to this daemon (--workflow-store)"
+			for _, def := range in.Workflows {
+				wfElsewhereNames = append(wfElsewhereNames, def.Name)
+			}
 			// #209 (§6.3): without a store the Workflows do not advance, and what
 			// is not done yet is decided by the declaration (an open planned_change
 			// for trigger: reimage) and observation (done_when).
@@ -2091,8 +2129,6 @@ func runCycleAsync(
 				for _, id := range h.Targets {
 					wfHeld[id.Local] = h.Workflow
 				}
-				wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventError, Workflow: h.Workflow,
-					Message: "no workflow store configured (--workflow-store); the Workflow does not advance and its targets are held (" + h.Describe(false) + ")"})
 			}
 		} else {
 			var runnable []workflow.Definition
@@ -2108,28 +2144,33 @@ func runCycleAsync(
 					runnable = append(runnable, def)
 				}
 			}
+			for _, def := range runnable {
+				wfElsewhereNames = append(wfElsewhereNames, def.Name)
+			}
 			// #209: only the holder of the store's advance lock advances; the
-			// others hold the targets of what is not done.
-			locked, lockErr := workflows.AcquireAdvance()
+			// others hold the targets of what is not done.  #210: a daemon that
+			// does not advance (observe-only, alert-only) does not take the lock,
+			// so the one that does can.
 			switch {
 			case len(runnable) == 0:
-			case lockErr != nil || !locked:
-				why := "another process holds the advance lock of the workflow store (it advances the Workflows)"
-				if lockErr != nil {
-					why = fmt.Sprintf("the advance lock of the workflow store cannot be taken: %v", lockErr)
-				}
-				for _, def := range runnable {
-					wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventWaiting, Workflow: def.Name,
-						Message: why + "; not advancing (targets of what is not done stay held)"})
-				}
+			case cfg.WorkflowObserveOnly:
+				wfElsewhere = "this daemon reads the workflow store only (--workflow-observe-only)"
 			case decision.IsAlertOnly():
-				for _, def := range runnable {
-					wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventWaiting, Workflow: def.Name,
-						Message: fmt.Sprintf("remediation mode is alert-only (%s); not advancing", decision.Reason)})
-				}
+				wfElsewhere = fmt.Sprintf("remediation mode is alert-only (%s)", decision.Reason)
 			default:
-				wfEvents = workflows.Tick(ctx, runnable)
-				wfTicked, wfDisrupting = disruptionCoverage(runnable, wfEvents)
+				locked, lockErr := workflows.AcquireAdvance()
+				switch {
+				case lockErr != nil:
+					for _, def := range runnable {
+						wfEvents = append(wfEvents, workflow.Event{Kind: workflow.EventWaiting, Workflow: def.Name,
+							Message: fmt.Sprintf("the advance lock of the workflow store cannot be taken: %v; not advancing (targets of what is not done stay held)", lockErr)})
+					}
+				case !locked:
+					wfElsewhere = "another process holds the advance lock of the workflow store"
+				default:
+					wfEvents = workflows.Tick(ctx, runnable)
+					wfTicked, wfDisrupting = disruptionCoverage(runnable, wfEvents)
+				}
 			}
 			wfHolds = workflows.Judge().Holds(ctx, in.Workflows)
 			for _, h := range wfHolds {
@@ -2151,6 +2192,12 @@ func runCycleAsync(
 	for _, ev := range workflow.HeldEvents(wfHolds, workflows != nil) {
 		wfEvents = append(wfEvents, ev)
 		wfFlagged[ev.Resource.String()] = true
+	}
+	if wfElsewhere != "" {
+		// #210: a level Event — raised every cycle, emitted once while it lasts.
+		ev := workflow.ElsewhereEvent(wfElsewhereNames, wfElsewhere)
+		wfEvents = append(wfEvents, ev)
+		wfElsewhere = ev.Message
 	}
 	var wfHeldThisCycle []string
 
@@ -2287,7 +2334,8 @@ func runCycleAsync(
 
 	// §22.3: what this cycle sees, for the level report.
 	cov := levelCoverage{observed: true, settled: map[string]bool{}, desired: make(map[string]bool, len(desired)),
-		wfTicked: wfTicked, disrupting: wfDisrupting, wfJudged: true, wfFlagged: wfFlagged}
+		wfTicked: wfTicked, disrupting: wfDisrupting, wfJudged: true, wfFlagged: wfFlagged,
+		wfElsewhere: wfElsewhere}
 	for _, r := range desired {
 		cov.desired[r.ID.String()] = true
 	}

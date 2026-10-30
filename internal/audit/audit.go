@@ -29,6 +29,7 @@
 package audit
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -114,6 +115,35 @@ const (
 	KindApply Kind = "resource.apply"
 	// KindPrune は prune（reality − desired、§12）の Delete。書くものは KindApply と同じ。
 	KindPrune Kind = "resource.prune"
+
+	// KindWorkflowRunStart は Workflow の run の始まり（#210、§6.3）。Workflow・RunID と、
+	// Detail に起こした理由（宣言を初めて見た・定義が変わった・trigger の宣言）を書く。
+	KindWorkflowRunStart Kind = "workflow.run.start"
+	// KindWorkflowStep は Workflow の手 1 つの結果（#210）。Workflow・RunID・Stage・
+	// Target・Step（手の番号、1 から）・StepKind（apply・task・wait・require・verify・
+	// action・gate）・Resource（手が触るリソース）・Result・Detail を書く。action は
+	// Action（op）と Args、wait と require は Elapsed（手に入ってからかかった時間）も。
+	// 待ち（pending）の周は書かない（済んだ・失敗したときに 1 行）。
+	KindWorkflowStep Kind = "workflow.step"
+	// KindWorkflowRunEnd は run の終わり（#210）。Result は done・halted・cancelled、
+	// Detail にその理由。
+	KindWorkflowRunEnd Kind = "workflow.run.end"
+)
+
+// Result の値（KindWorkflowStep・KindWorkflowRunEnd、#210）。
+const (
+	// 手の結果: ok（apply・task・verify の済み）、sent（action を送った）、
+	// satisfied（wait・require が満たされた）、timed_out（wait・require・gate の
+	// 時間切れ）、failed（手の失敗）、approved・rejected（gate）。
+	ResultSent      = "sent"
+	ResultSatisfied = "satisfied"
+	ResultTimedOut  = "timed_out"
+	ResultApproved  = "approved"
+	ResultRejected  = "rejected"
+	// run の終わり。
+	ResultDone      = "done"
+	ResultHalted    = "halted"
+	ResultCancelled = "cancelled"
 )
 
 // Result の値（KindApply・KindPrune）。
@@ -155,7 +185,42 @@ type Record struct {
 	Cause  string   `json:"cause,omitempty"`
 	Result string   `json:"result,omitempty"`
 	Error  string   `json:"error,omitempty"`
-	Detail string   `json:"detail,omitempty"`
+	// Stage・Target・Step・StepKind・Action・Args・Elapsed は Workflow の手の記録
+	// （#210）。Workflow の手から出た resource.apply にも Workflow・RunID・Stage・
+	// Target・Step を付ける（どの run のどの手の Apply か）。
+	Stage    string            `json:"stage,omitempty"`
+	Target   string            `json:"target,omitempty"`
+	Step     int               `json:"step,omitempty"`
+	StepKind string            `json:"step_kind,omitempty"`
+	Action   string            `json:"action,omitempty"`
+	Args     map[string]string `json:"args,omitempty"`
+	Elapsed  string            `json:"elapsed,omitempty"`
+	Detail   string            `json:"detail,omitempty"`
+}
+
+// StepRef は Workflow の手（#210）：その手から出た Apply の記録に付ける。
+type StepRef struct {
+	Workflow, RunID, Stage, Target string
+	// Step は手の番号（1 から）。
+	Step int
+}
+
+type stepKey struct{}
+
+// WithStep は ctx の Apply が Workflow の手 ref から出たことを示す（#210）。
+func WithStep(ctx context.Context, ref StepRef) context.Context {
+	return context.WithValue(ctx, stepKey{}, ref)
+}
+
+// StepFrom は ctx に付いた Workflow の手を返す。
+func StepFrom(ctx context.Context) (StepRef, bool) {
+	ref, ok := ctx.Value(stepKey{}).(StepRef)
+	return ref, ok
+}
+
+// Tag は rec に ref（Workflow・run・手の位置）を書く。
+func (ref StepRef) Tag(rec *Record) {
+	rec.Workflow, rec.RunID, rec.Stage, rec.Target, rec.Step = ref.Workflow, ref.RunID, ref.Stage, ref.Target, ref.Step
 }
 
 // Log は1つのファイル（回したあとは続きのファイル）への append-only ログ。

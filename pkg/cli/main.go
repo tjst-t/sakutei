@@ -161,6 +161,7 @@ func Main(opts ...Option) {
 //	--shard-id <id>      fencing holder ID of this shard
 //	--task-store <f>     S2 store of strategy: task progress phases (§6.2)
 //	--workflow-store <f> S2 store of the Workflows' progress (§6.3)
+//	--workflow-observe-only  read --workflow-store only: never advance a Workflow (another daemon does, #210)
 //	--audit-log <f>      S4 audit log (append-only) of approvals and gate timeouts (§6.4) and planned_change (§14.5)
 //	--approval-listen <addr>  serve the approval gate API (§6.4)
 //	--metrics-listen <addr>   serve the convergence state on /metrics (Prometheus text format, #54)
@@ -274,7 +275,12 @@ func runDaemon() {
 		"#52: how long a phased Task stopped inside its critical section waits for `sakutei task approve` before it halts (default 24h)")
 	// #42: 最小 Workflow の進行位置（S2）・S4 監査・承認 API（§6.3 / §6.4）。
 	workflowStore := fs.String("workflow-store", "",
-		"S2 store file of the Workflows' progress (§6.3); empty=no Workflow advances (their targets are held)")
+		"S2 store file of the Workflows' progress (§6.3); empty=this daemon does not advance the Workflows (another process does; their targets are held until done_when is observed, #209/#210)")
+	// #210: a daemon that does not advance the Workflows (alert-only, an
+	// observer beside the one that advances) reads the store as a one-shot
+	// reconcile does: the targets of a done Workflow converge as declared.
+	workflowObserveOnly := fs.Bool("workflow-observe-only", false,
+		"#210: read --workflow-store only: never advance a Workflow nor write the store nor take its advance lock (another daemon advances them); the targets of a done Workflow converge as declared")
 	auditLog := fs.String("audit-log", "",
 		"S4 audit log file (append-only, hash-chained JSON lines) of every Apply and prune (#187), gate approvals, rejections and timeouts (§6.4), freezes (§14.3), and planned_change declarations, openings and lane executions (§14.5; needed by a cooling-off)")
 	auditSink := addAuditSinkFlags(fs)
@@ -564,6 +570,11 @@ func runDaemon() {
 	if *workflowStore != "" {
 		cfg.WorkflowStore = workflow.NewFileStore(*workflowStore)
 	}
+	if *workflowObserveOnly && cfg.WorkflowStore == nil {
+		fmt.Fprintln(os.Stderr, "sakutei: --workflow-observe-only requires --workflow-store (the store it reads)")
+		os.Exit(1)
+	}
+	cfg.WorkflowObserveOnly = *workflowObserveOnly
 	cfg.Audit = auditLg
 	if *approvalListen != "" {
 		if cfg.WorkflowStore == nil || cfg.Audit == nil {

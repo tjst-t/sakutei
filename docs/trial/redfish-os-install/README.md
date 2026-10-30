@@ -205,11 +205,33 @@ workflows:
   目印が違う・無い間も待ち、どちらも `timeout`（10m）で halt（手順 8 の CD を抜くは施さない）。「まだ起動していない」と「壊れた」は観測からは見分けられないので、timeout は入れた OS が起動して sshd が答えるまでの時間より十分長くする。
 - `boot_once` の `target: Cd` は BMC の `@Redfish.AllowableValues` にある値でなければならない（送る前に確かめ、無ければ halt）。
 
+## BMC の注意（Workflow で OS を入れるときの一般的な事実）
+
+BMC と機種によって振る舞いが違う。Workflow を書くときは次の 2 つを前提にしておく。
+
+- **ゲストの中からの再起動で、また CD から起動して導入が繰り返されることがある。** 起動先の上書き（Once）が再起動のどこで使い切られるかは
+  BMC によって違い、インストーラが終わりに OS の中から再起動すると、上書きが残っていたり CD が差さったままだったりで、もう一度 CD から
+  起動して導入をやり直す BMC がある。導入の終わりは**再起動でなく電源 Off にし**（応答ファイルでインストーラに電源を切らせる。上の例の
+  手順 5）、**Off を `wait` で待ってから `apply` で On にする**形を勧める（手順 6）。CD は On の前か、入れた OS を観測したあとに抜く（手順 8）。
+- **導入中の GracefulRestart は無視されることがある。** GracefulRestart は OS に頼んで再起動させる操作なので、インストーラや起動途中の OS
+  （ACPI の電源ボタンを扱わない）では BMC が受け付けても何も起きないことがある。そのため `reset`（既定 GracefulRestart）のあとの `wait` には
+  必ず `timeout` を書き、**時間切れの扱いを決めておく**：halt して人が見る（既定、`on_failure: halt`）か、ForceRestart（`args: { type: ForceRestart }`、
+  破壊的として予算に数える）や電源の操作（`apply: { power: "Off" }` → Off を待つ → `apply: { power: "On" }`）に切り替える手順を書く。電源の状態が
+  分からないまま再起動を重ねない（一度きりの操作は二度送らない、#139）。
+
 ## 回し方
 
 Workflow を進めるのは**常駐の sakutei だけ**（`plan`・`reconcile` は Workflow を進めない）。進み具合は `--workflow-store`（S2）に残るので、必ず指定する。同じ store を 2 つの常駐に渡しても、進めるのは store の排他のロック（`wf.json.advance.lock`）を取った 1 つだけ（#209）。
 
 導入が済んだあとは、一回性の `reconcile` でも node1 と CD を宣言どおりに保てる（#209）。`--workflow-store wf.json` を渡せば読むだけに使い、done の Workflow の対象をふつうのリソースとして戻す。渡さなくても、intent の `done_when`（入れた OS の目印）が ssh で観測できれば済んだと見て戻す。目印が見えない・届かない間は「Workflow に任せる」として触らず、理由（`progress unknown (no --workflow-store, and done_when … is not observed on guest-os/node1)` など）を出す。halt した run の対象は、`sakutei workflow cancel` で片づけるまで触らない（理由は `status`・`plan` と level の Event `WorkflowTargetHeld`）。
+
+Workflow を進めない常駐（監視だけの alert-only など）を並べるときは、同じ store を `--workflow-store wf.json --workflow-observe-only` で読むだけに渡す（#210）。
+store を渡さない常駐・読むだけの常駐・alert-only の常駐は、Workflow を誤りにせず「別の処理が進める」として扱い、level の Event `WorkflowAdvancedElsewhere` を最初の周に
+1 回だけ出し、`sakutei status --daemon-status` に 1 行（`注意: Workflow は別の処理が進める（§6.3）: …`）出す。進めるロックは取らないので、進める常駐の邪魔をしない。
+
+`--audit-log` を渡すと、導入の run が監査の鎖に残る（#210、§26.3）：`workflow.run.start`（Workflow の名前・run の id・起こした理由）、手ごとの `workflow.step`
+（`boot_once`・`reset` は op と args、`wait` は満たしたか時間切れかと、かかった時間）、`workflow.run.end`（done・halted・cancelled と理由）。手から出た
+`resource.apply`（CD を差す・電源を入れる）には run の id と手の番号が付く。`sakutei audit verify --audit-log audit.jsonl` で鎖が切れていないことを確かめられる。
 
 ```sh
 W=/tmp/sakutei-os

@@ -53,10 +53,19 @@ func Decide(ctx context.Context, store Store, log *audit.Log, workflow, gate str
 			kind = audit.KindGateRejected
 			detail = fmt.Sprintf("stage %s rejected; workflow halted", gate)
 		}
-		return log.Append(audit.Record{
+		if err := log.Append(audit.Record{
 			Time: now, Kind: kind, Workflow: workflow, RunID: run.RunID, Gate: gate,
 			Actor: a.Approver, Roles: a.Roles, Signature: a.Signature, Detail: detail,
-		})
+		}); err != nil || a.Decision != DecisionReject {
+			return err
+		}
+		// #210: a rejection halts the run — its gate step and the run's end.
+		if err := log.Append(audit.Record{Time: now, Kind: audit.KindWorkflowStep, Workflow: workflow, RunID: run.RunID,
+			Stage: gate, StepKind: "gate", Result: audit.ResultRejected, Actor: a.Approver, Detail: detail}); err != nil {
+			return err
+		}
+		return log.Append(audit.Record{Time: now, Kind: audit.KindWorkflowRunEnd, Workflow: workflow, RunID: run.RunID,
+			Result: audit.ResultHalted, Actor: a.Approver, Detail: fmt.Sprintf("gate %s rejected by %s", gate, a.Approver)})
 	})
 }
 

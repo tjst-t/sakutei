@@ -672,6 +672,9 @@ func writeDaemonPlacement(sb *strings.Builder, h DaemonHealth) {
 	if h.Freeze != nil {
 		writeFreeze(sb, *h.Freeze, "  ")
 	}
+	if h.WorkflowsElsewhere != "" {
+		fmt.Fprintf(sb, "  注意: Workflow は別の処理が進める（§6.3）: %s\n", h.WorkflowsElsewhere)
+	}
 	if h.RuntimeChanged != "" {
 		fmt.Fprintf(sb, "  警告: 起動したあとに intent の runtime: が変わった — 起動したときの値で回っている。起こし直すと取り込む（§26.7）: %s\n", h.RuntimeChanged)
 	}

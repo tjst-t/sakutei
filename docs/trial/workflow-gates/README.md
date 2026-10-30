@@ -54,6 +54,7 @@ docs/trial/workflow-gates/run.sh            # 作業ディレクトリは /tmp/s
 | 10 | 不変条件（min_active）を破る手順には進まず、現実が戻れば進む（level-triggered） | §6.3 invariant |
 | 11 | `sakutei workflow cancel` で run を消すと、次の周に最初のステージからやり直す（Workflow に `done_when` を書き、終わりの姿が観測で満たされていれば、やり直さずに done と書く、#209） | §6.3（v1.5 の実装） |
 | 12 | done になれば対象は収束に戻る（手でずらすと直す）。一回性の `sakutei reconcile --workflow-store wf.json`（読むだけ）でも done の対象を宣言どおりに戻す（#209） | §6.3 |
+| 13 | run の始まり（`workflow.run.start`）・手ごと（`workflow.step`。ゲートの承認・却下・timeout は手の種類 `gate`）・終わり（`workflow.run.end`。done・halted・cancelled と理由）が名前と run の id つきで S4 に残り、手から出た `resource.apply` に run の id と手の番号が付く。`sakutei audit verify` が通る（#210）。`--workflow-store` を渡さない・`--workflow-observe-only` の常駐は誤りを出さず、`WorkflowAdvancedElsewhere` を 1 回と status の 1 行だけ出す | §6.3・§26.3 |
 
 ## 結果（2026-10-23、run.sh の出力の抜粋）
 

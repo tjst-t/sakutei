@@ -157,10 +157,21 @@ func runWorkflow(args []string) {
 			os.Exit(1)
 		}
 		if *auditLog != "" {
-			if err := auditSink.mustOpen("sakutei workflow "+verb, *auditLog).Append(audit.Record{Kind: audit.KindWorkflowCancelled,
-				Workflow: run.Workflow, RunID: run.RunID, Detail: fmt.Sprintf("cancelled at phase %s", run.Phase)}); err != nil {
-				fmt.Fprintf(os.Stderr, "sakutei workflow cancel: %v\n", err)
-				os.Exit(1)
+			// #210: the cancel, and the end of the run it removes when the run
+			// had not ended (a halted or done run's end is already recorded).
+			log := auditSink.mustOpen("sakutei workflow "+verb, *auditLog)
+			recs := []audit.Record{{Kind: audit.KindWorkflowCancelled, Workflow: run.Workflow, RunID: run.RunID,
+				Detail: fmt.Sprintf("cancelled at phase %s", run.Phase)}}
+			if run.Phase != workflow.PhaseHalted && run.Phase != workflow.PhaseDone {
+				recs = append(recs, audit.Record{Kind: audit.KindWorkflowRunEnd, Workflow: run.Workflow, RunID: run.RunID,
+					Result: audit.ResultCancelled, Detail: fmt.Sprintf("cancelled by a person at phase %s (stage %d target %d step %d)",
+						run.Phase, run.Stage, run.Target, run.Step)})
+			}
+			for _, rec := range recs {
+				if err := log.Append(rec); err != nil {
+					fmt.Fprintf(os.Stderr, "sakutei workflow cancel: %v\n", err)
+					os.Exit(1)
+				}
 			}
 		}
 		fmt.Fprintf(os.Stdout, "cancelled run %s of workflow %s (was %s)\n", run.RunID, run.Workflow, run.Phase)

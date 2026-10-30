@@ -127,6 +127,13 @@ const (
 	// attrs の workflow と stage（止まった理由・分からない理由）。持たなくなった周
 	// （cancel・resume・done_when が満たされた）に resolved。
 	EventWorkflowTargetHeld EventKind = "WorkflowTargetHeld"
+	// EventWorkflowAdvancedElsewhere はこの常駐が Workflow を進めず、別の処理（store の
+	// 進めるロックを取った常駐）に任せていること（level、§6.3、Backlog #210）: store を
+	// 渡されていない・読むだけ（--workflow-observe-only）・alert-only・ほかの処理が
+	// ロックを持つ。誤りではない（info）。attrs の workflow に Workflow の名前（, で
+	// 区切る）、reason に理由。続く間は最初の周に 1 回だけ出し、進めるようになった周
+	// （か Workflow が無くなった周）に resolved。
+	EventWorkflowAdvancedElsewhere EventKind = "WorkflowAdvancedElsewhere"
 )
 
 // IsLevel は k が level（継続状態）の Event かを返す（§22.3）。収束失敗・ずれ・
@@ -169,7 +176,10 @@ func (k EventKind) IsLevel() bool {
 		EventFrozen,
 		// Backlog #209: a Workflow target held for a halt (or unknown
 		// progress) stays held until a person cancels or resumes the run.
-		EventWorkflowTargetHeld:
+		EventWorkflowTargetHeld,
+		// Backlog #210: a daemon that does not advance the Workflows lasts as
+		// long as its role (its flags, its remediation mode).
+		EventWorkflowAdvancedElsewhere:
 		return true
 	}
 	return false

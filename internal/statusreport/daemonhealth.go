@@ -83,6 +83,11 @@ type DaemonHealth struct {
 	// ときは空。
 	RuntimeChanged string `json:"runtime_changed,omitempty"`
 
+	// WorkflowsElsewhere はこのデーモンが Workflow を進めず、別の処理に任せている
+	// こと（#210、§6.3）の 1 行: どの Workflow を・なぜ（store が無い・読むだけ・
+	// alert-only・ほかの処理が進めるロックを持つ）。進めているときは空。
+	WorkflowsElsewhere string `json:"workflows_advanced_elsewhere,omitempty"`
+
 	// Freeze は効いている global freeze（§14.3、#184）: 入口（flag・command）・
 	// 誰が・理由・始まり・期限。最後の周に効いていたときだけ。
 	Freeze *freeze.Freeze `json:"freeze,omitempty"`

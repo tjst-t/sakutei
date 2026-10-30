@@ -230,7 +230,11 @@ func (r *wfRig) audit() []audit.Record {
 	}
 	var out []audit.Record
 	for _, rec := range recs {
-		if rec.Kind != audit.KindApply && rec.Kind != audit.KindPrune {
+		// #210: the Workflow's run and step records are checked by their own
+		// tests (workflow_audit_test.go); these see the gates and cancels.
+		switch rec.Kind {
+		case audit.KindApply, audit.KindPrune, audit.KindWorkflowRunStart, audit.KindWorkflowStep, audit.KindWorkflowRunEnd:
+		default:
 			out = append(out, rec)
 		}
 	}
@@ -644,8 +648,9 @@ func TestWorkflowWithoutStoreHoldsTargets(t *testing.T) {
 	r.d = r.newDaemon(false)
 	for i := 0; i < 2; i++ {
 		res := r.cycle()
-		if !hasEvent(res, workflow.EventError, "no workflow store") {
-			t.Fatalf("expected a no-store event, got %v", res.WorkflowEvents)
+		// #210: not an error — the Workflows are left to another process.
+		if !hasEvent(res, workflow.EventElsewhere, "no workflow store") || hasEvent(res, workflow.EventError, "") {
+			t.Fatalf("expected a no-store WorkflowAdvancedElsewhere event (and no error), got %v", res.WorkflowEvents)
 		}
 		if len(res.WorkflowHeld) != 3 {
 			t.Fatalf("WorkflowHeld = %v, want n1..n3", res.WorkflowHeld)

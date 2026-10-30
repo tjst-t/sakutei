@@ -69,6 +69,8 @@ func (a *Audited) Execute(ctx context.Context, p provider.Provider, plan core.Pl
 		kind = audit.KindPrune
 	}
 	approval, _ := ctx.Value(approvalKey).(Approval)
+	// #210: an Apply from a Workflow step carries its run and step.
+	step, fromStep := audit.StepFrom(ctx)
 	for _, op := range plan.Ops {
 		rec := audit.Record{
 			Kind:     kind,
@@ -86,6 +88,9 @@ func (a *Audited) Execute(ctx context.Context, p provider.Provider, plan core.Pl
 		}
 		if approval != nil {
 			rec.PlannedChange, rec.Actor = approval(op)
+		}
+		if fromStep {
+			step.Tag(&rec)
 		}
 		if aerr := a.Log.Append(rec); aerr != nil && a.ErrOut != nil {
 			fmt.Fprintf(a.ErrOut, "sakutei: error: the %s of %s cannot be recorded in the S4 audit log: %v\n", kind, op.Target, aerr)

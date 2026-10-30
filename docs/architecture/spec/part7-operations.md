@@ -466,6 +466,11 @@ Event を永続化（S4・§4）し、**append-only + 連鎖ハッシュ**で改
     （値は書かない。秘密が混ざらないように）・cause（§10、帰属）・結果（`ok` / `failed` と理由）・planned_change のレーンで通った
     Op はその宣言と、宣言を承認した人。記録は Apply のあとに書く（結果を書くため）。書けなかったときは知らせるが、Apply の結果は
     変えない（起きた変更を失敗と偽ると同じ変更を繰り返すだけになる）。
+  - **Workflow の記録（v3.72、#210）**：Workflow の run の始まり（`workflow.run.start`）・手ごと（`workflow.step`。action の
+    op と args、待ちの手の満たした／時間切れとかかった時間）・終わり（`workflow.run.end`。done・halted・cancelled と理由）を、
+    Workflow の名前と run の id つきで残す。Workflow の手から出た `resource.apply` には run の id と手の番号（stage・target）が
+    付き、「どの Workflow のどの手で何をしたか」を監査だけから追える（形は §6.3）。同じ鎖に書くので `sakutei audit verify` で
+    たどれる。
   - **鎖**：各行は通し番号 `seq`（ファイルをまたいで 1 から）と、前の行（書かれたとおりのバイト列）の SHA-256 である `prev` を
     持つ。行の書き換え・抜き取り・差し込みは次の行の `prev` か `seq` で分かる。`sakutei audit verify` がたどり、見つければ終了コード
     3（`--json` でも出す）。鎖より前の版で書いた先頭の行は legacy として受け、鎖が始まったあとの `seq` の無い行は差し込みとして
