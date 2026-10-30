@@ -3989,7 +3989,7 @@
       "number": 171,
       "kind": "bug",
       "title": "受け入れテスト TestWorkflowInvariantBrokenAfterStepHalts が CI でまれに落ちる（halt せず次の段の承認待ちへ進む）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4004,7 +4004,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T09:41:45.283Z",
-      "updatedAt": "2026-10-30T13:35:32.586Z",
+      "updatedAt": "2026-10-30T13:35:53.691Z",
       "closedAt": null,
       "extra": {}
     },
