@@ -4,6 +4,10 @@ Sakutei のリリースごとの変更点。設計書の改訂は `docs/architec
 
 ## 未リリース
 
+## v2.11.0（2026-10-30）
+
+s3-bucket に Object Lock（作るときの有効化と既定の保持の mode・期間）を足し、同じ intent の中で常駐の役ごとに `runtime:` の値を宣言できるようにした版。設計書は v3.73 → v3.75（`docs/architecture/CHANGELOG-v3.74.md`・`v3.75.md`）。
+
 ### 追加
 
 - **s3-bucket の Object Lock**（#205）：欄 `object_lock`（`{"enable_on_create": true, "mode": "COMPLIANCE", "years": 7}`）で、作るときの有効化と、バケットの既定の保持（GOVERNANCE・COMPLIANCE、Days・Years）を宣言で持てるようにした。endpoint の設定の `fields` に `object_lock` を書いたときだけ扱う。作るときの有効化は書いたときだけ送り、既定の保持は PutObjectLockConfiguration だけで掛け（versioning は読まない）、期間は Days にそろえて比べる（years は 365 倍）。既にあるバケットの保持の設定を変える Apply（有効にする・mode を変える・延ばす・短くする・外す）は向きによらず予算に数え、承認ゲート（planned_change のレーン kind `update`）を通す。実装が受けない mode・既にあるバケットに有効にできない実装・API を持たない実装、既にあるバケットと食い違う宣言は理由つきで止める。観測用の資格に `s3:GetBucketObjectLockConfiguration` が要る（`fields` に書いたときだけ）。SeaweedFS 4.51・MinIO の統合試験（`make integration-s3`）と、作るときの有効化が無い偽サーバの受け入れテストで確かめた。設計書 v3.74。
