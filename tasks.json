@@ -4478,7 +4478,7 @@
       "number": 190,
       "kind": "task",
       "title": "本番の構成の手引き（鍵・監査・秘密・TLS・freeze）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "m7",
       "dependsOn": [
         "api-provider-proxmox-vm-redfish-ldap-pos",
@@ -4493,7 +4493,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-28T13:07:46.058Z",
+      "updatedAt": "2026-10-30T11:29:03.542Z",
       "closedAt": null,
       "extra": {}
     },
