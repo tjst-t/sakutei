@@ -4954,7 +4954,7 @@
       "number": 214,
       "kind": "task",
       "title": "nftables：confirm の先に別の resource の観測（observe:）と確かめの関数（check:）を書く",
-      "status": "in-progress",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4966,7 +4966,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-30T17:03:20.300Z",
-      "updatedAt": "2026-10-30T17:03:31.159Z",
+      "updatedAt": "2026-10-30T17:35:44.906Z",
       "closedAt": null,
       "extra": {}
     }
