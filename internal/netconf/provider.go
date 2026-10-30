@@ -74,6 +74,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/confirmafter"
 	"github.com/tjst-t/sakutei/v2/internal/remote"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
@@ -118,8 +119,7 @@ type Provider struct {
 	apply *ApplyConfig
 
 	// conf は変えたあとの確かめ（observe:・check:）のコアの口（#200）。
-	confMu sync.RWMutex
-	conf   provider.Confirmer
+	conf confirmafter.Holder
 }
 
 var (

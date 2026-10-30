@@ -103,6 +103,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/confirmafter"
 	"github.com/tjst-t/sakutei/v2/internal/filelock"
 	"github.com/tjst-t/sakutei/v2/internal/nftrule"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -199,6 +200,8 @@ type Provider struct {
 	// scope は List・BulkObserve が返す ID に付ける固定の scope
 	// (WithScope, Backlog #106, Option A)。空（root scope）が既定。
 	scope core.Scope
+	// conf は confirm の observe:・check: の名前を確かめるコアの口（Backlog #214）。
+	conf confirmafter.Holder
 }
 
 // Option configures optional Provider / LiveProvider behavior at construction
@@ -551,8 +554,12 @@ func (p *Provider) ValidateIntent(localID string, fields map[string]string) erro
 	}
 	// confirm は live の守りの宣言（Backlog #179）。intent を対象によらず使える
 	// ように file も同じ形を断る（file の Apply は守りを通さないので使わない）。
-	return validateConfirm(fields, localID, false)
+	return validateConfirm(fields, localID, false, p.conf.Confirmer())
 }
+
+// UseConfirmer は読み込んだ intent の Confirmer を受ける（provider.ConfirmUser、
+// Backlog #214。file は confirm の observe: と check: の名前を確かめるだけ）。
+func (p *Provider) UseConfirmer(c provider.Confirmer) { p.conf.UseConfirmer(c) }
 
 // RefinePlan は priority の差分のうち、数に直すと観測と同じもの（"filter" と
 // "0"）と、rules の差分のうち比べる形（空白・カウンタ・無名の集合のまとめ方、
@@ -570,6 +577,7 @@ var (
 	_ provider.BulkObserver    = (*Provider)(nil)
 	_ provider.IntentValidator = (*Provider)(nil)
 	_ provider.PlanRefiner     = (*Provider)(nil)
+	_ provider.ConfirmUser     = (*Provider)(nil)
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

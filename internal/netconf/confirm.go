@@ -53,11 +53,11 @@ package netconf
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/confirmafter"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
@@ -68,8 +68,8 @@ const FieldConfirm = "confirm"
 // 確かめる先の種類。
 const (
 	ConfirmSelf    = "self"
-	ConfirmObserve = "observe"
-	ConfirmCheck   = "check"
+	ConfirmObserve = confirmafter.Observe
+	ConfirmCheck   = confirmafter.Check
 )
 
 // confirmAfter は「変えたあとだけ確かめる」印（observe: と check: はいつも）。
@@ -85,31 +85,25 @@ type ConfirmTarget struct {
 	Check string
 }
 
+// after は observe: と check: の先を共通の口（internal/confirmafter、#214）の形にする。
+func (t ConfirmTarget) after() confirmafter.Target {
+	return confirmafter.Target{Kind: t.Kind, ID: t.ID, Expect: t.Expect, Check: t.Check}
+}
+
 // String は宣言に書く形（expect は欄の名前の順の JSON）。
 func (t ConfirmTarget) String() string {
-	switch t.Kind {
-	case ConfirmObserve:
-		s := "observe:" + t.ID.String()
-		if len(t.Expect) > 0 {
-			var b strings.Builder
-			enc := json.NewEncoder(&b)
-			enc.SetEscapeHTML(false)
-			_ = enc.Encode(t.Expect)
-			s += " expect:" + strings.TrimSpace(b.String())
-		}
-		return s
-	case ConfirmCheck:
-		return "check:" + t.Check
+	if t.Kind == ConfirmSelf {
+		return ConfirmSelf
 	}
-	return ConfirmSelf
+	return t.after().String()
 }
 
 // label は知らせに出す短い形（expect の値は出さない）。
 func (t ConfirmTarget) label() string {
-	if t.Kind == ConfirmObserve {
-		return "observe:" + t.ID.String()
+	if t.Kind == ConfirmSelf {
+		return ConfirmSelf
 	}
-	return t.String()
+	return t.after().Label()
 }
 
 // ParseConfirm は confirm の宣言を読む。空なら nil（self だけ）。
@@ -125,18 +119,14 @@ func ParseConfirm(s string) ([]ConfirmTarget, error) {
 		after := strings.HasPrefix(rest, confirmAfter)
 		rest = strings.TrimLeft(strings.TrimPrefix(rest, confirmAfter), " \t\r\n")
 		var t ConfirmTarget
-		var err error
+		at, r, ok, err := confirmafter.Parse(rest, nextTarget)
 		switch {
-		case strings.HasPrefix(rest, "observe:"):
-			t, rest, err = parseObserve(strings.TrimPrefix(rest, "observe:"))
-		case strings.HasPrefix(rest, "check:"):
-			name, r := token(strings.TrimPrefix(rest, "check:"))
-			if err = provider.ValidConfirmCheckName(name); err != nil {
-				err = fmt.Errorf("check:%s: %v", name, err)
-			}
-			t, rest = ConfirmTarget{Kind: ConfirmCheck, Check: name}, r
+		case err != nil:
+			return nil, err
+		case ok:
+			t, rest = ConfirmTarget{Kind: at.Kind, ID: at.ID, Expect: at.Expect, Check: at.Check}, r
 		default:
-			name, r := token(rest)
+			name, r := confirmafter.Token(rest)
 			if name != ConfirmSelf {
 				return nil, fmt.Errorf("%q: want self, observe:<provider>/<scope>/<id> [expect:{…}] or check:<name>, separated by commas", name)
 			}
@@ -144,9 +134,6 @@ func ParseConfirm(s string) ([]ConfirmTarget, error) {
 				return nil, fmt.Errorf("after:self: self is the device itself over a new connection, confirmed after every change anyway; observe: and check: are always confirmed after the change, after: is not needed")
 			}
 			t, rest = ConfirmTarget{Kind: ConfirmSelf}, r
-		}
-		if err != nil {
-			return nil, err
 		}
 		key := t.String()
 		if seen[key] {
@@ -178,87 +165,13 @@ func hasSelf(ts []ConfirmTarget) bool {
 	return false
 }
 
-// token は次の「,」か空白までを切り出す。
-func token(s string) (string, string) {
-	i := strings.IndexAny(s, ", \t\r\n")
-	if i < 0 {
-		return s, ""
-	}
-	return s[:i], s[i:]
-}
-
-// parseObserve は observe: の後ろ（ID と、あれば expect:）を読む。
-func parseObserve(s string) (ConfirmTarget, string, error) {
-	i := strings.IndexAny(s, " \t\r\n")
-	raw, rest := s, ""
-	if i >= 0 {
-		raw, rest = s[:i], s[i:]
-	}
-	// The id ends at a blank, or at a comma followed by the next target (a
-	// scope's own commas are followed by a label).
-	for j := 0; j < len(raw); j++ {
-		if raw[j] == ',' && nextTarget(raw[j+1:]) {
-			raw, rest = raw[:j], raw[j:]+rest
-			break
-		}
-	}
-	id, err := parseObserveID(raw)
-	if err != nil {
-		return ConfirmTarget{}, "", err
-	}
-	t := ConfirmTarget{Kind: ConfirmObserve, ID: id}
-	r := strings.TrimLeft(rest, " \t\r\n")
-	if !strings.HasPrefix(r, "expect:") {
-		return t, rest, nil
-	}
-	r = strings.TrimPrefix(r, "expect:")
-	dec := json.NewDecoder(strings.NewReader(r))
-	var raw2 map[string]any
-	if err := dec.Decode(&raw2); err != nil || raw2 == nil {
-		return ConfirmTarget{}, "", fmt.Errorf("observe:%s: expect: want a JSON object of field → value such as {\"config\":\"…\"}", id)
-	}
-	t.Expect = map[string]string{}
-	for k, v := range raw2 {
-		sv, ok := v.(string)
-		if !ok {
-			return ConfirmTarget{}, "", fmt.Errorf("observe:%s: expect: field %q: want a string value", id, k)
-		}
-		t.Expect[k] = sv
-	}
-	if len(t.Expect) == 0 {
-		return ConfirmTarget{}, "", fmt.Errorf("observe:%s: expect: {} expects nothing (leave expect: out to confirm only that it is observed present)", id)
-	}
-	return t, r[dec.InputOffset():], nil
-}
-
 // nextTarget は s が次の確かめる先で始まるか（空も）。
 func nextTarget(s string) bool {
-	if s == "" {
+	if s == "" || confirmafter.Starts(s) || strings.HasPrefix(s, confirmAfter) {
 		return true
 	}
-	if tok, _ := token(s); tok == ConfirmSelf {
-		return true
-	}
-	for _, p := range []string{confirmAfter, "observe:", "check:"} {
-		if strings.HasPrefix(s, p) {
-			return true
-		}
-	}
-	return false
-}
-
-// parseObserveID は "<provider>/<scope>/<id>" を読む。
-func parseObserveID(s string) (core.ID, error) {
-	prov, rest, ok1 := strings.Cut(s, "/")
-	scope, local, ok2 := strings.Cut(rest, "/")
-	if !ok1 || !ok2 || prov == "" || local == "" {
-		return core.ID{}, fmt.Errorf("observe:%s: want observe:<provider>/<scope>/<id> (the scope may be empty: netconf//sw2/if-uplink)", s)
-	}
-	sc, err := core.ParseScope(scope)
-	if err != nil {
-		return core.ID{}, fmt.Errorf("observe:%s: scope: %v", s, err)
-	}
-	return core.NewID(prov, sc, local), nil
+	tok, _ := confirmafter.Token(s)
+	return tok == ConfirmSelf
 }
 
 // validateConfirmField は読み込みの時点の confirm の確かめ（ValidateIntent
@@ -268,43 +181,18 @@ func (p *Provider) validateConfirmField(localID string, fields map[string]string
 	if err != nil {
 		return fmt.Errorf("%s %q: confirm: %w", Name, localID, err)
 	}
-	c := p.confirmer()
-	for _, t := range ts {
-		if t.Kind == ConfirmSelf {
-			continue
-		}
-		if c == nil {
-			return fmt.Errorf("%s %q: confirm: %s: this run checks nothing after a change (no confirmer is given to the provider)", Name, localID, t.label())
-		}
-		switch t.Kind {
-		case ConfirmObserve:
-			if t.ID.Provider == Name && t.ID.Local == localID {
-				return fmt.Errorf("%s %q: confirm: %s is the resource itself (self reads it)", Name, localID, t.label())
-			}
-			if err := c.CheckObserve(t.ID, t.Expect); err != nil {
-				return fmt.Errorf("%s %q: confirm: %w", Name, localID, err)
-			}
-		case ConfirmCheck:
-			if !c.HasCheck(t.Check) {
-				return fmt.Errorf("%s %q: confirm: check:%s: no check function is registered under that name (cli.WithConfirmCheck, or the Checks of a network_policy realizer's Output)", Name, localID, t.Check)
-			}
-		}
+	var after []confirmafter.Target
+	for _, t := range afterTargets(ts) {
+		after = append(after, t.after())
+	}
+	if err := confirmafter.Validate(p.conf.Confirmer(), Name, localID, after); err != nil {
+		return fmt.Errorf("%s %q: confirm: %w", Name, localID, err)
 	}
 	return nil
 }
 
 // UseConfirmer は読み込んだ intent の Confirmer を受ける（provider.ConfirmUser）。
-func (p *Provider) UseConfirmer(c provider.Confirmer) {
-	p.confMu.Lock()
-	defer p.confMu.Unlock()
-	p.conf = c
-}
-
-func (p *Provider) confirmer() provider.Confirmer {
-	p.confMu.RLock()
-	defer p.confMu.RUnlock()
-	return p.conf
-}
+func (p *Provider) UseConfirmer(c provider.Confirmer) { p.conf.UseConfirmer(c) }
 
 // afterTargets は変えたあとだけ確かめる先（observe: と check:）。
 func afterTargets(ts []ConfirmTarget) []ConfirmTarget {
@@ -318,60 +206,16 @@ func afterTargets(ts []ConfirmTarget) []ConfirmTarget {
 }
 
 // afterChecks は observe: と check: を、それぞれ通るまで deadline の中で
-// 繰り返す。全部が通れば ""、そうでなければ通らなかった先と最後に見た理由。
-// 確かめは観測の文脈で（Confirmer が観測用の資格に切り替える）。
+// 繰り返す（confirmafter.Wait）。全部が通れば ""、そうでなければ通らなかった
+// 先と最後に見た理由。
 func (a *applyRun) afterChecks(ctx context.Context, deadline time.Time) string {
-	ts := afterTargets(a.confirm)
-	if len(ts) == 0 {
-		return ""
+	of := provider.ConfirmTarget{ID: a.target, Fields: a.fields}
+	var items []confirmafter.Item
+	for _, t := range afterTargets(a.confirm) {
+		items = append(items, confirmafter.Item{Target: t.after(), Of: of})
 	}
-	c := a.p.confirmer()
-	if c == nil {
-		return "no confirmer is given to the provider, so " + ts[0].label() + " cannot be checked"
-	}
-	target := provider.ConfirmTarget{ID: a.target, Fields: a.fields}
-	for _, t := range ts {
-		last := ""
-		for {
-			vctx, cancel := context.WithDeadline(ctx, deadline)
-			var err error
-			if t.Kind == ConfirmObserve {
-				err = c.Observe(vctx, t.ID, t.Expect)
-			} else {
-				err = c.Check(vctx, t.Check, target)
-			}
-			cut := vctx.Err() != nil
-			cancel()
-			if err == nil {
-				break
-			}
-			if !cut || last == "" {
-				last = err.Error()
-			}
-			wait := a.pollInterval()
-			if rest := time.Until(deadline); rest < wait {
-				wait = rest
-			}
-			if wait <= 0 || ctx.Err() != nil {
-				return t.label() + ": " + last
-			}
-			select {
-			case <-ctx.Done():
-				return t.label() + ": " + last
-			case <-time.After(wait):
-			}
-		}
-	}
-	return ""
+	return confirmafter.Wait(ctx, a.p.conf.Confirmer(), items, deadline, a.pollInterval())
 }
 
 // confirmFields は op の宣言の値（確かめの関数に渡す。confirm 自身は除く）。
-func confirmFields(op core.Op) map[string]string {
-	out := map[string]string{}
-	for _, f := range op.Fields {
-		if f.Field != FieldConfirm {
-			out[f.Field] = f.To
-		}
-	}
-	return out
-}
+func confirmFields(op core.Op) map[string]string { return confirmafter.Fields(op, FieldConfirm) }

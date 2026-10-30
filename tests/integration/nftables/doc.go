@@ -31,6 +31,10 @@
 // 確かめ・巻き戻しが効くこと、sh・nft を root で流せないこと、道具が表の外を断る
 // ことを確かめる（guardtool_integration_test.go）。
 //
+// confirm の先の別のリソースの観測（observe:、Backlog #214）は、決まった道具と
+// 観測用の利用者のコンテナで、変えたあとの読みが観測用の利用者の list だけなこと・
+// expect と違えば巻き戻ることを確かめる（confirm_check_integration_test.go）。
+//
 // 網の間の許可（network_policy:、Backlog #174）から展開した base chain を
 // namespace の nft に流し、reason の comment が読み戻しで drift にならないことを
 // 確かめる（netpolicy_integration_test.go）。

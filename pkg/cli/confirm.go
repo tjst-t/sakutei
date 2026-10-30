@@ -27,9 +27,11 @@ import (
 )
 
 // WithConfirmCheck は確かめの関数を名前で足す（#200）。confirm の先に
-// check:<name> と書いたリソース（今は netconf の部分木）は、変えたあと
-// （commit confirmed のあと、確定の前）に f が nil を返すまで、時間の上限の
-// 中で f を繰り返し呼び、nil にならなければ確定しない。何をどう読んで判定
+// check:<name> と書いたリソース（netconf の部分木と、#214 から nftables の
+// base chain）は、変えたあと（netconf は commit confirmed のあと確定の前、
+// nftables は流して到達の先に届いたあと巻き戻しを取り消す前）に f が nil を
+// 返すまで、時間の上限の中で f を繰り返し呼び、nil にならなければ確定しない
+// （nftables は元の規則に戻す）。何をどう読んで判定
 // するかは f が持つ（f の ctx は観測の文脈: 書き込み用の資格は使わない）。
 // 同じ名前を 2 度足すと起動のエラー。network_policy の realizer は Output の
 // Checks でも渡せる（名前はここのものと重ならないこと）。

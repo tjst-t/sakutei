@@ -156,6 +156,7 @@ base chain を作る・変える・消す Apply は、NETCONF の commit confirm
 3. 対象のホストの側に、`ruleset_rollback_timeout`（既定 30 秒）の後に写しを `nft -f` で流す仕掛けを置く（POSIX の sh で一時のディレクトリ `${TMPDIR:-/tmp}/sakutei-nft-rollback.*` に写しを置き、`setsid`・`nohup` で切り離して眠る。決まった道具を使うホストでは道具の `arm` が写しを自分で取り、root だけが読み書きできる状態のディレクトリに置いて、自分を切り離して起動し直して眠る。下の「決まった道具」）。**ホストの上で時間で動くので、Sakutei との接続が切れても、Sakutei が落ちても戻る。** 戻したときは `logger -t sakutei-nft-rollback` で syslog に残す。
 4. `nft -f -` で 1 つのトランザクションとして流す。
 5. **新しい接続**で、確かめる先の**すべて**に到達を確かめる。`self` は、離れたホストなら ssh の master に相乗りしない新しい ssh の接続（`ControlPath=none`）で `true` を走らせ、手元の live なら `ruleset_confirm_address` への新しい TCP の接続。上限の半分まで、まだ届いていない先を張り直す。すべてに届いたときだけ確かめられたとする。
+5b. すべての到達の先に届いたら、宣言の `observe:`・`check:`（Backlog #214、下の「別のリソースの観測と確かめの関数」）を、同じ上限の半分までに通るまで繰り返し確かめる。
 6. 確かめられたら仕掛けを取り消す（眠っている仕掛けを止め、写しを消す）。
 
 - 確かめられなければ仕掛けを取り消さず、上限（＋少しの余り）まで待って写しに戻ったことを待ち、Apply の失敗として知らせる:
@@ -194,6 +195,8 @@ providers:
 | `ssh://[user@]host[:port]` | 別の経路（別のアドレス・ポート）への新しい ssh の接続（`true` を走らせる）。鍵・known_hosts・タイムアウトはそのホストの remote の設定。user・port を書かなければそのホストの設定のまま。ホスト鍵はその経路の名前（`[host]:port`）で known_hosts と照らす。**手元の live には書けない**（ssh の設定が無い） |
 | `tcp://host:port` | Sakutei からその宛先への新しい TCP の接続 |
 | `after:` を前に付けた先（`after:ssh://…`・`after:tcp://…`） | **変えたあとだけ**確かめる（Backlog #192。下の「変える chain を通る経路の先」）。変える前に届かなくても止めないが、変えたあとはほかの先と同じに必ず届くことを確かめ、届かなければ巻き戻す。`self` には付けられない |
+| `observe:<provider>/<scope>/<id> [expect:{…}]` | 別のリソースの観測（Backlog #214、下の「別のリソースの観測と確かめの関数」）。**いつも変えたあとだけ** |
+| `check:<name>` | 名前で登録した確かめの関数（Backlog #214、同じ）。**いつも変えたあとだけ** |
 
 ```json
 {
@@ -224,6 +227,28 @@ providers:
   ```
   nftables: Apply: not changing base chain(s) fw1/inet/filter/forward: host fw1 cannot be reached over a new connection before the change (self: ...); the change would only be rolled back. Confirm targets: self, after:ssh://admin@198.51.100.20:2200 (after: marks a target confirmed only after the change, not before it)
   ```
+
+#### 別のリソースの観測と確かめの関数（`observe:`・`check:`、Backlog #214）
+
+境界の FW の規則を変えたあと、そのホストへの到達ではなく「転送の経路で向こう側に届くか」を確かめたいときは、`confirm` に netconf（[netconf.md](netconf.md) の「confirm の先」）と同じ書き方で次を書く。読み方・読み込みの時点の確かめ・繰り返し・時間の上限・知らせ方は netconf と共通（`internal/confirmafter`）:
+
+- **`observe:<provider>/<scope>/<id> [expect:{…}]`**：intent が宣言する別のリソースを、コアがその provider の Read で**観測用の資格のまま、ふだんの範囲で**読み直し、`expect:`（JSON の object、欄 → 値）の**欄の部分集合**が期待どおりになるまで繰り返す（比べ方はふだんの収束と同じ。nftables の `rules` なら正規形）。`expect:` を書かなければ、観測できて在ることだけを確かめる。scope は `site=lab` の形（無ければ空: `observe:probe//p1`）。ID の中に空白は書けない。intent が宣言しないリソース・ensure: absent のもの・比べない欄（computed・managed・secret）・変える chain そのものは読み込みで断る。
+- **`check:<name>`**：`pkg/cli.WithConfirmCheck(name, f)` か network_policy の realizer の `Output.Checks` で登録した関数を、nil を返すまで呼ぶ。関数には変えた chain の ID と宣言の値を渡し、ctx は観測の文脈（書き込み用の資格を使わない）。登録の無い名前は読み込みで断る。
+
+```json
+"confirm": "self, observe:nftables/site=lab/fw2/inet/filter/web expect:{\"rules\":\"tcp dport 80 accept\"}, check:forward-seen"
+```
+
+- どちらも**いつも変えたあとだけ**確かめる（`after:` の印は書いても書かなくても同じ。plan の `confirm` の行には印を付けずに出る）。流したあと、到達の先（`self`・`ssh://`・`tcp://`）に**すべて**届いてから、同じ上限（巻き戻しの上限の半分）の中で、書いた順に 1 つずつ通るまで繰り返す（間隔は上限の 1/20 を 100ms〜5s に収めたもの）。
+- **通らなければ仕掛けを取り消さず**、上限で元の規則に戻す（今の守りと同じ。巻き戻されたとして同じ差分の Apply を止め、一回性の `reconcile` は 4）。知らせに通らなかった先と最後に見た理由を出す:
+
+  ```
+  nftables: Apply: host fw was reached after changing base chain(s) fw/inet/sk/input, but the change was not confirmed within 5s (observe:nftables/site=lab/fw/inet/sk/web: rules not as expected (...)): the rollback armed on the host restored tables inet/sk as they were before, after 10s. Confirm targets: self, observe:nftables/site=lab/fw/inet/sk/web
+  ```
+
+- **到達の先が 1 つも無い confirm は読み込みで断る**（`observe:`・`check:` は管理の経路が開いていることを確かめないので、それだけでは締め出しの守りにならない）。「全部に `after:` の印」の決まりは到達の先だけで数える（`after:ssh://…, check:x` は断る）。
+- 同じホストの 1 つのトランザクションで複数の base chain を変えるときは、それぞれの宣言の `observe:`・`check:` をそれぞれの変更について確かめる。
+- file 版も同じ形と名前を読み込みで確かめる（file は守りを通さないので使わない）。
 
 ### 承認と予算（壊す変更）
 
@@ -499,6 +524,15 @@ $ make integration-nftables
 | another path declared and shut: rolled back although self is reached | 同じ `confirm` で 2222 を通さない宣言 → 前の確かめは通り、後の確かめで別の経路が届かない → 4 で「rolled back」とその先を名指し、table は前の段のまま、両方の経路が届く |
 | the minimal core was not touched | `mgmt` が最初から最後まで変わらない |
 
+別のリソースの観測（Backlog #214、`confirm_check_integration_test.go` の `TestNFTablesConfirmObserve`）：決まった道具の段と同じ作り（道具・観測用の利用者 `sakutei-ro`・sudoers は道具だけ）の別のコンテナで、sudo の記録をファイル（`Defaults logfile`・`loglinelen=0`）に残す。base chain `inet sk input` の `confirm` に、同じホストの regular chain `inet sk web`（宣言どおり `tcp dport 80 accept`）の観測を書く:
+
+| 段 | 内容 |
+| --- | --- |
+| the observed chain is there | `web` だけを宣言 → reconcile が 0 |
+| observed as expected: changed and confirmed | `confirm: self, observe:nftables/site=lab/fw/inet/sk/web expect:{"rules":"tcp dport 80 accept"}` → reconcile が 0 で上限を待たずに返り、policy drop。sudo の記録で、道具の `apply` から `disarm` までの間の読みが**観測用の利用者 `sakutei-ro` の道具の `list inet sk` だけ**（書き込み用の資格を使わない）で、少なくとも 1 度読んでいる。上限を過ぎても drop のまま |
+| observed not as expected: rolled back | expect を `tcp dport 8080 accept`（現実と違う）にし、ルールを足す → 4 で「rolled back」と `observe:…/web: rules not as expected` を名指し、table は前の段のまま、新しい接続で届く |
+| no reached target: refused on loading | `confirm: observe:…/web` だけ → plan が「no target is reached」で断り、table は変わらない |
+
 変える chain を通る経路の先（Backlog #192、`forward_integration_test.go` の `TestNFTablesConfirmAfterForward`）：lockout と同じイメージの FW のコンテナ（`net.ipv4.ip_forward=1`、2200 を手元の空いたポートに出す）の後ろに、sshd の入ったもう 1 つのコンテナ（behind、出さない）を置く。手元から FW の 2200 へ入った接続は、宣言する nat の base chain `inet sk prerouting`（`tcp dport 2200 dnat ip to <behind>:22`）で behind へ DNAT され、宣言した `inet sk forward`（policy drop・`ct state established,related accept ; tcp dport 22 accept`）を通って届く（戻りの masquerade は Sakutei の外の `ip keep`）。この経路は prerouting が現実にできるまで無い。確かめる先は `ssh://127.0.0.1:<2200 の手元のポート>`（known_hosts に behind のホスト鍵）:
 
 | 段 | 内容 |
@@ -537,9 +571,14 @@ $ make integration-nftables
 
 ### 結果
 
-nftables v1.0.9 で回した結果（全段 PASS、Backlog #192 の段を足して）:
+nftables v1.0.9 で回した結果（全段 PASS、Backlog #214 の段を足して）:
 
 ```
+--- PASS: TestNFTablesConfirmObserve (34.40s)
+    --- PASS: TestNFTablesConfirmObserve/the_observed_chain_is_there (1.78s)
+    --- PASS: TestNFTablesConfirmObserve/observed_as_expected:_changed_and_confirmed (16.01s)
+    --- PASS: TestNFTablesConfirmObserve/observed_not_as_expected:_rolled_back (13.57s)
+    --- PASS: TestNFTablesConfirmObserve/no_reached_target:_refused_on_loading (0.07s)
 --- PASS: TestNFTablesConfirmAfterForward (32.38s)
     --- PASS: TestNFTablesConfirmAfterForward/the_forward_chain_(policy_drop)_applied (0.91s)
     --- PASS: TestNFTablesConfirmAfterForward/the_forwarded_path_unmarked:_stopped_before_the_change (0.42s)

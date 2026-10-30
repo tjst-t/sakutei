@@ -75,6 +75,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/confirmafter"
 	"github.com/tjst-t/sakutei/v2/internal/nftrule"
 	"github.com/tjst-t/sakutei/v2/internal/remote"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
@@ -192,6 +193,9 @@ type LiveProvider struct {
 	scope  core.Scope
 	// rollbackAfter は時間切れの巻き戻しの上限（Backlog #173）。
 	rollbackAfter time.Duration
+	// conf は変えたあとの確かめ（confirm の observe:・check:）のコアの口
+	// （Backlog #214）。
+	conf confirmafter.Holder
 }
 
 // NewLive は live の Provider を作る。Tables が空なら error。
@@ -254,7 +258,12 @@ var (
 	_ provider.IntentValidator  = (*LiveProvider)(nil)
 	_ provider.PlanRefiner      = (*LiveProvider)(nil)
 	_ provider.ApprovalRequirer = (*LiveProvider)(nil)
+	_ provider.ConfirmUser      = (*LiveProvider)(nil)
 )
+
+// UseConfirmer は読み込んだ intent の Confirmer を受ける（provider.ConfirmUser、
+// Backlog #214）。
+func (p *LiveProvider) UseConfirmer(c provider.Confirmer) { p.conf.UseConfirmer(c) }
 
 // Read observes one chain.  table が無い・chain が無いのは absent、nft が
 // 走らない・出力が読めないのは unknown（TransientError）、管理しない table・
@@ -378,7 +387,7 @@ func (p *LiveProvider) ValidateIntent(localID string, fields map[string]string) 
 	if err := validateBase(ref.Family, fields, localID); err != nil {
 		return err
 	}
-	return validateConfirm(fields, localID, !p.multi)
+	return validateConfirm(fields, localID, !p.multi, p.conf.Confirmer())
 }
 
 // RefinePlan は rules の差分のうち、比べる形にすると観測と同じもの（空白や
@@ -454,8 +463,9 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 	var touched []TableRef // 変える table（写しを取る順）
 	var script strings.Builder
 	var checks []chainCheck
-	var baseChanged []string    // 変える base chain の id
-	var targets []ConfirmTarget // 確かめる先（Backlog #179。宣言が無ければ self）
+	var baseChanged []string       // 変える base chain の id
+	var targets []ConfirmTarget    // 到達を確かめる先（Backlog #179。宣言が無ければ self）
+	var afters []confirmafter.Item // 変えたあとだけ確かめる observe:・check:（Backlog #214）
 	for _, op := range ops {
 		_, ref, chain, err := p.coords(op.Target.Local)
 		if err != nil {
@@ -570,6 +580,7 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 					ts = []ConfirmTarget{SelfTarget}
 				}
 				targets = mergeTargets(targets, ts)
+				afters = mergeItems(afters, afterItems(ts, provider.ConfirmTarget{ID: op.Target, Fields: confirmafter.Fields(op, FieldConfirm)}))
 			}
 		}
 	}
@@ -579,7 +590,7 @@ func (p *LiveProvider) applyHost(ctx context.Context, h liveHost, ops []core.Op)
 
 	body := []byte(script.String())
 	if len(baseChanged) > 0 {
-		return p.applyGuarded(ctx, h, touched, baseChanged, targets, body, checks)
+		return p.applyGuarded(ctx, h, touched, baseChanged, guardTargets{reach: targets, after: afters}, body, checks)
 	}
 	if _, err := h.runner.Run(ctx, []string{"-c", "-f", "-"}, body); err != nil {
 		return classifyApplyErr(h.what("nft -c (check)"), err, true)
@@ -620,7 +631,8 @@ func containsRef(refs []TableRef, ref TableRef) bool {
 // applyGuarded は base chain を変えるトランザクションを締め出しの守りを通して
 // 流す（guard.go の 1〜6）。確かめられなかった・巻き戻しが先に動いたときは
 // provider.RolledBackError。
-func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []TableRef, changed []string, targets []ConfirmTarget, body []byte, checks []chainCheck) error {
+func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []TableRef, changed []string, gt guardTargets, body []byte, checks []chainCheck) error {
+	targets := gt.reach
 	if h.guard == nil {
 		what := "set ruleset_confirm_address (--ruleset-confirm-address) to a host:port a new connection must reach after the change"
 		if h.name != "" {
@@ -648,7 +660,7 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 	// marked after: (Backlog #192) is only confirmed after it.
 	if err := p.preconfirm(ctx, h, beforeTargets(targets)); err != nil {
 		err = fmt.Errorf("nftables: Apply: not changing base chain(s) %s: %s cannot be reached over a new connection before the change (%w); the change would only be rolled back. Confirm targets: %s%s",
-			strings.Join(changed, ", "), who, err, targetsText(targets), afterHint(targets))
+			strings.Join(changed, ", "), who, err, gt.text(), afterHint(targets))
 		if errors.Is(err, ErrCannotConfirm) {
 			return provider.NewPermanentError(err)
 		}
@@ -704,10 +716,16 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 		return classifyApplyErr(h.what("nft -f"), err, false)
 	}
 	// 5. Confirm every target over a new connection, until half the time is
-	// gone.
-	confirmErr := p.confirm(ctx, h, targets, fireAt.Add(-armedFor/2))
+	// gone; then the checks made only after the change (observe:, check:,
+	// Backlog #214), within the same limit.
+	until := fireAt.Add(-armedFor / 2)
+	confirmErr := p.confirm(ctx, h, targets, until)
 	tables := refsText(touched)
+	afterWhy := ""
 	if confirmErr == nil {
+		afterWhy = confirmafter.Wait(ctx, p.conf.Confirmer(), gt.after, until, confirmafter.Interval(p.rollbackAfter))
+	}
+	if confirmErr == nil && afterWhy == "" {
 		// 6. Cancel the rollback.
 		derr := h.guard.Disarm(ctx, token)
 		if derr == nil {
@@ -722,9 +740,30 @@ func (p *LiveProvider) applyGuarded(ctx context.Context, h liveHost, touched []T
 	}
 	// Not confirmed: the rollback armed on the host puts the tables back.
 	waitUntil(ctx, fireAt.Add(rollbackGrace(armedFor)))
+	if confirmErr == nil {
+		return provider.NewRolledBackError(fmt.Errorf(
+			"nftables: Apply: %s was reached after changing base chain(s) %s, but the change was not confirmed within %s (%s): the rollback armed on the host restored tables %s as they were before, after %s. Confirm targets: %s",
+			who, strings.Join(changed, ", "), p.rollbackAfter/2, afterWhy, tables, p.rollbackAfter, gt.text()))
+	}
 	return provider.NewRolledBackError(fmt.Errorf(
 		"nftables: Apply: %s could not be reached over a new connection within %s after changing base chain(s) %s (%v): the rollback armed on the host restored tables %s as they were before, after %s. Declare a rule that keeps the management path open (e.g. jump to the minimal chain kept outside Sakutei) and apply again. Confirm targets: %s%s",
-		who, p.rollbackAfter/2, strings.Join(changed, ", "), confirmErr, tables, p.rollbackAfter, targetsText(targets), afterHint(targets)))
+		who, p.rollbackAfter/2, strings.Join(changed, ", "), confirmErr, tables, p.rollbackAfter, gt.text(), afterHint(targets)))
+}
+
+// guardTargets は守りの確かめる先: 到達の先（変える前と後）と、変えたあと
+// だけの observe:・check:（Backlog #214）。
+type guardTargets struct {
+	reach []ConfirmTarget
+	after []confirmafter.Item
+}
+
+// text は知らせに出す確かめる先の一覧。
+func (g guardTargets) text() string {
+	s := targetsText(g.reach)
+	for _, it := range g.after {
+		s += ", " + it.Target.Label()
+	}
+	return s
 }
 
 // preconfirm は変更の前に、targets のそれぞれへ新しい接続で 1 回ずつ確かめる

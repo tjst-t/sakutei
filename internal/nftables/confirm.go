@@ -38,6 +38,16 @@ package nftables
 //     ば巻き戻す。変える前に確かめる先が 1 つも無い宣言は読み込みで断る（前の
 //     確かめが何も守らなくなる）。self には付けられない（自身の管理の接続は
 //     変える前に届いている）。
+//   - observe:<provider>/<scope>/<id> [expect:{…}] と check:<name>（Backlog
+//     #214、netconf と同じ書き方と口、internal/confirmafter）: 別のリソースの
+//     観測（コアがその provider で観測用の資格・ふだんの範囲のまま読む）と、
+//     名前で登録した確かめの関数。どちらもいつも変えたあとだけ確かめる
+//     （after: は書いても書かなくても同じ）。到達の先（self・ssh://・tcp://）
+//     に届いてから、同じ時間の上限（巻き戻しの上限の半分）の中で通るまで
+//     繰り返し、通らなければ仕掛けを取り消さず元の規則に戻す。「全部に after:
+//     の印」の決まりは到達の先だけで数え、到達の先が 1 つも無い宣言は読み込み
+//     で断る（締め出しの守りを弱めない。observe: と check: は管理の経路が
+//     開いていることを確かめない）。
 
 import (
 	"errors"
@@ -46,6 +56,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/tjst-t/sakutei/v2/internal/confirmafter"
+	"github.com/tjst-t/sakutei/v2/pkg/core"
+	"github.com/tjst-t/sakutei/v2/pkg/provider"
 )
 
 // FieldConfirm は base chain の宣言の確かめる先の一覧のフィールド。
@@ -56,6 +70,9 @@ const (
 	ConfirmSelf = "self"
 	ConfirmSSH  = "ssh"
 	ConfirmTCP  = "tcp"
+	// ConfirmObserve・ConfirmCheck は変えたあとだけ確かめる先（Backlog #214）。
+	ConfirmObserve = confirmafter.Observe
+	ConfirmCheck   = confirmafter.Check
 )
 
 // ConfirmTarget は到達を確かめる 1 つの先。
@@ -67,16 +84,42 @@ type ConfirmTarget struct {
 	User string
 	Host string
 	Port int
+	// ID・Expect は observe: の先と期待する欄の値、Check は check: の関数の
+	// 名前（Backlog #214）。
+	ID     core.ID
+	Expect map[string]string
+	Check  string
 	// After は変えたあとだけ確かめる印（宣言の `after:`、Backlog #192）。
+	// observe: と check: はいつも真。
 	After bool
+}
+
+// reach は到達の先（self・ssh・tcp）かどうか。
+func (t ConfirmTarget) reach() bool { return t.Kind != ConfirmObserve && t.Kind != ConfirmCheck }
+
+// afterTarget は observe: と check: の先を共通の口の形にする。
+func (t ConfirmTarget) afterTarget() confirmafter.Target {
+	return confirmafter.Target{Kind: t.Kind, ID: t.ID, Expect: t.Expect, Check: t.Check}
 }
 
 // ConfirmAfterPrefix は変えたあとだけ確かめる先の印。
 const ConfirmAfterPrefix = "after:"
 
+// label は知らせに出す短い形（observe: の expect の値は出さない）。
+func (t ConfirmTarget) label() string {
+	if !t.reach() {
+		return t.afterTarget().Label()
+	}
+	return t.String()
+}
+
 // String は宣言に書く形（"self"・"ssh://admin@192.0.2.10:2222"・
-// "after:tcp://192.0.2.10:443"）。
+// "after:tcp://192.0.2.10:443"・"check:route-seen"。observe: と check: には
+// after: を付けない）。
 func (t ConfirmTarget) String() string {
+	if !t.reach() {
+		return t.afterTarget().String()
+	}
 	if t.After {
 		u := t
 		u.After = false
@@ -102,36 +145,103 @@ var SelfTarget = ConfirmTarget{Kind: ConfirmSelf}
 
 // parseConfirm は confirm の宣言を読む。空なら nil（既定の self）。
 func parseConfirm(s string) ([]ConfirmTarget, error) {
-	if strings.TrimSpace(s) == "" {
+	rest := strings.TrimSpace(s)
+	if rest == "" {
 		return nil, nil
 	}
 	var out []ConfirmTarget
 	seen := map[string]bool{}
-	for _, item := range strings.Split(s, ",") {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			return nil, fmt.Errorf("%q: an empty entry (want self, ssh://[user@]host[:port] or tcp://host:port, each optionally marked after:, separated by commas)", s)
-		}
-		after := strings.HasPrefix(item, ConfirmAfterPrefix)
-		t, err := parseConfirmTarget(strings.TrimSpace(strings.TrimPrefix(item, ConfirmAfterPrefix)))
+	for {
+		rest = strings.TrimLeft(rest, " \t\r\n")
+		after := strings.HasPrefix(rest, ConfirmAfterPrefix)
+		rest = strings.TrimLeft(strings.TrimPrefix(rest, ConfirmAfterPrefix), " \t\r\n")
+		at, r, ok, err := confirmafter.Parse(rest, nextTarget)
 		if err != nil {
 			return nil, err
 		}
-		if after && t.Kind == ConfirmSelf {
-			return nil, fmt.Errorf("%q: self is Sakutei's own management connection and is always confirmed before the change; mark only another path's target after:", item)
+		var t ConfirmTarget
+		if ok {
+			// Always confirmed after the change, marked or not.
+			t = ConfirmTarget{Kind: at.Kind, ID: at.ID, Expect: at.Expect, Check: at.Check, After: true}
+			rest = r
+		} else {
+			item := rest
+			if k := strings.IndexByte(rest, ','); k >= 0 {
+				item, rest = rest[:k], rest[k:]
+			} else {
+				rest = ""
+			}
+			item = strings.TrimSpace(item)
+			if item == "" {
+				return nil, fmt.Errorf("%q: an empty entry (want self, ssh://[user@]host[:port] or tcp://host:port, each optionally marked after:, or observe:<provider>/<scope>/<id> [expect:{…}] or check:<name>, separated by commas)", s)
+			}
+			if t, err = parseConfirmTarget(item); err != nil {
+				return nil, err
+			}
+			if after && t.Kind == ConfirmSelf {
+				return nil, fmt.Errorf("%q: self is Sakutei's own management connection and is always confirmed before the change; mark only another path's target after:", ConfirmAfterPrefix+item)
+			}
+			t.After = after
 		}
-		key := t.String()
+		key := strings.TrimPrefix(t.String(), ConfirmAfterPrefix) // marked or not, the same target
 		if seen[key] {
-			return nil, fmt.Errorf("%q is listed twice", item)
+			return nil, fmt.Errorf("%q is listed twice", t.label())
 		}
 		seen[key] = true
-		t.After = after
 		out = append(out, t)
+		rest = strings.TrimLeft(rest, " \t\r\n")
+		if rest == "" {
+			break
+		}
+		if rest[0] != ',' {
+			return nil, fmt.Errorf("%q: want a comma between the targets", rest)
+		}
+		rest = rest[1:]
 	}
-	if len(out) > 0 && len(beforeTargets(out)) == 0 {
+	reach := reachTargets(out)
+	if len(reach) == 0 {
+		return nil, fmt.Errorf("%q: no target is reached: observe: and check: are confirmed only after the change and do not show the management path open; write self (or ssh://, tcp://) too", s)
+	}
+	if len(beforeTargets(reach)) == 0 {
 		return nil, fmt.Errorf("%q: every target is marked after:, so nothing is confirmed before the change; keep self (or another target reached now) unmarked", s)
 	}
 	return out, nil
+}
+
+// nextTarget は s（「,」の後ろ）が次の確かめる先で始まるか（空も）。
+func nextTarget(s string) bool {
+	if s == "" || confirmafter.Starts(s) || strings.HasPrefix(s, ConfirmAfterPrefix) {
+		return true
+	}
+	for _, p := range []string{ConfirmSSH + "://", ConfirmTCP + "://"} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	tok, _ := confirmafter.Token(s)
+	return tok == ConfirmSelf
+}
+
+// reachTargets は到達の先（self・ssh・tcp）。
+func reachTargets(ts []ConfirmTarget) []ConfirmTarget {
+	var out []ConfirmTarget
+	for _, t := range ts {
+		if t.reach() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// afterItems は observe: と check: の先（Of は check: の関数に渡す変えたリソース）。
+func afterItems(ts []ConfirmTarget, of provider.ConfirmTarget) []confirmafter.Item {
+	var out []confirmafter.Item
+	for _, t := range ts {
+		if !t.reach() {
+			out = append(out, confirmafter.Item{Target: t.afterTarget(), Of: of})
+		}
+	}
+	return out
 }
 
 // beforeTargets は変える前にも確かめる先（after: の印の無い先）。
@@ -184,7 +294,9 @@ func parseConfirmTarget(item string) (ConfirmTarget, error) {
 
 // validateConfirm は読み込みの時点の confirm の検査: base chain の宣言だけに
 // 書け、形が読めること。local（手元の live）なら ssh の先は書けない。
-func validateConfirm(fields map[string]string, id string, local bool) error {
+// observe: の先と check: の名前は c（読み込んだ intent の Confirmer）に確かめる
+// （Backlog #214。I/O はしない）。
+func validateConfirm(fields map[string]string, id string, local bool, c provider.Confirmer) error {
 	v := fields[FieldConfirm]
 	if v == "" {
 		return nil
@@ -196,12 +308,18 @@ func validateConfirm(fields map[string]string, id string, local bool) error {
 	if err != nil {
 		return fmt.Errorf("%s: field %s: %w", id, FieldConfirm, err)
 	}
-	if local {
-		for _, t := range ts {
-			if t.Kind == ConfirmSSH {
-				return fmt.Errorf("%s: field %s: %s: the local nft has no ssh settings to reach another path; use tcp://host:port", id, FieldConfirm, t)
-			}
+	var after []confirmafter.Target
+	for _, t := range ts {
+		if !t.reach() {
+			after = append(after, t.afterTarget())
+			continue
 		}
+		if local && t.Kind == ConfirmSSH {
+			return fmt.Errorf("%s: field %s: %s: the local nft has no ssh settings to reach another path; use tcp://host:port", id, FieldConfirm, t)
+		}
+	}
+	if err := confirmafter.Validate(c, ProviderName, id, after); err != nil {
+		return fmt.Errorf("%s: field %s: %w", id, FieldConfirm, err)
 	}
 	return nil
 }
@@ -210,10 +328,14 @@ func validateConfirm(fields map[string]string, id string, local bool) error {
 // いない・ssh の設定の無い先へ ssh で確かめる）。直すのは設定か宣言（PermanentError）。
 var ErrCannotConfirm = errors.New("no way to confirm reaching it")
 
-// mergeTargets は ts を out に足す（同じ先は 1 つ。片方の宣言にだけ after: の
-// 印があれば、印の無い方（変える前にも確かめる）に寄せる）。
+// mergeTargets は ts の到達の先を out に足す（同じ先は 1 つ。片方の宣言にだけ
+// after: の印があれば、印の無い方（変える前にも確かめる）に寄せる）。observe:
+// と check: は足さない（afterItems）。
 func mergeTargets(out, ts []ConfirmTarget) []ConfirmTarget {
 	for _, t := range ts {
+		if !t.reach() {
+			continue
+		}
 		dup := false
 		for i, o := range out {
 			if o.Kind == t.Kind && o.User == t.User && o.Host == t.Host && o.Port == t.Port {
@@ -224,6 +346,24 @@ func mergeTargets(out, ts []ConfirmTarget) []ConfirmTarget {
 		}
 		if !dup {
 			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// mergeItems は items を out に足す（同じ先を同じリソースが 2 度は書かない。
+// 別の chain が同じ check: を書けば、それぞれの変更について確かめる）。
+func mergeItems(out, items []confirmafter.Item) []confirmafter.Item {
+	for _, it := range items {
+		dup := false
+		for _, o := range out {
+			if o.Target.String() == it.Target.String() && o.Of.ID.Key() == it.Of.ID.Key() {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, it)
 		}
 	}
 	return out

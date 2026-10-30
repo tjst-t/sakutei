@@ -62,6 +62,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tjst-t/sakutei/v2/internal/confirmafter"
 	"github.com/tjst-t/sakutei/v2/internal/remote"
 	"github.com/tjst-t/sakutei/v2/pkg/core"
 	"github.com/tjst-t/sakutei/v2/pkg/provider"
@@ -509,16 +510,7 @@ func (a *applyRun) observeNew(ctx context.Context) ([]*node, error) {
 }
 
 // pollInterval は確かめの間隔。
-func (a *applyRun) pollInterval() time.Duration {
-	d := a.cfg.ConfirmTimeout / 20
-	switch {
-	case d < 100*time.Millisecond:
-		return 100 * time.Millisecond
-	case d > 5*time.Second:
-		return 5 * time.Second
-	}
-	return d
-}
+func (a *applyRun) pollInterval() time.Duration { return confirmafter.Interval(a.cfg.ConfirmTimeout) }
 
 // verify は deadline まで新しい接続で部分木を読み、want と同じになるのを
 // 待つ。同じなら ""、そうでなければ最後に見た理由。比べるのは観測と同じく

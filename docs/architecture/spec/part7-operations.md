@@ -112,6 +112,10 @@ BMC・スイッチ管理ポートへ到達するための**管理NW**は段0 の
 - **`observe:` と `check:` はいつも変えたあとだけ確かめる**（commit confirmed と self の確かめのあと、確定の前。`after:` の印は書いても書かなくても同じ）。時間の上限は self と同じ（commit confirmed から confirm-timeout の半分）。**通らなければ確定しない**（self が落ちたときと同じ扱い：確定の commit を送らず機器の巻き戻しに任せ、PermanentError で同じ宣言は変わるまで当て直さない）。理由には通らなかった先（`observe:<ID>`・`check:<name>`）と最後に見た理由を出す（expect の値は出さない）。
 - **commit_group では**、group の全部の台が commit confirmed を終え、全部の台の self が通ってから、全部の台の `observe:`・`check:` を待つ（並べて。上限は一番短い confirm-timeout の半分）。1 つでも通らなければ、どの台も確定しない。
 - `confirm` は機器に無い「どう確かめるか」の宣言で、ほかの差分があるときだけ op に残す（それだけの差分は収束している）。
+- **nftables の base chain の confirm も同じ口を使う（v3.77、Backlog #214）**：読み方（`internal/confirmafter`）・繰り返し・
+  時間の上限・知らせ方を netconf と共通にする。nftables では到達の先（`self`・`ssh://`・`tcp://`）に変えたあと届いてから、
+  巻き戻しの上限の半分までに `observe:`・`check:` を待ち、通らなければ仕掛けを取り消さず、ホストの側の時間切れで元の規則に
+  戻す（巻き戻されたとして同じ差分の Apply を止める、§7.4・§29.1）。到達の先の無い confirm は読み込みで断る。
 
 **OOB（帯域外）= ネットワーク版 Break Glass**：管理NW そのものが死んだときの経路として、コンソールサーバ（シリアル集約）/ OOB 専用NW を持つ。これは Sakutei の管理対象外に置き、Break Glass の経路（§20）として扱う。
 

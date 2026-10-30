@@ -260,7 +260,7 @@ NETCONF には複数の機器をまたぐ確定が無い。4 の確定は台ご�
 
 ## confirm の先：別のリソースの観測（`observe:`）と確かめの関数（`check:`）（Backlog #200）
 
-ある台への変更が効いたかは、相手の台から見ないと分からないことがある（例：相手の台で経路が見えること）。欄 `confirm` に、変えたあと（commit confirmed のあと、確定の前）に確かめる先を「, 」で区切って書く。書かなければ `self` だけ（今までどおり）。
+ある台への変更が効いたかは、相手の台から見ないと分からないことがある（例：相手の台で経路が見えること）。欄 `confirm` に、変えたあと（commit confirmed のあと、確定の前）に確かめる先を「, 」で区切って書く。書かなければ `self` だけ（今までどおり）。`observe:`・`check:` の読み方・繰り返し・時間の上限・知らせ方は nftables の base chain の `confirm`（[nftables.md](nftables.md)、#214）と共通の口（`internal/confirmafter`）。
 
 ```yaml
 resources:
