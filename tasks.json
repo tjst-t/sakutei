@@ -4489,11 +4489,11 @@
       "labels": [],
       "body": "docs に、本番で動かすときの構成の手引きを書く：観測用と書き込み用の資格、監査の記録と外への送り、秘密の取り出し先、読み取りの口の TLS と認可、freeze の使い方、intent の runtime: と旗の扱い。",
       "doneWhen": "docs に手引きがあり、書いてある設定の例がそのまま読み込めることを確かめるテストが通る",
-      "resolution": "Factory が取り込みました（factory/tls-freeze）",
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-28T13:07:46.058Z",
-      "updatedAt": "2026-10-30T12:43:34.847Z",
+      "updatedAt": "2026-10-30T12:43:57.960Z",
       "closedAt": "2026-10-30T12:43:34.847Z",
       "extra": {}
     },
