@@ -14,7 +14,10 @@
 
 package core
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestNormalizeAndEqual(t *testing.T) {
 	cases := []struct {
@@ -30,6 +33,8 @@ func TestNormalizeAndEqual(t *testing.T) {
 		{Set, []any{"a", "b"}, []any{"b", "a"}, true},
 		{Set, []any{"a", "a"}, []any{"a", "b"}, false},
 		{Map, map[string]any{"x": 1}, map[string]any{"x": 1.0}, true},
+		{Float, 2, 2.0, true},
+		{Float, 0.5, 0.25, false},
 	}
 	for _, c := range cases {
 		a, err := Normalize(c.t, c.a)
@@ -47,7 +52,7 @@ func TestNormalizeAndEqual(t *testing.T) {
 	for _, c := range []struct {
 		t FieldType
 		v any
-	}{{String, 1}, {Int, "1"}, {Int, 1.5}, {Bool, "true"}, {Duration, "soon"}, {List, "a"}, {Map, []any{}}} {
+	}{{String, 1}, {Int, "1"}, {Int, 1.5}, {Bool, "true"}, {Duration, "soon"}, {List, "a"}, {Map, []any{}}, {Float, "1"}, {Float, math.NaN()}} {
 		if _, err := Normalize(c.t, c.v); err == nil {
 			t.Errorf("%s %v: 断らなかった", c.t, c.v)
 		}

@@ -193,11 +193,14 @@ const (
 	// Secret は秘密の参照（{secret: "<backend>:<path>"}）。値を持たず比べず、
 	// 世代だけを比べる（E-G2・N-L5）。
 	Secret
+	// Float は小数の値（/metrics の値・メモリの量）。Condition の大小で比べる
+	// （E-H4・N-T4）。
+	Float
 )
 
 var fieldTypeNames = map[FieldType]string{
 	String: "string", Int: "int", Bool: "bool", Duration: "duration",
-	List: "list", Set: "set", Map: "map", Secret: "secret",
+	List: "list", Set: "set", Map: "map", Secret: "secret", Float: "float",
 }
 
 func (t FieldType) String() string { return fieldTypeNames[t] }

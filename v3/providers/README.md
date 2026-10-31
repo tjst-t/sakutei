@@ -1,6 +1,6 @@
 # 新しいコアの provider（v3/providers）
 
-設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
+設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a・段 8b。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
 
 | パッケージ | 中身 |
 |---|---|
@@ -8,6 +8,8 @@
 | `hostconf` | ホストのファイル（種類 `file`、ID `<host>:<絶対パス>`、項目 `content`・`mode`・`owner`・`group`）と systemd のユニット（種類 `unit`、ID `<host>:<ユニット名>`、項目 `content`・`enabled`・`active`・`restart_on`）。中身は sha256 だけを観測する（E-D5・E-E2・N-D7・N-E1・N-E6） |
 | `nftables` | nftables の chain（種類 `chain`、ID `<host>/<family>/<table>/<chain>`、項目 `rules`・`type`・`hook`・`priority`・`policy`）。ホストごとに file（ruleset のファイル）か live（カーネル。root で走るのは決まった道具だけ）。扱う table は Range の `args.host`・`args.tables`。live の 2 段の Apply は `core.Transactor`（E-B2・E-B3・E-B4・N-B9） |
 | `nftguard`・`cmd/sakutei-nft-guard` | 決まった道具 sakutei-nft-guard（v2 から移し、すぐ戻す `rollback` を足した）。`list`・`check`・`apply`・`arm`・`disarm`・`rollback`・`status` だけ。扱う表は root だけが書ける道具の設定ファイルに書く（E-E1・E-B3） |
+| `redfish` | 物理サーバの BMC（Redfish）。種類 `system`（ID `<node>`、項目 `power`・`boot_enabled`・`boot_target`。Off へは GracefulShutdown だけ。切り替えの途中は Converging）・`virtual-media`（ID `<node>/cd`、項目 `image`）・`bios`（ID `<node>/<属性>`、項目 `value`。Settings に PATCH し、保留中は Converging。登録簿で確かめてから送る）・`firmware`（ID `<node>/<部品>`、観測だけ。`version` と最新の更新の Task の `update_state`・`update_image`・`update_percent`・`update_message`）。一回きりの操作（`core.Invoker`）は system の `boot_once`・`reset`・`force_restart`（壊す）・`force_off`（壊す）と firmware の `verify`・`stage`（壊す）・`reset`・`force_restart`。観測用と書き込み用の資格を分け、書き込み用は Apply・Invoke の中でだけ読む。List を持たず Delete は断る（E-A1〜E-A5・N-A1〜N-A4・E-G5） |
+| `metricsprobe` | /metrics（Prometheus の text 形式）を観測するだけ（module 名 `metrics-probe`）。種類 `series`（ID `<endpoint>/<メトリクス>[{ラベル="値",…}]`、項目 `series`・`value`（1 本のときだけ）・`sum`・`max`・`min`）。比べ方は Condition に書く。届かない・形が壊れている・一致する系列が無い・NaN は Unknown（E-H4・N-T4） |
 | `expanders/template` | Expand `go:template`：intent の `templates:` の雛形を、台の一覧（外部入力 `for_each` か intent の `items`）の 1 件ごとに宣言にする。全台に共通の値は `vars` に 1 か所。外部入力が届かなければ宣言を作らず Uncertain（E-A11・N-A14・N-E7・N-B15・E-K3） |
 | `expanders/netpolicy` | Expand `go:netpolicy`：intent の `network_policy:`（networks・allows・targets、domain・interfaces、reason・tags）を検査し、実現先ごとに nftables の base chain に展開する。重なり・理由の無い例外・重複・宣言に無い網・domain をまたぐ許可は Reject、隠れた許可・通らない許可は Warn。ほかの実現先は `netpolicy.WithRealizer`（E-B5） |
 | `expanders/compat` | Expand `go:compat`：intent の `compatibility:`（部品の版の互換の表）。望む組み合わせが表に無ければ Reject、1 つずつ更新する途中の組み合わせは depends_on の `when` で止める（E-A7） |
@@ -78,6 +80,63 @@ resources:
 - nftables の `rules` は nft が表示する形で書く（例 `iif "lo" tcp dport 22 accept`。nft が書き直す形で書くと、読み直しで宣言どおりにならず、2 段の Apply なら確定しない）。引用符の外の空白は 1 つ（違えば読み込みで正規形を示して断る）。
 - live の base chain（4 つの項目を書いた宣言）は `apply.transaction` を書く（書かなければ読み込みで断る）。管理の ssh を通す最小の核は Sakutei の外で保守し、宣言した base chain から `jump` で参照する（E-B4。その chain は Range の `external_owners` で外す）。
 - 決まった道具の設定ファイル（既定 `/etc/sakutei/nft-guard.json`、root の持ち物で group・other が書けない）：`{"tables": ["inet/filter"], "state_dir": "/run/sakutei-nft-guard", "max_rollback_seconds": 600}`。sudoers で許すのは道具だけにする。
+
+## BMC と /metrics の例
+
+```yaml
+# config.yaml（つなぎ方だけ）
+providers:
+  bmc:
+    module: redfish
+    settings:
+      settle: 15s                                  # 電源・起動先の Apply のあと読み直すまで（既定 15s）
+      nodes:
+        node1:
+          endpoint: https://192.0.2.11
+          ca_file: /etc/sakutei/bmc-ca.pem         # か insecure_skip_verify: true（明示したときだけ）
+          observe: {username: monitor, password_file: /etc/sakutei/bmc-monitor}
+          write: {username: admin, password_file: /etc/sakutei/bmc-admin}   # 省けば observe を使う
+  metrics:
+    module: metrics-probe
+    settings:
+      endpoints:
+        mq: {url: "https://mq1.example.net:15692/metrics", bearer_token_file: /etc/sakutei/mq-token}
+```
+
+```yaml
+# intent
+resources:
+  - type: bmc/system
+    id: node1
+    fields: {power: "On", boot_enabled: Continuous, boot_target: Pxe}
+    depends_on:
+      - when: 'observe(metrics/series/mq/rabbitmq_queue_messages{queue="orders"}).sum < 100'
+  - {type: bmc/virtual-media, id: node1/cd, fields: {image: "http://192.0.2.5/os.iso"}}
+  - {type: bmc/bios, id: node1/ProcVirtualization, fields: {value: Disabled}}
+  - {type: bmc/firmware, id: node1/BMC, fields: {version: "2.0.0"}}
+procedures:
+  - name: bmc-fw                                   # v2 の多相 Task（redfish-firmware）を手順に書き直したもの
+    target: {type: bmc/firmware, id: node1/BMC}
+    trigger: on_drift
+    drift_fields: [version]
+    steps:
+      - name: approve
+        gate: {approval: {quorum: {n: 1, of: [bob]}}}
+      - name: verify
+        invoke: {op: verify, args: {image_uri: "http://192.0.2.5/bmc-2.0.0.bin", sha256: "…"}}
+      - name: stage
+        critical: true
+        skip_if: 'observe(bmc/firmware/{target}).version == desired.version'
+        invoke: {op: stage, args: {image_uri: "http://192.0.2.5/bmc-2.0.0.bin"}}
+      - name: applied
+        wait: {when: 'observe(bmc/firmware/{target}).update_state == "Completed"', timeout: 1h}
+    done_when: 'observe(bmc/firmware/{target}).version == desired.version'
+```
+
+- 再起動・強制停止・1 回だけの起動先は宣言できない（観測に残らない一回きりの操作。読み込みで断り、手順の `invoke` を示す）。v2 の `power_off: graceful_then_force` は 2 つに分けた：宣言の `power: "Off"` は GracefulShutdown だけを送り（止まらなければ効かない Apply の回数で止まる、E-J6）、強制停止は手順の `invoke: {op: force_off}`（壊す操作。`wait: {for: 5m}` のあとに `skip_if` で止まっていなければ送る、など）。
+- BIOS の属性の登録簿（読み取り専用・選べる値・範囲）は読み込みでなく Apply の前に BMC から読んで確かめる（読み込みは BMC に触れない）。合わなければ送らずに Apply が失敗する。
+- `stage` の `transfer: multipart` は Sakutei がイメージを取りに行って MultipartHttpPushUri に送る（`sha256` を書けば送る中身を確かめる）。`apply_time: OnReset` は再起動で効く。イメージを取りに行く資格は `image_username` と秘密の参照の `image_password`（`"<backend>:<在りか>"`）。
+- 送れていない（BMC に届かない・電源の切り替えの途中・イメージを取りに行けない）ときだけ `ErrNotSent`（次の周に送り直す）。直さないと通らない理由（BMC が持たない起動先・更新できない部品・sha256 の不一致）と送ったあとの誤りは手順を止める。
 
 ## Expand と秘密の保管先の例
 
@@ -163,3 +222,25 @@ $ make integration-v3-nftables
 - `TestKernelPrepareExpires`：`Prepare` のあと `Commit` も `Rollback` もしなければ、ホストの側の時間切れ（道具が切り離して眠る自分）で元の規則に戻る（不変条件 17 の契約）。
 
 2026-10-31 に Linux 7.0・nftables 1.0.9 で通した（2 つで約 18 秒）。
+
+## 統合テスト（qemu-bmc）
+
+```console
+$ make integration-v3-redfish
+```
+
+v2 と同じ qemu-bmc 0.11.0（tag と digest で固定）を containerlab で 2 台立て（`redfish/integration/topology.clab.yml`。lab `sakutei-v3rf`・管理ネット 172.31.93.0/24 で、v2 の `make integration-redfish` の lab `sakutei-rf84` と重ならない）、v3 の sakutei（`cmd/sakutei`）の CLI と常駐を本物の Redfish に向けて回し、終わったら（失敗しても）lab を消す。KVM・docker・containerlab と sudo（パスワードなし）が要るので、check・test・CI には入れない。段（`redfish/integration/redfish_test.go`）：
+
+1. plan は BMC に書かず、reconcile で電源・起動先（Continuous の Pxe・Disabled）・仮想メディアに収束し、次の plan は変えない。
+2. 手で変えた電源・起動先・仮想メディアを次の reconcile で戻す。
+3. ACPI に応えない VM への既定の停止は GracefulShutdown だけで Off にならず、効かない Apply の回数で止まる（終了コード 4）。手順の `force_off` で止まる。
+4. BMC を止める（docker pause）とそのノードは Unknown で何もせず（終了コード 3）、もう 1 台は収束する。
+5. `boot_enabled: Once`・`power: ForceRestart` は読み込みで断る（終了コード 2）。
+6. 手順の `boot_once`（Cd）と `force_restart`：1 回の起動で BMC が上書きを Disabled に戻す。
+7. BIOS の属性：Settings に 1 度だけ PATCH し（再起動しない）、保留中の reconcile は Converging で重ねない。読み取り専用の属性は送らない。手順の `force_restart` で効き、宣言していない属性は変わらない。
+8. FW の更新（BMC）：常駐は承認の前に何も送らず、イメージも取りに来ない。承認の後に verify・stage（critical）を 1 回ずつ送り、BMC の Task（Completed）を待って版で閉じる。
+9. FW の更新（BIOS）：BMC の Task が終わっても版は再起動まで変わらず、手順の `force_restart` で効く。
+10. FW の故障（qemu-bmc の障害注入）：イメージを断られる（400 VerificationFailed）と手順は止まって送り直さない。BMC の Task が Exception で終わると版は変わらず、待ちの時間切れで止まる。
+11. 書き込み用のパスワードのファイルが無くても plan は観測できて差分を出し、reconcile は書かずに失敗する。
+
+2026-10-31 に Linux 7.0・containerlab・qemu-bmc 0.11.0 で通した（lab の用意を除いて約 110 秒）。

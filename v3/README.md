@@ -25,6 +25,7 @@
 | `readapi` | 常駐の読み取り HTTP（`/status`・`/plan`・`/events`（SSE）・`/graph`・`/health`）と TLS・クライアント証明書・読むだけのトークン |
 | `record` | Record のディレクトリ：`LOCK`（flock）・`format`・`marks.json`（範囲ごとの件数・予算の窓・効かない Apply の回数）・`audit/`（前の行のハッシュの鎖）・`events/`（`state.json`・`outbox/`・`cursors/`・監査の送り先の位置 `cursors/audit/`）・`health.json`・`wake`・`runs/`（手順の進み）・`approvals/`（依頼と判断）・`temp-policies/`（freeze）・`commands/`（start・cancel の頼み） |
 | `sdk/hostexec` | provider SDK のホストでコマンドを走らせる層（手元・ssh・sudo。ホスト鍵を known_hosts で確かめる。届かないは `UnreachableError`）と、設定の `hosts:` の読み方 |
+| `sdk/contract` | provider の契約テスト（`Run`。§6.2：届かないなら Unknown・無いなら Absent・作って読む・冪等・正規形・List の完全さと Observe との一致・秘密が漏れない・書き込みの資格を WriteContext の外で読まない・Schema の lint・Invoke は送れなかったときだけ `ErrNotSent`・Delete の断り。E-P2） |
 | `sdk/fake` | テスト用の偽の provider（Go から観測の答え・List の欠け・Apply の失敗・効かない Apply・上流の奥で届かない対象・削除の断り・一回きりの操作とその失敗（送れていない・送れたか分からない・送る途中で止まる）・2 段の Apply（`Prepare` の失敗・変更が別のものを壊す注入・時間切れの `Expire`）を置く・CLI ではモジュール `fake` の state のファイルと `ops`） |
 | `cli`・`cmd/sakutei` | CLI。`sakutei`（常駐）とサブコマンド `plan`・`reconcile`・`wake`・`audit verify`・`approve`・`reject`・`approvals`・`freeze`・`unfreeze`・`start`・`cancel`・`alloc release`。組み込みは `WithModule`・`WithSink`・`WithCheck`・`WithExpander`・`WithSecretBackend`・`WithAllocator` |
 | `internal/yaml` | 行番号を残す YAML の部分集合のパーサ（ブロックと 1 行のフロー） |
@@ -113,5 +114,11 @@ $ cd v3 && go run ./cmd/sakutei alloc release <pool> <value> --intent <dir> --re
 - どの送り方も時間を区切って呼び（`events.DeliverTimeout`、既定 10s）、送れない・戻らない・panic でも周を止めない（不変条件 28）。周の結果の `deliveries` に送り先ごと（監査は `stream: audit`）の結果が出る。
 - 送り先のモジュール（`providers/sinks`）：`alertmanager`・`syslog`・`metrics`・`otlp`。承認ツール `sakutei-approve`（`providers/cmd/sakutei-approve`）。詳しくは [providers/README.md](providers/README.md)。
 - `sakutei approve`・`reject` と承認ツールは同じ確かめ（`approval.Decide`）を通す：申請者・要件の `of` に無い人・無い依頼・待っていない依頼への判断と理由の無い拒否は書く前に断る（不変条件 21）。
+
+段 8b の決まり（redfish・metrics-probe と契約テスト）：
+
+- 契約テスト（§6.2、E-P2）：`sdk/contract.Run(t, newTarget)` は確かめごとに新しい `Target`（provider と偽の相手・模擬）を作り、書かなかった確かめは飛ばす。届かない故障（接続を切る・5xx・時間切れ・認証の失敗・壊れた出力）で Unknown 以外を返す・宣言どおりなのに 2 回目の Apply が相手に書く・観測の項目が Schema に無いか正規形でない・観測で書き込み用の資格を使う・誤りの文や Note や Fields に秘密の値が出る・送れたのに `ErrNotSent`（送れないのに返さない）・断る削除で相手に書く、を落とす。偽の provider でも回す（`sdk/contract/contract_test.go`）。
+- 型 `float`（`core.Float`、E-H4・N-T4）：小数の値（/metrics の値・メモリの量）。Condition の大小で比べる。NaN・±Inf は型に合わない。
+- provider `redfish`・`metrics-probe` は `providers/`（README に設定と intent の例・統合テスト）。
 
 テストはルートの `make check`・`make test-race` が一緒に回す（`providers/` も）。

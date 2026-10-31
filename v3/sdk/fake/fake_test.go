@@ -83,7 +83,7 @@ func TestModuleRejectsSettings(t *testing.T) {
 	for _, s := range []map[string]any{
 		{"stat": "x"},
 		{"state": 1},
-		{"kinds": map[string]any{"r": map[string]any{"fields": map[string]any{"v": "float"}}}},
+		{"kinds": map[string]any{"r": map[string]any{"fields": map[string]any{"v": "decimal"}}}},
 		{"kinds": map[string]any{"r": map[string]any{"fields": map[string]any{"v": map[string]any{"type": "string", "ident": true}}}}},
 		{"kinds": map[string]any{"r": map[string]any{"observe": true}}},
 	} {

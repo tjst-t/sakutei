@@ -38,6 +38,10 @@ func Normalize(t FieldType, v any) (any, error) {
 		if n, ok := toInt(v); ok {
 			return n, nil
 		}
+	case Float:
+		if f, ok := toFloat(v); ok {
+			return f, nil
+		}
 	case Bool:
 		if b, ok := v.(bool); ok {
 			return b, nil
@@ -124,6 +128,23 @@ func toInt(v any) (int64, bool) {
 		if i, err := n.Int64(); err == nil {
 			return i, true
 		}
+	}
+	return 0, false
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, !math.IsNaN(n) && !math.IsInf(n, 0)
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
 	}
 	return 0, false
 }

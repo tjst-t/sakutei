@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-v3-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-v3-nftables integration-v3-redfish integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -78,6 +78,25 @@ integration-nftables:
 # v3/providers/README.md。
 integration-v3-nftables:
 	cd v3/providers && SAKUTEI_IT_NFT=1 go test -count=1 -v -run Kernel -timeout 5m ./nftables/
+
+# 新しいコアの redfish provider の統合テスト（v3 段 8b）。v2 と同じ qemu-bmc 0.11.0 を
+# containerlab で 2 台立て（lab sakutei-v3rf・管理ネット 172.31.93.0/24。v2 の
+# integration-redfish の sakutei-rf84 と重ならないので同時に回せる）、v3 の sakutei の
+# CLI と常駐で電源・起動先・仮想メディア・BIOS・FW の更新（手順の verify・stage・
+# reset）を回し、終わったら（失敗しても）lab を消す。KVM・docker・containerlab と
+# sudo（パスワードなし）が要るので、check・test・CI には入れない。手順と結果は
+# v3/providers/README.md。
+V3_REDFISH_IT := ./redfish/integration/
+integration-v3-redfish:
+	$(V3P) go vet -tags integration_v3_redfish $(V3_REDFISH_IT)
+	@status=0; \
+	(cd v3/providers && go test -tags integration_v3_redfish -count=1 -v -timeout 30m $(V3_REDFISH_IT)) || status=$$?; \
+	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^clab-sakutei-v3rf-'; then \
+	  echo 'integration-v3-redfish: the lab was left behind; destroying it'; \
+	  sudo -n docker unpause clab-sakutei-v3rf-node1 clab-sakutei-v3rf-node2 >/dev/null 2>&1; \
+	  sudo -n containerlab destroy --name sakutei-v3rf --cleanup || status=1; \
+	fi; \
+	exit $$status
 
 # s3-bucket provider の統合テスト（#122）。docker で S3 互換のサーバ（MinIO・
 # SeaweedFS と、PUT の API を持たない古い SeaweedFS）を 127.0.0.1 の空いた

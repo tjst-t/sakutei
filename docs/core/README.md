@@ -237,7 +237,7 @@ type KindSchema struct {
     ObserveOnly bool                 // 観測だけ。Apply・Delete を呼ばない
     DestructiveDelete bool           // 中身を失う種類（volume・DB・バケット）
 }
-type FieldType int // String, Int, Bool, Duration, List(順序あり・全置換), Set(順不同), Map, Secret
+type FieldType int // String, Int, Bool, Duration, List(順序あり・全置換), Set(順不同), Map, Secret, Float(小数。/metrics の値)
 
 // 任意のインターフェース
 type Transactor interface {
@@ -275,6 +275,7 @@ type DesiredObserver interface {
 | `FieldSpec.Identity` | 変われば作り直しになる項目。物理の座標を選べるようにする | E-A10・N-A8 |
 | `FieldSpec.Type` の List・Set | 順序のある規則は全置換、集合は順不同で比べる | E-B12 |
 | `FieldSpec.Type` の Secret | 値を比べず世代で比べる。表示は伏せる | E-G2・N-L5 |
+| `FieldSpec.Type` の Float | 小数の値（/metrics の値・メモリの量）を Condition の大小で比べる。NaN・±Inf は型に合わない | E-H4・N-T4 |
 | `FieldSpec.Digest` | 観測は中身の sha256（`sha256:<hex>`）だけ。比べるときは宣言の値も sha256 にする。平文を観測・plan・Record に出さない（host のファイル・ユニットの中身） | E-E2・E-D5 |
 | `FieldSpec.Destructive` | create・update・delete のどれで壊すか。壊す変更は予算と承認 | E-C1・E-A1・N-D8・N-G10・N-C4 |
 | `Settle` | Apply のあと読み直すまで待つ | E-J6・E-R3 |
