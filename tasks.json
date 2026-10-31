@@ -5144,7 +5144,7 @@
       "number": 222,
       "kind": "task",
       "title": "v3 段7：Expand のモジュール・採番・秘密の世代と secret backend",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [
         "v3-6-provider-dnszone-hostconf-nftables"
@@ -5158,7 +5158,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T15:12:51.061Z",
+      "updatedAt": "2026-10-31T20:05:18.678Z",
       "closedAt": null,
       "extra": {}
     },
