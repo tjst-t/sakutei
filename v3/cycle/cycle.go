@@ -50,6 +50,8 @@ type Input struct {
 	Clock     core.Clock // nil なら計算機の時計（E-R4）
 	// Sinks は Event の送り先（つなぎ方の設定の sinks、E-H2）。
 	Sinks map[string]core.Sink
+	// AuditSinks は監査の鎖の送り先（streams: [audit]、E-L1・N-L1）。
+	AuditSinks map[string]core.AuditSink
 	// StuckAfter は intent の cycle.stuck_after（E-H1）。
 	StuckAfter int
 	// Checks は Condition の check(名前) の確かめ（E-B9）。
@@ -407,6 +409,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		errs = append(errs, "通知の状態を書けない: "+err.Error())
 	}
 	r.Deliveries = events.Deliver(ctx, in.Record, in.Sinks)
+	r.Deliveries = append(r.Deliveries, events.DeliverAudit(ctx, in.Record, in.AuditSinks)...)
 
 	// 健全性（E-K11・N-H4）。
 	if _, err := in.Record.RecordCycle(now, strings.Join(errs, "; ")); err != nil {
@@ -776,7 +779,7 @@ func FromLoaded(loaded *load.Loaded, rec *record.Record, clock core.Clock) Input
 		secrets = loaded.Secrets
 	}
 	return Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
-		Providers: loaded.Providers, Record: rec, Clock: clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter,
+		Providers: loaded.Providers, Record: rec, Clock: clock, Sinks: loaded.Sinks, AuditSinks: loaded.AuditSinks, StuckAfter: loaded.Cycle.StuckAfter,
 		Checks: loaded.Checks, Procedures: loaded.Procedures, Unknown: loaded.Unknown, Incomplete: loaded.Incomplete,
 		Secrets: secrets, IntentDir: loaded.IntentDir, Allocs: loaded.Allocs, InputCounts: loaded.InputCounts}
 }

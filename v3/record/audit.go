@@ -28,6 +28,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tjst-t/sakutei/v3/core"
 )
 
 // MaxAuditFile は監査のファイル 1 つの大きさの目安。超えれば新しいファイルへ回す
@@ -226,4 +228,83 @@ func auditFiles(dir string) ([]int, error) {
 	}
 	sort.Ints(out)
 	return out, nil
+}
+
+// ReadAudit は監査の鎖の since より後の行を max 行まで順に返す（監査の送り先、
+// E-L1・N-L1）。ファイルの初めの番号で読み始めるファイルを選び、全部は読まない。
+// 最後の切れた行（書いている途中）は返さない。Record を作らず、ロックも取らない。
+func ReadAudit(dir string, since uint64, max int) ([]core.AuditLine, error) {
+	adir := filepath.Join(dir, auditDir)
+	files, err := auditFiles(adir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	// 初めの番号が since+1 以下のうち最後のファイルから読む。
+	start := 0
+	for i, n := range files {
+		first, ok, err := firstAuditSeq(filepath.Join(adir, fileName(n)))
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		if first > since+1 {
+			break
+		}
+		start = i
+	}
+	var out []core.AuditLine
+	for _, n := range files[start:] {
+		data, err := os.ReadFile(filepath.Join(adir, fileName(n)))
+		if err != nil {
+			return nil, err
+		}
+		for len(data) > 0 {
+			i := bytes.IndexByte(data, '\n')
+			if i < 0 {
+				break // 書いている途中の行
+			}
+			line := data[:i]
+			data = data[i+1:]
+			var e struct {
+				Seq uint64 `json:"seq"`
+			}
+			if err := json.Unmarshal(line, &e); err != nil {
+				return nil, fmt.Errorf("監査 %s の行が読めない: %w", fileName(n), err)
+			}
+			if e.Seq <= since {
+				continue
+			}
+			out = append(out, core.AuditLine{Seq: e.Seq, Line: append([]byte(nil), line...)})
+			if len(out) >= max {
+				return out, nil
+			}
+		}
+	}
+	return out, nil
+}
+
+// firstAuditSeq はファイルの最初の行の番号。空なら false。
+func firstAuditSeq(path string) (uint64, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false, err
+	}
+	defer f.Close()
+	r := bufio.NewReader(f)
+	line, _ := r.ReadBytes('\n')
+	if len(line) == 0 || line[len(line)-1] != '\n' {
+		return 0, false, nil
+	}
+	var e struct {
+		Seq uint64 `json:"seq"`
+	}
+	if err := json.Unmarshal(line, &e); err != nil {
+		return 0, false, fmt.Errorf("監査 %s の最初の行が読めない: %w", filepath.Base(path), err)
+	}
+	return e.Seq, true, nil
 }

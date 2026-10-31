@@ -14,7 +14,7 @@
 
 // Command sakutei は新しいコアに実の provider（dnszone・hostconf・nftables）と
 // Expand のモジュール（template・netpolicy・compat）と秘密の保管先（vault-kv2・
-// command）を組み込んだ CLI（設計 §6.1 の cli.Main(With…)、E-O4・E-S4）。どれも
+// command）と Events の送り先（alertmanager・syslog・metrics・otlp）を組み込んだ CLI（設計 §6.1 の cli.Main(With…)、E-O4・E-S4）。どれも
 // コアの外のモジュールで、コアはインターフェースだけを知る。
 package main
 
@@ -27,6 +27,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/hostconf"
 	"github.com/tjst-t/sakutei/v3/providers/nftables"
 	"github.com/tjst-t/sakutei/v3/providers/secretbackend"
+	"github.com/tjst-t/sakutei/v3/providers/sinks/alertmanager"
+	"github.com/tjst-t/sakutei/v3/providers/sinks/metrics"
+	"github.com/tjst-t/sakutei/v3/providers/sinks/otlp"
+	"github.com/tjst-t/sakutei/v3/providers/sinks/syslog"
 	"github.com/tjst-t/sakutei/v3/sdk/fake"
 )
 
@@ -42,6 +46,10 @@ func Options() []cli.Option {
 		cli.WithExpander("compat", compat.Expander{}),
 		cli.WithSecretBackend(secretbackend.VaultKV2, secretbackend.VaultModule),
 		cli.WithSecretBackend(secretbackend.CommandName, secretbackend.CommandModule),
+		cli.WithSink("alertmanager", alertmanager.Module),
+		cli.WithSink("syslog", syslog.Module),
+		cli.WithSink("metrics", metrics.Module),
+		cli.WithSink("otlp", otlp.Module),
 	}
 }
 

@@ -72,6 +72,28 @@ type Sink interface {
 	Deliver(ctx context.Context, batch []Event) error
 }
 
+// StateSink は周ごとに今 firing の Event の一覧も受け取る送り先（任意）。
+// 送り出しの列は状態の変わり目だけなので、続いている状態を送り直す送り先
+// （Alertmanager の期限・metrics のゲージ）が使う（E-H2・E-H3）。Deliver の
+// あとに呼ぶ。失敗しても周を止めない（不変条件 28）。
+type StateSink interface {
+	DeliverState(ctx context.Context, firing []Event) error
+}
+
+// AuditLine は監査の鎖の 1 行（Record に書いたままの JSON と番号、E-L1・N-L1）。
+// 監査の行は値を書かない（不変条件 1）。
+type AuditLine struct {
+	Seq  uint64
+	Line []byte
+}
+
+// AuditSink は監査の鎖も送る送り先（つなぎ方の設定の streams: [audit]、syslog
+// など、E-L1・N-L1）。送り終えた位置は sink ごとに Record が覚え、送れなければ
+// 次の周に同じ位置から送り直す（不変条件 28）。
+type AuditSink interface {
+	DeliverAudit(ctx context.Context, batch []AuditLine) error
+}
+
 // CycleSettings は常駐の周の設定（intent の cycle:、§3.6）。
 type CycleSettings struct {
 	Interval   time.Duration // 常駐の周の間隔（E-J11）

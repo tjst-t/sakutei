@@ -2,17 +2,17 @@
 
 設計は `docs/core/README.md`、もとにした検討は `docs/review/core-usecase-review.md`。ルートの v2 のコードとは別の Go モジュール（`github.com/tjst-t/sakutei/v3`、標準ライブラリだけ）。互換は持たない。
 
-作る順番は設計書 §8 の 9 段。いまは **段 7** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）と、段 5（Procedure・承認と承認の CLI・一時的な Policy の freeze）と、段 6（2 段の Apply・最初の実 provider の dnszone・hostconf・nftables と決まった道具 nft-guard。provider はコアの外のモジュール `providers/`）と、段 7（Expand の連鎖と外のコマンドの Expand・golden のテストの道具・外部入力・採番・秘密の世代と保管先。Expand のモジュール template・netpolicy・compat と保管先 vault-kv2・command は `providers/`）を足した。
+作る順番は設計書 §8 の 9 段。いまは **段 8a** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）と、段 5（Procedure・承認と承認の CLI・一時的な Policy の freeze）と、段 6（2 段の Apply・最初の実 provider の dnszone・hostconf・nftables と決まった道具 nft-guard。provider はコアの外のモジュール `providers/`）と、段 7（Expand の連鎖と外のコマンドの Expand・golden のテストの道具・外部入力・採番・秘密の世代と保管先。Expand のモジュール template・netpolicy・compat と保管先 vault-kv2・command は `providers/`）と、段 8a（Events の送り先 alertmanager・syslog・metrics・otlp と承認ツール sakutei-approve。どれも `providers/`）を足した。段 8 の残り（provider）は段 8b〜8f。
 
 | パッケージ | 中身 |
 |---|---|
-| `core` | Resource・Range・Policy（承認 `Approval`・一時的な Policy の期限と理由）・Schema・Observation（ある・無い・分からない・作業中）と Provider の口（観測と列挙だけの `Reader`、一回きりの操作の `Invoker` と `ErrNotSent`）・Event と送り先の口 `Sink`・周の設定・Condition の口（三値 `Tri`・`on_unknown`・確かめの `CheckFunc`）・Procedure と段 |
-| `approval` | 承認を数える（N-of-M・申請者≠承認者・拒否・期限切れ・使った依頼）。Policy の承認と手順の gate で同じ数え方 |
+| `core` | Resource・Range・Policy（承認 `Approval`・一時的な Policy の期限と理由）・Schema・Observation（ある・無い・分からない・作業中）と Provider の口（観測と列挙だけの `Reader`、一回きりの操作の `Invoker` と `ErrNotSent`）・Event と送り先の口 `Sink`（任意で今の firing の一覧を受け取る `StateSink`・監査の鎖を受け取る `AuditSink`）・周の設定・Condition の口（三値 `Tri`・`on_unknown`・確かめの `CheckFunc`）・Procedure と段 |
+| `approval` | 承認を数える（N-of-M・申請者≠承認者・拒否・期限切れ・使った依頼）。Policy の承認と手順の gate で同じ数え方。判断を書く前の確かめと書き込み（`Decide`。CLI と sakutei-approve で同じ） |
 | `procedure` | 手順を起こし・1 段ずつ進め・止め・観測で閉じる（`Run`。plan では何も書かずに次を出す） |
 | `condition` | 観測についての三値の式を読み（`Parse`）、評価し（`Eval`）、Schema と突き合わせる（`Lint`） |
 | `graph` | `depends_on` と `when` から宣言の依存（上流・下流・量化の選び方・循環）を作る |
 | `intent` | intent のディレクトリ（`*.yaml`・`*.yml`・`*.json`）を読み、`resources:`・`ranges:`・`policies:`・`procedures:`・`cycle:` を Resource・Range・Policy・Procedure・周の設定にする |
-| `config` | つなぎ方の設定（`providers.<名前>.module`・`settings`、`sinks.<名前>.module`・`settings`、`listen.read`）。範囲・除外・方針は書けない（不変条件 24） |
+| `config` | つなぎ方の設定（`providers.<名前>.module`・`settings`、`sinks.<名前>.module`・`settings`・`streams`、`listen.read`）。範囲・除外・方針は書けない（不変条件 24） |
 | `expand` | Expand の口（`Expander`・`Input`・`Output`）・intent をそのまま読む `Passthrough`・`expand:` の順に呼ぶ `Run`・外のコマンドの Expand `Exec` |
 | `expand/expandtest` | Expand の golden のテスト（`Golden`：2 回呼んで同じ出力と golden.json を確かめる、N-P5） |
 | `alloc` | 採番：宣言の `{from_pool: …}` を intent のファイル `allocations/<pool>.yaml` の値で埋め、無ければ空きを選ぶ（`Resolve`）。周がロックを持って当てる前にファイルと Record の写しに書き（`Persist`）、人が返す（`Release`） |
@@ -20,10 +20,10 @@
 | `load` | 設定と intent を読み、Expand の出力を検証する（不変条件 25） |
 | `plan` | List と観測をして宣言と比べ、prune の守り・依存の待ち（Condition）・Policy の mode と予算・効かない回数で操作ごとに当てるかを決める（`Decide`）。受け取るのは `core.Reader` だけで、何も書かない |
 | `cycle` | 1 周（`Run`）。Record のロックを取り、一時的な Policy・承認・手順の進みを読んで監査に残し、`plan.Decide` と同じ判定で波ごとに当て、settle を待って読み直し、上流が効いたら下流を同じ周に観測し直して当て、手順を進め、効かない回数・目印・監査を書き、通知の状態を進めて送り出し、健全性を書く。ロックが取れなければ進めない周。`Plan` は同じ判定を何も書かずに出す |
-| `events` | 周の結果から状態型・出来事型の Event を作る（`Derive`）・送り先へ送り出す（`Deliver`）・stdout の送り先 |
+| `events` | 周の結果から状態型・出来事型の Event を作る（`Derive`）・送り先へ送り出す（`Deliver`。`StateSink` には周ごとに今の firing の一覧も）・監査の鎖を送り出す（`DeliverAudit`）・stdout の送り先 |
 | `daemon` | 常駐：`cycle.Run` を繰り返し、間隔を待ち、`sakutei wake`・SIGHUP・intent の変更で起きる |
 | `readapi` | 常駐の読み取り HTTP（`/status`・`/plan`・`/events`（SSE）・`/graph`・`/health`）と TLS・クライアント証明書・読むだけのトークン |
-| `record` | Record のディレクトリ：`LOCK`（flock）・`format`・`marks.json`（範囲ごとの件数・予算の窓・効かない Apply の回数）・`audit/`（前の行のハッシュの鎖）・`events/`（`state.json`・`outbox/`・`cursors/`）・`health.json`・`wake`・`runs/`（手順の進み）・`approvals/`（依頼と判断）・`temp-policies/`（freeze）・`commands/`（start・cancel の頼み） |
+| `record` | Record のディレクトリ：`LOCK`（flock）・`format`・`marks.json`（範囲ごとの件数・予算の窓・効かない Apply の回数）・`audit/`（前の行のハッシュの鎖）・`events/`（`state.json`・`outbox/`・`cursors/`・監査の送り先の位置 `cursors/audit/`）・`health.json`・`wake`・`runs/`（手順の進み）・`approvals/`（依頼と判断）・`temp-policies/`（freeze）・`commands/`（start・cancel の頼み） |
 | `sdk/hostexec` | provider SDK のホストでコマンドを走らせる層（手元・ssh・sudo。ホスト鍵を known_hosts で確かめる。届かないは `UnreachableError`）と、設定の `hosts:` の読み方 |
 | `sdk/fake` | テスト用の偽の provider（Go から観測の答え・List の欠け・Apply の失敗・効かない Apply・上流の奥で届かない対象・削除の断り・一回きりの操作とその失敗（送れていない・送れたか分からない・送る途中で止まる）・2 段の Apply（`Prepare` の失敗・変更が別のものを壊す注入・時間切れの `Expire`）を置く・CLI ではモジュール `fake` の state のファイルと `ops`） |
 | `cli`・`cmd/sakutei` | CLI。`sakutei`（常駐）とサブコマンド `plan`・`reconcile`・`wake`・`audit verify`・`approve`・`reject`・`approvals`・`freeze`・`unfreeze`・`start`・`cancel`・`alloc release`。組み込みは `WithModule`・`WithSink`・`WithCheck`・`WithExpander`・`WithSecretBackend`・`WithAllocator` |
@@ -105,5 +105,13 @@ $ cd v3 && go run ./cmd/sakutei alloc release <pool> <value> --intent <dir> --re
 - 二度払わない（不変条件 11）：値は宣言から消えても返さない（返すのは `sakutei alloc release <pool> <value> --reason …`。Record のロックを取ってファイルと写しの両方から外し、監査に `alloc.release`）。`reuse: false` のプールは block ごとの最後の値（`last`、ファイルにも書く）以下を払わないので、返した値も Record を失っても二度と払わない。ファイルが写しより戻っている（写しにある鍵が無い・値が違う・`last` が小さい。git で巻き戻した・手で消した）なら、そのプールから新しい値を出さず、それを要る宣言を Unknown にする（終了コード 3）。ファイルが写しより進んでいる（人が書き足した）のは受け入れて写しを書き直す。尽きた block は理由つきで止める。同じ値を 2 つに払うファイル・範囲の外の値は読み込みで断る。
 - 秘密（§3.1・§3.8、E-G2・E-G3・E-G4・N-G2）：Schema の型 `secret` の項目は `{secret: "<backend>:<在りか>"}` で書く（平文は読み込みで断り、値を診断に出さない）。保管先はつなぎ方の設定の `secret_backends.<名前>.module`（組み込みは `file`。`vault-kv2`・`command` は providers、ほかは `cli.WithSecretBackend`）。周の初めに参照ごとに世代だけを読み（値は読まない、10 秒で時間切れ）、宣言の値を `<backend>:<在りか>@gen=<世代>` にする。比べるのはこの参照だけで、provider は当てた世代の参照を観測に返す（世代が変われば当て直す）。世代を読めない秘密に依る宣言はその周 Unknown（観測も Apply もしない、下流は待つ、E-G4）。値は provider が Apply の直前に `WriteContext.Secret` でだけ取り出す（Apply・Delete・Prepare・Invoke の書き込みの文脈だけが保管先を持つ）。値は Record・出力・state・誤りの文に出ない（不変条件 27）。
 - Expand のモジュール（`providers/expanders`）：`go:template`（雛形を一覧の 1 件ごとに）・`go:netpolicy`（網の間の許可を nftables の base chain に）・`go:compat`（互換の表）。詳しくは [providers/README.md](providers/README.md)。
+
+段 8a の決まり：
+
+- 送り先（つなぎ方の設定の `sinks.<名前>`）に `streams: [events, audit]` を書ける（書かなければ `events` だけ、E-H2・E-L1）。`audit` は監査の鎖（`audit/`）を Record に書いたままの行で送り、位置は `events/cursors/audit/<名前>.json`。送れなければ位置を保って次の周に同じ位置から送り直す（届かない間は Record に貯まる。監査は消さない）。監査を送れないモジュール（`core.AuditSink` を持たない）に `audit` を書けば読み込みで断る。送るのはロックを持つ周だけ。
+- `core.StateSink` を持つ送り先には、送り出しの列のあとに周ごとに今の firing の一覧（`events/state.json`）も渡す。続いている状態を送り直す送り先（Alertmanager の endsAt・metrics のゲージ）が使い、常駐を起こし直しても一覧から送り直せる。
+- どの送り方も時間を区切って呼び（`events.DeliverTimeout`、既定 10s）、送れない・戻らない・panic でも周を止めない（不変条件 28）。周の結果の `deliveries` に送り先ごと（監査は `stream: audit`）の結果が出る。
+- 送り先のモジュール（`providers/sinks`）：`alertmanager`・`syslog`・`metrics`・`otlp`。承認ツール `sakutei-approve`（`providers/cmd/sakutei-approve`）。詳しくは [providers/README.md](providers/README.md)。
+- `sakutei approve`・`reject` と承認ツールは同じ確かめ（`approval.Decide`）を通す：申請者・要件の `of` に無い人・無い依頼・待っていない依頼への判断と理由の無い拒否は書く前に断る（不変条件 21）。
 
 テストはルートの `make check`・`make test-race` が一緒に回す（`providers/` も）。

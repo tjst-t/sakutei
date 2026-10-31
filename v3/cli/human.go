@@ -16,6 +16,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -105,57 +106,19 @@ func runDecide(args []string, decision string, stdout, stderr io.Writer, o *opti
 		fmt.Fprintf(stderr, "sakutei %s: --comment に拒否の理由を書く\n", name)
 		return ExitError
 	}
-	a, found, err := record.ReadApproval(*h.recd, id)
+	st, err := approval.Decide(*h.recd, id, record.Decision{By: *h.as, Decision: decision, Comment: *h.comment, At: o.clock.Now()})
 	if err != nil {
-		fmt.Fprintf(stderr, "sakutei %s: %v\n", name, err)
-		return ExitError
-	}
-	if !found {
-		fmt.Fprintf(stderr, "sakutei %s: 依頼 %s が無い（sakutei approvals で一覧）\n", name, id)
-		return ExitError
-	}
-	now := o.clock.Now()
-	req := a.Request
-	if st := approval.Evaluate(a, true, now); st.State != approval.Pending && st.State != approval.Approved {
-		fmt.Fprintf(stderr, "sakutei %s: 依頼 %s は %s（判断を受け付けない）\n", name, id, st.State)
-		return ExitError
-	}
-	for _, x := range strings.Split(req.Applicant, ",") {
-		if strings.TrimSpace(x) == *h.as {
-			fmt.Fprintf(stderr, "sakutei %s: %s は依頼 %s の申請者なので承認者になれない（申請者≠承認者）\n", name, *h.as, id)
-			return ExitError
+		var de *approval.DecideError
+		if errors.As(err, &de) && de.Code == approval.DecideNotFound {
+			fmt.Fprintf(stderr, "sakutei %s: %v（sakutei approvals で一覧）\n", name, err)
+		} else {
+			fmt.Fprintf(stderr, "sakutei %s: %v\n", name, err)
 		}
-	}
-	listed := false
-	for _, r := range req.Rules {
-		listed = listed || len(r.Of) == 0 || contains(r.Of, *h.as)
-	}
-	if !listed {
-		fmt.Fprintf(stderr, "sakutei %s: %s は依頼 %s の承認者（%s）に無い\n", name, *h.as, id, rulesText(req.Rules))
 		return ExitError
 	}
-	d := record.Decision{By: *h.as, Decision: decision, Comment: *h.comment, At: now}
-	if err := record.WriteDecision(*h.recd, id, d); err != nil {
-		fmt.Fprintf(stderr, "sakutei %s: %v\n", name, err)
-		return ExitError
-	}
-	a.Decisions = append(a.Decisions, d)
-	st := approval.Evaluate(a, true, now)
 	verb := map[string]string{record.Approve: "承認", record.Reject: "拒否"}[decision]
 	fmt.Fprintf(stdout, "%s を %s した（%s）。数えて効かせるのは次の周\n", id, verb, st.Summary())
 	return ExitOK
-}
-
-func rulesText(rules []record.Rule) string {
-	var parts []string
-	for _, r := range rules {
-		of := "申請者でない誰か"
-		if len(r.Of) > 0 {
-			of = strings.Join(r.Of, ", ")
-		}
-		parts = append(parts, fmt.Sprintf("%s: %d 人（%s）", r.From, r.N, of))
-	}
-	return strings.Join(parts, "・")
 }
 
 // runApprovals は承認の依頼の一覧（待っているもの）を出す。
@@ -197,7 +160,7 @@ func runApprovals(args []string, stdout, stderr io.Writer, o *options) int {
 		}
 		items = append(items, item{ID: id, Kind: a.Request.Kind, Subject: a.Request.Subject, Applicant: a.Request.Applicant,
 			State: st.State, Progress: st.Summary(), Approvers: st.Approvers, Created: a.Request.CreatedAt,
-			Expires: a.Request.Expires, Rules: rulesText(a.Request.Rules)})
+			Expires: a.Request.Expires, Rules: approval.RulesText(a.Request.Rules)})
 	}
 	if *h.asJSON {
 		enc := json.NewEncoder(stdout)
@@ -408,13 +371,4 @@ func runCancel(args []string, stdout, stderr io.Writer, o *options) int {
 	}
 	fmt.Fprintf(stdout, "%s を取り消す頼みを書いた。取り消すのは次の周\n", pos[0])
 	return ExitOK
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }

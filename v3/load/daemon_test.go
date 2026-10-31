@@ -67,8 +67,8 @@ listen:
 	if l.Cycle.Interval != 5*time.Minute || l.Cycle.StuckAfter != 3 {
 		t.Errorf("cycle: %+v", l.Cycle)
 	}
-	if l.Sinks["out"] == nil {
-		t.Errorf("sinks: %v", l.Sinks)
+	if l.Sinks["out"] == nil || len(l.AuditSinks) != 0 {
+		t.Errorf("sinks: %v %v", l.Sinks, l.AuditSinks)
 	}
 	if rl := l.Config.Read; rl == nil || rl.Address != "127.0.0.1:9440" || rl.TokensFile != "/etc/sakutei/read-tokens" {
 		t.Errorf("listen.read: %+v", rl)
@@ -95,6 +95,14 @@ func TestLoadRejectsDaemonSettings(t *testing.T) {
 			[]string{"sinks.out", `知らない項目 "to"`}},
 		{"送り先の範囲", baseConfig + "sinks:\n  out:\n    module: stdout\n    settings: {prune: true}\n", nil,
 			[]string{`範囲（"prune"）`}},
+		{"監査を送れない送り先", baseConfig + "sinks:\n  out:\n    module: stdout\n    streams: [audit]\n", nil,
+			[]string{"sinks.out", `"stdout" は監査（streams: [audit]）を送れない`}},
+		{"知らない streams", baseConfig + "sinks:\n  out:\n    module: stdout\n    streams: [logs]\n", nil,
+			[]string{"sinks.out.streams", "知らない送るもの logs"}},
+		{"streams の重なり", baseConfig + "sinks:\n  out:\n    module: stdout\n    streams: [events, events]\n", nil,
+			[]string{"events が 2 回ある"}},
+		{"秘密の保管先の streams", baseConfig + "secret_backends:\n  f:\n    module: file\n    streams: [events]\n", nil,
+			[]string{`知らない項目 "streams"`}},
 		{"外向きの平文", baseConfig + "listen:\n  read: {address: \"0.0.0.0:8443\"}\n", nil,
 			[]string{`loopback でない宛先 "0.0.0.0:8443"`, "plaintext: true"}},
 		{"鍵の無い証明書", baseConfig + "listen:\n  read: {address: \"0.0.0.0:8443\", tls: {cert: a.crt}}\n", nil,

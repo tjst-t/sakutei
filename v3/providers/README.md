@@ -1,6 +1,6 @@
 # 新しいコアの provider（v3/providers）
 
-設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7。provider・Expand のモジュール・秘密の保管先はコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
+設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
 
 | パッケージ | 中身 |
 |---|---|
@@ -12,7 +12,12 @@
 | `expanders/netpolicy` | Expand `go:netpolicy`：intent の `network_policy:`（networks・allows・targets、domain・interfaces、reason・tags）を検査し、実現先ごとに nftables の base chain に展開する。重なり・理由の無い例外・重複・宣言に無い網・domain をまたぐ許可は Reject、隠れた許可・通らない許可は Warn。ほかの実現先は `netpolicy.WithRealizer`（E-B5） |
 | `expanders/compat` | Expand `go:compat`：intent の `compatibility:`（部品の版の互換の表）。望む組み合わせが表に無ければ Reject、1 つずつ更新する途中の組み合わせは depends_on の `when` で止める（E-A7） |
 | `secretbackend` | 秘密の保管先 `vault-kv2`（Vault KV v2・OpenBao。トークンのファイルか AppRole、世代は KV の版）と `command`（外のコマンド。世代は正の整数）。届かなければ誤りで、コアがその秘密に依る宣言をその周 Unknown にする（E-G3・E-G4・E-O2・N-O2） |
-| `cmd/sakutei` | 上の provider・Expand・保管先を `cli.Main(cli.WithModule(...), cli.WithExpander(...), cli.WithSecretBackend(...))` で組み込んだ CLI（E-O4・E-S4） |
+| `sinks/alertmanager` | 送り先 `alertmanager`：Alertmanager の API v2 に、今 firing の一覧を周ごとに `endsAt = 今 + ttl` で送り直し、resolved と設定した出来事型を 1 回送る。複数の宛先（`urls`）の全部に送り、1 台でも受け取れば送れたとする（E-H2・E-T3） |
+| `sinks/syslog` | 送り先 `syslog`：RFC 5424（TCP の上は octet-counting、TLS は RFC 5425）で 1 件ずつ。`streams: [audit]` なら監査の鎖の行をそのまま MSG に（facility 13、受け手で鎖をたどれる）。番号は `[meta sequenceId]`（E-L1・N-L1） |
+| `sinks/metrics` | 送り先 `metrics`：CycleDone と今の firing の一覧から Prometheus の値を作り `/metrics` で見せる。数えていない値は出さない。待ち受けは最初に送られたときに始める。TLS・クライアント証明書・読むだけのトークン・外向きの平文の明示は `listen.read` と同じ（E-H3・N-L4） |
+| `sinks/otlp` | 送り先 `otlp`：CycleDone を周の span、その前の出来事型を子の span にして OTLP/HTTP の JSON で送る。ID は Event の番号から決まる（送り直しても同じ）。欄の値は載せない（E-H3・N-H5） |
+| `approve`・`cmd/sakutei-approve` | 承認ツール：ネットワーク越しの承認・拒否を、CLI と同じ判断のファイルとして Record に書くだけ。承認者は前段の認証（クライアント証明書の CN か、認証をする proxy のヘッダ）から受け取る。申請者・要件に無い人・待っていない依頼は書く前に断る（不変条件 21、E-M4・N-M4・E-L3） |
+| `cmd/sakutei` | 上の provider・Expand・保管先・送り先を `cli.Main(cli.WithModule(...), cli.WithExpander(...), cli.WithSecretBackend(...), cli.WithSink(...))` で組み込んだ CLI（E-O4・E-S4） |
 
 ホストへのつなぎ方（hostconf・nftables の live）はコアの SDK `sdk/hostexec`（手元・ssh・sudo。ホスト鍵は known_hosts で確かめる）。
 
@@ -105,6 +110,46 @@ network_policy:
 ```
 
 各 Expand の golden のテストは `expanders/*/testdata/<場合>/`（`intent/`・任意の `inputs.json`・`golden.json`）にあり、コアの `expand/expandtest.Golden` で 2 回呼んで同じ出力（純粋さ）と golden を確かめる（N-P5）。意図した変更なら `go test ./expanders/... -update` で書き直す。
+
+## 送り先と承認ツールの例
+
+```yaml
+# config.yaml
+sinks:
+  am:
+    module: alertmanager
+    settings:
+      urls: ["https://am1.example.com:9093", "https://am2.example.com:9093"]
+      tls: {ca: /etc/sakutei/am-ca.pem}
+      token_file: /etc/sakutei/am.token     # 省略可（Authorization: Bearer）
+      ttl: 10m                              # firing の endsAt（周の間隔より長く）
+      incidents: [Applied, Deleted]         # alert にする出来事型（既定は無し）。長さは incident_ttl（既定 1h）
+      labels: {instance: sakutei-tokyo}
+  audit:
+    module: syslog
+    settings: {address: "tls://log.example.com:6514", tls: {ca: /etc/sakutei/log-ca.pem}}
+    streams: [audit]                        # events も足せる
+  prom:
+    module: metrics
+    settings: {listen: "127.0.0.1:9464"}    # tls・auth.tokens_file・plaintext は listen.read と同じ
+  otel:
+    module: otlp
+    settings: {endpoint: "https://otel.example.com:4318", service_name: sakutei}
+```
+
+- Alertmanager の labels は `alertname`（Event の種類）・`resource` か `scope`・`stuck`（stuck に上がったときだけ）・宣言の labels（Prometheus の名前に直す）・設定の `labels`。annotations は `message`・`since`・`count`。Sakutei が止まれば送り直しも止まり、alert は `ttl` で消える。
+- 平文の http は loopback の宛先か `plaintext: true` のときだけ（alertmanager・otlp）。URL に資格は書けない。
+- `/metrics` の値：`sakutei_cycles_total`・`sakutei_last_cycle_timestamp_seconds`・`sakutei_cycle_duration_seconds`・`sakutei_resources{state}`・`sakutei_declared_resources`・`sakutei_cycle_applied`・`sakutei_cycle_failed`・`sakutei_halts`・`sakutei_budget_remaining{policy}`・`sakutei_budget_window_remaining{policy}`・`sakutei_firing{kind}`・`sakutei_firing_stuck{kind}`・`sakutei_events_total{kind}`。
+- どの送り先も、届かない・戻らないときは誤りを返すだけで、コアが位置を保って次の周に送り直す（周は止めない、不変条件 28）。
+
+```console
+$ sakutei-approve --record /var/lib/sakutei --listen 127.0.0.1:8444 --user-header X-Remote-User   # 認証をする proxy の後ろ
+$ sakutei-approve --record /var/lib/sakutei --listen 0.0.0.0:8444 \
+    --tls-cert tls.crt --tls-key tls.key --tls-client-ca approvers-ca.pem                       # 証明書の CN が承認者
+$ curl -X POST https://approve.example.com:8444/approvals/chg-3f…/approve -d '{"comment": "確認済み"}'
+```
+
+`GET /approvals`（待っている依頼。`?all=1` で全部）・`GET /approvals/{id}`・`POST /approvals/{id}/approve`・`POST /approvals/{id}/reject`（`comment` 必須）。断るときは 401（承認者が分からない）・403（申請者・要件に無い人）・404（依頼が無い）・409（待っていない）・400（書き方）。`--user-header` は loopback の待ち受けか `--tls-client-ca`（proxy の証明書）と一緒にしか使えない（誰でもヘッダを名乗れる口にしない）。数えて効かせ、監査に残すのは周。
 
 ## 統合テスト（本物のカーネル）
 

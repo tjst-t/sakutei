@@ -61,8 +61,17 @@ type ExpanderConfig struct {
 type SinkConfig struct {
 	Module   string
 	Settings map[string]any
-	Origin   core.Origin
+	// Streams は送るもの（events・audit、E-H2・E-L1）。書かなければ events だけ。
+	// 秘密の保管先では使わない。
+	Streams []string
+	Origin  core.Origin
 }
+
+// 送り先に送るもの（sinks.<名前>.streams）。
+const (
+	StreamEvents = "events" // Events の送り出しの列（E-H2・E-H3）
+	StreamAudit  = "audit"  // 監査の鎖（E-L1・N-L1）
+)
 
 // ReadListen は読み取り HTTP の待ち受け（§5.3、E-H5・E-L3・N-L4）。
 type ReadListen struct {
@@ -183,12 +192,16 @@ func Load(path string) (*Config, error) {
 					reject(n, target, "マップを書く")
 					continue
 				}
-				module, settings, origin := moduleOf(n, target, path, reject, unknown)
+				var streams []string
+				if k == "sinks" {
+					streams = sinkStreams(n, target, reject)
+				}
+				module, settings, origin := moduleOf(n, target, path, reject, unknown, k == "sinks")
 				switch k {
 				case "providers":
 					cfg.Providers[name] = ProviderConfig{Module: module, Settings: settings, Origin: origin}
 				case "sinks":
-					cfg.Sinks[name] = SinkConfig{Module: module, Settings: settings, Origin: origin}
+					cfg.Sinks[name] = SinkConfig{Module: module, Settings: settings, Streams: streams, Origin: origin}
 				default:
 					if strings.ContainsAny(name, ": ") {
 						reject(n, target, "名前に : と空白は使えない")
@@ -223,8 +236,36 @@ func Load(path string) (*Config, error) {
 type rejectFunc func(n *yaml.Node, target, format string, a ...any)
 type unknownFunc func(parent *yaml.Node, target, key string, allowed []string)
 
-// moduleOf は module と settings を読む（providers と sinks で同じ形）。
-func moduleOf(n *yaml.Node, target, path string, reject rejectFunc, unknown unknownFunc) (string, map[string]any, core.Origin) {
+// sinkStreams は sinks.<名前>.streams を読む（E-H2・E-L1）。書かなければ events だけ。
+func sinkStreams(n *yaml.Node, target string, reject rejectFunc) []string {
+	v := n.Map["streams"]
+	if v == nil {
+		return []string{StreamEvents}
+	}
+	if v.Kind != yaml.Seq || len(v.Seq) == 0 {
+		reject(v, target+".streams", "%s か %s の並びを書く", StreamEvents, StreamAudit)
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, it := range v.Seq {
+		s, _ := it.Scalar.(string)
+		switch {
+		case s != StreamEvents && s != StreamAudit:
+			reject(it, target+".streams", "知らない送るもの %v（%s・%s）", it.Value(), StreamEvents, StreamAudit)
+		case seen[s]:
+			reject(it, target+".streams", "%s が 2 回ある", s)
+		default:
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// moduleOf は module と settings を読む（providers・sinks・secret_backends で同じ
+// 形。sinks だけ streams も書ける）。
+func moduleOf(n *yaml.Node, target, path string, reject rejectFunc, unknown unknownFunc, sink bool) (string, map[string]any, core.Origin) {
 	var module string
 	var settings map[string]any
 	for _, k := range n.Keys {
@@ -250,8 +291,16 @@ func moduleOf(n *yaml.Node, target, path string, reject rejectFunc, unknown unkn
 				}
 			}
 			settings = v.Value().(map[string]any)
+		case "streams":
+			if !sink {
+				unknown(n, target, k, []string{"module", "settings"})
+			}
 		default:
-			unknown(n, target, k, []string{"module", "settings"})
+			allowed := []string{"module", "settings"}
+			if sink {
+				allowed = append(allowed, "streams")
+			}
+			unknown(n, target, k, allowed)
 		}
 	}
 	if module == "" && n.Map["module"] == nil {

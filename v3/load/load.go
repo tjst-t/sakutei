@@ -77,7 +77,9 @@ type Loaded struct {
 	// Procedures は一回きりの手順（§3.7）。
 	Procedures []core.Procedure
 	Cycle      core.CycleSettings   // 書かなければ既定の間隔
-	Sinks      map[string]core.Sink // つなぎ方の設定の sinks の名前 → 送り先
+	Sinks      map[string]core.Sink // つなぎ方の設定の sinks の名前 → 送り先（streams に events）
+	// AuditSinks は監査の鎖を送る送り先（streams に audit、E-L1・N-L1）。
+	AuditSinks map[string]core.AuditSink
 	Checks     map[string]core.CheckFunc
 	Warnings   []core.Diagnostic
 	// Unknown は Expand・秘密の世代・採番で「分からない」にした宣言 → 理由
@@ -103,7 +105,7 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 		return nil, err
 	}
 	providers, diags := build(cfg, opt.Modules)
-	sinks, sdiags := buildSinks(cfg, opt.Sinks)
+	sinks, auditSinks, sdiags := buildSinks(cfg, opt.Sinks)
 	diags = append(diags, sdiags...)
 	backends, bdiags := buildSecrets(cfg, opt.Secrets)
 	diags = append(diags, bdiags...)
@@ -176,7 +178,7 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 		cyc = out.Cycles[0]
 	}
 	return &Loaded{Config: cfg, Providers: providers, Resources: res, Ranges: out.Ranges, Policies: out.Policies,
-		Procedures: out.Procedures, Cycle: cyc, Sinks: sinks, Checks: opt.Checks, Warnings: warns,
+		Procedures: out.Procedures, Cycle: cyc, Sinks: sinks, AuditSinks: auditSinks, Checks: opt.Checks, Warnings: warns,
 		Unknown: unknown, Incomplete: incomplete, Secrets: backends, IntentDir: opt.IntentDir, Allocs: aplan.Writes,
 		InputCounts: counts}, nil
 }
@@ -292,13 +294,16 @@ func topKeysOf(doc intent.Document) []string {
 	return doc.Root.Keys
 }
 
-func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]core.Sink, []core.Diagnostic) {
+// buildSinks は送り先を作り、streams で Events の送り先と監査の送り先に分ける
+// （E-H2・E-L1）。監査を送れないモジュールに streams: [audit] を書けば断る。
+func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]core.Sink, map[string]core.AuditSink, []core.Diagnostic) {
 	names := make([]string, 0, len(cfg.Sinks))
 	for n := range cfg.Sinks {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	sinks := make(map[string]core.Sink, len(names))
+	audits := map[string]core.AuditSink{}
 	var diags []core.Diagnostic
 	for _, n := range names {
 		sc := cfg.Sinks[n]
@@ -317,9 +322,21 @@ func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]c
 			diags = append(diags, reject(sc.Origin, "sinks."+n, "%v", err))
 			continue
 		}
-		sinks[n] = s
+		for _, st := range sc.Streams {
+			switch st {
+			case config.StreamEvents:
+				sinks[n] = s
+			case config.StreamAudit:
+				a, ok := s.(core.AuditSink)
+				if !ok {
+					diags = append(diags, reject(sc.Origin, "sinks."+n, "送り先のモジュール %q は監査（streams: [audit]）を送れない", sc.Module))
+					continue
+				}
+				audits[n] = a
+			}
+		}
 	}
-	return sinks, diags
+	return sinks, audits, diags
 }
 
 func build(cfg *config.Config, modules map[string]Module) (map[string]core.Provider, []core.Diagnostic) {

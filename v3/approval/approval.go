@@ -173,3 +173,85 @@ func appendOnce(list []string, s string) []string {
 	}
 	return append(list, s)
 }
+
+// DecideError は判断を書く前に断った理由（CLI と承認ツール、§5.4）。
+type DecideError struct {
+	Code    string // DecideNotFound・DecideClosed・DecideForbidden・DecideInvalid
+	Message string
+}
+
+func (e *DecideError) Error() string { return e.Message }
+
+// DecideError の Code。承認ツールは HTTP の状態に写す。
+const (
+	DecideInvalid   = "invalid"   // 名前・理由の書き方の誤り
+	DecideNotFound  = "not_found" // 依頼が無い
+	DecideClosed    = "closed"    // 依頼が待っていない（使った・拒否・期限切れ）
+	DecideForbidden = "forbidden" // 申請者・要件に無い人（不変条件 21）
+)
+
+// Decide は依頼 id への判断 d を確かめてから Record に書く（CLI の approve・reject と
+// 承認ツール sakutei-approve で同じ、§5.4・不変条件 21、E-M4・N-M4）。申請者と
+// 要件に無い人の判断・待っていない依頼への判断は書く前に断る。数えて効かせる
+// のは周。書いたあとの数え方を返す。
+func Decide(dir, id string, d record.Decision) (Status, error) {
+	refuse := func(code, format string, a ...any) (Status, error) {
+		return Status{}, &DecideError{Code: code, Message: fmt.Sprintf(format, a...)}
+	}
+	if !record.ValidName(id) {
+		return refuse(DecideInvalid, "依頼の ID %q に使えない文字がある", id)
+	}
+	if d.By == "" || !record.ValidName(d.By) {
+		return refuse(DecideInvalid, "承認者の名前を書く（英数字と . _ @ -）")
+	}
+	switch d.Decision {
+	case record.Approve:
+	case record.Reject:
+		if strings.TrimSpace(d.Comment) == "" {
+			return refuse(DecideInvalid, "拒否の理由を書く")
+		}
+	default:
+		return refuse(DecideInvalid, "知らない判断 %q（%s・%s）", d.Decision, record.Approve, record.Reject)
+	}
+	a, found, err := record.ReadApproval(dir, id)
+	if err != nil {
+		return Status{}, err
+	}
+	if !found {
+		return refuse(DecideNotFound, "依頼 %s が無い", id)
+	}
+	req := a.Request
+	if st := Evaluate(a, true, d.At); st.State != Pending && st.State != Approved {
+		return refuse(DecideClosed, "依頼 %s は %s（判断を受け付けない）", id, st.State)
+	}
+	for _, x := range strings.Split(req.Applicant, ",") {
+		if strings.TrimSpace(x) == d.By {
+			return refuse(DecideForbidden, "%s は依頼 %s の申請者なので承認者になれない（申請者≠承認者）", d.By, id)
+		}
+	}
+	listed := false
+	for _, r := range req.Rules {
+		listed = listed || len(r.Of) == 0 || contains(r.Of, d.By)
+	}
+	if !listed {
+		return refuse(DecideForbidden, "%s は依頼 %s の承認者（%s）に無い", d.By, id, RulesText(req.Rules))
+	}
+	if err := record.WriteDecision(dir, id, d); err != nil {
+		return Status{}, err
+	}
+	a.Decisions = append(a.Decisions, d)
+	return Evaluate(a, true, d.At), nil
+}
+
+// RulesText は依頼の要件の 1 行（「policy: 2 人（alice, bob）」）。
+func RulesText(rules []record.Rule) string {
+	var parts []string
+	for _, r := range rules {
+		of := "申請者でない誰か"
+		if len(r.Of) > 0 {
+			of = strings.Join(r.Of, ", ")
+		}
+		parts = append(parts, fmt.Sprintf("%s: %d 人（%s）", r.From, r.N, of))
+	}
+	return strings.Join(parts, "・")
+}

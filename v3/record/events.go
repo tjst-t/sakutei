@@ -293,6 +293,20 @@ func (r *Record) WriteCursor(name string, seq uint64) error {
 	return writeFile(filepath.Join(dir, name+".json"), append(data, '\n'))
 }
 
+// AuditCursor は監査を送る sink name が送り終えた最後の監査の番号（無ければ 0、
+// events/cursors/audit/<sink>.json、E-L1）。
+func (r *Record) AuditCursor(name string) (uint64, error) {
+	return r.Cursor(filepath.Join(auditDir, name))
+}
+
+// WriteAuditCursor は監査を送る sink name が送り終えた最後の番号を書く。
+func (r *Record) WriteAuditCursor(name string, seq uint64) error {
+	if err := os.MkdirAll(filepath.Join(r.dir, eventsDir, cursorsDir, auditDir), 0o755); err != nil {
+		return err
+	}
+	return r.WriteCursor(filepath.Join(auditDir, name), seq)
+}
+
 // Health は健全性（§3.9、health.json）：最後の周の時刻・続いた誤りの数・最後の
 // 誤り（E-K11・N-H4）。
 type Health struct {

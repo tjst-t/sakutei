@@ -180,7 +180,7 @@ func logCycle(w io.Writer, cy daemon.Cycle, asJSON bool) {
 	}
 	for _, d := range cy.Result.Deliveries {
 		if d.Error != "" {
-			fmt.Fprintf(w, "  送り出し %s: %s\n", d.Sink, d.Error)
+			fmt.Fprintf(w, "  送り出し %s: %s\n", d.Label(), d.Error)
 		}
 	}
 }

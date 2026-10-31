@@ -655,8 +655,13 @@ type Event struct {
     Since time.Time; Count int; Message string
 }
 type Sink interface {
-    Name() string
     Deliver(ctx context.Context, batch []Event) error // 失敗しても周を止めない。次の周に同じ位置から
+}
+type StateSink interface { // 任意：周ごとに今の firing の一覧も受け取る（Alertmanager の送り直し・metrics のゲージ、E-H2・E-H3）
+    DeliverState(ctx context.Context, firing []Event) error
+}
+type AuditSink interface { // 任意：streams: [audit] で監査の鎖の行をそのまま受け取る（syslog、E-L1・N-L1）
+    DeliverAudit(ctx context.Context, batch []AuditLine) error
 }
 ```
 
@@ -725,7 +730,7 @@ record/
 ├── events/
 │   ├── state.json               # firing の一覧
 │   ├── outbox/000123.jsonl      # 送り出しの列（seq 順。古いものは全 sink が送ったら消す）
-│   └── cursors/<sink>.json
+│   └── cursors/<sink>.json      # 監査を送る sink は cursors/audit/<sink>.json も
 ├── audit/000007.jsonl           # 監査の鎖（大きくなれば新しいファイルへ回す）
 ├── alloc/<pool>.json            # 採番の写し
 └── health.json
@@ -884,7 +889,7 @@ listen:
 | `secret_backends` | E-G3・E-O2・N-O2 |
 | `inputs` の在りか | E-K3・E-P4 |
 | `expanders` の在りか（どれを使うかは intent の `expand:`） | E-B5・E-A7 |
-| `sinks`（`streams: [events, audit]`） | E-H2・E-H3・E-L1 |
+| `sinks`（`streams: [events, audit]`。書かなければ events。監査を送れないモジュールに audit を書けば断る） | E-H2・E-H3・E-L1 |
 | `listen.read` | E-H5・E-L3・N-L4 |
 
 ---
@@ -1007,7 +1012,7 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | 5 | Procedure（apply・invoke・wait・manual・gate・policy・critical）・承認の CLI・一時的な Policy・`approve` と `freeze` | 送信の途中で止めても二度送らない（16）。done_when で閉じる（18）。申請者≠承認者（21）。freeze の期限（22） |
 | 6 | 最初の実 provider：`dnszone`・`hostconf`・`nftables`（Transactor を含む）と `nft-guard` | 実のファイルとカーネルで、2 段の Apply が戻る（17）。v2 の試用の手順（DNS と FW）が通る |
 | 7 | Expand のモジュール（template・netpolicy・compat）・採番・秘密の世代と secret backend | 採番を巻き戻しても二度払わない（11）。金庫が落ちても Unknown に寄る（E-G4）。golden のテスト（N-P5） |
-| 8 | 残りの provider（proxmox・redfish・netconf・cli-device・postgresql・sqlmigrate・s3・ldap・ansible・template-file・guest-os・metrics-probe）・sink（alertmanager・syslog・metrics・otlp）・`sakutei-approve` | 各 provider の契約テストと、v2 と同じ統合テスト（qemu-bmc・netopeer2・Proxmox の入れ子） |
+| 8 | 残りの provider（proxmox・redfish・netconf・cli-device・postgresql・sqlmigrate・s3・ldap・ansible・template-file・guest-os・metrics-probe）・sink（alertmanager・syslog・metrics・otlp）・`sakutei-approve`。大きいので 8a（sink と `sakutei-approve`）と 8b〜8f（provider）に分ける | 各 provider の契約テストと、v2 と同じ統合テスト（qemu-bmc・netopeer2・Proxmox の入れ子）。8a：各 sink が偽の受け手に送れ、受け手が落ちても周を止めない（28）。`sakutei-approve` が申請者≠承認者を強制する（21） |
 | 9 | `sakutei-migrate`・import と同期の道具 | v2 の試用の intent を全部変換して、新しいコアの plan が v2 の plan と同じ操作を出す |
 
 最初の版（段 2 まで）で、v2 の安全の芯（消さない・数えて止める・一回実行で収束）を偽の provider の上で確かめられる。段 6 で初めて実物に触る。

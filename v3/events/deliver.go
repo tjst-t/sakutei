@@ -75,25 +75,79 @@ func deliverOne(ctx context.Context, rec *record.Record, name string, s core.Sin
 		d.Error = err.Error()
 		return d
 	}
-	if len(batch) == 0 {
+	if len(batch) > 0 {
+		d = sent(d, len(batch), call(ctx, func(ctx context.Context) error { return s.Deliver(ctx, batch) }),
+			batch[len(batch)-1].Seq, func(seq uint64) error { return rec.WriteCursor(name, seq) })
+	}
+	// 続いている状態を送り直す送り先には、周ごとに今の firing の一覧も渡す
+	// （E-H2・E-H3）。列の送りが失敗していても渡す（今の状態が正）。
+	if ss, ok := s.(core.StateSink); ok {
+		st, err := rec.EventState()
+		if err == nil {
+			err = call(ctx, func(ctx context.Context) error { return ss.DeliverState(ctx, st.Firing) })
+		}
+		if err != nil && d.Error == "" {
+			d.Error = "今の状態を送れない: " + err.Error()
+		}
+	}
+	return d
+}
+
+// AuditBatchSize は 1 回の送り出しで送る監査の行の数の上限。残りは次の周に送る。
+var AuditBatchSize = 1000
+
+// DeliverAudit は監査を送る sink ごとに、送り終えた位置の次から監査の鎖を送り、
+// 送れたら位置を進める（E-L1・N-L1）。送れなければ位置を保ち、次の周に同じ
+// 位置から送り直す（届かない間は Record に貯まっている）。監査は消さない。
+// ロックを持つ処理だけが呼ぶ。
+func DeliverAudit(ctx context.Context, rec *record.Record, sinks map[string]core.AuditSink) []plan.Delivery {
+	names := make([]string, 0, len(sinks))
+	for n := range sinks {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]plan.Delivery, 0, len(names))
+	for _, n := range names {
+		d := plan.Delivery{Sink: n, Stream: "audit"}
+		cur, err := rec.AuditCursor(n)
+		if err != nil {
+			d.Error = err.Error()
+			out = append(out, d)
+			continue
+		}
+		d.Cursor = cur
+		batch, err := record.ReadAudit(rec.Dir(), cur, AuditBatchSize)
+		switch {
+		case err != nil:
+			d.Error = err.Error()
+		case len(batch) == 0:
+		default:
+			s := sinks[n]
+			d = sent(d, len(batch), call(ctx, func(ctx context.Context) error { return s.DeliverAudit(ctx, batch) }),
+				batch[len(batch)-1].Seq, func(seq uint64) error { return rec.WriteAuditCursor(n, seq) })
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// sent は送った結果を d に書き、送れたら位置を last に進める。位置を書けなければ
+// 次の周に同じものを送る（落とすより重ねる）。
+func sent(d plan.Delivery, n int, err error, last uint64, write func(uint64) error) plan.Delivery {
+	if err != nil {
+		d.Error, d.Pending = err.Error(), n
 		return d
 	}
-	if err := call(ctx, s, batch); err != nil {
-		d.Error, d.Pending = err.Error(), len(batch)
+	if err := write(last); err != nil {
+		d.Error, d.Pending = "位置を書けない: "+err.Error(), n
 		return d
 	}
-	last := batch[len(batch)-1].Seq
-	if err := rec.WriteCursor(name, last); err != nil {
-		// 位置を書けなければ次の周に同じものを送る（落とすより重ねる）。
-		d.Error, d.Pending = "位置を書けない: "+err.Error(), len(batch)
-		return d
-	}
-	d.Sent, d.Cursor = len(batch), last
+	d.Sent, d.Cursor = n, last
 	return d
 }
 
 // call は時間を区切って送る。送り先が戻らなくても待たない。
-func call(ctx context.Context, s core.Sink, batch []core.Event) (err error) {
+func call(ctx context.Context, send func(ctx context.Context) error) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, DeliverTimeout)
 	defer cancel()
 	done := make(chan error, 1)
@@ -103,7 +157,7 @@ func call(ctx context.Context, s core.Sink, batch []core.Event) (err error) {
 				done <- fmt.Errorf("送り先が panic した: %v", p)
 			}
 		}()
-		done <- s.Deliver(ctx, batch)
+		done <- send(ctx)
 	}()
 	select {
 	case err := <-done:

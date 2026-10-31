@@ -261,10 +261,19 @@ func (s RunStatus) Active() bool { return s.State == "start" || s.State == "runn
 // Delivery は sink 1 つの送り出しの結果（E-H2・N-H2）。
 type Delivery struct {
 	Sink    string `json:"sink"`
+	Stream  string `json:"stream,omitempty"` // audit なら監査の鎖（E-L1）。空なら Events
 	Sent    int    `json:"sent"`
 	Cursor  uint64 `json:"cursor"`            // 送り終えた最後の番号
 	Pending int    `json:"pending,omitempty"` // 送れずに残った数
 	Error   string `json:"error,omitempty"`
+}
+
+// Label は送り出しの表示の名前（監査なら「<sink>（監査）」）。
+func (d Delivery) Label() string {
+	if d.Stream == "audit" {
+		return d.Sink + "（監査）"
+	}
+	return d.Sink
 }
 
 // Compute は provider ごとに Observe をまとめて呼び（E-D8）、宣言と比べる。
@@ -548,8 +557,11 @@ func (r Result) WriteText(w io.Writer) error {
 		fmt.Fprintf(&b, "誤り: %s\n", e)
 	}
 	for _, d := range r.Deliveries {
-		if d.Error != "" {
-			fmt.Fprintf(&b, "送り出し %s: 送れない（%d 件は次の周に送る）: %s\n", d.Sink, d.Pending, d.Error)
+		switch {
+		case d.Error != "" && d.Pending > 0:
+			fmt.Fprintf(&b, "送り出し %s: 送れない（%d 件は次の周に送る）: %s\n", d.Label(), d.Pending, d.Error)
+		case d.Error != "":
+			fmt.Fprintf(&b, "送り出し %s: 送れない: %s\n", d.Label(), d.Error)
 		}
 	}
 	_, err := io.WriteString(w, b.String())
