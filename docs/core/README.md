@@ -934,7 +934,7 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | 秘密が漏れない | 誤りの文・Note・Fields に秘密の値が出ない | E-G2・N-L5 |
 | 書き込みの資格 | `WriteContext` の外で書き込み用の資格を読まない | E-G5 |
 | Schema の lint | 版がある・identity の項目が宣言できる・壊す印の矛盾が無い | E-P2 |
-| Transaction の戻り | Prepare して Commit しなければ、時間切れのあとに元に戻る（模擬で） | E-B3・E-B8 |
+| Transaction の戻り | Prepare して Commit しなければ、時間切れのあとに元に戻る（模擬で）。確定すれば戻らず、Rollback で戻る（`contract.RunTxn`） | E-B3・E-B8 |
 | Invoke の送信 | 送れなかったときだけ `ErrNotSent` | E-A2 |
 | Delete の断り | 断る条件で `RefuseError` を返し、何も消さない | E-F1・E-C2 |
 
@@ -957,8 +957,8 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | redfish-firmware（多相 Task） | `redfish` の `firmware`（観測だけ。`version` と最新の更新の Task の `update_state`・`update_image`・`update_percent`・`update_message`）＋ `Invoker`（`verify`・`stage`（壊す）・`reset`・`force_restart`（壊す）） | 相は intent の Procedure に書き直す（§3.7 の例）。`stage` で送り、Task の完了は観測の `update_state` で待つ。すぐ効く部品は `stage` だけで版が変わり、再起動で効く部品（BIOS・`apply_time: OnReset`）は `reset` か `force_restart` で効かせる（`apply` という操作は無い）。危険区間は `critical`。`TargetDetermined` の判定は provider の中 | E-A5・N-A4 |
 | proxmox-vm | `proxmox` の `vm` | UPID の待ちは Apply の中か Converging。`keep`・`volume=` の付け替えは `Classifier`。keep の残る VM の削除は `RefuseError`。cluster の範囲は Range | E-D1・E-C2・N-D1・N-D10・N-C12・N-D3（置けるノードの集合は provider の項目で、今のノードが集合に入っていればずれにしない） |
 | proxmox-fw | `proxmox` の `fw-rules` | 印の無い規則は List で宣言外として出す。規則の変更は壊す印 | E-B6 |
-| netconf | `netconf` | 2 段の Apply は `Transactor`（commit confirmed）。commit_group は Resource の `transaction.group`。部分木と機器は Range。NACM の制限は settings | E-B7・E-B8・E-B9・E-B10・N-B1・N-B4 |
-| cli-device | `cli-device` | 機種の定義ファイルは settings。定義の `actions` は `Invoker`。commit/rollback は `Transactor` | E-B11・N-B1 |
+| netconf | `netconf` | 2 段の Apply は `Transactor`（commit confirmed。Commit＝確定の commit、Rollback＝cancel-commit かセッションの終わり）。commit_group は Resource の `transaction.group`、confirm の observe:・check: は Condition。機器と部分木（`filter.<部分木>`・順を比べる道 `ordered.<部分木>`）は Range。観測は毎回新しいセッション。NACM で絞ったユーザーで動く（外を読み書きする rpc を送らない） | E-B7・E-B8・E-B9・E-B10・N-B1・N-B4 |
+| cli-device | `cli-device` | 機種の定義ファイルは settings。種類は定義の項目、ID は装置。扱う装置と項目は Range。定義の `actions` は `Invoker`。`Transactor` は定義に時間切れで戻る確定（`config.commit_confirmed`・`confirm`・`cancel`）がある機種だけ（取り消し `rollback` は確定しない変更を捨てるだけで、時間切れの戻しにならない） | E-B11・N-B1 |
 | postgresql | `postgresql` | 利用者の表がある DB の削除は `RefuseError`。scope は Range | E-F1・E-F3・N-F1・N-F7 |
 | sqlmigrate | `sqlmigrate`（観測と `Invoker`） | `strategy: task` は Procedure（`trigger: on_drift`・`invoke: migrate`・`on_failure` で rollback） | E-F2・N-F2 |
 | s3-bucket | `s3` | Object Lock の変更は `Classifier`（承認）。中身のあるバケットの削除は `RefuseError`。接頭辞は Range | E-C1・N-C7 |

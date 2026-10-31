@@ -121,4 +121,9 @@ $ cd v3 && go run ./cmd/sakutei alloc release <pool> <value> --intent <dir> --re
 - 型 `float`（`core.Float`、E-H4・N-T4）：小数の値（/metrics の値・メモリの量）。Condition の大小で比べる。NaN・±Inf は型に合わない。
 - provider `redfish`・`metrics-probe` は `providers/`（README に設定と intent の例・統合テスト）。
 
+段 8c の決まり（netconf・cli-device と Transaction の契約）：
+
+- 契約テストの Transaction の戻り（§6.2、E-B3・E-B8・不変条件 17）：`sdk/contract.RunTxn(t, newTarget)` は確かめごとに新しい `TxnTarget`（Transactor を持つ provider・準備する宣言・時間切れ・時間切れを過ぎるまで待つ `Expire`）を作り、準備した変更が効く・確定すれば時間切れを過ぎても戻らない・Commit も Rollback もしなければ時間切れのあとに元に戻る・Rollback で戻る、を確かめる。偽の provider でも回す（`sdk/contract/txn_test.go`）。
+- provider `netconf`・`cli-device` は `providers/`（README に設定と intent の例・netopeer2 の統合テスト `make integration-v3-netconf`）。
+
 テストはルートの `make check`・`make test-race` が一緒に回す（`providers/` も）。

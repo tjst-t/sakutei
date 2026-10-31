@@ -224,6 +224,28 @@ integration-netconf:
 	fi; \
 	exit $$status
 
+# 新しいコアの netconf provider の統合テスト（v3 段 8c、不変条件 17）。v2 の
+# integration-netconf と同じ netopeer2 のイメージ（tag と digest で固定）を docker で
+# 4 台（sakutei-v3nc-sw1・g1〜g3。v2 の sakutei-ncit-* と重ならないので同時に回せる）
+# 127.0.0.1 の空いたポートに立て、v3 の CLI（cli.Run）で観測だけ・commit confirmed の
+# 2 段の Apply（1.0・1.1 の persist）・NACM で絞ったユーザー・確かめが通らなければ確定
+# せず戻る・Prepare のあと確定しなければ機器の時間切れで戻る・commit_group と confirm の
+# check(…)・present(…)・止めると Unknown を確かめ、終わったら（失敗しても）コンテナを
+# 消す。docker・ssh・ssh-keygen と sudo（パスワードなし）が要るので、check・test・CI
+# には入れない。手順と結果は v3/providers/README.md。
+.PHONY: integration-v3-netconf
+V3_NETCONF_IT := ./netconf/integration/
+integration-v3-netconf:
+	$(V3P) go vet -tags integration_v3_netconf $(V3_NETCONF_IT)
+	@status=0; \
+	(cd v3/providers && go test -tags integration_v3_netconf -count=1 -v -timeout 15m $(V3_NETCONF_IT)) || status=$$?; \
+	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-v3nc-'); \
+	if [ -n "$$left" ]; then \
+	  echo "integration-v3-netconf: containers were left behind; removing: $$left"; \
+	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	exit $$status
+
 # host-file と systemd-unit の統合テスト（#155）。docker で systemd を PID 1 で動かす
 # 使い捨てのコンテナ（ベースは tag と digest で固定。sshd・sudo・podman。--privileged）
 # を立て、sakutei の CLI から ssh 越しにファイル・通常のユニット・podman の quadlet で

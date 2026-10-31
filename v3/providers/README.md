@@ -1,6 +1,6 @@
 # 新しいコアの provider（v3/providers）
 
-設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a・段 8b。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
+設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a・段 8b・段 8c。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
 
 | パッケージ | 中身 |
 |---|---|
@@ -10,6 +10,8 @@
 | `nftguard`・`cmd/sakutei-nft-guard` | 決まった道具 sakutei-nft-guard（v2 から移し、すぐ戻す `rollback` を足した）。`list`・`check`・`apply`・`arm`・`disarm`・`rollback`・`status` だけ。扱う表は root だけが書ける道具の設定ファイルに書く（E-E1・E-B3） |
 | `redfish` | 物理サーバの BMC（Redfish）。種類 `system`（ID `<node>`、項目 `power`・`boot_enabled`・`boot_target`。Off へは GracefulShutdown だけ。切り替えの途中は Converging）・`virtual-media`（ID `<node>/cd`、項目 `image`）・`bios`（ID `<node>/<属性>`、項目 `value`。Settings に PATCH し、保留中は Converging。登録簿で確かめてから送る）・`firmware`（ID `<node>/<部品>`、観測だけ。`version` と最新の更新の Task の `update_state`・`update_image`・`update_percent`・`update_message`）。一回きりの操作（`core.Invoker`）は system の `boot_once`・`reset`・`force_restart`（壊す）・`force_off`（壊す）と firmware の `verify`・`stage`（壊す）・`reset`・`force_restart`。観測用と書き込み用の資格を分け、書き込み用は Apply・Invoke の中でだけ読む。List を持たず Delete は断る（E-A1〜E-A5・N-A1〜N-A4・E-G5） |
 | `metricsprobe` | /metrics（Prometheus の text 形式）を観測するだけ（module 名 `metrics-probe`）。種類 `series`（ID `<endpoint>/<メトリクス>[{ラベル="値",…}]`、項目 `series`・`value`（1 本のときだけ）・`sum`・`max`・`min`）。比べ方は Condition に書く。届かない・形が壊れている・一致する系列が無い・NaN は Unknown（E-H4・N-T4） |
+| `netconf` | NETCONF の機器の設定の部分木（種類 `subtree`、ID `<host>/<部分木>`、項目 `config`（宣言する XML）・`capabilities`（観測だけ））。機器と部分木（subtree filter・順を比べる道）は Range の `args.host`・`args.filter.<部分木>`・`args.ordered.<部分木>`。比べ方は名前空間・空白・兄弟の順・宣言に無い属性を問わない正規形。既定は観測だけで、`settings.apply: true` のとき `:confirmed-commit:1.0` の 2 段で当てる（`core.Transactor`：Prepare＝lock・edit-config・validate・commit confirmed、Commit＝確定の commit、Rollback＝discard・cancel-commit かセッションの終わり。確定しなければ機器の confirm-timeout で戻る）。NACM で部分木だけに絞ったユーザーで動く。commit_group は `apply.transaction.group`、確かめる先は `confirm` の `observe(…)`・`present(…)`・`check(…)`（E-B7・E-B8・E-B9・E-B10・N-B1・N-B4） |
+| `clidevice` | CLI でしか設定できない装置（種類＝機種の定義の項目、ID＝装置。項目のフィールドは文字列か秘密の参照）。機種の定義（観測のコマンドと読み方・変えるコマンドの雛形・確定と取り消し・`commit_confirmed`）は settings の `definition`（ファイルかマップ）。扱う装置と項目は Range の `args.host`・`args.items`。出力が定義に合わなければ Unknown。定義の `actions` は `core.Invoker`、`config.commit_confirmed`・`confirm`・`cancel` があれば `core.Transactor`（E-B11・N-B1） |
 | `expanders/template` | Expand `go:template`：intent の `templates:` の雛形を、台の一覧（外部入力 `for_each` か intent の `items`）の 1 件ごとに宣言にする。全台に共通の値は `vars` に 1 か所。外部入力が届かなければ宣言を作らず Uncertain（E-A11・N-A14・N-E7・N-B15・E-K3） |
 | `expanders/netpolicy` | Expand `go:netpolicy`：intent の `network_policy:`（networks・allows・targets、domain・interfaces、reason・tags）を検査し、実現先ごとに nftables の base chain に展開する。重なり・理由の無い例外・重複・宣言に無い網・domain をまたぐ許可は Reject、隠れた許可・通らない許可は Warn。ほかの実現先は `netpolicy.WithRealizer`（E-B5） |
 | `expanders/compat` | Expand `go:compat`：intent の `compatibility:`（部品の版の互換の表）。望む組み合わせが表に無ければ Reject、1 つずつ更新する途中の組み合わせは depends_on の `when` で止める（E-A7） |
@@ -21,7 +23,7 @@
 | `approve`・`cmd/sakutei-approve` | 承認ツール：ネットワーク越しの承認・拒否を、CLI と同じ判断のファイルとして Record に書くだけ。承認者は前段の認証（クライアント証明書の CN か、認証をする proxy のヘッダ）から受け取る。申請者・要件に無い人・待っていない依頼は書く前に断る（不変条件 21、E-M4・N-M4・E-L3） |
 | `cmd/sakutei` | 上の provider・Expand・保管先・送り先を `cli.Main(cli.WithModule(...), cli.WithExpander(...), cli.WithSecretBackend(...), cli.WithSink(...))` で組み込んだ CLI（E-O4・E-S4） |
 
-ホストへのつなぎ方（hostconf・nftables の live）はコアの SDK `sdk/hostexec`（手元・ssh・sudo。ホスト鍵は known_hosts で確かめる）。
+ホストへのつなぎ方（hostconf・nftables の live）はコアの SDK `sdk/hostexec`（手元・ssh・sudo。ホスト鍵は known_hosts で確かめる）。netconf の ssh サブシステムと cli-device の対話（pty）・1 行の exec は、同じ `hosts:` の設定の上の `internal/sshstream`（接続を使い回さない・sudo を付けない・ssh の終了コード 255 は届かない）。
 
 ## つなぎ方の設定と intent の例
 
@@ -138,6 +140,78 @@ procedures:
 - `stage` の `transfer: multipart` は Sakutei がイメージを取りに行って MultipartHttpPushUri に送る（`sha256` を書けば送る中身を確かめる）。`apply_time: OnReset` は再起動で効く。イメージを取りに行く資格は `image_username` と秘密の参照の `image_password`（`"<backend>:<在りか>"`）。
 - 送れていない（BMC に届かない・電源の切り替えの途中・イメージを取りに行けない）ときだけ `ErrNotSent`（次の周に送り直す）。直さないと通らない理由（BMC が持たない起動先・更新できない部品・sha256 の不一致）と送ったあとの誤りは手順を止める。
 
+## netconf と cli-device の例
+
+```yaml
+# config.yaml（つなぎ方だけ）
+providers:
+  nc:
+    module: netconf
+    settings:
+      apply: true                 # 既定は観測だけ（2 段の Apply を許すときだけ書く）
+      commit_flow: "1.0"          # "1.1" なら :confirmed-commit:1.1 の persist（セッションが切れても新しいセッションから確定）
+      timeout: 60s                # apply.transaction を書かない宣言の confirm-timeout（既定 30s）
+      hosts:
+        sw1:
+          ssh: {address: 192.0.2.1, port: 830, user: sakutei-ro, key: /etc/sakutei/id_ro, known_hosts: /etc/sakutei/known_hosts}
+          write:                  # 省略可。Prepare・Commit・Rollback だけが使う書き込み用の資格（E-G5）
+            ssh: {address: 192.0.2.1, port: 830, user: sakutei, key: /etc/sakutei/id_rw, known_hosts: /etc/sakutei/known_hosts}
+  sw:
+    module: cli-device
+    settings:
+      definition: /etc/sakutei/example-switch.yaml    # 機種の定義（YAML・JSON のファイルか、ここに直に書くマップ）
+      hosts:
+        sw1:
+          ssh: {address: 192.0.2.11, user: ro, key: /etc/sakutei/id_ro, known_hosts: /etc/sakutei/known_hosts}
+          write: {ssh: {address: 192.0.2.11, user: admin, key: /etc/sakutei/id_rw, known_hosts: /etc/sakutei/known_hosts}}
+          # definition: /etc/sakutei/other.yaml       # 装置ごとの上書き
+```
+
+```yaml
+# intent
+ranges:
+  - provider: nc
+    args:
+      host: sw1
+      filter.acl: '<nacm xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-acm"><rule-list><name>edge</name></rule-list></nacm>'
+      ordered.acl: nacm/rule-list/rule        # 順に意味のある列（ordered-by user）だけ順を比べる
+  - {provider: sw, args: {host: sw1, items: "syslog,community"}}   # items を書かなければ定義の全部
+resources:
+  - type: nc/subtree
+    id: sw1/acl
+    fields: {config: '<nacm xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-acm"><rule-list><name>edge</name>…</rule-list></nacm>'}
+    apply:
+      transaction:
+        group: core                           # commit_group：同じ名前の台は全部の確かめが通ったときだけ確定
+        timeout: 60s                          # confirm-timeout（確かめはその半分まで）
+        confirm:
+          - {phase: after, when: 'check(mgmt-path)'}             # cli.WithCheck で組み込んだ確かめ
+          - {phase: after, when: 'present(nc/subtree/sw2/acl)'}  # 別のリソースの観測
+  - type: sw/syslog
+    id: sw1
+    fields: {host: 192.0.2.53, port: "514"}
+  - type: sw/community
+    id: sw1
+    fields: {community: {secret: "vault:/net/snmp#community"}}
+```
+
+netconf の決まり：
+
+- `filter.<部分木>` の最上位の要素は名前空間を書く（名前空間の無い subtree filter はすべての名前空間に当たる）。宣言の最上位の要素は filter が選ぶものだけで、filter の外を書く宣言・`nc:operation` などの当て方の属性・中身の無い要素・`capabilities` の宣言・知らない項目は読み込みで断る。
+- 観測は get-config（running、部分木の filter）と close-session だけ。毎回新しいセッションを開いて閉じる（準備のあとの確かめも新しい接続で届くかを見る。コアは provider を閉じないので開いたままのセッションを残さない）。中身の無い要素だけの `<data>` は Absent、届かない・rpc-error・access-denied は Unknown（理由つき）。
+- 観測の `config` は、宣言と意味が同じなら宣言の書き方のまま返し、違えば機器の正規形（宣言に書いた属性だけ）を返す。比べるのは宣言に書いた属性だけで、機器が付ける commit の時刻などで drift にしない。
+- 当てるのはいつも commit confirmed の 2 段（`apply.transaction` を書かない宣言も、Apply の中で新しい接続で読み直して宣言どおりなら確定し、`timeout` の半分までに確かめられなければ戻す）。機器が `:candidate` と `:confirmed-commit` を持たなければ何も送らない。部分木を消さない（`prune: true` の範囲・`ensure: absent` は読み込みで断り、Delete は `RefuseError`）。List は範囲の部分木のうち機器に在るもの（宣言外の報告）。
+- NACM で絞ったユーザー：送る rpc は get-config・lock・unlock・edit-config・validate・commit・cancel-commit・discard-changes・close-session だけで、部分木の外を読み書きしない。access-denied で断られたら何も確定せず、許すべきもの（部分木の読み書きと上の rpc の実行）を理由に書く。読むのを許されていない部分木は NACM が黙って省くので Absent に見える。
+
+cli-device の決まり（機種の定義は `clidevice/testdata/example-device.yaml`、架空の装置は `clidevice/clifake`）：
+
+- 種類は定義の項目、ID は装置（`sw/syslog` の `sw1`）。項目は全体で宣言する。値は定義の `pattern`（値の全体）に合わなければ読み込みで断る（コマンドへの差し込みを防ぐ。値は文言に出さない）。秘密の項目は `{secret: …}` でしか書けず、Apply の直前に `WriteContext.Secret` で取り出し、誤りの文・観測では `***` に伏せる。観測は「このプロセスが書いた値と同じなら当てた参照（世代つき）」だけを返す。
+- 出力が定義に合わない（読み方が当たらない・2 つ当たる・エラーの印・プロンプトが来ない・exec の 0 以外の終了）・届かないは Unknown で、Apply は何も流さない。1 回の Observe で同じコマンドの出力は使い回す。
+- Apply は流す前に観測し、宣言どおりなら流さない。エラーの印で止め、`config.rollback` があれば取り消して確定しない。流した後は観測し直し、宣言どおりでなければ誤り（コアが効かない回数で止める）。
+- 2 段の Apply：定義の `config.commit_confirmed`（`{seconds}`・`{minutes}` に transaction.timeout が入る）・`confirm`（確定）・`cancel`（任意。すぐ戻す）を書いた機種だけ。Prepare は設定に入ってコマンド列と commit_confirmed を流し、Commit は新しいやりとりで confirm を流す。どれも無ければ装置の時間切れで戻る（不変条件 17）。書かない機種の宣言に `apply.transaction` を書くと Prepare で断る。
+- 定義の `actions` は `core.Invoker`（`Ops` の `Destructive` は定義の `destructive`）。届かない・1 つも打てていないときだけ `ErrNotSent`。
+- v2 の項目の `disruptive`（Apply を壊す変更に数える）は、コアの壊す変更の印（`Classifier`）が入るまで書けない（書けば読み込みで断る）。
+
 ## Expand と秘密の保管先の例
 
 ```yaml
@@ -244,3 +318,23 @@ v2 と同じ qemu-bmc 0.11.0（tag と digest で固定）を containerlab で 2
 11. 書き込み用のパスワードのファイルが無くても plan は観測できて差分を出し、reconcile は書かずに失敗する。
 
 2026-10-31 に Linux 7.0・containerlab・qemu-bmc 0.11.0 で通した（lab の用意を除いて約 110 秒）。
+
+## 統合テスト（netopeer2、v3 段 8c）
+
+```console
+$ make integration-v3-netconf
+```
+
+v2 の `make integration-netconf` と同じ netopeer2 のイメージ（`sysrepo/sysrepo-netopeer2`、tag と digest で固定。`SAKUTEI_IT_NETOPEER2_IMAGE` で差し替えられる）を docker で 4 台（`sakutei-v3nc-sw1`・`g1`〜`g3`。v2 の `sakutei-ncit-*` と重ならない）127.0.0.1 の空いたポートに立て、v3 の CLI（`cli.Run` の plan・reconcile、`netconf.Module` と `cli.WithCheck`）を本物の NETCONF over SSH に向けて回す（`netconf/integration/`、build tag `integration_v3_netconf`）。docker・ssh・ssh-keygen と sudo（パスワードなし）が要るので、check・test・CI には入れない。コンテナは終われば（落ちても）消す。
+
+1. 宣言どおりなら差分なし（空白・group の利用者の順が機器と違っても）。
+2. 観測だけ：別のセッションで手で変えるとずれ（drift、終了コード 3）、当てない。
+3. commit confirmed の 2 段で当てる：1.0（`apply.transaction`）・1.1 の persist・`apply.transaction` を書かない宣言。確定したものは confirm-timeout を過ぎても戻らない。
+4. NACM で 2 つの部分木と要る rpc だけを許した利用者：観測と 2 段の Apply が通り、その間に netopeer2 が断ったものが無い。部分木の外を書く宣言は access-denied（理由つき）で、機器は変わらない。
+5. 当てると NACM を読めなくなる宣言（読みの締め出し）：確かめが通らず確定しない（終了コード 4・rolled_back）、機器が元に戻り、次の周も同じ宣言を当て直さない。
+6. Prepare のあと Commit も Rollback もしなければ、機器の confirm-timeout で元に戻る（不変条件 17）。
+7. confirm の `present(nc/subtree/g2/marker)`：別の台に印が無ければ確定せず、印を置けば確定する。
+8. commit_group（g1〜g3）と `check(path)`：全部の台で通れば 3 台とも確定し、通らなければどの台も確定せず戻る。
+9. 機器を止めると Unknown（0 以外で終わる）。
+
+2026-10-31 に docker 29.1.3 で通した（9 段・約 85 秒）。この netopeer2 のイメージは、コアの周で commit_group を戻したあと（8 の後半）同じ機器に次の commit confirmed を送ると netopeer2-server が SIGSEGV で落ちた（同じ rpc の並びを provider に直に送ると落ちず、手元の側では原因を絞れなかった）。v2 の統合テストも group を最後に回しているので、8 を g1〜g3 で最後に回している。

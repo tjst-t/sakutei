@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Command sakutei は新しいコアに実の provider（dnszone・hostconf・nftables・
-// redfish・metrics-probe）と
+// redfish・metrics-probe・netconf・cli-device）と
 // Expand のモジュール（template・netpolicy・compat）と秘密の保管先（vault-kv2・
 // command）と Events の送り先（alertmanager・syslog・metrics・otlp）を組み込んだ CLI（設計 §6.1 の cli.Main(With…)、E-O4・E-S4）。どれも
 // コアの外のモジュールで、コアはインターフェースだけを知る。
@@ -21,12 +21,14 @@ package main
 
 import (
 	"github.com/tjst-t/sakutei/v3/cli"
+	"github.com/tjst-t/sakutei/v3/providers/clidevice"
 	"github.com/tjst-t/sakutei/v3/providers/dnszone"
 	"github.com/tjst-t/sakutei/v3/providers/expanders/compat"
 	"github.com/tjst-t/sakutei/v3/providers/expanders/netpolicy"
 	"github.com/tjst-t/sakutei/v3/providers/expanders/template"
 	"github.com/tjst-t/sakutei/v3/providers/hostconf"
 	"github.com/tjst-t/sakutei/v3/providers/metricsprobe"
+	"github.com/tjst-t/sakutei/v3/providers/netconf"
 	"github.com/tjst-t/sakutei/v3/providers/nftables"
 	"github.com/tjst-t/sakutei/v3/providers/redfish"
 	"github.com/tjst-t/sakutei/v3/providers/secretbackend"
@@ -45,6 +47,8 @@ func Options() []cli.Option {
 		cli.WithModule("nftables", nftables.Module),
 		cli.WithModule("redfish", redfish.Module),
 		cli.WithModule("metrics-probe", metricsprobe.Module),
+		cli.WithModule("netconf", netconf.Module),
+		cli.WithModule("cli-device", clidevice.Module),
 		cli.WithModule("fake", fake.Module),
 		cli.WithExpander("template", template.Expander{}),
 		cli.WithExpander("netpolicy", netpolicy.New()),
