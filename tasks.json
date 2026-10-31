@@ -5218,7 +5218,7 @@
       "number": 225,
       "kind": "task",
       "title": "v3 段8b：redfish（BMC・firmware）と metrics-probe の provider",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "v3",
       "dependsOn": [
         "v3-7-expand-secret-backend"
@@ -5232,7 +5232,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T21:00:14.412Z",
-      "updatedAt": "2026-10-31T21:02:06.032Z",
+      "updatedAt": "2026-10-31T22:47:14.937Z",
       "closedAt": null,
       "extra": {}
     },
