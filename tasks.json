@@ -5052,7 +5052,7 @@
       "number": 218,
       "kind": "task",
       "title": "v3 段3：常駐・起床・読み取り HTTP・Events と stdout への送り出し",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [
         "v3-2-1-apply-delete-list-prune-policy-mo"
@@ -5066,7 +5066,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T15:12:51.061Z",
+      "updatedAt": "2026-10-31T16:31:06.942Z",
       "closedAt": null,
       "extra": {}
     },
