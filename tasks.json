@@ -4969,6 +4969,32 @@
       "updatedAt": "2026-10-30T17:35:47.941Z",
       "closedAt": "2026-10-30T17:35:47.941Z",
       "extra": {}
+    },
+    {
+      "id": "v3",
+      "number": 215,
+      "kind": "story",
+      "title": "新しいコアへの作り直し（v3）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "core-v3"
+      ],
+      "body": "v2.12.0 までに機能が増えすぎた（Go 約10.8万行・起動のフラグ128個）。コアを 9 つの部品（Resource・Range・Provider・Condition・Graph・Policy・Procedure・Expand・Record と Events）に絞り、ゼロから作り直す。互換は持たない。v2 のユースケースは全部満たす。\n\n設計は docs/core/README.md、もとにした検討は docs/review/core-usecase-review.md。作る順番は設計書 §8 の 9 段で、子のタスクがそれぞれの段にあたる。\n\n決まり：設計書と実装に入れる項目には、それを要求するユースケースの ID を付ける。ID を付けられない項目は入れない。",
+      "doneWhen": "設計書 §8 の 9 段が全部終わり、v2 の試用の intent を変換した結果について、新しいコアの plan が v2 の plan と同じ操作を出す。",
+      "resolution": null,
+      "refs": [
+        "docs/core/README.md",
+        "docs/review/core-usecase-review.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-31T15:12:30.104Z",
+      "updatedAt": "2026-10-31T15:12:30.104Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
