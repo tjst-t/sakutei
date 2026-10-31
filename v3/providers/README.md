@@ -134,7 +134,7 @@ procedures:
 ```
 
 - 再起動・強制停止・1 回だけの起動先は宣言できない（観測に残らない一回きりの操作。読み込みで断り、手順の `invoke` を示す）。v2 の `power_off: graceful_then_force` は 2 つに分けた：宣言の `power: "Off"` は GracefulShutdown だけを送り（止まらなければ効かない Apply の回数で止まる、E-J6）、強制停止は手順の `invoke: {op: force_off}`（壊す操作。`wait: {for: 5m}` のあとに `skip_if` で止まっていなければ送る、など）。
-- BIOS の属性の登録簿（読み取り専用・選べる値・範囲）は読み込みでなく Apply の前に BMC から読んで確かめる（読み込みは BMC に触れない）。合わなければ送らずに Apply が失敗する。
+- BIOS の属性の登録簿（読み取り専用・選べる値・範囲）は読み込みでなく Apply の前に BMC から読んで確かめる（読み込みは BMC に触れない）。合わなければ送らずに Apply が失敗する（設計 §7.1 の redfish-bios、E-A4・N-A3）。
 - `stage` の `transfer: multipart` は Sakutei がイメージを取りに行って MultipartHttpPushUri に送る（`sha256` を書けば送る中身を確かめる）。`apply_time: OnReset` は再起動で効く。イメージを取りに行く資格は `image_username` と秘密の参照の `image_password`（`"<backend>:<在りか>"`）。
 - 送れていない（BMC に届かない・電源の切り替えの途中・イメージを取りに行けない）ときだけ `ErrNotSent`（次の周に送り直す）。直さないと通らない理由（BMC が持たない起動先・更新できない部品・sha256 の不一致）と送ったあとの誤りは手順を止める。
 

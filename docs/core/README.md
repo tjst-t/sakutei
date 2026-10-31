@@ -284,7 +284,7 @@ type DesiredObserver interface {
 | `Transactor` | 準備 → 確かめ → 確定。確定を呼ばなければ相手の時間切れで戻る | E-B3・E-B8・E-B9・N-B2・N-D5・N-K9 |
 | `Invoker` | 観測に残らない一回きりの操作（boot_once・reset・migrate・drain・upgrade）。Procedure からだけ呼ぶ | E-A2・E-B11・N-D4・N-E2・N-A11 |
 | `Classifier` | 状況で壊す変更（volume の付け替え・base chain の作成・保持の設定の変更）を計画のときに言う | E-C2・E-B3・E-C1 |
-| `Validator` | 読み込みのときに provider 固有の誤りを断る（属性の登録簿・範囲の外・確かめる先の不足） | E-I7・E-A4・E-B3 |
+| `Validator` | 読み込みのときに provider 固有の誤りを断る（範囲の外・確かめる先の不足・宣言だけで決まる値の誤り）。読み込みは相手に触れないので、相手から読まないと分からない決まり（BIOS の属性の登録簿など）は Apply の前に確かめる | E-I7・E-A4・E-B3 |
 | `DesiredObserver` | 宣言を見ないと観測できない縮退（Ansible の check mode・雛形ファイル）。この provider は List と prune を持てない | E-E3・E-E5・N-E5 |
 
 ### 3.4 Condition（観測についての三値の式）
@@ -438,25 +438,27 @@ func Effective(ps []Policy, op Operation, clock Clock, usage Usage) Decision
 ```yaml
 procedures:
   - name: bmc-fw
-    target: {type: bmc/system, select: {labels: {rack: "3"}}}
+    target: {type: bmc/firmware, select: {labels: {rack: "3"}}}   # ID は <node>/<部品>
     trigger: on_drift                     # 宣言と観測がずれたら対象ごとに 1 回
-    drift_fields: [firmware]
+    drift_fields: [version]
     concurrency: 1
     invariant: 'count(bmc/system[role=gpu], it.power == "On") >= 30'
     steps:
-      - name: verify
-        skip_if: 'observe(bmc/firmware/{target}).version == desired.firmware'
-        invoke: {op: verify_image, args: {sha256: "{desired.image_sha256}"}}
       - name: approve
         gate: {approval: {quorum: {n: 1, of: [bob]}}, timeout: 24h}
-      - name: apply
+      - name: verify
+        invoke: {op: verify, args: {image_uri: "http://192.0.2.5/bmc-2.0.0.bin", sha256: "…"}}
+      - name: stage
         critical: true                    # ここで止まったら自動で再開しない
-        invoke: {op: apply_update}
-      - name: reboot
-        invoke: {op: reset, args: {type: GracefulRestart}}
+        skip_if: 'observe(bmc/firmware/{target}).version == desired.version'
+        invoke: {op: stage, args: {image_uri: "http://192.0.2.5/bmc-2.0.0.bin"}}
+      - name: staged
+        wait: {when: 'observe(bmc/firmware/{target}).update_state == "Completed"', timeout: 1h}
+      - name: reboot                      # 再起動で効く部品（BIOS・apply_time: OnReset）だけ
+        invoke: {op: reset}
       - name: confirm
-        wait: {when: 'observe(bmc/firmware/{target}).version == desired.firmware', timeout: 30m}
-    done_when: 'observe(bmc/firmware/{target}).version == desired.firmware'
+        wait: {when: 'observe(bmc/firmware/{target}).version == desired.version', timeout: 30m}
+    done_when: 'observe(bmc/firmware/{target}).version == desired.version'
     on_failure: halt
     timeout: 6h
 
@@ -743,10 +745,10 @@ record/
 
 ```json
 {
-  "procedure": "bmc-fw", "target": "bmc/system/r3-n07", "run_id": "r-20261105-0012",
+  "procedure": "bmc-fw", "target": "bmc/firmware/r3-n07/BMC", "run_id": "r-20261105-0012",
   "started_at": "2026-11-05T22:03:10+09:00", "intent_revision": "sha256:9f…",
-  "step": 3, "step_name": "apply",
-  "sending": {"op": "apply_update", "at": "2026-11-05T22:41:02+09:00"},
+  "step": 3, "step_name": "stage",
+  "sending": {"op": "stage", "at": "2026-11-05T22:41:02+09:00"},
   "gates": {"approve": {"approved_by": ["bob"], "at": "2026-11-05T22:30:00+09:00"}},
   "state": "running"
 }
@@ -951,8 +953,8 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | redfish-system | `redfish` の `system` | power の強制停止は壊す印。電源の切り替え中は Converging | E-A1・N-A1 |
 | redfish の boot_once・reset | `redfish` の `Invoker` | `ErrNotSent` の判定をそのまま移す | E-A2・N-A2 |
 | redfish-virtual-media | `redfish` の `virtual-media` | 変更なし | E-A3 |
-| redfish-bios | `redfish` の `bios` | 保留中は Converging。属性の登録簿の検査は `Validator` | E-A4・N-A3 |
-| redfish-firmware（多相 Task） | `redfish` の `firmware`（観測だけ）＋ `Invoker`（verify・stage・apply） | 相は intent の Procedure に書き直す（§3.7 の例）。危険区間は `critical`。`TargetDetermined` の判定は provider の中 | E-A5・N-A4 |
+| redfish-bios | `redfish` の `bios`（ID `<node>/<属性>`、項目 `value`） | 保留中は Converging。属性の登録簿（読み取り専用・選べる値・範囲・型）の検査は `Validator` でなく Apply の直前：読み込みは BMC に触れないので、登録簿は Apply の前に BMC から読み、合わなければ送らずに Apply を失敗させる | E-A4・N-A3 |
+| redfish-firmware（多相 Task） | `redfish` の `firmware`（観測だけ。`version` と最新の更新の Task の `update_state`・`update_image`・`update_percent`・`update_message`）＋ `Invoker`（`verify`・`stage`（壊す）・`reset`・`force_restart`（壊す）） | 相は intent の Procedure に書き直す（§3.7 の例）。`stage` で送り、Task の完了は観測の `update_state` で待つ。すぐ効く部品は `stage` だけで版が変わり、再起動で効く部品（BIOS・`apply_time: OnReset`）は `reset` か `force_restart` で効かせる（`apply` という操作は無い）。危険区間は `critical`。`TargetDetermined` の判定は provider の中 | E-A5・N-A4 |
 | proxmox-vm | `proxmox` の `vm` | UPID の待ちは Apply の中か Converging。`keep`・`volume=` の付け替えは `Classifier`。keep の残る VM の削除は `RefuseError`。cluster の範囲は Range | E-D1・E-C2・N-D1・N-D10・N-C12・N-D3（置けるノードの集合は provider の項目で、今のノードが集合に入っていればずれにしない） |
 | proxmox-fw | `proxmox` の `fw-rules` | 印の無い規則は List で宣言外として出す。規則の変更は壊す印 | E-B6 |
 | netconf | `netconf` | 2 段の Apply は `Transactor`（commit confirmed）。commit_group は Resource の `transaction.group`。部分木と機器は Range。NACM の制限は settings | E-B7・E-B8・E-B9・E-B10・N-B1・N-B4 |
