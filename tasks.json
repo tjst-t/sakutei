@@ -5075,7 +5075,7 @@
       "number": 219,
       "kind": "task",
       "title": "v3 段4：Condition（三値・all/any/count）・Graph・Apply の後の待ちと効かない回数",
-      "status": "ready",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [
         "v3-3-http-events-stdout"
@@ -5085,12 +5085,12 @@
       "labels": [],
       "body": "§8 の段4。",
       "doneWhen": "空から組む構成が1回で収束する（E-J7）。効かない Apply で止まる（不変条件 14）。容量の待ち（E-C4）がテストで通る。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T18:11:32.949Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-31T18:11:55.829Z",
+      "closedAt": "2026-10-31T18:11:55.829Z",
       "extra": {}
     },
     {
