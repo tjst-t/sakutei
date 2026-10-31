@@ -5029,7 +5029,7 @@
       "number": 217,
       "kind": "task",
       "title": "v3 段2：1周の処理（Apply・Delete・List・prune の守り）・Policy の mode と予算・Record・一回実行",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "v3",
       "dependsOn": [
         "v3-1-expand-provider-plan"
@@ -5043,7 +5043,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T15:56:46.139Z",
+      "updatedAt": "2026-10-31T16:30:52.074Z",
       "closedAt": null,
       "extra": {}
     },
