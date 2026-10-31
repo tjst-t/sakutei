@@ -5075,7 +5075,7 @@
       "number": 219,
       "kind": "task",
       "title": "v3 段4：Condition（三値・all/any/count）・Graph・Apply の後の待ちと効かない回数",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "v3",
       "dependsOn": [
         "v3-3-http-events-stdout"
@@ -5089,7 +5089,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T17:26:38.786Z",
+      "updatedAt": "2026-10-31T18:11:32.949Z",
       "closedAt": null,
       "extra": {}
     },
