@@ -1,0 +1,47 @@
+{
+  "resources": [
+    {
+      "id": "host/file/n1:/etc/chrony.conf",
+      "labels": {
+        "site": "a"
+      },
+      "fields": {
+        "content": "server 192.0.2.123 iburst # 0\n"
+      }
+    },
+    {
+      "id": "pve/vm/n1",
+      "fields": {
+        "cores": 4,
+        "vmid": {
+          "from_pool": "vmid"
+        }
+      }
+    },
+    {
+      "id": "host/file/n2:/etc/chrony.conf",
+      "labels": {
+        "site": "b"
+      },
+      "fields": {
+        "content": "server 192.0.2.123 iburst # 1\n"
+      }
+    },
+    {
+      "id": "pve/vm/n2",
+      "fields": {
+        "cores": 8,
+        "vmid": {
+          "from_pool": "vmid"
+        }
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "severity": "reject",
+      "target": "templates",
+      "message": "template bad: 一覧の 0 件目: {item.name}: item はマップでない"
+    }
+  ]
+}

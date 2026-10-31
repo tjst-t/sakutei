@@ -33,9 +33,11 @@ import (
 	"github.com/tjst-t/sakutei/v3/cycle"
 	"github.com/tjst-t/sakutei/v3/daemon"
 	"github.com/tjst-t/sakutei/v3/events"
+	"github.com/tjst-t/sakutei/v3/expand"
 	"github.com/tjst-t/sakutei/v3/load"
 	"github.com/tjst-t/sakutei/v3/plan"
 	"github.com/tjst-t/sakutei/v3/record"
+	"github.com/tjst-t/sakutei/v3/secret"
 )
 
 // 終了コード（§5.5、E-J14）。
@@ -59,7 +61,8 @@ const usage = `使い方:
   sakutei freeze    --record <dir> --reason … --until <時刻|長さ> [--select labels.<k>=<v>|type=<t>]… [--name <名前>] [--as <名前>]
   sakutei unfreeze  <名前> --record <dir> --reason … [--as <名前>]
   sakutei start     <procedure> --record <dir> [--target <名前>] [--as <名前>]
-  sakutei cancel    <run-id> --record <dir> --reason … [--as <名前>]`
+  sakutei cancel    <run-id> --record <dir> --reason … [--as <名前>]
+  sakutei alloc release <pool> <value> --intent <dir> --record <dir> --reason … [--as <名前>]`
 
 // Option は Main に組み込むもの。
 type Option func(*options)
@@ -68,9 +71,13 @@ type options struct {
 	modules map[string]load.Module
 	sinks   map[string]load.SinkModule
 	checks  map[string]core.CheckFunc
-	clock   core.Clock
-	wait    func(ctx context.Context, interval time.Duration, wake <-chan struct{}) bool
-	onCycle func(daemon.Cycle)
+	// 段 7：Expand・秘密の保管先・採番の選び方（§3.8）。
+	expanders map[string]expand.Expander
+	secrets   map[string]load.SecretModule
+	allocator core.Allocator
+	clock     core.Clock
+	wait      func(ctx context.Context, interval time.Duration, wake <-chan struct{}) bool
+	onCycle   func(daemon.Cycle)
 }
 
 // WithModule は provider のモジュールを名前で組み込む（E-O4）。
@@ -87,6 +94,23 @@ func WithSink(name string, m load.SinkModule) Option {
 // WithCheck は Condition の check(名前) で使う確かめを名前で組み込む（E-B9）。
 func WithCheck(name string, f core.CheckFunc) Option {
 	return func(o *options) { o.checks[name] = f }
+}
+
+// WithExpander は Go の Expand を名前で組み込む（intent の expand: の go:<名前>、
+// E-A11・N-A14・E-B5・E-A7）。
+func WithExpander(name string, e expand.Expander) Option {
+	return func(o *options) { o.expanders[name] = e }
+}
+
+// WithSecretBackend は秘密の保管先のモジュールを名前で組み込む（つなぎ方の設定の
+// secret_backends.<名前>.module、E-G3・E-O2）。file は初めから組み込んである。
+func WithSecretBackend(name string, m load.SecretModule) Option {
+	return func(o *options) { o.secrets[name] = m }
+}
+
+// WithAllocator は採番の空きの選び方を差し替える（外の採番権威、E-T4・N-T5）。
+func WithAllocator(a core.Allocator) Option {
+	return func(o *options) { o.allocator = a }
 }
 
 // WithDaemonWait は常駐の周の間の待ちを差し替える（テスト用）。false を返せば
@@ -116,7 +140,8 @@ func Main(opts ...Option) {
 // Run はサブコマンドを動かし、終了コードを返す。
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...Option) int {
 	o := &options{modules: map[string]load.Module{}, sinks: map[string]load.SinkModule{"stdout": events.StdoutModule(stdout)},
-		checks: map[string]core.CheckFunc{}, clock: core.SystemClock{}}
+		checks: map[string]core.CheckFunc{}, clock: core.SystemClock{}, expanders: map[string]expand.Expander{},
+		secrets: map[string]load.SecretModule{"file": secret.FileModule}}
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -154,8 +179,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 		return runStart(args[1:], stdout, stderr, o)
 	case "cancel":
 		return runCancel(args[1:], stdout, stderr, o)
+	case "alloc":
+		if len(args) < 2 || args[1] != "release" {
+			fmt.Fprintln(stderr, "sakutei alloc: サブコマンドは release")
+			return ExitError
+		}
+		return runAllocRelease(ctx, args[2:], stdout, stderr, o)
 	default:
-		fmt.Fprintf(stderr, "sakutei: 知らないサブコマンド %q（あるもの: plan, reconcile, wake, audit verify, approve, reject, approvals, freeze, unfreeze, start, cancel。常駐は sakutei --intent …）\n", args[0])
+		fmt.Fprintf(stderr, "sakutei: 知らないサブコマンド %q（あるもの: plan, reconcile, wake, audit verify, approve, reject, approvals, freeze, unfreeze, start, cancel, alloc release。常駐は sakutei --intent …）\n", args[0])
 		return ExitError
 	}
 }
@@ -198,7 +229,8 @@ func (c common) parse(name string, args []string, stderr io.Writer, needRecord b
 }
 
 func (c common) loadOptions(o *options) load.Options {
-	return load.Options{IntentDir: *c.intentDir, ConfigFile: *c.configFile, Modules: o.modules, Sinks: o.sinks, Checks: o.checks}
+	return load.Options{IntentDir: *c.intentDir, ConfigFile: *c.configFile, Modules: o.modules, Sinks: o.sinks, Checks: o.checks,
+		Expanders: o.expanders, Secrets: o.secrets, Allocator: o.allocator, RecordDir: *c.recd}
 }
 
 func loadIntent(ctx context.Context, name string, c common, stderr io.Writer, o *options) (*load.Loaded, int, error) {
@@ -274,9 +306,7 @@ func decide(ctx context.Context, loaded *load.Loaded, recd string, clock core.Cl
 
 // cycleInput は読み込んだ結果を 1 周の入力にする（一回実行・plan。常駐は daemon）。
 func cycleInput(loaded *load.Loaded, rec *record.Record, clock core.Clock) cycle.Input {
-	return cycle.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
-		Providers: loaded.Providers, Record: rec, Clock: clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter,
-		Checks: loaded.Checks, Procedures: loaded.Procedures}
+	return cycle.FromLoaded(loaded, rec, clock)
 }
 
 // runReconcile は 1 周だけ回して終わる（§2.2 の一回実行、E-O3）。

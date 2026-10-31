@@ -551,12 +551,13 @@ type Step struct {
 ```yaml
 inputs:
   - name: inventory                    # 中身の在りかはつなぎ方の設定に書く
+    items: hosts                       # 件数を数えるリスト（書かなければ最上位の項目の数）
     expected_min: 40                   # これより少なければ「届いたが欠けている」
-    max_drop: 50%                      # 前の周より件数がこれ以上減れば止める
+    max_drop: 50%                      # 前の周より件数がこれ以上減れば「届いたが欠けている」
 expand:
-  - kind: go:template                  # Go で登録した変換
+  - kind: go:template                  # Go で登録した変換（自分が読む項目 templates: を言う）
   - kind: go:netpolicy                 # network_policy: を fw/chain・pve-fw/rules に展開
-  - kind: exec:./expand-compat         # 外のコマンド。stdin に入力の JSON、stdout に出力の JSON
+  - {kind: "exec:compat", keys: [compatibility]}   # 外のコマンド（在りかは設定の expanders.compat）。stdin に入力の JSON、stdout に出力の JSON
 pools:
   - name: vmid
     range: "100-199"
@@ -572,25 +573,26 @@ resources:
 
 ```go
 type Input struct {
-    Intent      []Document
-    Inputs      map[string]ExternalInput // {Data any; Reachable bool}
-    Allocations map[string]Allocation    // intent のファイルから読んだ採番の結果
-    SecretGens  map[string]Generation    // ref → 世代（読めなければ欠ける）
-    Now         *time.Time               // 任意。日か時に丸める。要る Expand だけが受け取る
+    Intent []Document
+    Inputs map[string]ExternalInput // {Data any; Reachable bool; Note string}
+    Prior  Output                   // それより前の出力（読むだけ。互換の表の照合が使う）
 }
 type Output struct {
-    Resources     []Resource
-    Ranges        []Range
-    Policies      []Policy
-    Procedures    []Procedure
-    AllocRequests []AllocRequest
-    Diagnostics   []Diagnostic           // {Severity: Reject|Warn|Unknown; Target; Message}
+    Resources   []Resource
+    Ranges      []Range
+    Policies    []Policy
+    Procedures  []Procedure
+    Pools       []Pool
+    Allocations []Allocation             // intent のファイル allocations/<pool>.yaml
+    DependsOn   map[ID][]Dependency      // 前の宣言に足す依存（変えてよいのはこれだけ）
+    Diagnostics []Diagnostic             // {Severity: Reject|Warn|Uncertain; Target; Message}
 }
 type Expander interface {
-    Expand(ctx context.Context, in Input) (Output, error)
+    Keys() []string                      // intent の最上位で読む項目
+    Expand(ctx context.Context, in Input) (Output, error) // 足す分だけを返す
 }
 type Allocator interface {
-    Pick(pool Pool, used []Value, req AllocRequest) (Value, error) // 既定はファイルの空きの先頭
+    Pick(pool Pool, taken func(int64) bool, req AllocRequest) (int64, error) // 既定は空きの先頭
 }
 ```
 
@@ -599,15 +601,15 @@ type Allocator interface {
 | Go の Expand と外のコマンドの Expand | 合成リソース・全台共通の設定・台ごとの差の展開 | E-A11・N-A14・N-E7・N-B15・N-A11・N-E8 |
 | 診断 Reject | 入力の意味の誤り（重なる網・理由の無い例外・表に無い版の組）を読み込みで断る | E-B5・E-A7・N-B7 |
 | 診断 Warn | 隠れて効かない許可などを知らせる | E-B5 |
-| 診断 Unknown | その Resource を「分からない」扱いにする（観測も Apply もしない、下流は待つ） | E-G4・E-K3 |
+| 診断 Uncertain | その Resource を「分からない」扱いにする（観測も Apply もしない、下流は待つ）。Target が種類か provider なら、宣言が欠けているかもしれないのでその provider の範囲を消さない | E-G4・E-K3 |
 | 外部入力が届かない | 依る Resource を Unknown にする。空の desired を作らない | E-K3・E-K4・N-K3・N-S4 |
 | `expected_min`・`max_drop` | 届いたが欠けている入力で消さない。前の周の件数は Record の目印 | E-K3 |
-| 秘密の世代 | 値は渡さず世代だけ。世代が変われば Apply（値は provider が Apply の直前に取り出す） | E-G2・E-G3・N-G2 |
-| 採番の要求 | Expand は値を知らず要求を出す。コアが空きを選び intent のファイル `allocations/<pool>.yaml` に書き足して、Expand をもう 1 回呼ぶ | N-B13・N-B12・N-A14 |
+| 秘密の世代 | Expand のあとでコアが参照ごとに世代だけを読み、参照に付ける（`<backend>:<在りか>@gen=<世代>`。Expand には値も世代も渡さない）。世代が変われば Apply（値は provider が Apply の直前に `WriteContext.Secret` で取り出す） | E-G2・E-G3・N-G2 |
+| 採番の要求 | Expand は値を知らず、宣言の項目に `{from_pool: …}` を書いて出す。コアが intent のファイル `allocations/<pool>.yaml` の値を差し込み、無ければ空きを選ぶ（plan は選ぶだけ）。周はロックを持って当てる前にファイルと写しに書き足す | N-B13・N-B12・N-A14 |
 | `blocks`・`reuse: false`・`template` | 区切った範囲・再利用しない・文字列への埋め込み | N-B13 |
 | 解放は人 | 宣言から消えても値を返さない。`sakutei alloc release` で人が返す | N-B13・N-J4 |
 | `Allocator.Pick` の差し替え | 外の採番権威を使う | E-T4・N-T5 |
-| `Now`（任意・丸めた時刻） | 期限つきの宣言（期限つきの許可）を Expand が落とす | N-B8・N-R1 |
+| `Now`（任意・丸めた時刻） | 期限つきの宣言（期限つきの許可）を Expand が落とす。`Input` に日か時に丸めた時刻を足し、要る Expand だけが受け取る（段 7 では入れていない。期限つきの宣言を書く Expand と一緒に足す） | N-B8・N-R1 |
 | 入力を差し替える | 本番の intent に、偽の外部入力・偽の秘密・偽の provider を当てる（ツイン） | E-P4・N-P2・N-K8 |
 | 純粋さ | 同じ入力に同じ出力。golden のテストで確かめられる | N-P5 |
 | 出力のハッシュ | `--expect-revision` と原因の判定に使う | E-J9・E-L5・N-J9・E-J13 |

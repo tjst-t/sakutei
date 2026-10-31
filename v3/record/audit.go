@@ -55,6 +55,10 @@ type Entry struct {
 	Run        string   `json:"run_id,omitempty"`
 	Step       string   `json:"step,omitempty"`
 	Op         string   `json:"op,omitempty"`
+	// 段 7：採番（alloc.assign・alloc.release、N-B13）。払った・返した値はプールの
+	// 番号で、秘密ではない。
+	Pool  string `json:"pool,omitempty"`
+	Value *int64 `json:"value,omitempty"`
 }
 
 // Audit は監査の鎖への追記。

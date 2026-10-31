@@ -1,0 +1,12 @@
+expand:
+  - kind: go:template
+inputs:
+  - {name: inventory, items: hosts, expected_min: 2}
+templates:
+  - name: bmc
+    for_each: inventory.hosts
+    vars: {firmware: "1.3"}
+    resources:
+      - type: fw/version
+        id: "{item.name}-bmc"
+        fields: {version: "{vars.firmware}"}

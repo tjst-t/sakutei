@@ -34,6 +34,27 @@ type Config struct {
 	Providers map[string]ProviderConfig // provider のインスタンス名 → つなぎ方
 	Sinks     map[string]SinkConfig     // Event の送り先の名前 → つなぎ方（E-H2・E-H3）
 	Read      *ReadListen               // 読み取り HTTP の待ち受け。書かなければ待ち受けない（E-H5）
+	// SecretBackends は秘密の保管先の名前 → つなぎ方（E-G3・E-O2・N-O2）。
+	SecretBackends map[string]SinkConfig
+	// Inputs は外部入力の名前 → 在りか（E-K3・E-P4）。どれを使うか・欠けの
+	// 目安は intent の inputs:。
+	Inputs map[string]InputConfig
+	// Expanders は外のコマンドの Expand の名前 → 在りか（E-B5・E-A7）。どれを
+	// 使うかは intent の expand:。
+	Expanders map[string]ExpanderConfig
+}
+
+// InputConfig は外部入力 1 つの在りか。いまはファイル（YAML か JSON）だけ。
+type InputConfig struct {
+	File   string
+	Origin core.Origin
+}
+
+// ExpanderConfig は外のコマンドの Expand 1 つ。stdin に入力の JSON を渡し、
+// stdout の出力の JSON を読む（E-A11・N-A14）。
+type ExpanderConfig struct {
+	Exec   string
+	Origin core.Origin
 }
 
 // SinkConfig は Event の送り先 1 つ（E-H2・E-H3・N-H2）。
@@ -102,12 +123,51 @@ func Load(path string) (*Config, error) {
 		reject(n, target, "知らない項目 %q（書ける項目: %s）", key, strings.Join(allowed, ", "))
 	}
 
-	cfg := &Config{Providers: map[string]ProviderConfig{}, Sinks: map[string]SinkConfig{}}
-	top := []string{"providers", "sinks", "listen"}
+	cfg := &Config{Providers: map[string]ProviderConfig{}, Sinks: map[string]SinkConfig{}, SecretBackends: map[string]SinkConfig{},
+		Inputs: map[string]InputConfig{}, Expanders: map[string]ExpanderConfig{}}
+	top := []string{"expanders", "inputs", "listen", "providers", "secret_backends", "sinks"}
 	for _, k := range root.Keys {
 		v := root.Map[k]
 		switch k {
-		case "providers", "sinks":
+		case "inputs", "expanders":
+			if v.Kind != yaml.Map {
+				reject(v, k, "マップを書く")
+				continue
+			}
+			for _, name := range v.Keys {
+				n := v.Map[name]
+				target := k + "." + name
+				want := map[string]string{"inputs": "file", "expanders": "exec"}[k]
+				if n.Kind != yaml.Map {
+					reject(n, target, "マップを書く")
+					continue
+				}
+				var where string
+				for _, ik := range n.Keys {
+					s, ok := n.Map[ik].Scalar.(string)
+					switch {
+					case ik != want:
+						unknown(n, target, ik, []string{want})
+					case !ok || s == "":
+						reject(n.Map[ik], target+"."+ik, "パスを書く")
+					default:
+						where = s
+					}
+				}
+				if where == "" {
+					if n.Map[want] == nil {
+						reject(n, target, "%s を書く", want)
+					}
+					continue
+				}
+				origin := core.Origin{File: path, Line: n.Line}
+				if k == "inputs" {
+					cfg.Inputs[name] = InputConfig{File: where, Origin: origin}
+				} else {
+					cfg.Expanders[name] = ExpanderConfig{Exec: where, Origin: origin}
+				}
+			}
+		case "providers", "sinks", "secret_backends":
 			if v.Kind != yaml.Map {
 				reject(v, k, "マップを書く")
 				continue
@@ -124,10 +184,17 @@ func Load(path string) (*Config, error) {
 					continue
 				}
 				module, settings, origin := moduleOf(n, target, path, reject, unknown)
-				if k == "providers" {
+				switch k {
+				case "providers":
 					cfg.Providers[name] = ProviderConfig{Module: module, Settings: settings, Origin: origin}
-				} else {
+				case "sinks":
 					cfg.Sinks[name] = SinkConfig{Module: module, Settings: settings, Origin: origin}
+				default:
+					if strings.ContainsAny(name, ": ") {
+						reject(n, target, "名前に : と空白は使えない")
+						continue
+					}
+					cfg.SecretBackends[name] = SinkConfig{Module: module, Settings: settings, Origin: origin}
 				}
 			}
 		case "listen":

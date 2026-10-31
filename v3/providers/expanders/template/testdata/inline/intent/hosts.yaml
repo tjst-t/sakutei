@@ -1,0 +1,24 @@
+expand:
+  - kind: go:template
+templates:
+  - name: chrony
+    items:
+      - {name: n1, site: a, cores: 4}
+      - {name: n2, site: b, cores: 8}
+    vars: {ntp: 192.0.2.123}
+    resources:
+      - type: host/file
+        id: "{item.name}:/etc/chrony.conf"
+        labels: {site: "{item.site}"}
+        fields:
+          content: "server {vars.ntp} iburst # {index}\n"
+      - type: pve/vm
+        id: "{item.name}"
+        fields:
+          cores: "{item.cores}"
+          vmid: {from_pool: vmid}
+  - name: bad
+    items: [x]
+    resources:
+      - type: host/file
+        id: "{item.name}"

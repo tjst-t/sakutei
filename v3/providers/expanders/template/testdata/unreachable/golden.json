@@ -1,0 +1,9 @@
+{
+  "diagnostics": [
+    {
+      "severity": "unknown",
+      "target": "fw/version",
+      "message": "template bmc: 外部入力 inventory.hosts: 届かない: open /srv/inventory.yaml: no such file or directory。この種類の宣言が欠けているかもしれない"
+    }
+  ]
+}

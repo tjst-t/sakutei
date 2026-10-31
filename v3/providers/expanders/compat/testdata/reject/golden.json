@@ -1,0 +1,23 @@
+{
+  "resources": [
+    {
+      "id": "fw/version/n1-bmc",
+      "fields": {
+        "version": "1.2"
+      }
+    },
+    {
+      "id": "fw/version/n1-bios",
+      "fields": {
+        "version": "2.1"
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "severity": "reject",
+      "target": "compatibility",
+      "message": "表 bmc-bios: node=n1 の望む組み合わせ {bios=2.1, bmc=1.2} が allow に無い"
+    }
+  ]
+}

@@ -95,7 +95,7 @@ func runTxn(ctx context.Context, in Input, clock core.Clock, r *plan.Result, uni
 		var t core.Txn
 		var err error
 		if ok {
-			t, err = tr.Prepare(ctx, core.WriteContext{}, byProvider[name], core.TxnOptions{Timeout: timeout})
+			t, err = tr.Prepare(ctx, core.NewWriteContext(in.Secrets), byProvider[name], core.TxnOptions{Timeout: timeout})
 		}
 		if !ok || err != nil {
 			why := "provider " + name + " は 2 段の Apply を持たない"

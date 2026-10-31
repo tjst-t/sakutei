@@ -2,7 +2,7 @@
 
 設計は `docs/core/README.md`、もとにした検討は `docs/review/core-usecase-review.md`。ルートの v2 のコードとは別の Go モジュール（`github.com/tjst-t/sakutei/v3`、標準ライブラリだけ）。互換は持たない。
 
-作る順番は設計書 §8 の 9 段。いまは **段 6** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）と、段 5（Procedure・承認と承認の CLI・一時的な Policy の freeze）と、段 6（2 段の Apply・最初の実 provider の dnszone・hostconf・nftables と決まった道具 nft-guard。provider はコアの外のモジュール `providers/`）を足した。
+作る順番は設計書 §8 の 9 段。いまは **段 7** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）と、段 5（Procedure・承認と承認の CLI・一時的な Policy の freeze）と、段 6（2 段の Apply・最初の実 provider の dnszone・hostconf・nftables と決まった道具 nft-guard。provider はコアの外のモジュール `providers/`）と、段 7（Expand の連鎖と外のコマンドの Expand・golden のテストの道具・外部入力・採番・秘密の世代と保管先。Expand のモジュール template・netpolicy・compat と保管先 vault-kv2・command は `providers/`）を足した。
 
 | パッケージ | 中身 |
 |---|---|
@@ -13,7 +13,10 @@
 | `graph` | `depends_on` と `when` から宣言の依存（上流・下流・量化の選び方・循環）を作る |
 | `intent` | intent のディレクトリ（`*.yaml`・`*.yml`・`*.json`）を読み、`resources:`・`ranges:`・`policies:`・`procedures:`・`cycle:` を Resource・Range・Policy・Procedure・周の設定にする |
 | `config` | つなぎ方の設定（`providers.<名前>.module`・`settings`、`sinks.<名前>.module`・`settings`、`listen.read`）。範囲・除外・方針は書けない（不変条件 24） |
-| `expand` | Expand の口と素通しの `Passthrough` |
+| `expand` | Expand の口（`Expander`・`Input`・`Output`）・intent をそのまま読む `Passthrough`・`expand:` の順に呼ぶ `Run`・外のコマンドの Expand `Exec` |
+| `expand/expandtest` | Expand の golden のテスト（`Golden`：2 回呼んで同じ出力と golden.json を確かめる、N-P5） |
+| `alloc` | 採番：宣言の `{from_pool: …}` を intent のファイル `allocations/<pool>.yaml` の値で埋め、無ければ空きを選ぶ（`Resolve`）。周がロックを持って当てる前にファイルと Record の写しに書き（`Persist`）、人が返す（`Release`） |
+| `secret` | 秘密の世代を宣言の参照に付ける（`Stamp`。読めなければ Uncertain）と、組み込みの保管先 `file` |
 | `load` | 設定と intent を読み、Expand の出力を検証する（不変条件 25） |
 | `plan` | List と観測をして宣言と比べ、prune の守り・依存の待ち（Condition）・Policy の mode と予算・効かない回数で操作ごとに当てるかを決める（`Decide`）。受け取るのは `core.Reader` だけで、何も書かない |
 | `cycle` | 1 周（`Run`）。Record のロックを取り、一時的な Policy・承認・手順の進みを読んで監査に残し、`plan.Decide` と同じ判定で波ごとに当て、settle を待って読み直し、上流が効いたら下流を同じ周に観測し直して当て、手順を進め、効かない回数・目印・監査を書き、通知の状態を進めて送り出し、健全性を書く。ロックが取れなければ進めない周。`Plan` は同じ判定を何も書かずに出す |
@@ -23,7 +26,7 @@
 | `record` | Record のディレクトリ：`LOCK`（flock）・`format`・`marks.json`（範囲ごとの件数・予算の窓・効かない Apply の回数）・`audit/`（前の行のハッシュの鎖）・`events/`（`state.json`・`outbox/`・`cursors/`）・`health.json`・`wake`・`runs/`（手順の進み）・`approvals/`（依頼と判断）・`temp-policies/`（freeze）・`commands/`（start・cancel の頼み） |
 | `sdk/hostexec` | provider SDK のホストでコマンドを走らせる層（手元・ssh・sudo。ホスト鍵を known_hosts で確かめる。届かないは `UnreachableError`）と、設定の `hosts:` の読み方 |
 | `sdk/fake` | テスト用の偽の provider（Go から観測の答え・List の欠け・Apply の失敗・効かない Apply・上流の奥で届かない対象・削除の断り・一回きりの操作とその失敗（送れていない・送れたか分からない・送る途中で止まる）・2 段の Apply（`Prepare` の失敗・変更が別のものを壊す注入・時間切れの `Expire`）を置く・CLI ではモジュール `fake` の state のファイルと `ops`） |
-| `cli`・`cmd/sakutei` | CLI。`sakutei`（常駐）とサブコマンド `plan`・`reconcile`・`wake`・`audit verify`・`approve`・`reject`・`approvals`・`freeze`・`unfreeze`・`start`・`cancel` |
+| `cli`・`cmd/sakutei` | CLI。`sakutei`（常駐）とサブコマンド `plan`・`reconcile`・`wake`・`audit verify`・`approve`・`reject`・`approvals`・`freeze`・`unfreeze`・`start`・`cancel`・`alloc release`。組み込みは `WithModule`・`WithSink`・`WithCheck`・`WithExpander`・`WithSecretBackend`・`WithAllocator` |
 | `internal/yaml` | 行番号を残す YAML の部分集合のパーサ（ブロックと 1 行のフロー） |
 
 ```console
@@ -39,6 +42,7 @@ $ cd v3 && go run ./cmd/sakutei freeze    --record <dir> --reason … --until <�
 $ cd v3 && go run ./cmd/sakutei unfreeze  <名前> --record <dir> --reason … [--as <名前>]
 $ cd v3 && go run ./cmd/sakutei start     <procedure> --record <dir> [--target <名前>] [--as <名前>]
 $ cd v3 && go run ./cmd/sakutei cancel    <run-id> --record <dir> --reason … [--as <名前>]
+$ cd v3 && go run ./cmd/sakutei alloc release <pool> <value> --intent <dir> --record <dir> --reason … [--as <名前>]
 ```
 
 `plan` の終了コード：0 計算できた／1 実行の誤り／2 読み込みで断った。
@@ -90,5 +94,16 @@ $ cd v3 && go run ./cmd/sakutei cancel    <run-id> --record <dir> --reason … [
 - `FieldSpec.Digest`：観測は中身の sha256 だけで、比べるときは宣言も sha256 にする（平文を観測・plan に出さない、E-E2）。
 - 実の provider はコアの外の Go モジュール `providers/`（`github.com/tjst-t/sakutei/v3/providers`）。それを組み込んだ CLI は `providers/cmd/sakutei`、決まった道具は `providers/cmd/sakutei-nft-guard`。詳しくは [providers/README.md](providers/README.md)。
 - v2 の試用の手順（DNS と FW）は `docs/trial/v3/`（`run.sh` と、同じ手順を回す `providers/cmd/sakutei` の `TestTrial`）。本物のカーネルの 2 段の Apply は `make integration-v3-nftables`。
+
+段 7 の決まり：
+
+- Expand（§3.8）：周の段 2 で、intent の最上位の項目をそのまま読む `Passthrough` のあと、intent の `expand:` に書いた順に Expand を呼び、出力を足していく。`kind: go:<名前>` は `cli.WithExpander` で組み込んだもの（自分が読む intent の項目を `Keys` で言う）、`kind: exec:<名前>` はつなぎ方の設定の `expanders.<名前>.exec` のコマンド（読む項目は `keys:`。stdin に入力の JSON、stdout に intent と同じ形の出力と `diagnostics`。30 秒で時間切れ）。Expand は足す分だけを返し、前の宣言を変えるのは依存を足す `DependsOn` だけ。組み込まれていない Expand・同じ項目を 2 つが読む宣言・誰も読まない項目は読み込みで断る。外のコマンドが失敗すればその周は読み込めない（終了コード 1、常駐は健全性に残して回り続ける）。
+- 診断（§3.8）：`Reject` は読み込みで断る（終了コード 2）、`Warn` は知らせる、`Uncertain` は Target の宣言をその周 Unknown にする（観測を試みず、Apply も消しもせず、下流は待つ。不変条件 3・5）。Target が種類（`<provider>/<種類>`）か provider の名前なら、宣言が欠けているかもしれないので、その provider の範囲の宣言外を消さない（「消さない」で止める、E-K3・不変条件 26）。
+- 外部入力（E-K3・E-P4）：intent の `inputs: [{name, items, expected_min, max_drop}]` で使う入力と欠けの目安を、つなぎ方の設定の `inputs.<名前>.file` で在りか（最上位がマップの YAML か JSON）を書く。件数は `items` のリストの長さ（書かなければ最上位の項目の数）。読めない・形が違う・`expected_min` より少ない・前の周の件数（Record の目印 `input_counts`）から `max_drop` を超えて減ったものは「届かない」（`Reachable: false` と理由）で、Expand はそれに依る宣言を作らず Uncertain を出す。欠けた周は前の件数を保つ。
+- golden のテスト（N-P5）：`expand/expandtest.Golden` は `testdata/<場合>/intent/` と任意の `inputs.json` で Expand を 2 回呼び、同じ出力（純粋さ）と `golden.json` を確かめる（`go test -update` で書き直す）。Go の Expand も外のコマンドの Expand も使える。
+- 採番（§3.8、N-B13・N-B12・N-A14）：intent の `pools: [{name, range: "100-199", blocks: [{name, range}], reuse}]`。宣言の項目に `{from_pool: <pool>, block: <名前>, template: "192.0.2.{n}"}` と書くと、intent のファイル `allocations/<pool>.yaml`（`allocations: {pool, values: [{key, value}], last: [{block, value}]}`、鍵は `<type>/<id>#<項目>`）の値で埋め、無ければ空きの先頭（`core.Allocator`、`cli.WithAllocator` で差し替え）を選ぶ。`template` があれば `{n}` を値にした文字列、無ければ整数。plan は選ぶだけで書かない。周はロックを持って当てる前に、ファイル（先）と Record の写し `alloc/<pool>.json`（後）に書き足し、監査に `alloc.assign` を残す。書けない・周の間にファイルか写しが変わったときは、その値に依る宣言をその周 Unknown にする。
+- 二度払わない（不変条件 11）：値は宣言から消えても返さない（返すのは `sakutei alloc release <pool> <value> --reason …`。Record のロックを取ってファイルと写しの両方から外し、監査に `alloc.release`）。`reuse: false` のプールは block ごとの最後の値（`last`、ファイルにも書く）以下を払わないので、返した値も Record を失っても二度と払わない。ファイルが写しより戻っている（写しにある鍵が無い・値が違う・`last` が小さい。git で巻き戻した・手で消した）なら、そのプールから新しい値を出さず、それを要る宣言を Unknown にする（終了コード 3）。ファイルが写しより進んでいる（人が書き足した）のは受け入れて写しを書き直す。尽きた block は理由つきで止める。同じ値を 2 つに払うファイル・範囲の外の値は読み込みで断る。
+- 秘密（§3.1・§3.8、E-G2・E-G3・E-G4・N-G2）：Schema の型 `secret` の項目は `{secret: "<backend>:<在りか>"}` で書く（平文は読み込みで断り、値を診断に出さない）。保管先はつなぎ方の設定の `secret_backends.<名前>.module`（組み込みは `file`。`vault-kv2`・`command` は providers、ほかは `cli.WithSecretBackend`）。周の初めに参照ごとに世代だけを読み（値は読まない、10 秒で時間切れ）、宣言の値を `<backend>:<在りか>@gen=<世代>` にする。比べるのはこの参照だけで、provider は当てた世代の参照を観測に返す（世代が変われば当て直す）。世代を読めない秘密に依る宣言はその周 Unknown（観測も Apply もしない、下流は待つ、E-G4）。値は provider が Apply の直前に `WriteContext.Secret` でだけ取り出す（Apply・Delete・Prepare・Invoke の書き込みの文脈だけが保管先を持つ）。値は Record・出力・state・誤りの文に出ない（不変条件 27）。
+- Expand のモジュール（`providers/expanders`）：`go:template`（雛形を一覧の 1 件ごとに）・`go:netpolicy`（網の間の許可を nftables の base chain に）・`go:compat`（互換の表）。詳しくは [providers/README.md](providers/README.md)。
 
 テストはルートの `make check`・`make test-race` が一緒に回す（`providers/` も）。

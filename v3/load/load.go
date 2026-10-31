@@ -24,12 +24,15 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tjst-t/sakutei/v3/alloc"
 	"github.com/tjst-t/sakutei/v3/condition"
 	"github.com/tjst-t/sakutei/v3/config"
 	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/expand"
 	"github.com/tjst-t/sakutei/v3/graph"
 	"github.com/tjst-t/sakutei/v3/intent"
+	"github.com/tjst-t/sakutei/v3/record"
+	"github.com/tjst-t/sakutei/v3/secret"
 )
 
 // Module は provider のモジュール。つなぎ方の設定の settings から provider を
@@ -40,13 +43,25 @@ type Module func(settings map[string]any) (core.Provider, error)
 // から送り先を作る（E-H2・E-H3）。
 type SinkModule func(settings map[string]any) (core.Sink, error)
 
+// SecretModule は秘密の保管先のモジュール。つなぎ方の設定の
+// secret_backends.<名前>.settings から保管先を作る（E-G3・E-O2・N-O2）。
+type SecretModule func(settings map[string]any) (core.SecretBackend, error)
+
 // Options は読み込みの入力。
 type Options struct {
 	IntentDir  string
 	ConfigFile string
 	Modules    map[string]Module
 	Sinks      map[string]SinkModule
-	Expander   expand.Expander // nil なら expand.Passthrough
+	// Expanders は Go で組み込んだ Expand（intent の expand: の go:<名前>、E-A11）。
+	Expanders map[string]expand.Expander
+	// Secrets は秘密の保管先のモジュール（file は初めから、E-G3）。
+	Secrets map[string]SecretModule
+	// Allocator は採番の空きの選び方。nil なら空きの先頭（E-T4・N-T5）。
+	Allocator core.Allocator
+	// RecordDir は前の周の目印（外部入力の件数）と採番の写しを読む Record（読む
+	// だけ。空なら読まない）。
+	RecordDir string
 	// Checks は Condition の check(名前) で使う確かめ（E-B9）。登録していない名前は
 	// 読み込みで断る。
 	Checks map[string]core.CheckFunc
@@ -65,6 +80,20 @@ type Loaded struct {
 	Sinks      map[string]core.Sink // つなぎ方の設定の sinks の名前 → 送り先
 	Checks     map[string]core.CheckFunc
 	Warnings   []core.Diagnostic
+	// Unknown は Expand・秘密の世代・採番で「分からない」にした宣言 → 理由
+	// （観測も Apply もしない、下流は待つ、E-G4・E-K3）。
+	Unknown map[core.ID]string
+	// Incomplete は宣言が欠けているかもしれない provider → 理由（外部入力が
+	// 届かない。その provider の範囲は消さない、E-K3・不変条件 26）。
+	Incomplete map[string]string
+	// Secrets は秘密の保管先（書き込みの文脈で値を取り出す、E-G2）。
+	Secrets core.SecretBackends
+	// IntentDir は intent のディレクトリ（採番のファイルを書き足す）。
+	IntentDir string
+	// Allocs は周がロックを持って書く採番（新しい値・写しの書き直し、N-B13）。
+	Allocs map[string]alloc.Write
+	// InputCounts は届いた外部入力の件数（Record の目印に書く、E-K3）。
+	InputCounts map[string]int
 }
 
 // Load は設定と intent を読み、検証する。
@@ -76,6 +105,8 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 	providers, diags := build(cfg, opt.Modules)
 	sinks, sdiags := buildSinks(cfg, opt.Sinks)
 	diags = append(diags, sdiags...)
+	backends, bdiags := buildSecrets(cfg, opt.Secrets)
+	diags = append(diags, bdiags...)
 	if len(diags) > 0 {
 		return nil, &core.RejectError{Diagnostics: diags}
 	}
@@ -83,20 +114,57 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 	if err != nil {
 		return nil, err
 	}
-	ex := opt.Expander
-	if ex == nil {
-		ex = expand.Passthrough{}
+
+	// 段 2：外部入力を読み、Expand を順に呼ぶ（§2.1）。
+	var marks record.Marks
+	if opt.RecordDir != "" {
+		marks, _ = record.ReadMarks(opt.RecordDir) // 読めなければ前の件数を見ない（急減は判定しない）
 	}
-	out, err := ex.Expand(ctx, expand.Input{Intent: docs})
+	inputs, counts, idiags := readInputs(cfg, docs, marks)
+	if len(idiags) > 0 {
+		return nil, &core.RejectError{Diagnostics: idiags}
+	}
+	execs := make(map[string]string, len(cfg.Expanders))
+	for n, e := range cfg.Expanders {
+		execs[n] = e.Exec
+	}
+	out, err := expand.Run(ctx, docs, inputs, opt.Expanders, execs)
 	if err != nil {
 		return nil, fmt.Errorf("expand: %w", err)
 	}
+
+	// 採番：intent のファイルの値を差し込み、無ければ空きを選ぶ（書くのは周）。
+	reqs, adiags := alloc.Requests(out.Resources)
+	out.Diagnostics = append(out.Diagnostics, adiags...)
+	copies, err := alloc.ReadCopies(opt.RecordDir, out.Pools)
+	if err != nil {
+		return nil, fmt.Errorf("Record の採番の写し: %w", err)
+	}
+	aplan, adiags := alloc.Resolve(alloc.State{Pools: out.Pools, Files: out.Allocations, Copies: copies}, reqs, opt.Allocator)
+	out.Diagnostics = append(out.Diagnostics, adiags...)
+	out.Resources, adiags = alloc.Substitute(out.Resources, aplan)
+	out.Diagnostics = append(out.Diagnostics, adiags...)
+
+	// 秘密の世代（値は読まない、E-G2・E-G4）。
+	kind := func(id core.ID) (core.KindSchema, bool) { ks, why := kindOf(id, providers); return ks, why == "" }
+	out.Resources, adiags = secret.Stamp(ctx, out.Resources, kind, backends)
+	out.Diagnostics = append(out.Diagnostics, adiags...)
+
 	res, diags := Validate(out, providers, opt.Checks)
 	var rejects, warns []core.Diagnostic
+	unknown, incomplete := map[core.ID]string{}, map[string]string{}
+	declared := map[string]bool{}
+	for _, r := range res {
+		declared[r.ID.String()] = true
+	}
 	for _, d := range diags {
-		if d.Severity == core.Reject {
+		switch d.Severity {
+		case core.Reject:
 			rejects = append(rejects, d)
-		} else {
+		case core.Uncertain:
+			warns = append(warns, d)
+			uncertain(d, declared, providers, unknown, incomplete)
+		default:
 			warns = append(warns, d)
 		}
 	}
@@ -108,7 +176,120 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 		cyc = out.Cycles[0]
 	}
 	return &Loaded{Config: cfg, Providers: providers, Resources: res, Ranges: out.Ranges, Policies: out.Policies,
-		Procedures: out.Procedures, Cycle: cyc, Sinks: sinks, Checks: opt.Checks, Warnings: warns}, nil
+		Procedures: out.Procedures, Cycle: cyc, Sinks: sinks, Checks: opt.Checks, Warnings: warns,
+		Unknown: unknown, Incomplete: incomplete, Secrets: backends, IntentDir: opt.IntentDir, Allocs: aplan.Writes,
+		InputCounts: counts}, nil
+}
+
+// uncertain は Uncertain の診断の Target を、宣言（Unknown にする）か provider・
+// 種類（その provider の範囲を消さない）に振り分ける（E-G4・E-K3）。どれにも
+// 当たらなければ、全部の provider の範囲を消さない（安全側）。
+func uncertain(d core.Diagnostic, declared map[string]bool, providers map[string]core.Provider, unknown map[core.ID]string, incomplete map[string]string) {
+	add := func(p string) {
+		if incomplete[p] == "" {
+			incomplete[p] = d.Message
+		}
+	}
+	switch {
+	case declared[d.Target]:
+		id, _ := core.ParseRef(d.Target)
+		if unknown[id] == "" {
+			unknown[id] = d.Message
+		}
+	case providers[d.Target] != nil:
+		add(d.Target)
+	case core.ParseType(d.Target) == nil && providers[core.ID{Type: d.Target}.Provider()] != nil:
+		add(core.ID{Type: d.Target}.Provider())
+	default:
+		for n := range providers {
+			add(n)
+		}
+	}
+}
+
+func buildSecrets(cfg *config.Config, modules map[string]SecretModule) (core.SecretBackends, []core.Diagnostic) {
+	out := core.SecretBackends{}
+	var diags []core.Diagnostic
+	for _, n := range sortedKeys(cfg.SecretBackends) {
+		sc := cfg.SecretBackends[n]
+		m, ok := modules[sc.Module]
+		if !ok {
+			diags = append(diags, reject(sc.Origin, "secret_backends."+n, "知らない保管先のモジュール %q（組み込まれているもの: %s）", sc.Module, strings.Join(sortedKeys(modules), ", ")))
+			continue
+		}
+		b, err := m(sc.Settings)
+		if err != nil {
+			diags = append(diags, reject(sc.Origin, "secret_backends."+n, "%v", err))
+			continue
+		}
+		out[n] = b
+	}
+	return out, diags
+}
+
+// readInputs は intent の inputs: に書いた外部入力を、つなぎ方の設定の在りかから
+// 読む（E-K3・E-P4）。入力は最上位がマップの YAML か JSON。件数は items の
+// リストの長さ（書かなければ最上位の項目の数）。読めない・形の誤りは届かない。expected_min より少ない・
+// 前の周の件数から max_drop を超えて減ったものは「届いたが欠けている」で、どちらも
+// Reachable を false にする（Expand はそれに依る宣言を作らない）。counts は届いた
+// ものの件数（Record の目印に書く）。
+func readInputs(cfg *config.Config, docs []intent.Document, marks record.Marks) (map[string]expand.ExternalInput, map[string]int, []core.Diagnostic) {
+	inputs := map[string]expand.ExternalInput{}
+	counts := map[string]int{}
+	var diags []core.Diagnostic
+	for _, doc := range docs {
+		d, _ := intent.Decode(doc, topKeysOf(doc)...)
+		for _, spec := range d.Inputs {
+			if _, dup := inputs[spec.Name]; dup {
+				diags = append(diags, reject(spec.Origin, "inputs", "外部入力 %q が 2 回書かれている", spec.Name))
+				continue
+			}
+			ic, ok := cfg.Inputs[spec.Name]
+			if !ok {
+				diags = append(diags, reject(spec.Origin, "inputs", "外部入力 %q の在りかがつなぎ方の設定の inputs に無い", spec.Name))
+				continue
+			}
+			in := expand.ExternalInput{}
+			n, err := intent.ReadFile(ic.File)
+			if err != nil {
+				in.Note = "届かない: " + err.Error()
+				inputs[spec.Name] = in
+				continue
+			}
+			in.Data = n.Value()
+			count := len(n.Keys)
+			list, isList := in.Data.(map[string]any)[spec.Items].([]any)
+			if spec.Items != "" {
+				count = len(list)
+			}
+			prev, had := marks.InputCounts[spec.Name]
+			switch {
+			case spec.Items != "" && !isList:
+				in.Note = fmt.Sprintf("届いたが形が違う（%s がリストでない）", spec.Items)
+			case spec.ExpectedMin > 0 && count < spec.ExpectedMin:
+				in.Note = fmt.Sprintf("届いたが欠けている（%d 件。expected_min %d）", count, spec.ExpectedMin)
+			case spec.MaxDrop >= 0 && had && prev > 0 && (prev-count)*100 > prev*spec.MaxDrop:
+				in.Note = fmt.Sprintf("届いたが欠けている（前の周の %d 件から %d 件に減った。max_drop %d%%）", prev, count, spec.MaxDrop)
+			default:
+				in.Reachable = true
+				counts[spec.Name] = count
+			}
+			if !in.Reachable {
+				in.Data = nil // 欠けた入力から宣言を作らせない
+			}
+			inputs[spec.Name] = in
+		}
+	}
+	return inputs, counts, diags
+}
+
+// topKeysOf は文書の最上位の項目を全部（inputs: だけを読むので、ほかの項目を
+// ここでは断らない）。
+func topKeysOf(doc intent.Document) []string {
+	if doc.Root == nil {
+		return nil
+	}
+	return doc.Root.Keys
 }
 
 func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]core.Sink, []core.Diagnostic) {

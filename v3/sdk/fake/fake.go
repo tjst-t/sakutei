@@ -81,6 +81,7 @@ type Provider struct {
 	prepareErr   map[core.ID]error
 	onPrepare    func(changes []core.Change)
 	txns         []*Txn
+	secrets      []string // Apply が取り出した秘密の値（テストが漏れを確かめる）
 }
 
 var (
@@ -305,13 +306,24 @@ func (p *Provider) Observe(_ context.Context, ids []core.ID) (map[core.ID]core.O
 }
 
 // Apply は宣言した項目を置く。
-func (p *Provider) Apply(_ context.Context, _ core.WriteContext, id core.ID, desired core.Fields, _ core.Observation) error {
+func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, desired core.Fields, _ core.Observation) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls.Apply++
 	p.writes = append(p.writes, Write{Op: "apply", ID: id})
 	if err := p.applyErr[id]; err != nil {
 		return err
+	}
+	// Secret の項目は書き込みの文脈で値を取り出す（E-G2）。観測には当てた世代の
+	// 参照だけを残す（値は持たない）。
+	for k, spec := range p.schema.Kinds[id.Kind()].Fields {
+		if v, ok := desired[k]; ok && spec.Type == core.Secret {
+			val, err := w.Secret(ctx, v)
+			if err != nil {
+				return err
+			}
+			p.secrets = append(p.secrets, val)
+		}
 	}
 	if p.ineffective[id] {
 		return nil
@@ -331,6 +343,13 @@ func (p *Provider) Apply(_ context.Context, _ core.WriteContext, id core.ID, des
 	}
 	p.state[id] = core.Observation{Availability: core.Present, Fields: fields}
 	return p.writeState()
+}
+
+// Secrets は Apply が取り出した秘密の値（テスト用）。
+func (p *Provider) Secrets() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.secrets...)
 }
 
 // Delete は Absent にする。

@@ -1,0 +1,28 @@
+{
+  "resources": [
+    {
+      "id": "fw/version/n1-bmc",
+      "fields": {
+        "version": "1.3"
+      },
+      "depends_on": [
+        "when (observe(fw/version/n1-bios).version == \"2.0\") or (observe(fw/version/n1-bios).version == \"2.1\")"
+      ]
+    },
+    {
+      "id": "fw/version/n1-bios",
+      "fields": {
+        "version": "2.1"
+      },
+      "depends_on": [
+        "when (observe(fw/version/n1-bmc).version == \"1.3\")"
+      ]
+    },
+    {
+      "id": "fw/version/n2-bmc",
+      "fields": {
+        "version": "1.2"
+      }
+    }
+  ]
+}

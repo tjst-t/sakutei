@@ -1,0 +1,9 @@
+expand:
+  - {kind: "exec:hosts", keys: [hosts]}
+hosts:
+  - n1
+  - n2
+resources:
+  - type: dns/record
+    id: www
+    fields: {value: 192.0.2.10}

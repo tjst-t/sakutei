@@ -81,6 +81,8 @@ type Exec struct {
 	// Reserve は書く段の前に、当たる Policy の予算を確かめて使う（不変条件 20）。
 	// 通らなければ理由を返し、その段を進めない。
 	Reserve func(policies []string, destructive bool) string
+	// Write は書き込みの文脈（秘密の取り出し先を持つ、E-G2・E-G5）。
+	Write core.WriteContext
 }
 
 // Output は手順の段の結果。
@@ -724,7 +726,7 @@ func (x *run) send(ctx context.Context, s core.Step, op string, destructive bool
 			return false
 		}
 	}
-	err := f(core.WriteContext{})
+	err := f(e.in.Exec.Write)
 	kind := "procedure.invoke"
 	if s.Kind == core.StepApply {
 		kind = "procedure.apply"

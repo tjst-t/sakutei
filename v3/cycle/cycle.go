@@ -30,9 +30,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v3/alloc"
 	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/events"
 	"github.com/tjst-t/sakutei/v3/graph"
+	"github.com/tjst-t/sakutei/v3/load"
 	"github.com/tjst-t/sakutei/v3/plan"
 	"github.com/tjst-t/sakutei/v3/procedure"
 	"github.com/tjst-t/sakutei/v3/record"
@@ -59,6 +61,63 @@ type Input struct {
 	Procedures []core.Procedure
 	// Daemon は常駐の周か。一回実行は critical の段を進めない（§2.2、不変条件 16）。
 	Daemon bool
+	// Unknown は読み込み（Expand・秘密の世代・採番）が「分からない」にした宣言 →
+	// 理由。観測を試みず Unknown として扱う（E-G4・E-K3・不変条件 5）。
+	Unknown map[core.ID]string
+	// Incomplete は宣言が欠けているかもしれない provider → 理由。その範囲は
+	// 消さない（E-K3・不変条件 26）。
+	Incomplete map[string]string
+	// Secrets は書き込みの文脈で秘密の値を取り出す保管先（E-G2）。
+	Secrets core.SecretResolver
+	// IntentDir と Allocs は、ロックを持って当てる前に書く採番（N-B13）。
+	IntentDir string
+	Allocs    map[string]alloc.Write
+	// InputCounts は届いた外部入力の件数（目印に書く、E-K3）。
+	InputCounts map[string]int
+}
+
+// readersOf は provider の観測の口。Unknown の宣言は provider に問わずに Unknown を
+// 返す（依存が使えない間は観測を試みない、不変条件 5）。
+func readersOf(in Input) map[string]core.Reader {
+	readers := make(map[string]core.Reader, len(in.Providers))
+	for n, p := range in.Providers {
+		readers[n] = p
+	}
+	if len(in.Unknown) == 0 {
+		return readers
+	}
+	for n, p := range in.Providers {
+		readers[n] = unknownReader{Reader: p, unknown: in.Unknown}
+	}
+	return readers
+}
+
+type unknownReader struct {
+	core.Reader
+	unknown map[core.ID]string
+}
+
+func (u unknownReader) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core.Observation, error) {
+	var ask []core.ID
+	out := map[core.ID]core.Observation{}
+	for _, id := range ids {
+		if why, ok := u.unknown[id]; ok {
+			out[id] = core.Observation{Availability: core.Unknown, Note: why}
+		} else {
+			ask = append(ask, id)
+		}
+	}
+	if len(ask) == 0 {
+		return out, nil
+	}
+	got, err := u.Reader.Observe(ctx, ask)
+	if err != nil {
+		return nil, err
+	}
+	for id, o := range got {
+		out[id] = o
+	}
+	return out, nil
 }
 
 // 同じ周の観測し直しの上限（§3.5、E-J7）。上流の Apply が効いたら、待っていた・
@@ -76,11 +135,9 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		clock = core.SystemClock{}
 	}
 	now := clock.Now()
-	readers := make(map[string]core.Reader, len(in.Providers))
-	for n, p := range in.Providers {
-		readers[n] = p
-	}
-	pin := plan.Input{Resources: in.Resources, Ranges: in.Ranges, Policies: in.Policies, Readers: readers, Now: now, Checks: in.Checks}
+	readers := readersOf(in)
+	pin := plan.Input{Resources: in.Resources, Ranges: in.Ranges, Policies: in.Policies, Readers: readers, Now: now, Checks: in.Checks,
+		Incomplete: in.Incomplete}
 
 	// 段 0：ロック。取れなければ進めない周：観測して比べるだけで、何も書かない
 	// （E-M5・N-M7・N-S3）。
@@ -117,6 +174,32 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		}
 		r.Errors = append(r.Errors, errs...)
 		return r, nil
+	}
+
+	// 段 2 の続き：選んだ採番の値を、当てる前に intent のファイルと写しに書く。
+	// 書けなかった値に依る宣言はこの周 Unknown（二度払わない、不変条件 11）。
+	if len(in.Allocs) > 0 {
+		failed := alloc.Persist(in.IntentDir, in.Record, func(pool, key string, v int64) error {
+			res, field := splitAllocKey(key)
+			_, err := audit.Append(record.Entry{At: now, Kind: "alloc.assign", Resource: res, Fields: []string{field}, Pool: pool, Value: &v, Result: "ok"})
+			return err
+		}, in.Allocs)
+		if len(failed) > 0 {
+			unknown := make(map[core.ID]string, len(in.Unknown)+len(failed))
+			for id, why := range in.Unknown {
+				unknown[id] = why
+			}
+			for key, why := range failed {
+				res, field := splitAllocKey(key)
+				if id, err := core.ParseRef(res); err == nil {
+					unknown[id] = fmt.Sprintf("項目 %q の採番: %s", field, why)
+				}
+				errs = append(errs, fmt.Sprintf("採番 %s: %s", key, why))
+			}
+			in.Unknown = unknown
+			readers = readersOf(in)
+			pin.Readers = readers
+		}
 	}
 
 	// 段 1：一時的な Policy・承認・手順の進みを読み、期限切れ・終えたもの・新しい
@@ -211,7 +294,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 			if len(useApprovals([]int{i})) == 0 {
 				continue
 			}
-			fire(ctx, &r.Changes[i], in.Providers[r.Changes[i].ID.Provider()], byID[r.Changes[i].ID])
+			fire(ctx, &r.Changes[i], in.Providers[r.Changes[i].ID.Provider()], byID[r.Changes[i].ID], in.Secrets)
 			done = append(done, i)
 			if !account(i) {
 				block(&r, plain[n+1:], "監査に書けないので当てない")
@@ -290,7 +373,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		pin2.Exec = &procedure.Exec{Record: in.Record, Audit: audit, Providers: in.Providers, Commands: cmds,
 			Reserve: func(names []string, destructive bool) string {
 				return reserve(&r, st.policies, names, destructive, used, firedDestructive, marks, base, now, in.Record)
-			}}
+			}, Write: core.NewWriteContext(in.Secrets)}
 	}
 	pout := procedure.Run(ctx, pin2)
 	r.Runs, r.Halts = pout.Runs, append(r.Halts, pout.Halts...)
@@ -313,7 +396,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	windows := windowsWith(base, firedDestructive, r, nil)
 	ineffective := countIneffective(&r, marks)
 	next := record.Marks{Cycle: marks.Cycle + 1, At: now, RangeCounts: nextCounts(r, marks, gone), BudgetWindows: windows,
-		Ineffective: ineffective}
+		Ineffective: ineffective, InputCounts: inputCounts(marks, in.InputCounts)}
 	if err := in.Record.WriteMarks(next); err != nil {
 		errs = append(errs, "Record に書けない: "+err.Error())
 	}
@@ -342,17 +425,15 @@ func Plan(ctx context.Context, in Input, dir string, marks record.Marks, reportO
 		clock = core.SystemClock{}
 	}
 	now := clock.Now()
-	readers := make(map[string]core.Reader, len(in.Providers))
-	for n, p := range in.Providers {
-		readers[n] = p
-	}
+	readers := readersOf(in)
 	st := readState(dir, now, in.Policies, nil)
 	handover, held := procedure.Prepare(in.Procedures, in.Resources, st.runs)
 	if reportOnly == "" {
 		reportOnly = st.reportOnly
 	}
 	r := plan.Decide(ctx, plan.Input{Resources: in.Resources, Ranges: in.Ranges, Policies: st.policies, Readers: readers,
-		Marks: marks, Now: now, ReportOnly: reportOnly, Checks: in.Checks, Approvals: st.approvals, Handover: handover, Held: held})
+		Marks: marks, Now: now, ReportOnly: reportOnly, Checks: in.Checks, Approvals: st.approvals, Handover: handover, Held: held,
+		Incomplete: in.Incomplete})
 	r.Temporary = st.temporary
 	pout := procedure.Run(ctx, procedure.Input{Procedures: in.Procedures, Resources: in.Resources, Readers: readers,
 		Policies: st.policies, Runs: st.runs, Approvals: st.approvals, Changes: r.Changes, Now: now, Checks: in.Checks, Daemon: in.Daemon})
@@ -579,13 +660,14 @@ func block(r *plan.Result, idx []int, why string) {
 }
 
 // fire は 1 件を当てる。書き込みの文脈は Apply・Delete のときだけ渡す（E-G5）。
-func fire(ctx context.Context, c *plan.Change, p core.Provider, res *core.Resource) {
+func fire(ctx context.Context, c *plan.Change, p core.Provider, res *core.Resource, secrets core.SecretResolver) {
 	var err error
+	w := core.NewWriteContext(secrets)
 	switch c.Op {
 	case plan.Create, plan.Update:
-		err = p.Apply(ctx, core.WriteContext{}, c.ID, res.Fields, c.Current)
+		err = p.Apply(ctx, w, c.ID, res.Fields, c.Current)
 	case plan.Delete, plan.Prune:
-		err = p.Delete(ctx, core.WriteContext{}, c.ID, c.Current)
+		err = p.Delete(ctx, w, c.ID, c.Current)
 	}
 	var refuse *core.RefuseError
 	switch {
@@ -659,4 +741,42 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// splitAllocKey は採番の鍵（"<type>/<id>#<項目>"）を宣言と項目に分ける。
+func splitAllocKey(key string) (res, field string) {
+	i := strings.LastIndex(key, "#")
+	if i < 0 {
+		return key, ""
+	}
+	return key[:i], key[i+1:]
+}
+
+// inputCounts は外部入力の件数の目印。届いたものは今の件数、欠けた・届かない
+// ものは前の値を保つ（E-K3）。
+func inputCounts(marks record.Marks, now map[string]int) map[string]int {
+	if len(marks.InputCounts) == 0 && len(now) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(marks.InputCounts)+len(now))
+	for k, v := range marks.InputCounts {
+		out[k] = v
+	}
+	for k, v := range now {
+		out[k] = v
+	}
+	return out
+}
+
+// FromLoaded は読み込んだ結果を 1 周の入力にする（一回実行・plan・常駐で同じ、
+// 不変条件 30）。
+func FromLoaded(loaded *load.Loaded, rec *record.Record, clock core.Clock) Input {
+	var secrets core.SecretResolver
+	if len(loaded.Secrets) > 0 {
+		secrets = loaded.Secrets
+	}
+	return Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
+		Providers: loaded.Providers, Record: rec, Clock: clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter,
+		Checks: loaded.Checks, Procedures: loaded.Procedures, Unknown: loaded.Unknown, Incomplete: loaded.Incomplete,
+		Secrets: secrets, IntentDir: loaded.IntentDir, Allocs: loaded.Allocs, InputCounts: loaded.InputCounts}
 }

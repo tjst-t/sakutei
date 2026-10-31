@@ -1,0 +1,44 @@
+{
+  "resources": [
+    {
+      "id": "fw/chain/fw1/inet/filter/forward",
+      "labels": {
+        "site": "a"
+      },
+      "fields": {
+        "hook": "forward",
+        "policy": "drop",
+        "priority": 0,
+        "rules": [
+          "ct state established,related accept",
+          "ip saddr 10.1.0.0/24 ip daddr 192.0.2.0/24 tcp dport { 80, 443 } accept comment \"社内から公開の web\"",
+          "ip6 saddr 2001:db8:1::/64 ip6 daddr 2001:db8:2::/64 tcp dport { 80, 443 } accept comment \"社内から公開の web\"",
+          "ip saddr 10.1.0.0/24 ip daddr 192.0.2.0/24 tcp dport 443 accept comment \"重ねて書いた\"",
+          "ip6 saddr 2001:db8:1::/64 ip6 daddr 2001:db8:2::/64 tcp dport 443 accept comment \"重ねて書いた\"",
+          "ip saddr 10.1.0.0/24 ip daddr 192.0.2.0/24 tcp dport 23 accept comment \"古い装置は telnet だけ\"",
+          "ip6 saddr 2001:db8:1::/64 ip6 daddr 2001:db8:2::/64 tcp dport 23 accept comment \"古い装置は telnet だけ\"",
+          "ip saddr 10.9.0.10 ip daddr 192.0.2.0/24 meta l4proto icmp accept comment \"監視の ping\"",
+          "ip saddr 192.0.2.0/24 ip daddr 10.1.0.0/24 udp dport 5000-5010 accept comment \"dmz から社内の受け口\"",
+          "ip6 saddr 2001:db8:2::/64 ip6 daddr 2001:db8:1::/64 udp dport 5000-5010 accept comment \"dmz から社内の受け口\""
+        ],
+        "type": "filter"
+      },
+      "apply": {
+        "timeout": "30s"
+      },
+      "reason": "network_policy の実現先 fw1"
+    }
+  ],
+  "diagnostics": [
+    {
+      "severity": "warn",
+      "target": "network_policy",
+      "message": "shadowed: policy.yaml: network_policy.allows[1] (office → dmz tcp 443): 効かない：policy.yaml: network_policy.allows[0]（office → dmz tcp 80,443）がすでに全部を許している（理由: \"社内から公開の web\"）（理由: \"重ねて書いた\"）"
+    },
+    {
+      "severity": "warn",
+      "target": "network_policy",
+      "message": "unreached: policy.yaml: network_policy.allows[5] (office → lab tcp 8080): この許可を通す実現先が無い（その網の間の境界も、宛先の網のホストも無い）（理由: \"lab には実現先が無い\"）"
+    }
+  ]
+}

@@ -93,6 +93,8 @@ type Marks struct {
 	// Ineffective は Resource ごとの、続いた効かない Apply の数（E-J6・E-K10・
 	// 不変条件 14）。宣言が変われば数え直す。読み直して宣言どおりなら消す。
 	Ineffective map[string]IneffectiveMark `json:"ineffective,omitempty"`
+	// InputCounts は外部入力ごとの前の周の件数（E-K3）。欠けていた周は前の値を保つ。
+	InputCounts map[string]int `json:"input_counts,omitempty"`
 }
 
 // IneffectiveMark は効かない Apply の数と、数えたときの宣言のハッシュ（宣言を
@@ -159,6 +161,10 @@ func readMarks(dir string) (Marks, error) {
 	}
 	return m, nil
 }
+
+// WriteAtomic は一時ファイルに書いて rename する（Record の外のファイル：採番の
+// intent のファイル、N-B13）。
+func WriteAtomic(path string, data []byte) error { return writeFile(path, data) }
 
 // writeFile は一時ファイルに書いて rename する（途中で止まっても半端なファイルを
 // 残さない）。

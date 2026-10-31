@@ -1,0 +1,18 @@
+expand:
+  - kind: go:compat
+compatibility:
+  - name: bmc-bios
+    components:
+      bmc: {id: "fw/version/{node}-bmc"}
+      bios: {id: "fw/version/{node}-bios"}
+    allow:
+      - {bmc: "1.2", bios: "2.0"}
+      - {bmc: "1.3", bios: "*"}
+resources:
+  # 表に無い組み合わせ（1.2 と 2.1）は読み込みで断る。
+  - type: fw/version
+    id: n1-bmc
+    fields: {version: "1.2"}
+  - type: fw/version
+    id: n1-bios
+    fields: {version: "2.1"}

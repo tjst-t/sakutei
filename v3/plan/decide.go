@@ -57,6 +57,9 @@ type Input struct {
 	// Held は止まった手順の対象（→ 理由）。収束でも宣言どおりに戻さない
 	// （不変条件 18、E-A9）。
 	Held map[core.ID]string
+	// Incomplete は宣言が欠けているかもしれない provider（外部入力が届かない）→
+	// 理由。その provider の範囲は消さない（E-K3・不変条件 26）。
+	Incomplete map[string]string
 }
 
 // Strip は手順が受け持つ項目を宣言から外す（収束が比べて当てるのは残りだけ、
@@ -174,7 +177,7 @@ func Decide(ctx context.Context, in Input) Result {
 	}
 	for _, id := range candIDs {
 		i := candidates[id]
-		if c, ok := pruneChange(id, in.Ranges[i], out.Ranges[i], in.Readers[id.Provider()], obs[id]); ok {
+		if c, ok := pruneChange(id, in.Ranges[i], out.Ranges[i], in.Readers[id.Provider()], obs[id], in.Incomplete[id.Provider()]); ok {
 			out.Changes = append(out.Changes, c)
 		}
 	}
@@ -540,7 +543,7 @@ func excluded(rg core.Range, id core.ID) bool {
 // pruneChange は宣言外の 1 件を判定する（不変条件 6・7・9）。消すのは、prune を
 // 許す範囲で、List が完全で（ここに来る前に確かめた）、観測が Present で、消せる
 // 種類で、前の周の件数があり、急減していないときだけ。観測で Absent なら出さない。
-func pruneChange(id core.ID, rg core.Range, st RangeStatus, r core.Reader, o core.Observation) (Change, bool) {
+func pruneChange(id core.ID, rg core.Range, st RangeStatus, r core.Reader, o core.Observation, incomplete string) (Change, bool) {
 	c := Change{Resource: id.String(), ID: id, Current: o, Range: st.Range, labels: rg.Labels}
 	if o.Availability == core.Absent {
 		return c, false
@@ -568,6 +571,8 @@ func pruneChange(id core.ID, rg core.Range, st RangeStatus, r core.Reader, o cor
 			c.Action, c.Blocked = ActHold, "前の周の List の件数が無い（初めての周）ので消さない"
 		case st.Dropped:
 			c.Action, c.Blocked = ActHold, "List が急減したので消さない"
+		case incomplete != "":
+			c.Action, c.Blocked = ActHold, "宣言が欠けているかもしれないので消さない（"+incomplete+"）"
 		}
 	}
 	return c, true

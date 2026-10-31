@@ -109,17 +109,30 @@ type Decoded struct {
 	Policies   []core.Policy
 	Procedures []core.Procedure
 	Cycle      *core.CycleSettings // 書かなければ nil
+	// Pools は採番のプール、Allocations は採番の結果のファイル（§3.8、N-B13）。
+	Pools       []core.Pool
+	Allocations []core.Allocation
+	// Expand は使う Expand の並び（E-A11・N-A14）、Inputs は使う外部入力と欠けの
+	// 目安（E-K3）。
+	Expand []ExpandStep
+	Inputs []InputSpec
 }
 
-// Decode は 1 つの Document の resources:・ranges:・policies:・cycle: を読む。形の誤り・知らない
-// 項目は診断（Reject）にして返す。
-func Decode(doc Document) (Decoded, []core.Diagnostic) {
+// TopKeys は intent の最上位に書ける項目（Expand のモジュールが読む項目を除く）。
+var TopKeys = []string{"resources", "ranges", "policies", "procedures", "cycle", "pools", "allocations", "expand", "inputs"}
+
+// Decode は 1 つの Document の最上位の項目を読む。形の誤り・知らない項目は
+// 診断（Reject）にして返す。claimed は Expand のモジュールが読む最上位の項目
+// （network_policy: など）で、ここでは読まずに断りもしない。
+func Decode(doc Document, claimed ...string) (Decoded, []core.Diagnostic) {
 	d := &decoder{file: doc.Path}
 	var out Decoded
-	top := d.object(doc.Root, "", "resources", "ranges", "policies", "procedures", "cycle")
+	allowed := append(append([]string(nil), TopKeys...), claimed...)
+	top := d.object(doc.Root, "", allowed...)
 	if top == nil {
 		return out, d.diags
 	}
+	d.extra(top, &out)
 	if n := top["resources"]; n != nil {
 		for i, item := range d.list(n, "resources") {
 			if r, ok := d.resource(item, fmt.Sprintf("resources[%d]", i)); ok {

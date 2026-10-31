@@ -1,0 +1,24 @@
+expand:
+  - kind: go:netpolicy
+network_policy:
+  networks:
+    - {name: office, cidrs: ["10.1.0.0/24", "2001:db8:1::/64"]}
+    - {name: dmz, cidrs: ["192.0.2.0/24", "2001:db8:2::/64"]}
+    - {name: mgmt, cidrs: ["10.9.0.10"]}
+    - {name: lab, cidrs: ["10.50.0.0/24"]}
+  allows:
+    - {from: office, to: dmz, proto: tcp, ports: [443, 80], reason: "社内から公開の web"}
+    - {from: office, to: dmz, proto: tcp, ports: [443], reason: "重ねて書いた"}
+    - {from: office, to: dmz, proto: tcp, ports: [23], reason: "古い装置は telnet だけ", tags: [exception]}
+    - {from: mgmt, to: dmz, proto: icmp, reason: "監視の ping"}
+    - {from: dmz, to: office, proto: udp, ports: ["5000-5010"], reason: "dmz から社内の受け口"}
+    - {from: office, to: lab, proto: tcp, ports: [8080], reason: "lab には実現先が無い"}
+  targets:
+    - name: fw1
+      kind: boundary
+      networks: [office, dmz, mgmt]
+      provider: fw
+      id: fw1/inet/filter/forward
+      before: ["ct state established,related accept"]
+      labels: {site: a}
+      apply: {transaction: {timeout: 30s}}

@@ -58,6 +58,21 @@ func Normalize(t FieldType, v any) (any, error) {
 			}
 			return out, nil
 		}
+	case Secret:
+		// 平文を宣言に書かせない：参照の形でなければ断り、値を誤りの文に出さない
+		// （E-G2・不変条件 27）。
+		ref, ok := v.(string)
+		if m, isMap := v.(map[string]any); isMap && len(m) == 1 {
+			ref, ok = m["secret"].(string)
+		}
+		if !ok {
+			return nil, fmt.Errorf("秘密は {secret: \"<backend>:<在りか>\"} で書く")
+		}
+		r, err := ParseSecretRef(ref)
+		if err != nil {
+			return nil, fmt.Errorf("秘密は {secret: \"<backend>:<在りか>\"} で書く")
+		}
+		return r.String(), nil
 	case Map:
 		if m, ok := v.(map[string]any); ok {
 			return normalizeAny(m), nil

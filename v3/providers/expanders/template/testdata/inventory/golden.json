@@ -1,0 +1,16 @@
+{
+  "resources": [
+    {
+      "id": "fw/version/r3-n01-bmc",
+      "fields": {
+        "version": "1.3"
+      }
+    },
+    {
+      "id": "fw/version/r3-n02-bmc",
+      "fields": {
+        "version": "1.3"
+      }
+    }
+  ]
+}

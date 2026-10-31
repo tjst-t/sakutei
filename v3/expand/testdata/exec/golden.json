@@ -1,0 +1,31 @@
+{
+  "resources": [
+    {
+      "id": "dns/record/www",
+      "fields": {
+        "value": "192.0.2.10"
+      }
+    },
+    {
+      "id": "dns/record/n1",
+      "fields": {
+        "value": "192.0.2.1"
+      },
+      "reason": "exec"
+    },
+    {
+      "id": "dns/record/n2",
+      "fields": {
+        "value": "192.0.2.1"
+      },
+      "reason": "exec"
+    }
+  ],
+  "diagnostics": [
+    {
+      "severity": "warn",
+      "target": "hosts",
+      "message": "2 台"
+    }
+  ]
+}

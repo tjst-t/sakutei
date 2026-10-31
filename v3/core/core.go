@@ -190,11 +190,14 @@ const (
 	List
 	Set
 	Map
+	// Secret は秘密の参照（{secret: "<backend>:<path>"}）。値を持たず比べず、
+	// 世代だけを比べる（E-G2・N-L5）。
+	Secret
 )
 
 var fieldTypeNames = map[FieldType]string{
 	String: "string", Int: "int", Bool: "bool", Duration: "duration",
-	List: "list", Set: "set", Map: "map",
+	List: "list", Set: "set", Map: "map", Secret: "secret",
 }
 
 func (t FieldType) String() string { return fieldTypeNames[t] }
@@ -301,12 +304,35 @@ type Listing struct {
 }
 
 // WriteContext は Apply・Delete のときだけコアが渡す。provider は書き込み用の
-// 資格をこの中でだけ取り出す（E-G5・N-G3）。コアの外では作れない。
+// 資格と秘密の値をこの中でだけ取り出す（E-G5・N-G3・E-G2）。
 type WriteContext struct {
-	_ writeToken
+	_       writeToken
+	secrets SecretResolver
 }
 
 type writeToken struct{}
+
+// NewWriteContext は秘密の取り出し先を持つ書き込みの文脈を作る。コアの周が
+// Apply・Delete・Prepare・Invoke の直前にだけ作る。
+func NewWriteContext(s SecretResolver) WriteContext { return WriteContext{secrets: s} }
+
+// Secret は Secret の項目の値（宣言の参照と世代）から秘密の値を取り出す
+// （§3.8、E-G2・E-G3・N-G2）。値は使い終えたら捨て、誤りの文・Note・Fields に
+// 出さない（不変条件 27）。
+func (w WriteContext) Secret(ctx context.Context, value any) (string, error) {
+	s, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("秘密の参照でない値")
+	}
+	ref, err := ParseSecretRef(s)
+	if err != nil {
+		return "", err
+	}
+	if w.secrets == nil {
+		return "", fmt.Errorf("秘密 %s の取り出し先が無い", ref.Ref())
+	}
+	return w.secrets.Resolve(ctx, ref)
+}
 
 // Observer は観測だけの口。比べる処理（plan）はこれだけを受け取り、現実を
 // 変える関数を型として持たない（不変条件 2・30、E-J9）。
@@ -365,11 +391,19 @@ const (
 	Reject Severity = iota
 	// Warn は知らせるだけ（E-B5）。
 	Warn
+	// Uncertain は Target の Resource を「分からない」扱いにする（観測も Apply も
+	// しない、下流は待つ、E-G4・E-K3）。Target が "<provider>/<種類>" か provider の
+	// 名前なら、宣言が欠けているかもしれないので、その provider の範囲を消さない
+	// （外部入力が届かないとき空の desired で消さない、E-K3・不変条件 26）。
+	Uncertain
 )
 
 func (s Severity) String() string {
-	if s == Warn {
+	switch s {
+	case Warn:
 		return "warn"
+	case Uncertain:
+		return "unknown"
 	}
 	return "reject"
 }

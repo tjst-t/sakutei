@@ -1,0 +1,14 @@
+expand:
+  - kind: go:netpolicy
+network_policy:
+  networks:
+    - {name: a, cidrs: ["10.0.0.0/16"]}
+    - {name: b, cidrs: ["10.0.1.0/24"]}
+    - {name: c, domain: tenant, cidrs: ["10.0.0.0/24"]}
+  allows:
+    - {from: a, to: b, proto: tcp, ports: [22], tags: [exception]}
+    - {from: a, to: b, proto: tcp, ports: [22], tags: [exception]}
+    - {from: a, to: nowhere}
+    - {from: a, to: c, reason: "domain をまたぐ"}
+  targets:
+    - {name: fw1, kind: boundary, networks: [a, b], provider: fw, id: fw1/inet/filter/forward}
