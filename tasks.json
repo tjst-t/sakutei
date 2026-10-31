@@ -5207,6 +5207,29 @@
       "updatedAt": "2026-10-31T15:12:51.061Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "v3-8b-redfish-bmc-firmware-metrics-probe",
+      "number": 225,
+      "kind": "task",
+      "title": "v3 段8b：redfish（BMC・firmware）と metrics-probe の provider",
+      "status": "backlog",
+      "parent": "v3",
+      "dependsOn": [
+        "v3-7-expand-secret-backend"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "§8 の段8 を分けたもの。v2 の redfish（電源・起動先・仮想メディア・firmware）と metrics-probe を、新しいコアの Provider として v3/providers/ に書く。v2 と同じ qemu-bmc の統合テストを v3 用に用意する（make のターゲットを分け、check・CI には入れない。lab の名前は v2 のものと重ならないようにする）。",
+      "doneWhen": "契約テストが通る。v3 用の qemu-bmc の統合テストが通る。make check と make test-race が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-31T21:00:14.412Z",
+      "updatedAt": "2026-10-31T21:00:14.412Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
