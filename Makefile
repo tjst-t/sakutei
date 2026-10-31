@@ -1,15 +1,18 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-v3-nftables integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
 
 BIN     := sakutei
 DEMODIR := .demo
 
-# 新しいコア（v3/、別の Go モジュール。設計は docs/core/README.md）も
-# build・vet・test・test-race で一緒に回す。
+# 新しいコア（v3/、別の Go モジュール。設計は docs/core/README.md）と、コアの外の
+# provider のモジュール（v3/providers/、また別の Go モジュール）も build・vet・
+# test・test-race で一緒に回す。
 V3 := cd v3 &&
+V3P := cd v3/providers &&
 
 build:
 	go build -o $(BIN) ./cmd/sakutei
 	$(V3) go build -p $(TEST_P) ./...
+	$(V3P) go build -p $(TEST_P) ./...
 
 # 同時に回すパッケージの数（go test -p）。既定（CPU の数）だと CPU の多いホストで
 # テストのバイナリとそのスレッドが一度に千を超え、ほかのジョブと task の上限
@@ -20,16 +23,19 @@ TEST_P ?= 8
 test:
 	go test -p $(TEST_P) ./...
 	$(V3) go test -p $(TEST_P) ./...
+	$(V3P) go test -p $(TEST_P) ./...
 
 # race detector 付きのテスト。cgo が要るので gcc（C コンパイラ）が必要。
 # -count=1 で結果のキャッシュを使わず、毎回実際に回す。
 test-race:
 	CGO_ENABLED=1 go test -race -p $(TEST_P) -count=1 ./...
 	$(V3) CGO_ENABLED=1 go test -race -p $(TEST_P) -count=1 ./...
+	$(V3P) CGO_ENABLED=1 go test -race -p $(TEST_P) -count=1 ./...
 
 vet:
 	go vet ./...
 	$(V3) go vet -p $(TEST_P) ./...
+	$(V3P) go vet -p $(TEST_P) ./...
 
 check: build vet test
 
@@ -62,6 +68,16 @@ NFTABLES_IT := ./tests/integration/nftables/
 integration-nftables:
 	go vet -tags integration_nftables $(NFTABLES_IT)
 	go test -tags integration_nftables -count=1 -v -timeout 10m $(NFTABLES_IT)
+
+# 新しいコアの nftables provider の統合テスト（v3 段 6、不変条件 17）。本物の nft を
+# 使い捨ての network namespace（ip netns）の中で回し、2 段の Apply が確かめられれば
+# 確定し、確かめられなければ確定せず戻ること、Prepare のあと放置するとホストの側の
+# 時間切れで戻ることを確かめる（ホストの FW には触れない。namespace と道具の置き場は
+# テストが消す）。root で走るのは決まった道具 sakutei-nft-guard だけ。sudo（パスワード
+# なし）・ip・nft・python3 が要るので、check・test・CI には入れない。手順と結果は
+# v3/providers/README.md。
+integration-v3-nftables:
+	cd v3/providers && SAKUTEI_IT_NFT=1 go test -count=1 -v -run Kernel -timeout 5m ./nftables/
 
 # s3-bucket provider の統合テスト（#122）。docker で S3 互換のサーバ（MinIO・
 # SeaweedFS と、PUT の API を持たない古い SeaweedFS）を 127.0.0.1 の空いた

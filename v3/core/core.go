@@ -127,6 +127,7 @@ type Resource struct {
 	Fields    Fields            // E-D7・E-B7・N-I2・E-B14・E-A10
 	Labels    map[string]string // E-M1・E-M2・N-M5
 	DependsOn []Dependency      // E-J7・E-B13・E-I5
+	Apply     *ApplyOptions     // E-B3・E-B8・N-B2・N-D5
 	Reason    string            // N-J7・N-L8
 	Origin    Origin            // E-M3
 }
@@ -212,6 +213,10 @@ func ParseFieldType(s string) (FieldType, bool) {
 type FieldSpec struct {
 	Type     FieldType
 	Identity bool
+	// Digest は観測が中身の sha256（"sha256:<hex>"）だけを返す項目。比べるときは
+	// 宣言の値も Digest にする。中身の平文を観測・plan・Record に出さない
+	// （E-E2・E-D5）。Type は String だけ。
+	Digest bool
 }
 
 // KindSchema は種類ごとの項目。

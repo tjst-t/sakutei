@@ -122,6 +122,11 @@ type Change struct {
 	After   Op      `json:"after,omitempty"` // 当てたあとに読み直した結果
 	// AfterNote は読み直しの Unknown・Converging の理由。
 	AfterNote string `json:"after_note,omitempty"`
+	// Txn は 2 段で当てた単位（group か宣言、E-B3・E-B9）。
+	Txn string `json:"transaction,omitempty"`
+	// RolledBack は 2 段の Apply を確かめられず確定しなかった（相手の側で戻る、
+	// 不変条件 17）。同じ宣言のまま当て直さない（不変条件 13・14）。
+	RolledBack bool `json:"rolled_back,omitempty"`
 
 	// ID と Current は当てる処理が使う。JSON にも Record にも出さない（観測の値を
 	// 残さない、不変条件 1）。
@@ -350,7 +355,11 @@ func compare(r core.Resource, ks core.KindSchema, o core.Observation) Change {
 		default:
 			c.Op = Create
 			for _, k := range sortedKeys(r.Fields) {
-				c.Fields = append(c.Fields, FieldChange{Name: k, Desired: r.Fields[k]})
+				want := r.Fields[k]
+				if s, isStr := want.(string); ks.Fields[k].Digest && isStr {
+					want = core.Digest(s)
+				}
+				c.Fields = append(c.Fields, FieldChange{Name: k, Desired: want})
 			}
 		}
 		return c
@@ -366,6 +375,9 @@ func compare(r core.Resource, ks core.KindSchema, o core.Observation) Change {
 	for _, k := range sortedKeys(r.Fields) {
 		spec := ks.Fields[k]
 		want := r.Fields[k]
+		if s, isStr := want.(string); spec.Digest && isStr {
+			want = core.Digest(s) // 平文を比べず・出さない（E-E2）
+		}
 		raw, ok := o.Fields[k]
 		if !ok {
 			c.Fields = append(c.Fields, FieldChange{Name: k, Desired: want, Missing: true, Identity: spec.Identity})
@@ -484,8 +496,15 @@ func (r Result) WriteText(w io.Writer) error {
 			if c.Ineffective > 0 {
 				after += fmt.Sprintf("（効かない Apply %d 回目）", c.Ineffective)
 			}
+			if c.Txn != "" {
+				after += "（2 段で確定: " + c.Txn + "）"
+			}
 			fmt.Fprintf(&b, "    結果: 当てた。読み直し: %s\n", after)
 		case OutcomeError:
+			if c.RolledBack {
+				fmt.Fprintf(&b, "    結果: 確定せず戻した（%s）: %s\n", c.Txn, c.Error)
+				break
+			}
 			fmt.Fprintf(&b, "    結果: 失敗: %s\n", c.Error)
 		case OutcomeRefused:
 			fmt.Fprintf(&b, "    結果: provider が断った: %s\n", c.Error)

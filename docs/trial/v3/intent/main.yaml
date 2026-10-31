@@ -1,0 +1,30 @@
+# 新しいコア（v3）の試用の intent（docs/trial/README.md の「v3 で試す」）。
+# dnszone の id は <FQDN>/<型>。nftables の id は <host>/<family>/<table>/<chain>。
+# 範囲（ゾーン・扱う table）は intent の ranges に書く。
+ranges:
+  - provider: dns
+    args:
+      zone: example.com.
+  - provider: fw
+    args:
+      host: lab
+      tables: inet/filter
+resources:
+  - type: dns/record
+    id: www.example.com./A
+    fields:
+      value: 192.0.2.20
+      ttl: 300
+  # api-begin（run.sh の手順 5 がこの範囲を消して試す）
+  - type: dns/record
+    id: api.example.com./A
+    fields:
+      value: 192.0.2.30
+      ttl: 300
+  # api-end
+  - type: fw/chain
+    id: lab/inet/filter/sakutei_allow
+    fields:
+      rules:
+        - tcp dport 22 accept
+        - tcp dport 443 accept

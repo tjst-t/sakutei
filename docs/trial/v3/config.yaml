@@ -1,0 +1,13 @@
+# 新しいコア（v3）の試用のつなぎ方の設定（docs/trial/README.md の「v3 で試す」）。
+# 範囲・方針は書けない（intent に書く）。パスは作業ディレクトリからの相対。
+providers:
+  dns:
+    module: dnszone
+    settings:
+      zone_dir: .
+  fw:
+    module: nftables
+    settings:
+      hosts:
+        lab:
+          ruleset: firewall.rules

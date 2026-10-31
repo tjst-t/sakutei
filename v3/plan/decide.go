@@ -130,6 +130,7 @@ func Decide(ctx context.Context, in Input) Result {
 		ids = append(ids, r.ID)
 		ids = append(ids, g.Refs(r.ID)...)
 		ids = append(ids, g.Dependents(r.ID)...)
+		ids = append(ids, ConfirmRefs(r, core.ConfirmBefore, g)...)
 	}
 	candIDs := make([]core.ID, 0, len(candidates))
 	for id := range candidates {
@@ -221,6 +222,13 @@ func Decide(ctx context.Context, in Input) Result {
 				c.Action, c.Blocked = ActWait, why
 			}
 		}
+		// 2 段の Apply の before の確かめが通らなければ変えない（E-B3・N-B9：前に
+		// 届かない先は、変えても確かめが落ちて戻るだけ。不変条件 17）。
+		if r := g.Resource(c.ID); c.Action == ActApply && r != nil {
+			if ok, why := confirmedIn(*r, core.ConfirmBefore, env); !ok {
+				c.Action, c.Blocked = ActWait, "confirm（before）が通らないので変えない: "+why
+			}
+		}
 	}
 	for i := range out.Changes {
 		c := &out.Changes[i]
@@ -253,6 +261,7 @@ func Decide(ctx context.Context, in Input) Result {
 			needApproval(c, in, &out)
 		}
 	}
+	holdGroups(&out, fullByID)
 	checkBudgets(&out, in)
 
 	for _, c := range out.Changes {
@@ -376,22 +385,23 @@ func runChecks(ctx context.Context, subjects []core.Resource, funcs map[string]c
 	out := map[string]checkResult{}
 	view := &condEnv{obs: obs}
 	for _, r := range subjects {
+		names := confirmChecks(r, core.ConfirmBefore)
 		for _, d := range r.DependsOn {
-			if d.When == nil {
+			if d.When != nil {
+				names = append(names, d.When.Checks()...)
+			}
+		}
+		for _, name := range names {
+			if _, done := out[name]; done {
 				continue
 			}
-			for _, name := range d.When.Checks() {
-				if _, done := out[name]; done {
-					continue
-				}
-				f, ok := funcs[name]
-				if !ok {
-					out[name] = checkResult{core.TriUnknown, "登録した確かめに無い"}
-					continue
-				}
-				t, why := f(ctx, view)
-				out[name] = checkResult{t, why}
+			f, ok := funcs[name]
+			if !ok {
+				out[name] = checkResult{core.TriUnknown, "登録した確かめに無い"}
+				continue
 			}
+			t, why := f(ctx, view)
+			out[name] = checkResult{t, why}
 		}
 	}
 	return out

@@ -162,6 +162,7 @@ type Resource struct {
 | `apply.transaction` | 2 段で当てて確かめる（§3.3 の Transaction） | E-B3・E-B8・N-B2・N-D5 |
 | `apply.transaction.group` | 同じ group は全部で確かめが通ったときだけ確定 | E-B9・N-B3・N-B14 |
 | `confirm[].phase` | `before`（変える前に確かめ、だめなら変えない）・`after`（変えたあとに確かめ、だめなら確定しない） | E-B3・N-B9 |
+| 確かめの決まり | `after` は、単位（group か宣言）の全部の宣言を読み直して宣言どおりで、全部の `after` が真のときだけ通る。不明は通らない。`timeout`（既定 30s、2s 以上）の半分まで 1 秒ごとに確かめ直す。通らなければ Commit を呼ばず（Rollback は急ぐためだけ）、同じ宣言のまま当て直さない（止めて知らせる。宣言を直すか現実が宣言どおりになれば数え直す）。group の 1 つが当てられない（待つ・承認待ち・report）なら group ごと待ち、group の中の依存は読み込みで断る | E-B3・E-B9・N-B3・不変条件 13・17 |
 | `reason` | 変更の理由を監査と Event に出す | N-J7・N-L8 |
 
 ### 3.2 Range（管理する範囲）
@@ -240,7 +241,7 @@ type FieldType int // String, Int, Bool, Duration, List(順序あり・全置換
 
 // 任意のインターフェース
 type Transactor interface {
-    Prepare(ctx context.Context, w WriteContext, changes []Change, opt TxnOptions) (Txn, error)
+    Prepare(ctx context.Context, w WriteContext, changes []Change, opt TxnOptions) (Txn, error) // Change{ID; Delete; Desired; Current}・TxnOptions{Timeout}
 }
 type Txn interface {
     Commit(ctx context.Context) error
@@ -274,6 +275,7 @@ type DesiredObserver interface {
 | `FieldSpec.Identity` | 変われば作り直しになる項目。物理の座標を選べるようにする | E-A10・N-A8 |
 | `FieldSpec.Type` の List・Set | 順序のある規則は全置換、集合は順不同で比べる | E-B12 |
 | `FieldSpec.Type` の Secret | 値を比べず世代で比べる。表示は伏せる | E-G2・N-L5 |
+| `FieldSpec.Digest` | 観測は中身の sha256（`sha256:<hex>`）だけ。比べるときは宣言の値も sha256 にする。平文を観測・plan・Record に出さない（host のファイル・ユニットの中身） | E-E2・E-D5 |
 | `FieldSpec.Destructive` | create・update・delete のどれで壊すか。壊す変更は予算と承認 | E-C1・E-A1・N-D8・N-G10・N-C4 |
 | `Settle` | Apply のあと読み直すまで待つ | E-J6・E-R3 |
 | `ObserveOnly` | 観測だけの種類（在庫・operational の状態・golden config） | E-B7・E-E4・N-B5・N-B6・N-A7 |
@@ -850,8 +852,12 @@ providers:
     max_concurrent: 8
   fw:
     module: nftables
-    settings: {guard_tool: /usr/local/sbin/sakutei-nft-guard}
-    ssh: {known_hosts: /etc/sakutei/known_hosts, key: {secret: "file:/etc/sakutei/id_ed25519"}}
+    settings:
+      hosts:                         # ホストごとのつなぎ方（扱う table は intent の ranges）
+        fw1:
+          ssh: {address: 192.0.2.1, user: sakutei, known_hosts: /etc/sakutei/known_hosts, key: /etc/sakutei/id_ed25519}
+          sudo: true
+          guard: [/usr/local/libexec/sakutei-nft-guard]
 secret_backends:
   vault: {module: vault-kv2, settings: {address: "https://vault.example.com:8200", approle: {role_id_file: /etc/sakutei/role_id, secret_id_file: /etc/sakutei/secret_id}}}
   file:  {module: file}
@@ -871,7 +877,7 @@ listen:
 |---|---|
 | `providers.<名前>.module`・`settings` | E-O4・E-S1・N-S2 |
 | `observe`・`write` の資格 | E-G5・N-G3 |
-| `ssh` の known_hosts と鍵 | E-E1 |
+| `hosts.<名前>` の `ssh`（known_hosts と鍵）・`local`・`sudo`（SDK の `sdk/hostexec.ParseHosts`） | E-E1 |
 | `max_concurrent` | E-N1・N-N4 |
 | `secret_backends` | E-G3・E-O2・N-O2 |
 | `inputs` の在りか | E-K3・E-P4 |
@@ -892,7 +898,7 @@ listen:
 5. 設定の読み方（`settings` の型）。範囲の引数（`Range.Args`）は設定でなく Range から受け取る。
 6. 任意：`Transactor`・`Invoker`・`Classifier`・`Validator`・`DesiredObserver`。
 
-SDK が用意するもの：`SecretRef.Resolve(w WriteContext)`（書き込みの文脈でだけ書き込み用の資格を返す）・ssh の実行の層（known_hosts・接続の使い回し・決まったコマンドだけを sudo で）・HTTP の下回り（TLS・API のパスの前置き・リトライ）・`cli.Main(WithProvider(...), WithExpander(...), WithSink(...), WithSecretBackend(...), WithCheck(...))`。
+SDK が用意するもの：`SecretRef.Resolve(w WriteContext)`（書き込みの文脈でだけ書き込み用の資格を返す）・ssh の実行の層（`sdk/hostexec`：known_hosts・決まったコマンドだけを sudo で。届かないは `UnreachableError` で、provider は Unknown にする）・HTTP の下回り（TLS・API のパスの前置き・リトライ）・`cli.Main(WithProvider(...), WithExpander(...), WithSink(...), WithSecretBackend(...), WithCheck(...))`。
 
 | SDK の項目 | ユースケース |
 |---|---|
@@ -933,7 +939,7 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | v2 | 新しいモジュール | 移植の要点 | ユースケース |
 |---|---|---|---|
 | dnszone | `dnszone` | ゾーンの指定は Range の `args.zone` へ。SOA のシリアルを上げるのは Apply の中のまま。`soa_serial: keep` は Resource の項目 | E-B1・N-B11 |
-| nftables（file・live）＋ sakutei-nft-guard | `nftables`・`nft-guard` | base chain の守りは `Transactor`（Prepare＝写しと guard の arm、Commit＝disarm）。確かめる先は Resource の `confirm`（`phase`）。作成・policy 変更は Schema の壊す印と `Classifier`。`tables` は Range へ | E-B2・E-B3・E-B4・N-B9 |
+| nftables（file・live）＋ sakutei-nft-guard | `nftables`・`nft-guard` | base chain の守りは `Transactor`（Prepare＝guard の check・arm（写しと時間切れの戻し）・apply、Commit＝disarm、Rollback＝guard の rollback）。live の base chain の宣言は `apply.transaction` を書かなければ読み込みで断る。確かめる先は Resource の `confirm`（`phase`）。作成・policy 変更は Schema の壊す印と `Classifier`（後の段）。`host` と `tables` は Range へ | E-B2・E-B3・E-B4・N-B9 |
 | redfish-system | `redfish` の `system` | power の強制停止は壊す印。電源の切り替え中は Converging | E-A1・N-A1 |
 | redfish の boot_once・reset | `redfish` の `Invoker` | `ErrNotSent` の判定をそのまま移す | E-A2・N-A2 |
 | redfish-virtual-media | `redfish` の `virtual-media` | 変更なし | E-A3 |
@@ -949,7 +955,7 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | ldap | `ldap` | base_dn・filter・scope は Range。子のある項目の削除は `RefuseError` | E-G1・N-G1 |
 | ansible | `ansible` | `DesiredObserver`（check mode）。List と prune は持たない | E-E3・N-E5・N-T3 |
 | template-file | `template-file` | `DesiredObserver` | E-E5・N-E8 |
-| host-file・systemd-unit（hostconf） | `hostconf` | `restart_on` は Resource の項目のまま。ホストは Range。中身は hash と stat だけ観測 | E-D5・E-E2・N-D7・N-E1・N-E6・E-H7・N-H1（監視の設定のファイルもこれで配る） |
+| host-file・systemd-unit（hostconf） | `hostconf`（種類 `file`・`unit`） | `restart_on` は Resource の項目のまま（入れ替えた時の digest の印はホストの側）。ホストは Range。中身は hash と stat だけ観測（`FieldSpec.Digest`） | E-D5・E-E2・N-D7・N-E1・N-E6・E-H7・N-H1（監視の設定のファイルもこれで配る） |
 | guest-os | `guest-os` | 観測だけ。目印は Resource の項目 | E-E4・E-A8 |
 | metrics-probe | `metrics-probe` | 観測だけ。比べ方は provider の設定でなく Condition に移す（provider は値を返すだけ） | E-H4・N-T4 |
 | secret backends（vault-kv2・command・file） | `secret/vault-kv2` ほか | 世代を返す `Generation` と `Resolve` のまま | E-G3・E-G4 |

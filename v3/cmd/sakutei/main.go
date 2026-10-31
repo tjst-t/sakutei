@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command sakutei は新しいコアの CLI。実の provider は段 6 から組み込む。今は
-// 偽の provider（モジュール fake、E-P1）だけを持つ。
+// Command sakutei は新しいコアだけの CLI。偽の provider（モジュール fake、E-P1）
+// だけを持つ。実の provider（dnszone・hostconf・nftables）はコアの外のモジュール
+// providers/ にあり、それを組み込んだ CLI は providers/cmd/sakutei。
 package main
 
 import (

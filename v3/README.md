@@ -2,7 +2,7 @@
 
 設計は `docs/core/README.md`、もとにした検討は `docs/review/core-usecase-review.md`。ルートの v2 のコードとは別の Go モジュール（`github.com/tjst-t/sakutei/v3`、標準ライブラリだけ）。互換は持たない。
 
-作る順番は設計書 §8 の 9 段。いまは **段 5** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）と、段 5（Procedure・承認と承認の CLI・一時的な Policy の freeze）を足した。
+作る順番は設計書 §8 の 9 段。いまは **段 6** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）と、段 5（Procedure・承認と承認の CLI・一時的な Policy の freeze）と、段 6（2 段の Apply・最初の実 provider の dnszone・hostconf・nftables と決まった道具 nft-guard。provider はコアの外のモジュール `providers/`）を足した。
 
 | パッケージ | 中身 |
 |---|---|
@@ -21,7 +21,8 @@
 | `daemon` | 常駐：`cycle.Run` を繰り返し、間隔を待ち、`sakutei wake`・SIGHUP・intent の変更で起きる |
 | `readapi` | 常駐の読み取り HTTP（`/status`・`/plan`・`/events`（SSE）・`/graph`・`/health`）と TLS・クライアント証明書・読むだけのトークン |
 | `record` | Record のディレクトリ：`LOCK`（flock）・`format`・`marks.json`（範囲ごとの件数・予算の窓・効かない Apply の回数）・`audit/`（前の行のハッシュの鎖）・`events/`（`state.json`・`outbox/`・`cursors/`）・`health.json`・`wake`・`runs/`（手順の進み）・`approvals/`（依頼と判断）・`temp-policies/`（freeze）・`commands/`（start・cancel の頼み） |
-| `sdk/fake` | テスト用の偽の provider（Go から観測の答え・List の欠け・Apply の失敗・効かない Apply・上流の奥で届かない対象・削除の断り・一回きりの操作とその失敗（送れていない・送れたか分からない・送る途中で止まる）を置く・CLI ではモジュール `fake` の state のファイルと `ops`） |
+| `sdk/hostexec` | provider SDK のホストでコマンドを走らせる層（手元・ssh・sudo。ホスト鍵を known_hosts で確かめる。届かないは `UnreachableError`）と、設定の `hosts:` の読み方 |
+| `sdk/fake` | テスト用の偽の provider（Go から観測の答え・List の欠け・Apply の失敗・効かない Apply・上流の奥で届かない対象・削除の断り・一回きりの操作とその失敗（送れていない・送れたか分からない・送る途中で止まる）・2 段の Apply（`Prepare` の失敗・変更が別のものを壊す注入・時間切れの `Expire`）を置く・CLI ではモジュール `fake` の state のファイルと `ops`） |
 | `cli`・`cmd/sakutei` | CLI。`sakutei`（常駐）とサブコマンド `plan`・`reconcile`・`wake`・`audit verify`・`approve`・`reject`・`approvals`・`freeze`・`unfreeze`・`start`・`cancel` |
 | `internal/yaml` | 行番号を残す YAML の部分集合のパーサ（ブロックと 1 行のフロー） |
 
@@ -80,4 +81,14 @@ $ cd v3 && go run ./cmd/sakutei cancel    <run-id> --record <dir> --reason … [
 - 常駐は `approvals/`・`temp-policies/`・`commands/` の書き込みで次の周を始める。Event は `ApprovalPending`（承認待ち）・`Frozen`・`ProcedureNeedsDaemon`・`Waiting`（手順が待つ）・`Halt`（手順が止まった）・`ProcedureStep`（段を済ませた・済んだ・取り消した）を足した。一回実行の終了コードは、済んでいない手順・承認待ちを 3、止まった手順・拒否を 4 に数える。
 - 性質のテスト（`cycle`）は race detector のとき（と `-short`）回数を減らす（make test-race で v3/cycle を 60 秒以内に）。
 
-テストはルートの `make check`・`make test-race` が一緒に回す。
+段 6 の決まり：
+
+- 2 段の Apply（`apply.transaction`、§3.1・§3.3）：`group`（同じ名前の宣言を 1 つにまとめる）・`timeout`（既定 30s、2s 以上）・`confirm`（`phase: before|after` と `when` の Condition）。provider は `core.Transactor` を持つ（無ければ読み込みで断る）。
+- `before` は判定（plan と同じ）で見る：通らなければ変えない（待つ）。group の 1 つが当てられない（待つ・承認待ち・report・止めた）なら group ごと待つ。group の中の依存は読み込みで断る。
+- 周は単位（group か宣言）ごとに provider ごとに `Prepare` し（相手の側に timeout の後に戻す仕掛けを置いて当てる）、settle を待ってから timeout の半分まで 1 秒ごとに、全部の宣言を読み直して宣言どおりで全部の `after` が真かを確かめる（不明は通らない）。全部が通ったときだけ `Commit`。通らなければ `Commit` を呼ばずに `Rollback`（急ぐためだけ。呼ばなくても相手の時間切れで戻る）。1 つでも準備できなければ、準備したものを戻して確定しない（不変条件 17）。
+- 確かめられず戻した宣言は、同じ宣言のまま当て直さない（効かない回数を上限にして止める、終了コード 4。毎周締め出して戻すのを繰り返さない、不変条件 13・14）。宣言を直すか現実が宣言どおりになれば数え直す。結果の `transaction`・`rolled_back` に出る。
+- `FieldSpec.Digest`：観測は中身の sha256 だけで、比べるときは宣言も sha256 にする（平文を観測・plan に出さない、E-E2）。
+- 実の provider はコアの外の Go モジュール `providers/`（`github.com/tjst-t/sakutei/v3/providers`）。それを組み込んだ CLI は `providers/cmd/sakutei`、決まった道具は `providers/cmd/sakutei-nft-guard`。詳しくは [providers/README.md](providers/README.md)。
+- v2 の試用の手順（DNS と FW）は `docs/trial/v3/`（`run.sh` と、同じ手順を回す `providers/cmd/sakutei` の `TestTrial`）。本物のカーネルの 2 段の Apply は `make integration-v3-nftables`。
+
+テストはルートの `make check`・`make test-race` が一緒に回す（`providers/` も）。

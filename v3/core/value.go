@@ -15,6 +15,8 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -143,4 +145,10 @@ func describe(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+// Digest は中身の sha256 を "sha256:<hex>" で返す（FieldSpec.Digest、E-E2）。
+func Digest(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }

@@ -199,6 +199,7 @@ func Validate(out expand.Output, providers map[string]core.Provider, checks map[
 		res = append(res, r)
 	}
 	diags = append(diags, checkCycles(res)...)
+	diags = append(diags, checkGroups(res)...)
 	diags = append(diags, checkRanges(res, out.Ranges, providers)...)
 	diags = append(diags, checkPolicies(out.Policies, providers)...)
 	diags = append(diags, checkProcedures(out.Procedures, res, providers, checks)...)
@@ -294,7 +295,43 @@ func checkResource(r core.Resource, providers map[string]core.Provider, checks m
 			}
 		}
 	}
+	// 2 段の Apply は Transactor を持つ provider だけ（E-B3・E-B8）。確かめの式も
+	// when と同じに突き合わせる（E-B9・N-B9）。
+	if t := r.Txn(); t != nil {
+		if _, ok := providers[r.ID.Provider()].(core.Transactor); !ok {
+			diags = append(diags, reject(r.Origin, target, "provider %q は 2 段の Apply（apply.transaction）を持たない", r.ID.Provider()))
+		}
+		if ks.ObserveOnly {
+			diags = append(diags, reject(r.Origin, target, "観測だけの種類に apply.transaction は書けない"))
+		}
+		for _, c := range t.Confirm {
+			for _, msg := range condition.Lint(c.When, lookup, &ks, hasCheck) {
+				diags = append(diags, reject(r.Origin, target, "confirm（%s）の when %q: %s", c.Phase, c.When.String(), msg))
+			}
+		}
+	}
 	return r, diags
+}
+
+// checkGroups は 2 段の Apply の group を確かめる（E-B9・N-B3）。同じ group は
+// 同じ波で 1 回に当てるので、group の中の依存は断る（片方が済むまで待てば
+// group ごと進めない）。
+func checkGroups(res []core.Resource) []core.Diagnostic {
+	g := graph.New(res)
+	var diags []core.Diagnostic
+	for _, r := range res {
+		t := r.Txn()
+		if t == nil || t.Group == "" {
+			continue
+		}
+		for _, up := range g.Upstream(r.ID) {
+			u := g.Resource(up)
+			if u != nil && u.Txn() != nil && u.Txn().Group == t.Group {
+				diags = append(diags, reject(r.Origin, r.ID.String(), "同じ transaction.group %q の %s に依っている（group の中の依存は書けない）", t.Group, up))
+			}
+		}
+	}
+	return diags
 }
 
 // checkCycles は宣言どうしの依存（depends_on の id と when が名指しする対象）の

@@ -210,3 +210,21 @@ func TestWrite(t *testing.T) {
 		t.Fatalf("json: %s", buf.String())
 	}
 }
+
+// E-E2：Digest の項目は宣言を sha256 にして比べ、平文を出さない。
+func TestCompareDigest(t *testing.T) {
+	ks := core.KindSchema{Fields: map[string]core.FieldSpec{"content": {Type: core.String, Digest: true}}}
+	r := core.Resource{ID: core.ID{Type: "h/file", Name: "a"}, Fields: core.Fields{"content": "secret=1\n"}}
+	same := plan.Compare(r, ks, core.Observation{Availability: core.Present, Fields: core.Fields{"content": core.Digest("secret=1\n")}})
+	if same.Op != plan.None {
+		t.Fatalf("%+v", same)
+	}
+	diff := plan.Compare(r, ks, core.Observation{Availability: core.Present, Fields: core.Fields{"content": core.Digest("x")}})
+	if diff.Op != plan.Update || diff.Fields[0].Desired != core.Digest("secret=1\n") {
+		t.Fatalf("%+v", diff)
+	}
+	created := plan.Compare(r, ks, core.Observation{Availability: core.Absent})
+	if created.Op != plan.Create || created.Fields[0].Desired != core.Digest("secret=1\n") {
+		t.Fatalf("%+v", created)
+	}
+}

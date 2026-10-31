@@ -277,7 +277,7 @@ func (d *decoder) stringMap(n *yaml.Node, path string) (map[string]string, bool)
 }
 
 func (d *decoder) resource(n *yaml.Node, path string) (core.Resource, bool) {
-	obj := d.object(n, path, "type", "id", "ensure", "labels", "fields", "depends_on", "reason")
+	obj := d.object(n, path, "type", "id", "ensure", "labels", "fields", "depends_on", "apply", "reason")
 	if obj == nil {
 		return core.Resource{}, false
 	}
@@ -328,10 +328,85 @@ func (d *decoder) resource(n *yaml.Node, path string) (core.Resource, bool) {
 			}
 		}
 	}
+	if v := obj["apply"]; v != nil {
+		r.Apply = d.applyOptions(v, target+".apply")
+	}
 	if v := obj["reason"]; v != nil {
 		r.Reason, _ = d.str(v, target+".reason")
 	}
 	return r, len(d.diags) == before
+}
+
+// applyOptions は apply を読む（§3.1）。今あるのは transaction だけ
+// （E-B3・E-B8・E-B9・N-B2・N-B9）。
+func (d *decoder) applyOptions(n *yaml.Node, path string) *core.ApplyOptions {
+	obj := d.object(n, path, "transaction")
+	if obj == nil {
+		return nil
+	}
+	tn := obj["transaction"]
+	if tn == nil {
+		d.reject(n, path, "transaction を書く")
+		return nil
+	}
+	tp := path + ".transaction"
+	tobj := d.object(tn, tp, "group", "timeout", "confirm")
+	if tobj == nil {
+		return nil
+	}
+	t := &core.TxnSpec{Timeout: core.DefaultTxnTimeout}
+	if x := tobj["group"]; x != nil {
+		if s, ok := d.str(x, tp+".group"); ok {
+			if !validName(s) {
+				d.reject(x, tp+".group", "group の名前は英数字・-・_ で書く（%q が書かれている）", s)
+			}
+			t.Group = s
+		}
+	}
+	if x := tobj["timeout"]; x != nil {
+		// 確かめは半分まで。相手の時間切れは秒で仕掛けるので 2 秒以上（E-B3）。
+		if v := d.positiveDuration(x, tp+".timeout"); v > 0 {
+			if v < 2*time.Second {
+				d.reject(x, tp+".timeout", "2s 以上を書く（確かめは半分まで）")
+			}
+			t.Timeout = v
+		}
+	}
+	if x := tobj["confirm"]; x != nil {
+		for i, cn := range d.list(x, tp+".confirm") {
+			cp := fmt.Sprintf("%s.confirm[%d]", tp, i)
+			cobj := d.object(cn, cp, "phase", "when")
+			if cobj == nil {
+				continue
+			}
+			var c core.Confirm
+			if y := cobj["phase"]; y != nil {
+				switch s, _ := d.str(y, cp+".phase"); s {
+				case "before":
+					c.Phase = core.ConfirmBefore
+				case "after":
+					c.Phase = core.ConfirmAfter
+				default:
+					d.reject(y, cp+".phase", "phase は before か after（%q が書かれている）", s)
+				}
+			} else {
+				d.reject(cn, cp, "phase を書く（before か after）")
+			}
+			if s := d.expr(cobj["when"], cp+".when"); s != "" {
+				cond, err := condition.Parse(s)
+				if err != nil {
+					d.reject(cobj["when"], cp+".when", "%v", err)
+				}
+				c.When = cond
+			} else if cobj["when"] == nil {
+				d.reject(cn, cp, "when を書く")
+			}
+			if c.When != nil {
+				t.Confirm = append(t.Confirm, c)
+			}
+		}
+	}
+	return &core.ApplyOptions{Transaction: t}
 }
 
 // dependency は depends_on の 1 件を読む（§3.5）。id（名指しの上流、E-J7）と

@@ -78,12 +78,16 @@ type Provider struct {
 	opSet        map[string]map[string]core.Fields // 種類 → 操作 → 送ると置く項目
 	onInvoke     func(id core.ID, op string, args core.Fields) error
 	invokes      []Invocation
+	prepareErr   map[core.ID]error
+	onPrepare    func(changes []core.Change)
+	txns         []*Txn
 }
 
 var (
-	_ core.Provider  = (*Provider)(nil)
-	_ core.Validator = (*Provider)(nil)
-	_ core.Invoker   = (*Provider)(nil)
+	_ core.Provider   = (*Provider)(nil)
+	_ core.Validator  = (*Provider)(nil)
+	_ core.Invoker    = (*Provider)(nil)
+	_ core.Transactor = (*Provider)(nil)
 )
 
 // New は schema の偽の provider を作る。置いていない ID の観測は Absent。
@@ -91,7 +95,7 @@ func New(schema core.Schema) *Provider {
 	return &Provider{schema: schema, state: map[core.ID]core.Observation{}, omit: map[core.ID]bool{},
 		listHide: map[core.ID]bool{}, applyErr: map[core.ID]error{}, deleteRefuse: map[core.ID]string{},
 		ineffective: map[core.ID]bool{}, behind: map[core.ID]core.ID{},
-		ops: map[string]map[string]core.OpSpec{}, opSet: map[string]map[string]core.Fields{}}
+		ops: map[string]map[string]core.OpSpec{}, opSet: map[string]map[string]core.Fields{}, prepareErr: map[core.ID]error{}}
 }
 
 // SetOp は種類 kind に一回きりの操作 op を置く（E-A2）。set は送ったときに対象に

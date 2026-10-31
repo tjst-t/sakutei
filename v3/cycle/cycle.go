@@ -167,17 +167,25 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 			}
 		}
 		stop := false
-		for n, i := range writes {
-			c := &r.Changes[i]
-			// 承認を使った印を発射の前に書く。書けなければ承認を使わない（不変条件 21）。
-			if c.Request != "" {
-				if err := useApproval(in.Record, audit, st.approvals[c.Request], c, now); err != nil {
-					errs = append(errs, "承認を使った印を書けない: "+err.Error())
-					block(&r, []int{i}, "承認を使った印を Record に書けないので当てない")
-					continue
+		// 承認を使った印を発射の前に書く。書けなければ承認を使わない（不変条件 21）。
+		useApprovals := func(idx []int) []int {
+			var ok []int
+			for _, i := range idx {
+				c := &r.Changes[i]
+				if c.Request != "" {
+					if err := useApproval(in.Record, audit, st.approvals[c.Request], c, now); err != nil {
+						errs = append(errs, "承認を使った印を書けない: "+err.Error())
+						block(&r, []int{i}, "承認を使った印を Record に書けないので当てない")
+						continue
+					}
 				}
+				ok = append(ok, i)
 			}
-			fire(ctx, c, in.Providers[c.ID.Provider()], byID[c.ID])
+			return ok
+		}
+		// account は当てた 1 件を予算に数えて監査に残す。監査に書けなければ false。
+		account := func(i int) bool {
+			c := &r.Changes[i]
 			c.Wave = wave
 			fired[c.ID] = true
 			for _, p := range c.Policies {
@@ -193,12 +201,49 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 			}
 			if _, err := audit.Append(entry(c, now)); err != nil {
 				errs = append(errs, "監査に書けない: "+err.Error())
-				block(&r, writes[n+1:], "監査に書けないので当てない")
-				writes = writes[:n+1]
-				stop = true
+				return false
+			}
+			return true
+		}
+		plain, units := plan.TxnUnits(r, writes, byID)
+		var done []int
+		for n, i := range plain {
+			if len(useApprovals([]int{i})) == 0 {
+				continue
+			}
+			fire(ctx, &r.Changes[i], in.Providers[r.Changes[i].ID.Provider()], byID[r.Changes[i].ID])
+			done = append(done, i)
+			if !account(i) {
+				block(&r, plain[n+1:], "監査に書けないので当てない")
+				for _, u := range units {
+					block(&r, u, "監査に書けないので当てない")
+				}
+				units, stop = nil, true
 				break
 			}
 		}
+		// 2 段の Apply は単位（group か宣言）ごとに準備し、確かめが通ったときだけ
+		// 確定する（不変条件 17）。
+		for n, u := range units {
+			u = useApprovals(u)
+			if len(u) == 0 {
+				continue
+			}
+			runTxn(ctx, in, clock, &r, u, byID, g)
+			done = append(done, u...)
+			for _, i := range u {
+				if !account(i) {
+					stop = true
+				}
+			}
+			if stop {
+				for _, rest := range units[n+1:] {
+					block(&r, rest, "監査に書けないので当てない")
+				}
+				break
+			}
+		}
+		writes = done
 		// settle を待って読み直す（観測しなかった値を「ずれ無し」と出さない、
 		// 不変条件 29。効いたかを見る、不変条件 14）。
 		settle(ctx, in.Sleep, r, writes, readers)
@@ -440,26 +485,14 @@ func settle(ctx context.Context, sleep func(context.Context, time.Duration), r p
 	var d time.Duration
 	for _, i := range writes {
 		c := r.Changes[i]
-		if c.Outcome != plan.OutcomeOK {
-			continue
+		if c.Outcome != plan.OutcomeOK || c.Txn != "" {
+			continue // 2 段の Apply は確かめの前に待った
 		}
 		if ks := readers[c.ID.Provider()].Schema().Kinds[c.ID.Kind()]; ks.Settle > d {
 			d = ks.Settle
 		}
 	}
-	if d <= 0 {
-		return
-	}
-	if sleep != nil {
-		sleep(ctx, d)
-		return
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-	case <-t.C:
-	}
+	wait(ctx, sleep, d)
 }
 
 // countIneffective は効かない Apply を数える（不変条件 14、E-J6・E-K10）。当てて
@@ -475,6 +508,17 @@ func countIneffective(r *plan.Result, marks record.Marks) map[string]record.Inef
 			had = false
 		}
 		switch {
+		case c.RolledBack:
+			// 確かめられず戻した 2 段の Apply は、同じ宣言のまま当て直さない
+			// （不変条件 13・17。毎周締め出して戻すのを繰り返さない）。
+			n := max(c.IneffectiveLimit, 1)
+			if had && prev.Count+1 > n {
+				n = prev.Count + 1
+			}
+			out[c.Resource] = record.IneffectiveMark{Count: n, Desired: c.DesiredHash}
+			c.Ineffective = n
+			r.Halts = append(r.Halts, plan.Halt{Scope: "resource " + c.Resource,
+				Reason: "2 段の Apply を確かめられず確定しなかった（相手の側で元に戻る）。宣言を直すか現実を宣言どおりにするまで当て直さない"})
 		case c.Outcome == plan.OutcomeOK:
 			switch c.After {
 			case plan.None:

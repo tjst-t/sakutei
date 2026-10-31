@@ -17,6 +17,24 @@ v2（Backlog #20）に入るかどうかは、この手順で v1 を使ってみ
   （例 `inet/filter/sakutei_allow`）。迷ったら手順 1 の `import` が出す ID をそのまま使う。
 - **nftables の rules** は順序つきの 1 本の文字列で、ルールの区切りは ` ; `。並べ替えも差分になる。
 
+## v3 で試す（新しいコア、docs/trial/v3/）
+
+新しいコア（`v3/`、設計 `docs/core/README.md`）に実の provider（`v3/providers/` の dnszone・nftables）を組み込んだ `sakutei` で、同じ手順（plan → reconcile → 手でずらす → 戻る → 知らせるだけ → 宣言から外しても消さない）を流す。
+
+```sh
+docs/trial/v3/run.sh            # 作業ディレクトリは /tmp/sakutei-trial-v3（毎回作り直す）
+```
+
+v1 との違い：
+
+- つなぎ方の設定（`config.yaml`）と intent に分かれる。ゾーン（`zone`）と扱う table（`host`・`tables`）は intent の `ranges` に書く。
+- ID は dnszone が `<FQDN>/<型>`（種類 `dns/record`）、nftables が `<host>/<family>/<table>/<chain>`（種類 `fw/chain`）。`rules` はルール文のリスト。
+- import はまだ無い（段 9）。status の代わりに plan がずれを出す。
+- alert-only は `sakutei freeze`（理由・期限・誰が。`unfreeze` で終える）。
+- 宣言から外したものは `ranges` の `prune: false`（既定）なら消さず、宣言外として出す。`prune: true` にしても、前の周の件数が無ければ・予算（`budget.destructive_per_cycle`）を超えれば消さない。
+
+同じ手順と v1 の D3（宣言外の削除が予算で止まる）を `v3/providers/cmd/sakutei` の `TestTrial` が回す（`make test` に入る）。
+
 ## 置いてあるもの（docs/trial/v1/）
 
 | ファイル | 中身 |
