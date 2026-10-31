@@ -175,6 +175,21 @@ type Result struct {
 	// （E-M5・N-M7）。
 	AdvancedElsewhere bool     `json:"advanced_elsewhere,omitempty"`
 	Errors            []string `json:"errors,omitempty"` // Record・監査に書けないなど、周の誤り
+
+	// Events はこの周に送り出しの列へ積んだ Event（reconcile だけ、§5.2）。
+	Events []core.Event `json:"events,omitempty"`
+	// Deliveries は sink ごとの送り出しの結果。失敗しても周の誤りにしない
+	// （不変条件 28）。
+	Deliveries []Delivery `json:"deliveries,omitempty"`
+}
+
+// Delivery は sink 1 つの送り出しの結果（E-H2・N-H2）。
+type Delivery struct {
+	Sink    string `json:"sink"`
+	Sent    int    `json:"sent"`
+	Cursor  uint64 `json:"cursor"`            // 送り終えた最後の番号
+	Pending int    `json:"pending,omitempty"` // 送れずに残った数
+	Error   string `json:"error,omitempty"`
 }
 
 // Compute は provider ごとに Observe をまとめて呼び（E-D8）、宣言と比べる。
@@ -415,6 +430,11 @@ func (r Result) WriteText(w io.Writer) error {
 	for _, e := range r.Errors {
 		fmt.Fprintf(&b, "誤り: %s\n", e)
 	}
+	for _, d := range r.Deliveries {
+		if d.Error != "" {
+			fmt.Fprintf(&b, "送り出し %s: 送れない（%d 件は次の周に送る）: %s\n", d.Sink, d.Pending, d.Error)
+		}
+	}
 	_, err := io.WriteString(w, b.String())
 	return err
 }
@@ -446,3 +466,6 @@ func sortedKeys(m core.Fields) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// Labels は宣言の labels（宣言外は範囲の labels）。Event に載せる（E-M1・E-H2）。
+func (c Change) Labels() map[string]string { return c.labels }

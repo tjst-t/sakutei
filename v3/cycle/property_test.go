@@ -15,6 +15,7 @@
 package cycle_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -62,7 +63,11 @@ type world struct {
 //     急減していないときだけ。
 //   - 不変条件 20：書いた数が予算を超えない。予算で止めた周は 1 件も書かない
 //     （超過分だけを保留しない）。
-//   - 不変条件 1：Record のどのファイルにも観測の値が現れない。
+//   - 不変条件 1：Record のどのファイルにも観測の値が現れない（通知の状態・送り出しの
+//     列を含む）。
+//   - 不変条件 29：観測が Unknown・作業中・答えなし・Observe の失敗の対象と、List が
+//     壊れた周の範囲の Event を resolved にしない。
+//   - 不変条件 28：送れない sink があっても周の誤りにならない。
 func TestCycleProperties(t *testing.T) {
 	seeds := 400
 	if testing.Short() {
@@ -186,8 +191,11 @@ func property(t *testing.T, seed int64) {
 			t.Fatal(err)
 		}
 		h.clock.t = h.clock.t.Add(time.Duration(rng.Intn(50)) * time.Minute)
+		// 送れない sink を混ぜても周は変わらない（不変条件 28）。
+		h.in.Sinks = map[string]core.Sink{"flaky": failSink{fail: rng.Intn(2) == 0}}
 		r := h.run()
 		check(t, cyc, h, w, declaredSet, prev, r)
+		checkEvents(t, cyc, w, r)
 	}
 
 	// 不変条件 1：Record に観測の値を書かない。
@@ -316,6 +324,55 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 			if wr.ID.Kind() == "rec" {
 				fail("report なのに %s に書いた", wr.ID)
 			}
+		}
+	}
+}
+
+type failSink struct{ fail bool }
+
+func (s failSink) Deliver(context.Context, []core.Event) error {
+	if s.fail {
+		return errors.New("届かない")
+	}
+	return nil
+}
+
+// checkEvents は不変条件 28・29 を確かめる。
+func checkEvents(t *testing.T, cyc int, w world, r plan.Result) {
+	t.Helper()
+	if len(r.Errors) > 0 {
+		t.Fatalf("周 %d: 周の誤り %v", cyc, r.Errors)
+	}
+	if len(r.Events) == 0 || r.Events[len(r.Events)-1].Kind != "CycleDone" {
+		t.Fatalf("周 %d: CycleDone が無い: %+v", cyc, r.Events)
+	}
+	for _, e := range r.Events {
+		if e.Type != core.StateEvent || e.State != core.Resolved {
+			continue
+		}
+		if e.Resource == "" {
+			if w.listBroken && strings.HasPrefix(e.Scope, "range ") {
+				t.Fatalf("周 %d: List が壊れた周に %s を resolved にした", cyc, e.Key())
+			}
+			continue
+		}
+		id, err := core.ParseRef(e.Resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		k, seen := w.obs[id]
+		blind := w.observeErr || k == obsUnknown || k == obsConverging || k == obsOmit
+		// 宣言外は完全な List に出なければ無いとみなす（List が集合の正、不変条件 8）。
+		// 偽の provider の List は Present だけを返す。
+		if e.Kind == "Unmanaged" {
+			listed := !w.hidden[id] && (k == obsSame || k == obsDiff || k == obsOmit)
+			blind = listed && (w.observeErr || k == obsOmit)
+		}
+		if seen && blind && e.Kind != "Unknown" && e.Kind != "Converging" {
+			t.Fatalf("周 %d: 観測できなかった %s を resolved にした", cyc, e.Key())
+		}
+		if w.listBroken && e.Kind == "Unmanaged" {
+			t.Fatalf("周 %d: List が壊れた周に宣言外 %s を resolved にした", cyc, e.Key())
 		}
 	}
 }

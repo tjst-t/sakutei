@@ -19,6 +19,7 @@ package load
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -33,11 +34,16 @@ import (
 // 作る（E-O4・E-S1・N-S2）。範囲は settings でなく Range から受け取る。
 type Module func(settings map[string]any) (core.Provider, error)
 
+// SinkModule は Event の送り先のモジュール。つなぎ方の設定の sinks.<名前>.settings
+// から送り先を作る（E-H2・E-H3）。
+type SinkModule func(settings map[string]any) (core.Sink, error)
+
 // Options は読み込みの入力。
 type Options struct {
 	IntentDir  string
 	ConfigFile string
 	Modules    map[string]Module
+	Sinks      map[string]SinkModule
 	Expander   expand.Expander // nil なら expand.Passthrough
 }
 
@@ -48,6 +54,8 @@ type Loaded struct {
 	Resources []core.Resource
 	Ranges    []core.Range
 	Policies  []core.Policy
+	Cycle     core.CycleSettings   // 書かなければ既定の間隔
+	Sinks     map[string]core.Sink // つなぎ方の設定の sinks の名前 → 送り先
 	Warnings  []core.Diagnostic
 }
 
@@ -58,6 +66,8 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 		return nil, err
 	}
 	providers, diags := build(cfg, opt.Modules)
+	sinks, sdiags := buildSinks(cfg, opt.Sinks)
+	diags = append(diags, sdiags...)
 	if len(diags) > 0 {
 		return nil, &core.RejectError{Diagnostics: diags}
 	}
@@ -85,7 +95,42 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 	if len(rejects) > 0 {
 		return nil, &core.RejectError{Diagnostics: rejects}
 	}
-	return &Loaded{Config: cfg, Providers: providers, Resources: res, Ranges: out.Ranges, Policies: out.Policies, Warnings: warns}, nil
+	cyc := core.CycleSettings{Interval: core.DefaultInterval}
+	if len(out.Cycles) > 0 {
+		cyc = out.Cycles[0]
+	}
+	return &Loaded{Config: cfg, Providers: providers, Resources: res, Ranges: out.Ranges, Policies: out.Policies,
+		Cycle: cyc, Sinks: sinks, Warnings: warns}, nil
+}
+
+func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]core.Sink, []core.Diagnostic) {
+	names := make([]string, 0, len(cfg.Sinks))
+	for n := range cfg.Sinks {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	sinks := make(map[string]core.Sink, len(names))
+	var diags []core.Diagnostic
+	for _, n := range names {
+		sc := cfg.Sinks[n]
+		m, ok := modules[sc.Module]
+		if !ok {
+			known := make([]string, 0, len(modules))
+			for k := range modules {
+				known = append(known, k)
+			}
+			sort.Strings(known)
+			diags = append(diags, reject(sc.Origin, "sinks."+n, "知らない送り先のモジュール %q（組み込まれているもの: %s）", sc.Module, strings.Join(known, ", ")))
+			continue
+		}
+		s, err := m(sc.Settings)
+		if err != nil {
+			diags = append(diags, reject(sc.Origin, "sinks."+n, "%v", err))
+			continue
+		}
+		sinks[n] = s
+	}
+	return sinks, diags
 }
 
 func build(cfg *config.Config, modules map[string]Module) (map[string]core.Provider, []core.Diagnostic) {
@@ -147,6 +192,10 @@ func Validate(out expand.Output, providers map[string]core.Provider) ([]core.Res
 	diags = append(diags, checkCycles(res)...)
 	diags = append(diags, checkRanges(res, out.Ranges, providers)...)
 	diags = append(diags, checkPolicies(out.Policies, providers)...)
+	// cycle: は intent に 1 か所だけ（E-M3：どちらが効くかを迷わせない）。
+	for _, c := range out.Cycles[min(len(out.Cycles), 1):] {
+		diags = append(diags, reject(c.Origin, "cycle", "cycle: が 2 か所に書かれている（先は %s）", out.Cycles[0].Origin))
+	}
 	return res, diags
 }
 
@@ -356,4 +405,10 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// IsReject は err が読み込みで断ったもの（終了コード 2）か。
+func IsReject(err error) bool {
+	var rej *core.RejectError
+	return errors.As(err, &rej)
 }

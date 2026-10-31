@@ -105,14 +105,15 @@ type Decoded struct {
 	Resources []core.Resource
 	Ranges    []core.Range
 	Policies  []core.Policy
+	Cycle     *core.CycleSettings // 書かなければ nil
 }
 
-// Decode は 1 つの Document の resources:・ranges:・policies: を読む。形の誤り・知らない
+// Decode は 1 つの Document の resources:・ranges:・policies:・cycle: を読む。形の誤り・知らない
 // 項目は診断（Reject）にして返す。
 func Decode(doc Document) (Decoded, []core.Diagnostic) {
 	d := &decoder{file: doc.Path}
 	var out Decoded
-	top := d.object(doc.Root, "", "resources", "ranges", "policies")
+	top := d.object(doc.Root, "", "resources", "ranges", "policies", "cycle")
 	if top == nil {
 		return out, d.diags
 	}
@@ -137,7 +138,38 @@ func Decode(doc Document) (Decoded, []core.Diagnostic) {
 			}
 		}
 	}
+	if n := top["cycle"]; n != nil {
+		out.Cycle = d.cycle(n, "cycle")
+	}
 	return out, d.diags
+}
+
+// cycle は常駐の周の設定を読む（E-J11・E-H1）。
+func (d *decoder) cycle(n *yaml.Node, path string) *core.CycleSettings {
+	obj := d.object(n, path, "interval", "stuck_after")
+	if obj == nil {
+		return nil
+	}
+	c := &core.CycleSettings{Interval: core.DefaultInterval, Origin: core.Origin{File: d.file, Line: n.Line}}
+	if v := obj["interval"]; v != nil {
+		if s, ok := d.str(v, path+".interval"); ok {
+			iv, err := time.ParseDuration(s)
+			if err != nil || iv < time.Second {
+				d.reject(v, path+".interval", "1s 以上の長さを書く（例 60s）")
+			} else {
+				c.Interval = iv
+			}
+		}
+	}
+	if v := obj["stuck_after"]; v != nil {
+		i, ok := v.Scalar.(int)
+		if v.Kind != yaml.Scalar || !ok || i < 1 {
+			d.reject(v, path+".stuck_after", "1 以上の整数を書く")
+		} else {
+			c.StuckAfter = i
+		}
+	}
+	return c
 }
 
 type decoder struct {

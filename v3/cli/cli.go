@@ -13,20 +13,25 @@
 // limitations under the License.
 
 // Package cli は sakutei の CLI の入口（設計 §5.4・§5.5）。provider のモジュールは
-// WithModule で組み込む（E-O4・E-S4）。段 2 のサブコマンドは plan・reconcile・
-// audit verify。
+// WithModule で組み込む（E-O4・E-S4）。段 3 のサブコマンドは sakutei（常駐）・
+// plan・reconcile・wake・audit verify。
 package cli
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/cycle"
+	"github.com/tjst-t/sakutei/v3/daemon"
+	"github.com/tjst-t/sakutei/v3/events"
 	"github.com/tjst-t/sakutei/v3/load"
 	"github.com/tjst-t/sakutei/v3/plan"
 	"github.com/tjst-t/sakutei/v3/record"
@@ -42,8 +47,10 @@ const (
 )
 
 const usage = `使い方:
+  sakutei           --intent <dir> --config <file> --record <dir> [--json]   # 常駐
   sakutei plan      --intent <dir> --config <file> [--record <dir>] [--json]
   sakutei reconcile --intent <dir> --config <file> --record <dir> [--once] [--json]
+  sakutei wake      --record <dir>
   sakutei audit verify --record <dir>`
 
 // Option は Main に組み込むもの。
@@ -51,7 +58,10 @@ type Option func(*options)
 
 type options struct {
 	modules map[string]load.Module
+	sinks   map[string]load.SinkModule
 	clock   core.Clock
+	wait    func(ctx context.Context, interval time.Duration, wake <-chan struct{}) bool
+	onCycle func(daemon.Cycle)
 }
 
 // WithModule は provider のモジュールを名前で組み込む（E-O4）。
@@ -59,25 +69,49 @@ func WithModule(name string, m load.Module) Option {
 	return func(o *options) { o.modules[name] = m }
 }
 
+// WithSink は Event の送り先のモジュールを名前で組み込む（E-H2・E-H3）。stdout は
+// 初めから組み込んである。
+func WithSink(name string, m load.SinkModule) Option {
+	return func(o *options) { o.sinks[name] = m }
+}
+
+// WithDaemonWait は常駐の周の間の待ちを差し替える（テスト用）。false を返せば
+// 常駐を終える。
+func WithDaemonWait(wait func(ctx context.Context, interval time.Duration, wake <-chan struct{}) bool) Option {
+	return func(o *options) { o.wait = wait }
+}
+
+// WithDaemonCycle は常駐の周ごとの結果を受け取る（テスト用）。
+func WithDaemonCycle(f func(daemon.Cycle)) Option {
+	return func(o *options) { o.onCycle = f }
+}
+
 // WithClock は時計を差し替える（E-R4、テスト用）。
 func WithClock(c core.Clock) Option {
 	return func(o *options) { o.clock = c }
 }
 
-// Main は os.Args で Run を呼んで終わる。
+// Main は os.Args で Run を呼んで終わる。SIGINT・SIGTERM で常駐を終える。
 func Main(opts ...Option) {
-	os.Exit(Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, opts...))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := Run(ctx, os.Args[1:], os.Stdout, os.Stderr, opts...)
+	stop()
+	os.Exit(code)
 }
 
 // Run はサブコマンドを動かし、終了コードを返す。
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...Option) int {
-	o := &options{modules: map[string]load.Module{}, clock: core.SystemClock{}}
+	o := &options{modules: map[string]load.Module{}, sinks: map[string]load.SinkModule{"stdout": events.StdoutModule(stdout)},
+		clock: core.SystemClock{}}
 	for _, opt := range opts {
 		opt(o)
 	}
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usage)
 		return ExitError
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return runDaemon(ctx, args, stdout, stderr, o)
 	}
 	switch args[0] {
 	case "plan":
@@ -90,8 +124,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 			return ExitError
 		}
 		return runAuditVerify(args[2:], stdout, stderr)
+	case "wake":
+		return runWake(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "sakutei: 知らないサブコマンド %q（あるもの: plan, reconcile, audit verify）\n", args[0])
+		fmt.Fprintf(stderr, "sakutei: 知らないサブコマンド %q（あるもの: plan, reconcile, wake, audit verify。常駐は sakutei --intent …）\n", args[0])
 		return ExitError
 	}
 }
@@ -133,21 +169,24 @@ func (c common) parse(name string, args []string, stderr io.Writer, needRecord b
 	return true
 }
 
-func loadIntent(ctx context.Context, name string, c common, stderr io.Writer, o *options) (*load.Loaded, int) {
-	loaded, err := load.Load(ctx, load.Options{IntentDir: *c.intentDir, ConfigFile: *c.configFile, Modules: o.modules})
+func (c common) loadOptions(o *options) load.Options {
+	return load.Options{IntentDir: *c.intentDir, ConfigFile: *c.configFile, Modules: o.modules, Sinks: o.sinks}
+}
+
+func loadIntent(ctx context.Context, name string, c common, stderr io.Writer, o *options) (*load.Loaded, int, error) {
+	loaded, err := load.Load(ctx, c.loadOptions(o))
 	if err != nil {
-		var rej *core.RejectError
-		if errors.As(err, &rej) {
+		if load.IsReject(err) {
 			fmt.Fprintf(stderr, "sakutei %s: 読み込みで断った:\n%v\n", name, err)
-			return nil, ExitRejected
+			return nil, ExitRejected, err
 		}
 		fmt.Fprintf(stderr, "sakutei %s: %v\n", name, err)
-		return nil, ExitError
+		return nil, ExitError, err
 	}
 	for _, w := range loaded.Warnings {
 		fmt.Fprintf(stderr, "警告: %s\n", w)
 	}
-	return loaded, ExitOK
+	return loaded, ExitOK, nil
 }
 
 func write(r plan.Result, asJSON bool, stdout, stderr io.Writer, name string) bool {
@@ -172,27 +211,39 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer, o *op
 	if !c.parse("plan", args, stderr, false) {
 		return ExitError
 	}
-	loaded, code := loadIntent(ctx, "plan", c, stderr, o)
+	loaded, code, _ := loadIntent(ctx, "plan", c, stderr, o)
 	if loaded == nil {
 		return code
 	}
-	in := plan.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
-		Readers: map[string]core.Reader{}, Now: o.clock.Now()}
-	for n, p := range loaded.Providers {
-		in.Readers[n] = p
+	r, err := decide(ctx, loaded, *c.recd, o.clock)
+	if err != nil {
+		fmt.Fprintf(stderr, "警告: %v\n", err)
 	}
-	if *c.recd != "" {
-		m, err := record.ReadMarks(*c.recd)
-		if err != nil {
-			in.ReportOnly = "Record の目印が読めない"
-			fmt.Fprintf(stderr, "警告: Record の目印が読めない: %v\n", err)
-		}
-		in.Marks = m
-	}
-	if !write(plan.Decide(ctx, in), *c.asJSON, stdout, stderr, "plan") {
+	if !write(r, *c.asJSON, stdout, stderr, "plan") {
 		return ExitError
 	}
 	return ExitOK
+}
+
+// decide は plan の判定。Record は目印を読むだけ（読めなければ report に寄せ、
+// その誤りを返す）。plan と常駐の /plan が使う（不変条件 30）。
+func decide(ctx context.Context, loaded *load.Loaded, recd string, clock core.Clock) (plan.Result, error) {
+	in := plan.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
+		Readers: map[string]core.Reader{}, Now: clock.Now()}
+	for n, p := range loaded.Providers {
+		in.Readers[n] = p
+	}
+	var err error
+	if recd != "" {
+		var m record.Marks
+		m, err = record.ReadMarks(recd)
+		if err != nil {
+			in.ReportOnly = "Record の目印が読めない"
+			err = fmt.Errorf("Record の目印が読めない: %w", err)
+		}
+		in.Marks = m
+	}
+	return plan.Decide(ctx, in), err
 }
 
 // runReconcile は 1 周だけ回して終わる（§2.2 の一回実行、E-O3）。
@@ -203,20 +254,23 @@ func runReconcile(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return ExitError
 	}
 	if !*once {
-		fmt.Fprintln(stderr, "sakutei reconcile: 常駐（--once=false）はまだ無い")
-		return ExitError
-	}
-	loaded, code := loadIntent(ctx, "reconcile", c, stderr, o)
-	if loaded == nil {
-		return code
+		return daemonMain(ctx, "reconcile", c, stdout, stderr, o)
 	}
 	rec, err := record.Open(*c.recd)
 	if err != nil {
 		fmt.Fprintf(stderr, "sakutei reconcile: %v\n", err)
 		return ExitError
 	}
+	loaded, code, lerr := loadIntent(ctx, "reconcile", c, stderr, o)
+	if loaded == nil {
+		// 読めない周も健全性に残す。常駐と同じ（不変条件 30、E-K11）。
+		if err := cycle.RecordLoadError(rec, o.clock, lerr); err != nil {
+			fmt.Fprintf(stderr, "sakutei reconcile: 健全性を書けない: %v\n", err)
+		}
+		return code
+	}
 	r, err := cycle.Run(ctx, cycle.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
-		Providers: loaded.Providers, Record: rec, Clock: o.clock})
+		Providers: loaded.Providers, Record: rec, Clock: o.clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter})
 	if err != nil {
 		fmt.Fprintf(stderr, "sakutei reconcile: %v\n", err)
 		return ExitError

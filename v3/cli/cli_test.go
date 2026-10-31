@@ -376,7 +376,6 @@ func TestReconcileUsage(t *testing.T) {
 	e := setup(t)
 	cases := [][]string{
 		{"reconcile", "--intent", e.intent, "--config", e.config},
-		{"reconcile", "--intent", e.intent, "--config", e.config, "--record", e.record, "--once=false"},
 		{"audit"},
 		{"audit", "verify"},
 	}

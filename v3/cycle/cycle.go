@@ -18,15 +18,18 @@
 //
 // 段 2 は §2.1 の段 0（ロック）・3〜6（観測・比べる・方針・当てる）・8（目印と
 // 監査）と、当てたものの読み直しを行う。判定は plan.Decide と同じ（不変条件 30）。
+// 段 3 で、段 8 の通知の状態・送り出しの列・sink への送り出し・健全性を足した。
 package cycle
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/v3/core"
+	"github.com/tjst-t/sakutei/v3/events"
 	"github.com/tjst-t/sakutei/v3/plan"
 	"github.com/tjst-t/sakutei/v3/record"
 )
@@ -39,6 +42,10 @@ type Input struct {
 	Providers map[string]core.Provider
 	Record    *record.Record
 	Clock     core.Clock // nil なら計算機の時計（E-R4）
+	// Sinks は Event の送り先（つなぎ方の設定の sinks、E-H2）。
+	Sinks map[string]core.Sink
+	// StuckAfter は intent の cycle.stuck_after（E-H1）。
+	StuckAfter int
 }
 
 // Run は 1 周回す。誤りを返すのはロックを試すこともできないときだけで、ほかの
@@ -88,6 +95,9 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	r := plan.Decide(ctx, pin)
 	r.Verb = "reconcile"
 	if merr != nil {
+		if _, err := in.Record.RecordCycle(now, strings.Join(errs, "; ")); err != nil {
+			errs = append(errs, "健全性を書けない: "+err.Error())
+		}
 		r.Errors = errs
 		return r, nil
 	}
@@ -153,8 +163,60 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	if err := in.Record.WriteMarks(next); err != nil {
 		errs = append(errs, "Record に書けない: "+err.Error())
 	}
+
+	// 通知の状態を進めて送り出しの列に積み、sink へ送る。送れなくても周を
+	// 止めない（不変条件 28・29）。
+	if err := emit(&r, in, now, clock.Now().Sub(now)); err != nil {
+		errs = append(errs, "通知の状態を書けない: "+err.Error())
+	}
+	r.Deliveries = events.Deliver(ctx, in.Record, in.Sinks)
+
+	// 健全性（E-K11・N-H4）。
+	if _, err := in.Record.RecordCycle(now, strings.Join(errs, "; ")); err != nil {
+		errs = append(errs, "健全性を書けない: "+err.Error())
+	}
 	r.Errors = errs
 	return r, nil
+}
+
+// emit は通知の状態を進める。番号は送り出しの列の最後と state.json の大きいほう
+// の次から（state.json を書く前に止まっても番号を二度使わない）。
+func emit(r *plan.Result, in Input, now time.Time, d time.Duration) error {
+	st, err := in.Record.EventState()
+	if err != nil {
+		return err
+	}
+	last, err := in.Record.LastOutboxSeq()
+	if err != nil {
+		return err
+	}
+	out := events.Derive(events.Input{Result: *r, Prev: st.Firing, Seq: max(st.Seq, last), Now: now, Duration: d, StuckAfter: in.StuckAfter})
+	if err := in.Record.AppendOutbox(out.Emitted); err != nil {
+		return err
+	}
+	if err := in.Record.WriteEventState(record.EventState{Seq: out.Seq, Firing: out.Firing}); err != nil {
+		return err
+	}
+	r.Events = out.Emitted
+	return nil
+}
+
+// RecordLoadError は intent・設定を読めなかった周を健全性に残す（E-K11）。一回
+// 実行と常駐が同じものを書く（不変条件 30）。ロックが取れなければ何もしない。
+func RecordLoadError(rec *record.Record, clock core.Clock, loadErr error) error {
+	if clock == nil {
+		clock = core.SystemClock{}
+	}
+	release, held, err := rec.Lock()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if !held {
+		return nil
+	}
+	_, err = rec.RecordCycle(clock.Now(), "読み込み: "+loadErr.Error())
+	return err
 }
 
 // nextWindows は Policy ごとの予算の窓の、この周に当てる分を足した使用量。
