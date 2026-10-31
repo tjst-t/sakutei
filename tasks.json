@@ -5121,7 +5121,7 @@
       "number": 221,
       "kind": "task",
       "title": "v3 段6：最初の実 provider（dnszone・hostconf・nftables と nft-guard）",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "v3",
       "dependsOn": [
         "v3-5-procedure-cli-policy-approve-freeze"
@@ -5135,7 +5135,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T19:09:06.424Z",
+      "updatedAt": "2026-10-31T20:04:38.131Z",
       "closedAt": null,
       "extra": {}
     },
