@@ -5006,7 +5006,7 @@
       "number": 216,
       "kind": "task",
       "title": "v3 段1：型・読み込みと検証・素通しの Expand・偽の provider・plan",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5020,7 +5020,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T15:14:16.790Z",
+      "updatedAt": "2026-10-31T15:14:35.180Z",
       "closedAt": null,
       "extra": {}
     },
