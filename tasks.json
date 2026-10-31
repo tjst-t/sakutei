@@ -5253,6 +5253,29 @@
       "updatedAt": "2026-10-31T21:00:25.116Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "v3-8d-proxmox-vm-fw-guest-os-provider",
+      "number": 227,
+      "kind": "task",
+      "title": "v3 段8d：proxmox（VM・FW）と guest-os の provider",
+      "status": "backlog",
+      "parent": "v3",
+      "dependsOn": [
+        "v3-7-expand-secret-backend"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "§8 の段8 を分けたもの。v2 の proxmox-vm（複製・作成・NIC・pool・ciupgrade・keep ディスク・消す宣言）と proxmox-fw、guest-os を、新しいコアの Provider として v3/providers/ に書く。v2 と同じ入れ子の Proxmox VE 9.2 の統合テストを v3 用に用意する（make のターゲットを分け、check・CI には入れない）。",
+      "doneWhen": "契約テストが通る。v3 用の入れ子の Proxmox の統合テストが通る。make check と make test-race が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-31T21:00:34.335Z",
+      "updatedAt": "2026-10-31T21:00:34.335Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
