@@ -5241,7 +5241,7 @@
       "number": 226,
       "kind": "task",
       "title": "v3 段8c：netconf と cli-device の provider",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "v3",
       "dependsOn": [
         "v3-7-expand-secret-backend"
@@ -5255,7 +5255,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T21:00:25.116Z",
-      "updatedAt": "2026-10-31T21:55:20.774Z",
+      "updatedAt": "2026-10-31T23:37:39.565Z",
       "closedAt": null,
       "extra": {}
     },
