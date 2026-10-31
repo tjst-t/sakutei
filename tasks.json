@@ -5121,7 +5121,7 @@
       "number": 221,
       "kind": "task",
       "title": "v3 段6：最初の実 provider（dnszone・hostconf・nftables と nft-guard）",
-      "status": "ready",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [
         "v3-5-procedure-cli-policy-approve-freeze"
@@ -5131,12 +5131,12 @@
       "labels": [],
       "body": "§8 の段6。provider はコアの外のモジュールとして書く。",
       "doneWhen": "実のファイルとカーネルで、2段階の Apply が確定しなければ戻る（17）。v2 の試用の手順（DNS と FW）が新しいコアで通る。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T20:04:38.131Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-31T20:05:07.371Z",
+      "closedAt": "2026-10-31T20:05:07.371Z",
       "extra": {}
     },
     {
