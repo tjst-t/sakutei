@@ -5241,7 +5241,7 @@
       "number": 226,
       "kind": "task",
       "title": "v3 段8c：netconf と cli-device の provider",
-      "status": "ready",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [
         "v3-7-expand-secret-backend"
@@ -5251,12 +5251,12 @@
       "labels": [],
       "body": "§8 の段8 を分けたもの。v2 の netconf（:confirmed-commit:1.0 の2段の Apply、NACM で絞ったユーザー、commit_group、confirm の先の observe:／check:）と cli-device を、新しいコアの Provider（Transaction を使う）として v3/providers/ に書く。v2 と同じ netopeer2 の統合テストを v3 用に用意する（make のターゲットを分け、check・CI には入れない。コンテナの名前は v2 のものと重ならないようにする）。",
       "doneWhen": "契約テストが通る。v3 用の netopeer2 の統合テストが通り、確定しなければ機器の時間切れで戻る（不変条件 17）。make check と make test-race が通る。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T21:00:25.116Z",
-      "updatedAt": "2026-10-31T23:37:39.565Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-31T23:38:09.155Z",
+      "closedAt": "2026-10-31T23:38:09.155Z",
       "extra": {}
     },
     {
