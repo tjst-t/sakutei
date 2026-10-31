@@ -5167,7 +5167,7 @@
       "number": 223,
       "kind": "task",
       "title": "v3 段8a：送り先（alertmanager・syslog・metrics・otlp）と承認ツール sakutei-approve",
-      "status": "ready",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [
         "v3-7-expand-secret-backend"
@@ -5177,12 +5177,12 @@
       "labels": [],
       "body": "§8 の段8 のうち、Events の送り先と承認ツール。provider は段8b〜8f に分けた（段8 は大きいため）。送り先と sakutei-approve はコアの外のモジュール（v3/providers/ と同じ扱い）に置く。v2 の同じ機能（--event-alertmanager の複数の宛先、syslog の監査、/metrics と読み取りの TLS と認可、OTLP）のユースケースを満たす。",
       "doneWhen": "各送り先が、偽の受け手を相手にしたテストで送れる・受け手が落ちても1周の処理を止めない。sakutei-approve で申請者と承認者が同じなら断る（不変条件 21）。make check と make test-race が通る。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T21:54:43.785Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-31T21:55:12.270Z",
+      "closedAt": "2026-10-31T21:55:12.270Z",
       "extra": {}
     },
     {
