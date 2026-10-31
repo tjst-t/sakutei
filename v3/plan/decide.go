@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v3/approval"
 	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/graph"
 	"github.com/tjst-t/sakutei/v3/record"
@@ -48,6 +49,36 @@ type Input struct {
 	// Used はこの周の前の波で当てた数（Policy ごと）。予算はこれと合わせて数える
 	// （E-J1・不変条件 20）。
 	Used map[string]BudgetUse
+	// Approvals は Record の承認の依頼と判断（読むだけ、E-L2・不変条件 21）。
+	Approvals map[string]record.Approval
+	// Handover は手順が受け持つ項目（対象 → drift_fields）。収束では当てない
+	// （E-F2・E-A5・N-A4）。
+	Handover map[core.ID][]string
+	// Held は止まった手順の対象（→ 理由）。収束でも宣言どおりに戻さない
+	// （不変条件 18、E-A9）。
+	Held map[core.ID]string
+}
+
+// Strip は手順が受け持つ項目を宣言から外す（収束が比べて当てるのは残りだけ、
+// E-F2・E-A5・N-A4）。
+func Strip(res []core.Resource, handover map[core.ID][]string) []core.Resource {
+	if len(handover) == 0 {
+		return res
+	}
+	out := make([]core.Resource, len(res))
+	for i, r := range res {
+		if fields, ok := handover[r.ID]; ok && r.Fields != nil {
+			f := make(core.Fields, len(r.Fields))
+			for k, v := range r.Fields {
+				if !has(fields, k) {
+					f[k] = v
+				}
+			}
+			r.Fields = f
+		}
+		out[i] = r
+	}
+	return out
 }
 
 // Decide は List と Observe をして宣言と比べ、prune の守り・依存の待ち・Policy の
@@ -55,11 +86,13 @@ type Input struct {
 // Record も変えない。
 func Decide(ctx context.Context, in Input) Result {
 	out := Result{Summary: map[Op]int{}, ReportOnly: in.ReportOnly}
-	g := graph.New(in.Resources)
-	subjects := in.Resources
+	full := in.Resources
+	resources := Strip(in.Resources, in.Handover)
+	g := graph.New(resources)
+	subjects := resources
 	if in.Only != nil {
 		subjects = nil
-		for _, r := range in.Resources {
+		for _, r := range resources {
 			if in.Only[r.ID] {
 				subjects = append(subjects, r)
 			}
@@ -113,9 +146,21 @@ func Decide(ctx context.Context, in Input) Result {
 			ops[id] = Compare(*r, in.Readers[id.Provider()].Schema().Kinds[id.Kind()], obs[id]).Op
 		}
 	}
+	fullByID := make(map[core.ID]core.Resource, len(full))
+	for _, r := range full {
+		fullByID[r.ID] = r
+	}
 	for _, r := range subjects {
 		ks := in.Readers[r.ID.Provider()].Schema().Kinds[r.ID.Kind()]
 		c := Compare(r, ks, obs[r.ID])
+		if fields, ok := in.Handover[r.ID]; ok && obs[r.ID].Availability == core.Present {
+			// 手順が受け持つ項目のずれ（手順を起こすきっかけ、E-F2）。
+			for _, f := range Compare(fullByID[r.ID], ks, obs[r.ID]).Fields {
+				if has(fields, f.Name) {
+					c.Handover = append(c.Handover, f.Name)
+				}
+			}
+		}
 		c.Destructive = c.Op == Delete || (c.Op == Update && c.Replace)
 		c.labels = r.Labels
 		c.DesiredHash = DesiredHash(r)
@@ -157,6 +202,10 @@ func Decide(ctx context.Context, in Input) Result {
 			continue // prune の守り
 		}
 		c.Action = ActApply
+		if why, ok := in.Held[c.ID]; ok {
+			c.Action, c.Blocked = ActKeep, why
+			continue
+		}
 		// 依存の待ち。Unknown の上流の下流を進めない（不変条件 3、E-J7・E-D6）。
 		switch c.Op {
 		case Create, Update:
@@ -200,6 +249,9 @@ func Decide(ctx context.Context, in Input) Result {
 				out.Halts = append(out.Halts, Halt{Scope: "resource " + c.Resource, Reason: c.Blocked})
 			}
 		}
+		if c.Action == ActApply {
+			needApproval(c, in, &out)
+		}
 	}
 	checkBudgets(&out, in)
 
@@ -208,6 +260,80 @@ func Decide(ctx context.Context, in Input) Result {
 	}
 	sort.SliceStable(out.Changes, func(i, j int) bool { return out.Changes[i].Resource < out.Changes[j].Resource })
 	return out
+}
+
+// ChangeRequestID は変更 1 つの承認の依頼の ID。同じ宣言の同じ操作には同じ ID
+// （宣言を直せば頼み直す）。
+func ChangeRequestID(c Change) string {
+	sum := sha256.Sum256([]byte(c.Resource + "\n" + string(c.Op) + "\n" + c.DesiredHash))
+	return "chg-" + hex.EncodeToString(sum[:8])
+}
+
+// needApproval は当たる Policy の承認を確かめる（E-L2・N-L2・E-J10・N-G10・
+// 不変条件 21）。承認が揃えば当て、拒否なら止め、揃わなければ承認待ち。依頼が
+// 無い・使った・期限切れ・要件が変わったなら、周が新しく頼む（NewRequest）。
+func needApproval(c *Change, in Input, out *Result) {
+	var rules []record.Rule
+	var applicants []string
+	var timeout time.Duration
+	for _, p := range in.Policies {
+		if p.Approval == nil || !has(c.Policies, p.Name) {
+			continue
+		}
+		rules = append(rules, approval.Rules("policy "+p.Name, p.Approval))
+		if p.Applicant != "" && !has(applicants, p.Applicant) {
+			applicants = append(applicants, p.Applicant)
+		}
+		if t := p.Approval.Timeout; t > 0 && (timeout == 0 || t < timeout) {
+			timeout = t
+		}
+	}
+	if len(rules) == 0 {
+		return
+	}
+	sort.Strings(applicants)
+	id := ChangeRequestID(*c)
+	c.Request = id
+	a, ok := in.Approvals[id]
+	st := approval.Evaluate(a, ok, in.Now)
+	if ok && !approval.SameRules(a.Request.Rules, rules) {
+		st.State = approval.Missing // 要件が変わった：頼み直す
+	}
+	switch st.State {
+	case approval.Approved:
+		c.ApprovedBy = st.Approvers
+		return
+	case approval.Rejected:
+		c.Action = ActHalt
+		c.Blocked = fmt.Sprintf("承認の依頼 %s を %s が拒否した。宣言を直せば頼み直す", id, strings.Join(st.RejectedBy, "・"))
+		out.Halts = append(out.Halts, Halt{Scope: "resource " + c.Resource, Reason: c.Blocked})
+		return
+	case approval.Pending:
+		c.Action = ActPending
+		c.Blocked = fmt.Sprintf("sakutei approve %s（%s）", id, st.Summary())
+		return
+	}
+	// 無い・使った・期限切れ・要件が変わった。
+	req := record.ApprovalRequest{ID: id, Kind: "change", Subject: fmt.Sprintf("%s %s", c.Op, c.Resource),
+		Applicant: strings.Join(applicants, ","), Rules: rules, CreatedAt: in.Now, State: record.RequestPending}
+	if timeout > 0 {
+		exp := in.Now.Add(timeout)
+		req.Expires = &exp
+	}
+	c.Action, c.NewRequest, c.Fresh = ActPending, &req, ok
+	c.Blocked = fmt.Sprintf("sakutei approve %s（%s）", id, approvalNeed(rules))
+}
+
+func approvalNeed(rules []record.Rule) string {
+	var parts []string
+	for _, r := range rules {
+		of := "申請者でない誰か"
+		if len(r.Of) > 0 {
+			of = strings.Join(r.Of, ", ")
+		}
+		parts = append(parts, fmt.Sprintf("%s 0/%d（%s）", r.From, r.N, of))
+	}
+	return strings.Join(parts, "・")
 }
 
 // DesiredHash は宣言（ensure と項目）のハッシュ。宣言外は空。
@@ -516,6 +642,12 @@ func (r Result) Remaining() int {
 	}
 	for _, st := range r.Ranges {
 		if st.Prune && !st.Complete {
+			n++
+		}
+	}
+	// 済んでいない手順（待つ・承認待ち・常駐が要る、§3.7）。
+	for _, s := range r.Runs {
+		if s.Active() {
 			n++
 		}
 	}

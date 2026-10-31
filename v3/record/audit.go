@@ -40,13 +40,21 @@ type Entry struct {
 	Seq      uint64    `json:"seq"`
 	Prev     string    `json:"prev"`
 	At       time.Time `json:"at"`
-	Kind     string    `json:"kind"` // resource.apply・resource.delete・resource.prune
+	Kind     string    `json:"kind"` // resource.apply・resource.delete・resource.prune・approval.*・freeze.*・procedure.*
 	Resource string    `json:"resource,omitempty"`
 	Fields   []string  `json:"fields,omitempty"`
 	Result   string    `json:"result,omitempty"` // ok・error・refused
 	Error    string    `json:"error,omitempty"`
 	Policies []string  `json:"policies,omitempty"`
 	Reason   string    `json:"reason,omitempty"` // N-J7・N-L8
+	// 段 5：承認・一時的な Policy・手順（E-L1・E-L2・E-L6・N-L3・E-J4）。
+	By         string   `json:"by,omitempty"`          // した人（承認者・freeze した人・start した人）
+	Request    string   `json:"request,omitempty"`     // 承認の依頼の ID
+	ApprovedBy []string `json:"approved_by,omitempty"` // 数えた承認者
+	Procedure  string   `json:"procedure,omitempty"`
+	Run        string   `json:"run_id,omitempty"`
+	Step       string   `json:"step,omitempty"`
+	Op         string   `json:"op,omitempty"`
 }
 
 // Audit は監査の鎖への追記。

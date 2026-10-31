@@ -41,6 +41,14 @@ type Calls struct {
 	Apply   int
 	Delete  int
 	List    int
+	Invoke  int
+}
+
+// Invocation は Invoke の 1 回（呼ばれた順）。
+type Invocation struct {
+	ID   core.ID
+	Op   string
+	Args core.Fields
 }
 
 // Write は Apply・Delete の 1 回（呼ばれた順）。
@@ -66,18 +74,102 @@ type Provider struct {
 	stateFile    string
 	calls        Calls
 	writes       []Write
+	ops          map[string]map[string]core.OpSpec // 種類 → 操作
+	opSet        map[string]map[string]core.Fields // 種類 → 操作 → 送ると置く項目
+	onInvoke     func(id core.ID, op string, args core.Fields) error
+	invokes      []Invocation
 }
 
 var (
 	_ core.Provider  = (*Provider)(nil)
 	_ core.Validator = (*Provider)(nil)
+	_ core.Invoker   = (*Provider)(nil)
 )
 
 // New は schema の偽の provider を作る。置いていない ID の観測は Absent。
 func New(schema core.Schema) *Provider {
 	return &Provider{schema: schema, state: map[core.ID]core.Observation{}, omit: map[core.ID]bool{},
 		listHide: map[core.ID]bool{}, applyErr: map[core.ID]error{}, deleteRefuse: map[core.ID]string{},
-		ineffective: map[core.ID]bool{}, behind: map[core.ID]core.ID{}}
+		ineffective: map[core.ID]bool{}, behind: map[core.ID]core.ID{},
+		ops: map[string]map[string]core.OpSpec{}, opSet: map[string]map[string]core.Fields{}}
+}
+
+// SetOp は種類 kind に一回きりの操作 op を置く（E-A2）。set は送ったときに対象に
+// 置く項目（観測に残る効き目。nil なら何も変えない）。
+func (p *Provider) SetOp(kind, op string, spec core.OpSpec, set core.Fields) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ops[kind] == nil {
+		p.ops[kind], p.opSet[kind] = map[string]core.OpSpec{}, map[string]core.Fields{}
+	}
+	p.ops[kind][op] = spec
+	p.opSet[kind][op] = set
+}
+
+// OnInvoke は Invoke のたびに（ロックの外で）f を呼ぶ。f が誤りを返せば、項目を
+// 置かずにその誤りを返す（core.ErrNotSent・送れたか分からない誤り・panic で
+// 送信の途中で止まったプロセスを注入する、不変条件 16）。
+func (p *Provider) OnInvoke(f func(id core.ID, op string, args core.Fields) error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onInvoke = f
+}
+
+// Invocations は Invoke が呼ばれた順の記録（失敗を含む）。
+func (p *Provider) Invocations() []Invocation {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Invocation(nil), p.invokes...)
+}
+
+// Ops は種類 kind の操作。
+func (p *Provider) Ops(kind string) map[string]core.OpSpec {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[string]core.OpSpec, len(p.ops[kind]))
+	for k, v := range p.ops[kind] {
+		out[k] = v
+	}
+	return out
+}
+
+// Invoke は呼ばれたことを残し、OnInvoke の誤りが無ければ操作の項目を対象に置く。
+func (p *Provider) Invoke(_ context.Context, _ core.WriteContext, id core.ID, op string, args core.Fields) error {
+	p.mu.Lock()
+	p.calls.Invoke++
+	p.invokes = append(p.invokes, Invocation{ID: id, Op: op, Args: args})
+	hook := p.onInvoke
+	_, known := p.ops[id.Kind()][op]
+	p.mu.Unlock()
+	if !known {
+		return fmt.Errorf("種類 %q に操作 %q が無い: %w", id.Kind(), op, core.ErrNotSent)
+	}
+	if hook != nil {
+		if err := hook(id, op, args); err != nil {
+			return err
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	set := p.opSet[id.Kind()][op]
+	if len(set) == 0 {
+		return nil
+	}
+	if err := p.readState(); err != nil {
+		return err
+	}
+	obs := p.state[id]
+	fields := core.Fields{}
+	if obs.Availability == core.Present {
+		for k, v := range obs.Fields {
+			fields[k] = v
+		}
+	}
+	for k, v := range set {
+		fields[k] = v
+	}
+	p.state[id] = core.Observation{Availability: core.Present, Fields: fields}
+	return p.writeState()
 }
 
 // SetListError は List を err で失敗させる（nil で戻す）。

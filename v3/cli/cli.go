@@ -13,8 +13,9 @@
 // limitations under the License.
 
 // Package cli は sakutei の CLI の入口（設計 §5.4・§5.5）。provider のモジュールは
-// WithModule で組み込む（E-O4・E-S4）。段 3 のサブコマンドは sakutei（常駐）・
-// plan・reconcile・wake・audit verify。
+// WithModule で組み込む（E-O4・E-S4）。サブコマンドは sakutei（常駐）・plan・
+// reconcile・wake・audit verify と、段 5 の人の判断（approve・reject・approvals・
+// freeze・unfreeze・start・cancel）。
 package cli
 
 import (
@@ -51,7 +52,14 @@ const usage = `使い方:
   sakutei plan      --intent <dir> --config <file> [--record <dir>] [--json]
   sakutei reconcile --intent <dir> --config <file> --record <dir> [--once] [--json]
   sakutei wake      --record <dir>
-  sakutei audit verify --record <dir>`
+  sakutei audit verify --record <dir>
+  sakutei approve   <request-id> --record <dir> --as <名前> [--comment …]
+  sakutei reject    <request-id> --record <dir> --as <名前> --comment …
+  sakutei approvals --record <dir> [--all] [--json]
+  sakutei freeze    --record <dir> --reason … --until <時刻|長さ> [--select labels.<k>=<v>|type=<t>]… [--name <名前>] [--as <名前>]
+  sakutei unfreeze  <名前> --record <dir> --reason … [--as <名前>]
+  sakutei start     <procedure> --record <dir> [--target <名前>] [--as <名前>]
+  sakutei cancel    <run-id> --record <dir> --reason … [--as <名前>]`
 
 // Option は Main に組み込むもの。
 type Option func(*options)
@@ -132,8 +140,22 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 		return runAuditVerify(args[2:], stdout, stderr)
 	case "wake":
 		return runWake(args[1:], stdout, stderr)
+	case "approve":
+		return runDecide(args[1:], record.Approve, stdout, stderr, o)
+	case "reject":
+		return runDecide(args[1:], record.Reject, stdout, stderr, o)
+	case "approvals":
+		return runApprovals(args[1:], stdout, stderr, o)
+	case "freeze":
+		return runFreeze(args[1:], stdout, stderr, o)
+	case "unfreeze":
+		return runUnfreeze(args[1:], stdout, stderr, o)
+	case "start":
+		return runStart(args[1:], stdout, stderr, o)
+	case "cancel":
+		return runCancel(args[1:], stdout, stderr, o)
 	default:
-		fmt.Fprintf(stderr, "sakutei: 知らないサブコマンド %q（あるもの: plan, reconcile, wake, audit verify。常駐は sakutei --intent …）\n", args[0])
+		fmt.Fprintf(stderr, "sakutei: 知らないサブコマンド %q（あるもの: plan, reconcile, wake, audit verify, approve, reject, approvals, freeze, unfreeze, start, cancel。常駐は sakutei --intent …）\n", args[0])
 		return ExitError
 	}
 }
@@ -221,7 +243,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer, o *op
 	if loaded == nil {
 		return code
 	}
-	r, err := decide(ctx, loaded, *c.recd, o.clock)
+	r, err := decide(ctx, loaded, *c.recd, o.clock, false)
 	if err != nil {
 		fmt.Fprintf(stderr, "警告: %v\n", err)
 	}
@@ -233,23 +255,28 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer, o *op
 
 // decide は plan の判定。Record は目印を読むだけ（読めなければ report に寄せ、
 // その誤りを返す）。plan と常駐の /plan が使う（不変条件 30）。
-func decide(ctx context.Context, loaded *load.Loaded, recd string, clock core.Clock) (plan.Result, error) {
-	in := plan.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
-		Readers: map[string]core.Reader{}, Now: clock.Now(), Checks: loaded.Checks}
-	for n, p := range loaded.Providers {
-		in.Readers[n] = p
-	}
+// daemon は常駐の /plan か（常駐は critical の段を進める、§2.2）。
+func decide(ctx context.Context, loaded *load.Loaded, recd string, clock core.Clock, daemon bool) (plan.Result, error) {
 	var err error
+	var marks record.Marks
+	reportOnly := ""
 	if recd != "" {
-		var m record.Marks
-		m, err = record.ReadMarks(recd)
+		marks, err = record.ReadMarks(recd)
 		if err != nil {
-			in.ReportOnly = "Record の目印が読めない"
+			reportOnly = "Record の目印が読めない"
 			err = fmt.Errorf("Record の目印が読めない: %w", err)
 		}
-		in.Marks = m
 	}
-	return plan.Decide(ctx, in), err
+	in := cycleInput(loaded, nil, clock)
+	in.Daemon = daemon
+	return cycle.Plan(ctx, in, recd, marks, reportOnly), err
+}
+
+// cycleInput は読み込んだ結果を 1 周の入力にする（一回実行・plan。常駐は daemon）。
+func cycleInput(loaded *load.Loaded, rec *record.Record, clock core.Clock) cycle.Input {
+	return cycle.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
+		Providers: loaded.Providers, Record: rec, Clock: clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter,
+		Checks: loaded.Checks, Procedures: loaded.Procedures}
 }
 
 // runReconcile は 1 周だけ回して終わる（§2.2 の一回実行、E-O3）。
@@ -275,9 +302,7 @@ func runReconcile(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		}
 		return code
 	}
-	r, err := cycle.Run(ctx, cycle.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
-		Providers: loaded.Providers, Record: rec, Clock: o.clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter,
-		Checks: loaded.Checks})
+	r, err := cycle.Run(ctx, cycleInput(loaded, rec, o.clock))
 	if err != nil {
 		fmt.Fprintf(stderr, "sakutei reconcile: %v\n", err)
 		return ExitError

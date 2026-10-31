@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/v3/core"
@@ -103,7 +104,7 @@ func Run(ctx context.Context, opt Options) error {
 			interval = loaded.Cycle.Interval
 			r, err := cycle.Run(ctx, cycle.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
 				Providers: loaded.Providers, Record: opt.Record, Clock: clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter,
-				Checks: loaded.Checks})
+				Checks: loaded.Checks, Procedures: loaded.Procedures, Daemon: true})
 			if err != nil {
 				c.Err = err
 			} else {
@@ -145,6 +146,10 @@ func watch(ctx context.Context, opt Options, wake chan<- struct{}) {
 	}
 	mark := record.WakeMark(opt.Record.Dir())
 	sum := fingerprint(opt.IntentDir)
+	// 承認・一時的な Policy・頼みの置き場に書き込みがあれば起きる（§2.2 の承認の
+	// 待ち受け、E-L2・E-J4）。
+	reqs := record.Requests(opt.Record.Dir())
+	rsum := fingerprints(reqs)
 	t := time.NewTicker(PollInterval)
 	defer t.Stop()
 	for {
@@ -162,8 +167,20 @@ func watch(ctx context.Context, opt Options, wake chan<- struct{}) {
 				sum = s
 				poke()
 			}
+			if s := fingerprints(reqs); s != rsum {
+				rsum = s
+				poke()
+			}
 		}
 	}
+}
+
+func fingerprints(dirs []string) string {
+	var b strings.Builder
+	for _, d := range dirs {
+		b.WriteString(fingerprint(d))
+	}
+	return b.String()
 }
 
 // fingerprint は dir の下のファイルの名前・大きさ・更新時刻のハッシュ。

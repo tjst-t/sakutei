@@ -22,6 +22,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -101,12 +102,13 @@ func LoadDir(dir string) ([]Document, error) {
 	return docs, nil
 }
 
-// Decoded は intent から読んだ Resource・Range・Policy。
+// Decoded は intent から読んだ Resource・Range・Policy・Procedure。
 type Decoded struct {
-	Resources []core.Resource
-	Ranges    []core.Range
-	Policies  []core.Policy
-	Cycle     *core.CycleSettings // 書かなければ nil
+	Resources  []core.Resource
+	Ranges     []core.Range
+	Policies   []core.Policy
+	Procedures []core.Procedure
+	Cycle      *core.CycleSettings // 書かなければ nil
 }
 
 // Decode は 1 つの Document の resources:・ranges:・policies:・cycle: を読む。形の誤り・知らない
@@ -114,7 +116,7 @@ type Decoded struct {
 func Decode(doc Document) (Decoded, []core.Diagnostic) {
 	d := &decoder{file: doc.Path}
 	var out Decoded
-	top := d.object(doc.Root, "", "resources", "ranges", "policies", "cycle")
+	top := d.object(doc.Root, "", "resources", "ranges", "policies", "procedures", "cycle")
 	if top == nil {
 		return out, d.diags
 	}
@@ -136,6 +138,13 @@ func Decode(doc Document) (Decoded, []core.Diagnostic) {
 		for i, item := range d.list(n, "policies") {
 			if p, ok := d.policy(item, fmt.Sprintf("policies[%d]", i)); ok {
 				out.Policies = append(out.Policies, p)
+			}
+		}
+	}
+	if n := top["procedures"]; n != nil {
+		for i, item := range d.list(n, "procedures") {
+			if p, ok := d.procedure(item, fmt.Sprintf("procedures[%d]", i)); ok {
+				out.Procedures = append(out.Procedures, p)
 			}
 		}
 	}
@@ -440,9 +449,9 @@ func (d *decoder) rangeOf(n *yaml.Node, path string) (core.Range, bool) {
 	return r, len(d.diags) == before
 }
 
-// policy は Policy を読む（§3.6）。段 2 は select・mode・budget だけ。
+// policy は Policy を読む（§3.6）。select・mode・budget・approval・applicant。
 func (d *decoder) policy(n *yaml.Node, path string) (core.Policy, bool) {
-	obj := d.object(n, path, "name", "select", "mode", "budget")
+	obj := d.object(n, path, "name", "select", "mode", "budget", "approval", "applicant")
 	if obj == nil {
 		return core.Policy{}, false
 	}
@@ -474,7 +483,362 @@ func (d *decoder) policy(n *yaml.Node, path string) (core.Policy, bool) {
 	if v := obj["budget"]; v != nil {
 		p.Budget = d.budget(v, path+".budget")
 	}
+	if v := obj["approval"]; v != nil {
+		p.Approval = d.approval(v, path+".approval")
+	}
+	if v := obj["applicant"]; v != nil {
+		p.Applicant, _ = d.str(v, path+".applicant")
+		if obj["approval"] == nil {
+			d.reject(v, path+".applicant", "applicant は approval と一緒に書く")
+		}
+	}
+	// 申請者が分からない依頼は申請者≠承認者を確かめられない（E-L2・N-L2）。
+	if p.Approval != nil && p.Approval.Separation && p.Applicant == "" {
+		d.reject(obj["approval"], path+".approval", "separation: true には applicant（申請者）を書く")
+	}
 	return p, len(d.diags) == before
+}
+
+// approval は承認の要件を読む（§3.6、E-L2・N-L2）。
+//
+//	approval: {quorum: {n: 2, of: [alice, bob, carol]}, separation: true, timeout: 24h}
+func (d *decoder) approval(n *yaml.Node, path string) *core.Approval {
+	obj := d.object(n, path, "quorum", "separation", "timeout")
+	if obj == nil {
+		return nil
+	}
+	a := &core.Approval{}
+	if q := obj["quorum"]; q == nil {
+		d.reject(n, path, "quorum（{n: 承認者の数, of: [承認者]}）を書く")
+	} else if qo := d.object(q, path+".quorum", "n", "of"); qo != nil {
+		if v := qo["of"]; v == nil {
+			d.reject(q, path+".quorum", "of（承認者の一覧）を書く")
+		} else {
+			for i, x := range d.list(v, path+".quorum.of") {
+				name, ok := d.str(x, fmt.Sprintf("%s.quorum.of[%d]", path, i))
+				if !ok {
+					continue
+				}
+				switch {
+				case !validName(name):
+					d.reject(x, path+".quorum.of", "承認者の名前 %q に使えない文字がある（英数字と . _ @ -）", name)
+				case contains(a.Of, name):
+					d.reject(x, path+".quorum.of", "承認者 %q が 2 回書かれている", name)
+				default:
+					a.Of = append(a.Of, name)
+				}
+			}
+		}
+		if v := qo["n"]; v == nil {
+			d.reject(q, path+".quorum", "n（数える承認者の数）を書く")
+		} else if i, ok := v.Scalar.(int); v.Kind != yaml.Scalar || !ok || i < 1 {
+			d.reject(v, path+".quorum.n", "1 以上の整数を書く")
+		} else if len(a.Of) > 0 && i > len(a.Of) {
+			d.reject(v, path+".quorum.n", "n %d が of の %d 人より多い（満たせない）", i, len(a.Of))
+		} else {
+			a.N = i
+		}
+	}
+	if v := obj["separation"]; v != nil {
+		a.Separation, _ = d.boolean(v, path+".separation")
+	}
+	if v := obj["timeout"]; v != nil {
+		a.Timeout = d.positiveDuration(v, path+".timeout")
+	}
+	return a
+}
+
+func (d *decoder) positiveDuration(n *yaml.Node, path string) time.Duration {
+	s, ok := d.str(n, path)
+	if !ok {
+		return 0
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil || v <= 0 {
+		d.reject(n, path, "正の長さを書く（例 24h）")
+		return 0
+	}
+	return v
+}
+
+// procedure は手順を読む（§3.7）。
+func (d *decoder) procedure(n *yaml.Node, path string) (core.Procedure, bool) {
+	obj := d.object(n, path, "name", "target", "trigger", "drift_fields", "precondition", "done_when", "invariant",
+		"steps", "concurrency", "on_failure", "timeout")
+	if obj == nil {
+		return core.Procedure{}, false
+	}
+	before := len(d.diags)
+	p := core.Procedure{Concurrency: 1, Origin: core.Origin{File: d.file, Line: n.Line}}
+	if obj["name"] == nil {
+		d.reject(n, path, "name を書く")
+	} else if s, ok := d.str(obj["name"], path+".name"); ok {
+		if !validName(s) {
+			d.reject(obj["name"], path+".name", "名前 %q に使えない文字がある（英数字と . _ @ -）", s)
+		}
+		p.Name = s
+		path = "procedure " + s
+	}
+	if v := obj["target"]; v == nil {
+		d.reject(n, path, "target を書く（{type: <provider>/<種類>, id: 名前} か {type: …, select: {labels: …}}）")
+	} else if to := d.object(v, path+".target", "type", "id", "select"); to != nil {
+		if x := to["type"]; x == nil {
+			d.reject(v, path+".target", "type を書く")
+		} else if t, ok := d.str(x, path+".target.type"); ok {
+			if err := core.ParseType(t); err != nil {
+				d.reject(x, path+".target.type", "%v", err)
+			}
+			p.Target.Type = t
+		}
+		if x := to["id"]; x != nil {
+			p.Target.ID, _ = d.str(x, path+".target.id")
+		}
+		if x := to["select"]; x != nil {
+			if so := d.object(x, path+".target.select", "labels"); so != nil && so["labels"] != nil {
+				p.Target.Labels, _ = d.stringMap(so["labels"], path+".target.select.labels")
+			}
+			if len(p.Target.Labels) == 0 {
+				d.reject(x, path+".target.select", "labels を書く")
+			}
+		}
+		if (to["id"] == nil) == (to["select"] == nil) {
+			d.reject(v, path+".target", "id か select のどちらか 1 つを書く")
+		}
+	}
+	switch v := obj["trigger"]; {
+	case v == nil:
+		d.reject(n, path, "trigger を書く（on_drift か manual）")
+	default:
+		switch s, _ := d.str(v, path+".trigger"); s {
+		case "on_drift":
+			p.Trigger.Kind = core.TriggerOnDrift
+		case "manual":
+			p.Trigger.Kind = core.TriggerManual
+		default:
+			d.reject(v, path+".trigger", "trigger は on_drift か manual（%q が書かれている）", s)
+		}
+	}
+	if v := obj["drift_fields"]; v != nil {
+		for i, x := range d.list(v, path+".drift_fields") {
+			if f, ok := d.str(x, fmt.Sprintf("%s.drift_fields[%d]", path, i)); ok {
+				p.Trigger.Fields = append(p.Trigger.Fields, f)
+			}
+		}
+	}
+	if p.Trigger.Kind == core.TriggerOnDrift && obj["trigger"] != nil && len(p.Trigger.Fields) == 0 {
+		d.reject(n, path, "trigger: on_drift には drift_fields を書く")
+	}
+	if p.Trigger.Kind == core.TriggerManual && obj["drift_fields"] != nil {
+		d.reject(obj["drift_fields"], path+".drift_fields", "drift_fields は trigger: on_drift と一緒に書く")
+	}
+	p.Precondition = d.expr(obj["precondition"], path+".precondition")
+	p.DoneWhen = d.expr(obj["done_when"], path+".done_when")
+	p.Invariant = d.expr(obj["invariant"], path+".invariant")
+	if v := obj["concurrency"]; v != nil {
+		i, ok := v.Scalar.(int)
+		if v.Kind != yaml.Scalar || !ok || i < 1 {
+			d.reject(v, path+".concurrency", "1 以上の整数を書く")
+		} else {
+			p.Concurrency = i
+		}
+	}
+	if v := obj["on_failure"]; v != nil {
+		// 戻しの段（rollback）は後の段。いまは止めるだけ（E-F2）。
+		if s, _ := d.str(v, path+".on_failure"); s != "halt" {
+			d.reject(v, path+".on_failure", "on_failure は halt だけ（%q が書かれている）", s)
+		}
+	}
+	if v := obj["timeout"]; v != nil {
+		p.Timeout = d.positiveDuration(v, path+".timeout")
+	}
+	if v := obj["steps"]; v == nil {
+		d.reject(n, path, "steps を書く")
+	} else {
+		names := map[string]bool{}
+		for i, sn := range d.list(v, path+".steps") {
+			st, ok := d.step(sn, fmt.Sprintf("%s.steps[%d]", path, i), i)
+			if !ok {
+				continue
+			}
+			if names[st.Name] {
+				d.reject(sn, path+".steps", "段の名前 %q が 2 回ある", st.Name)
+			}
+			names[st.Name] = true
+			p.Steps = append(p.Steps, st)
+		}
+		if len(p.Steps) == 0 && v.Kind == yaml.Seq {
+			d.reject(v, path+".steps", "段を 1 つ以上書く")
+		}
+	}
+	// 人の作業は観測で閉じる。人の「やった」は閉じる根拠にしない（E-A6・E-Q3）。
+	for _, st := range p.Steps {
+		if st.Kind == core.StepManual && p.DoneWhen == "" {
+			d.reject(n, path, "manual の段には done_when を書く（人の作業は観測で閉じる）")
+			break
+		}
+	}
+	return p, len(d.diags) == before
+}
+
+func (d *decoder) expr(n *yaml.Node, path string) string {
+	if n == nil {
+		return ""
+	}
+	s, ok := d.str(n, path)
+	if !ok {
+		return ""
+	}
+	if strings.TrimSpace(s) == "" {
+		d.reject(n, path, "式を書く")
+	}
+	return s
+}
+
+var stepKinds = []string{"apply", "invoke", "wait", "manual", "gate", "policy"}
+
+// step は手順の段を読む。apply・invoke・wait・manual・gate・policy のどれか 1 つ。
+func (d *decoder) step(n *yaml.Node, path string, i int) (core.Step, bool) {
+	obj := d.object(n, path, append([]string{"name", "skip_if", "critical"}, stepKinds...)...)
+	if obj == nil {
+		return core.Step{}, false
+	}
+	before := len(d.diags)
+	st := core.Step{Name: fmt.Sprint(i + 1)}
+	if v := obj["name"]; v != nil {
+		if s, ok := d.str(v, path+".name"); ok {
+			if !validName(s) {
+				d.reject(v, path+".name", "名前 %q に使えない文字がある（英数字と . _ @ -）", s)
+			}
+			st.Name = s
+		}
+	}
+	st.SkipIf = d.expr(obj["skip_if"], path+".skip_if")
+	if v := obj["critical"]; v != nil {
+		st.Critical, _ = d.boolean(v, path+".critical")
+	}
+	var kinds []string
+	for _, k := range stepKinds {
+		if obj[k] != nil {
+			kinds = append(kinds, k)
+		}
+	}
+	if len(kinds) != 1 {
+		d.reject(n, path, "段は %s のどれか 1 つを書く", strings.Join(stepKinds, "・"))
+		return st, false
+	}
+	v := obj[kinds[0]]
+	p := path + "." + kinds[0]
+	switch kinds[0] {
+	case "apply":
+		st.Kind = core.StepApply
+		if r, ok := d.resource(v, p); ok {
+			if len(r.DependsOn) > 0 {
+				d.reject(v, p, "手順の apply に depends_on は書けない（順序は段の並び）")
+			}
+			st.Apply = &r
+		}
+	case "invoke":
+		st.Kind = core.StepInvoke
+		if o := d.object(v, p, "op", "args"); o != nil {
+			if o["op"] == nil {
+				d.reject(v, p, "op を書く")
+			} else {
+				st.Op, _ = d.str(o["op"], p+".op")
+			}
+			if a := o["args"]; a != nil {
+				if a.Kind != yaml.Map {
+					d.reject(a, p+".args", "マップを書く")
+				} else {
+					st.Args = core.Fields(a.Value().(map[string]any))
+				}
+			}
+		}
+	case "wait":
+		st.Kind = core.StepWait
+		if o := d.object(v, p, "when", "for", "timeout"); o != nil {
+			st.When = d.expr(o["when"], p+".when")
+			if x := o["for"]; x != nil {
+				st.For = d.positiveDuration(x, p+".for")
+			}
+			if x := o["timeout"]; x != nil {
+				st.Timeout = d.positiveDuration(x, p+".timeout")
+			}
+			if (o["when"] == nil) == (o["for"] == nil) {
+				d.reject(v, p, "when か for のどちらか 1 つを書く")
+			}
+		}
+	case "manual":
+		st.Kind = core.StepManual
+		if o := d.object(v, p, "instruction", "url", "timeout"); o != nil {
+			if o["instruction"] == nil {
+				d.reject(v, p, "instruction（人への頼み）を書く")
+			} else {
+				st.Instruction, _ = d.str(o["instruction"], p+".instruction")
+			}
+			if x := o["url"]; x != nil {
+				st.URL, _ = d.str(x, p+".url")
+			}
+			if x := o["timeout"]; x != nil {
+				st.Timeout = d.positiveDuration(x, p+".timeout")
+			}
+		}
+	case "gate":
+		st.Kind = core.StepGate
+		if o := d.object(v, p, "approval", "timeout"); o != nil {
+			if o["approval"] == nil {
+				d.reject(v, p, "approval を書く")
+			} else {
+				st.Gate = d.approval(o["approval"], p+".approval")
+			}
+			if x := o["timeout"]; x != nil {
+				t := d.positiveDuration(x, p+".timeout")
+				if st.Gate != nil {
+					if st.Gate.Timeout != 0 {
+						d.reject(x, p+".timeout", "timeout は gate か approval のどちらか一方に書く")
+					}
+					st.Gate.Timeout = t
+				}
+			}
+		}
+	case "policy":
+		st.Kind = core.StepPolicy
+		if o := d.object(v, p, "select", "mode", "reason"); o != nil {
+			pol := core.Policy{Name: "step " + st.Name, Mode: core.ModeReport, Origin: core.Origin{File: d.file, Line: v.Line}}
+			if o["select"] == nil {
+				d.reject(v, p, "select を書く")
+			} else {
+				pol.Select = d.selector(o["select"], p+".select")
+			}
+			// 手順の間だけ締める。緩める向きには効かない（不変条件 19）。
+			if x := o["mode"]; x == nil {
+				d.reject(v, p, "mode: report を書く")
+			} else if s, _ := d.str(x, p+".mode"); s != "report" {
+				d.reject(x, p+".mode", "手順の段の policy は mode: report だけ（%q が書かれている）", s)
+			}
+			if x := o["reason"]; x != nil {
+				pol.Reason, _ = d.str(x, p+".reason")
+			}
+			st.Policy = &pol
+		}
+	}
+	if st.Critical && (st.Kind != core.StepApply && st.Kind != core.StepInvoke) {
+		d.reject(obj["critical"], path+".critical", "critical は apply・invoke の段にだけ書ける")
+	}
+	return st, len(d.diags) == before
+}
+
+var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
+
+// validName は Record のファイル名にする名前（手順・段・承認者）に使える文字か。
+func validName(s string) bool { return nameRe.MatchString(s) && len(s) <= 100 }
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // selector は select を読む。何にも当たらない select は断る（E-M2）。

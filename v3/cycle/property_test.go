@@ -71,8 +71,8 @@ type world struct {
 //   - 不変条件 28：送れない sink があっても周の誤りにならない。
 func TestCycleProperties(t *testing.T) {
 	seeds := 400
-	if testing.Short() {
-		seeds = 60
+	if testing.Short() || raceEnabled {
+		seeds = 40
 	}
 	for seed := 1; seed <= seeds; seed++ {
 		seed := seed

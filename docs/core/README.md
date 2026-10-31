@@ -711,9 +711,12 @@ type Sink interface {
 record/
 ├── LOCK                         # flock。進める常駐（または一回実行）が持つ
 ├── format                       # Record の形の版。知らない版なら読まず止める
-├── runs/<procedure>/<target>.json
-├── approvals/<request-id>.json  # CLI と承認ツールが書く。1 件 1 ファイル（書き込みは一時ファイル＋rename）
-├── temp-policies/<name>.json
+├── runs/<procedure>/<target>.json   # 周だけが書く。済んだ・取り消した手順は消す（履歴は監査）
+├── approvals/<request-id>/
+│   ├── request.json             # 依頼。周が書く（要件・申請者・期限・pending/used/rejected/expired）
+│   └── by-<承認者>.json          # 判断。CLI と承認ツールが書く。1 人 1 ファイル（書き込みは一時ファイル＋rename）
+├── temp-policies/<name>.json    # CLI が書く。終えた印は <name>.json.end（周と CLI が同じファイルを書き合わない）
+├── commands/<時刻>-<種類>-*.json  # sakutei start・cancel の頼み。周が監査に残して消す
 ├── marks.json                   # 前の周の目印
 ├── events/
 │   ├── state.json               # firing の一覧
@@ -803,6 +806,7 @@ TLS とトークン・クライアント証明書の認可はつなぎ方の設�
 ```console
 $ sakutei approve <request-id> --as alice --comment "確認済み"
 $ sakutei reject  <request-id> --as bob   --comment "窓が違う"
+$ sakutei approvals [--all] [--json]                 # 待っている依頼と数え方
 $ sakutei start gateway-upgrade [--target gw1]
 $ sakutei cancel <run-id> --reason "…"
 $ sakutei accept-version <provider>
@@ -810,7 +814,9 @@ $ sakutei alloc release <pool> <value> --reason "…"
 $ sakutei audit verify
 ```
 
-承認ツール（別のバイナリ `sakutei-approve`）は、前段の認証の結果から承認者を受け取り、同じ形の 1 ファイルを `approvals/` に書くだけ。コアは認証をしない。承認者が条件（quorum・separation・役割）を満たすかは周の中で数える。
+承認ツール（別のバイナリ `sakutei-approve`）は、前段の認証の結果から承認者を受け取り、同じ形の 1 ファイルを `approvals/<request-id>/` に書くだけ。コアは認証をしない。承認者が条件（quorum・separation・役割）を満たすかは周の中で数える（申請者・要件に無い人・期限の後の判断は数えない）。CLI も申請者と要件に無い人の判断を書く前に断る。依頼の ID は、Policy の変更なら宣言と操作から決まる `chg-…`、手順の gate なら `<run-id>-<段>`、送る途中で止まった手順を続ける承認なら `<run-id>-resume-<段>`。
+
+人の判断を書くサブコマンド（approve・reject・freeze・unfreeze・start・cancel）はロックを取らずにファイルを書くだけで、効かせて監査に残すのは周。常駐はその置き場の書き込みで次の周を始める。
 
 ### 5.5 起動の引数
 
@@ -823,7 +829,7 @@ $ sakutei audit verify
 | `--once` | 1 周だけ回して終わる（`reconcile` の既定） |
 | `--json` | 出力を JSON に |
 
-サブコマンド：`sakutei`（常駐）・`plan`・`reconcile`・`status`・`wake`・`freeze`/`unfreeze`・`approve`/`reject`・`start`/`cancel`・`accept-version`・`alloc release`・`audit verify`。
+サブコマンド：`sakutei`（常駐）・`plan`・`reconcile`・`status`・`wake`・`freeze`/`unfreeze`・`approve`/`reject`/`approvals`・`start`/`cancel`・`accept-version`・`alloc release`・`audit verify`。
 
 一回実行の終了コード（E-J14）：0 収束した／1 実行の誤り／2 読み込みで断った／3 ずれか Unknown が残る（report・承認待ちを含む）／4 止まった（予算・効かない上限・急減・版の変化）。
 

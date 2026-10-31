@@ -71,7 +71,7 @@ func daemonMain(ctx context.Context, name string, c common, stdout, stderr io.Wr
 			if err != nil {
 				return plan.Result{}, err
 			}
-			r, _ := decide(ctx, l, rec.Dir(), o.clock)
+			r, _ := decide(ctx, l, rec.Dir(), o.clock, true)
 			return r, nil
 		},
 		Graph: func(ctx context.Context) (readapi.Graph, error) {

@@ -44,6 +44,10 @@ const (
 	KindWaiting       = "Waiting"
 	KindHalt          = "Halt"
 	KindDeleteRefused = "DeleteRefused"
+	// 段 5（§3.6・§3.7）。
+	KindApprovalPending      = "ApprovalPending"      // 承認待ち（Policy・gate・続ける承認、E-L2）
+	KindFrozen               = "Frozen"               // 一時的な Policy が効いている（E-J4・N-Q1）
+	KindProcedureNeedsDaemon = "ProcedureNeedsDaemon" // 一回実行が critical の段の手前（§2.2）
 )
 
 // 出来事型の Event の種類（§5.2）。
@@ -51,6 +55,8 @@ const (
 	KindApplied   = "Applied"
 	KindDeleted   = "Deleted"
 	KindCycleDone = "CycleDone"
+	// KindProcedureStep は手順の段を済ませた・手順が済んだ・取り消した（§3.7）。
+	KindProcedureStep = "ProcedureStep"
 )
 
 // Input は Derive の入力。
@@ -102,6 +108,9 @@ func Derive(in Input) Output {
 		if c.Action == plan.ActWait {
 			add(core.Event{Kind: KindWaiting, Resource: c.Resource, Labels: c.Labels(), Message: c.Blocked})
 		}
+		if c.Action == plan.ActPending {
+			add(core.Event{Kind: KindApprovalPending, Resource: c.Resource, Labels: c.Labels(), Message: c.Blocked})
+		}
 		if c.Outcome == plan.OutcomeRefused {
 			add(core.Event{Kind: KindDeleteRefused, Resource: c.Resource, Labels: c.Labels(), Message: c.Error})
 		}
@@ -115,6 +124,38 @@ func Derive(in Input) Output {
 	}
 	for _, h := range r.Halts {
 		add(core.Event{Kind: KindHalt, Scope: h.Scope, Message: h.Reason})
+	}
+	for _, t := range r.Temporary {
+		msg := fmt.Sprintf("%s を report（%s）。理由: %s", t.Select, t.Source, t.Reason)
+		if !t.Until.IsZero() {
+			msg += "。期限 " + t.Until.Format(time.RFC3339)
+		}
+		if t.By != "" {
+			msg += "。" + t.By
+		}
+		add(core.Event{Kind: KindFrozen, Scope: "policy " + t.Name, Message: msg})
+	}
+	for _, s := range r.Runs {
+		if !s.Active() || s.Waiting == "" {
+			continue
+		}
+		e := core.Event{Kind: KindWaiting, Scope: "procedure " + s.Procedure + " " + s.Target, Labels: s.Labels, Message: s.Waiting}
+		switch {
+		case s.NeedsDaemon:
+			e.Kind = KindProcedureNeedsDaemon
+		case s.Request != "":
+			e.Kind = KindApprovalPending
+		}
+		if s.Instruction != "" {
+			e.Message += "。人の作業: " + s.Instruction
+		}
+		add(e)
+	}
+	// 止まった手順の続ける承認（E-A5・E-K5）。
+	for _, s := range r.Runs {
+		if s.State == "halted" && s.Request != "" {
+			add(core.Event{Kind: KindApprovalPending, Scope: "procedure " + s.Procedure + " " + s.Target, Labels: s.Labels, Message: s.Waiting})
+		}
 	}
 
 	out := Output{Seq: in.Seq}
@@ -188,6 +229,21 @@ func Derive(in Input) Output {
 			continue
 		}
 		emit(e)
+	}
+	for _, s := range r.Runs {
+		scope := "procedure " + s.Procedure + " " + s.Target
+		if s.RunID == "" {
+			continue
+		}
+		for _, name := range s.Passed {
+			emit(core.Event{Kind: KindProcedureStep, Type: core.IncidentEvent, Scope: scope, Labels: s.Labels,
+				Message: fmt.Sprintf("%s: 段 %s を済ませた", s.RunID, name)})
+		}
+		switch s.State {
+		case "done", "cancelled":
+			emit(core.Event{Kind: KindProcedureStep, Type: core.IncidentEvent, Scope: scope, Labels: s.Labels,
+				Message: fmt.Sprintf("%s: %s（%s）", s.RunID, s.State, s.Reason)})
+		}
 	}
 	emit(cycleDone(r, in.Duration))
 	return out

@@ -36,12 +36,15 @@ import (
 //	      fields:
 //	        value: string
 //	        zone: {type: string, identity: true}
+//	      ops:                       # 一回きりの操作（Invoker、E-A2）
+//	        upgrade: {destructive: false, set: {version: "2"}}   # 送ると対象に置く項目
 //
 // state のファイルが無ければ全部 Absent、読めなければ Observe が失敗する（コアは
 // Unknown にする）。
 func Module(settings map[string]any) (core.Provider, error) {
 	schema := core.Schema{Version: "fake/1", Kinds: map[string]core.KindSchema{}}
 	var stateFile string
+	pendingOps := map[string]map[string]opDef{}
 	for _, k := range sortedKeys(settings) {
 		v := settings[k]
 		switch k {
@@ -63,11 +66,12 @@ func Module(settings map[string]any) (core.Provider, error) {
 				return nil, fmt.Errorf("settings.kinds にマップを書く")
 			}
 			for _, kind := range sortedKeys(kinds) {
-				ks, err := kindSchema(kind, kinds[kind])
+				ks, kops, err := kindSchema(kind, kinds[kind])
 				if err != nil {
 					return nil, err
 				}
 				schema.Kinds[kind] = ks
+				pendingOps[kind] = kops
 			}
 		default:
 			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: state, version, kinds）", k)
@@ -75,53 +79,104 @@ func Module(settings map[string]any) (core.Provider, error) {
 	}
 	p := New(schema)
 	p.stateFile = stateFile
+	for kind, ops := range pendingOps {
+		for op, o := range ops {
+			p.SetOp(kind, op, o.spec, o.set)
+		}
+	}
 	return p, nil
 }
 
-func kindSchema(kind string, v any) (core.KindSchema, error) {
+type opDef struct {
+	spec core.OpSpec
+	set  core.Fields
+}
+
+// ops は settings.kinds.<kind>.ops を読む。
+func ops(kind string, v any) (map[string]opDef, error) {
 	m, ok := v.(map[string]any)
 	if !ok {
-		return core.KindSchema{}, fmt.Errorf("settings.kinds.%s にマップを書く", kind)
+		return nil, fmt.Errorf("settings.kinds.%s.ops にマップを書く", kind)
 	}
-	ks := core.KindSchema{Fields: map[string]core.FieldSpec{}}
+	out := map[string]opDef{}
+	for _, name := range sortedKeys(m) {
+		om, ok := m[name].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("settings.kinds.%s.ops.%s にマップを書く", kind, name)
+		}
+		var d opDef
+		for _, k := range sortedKeys(om) {
+			switch k {
+			case "destructive":
+				b, ok := om[k].(bool)
+				if !ok {
+					return nil, fmt.Errorf("settings.kinds.%s.ops.%s.destructive に true か false を書く", kind, name)
+				}
+				d.spec.Destructive = b
+			case "set":
+				f, ok := om[k].(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("settings.kinds.%s.ops.%s.set にマップを書く", kind, name)
+				}
+				d.set = core.Fields(f)
+			default:
+				return nil, fmt.Errorf("settings.kinds.%s.ops.%s に知らない項目 %q（書ける項目: destructive, set）", kind, name, k)
+			}
+		}
+		out[name] = d
+	}
+	return out, nil
+}
+
+func kindSchema(kind string, v any) (ks core.KindSchema, kops map[string]opDef, err error) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return core.KindSchema{}, nil, fmt.Errorf("settings.kinds.%s にマップを書く", kind)
+	}
+	ks = core.KindSchema{Fields: map[string]core.FieldSpec{}}
 	for _, k := range sortedKeys(m) {
 		switch k {
 		case "observe_only":
 			b, ok := m[k].(bool)
 			if !ok {
-				return ks, fmt.Errorf("settings.kinds.%s.observe_only に true か false を書く", kind)
+				return ks, nil, fmt.Errorf("settings.kinds.%s.observe_only に true か false を書く", kind)
 			}
 			ks.ObserveOnly = b
 		case "destructive_delete":
 			b, ok := m[k].(bool)
 			if !ok {
-				return ks, fmt.Errorf("settings.kinds.%s.destructive_delete に true か false を書く", kind)
+				return ks, nil, fmt.Errorf("settings.kinds.%s.destructive_delete に true か false を書く", kind)
 			}
 			ks.DestructiveDelete = b
 		case "settle":
 			str, ok := m[k].(string)
 			d, err := time.ParseDuration(str)
 			if !ok || err != nil || d < 0 {
-				return ks, fmt.Errorf("settings.kinds.%s.settle に 0 以上の長さを書く（例 2s）", kind)
+				return ks, nil, fmt.Errorf("settings.kinds.%s.settle に 0 以上の長さを書く（例 2s）", kind)
 			}
 			ks.Settle = d
 		case "fields":
 			fields, ok := m[k].(map[string]any)
 			if !ok {
-				return ks, fmt.Errorf("settings.kinds.%s.fields にマップを書く", kind)
+				return ks, nil, fmt.Errorf("settings.kinds.%s.fields にマップを書く", kind)
 			}
 			for _, name := range sortedKeys(fields) {
 				spec, err := fieldSpec(fields[name])
 				if err != nil {
-					return ks, fmt.Errorf("settings.kinds.%s.fields.%s: %w", kind, name, err)
+					return ks, nil, fmt.Errorf("settings.kinds.%s.fields.%s: %w", kind, name, err)
 				}
 				ks.Fields[name] = spec
 			}
+		case "ops":
+			kops, err = ops(kind, m[k])
+			if err != nil {
+				return ks, nil, err
+			}
 		default:
-			return ks, fmt.Errorf("settings.kinds.%s に知らない項目 %q（書ける項目: observe_only, destructive_delete, settle, fields）", kind, k)
+			return ks, nil, fmt.Errorf("settings.kinds.%s に知らない項目 %q（書ける項目: observe_only, destructive_delete, settle, fields, ops）", kind, k)
 		}
 	}
-	return ks, nil
+	return ks, kops, nil
 }
 
 func fieldSpec(v any) (core.FieldSpec, error) {

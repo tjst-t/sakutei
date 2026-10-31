@@ -34,6 +34,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/events"
 	"github.com/tjst-t/sakutei/v3/graph"
 	"github.com/tjst-t/sakutei/v3/plan"
+	"github.com/tjst-t/sakutei/v3/procedure"
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
@@ -54,6 +55,10 @@ type Input struct {
 	// Sleep は Apply のあとの settle を待つ（E-J6・E-R3）。nil なら時計で待つ。
 	// テストで差し替える（E-R4）。
 	Sleep func(ctx context.Context, d time.Duration)
+	// Procedures は一回きりの手順（§3.7）。
+	Procedures []core.Procedure
+	// Daemon は常駐の周か。一回実行は critical の段を進めない（§2.2、不変条件 16）。
+	Daemon bool
 }
 
 // 同じ周の観測し直しの上限（§3.5、E-J7）。上流の Apply が効いたら、待っていた・
@@ -85,9 +90,8 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	}
 	defer release()
 	if !held {
-		pin.Marks, _ = record.ReadMarks(in.Record.Dir())
-		pin.ReportOnly = "ほかの処理が Record のロックを持つ"
-		r := plan.Decide(ctx, pin)
+		marks, _ := record.ReadMarks(in.Record.Dir())
+		r := Plan(ctx, in, in.Record.Dir(), marks, "ほかの処理が Record のロックを持つ")
 		r.Verb, r.AdvancedElsewhere = "reconcile", true
 		return r, nil
 	}
@@ -105,25 +109,39 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		pin.ReportOnly = "監査に書けない"
 	}
 	pin.Marks = marks
+	if merr != nil || audit == nil {
+		r := Plan(ctx, in, in.Record.Dir(), marks, pin.ReportOnly)
+		r.Verb = "reconcile"
+		if _, err := in.Record.RecordCycle(now, strings.Join(errs, "; ")); err != nil {
+			errs = append(errs, "健全性を書けない: "+err.Error())
+		}
+		r.Errors = append(r.Errors, errs...)
+		return r, nil
+	}
+
+	// 段 1：一時的な Policy・承認・手順の進みを読み、期限切れ・終えたもの・新しい
+	// 判断を監査に残す（不変条件 21・22）。
+	st := readState(in.Record.Dir(), now, in.Policies, &stateExec{rec: in.Record, audit: audit})
+	errs = append(errs, st.errs...)
+	handover, heldTargets := procedure.Prepare(in.Procedures, in.Resources, st.runs)
+	pin.Policies, pin.Approvals, pin.Handover, pin.Held = st.policies, st.approvals, handover, heldTargets
+	if st.reportOnly != "" {
+		pin.ReportOnly = st.reportOnly
+	}
 
 	// 段 3〜5。
 	r := plan.Decide(ctx, pin)
 	r.Verb = "reconcile"
-	if merr != nil {
-		if _, err := in.Record.RecordCycle(now, strings.Join(errs, "; ")); err != nil {
-			errs = append(errs, "健全性を書けない: "+err.Error())
-		}
-		r.Errors = errs
-		return r, nil
-	}
+	r.Temporary = st.temporary
 
 	// 段 6・7：波ごとに当てて読み直す。上流が効いたら、待っていた・観測できなかった
 	// 下流を同じ周にもう一度観測して当てる（E-J7）。同じ Resource は 1 周に 1 回
 	// だけ当てる（不変条件 12）。上流が失敗・未確認なら下流は次の周（E-D6）。
-	g := graph.New(in.Resources)
-	byID := make(map[core.ID]*core.Resource, len(in.Resources))
-	for i := range in.Resources {
-		byID[in.Resources[i].ID] = &in.Resources[i]
+	converged := plan.Strip(in.Resources, handover)
+	g := graph.New(converged)
+	byID := make(map[core.ID]*core.Resource, len(converged))
+	for i := range converged {
+		byID[converged[i].ID] = &converged[i]
 	}
 	base := baseWindows(r)
 	firedDestructive := map[string]int{} // Policy → 当てた壊す変更（断られた削除を除く）
@@ -151,6 +169,14 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		stop := false
 		for n, i := range writes {
 			c := &r.Changes[i]
+			// 承認を使った印を発射の前に書く。書けなければ承認を使わない（不変条件 21）。
+			if c.Request != "" {
+				if err := useApproval(in.Record, audit, st.approvals[c.Request], c, now); err != nil {
+					errs = append(errs, "承認を使った印を書けない: "+err.Error())
+					block(&r, []int{i}, "承認を使った印を Record に書けないので当てない")
+					continue
+				}
+			}
 			fire(ctx, c, in.Providers[c.ID.Provider()], byID[c.ID])
 			c.Wave = wave
 			fired[c.ID] = true
@@ -191,6 +217,46 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		merge(&r, plan.Decide(ctx, sub))
 	}
 
+	// 承認の依頼を書く（無い・使った・期限切れ・要件が変わった、E-L2）。
+	for i := range r.Changes {
+		c := &r.Changes[i]
+		if c.NewRequest == nil {
+			continue
+		}
+		if err := in.Record.WriteRequest(*c.NewRequest, c.Fresh); err != nil {
+			errs = append(errs, "承認の依頼を書けない: "+err.Error())
+			continue
+		}
+		if _, err := audit.Append(record.Entry{At: now, Kind: "approval.request", Request: c.Request, Resource: c.Resource,
+			Policies: c.Policies, By: c.NewRequest.Applicant, Result: "ok"}); err != nil {
+			errs = append(errs, "監査に書けない: "+err.Error())
+		}
+	}
+
+	// 段 6：手順を進める（§3.7）。書く段は予算を周の変更と合わせて数える
+	// （不変条件 20）。
+	pin2 := procedure.Input{Procedures: in.Procedures, Resources: in.Resources, Readers: readers, Policies: st.policies,
+		Runs: st.runs, Approvals: st.approvals, Changes: r.Changes, Now: now, Cycle: marks.Cycle + 1, Checks: in.Checks, Daemon: in.Daemon}
+	if pin.ReportOnly == "" {
+		cmds, err := in.Record.Commands()
+		if err != nil {
+			errs = append(errs, "頼み（commands/）が読めない: "+err.Error())
+		}
+		pin2.Exec = &procedure.Exec{Record: in.Record, Audit: audit, Providers: in.Providers, Commands: cmds,
+			Reserve: func(names []string, destructive bool) string {
+				return reserve(&r, st.policies, names, destructive, used, firedDestructive, marks, base, now, in.Record)
+			}}
+	}
+	pout := procedure.Run(ctx, pin2)
+	r.Runs, r.Halts = pout.Runs, append(r.Halts, pout.Halts...)
+	errs = append(errs, pout.Errors...)
+	// 手順の段 policy はこの周に足したものも出す。
+	if runs, err := in.Record.Runs(); err == nil {
+		r.Temporary = append(r.Temporary, procedure.Temporary(runs)...)
+	} else {
+		errs = append(errs, "手順の進み（runs/）が読めない: "+err.Error())
+	}
+
 	// 段 8：目印を書く。
 	gone := map[core.ID]bool{}
 	for _, i := range allWrites {
@@ -220,6 +286,35 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	}
 	r.Errors = errs
 	return r, nil
+}
+
+// Plan は reconcile と同じ判定を何も書かずに出す（plan・ロックがほかにある周・
+// Record が読めない周、不変条件 30）。dir が空なら Record なし。reportOnly が
+// 空でなければ当てる操作を全部 report にする。
+func Plan(ctx context.Context, in Input, dir string, marks record.Marks, reportOnly string) plan.Result {
+	clock := in.Clock
+	if clock == nil {
+		clock = core.SystemClock{}
+	}
+	now := clock.Now()
+	readers := make(map[string]core.Reader, len(in.Providers))
+	for n, p := range in.Providers {
+		readers[n] = p
+	}
+	st := readState(dir, now, in.Policies, nil)
+	handover, held := procedure.Prepare(in.Procedures, in.Resources, st.runs)
+	if reportOnly == "" {
+		reportOnly = st.reportOnly
+	}
+	r := plan.Decide(ctx, plan.Input{Resources: in.Resources, Ranges: in.Ranges, Policies: st.policies, Readers: readers,
+		Marks: marks, Now: now, ReportOnly: reportOnly, Checks: in.Checks, Approvals: st.approvals, Handover: handover, Held: held})
+	r.Temporary = st.temporary
+	pout := procedure.Run(ctx, procedure.Input{Procedures: in.Procedures, Resources: in.Resources, Readers: readers,
+		Policies: st.policies, Runs: st.runs, Approvals: st.approvals, Changes: r.Changes, Now: now, Checks: in.Checks, Daemon: in.Daemon})
+	r.Runs, r.Halts = pout.Runs, append(r.Halts, pout.Halts...)
+	r.Temporary = append(r.Temporary, procedure.Temporary(st.runs)...)
+	r.Errors = append(r.Errors, st.errs...)
+	return r
 }
 
 // emit は通知の状態を進める。番号は送り出しの列の最後と state.json の大きいほう

@@ -59,10 +59,12 @@ type Loaded struct {
 	Resources []core.Resource
 	Ranges    []core.Range
 	Policies  []core.Policy
-	Cycle     core.CycleSettings   // 書かなければ既定の間隔
-	Sinks     map[string]core.Sink // つなぎ方の設定の sinks の名前 → 送り先
-	Checks    map[string]core.CheckFunc
-	Warnings  []core.Diagnostic
+	// Procedures は一回きりの手順（§3.7）。
+	Procedures []core.Procedure
+	Cycle      core.CycleSettings   // 書かなければ既定の間隔
+	Sinks      map[string]core.Sink // つなぎ方の設定の sinks の名前 → 送り先
+	Checks     map[string]core.CheckFunc
+	Warnings   []core.Diagnostic
 }
 
 // Load は設定と intent を読み、検証する。
@@ -106,7 +108,7 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 		cyc = out.Cycles[0]
 	}
 	return &Loaded{Config: cfg, Providers: providers, Resources: res, Ranges: out.Ranges, Policies: out.Policies,
-		Cycle: cyc, Sinks: sinks, Checks: opt.Checks, Warnings: warns}, nil
+		Procedures: out.Procedures, Cycle: cyc, Sinks: sinks, Checks: opt.Checks, Warnings: warns}, nil
 }
 
 func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]core.Sink, []core.Diagnostic) {
@@ -199,6 +201,7 @@ func Validate(out expand.Output, providers map[string]core.Provider, checks map[
 	diags = append(diags, checkCycles(res)...)
 	diags = append(diags, checkRanges(res, out.Ranges, providers)...)
 	diags = append(diags, checkPolicies(out.Policies, providers)...)
+	diags = append(diags, checkProcedures(out.Procedures, res, providers, checks)...)
 	// cycle: は intent に 1 か所だけ（E-M3：どちらが効くかを迷わせない）。
 	for _, c := range out.Cycles[min(len(out.Cycles), 1):] {
 		diags = append(diags, reject(c.Origin, "cycle", "cycle: が 2 か所に書かれている（先は %s）", out.Cycles[0].Origin))

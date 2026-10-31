@@ -34,6 +34,7 @@ type Output struct {
 	Resources   []core.Resource
 	Ranges      []core.Range
 	Policies    []core.Policy
+	Procedures  []core.Procedure
 	Cycles      []core.CycleSettings // intent の cycle:。2 つ以上は読み込みで断る
 	Diagnostics []core.Diagnostic
 }
@@ -45,7 +46,7 @@ type Expander interface {
 	Expand(ctx context.Context, in Input) (Output, error)
 }
 
-// Passthrough は intent に書いた resources:・ranges:・policies:・cycle: をそのまま返す。
+// Passthrough は intent に書いた resources:・ranges:・policies:・procedures:・cycle: をそのまま返す。
 type Passthrough struct{}
 
 // Expand は文書の順に読み、診断も文書の順に返す。
@@ -56,6 +57,7 @@ func (Passthrough) Expand(_ context.Context, in Input) (Output, error) {
 		out.Resources = append(out.Resources, d.Resources...)
 		out.Ranges = append(out.Ranges, d.Ranges...)
 		out.Policies = append(out.Policies, d.Policies...)
+		out.Procedures = append(out.Procedures, d.Procedures...)
 		if d.Cycle != nil {
 			out.Cycles = append(out.Cycles, *d.Cycle)
 		}

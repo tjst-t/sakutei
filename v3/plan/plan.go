@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/tjst-t/sakutei/v3/core"
+	"github.com/tjst-t/sakutei/v3/record"
 )
 
 // Op は 1 件の Resource の操作。
@@ -64,6 +65,10 @@ const (
 	ActHalt   Action = "halt"   // 予算を超えたので周全体を止めた（E-J1・不変条件 20）
 	ActWait   Action = "wait"   // 上流が済んでいない（E-J7・E-D6・不変条件 3）
 	ActHold   Action = "hold"   // prune の守りで消さない（E-K2・不変条件 7）
+	// ActKeep は止まった手順の対象で、収束でも宣言どおりに戻さない（不変条件 18、E-A9）。
+	ActKeep Action = "keep"
+	// ActPending は承認待ち（E-L2・N-L2・不変条件 21）。
+	ActPending Action = "pending"
 )
 
 // Writes は op が現実を変える操作か。
@@ -103,6 +108,13 @@ type Change struct {
 	Ineffective int `json:"ineffective,omitempty"`
 	// Wave は当てた波（1 から。同じ周の観測し直しで当てたものは 2 以降、E-J7）。
 	Wave int `json:"wave,omitempty"`
+	// Request は承認の依頼の ID（当たる Policy に approval がある、E-L2・N-L2）。
+	Request string `json:"request,omitempty"`
+	// ApprovedBy は数えた承認者（不変条件 21）。
+	ApprovedBy []string `json:"approved_by,omitempty"`
+	// Handover は手順が受け持つ項目（drift_fields）のうちずれているもの。収束では
+	// 当てず手順を起こす（E-F2・E-A5・N-A4）。
+	Handover []string `json:"handover,omitempty"`
 
 	// reconcile が当てた結果。
 	Outcome Outcome `json:"outcome,omitempty"`
@@ -119,7 +131,11 @@ type Change struct {
 	DesiredHash string `json:"-"`
 	// IneffectiveLimit は当たる Policy の max_ineffective_applies の最も小さいもの。
 	IneffectiveLimit int `json:"-"`
-	labels           map[string]string
+	// NewRequest は周が Record に書く承認の依頼（無い・使った・期限切れ・要件が
+	// 変わった）。Fresh なら前の判断を消して頼み直す。
+	NewRequest *record.ApprovalRequest `json:"-"`
+	Fresh      bool                    `json:"-"`
+	labels     map[string]string
 }
 
 // Outcome は当てた結果。
@@ -191,7 +207,51 @@ type Result struct {
 	// Deliveries は sink ごとの送り出しの結果。失敗しても周の誤りにしない
 	// （不変条件 28）。
 	Deliveries []Delivery `json:"deliveries,omitempty"`
+
+	// Temporary は効いている一時的な Policy（freeze・手順の段の policy、
+	// E-J4・N-Q1・N-Q2）。
+	Temporary []Temporary `json:"temporary,omitempty"`
+	// Runs は手順の対象ごとの進み（§3.7）。
+	Runs []RunStatus `json:"runs,omitempty"`
 }
+
+// Temporary は効いている一時的な Policy 1 つ。
+type Temporary struct {
+	Name   string    `json:"name"`
+	Select string    `json:"select"`
+	Reason string    `json:"reason"`
+	By     string    `json:"by,omitempty"`
+	Until  time.Time `json:"until,omitempty"`
+	Source string    `json:"source"` // freeze・procedure <run_id>
+}
+
+// RunStatus は手順 1 つ・対象 1 つのこの周の進み（§3.7）。
+type RunStatus struct {
+	Procedure string `json:"procedure"`
+	Target    string `json:"target"`
+	RunID     string `json:"run_id,omitempty"`
+	// State は周の終わりの状態：start（起こす・起こした）・running・halted・
+	// done（済んだ）・cancelled。
+	State    string `json:"state"`
+	Step     int    `json:"step"` // 今の段（1 から。0 は始まる前）
+	StepName string `json:"step_name,omitempty"`
+	Steps    int    `json:"steps"`
+	// Passed はこの周に済ませた段（飛ばした段を含む）。
+	Passed []string `json:"passed,omitempty"`
+	// Waiting は進めない理由（待つ・承認待ち・常駐が要る・report）。
+	Waiting string `json:"waiting,omitempty"`
+	Request string `json:"request,omitempty"` // 承認の依頼
+	// NeedsDaemon は一回実行で critical の段の手前に来た（§2.2）。
+	NeedsDaemon bool              `json:"needs_daemon,omitempty"`
+	Instruction string            `json:"instruction,omitempty"` // manual の段の頼み
+	URL         string            `json:"url,omitempty"`
+	Reason      string            `json:"reason,omitempty"` // 止めた理由
+	Error       string            `json:"error,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+// Active は周の終わりに手順が残っている（済んでいない）か。
+func (s RunStatus) Active() bool { return s.State == "start" || s.State == "running" }
 
 // Delivery は sink 1 つの送り出しの結果（E-H2・N-H2）。
 type Delivery struct {
@@ -392,6 +452,12 @@ func (r Result) WriteText(w io.Writer) error {
 		if c.Action != "" && c.Action != ActApply {
 			fmt.Fprintf(&b, "    %s: %s\n", actionLabel[c.Action], c.Blocked)
 		}
+		if len(c.ApprovedBy) > 0 {
+			fmt.Fprintf(&b, "    承認: %s（%s）\n", strings.Join(c.ApprovedBy, ", "), c.Request)
+		}
+		if len(c.Handover) > 0 {
+			fmt.Fprintf(&b, "    手順が受け持つ: %s\n", strings.Join(c.Handover, ", "))
+		}
 		for _, f := range c.Fields {
 			mark := ""
 			if f.Identity {
@@ -440,6 +506,19 @@ func (r Result) WriteText(w io.Writer) error {
 		}
 		fmt.Fprintln(&b)
 	}
+	for _, s := range r.Runs {
+		writeRun(&b, s)
+	}
+	for _, t := range r.Temporary {
+		fmt.Fprintf(&b, "一時的な Policy %s（%s）: %s を report。理由: %s", t.Name, t.Source, t.Select, t.Reason)
+		if !t.Until.IsZero() {
+			fmt.Fprintf(&b, "。期限 %s", t.Until.Format(time.RFC3339))
+		}
+		if t.By != "" {
+			fmt.Fprintf(&b, "。%s", t.By)
+		}
+		fmt.Fprintln(&b)
+	}
 	for _, h := range r.Halts {
 		fmt.Fprintf(&b, "止めた: %s: %s\n", h.Scope, h.Reason)
 	}
@@ -458,8 +537,40 @@ func (r Result) WriteText(w io.Writer) error {
 	return err
 }
 
+var runStateLabel = map[string]string{"start": "起こす", "running": "進めている", "halted": "止めた", "done": "済んだ", "cancelled": "取り消した"}
+
+func writeRun(b *strings.Builder, s RunStatus) {
+	head := fmt.Sprintf("手順 %s %s: %s", s.Procedure, s.Target, runStateLabel[s.State])
+	if s.RunID != "" {
+		head += "（" + s.RunID + "）"
+	}
+	if s.Step > 0 {
+		head += fmt.Sprintf(" 段 %d/%d %s", s.Step, s.Steps, s.StepName)
+	}
+	fmt.Fprintln(b, head)
+	if len(s.Passed) > 0 {
+		fmt.Fprintf(b, "    この周に済ませた段: %s\n", strings.Join(s.Passed, ", "))
+	}
+	if s.Waiting != "" {
+		fmt.Fprintf(b, "    待つ: %s\n", s.Waiting)
+	}
+	if s.Instruction != "" {
+		fmt.Fprintf(b, "    人の作業: %s", s.Instruction)
+		if s.URL != "" {
+			fmt.Fprintf(b, "（%s）", s.URL)
+		}
+		fmt.Fprintln(b)
+	}
+	if s.Reason != "" {
+		fmt.Fprintf(b, "    理由: %s\n", s.Reason)
+	}
+	if s.Error != "" {
+		fmt.Fprintf(b, "    誤り: %s\n", s.Error)
+	}
+}
+
 var actionLabel = map[Action]string{
-	ActReport: "知らせるだけ", ActHalt: "止めた", ActWait: "待つ", ActHold: "消さない",
+	ActReport: "知らせるだけ", ActHalt: "止めた", ActWait: "待つ", ActHold: "消さない", ActKeep: "触らない", ActPending: "承認待ち",
 }
 
 func ratio(used, limit int) string {

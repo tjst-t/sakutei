@@ -2,25 +2,27 @@
 
 設計は `docs/core/README.md`、もとにした検討は `docs/review/core-usecase-review.md`。ルートの v2 のコードとは別の Go モジュール（`github.com/tjst-t/sakutei/v3`、標準ライブラリだけ）。互換は持たない。
 
-作る順番は設計書 §8 の 9 段。いまは **段 4** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）を足した。
+作る順番は設計書 §8 の 9 段。いまは **段 5** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）と、段 5（Procedure・承認と承認の CLI・一時的な Policy の freeze）を足した。
 
 | パッケージ | 中身 |
 |---|---|
-| `core` | Resource・Range・Policy・Schema・Observation（ある・無い・分からない・作業中）と Provider の口（観測と列挙だけの `Reader`）・Event と送り先の口 `Sink`・周の設定・Condition の口（三値 `Tri`・`on_unknown`・確かめの `CheckFunc`） |
+| `core` | Resource・Range・Policy（承認 `Approval`・一時的な Policy の期限と理由）・Schema・Observation（ある・無い・分からない・作業中）と Provider の口（観測と列挙だけの `Reader`、一回きりの操作の `Invoker` と `ErrNotSent`）・Event と送り先の口 `Sink`・周の設定・Condition の口（三値 `Tri`・`on_unknown`・確かめの `CheckFunc`）・Procedure と段 |
+| `approval` | 承認を数える（N-of-M・申請者≠承認者・拒否・期限切れ・使った依頼）。Policy の承認と手順の gate で同じ数え方 |
+| `procedure` | 手順を起こし・1 段ずつ進め・止め・観測で閉じる（`Run`。plan では何も書かずに次を出す） |
 | `condition` | 観測についての三値の式を読み（`Parse`）、評価し（`Eval`）、Schema と突き合わせる（`Lint`） |
 | `graph` | `depends_on` と `when` から宣言の依存（上流・下流・量化の選び方・循環）を作る |
-| `intent` | intent のディレクトリ（`*.yaml`・`*.yml`・`*.json`）を読み、`resources:`・`ranges:`・`policies:`・`cycle:` を Resource・Range・Policy・周の設定にする |
+| `intent` | intent のディレクトリ（`*.yaml`・`*.yml`・`*.json`）を読み、`resources:`・`ranges:`・`policies:`・`procedures:`・`cycle:` を Resource・Range・Policy・Procedure・周の設定にする |
 | `config` | つなぎ方の設定（`providers.<名前>.module`・`settings`、`sinks.<名前>.module`・`settings`、`listen.read`）。範囲・除外・方針は書けない（不変条件 24） |
 | `expand` | Expand の口と素通しの `Passthrough` |
 | `load` | 設定と intent を読み、Expand の出力を検証する（不変条件 25） |
 | `plan` | List と観測をして宣言と比べ、prune の守り・依存の待ち（Condition）・Policy の mode と予算・効かない回数で操作ごとに当てるかを決める（`Decide`）。受け取るのは `core.Reader` だけで、何も書かない |
-| `cycle` | 1 周（`Run`）。Record のロックを取り、`plan.Decide` と同じ判定で波ごとに当て、settle を待って読み直し、上流が効いたら下流を同じ周に観測し直して当て、効かない回数・目印・監査を書き、通知の状態を進めて送り出し、健全性を書く。ロックが取れなければ進めない周 |
+| `cycle` | 1 周（`Run`）。Record のロックを取り、一時的な Policy・承認・手順の進みを読んで監査に残し、`plan.Decide` と同じ判定で波ごとに当て、settle を待って読み直し、上流が効いたら下流を同じ周に観測し直して当て、手順を進め、効かない回数・目印・監査を書き、通知の状態を進めて送り出し、健全性を書く。ロックが取れなければ進めない周。`Plan` は同じ判定を何も書かずに出す |
 | `events` | 周の結果から状態型・出来事型の Event を作る（`Derive`）・送り先へ送り出す（`Deliver`）・stdout の送り先 |
 | `daemon` | 常駐：`cycle.Run` を繰り返し、間隔を待ち、`sakutei wake`・SIGHUP・intent の変更で起きる |
 | `readapi` | 常駐の読み取り HTTP（`/status`・`/plan`・`/events`（SSE）・`/graph`・`/health`）と TLS・クライアント証明書・読むだけのトークン |
-| `record` | Record のディレクトリ：`LOCK`（flock）・`format`・`marks.json`（範囲ごとの件数・予算の窓・効かない Apply の回数）・`audit/`（前の行のハッシュの鎖）・`events/`（`state.json`・`outbox/`・`cursors/`）・`health.json`・`wake` |
-| `sdk/fake` | テスト用の偽の provider（Go から観測の答え・List の欠け・Apply の失敗・効かない Apply・上流の奥で届かない対象・削除の断りを置く・CLI ではモジュール `fake` の state のファイル） |
-| `cli`・`cmd/sakutei` | CLI。`sakutei`（常駐）とサブコマンド `plan`・`reconcile`・`wake`・`audit verify` |
+| `record` | Record のディレクトリ：`LOCK`（flock）・`format`・`marks.json`（範囲ごとの件数・予算の窓・効かない Apply の回数）・`audit/`（前の行のハッシュの鎖）・`events/`（`state.json`・`outbox/`・`cursors/`）・`health.json`・`wake`・`runs/`（手順の進み）・`approvals/`（依頼と判断）・`temp-policies/`（freeze）・`commands/`（start・cancel の頼み） |
+| `sdk/fake` | テスト用の偽の provider（Go から観測の答え・List の欠け・Apply の失敗・効かない Apply・上流の奥で届かない対象・削除の断り・一回きりの操作とその失敗（送れていない・送れたか分からない・送る途中で止まる）を置く・CLI ではモジュール `fake` の state のファイルと `ops`） |
+| `cli`・`cmd/sakutei` | CLI。`sakutei`（常駐）とサブコマンド `plan`・`reconcile`・`wake`・`audit verify`・`approve`・`reject`・`approvals`・`freeze`・`unfreeze`・`start`・`cancel` |
 | `internal/yaml` | 行番号を残す YAML の部分集合のパーサ（ブロックと 1 行のフロー） |
 
 ```console
@@ -29,6 +31,13 @@ $ cd v3 && go run ./cmd/sakutei wake      --record <dir>
 $ cd v3 && go run ./cmd/sakutei plan      --intent <dir> --config <file> [--record <dir>] [--json]
 $ cd v3 && go run ./cmd/sakutei reconcile --intent <dir> --config <file> --record <dir> [--once] [--json]
 $ cd v3 && go run ./cmd/sakutei audit verify --record <dir>
+$ cd v3 && go run ./cmd/sakutei approve   <request-id> --record <dir> --as <名前> [--comment …]
+$ cd v3 && go run ./cmd/sakutei reject    <request-id> --record <dir> --as <名前> --comment …
+$ cd v3 && go run ./cmd/sakutei approvals --record <dir> [--all] [--json]
+$ cd v3 && go run ./cmd/sakutei freeze    --record <dir> --reason … --until <時刻|長さ> [--select labels.<k>=<v>|type=<t>]… [--name <名前>] [--as <名前>]
+$ cd v3 && go run ./cmd/sakutei unfreeze  <名前> --record <dir> --reason … [--as <名前>]
+$ cd v3 && go run ./cmd/sakutei start     <procedure> --record <dir> [--target <名前>] [--as <名前>]
+$ cd v3 && go run ./cmd/sakutei cancel    <run-id> --record <dir> --reason … [--as <名前>]
 ```
 
 `plan` の終了コード：0 計算できた／1 実行の誤り／2 読み込みで断った。
@@ -40,7 +49,7 @@ $ cd v3 && go run ./cmd/sakutei audit verify --record <dir>
 - 宣言外を消すのは、Range を宣言し、`prune: true` で、List が完全で、List に出て、宣言に無く、外の持ち主でなく、観測が Present で、消せる種類（`DestructiveDelete`・観測だけの種類でない）で、前の周の件数が Record にあり、急減（`max_drop`）していず、予算を通ったときだけ（不変条件 6・7・9）。前の周の件数は List の件数から自分が消した分を差し引いて覚え、急減で止めた周は前の値を保つ。
 - Unknown・Converging・答えの無い対象には書かず、宣言した上流が宣言どおりでない下流（宣言に無い上流は Present でない下流）は待つ（不変条件 3）。上流を当てた周の下流は、段 4 で同じ周に観測し直して当てるようにした。
 - 当たる Policy のうち 1 つでも `mode: report` なら知らせるだけ。予算（`per_cycle`・`destructive_per_cycle`・`destructive_per_window` と `window`）は Policy ごとに数え、1 つでも超えれば周全体を止める（不変条件 20）。窓の使用量は発射の前に Record に書き、書けなければ当てない。断られた削除は数えない。
-- 窓・承認・別枠・一時的な Policy・`policy_sets` は後の段。
+- 窓・別枠・`policy_sets` は後の段（承認・一時的な Policy は段 5）。
 
 段 3 の決まり：
 
@@ -48,7 +57,7 @@ $ cd v3 && go run ./cmd/sakutei audit verify --record <dir>
 - 状態型の Event（`Drift`・`Unknown`・`Converging`・`Unmanaged`・`Waiting`・`Halt`・`DeleteRefused`）はキー（種類＋対象）ごとに firing になった周と resolved になった周にだけ送り出しの列に積み、続いた周は `count` を数え、`cycle.stuck_after` の周数で 1 回だけ `stuck` を積む（E-H1）。対象が Unknown・作業中の周、範囲の List が不完全な周には resolved にせず、`count` も進めない（不変条件 29）。出来事型は `Applied`・`Deleted`・`CycleDone`（件数と周の時間。数えたものだけ）。
 - 送り出しの列（`events/outbox/`）は送り先ごとの位置（`events/cursors/`）から送る。送れない・時間内に戻らない・panic した送り先は位置を保って次の周に同じ位置から送り直し、周の誤りにしない（不変条件 28）。全部の送り先が送ったファイルは消す。送り先は `sinks:` に書き、いまあるモジュールは `stdout`（1 行 1 件の JSON。一回実行では結果の前に出る）。進めない周（ロックがほか）は積まず送らない。
 - 読み取り HTTP（`listen.read`）は GET だけ。`/status` は最後の周の結果（`reconcile --json` と同じ構造）、`/plan` は何も消費しない plan（同時に 1 つ、2 つ目は 503）、`/events` は送り出しの列の SSE（`?since=`・`Last-Event-ID`）、`/graph` は依存、`/health` は健全性（続いた誤りがあれば 503、E-K11）。loopback でない宛先の平文は `plaintext: true` を書いたときだけ。TLS・クライアント証明書（`tls.client_ca`）・読むだけのトークン（`auth.tokens_file`、Bearer）を書ける（N-L4）。
-- `status`・`freeze`・承認・Procedure は後の段。
+- `status` は後の段。`freeze`・承認・Procedure は段 5。
 
 段 4 の決まり：
 
@@ -58,5 +67,17 @@ $ cd v3 && go run ./cmd/sakutei audit verify --record <dir>
 - 波：1 周の中で、当てたものが読み直しで宣言どおり（効いた）なら、それに依る・それが依る宣言のうち、待っていたか観測できなかったもの（Unknown）を同じ周にもう一度観測して判定し、当てる（E-J7）。上限は観測し直し 3 回・周の始まりから 2 分。同じ Resource は 1 周に 1 回だけ当てる。上流が失敗・効かないなら下流は次の周。予算は周の全部の波で数え、後の波で超えればその波を止める（前の波で当てたものは残る）。`plan` は最初の波だけを出す（観測し直さない）。
 - settle：波ごとに、当てて成功した種類の `Settle`（Schema、fake では `settle:`）の最も長いものを 1 回待ってから読み直す。
 - 効かない Apply（不変条件 14、E-J6・E-K10）：当てて成功したのに読み直すとずれたまま（作る・変える・消すが残る）なら、Record の `marks.json` の `ineffective` に宣言のハッシュと一緒に 1 つ足す。宣言どおりなら消し、読み直しが Unknown・作業中なら数えない（不変条件 4）。上限は当たる Policy の `budget.max_ineffective_applies`（1 以上）の最も小さいもので、どれも書かなければ 3。上限に達した周に止め（終了コード 4）、次の周からは当てない（Event `Halt`）。宣言を直すか、現実が宣言どおりになれば数え直す。
+
+段 5 の決まり：
+
+- 手順（`procedures:`、§3.7）は `target`（`type` と `id` か `select.labels`）・`trigger`（`on_drift` と `drift_fields`、または `manual`）・`steps`・`done_when`・`precondition`・`invariant`・`concurrency`（既定 1）・`timeout`・`on_failure: halt` を書く。段は `apply`・`invoke`・`wait`（`when` か `for`、`timeout`）・`manual`（`instruction`・`url`・`timeout`）・`gate`（`approval`・`timeout`）・`policy`（`select` と `mode: report`）のどれか 1 つと、`name`・`skip_if`・`critical`（apply・invoke だけ）。式・名前・項目の `{target}` は対象の名前、`{desired.項目}` は対象の宣言の値に置き換える。知らない操作・項目・式の誤り、done_when の無い manual、同じ対象の同じ項目を 2 つの手順が受け持つ宣言、申請者の分からない separation の gate は読み込みで断る。戻しの段（rollback）・`exec`・`disruption`・`trigger: {policy: …}`・`before_delete` は後の段。
+- `drift_fields` は収束ループが比べも当てもせず（plan に「手順が受け持つ」と出す）、ずれていれば対象ごとに 1 回手順を起こす（E-F2・E-A5）。同じ対象に未完了の手順は 1 つ。`manual` の手順は `sakutei start`（`--as` が申請者）で起こす。
+- 進み（`runs/<手順>/<対象>.json`）は周だけが書く。周ごとに、手順の timeout・done_when（真なら済んだ。不明は済んでいない）・invariant（真でなければ待つ）・skip_if を見て、段を進められるだけ進める。済んだ手順・取り消した手順の進みは消す（履歴は監査）。done_when が真の対象には手順を起こさない（Record を失っても二度走らない、不変条件 18）。
+- 一回きりの操作（`invoke`、provider の `core.Invoker`）と critical の段は、送る前に送信中の記録を `runs/` に書く。前の周の記録が残っていれば（送る途中で止まった）送らずに手順を止め、続ける承認（`<run-id>-resume-<段>`。要件は手順の最初の gate と同じ、gate が無ければ申請者でない 1 人）を頼む。承認されればその段をもう一度送る。`core.ErrNotSent` なら記録を消して次の周に送り直し、ほかの誤りは送れたか分からないので止める（不変条件 16）。一回実行（`reconcile --once`）は critical の段の手前で止め、Event `ProcedureNeedsDaemon` を出す。進めるのは常駐だけ。
+- 止まった手順の対象は、収束でも宣言どおりに戻さない（plan に「触らない」、E-A9）。続けるか `sakutei cancel <run-id> --reason …` で片づける。手順を書く段は当たる Policy の予算を周の変更と合わせて数え、`mode: report` の Policy（freeze を含む）に当たる対象の手順は起こさず、書く段を進めない。段 `policy` の report は手順の間だけ効く（次の周から）。
+- 承認（Policy の `approval: {quorum: {n, of}, separation, timeout}` と `applicant`、手順の `gate`）：周が依頼（`approvals/<id>/request.json`。Policy の変更の ID は宣言と操作から決まる `chg-…`、gate は `<run-id>-<段>`）を書き、`sakutei approve`・`reject`（または承認ツール）が `approvals/<id>/by-<名前>.json` を書く。数えるのは周で、申請者・`of` に無い人・期限の後の判断は数えず、異なる人だけを数える。数える人が 1 人でも拒否すれば拒否（Policy の変更は止める、gate は手順を止める）。期限が切れれば頼み直す（gate は止める）。使う前に依頼に「使った」を書き、書けなければ当てない。使った依頼は使い回さない（不変条件 21）。CLI も、申請者・`of` に無い人・無い依頼・済んだ依頼の判断と、理由の無い拒否を断る。新しい判断・拒否・期限切れ・使った承認は監査に残す。
+- 一時的な Policy（`sakutei freeze`、`temp-policies/<名前>.json`）は理由・期限・誰がを必須とし、当たる先（既定は全部）を `mode: report` にする。周が始まり（`freeze.start`）を監査に残し、期限で消し（`freeze.expire`）、`sakutei unfreeze` の印（`<名前>.json.end`）で終える（`freeze.end`）。効いている間は Event `Frozen`。読めない一時的な Policy・承認・進みがあれば全体を report に寄せる（不変条件 22）。
+- 常駐は `approvals/`・`temp-policies/`・`commands/` の書き込みで次の周を始める。Event は `ApprovalPending`（承認待ち）・`Frozen`・`ProcedureNeedsDaemon`・`Waiting`（手順が待つ）・`Halt`（手順が止まった）・`ProcedureStep`（段を済ませた・済んだ・取り消した）を足した。一回実行の終了コードは、済んでいない手順・承認待ちを 3、止まった手順・拒否を 4 に数える。
+- 性質のテスト（`cycle`）は race detector のとき（と `-short`）回数を減らす（make test-race で v3/cycle を 60 秒以内に）。
 
 テストはルートの `make check`・`make test-race` が一緒に回す。

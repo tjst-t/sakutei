@@ -14,23 +14,71 @@
 
 package core
 
-import "time"
+import (
+	"sort"
+	"strings"
+	"time"
+)
 
 // Policy は「この範囲で、いつ、どこまで変えてよいか」（設計 §3.6）。段 2 は
-// select・mode・budget を持つ。窓・承認・別枠・一時的な Policy は段 5 で足す。
+// select・mode・budget を持ち、段 5 で承認と一時的な Policy（期限・理由・誰が）を
+// 足した。窓・別枠は後の段。
 type Policy struct {
 	Name   string
 	Select Selector // E-M2・N-M2・E-M1
 	Mode   Mode     // E-I3・E-Q1・N-Q2・N-I1
 	Budget *Budget  // E-J1
+	// Approval は当たる変更を承認まで流さない（E-L2・N-L2・E-J10・N-G10）。
+	Approval *Approval
+	// Applicant は承認を頼む人。承認者に数えない（不変条件 21、E-L2）。
+	Applicant string
+	// Until・Reason・By は一時的な Policy（freeze・その場の report・手順の段の
+	// policy）。Until を過ぎれば消える（不変条件 22、E-J4・N-Q1・E-R2・N-R1）。
+	Until  time.Time
+	Reason string
+	By     string
 	Origin Origin
+}
+
+// Approval は承認の要件（§3.6・§3.7）。Policy と手順の gate で同じ型
+// （E-L2・N-L2・E-A5・E-J8）。
+type Approval struct {
+	// N は数える承認者の数。Of に入る、申請者でない、異なる人だけを数える
+	// （N-of-M、不変条件 21）。
+	N  int
+	Of []string
+	// Separation は申請者が分からない依頼を承認させない（申請者≠承認者を確かめ
+	// られないものを通さない、E-L2・N-L2）。
+	Separation bool
+	// Timeout を過ぎた依頼は期限切れ（E-L2・E-L6）。0 は期限なし。
+	Timeout time.Duration
 }
 
 // Selector は Policy の当たり先。書いた条件を全部満たすものに当たる（E-M2）。
 type Selector struct {
-	All    bool
-	Types  []string          // "<provider>/<種類>"
-	Labels map[string]string // 宣言の labels。宣言外は Range の labels（E-D4・N-I3）
+	All    bool              `json:"all,omitempty"`
+	Types  []string          `json:"types,omitempty"`  // "<provider>/<種類>"
+	Labels map[string]string `json:"labels,omitempty"` // 宣言の labels。宣言外は Range の labels（E-D4・N-I3）
+}
+
+// String は人が読む形（freeze の一覧・Event）。
+func (s Selector) String() string {
+	if s.All {
+		return "all"
+	}
+	var parts []string
+	for _, t := range s.Types {
+		parts = append(parts, "type="+t)
+	}
+	keys := make([]string, 0, len(s.Labels))
+	for k := range s.Labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		parts = append(parts, "labels."+k+"="+s.Labels[k])
+	}
+	return strings.Join(parts, ",")
 }
 
 // Matches は種類 typ・ラベル labels のものに当たるか。
