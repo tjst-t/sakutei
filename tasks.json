@@ -4975,7 +4975,7 @@
       "number": 215,
       "kind": "story",
       "title": "新しいコアへの作り直し（v3）",
-      "status": "backlog",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4990,9 +4990,14 @@
         "docs/core/README.md",
         "docs/review/core-usecase-review.md"
       ],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "842b31fe-c4b4-4859-a4f2-ebe5f6966616",
+          "threadId": "12fb8b5e-6b71-4ba1-b226-afd2fc57b2e3"
+        }
+      ],
       "createdAt": "2026-10-31T15:12:30.104Z",
-      "updatedAt": "2026-10-31T15:12:30.104Z",
+      "updatedAt": "2026-10-31T15:14:24.709Z",
       "closedAt": null,
       "extra": {}
     },
