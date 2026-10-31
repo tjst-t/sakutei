@@ -5193,7 +5193,12 @@
       "status": "ready",
       "parent": "v3",
       "dependsOn": [
-        "v3-8-provider"
+        "v3-8-provider",
+        "v3-8b-redfish-bmc-firmware-metrics-probe",
+        "v3-8c-netconf-cli-device-provider",
+        "v3-8d-proxmox-vm-fw-guest-os-provider",
+        "v3-8e-postgresql-sqlmigrate-ldap-provide",
+        "v3-8f-s3-object-lock-ansible-template-fi"
       ],
       "milestone": null,
       "priority": "normal",
@@ -5204,7 +5209,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T15:12:51.061Z",
+      "updatedAt": "2026-10-31T21:01:48.065Z",
       "closedAt": null,
       "extra": {}
     },
