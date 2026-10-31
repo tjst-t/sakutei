@@ -47,6 +47,7 @@ type Loaded struct {
 	Providers map[string]core.Provider
 	Resources []core.Resource
 	Ranges    []core.Range
+	Policies  []core.Policy
 	Warnings  []core.Diagnostic
 }
 
@@ -84,7 +85,7 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 	if len(rejects) > 0 {
 		return nil, &core.RejectError{Diagnostics: rejects}
 	}
-	return &Loaded{Config: cfg, Providers: providers, Resources: res, Ranges: out.Ranges, Warnings: warns}, nil
+	return &Loaded{Config: cfg, Providers: providers, Resources: res, Ranges: out.Ranges, Policies: out.Policies, Warnings: warns}, nil
 }
 
 func build(cfg *config.Config, modules map[string]Module) (map[string]core.Provider, []core.Diagnostic) {
@@ -145,7 +146,29 @@ func Validate(out expand.Output, providers map[string]core.Provider) ([]core.Res
 	}
 	diags = append(diags, checkCycles(res)...)
 	diags = append(diags, checkRanges(res, out.Ranges, providers)...)
+	diags = append(diags, checkPolicies(out.Policies, providers)...)
 	return res, diags
+}
+
+// checkPolicies は同じ名前の Policy と、知らない種類に当てる select を断る
+// （E-M3：当たらない Policy は書き誤り）。
+func checkPolicies(ps []core.Policy, providers map[string]core.Provider) []core.Diagnostic {
+	var diags []core.Diagnostic
+	seen := map[string]core.Origin{}
+	for _, p := range ps {
+		target := "policy " + p.Name
+		if first, dup := seen[p.Name]; dup {
+			diags = append(diags, reject(p.Origin, target, "同じ名前の Policy が 2 つある（先は %s）", first))
+		}
+		seen[p.Name] = p.Origin
+		for _, t := range p.Select.Types {
+			id := core.ID{Type: t}
+			if _, why := kindOf(id, providers); why != "" {
+				diags = append(diags, reject(p.Origin, target, "select の type %s: %s", t, why))
+			}
+		}
+	}
+	return diags
 }
 
 // kindOf は ID の provider と種類を引く。無ければ断る理由を返す

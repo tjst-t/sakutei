@@ -78,6 +78,7 @@ resources:
 }
 `)
 	// 段 2 から使う Record の形のファイルを置いておき、plan が触らないことを見る。
+	write(t, filepath.Join(e.record, "format"), "1\n")
 	write(t, filepath.Join(e.record, "marks.json"), `{"cycle": 1}`+"\n")
 	write(t, filepath.Join(e.record, "audit", "000001.jsonl"), `{"seq": 1}`+"\n")
 	return e
@@ -181,8 +182,9 @@ func TestPlanDoesNotCreateRecord(t *testing.T) {
 	}
 }
 
-// plan が provider に対して呼ぶのは Observe だけ（Apply・Delete・List を呼ばない）。
-func TestPlanCallsOnlyObserve(t *testing.T) {
+// plan が provider に対して呼ぶのは Observe と List だけ（Apply・Delete を呼ばない）。
+// どちらも provider ごと・範囲ごとに 1 回（E-D8）。
+func TestPlanCallsOnlyReaders(t *testing.T) {
 	e := setup(t)
 	var made []*fake.Provider
 	module := func(settings map[string]any) (core.Provider, error) {
@@ -198,7 +200,7 @@ func TestPlanCallsOnlyObserve(t *testing.T) {
 	if code != cli.ExitOK {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
-	if len(made) != 1 || made[0].Calls() != (fake.Calls{Observe: 1}) {
+	if len(made) != 1 || made[0].Calls() != (fake.Calls{Observe: 1, List: 1}) {
 		t.Fatalf("calls: %+v", made[0].Calls())
 	}
 }
@@ -220,10 +222,11 @@ func TestPlanJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if len(r.Changes) != 3 || r.Changes[0].Resource != "dns/record/api" || r.Changes[0].Origin != "dns.yaml:8" {
+	if len(r.Changes) != 4 || r.Changes[0].Resource != "dns/record/api" || r.Changes[0].Origin != "dns.yaml:8" {
 		t.Fatalf("%s", out)
 	}
-	if !reflect.DeepEqual(r.Summary, map[string]int{"create": 1, "update": 1, "delete": 1}) {
+	// 宣言外の stray は prune の候補だが、前の周の件数が無いので消さない（不変条件 7）。
+	if !reflect.DeepEqual(r.Summary, map[string]int{"create": 1, "update": 1, "delete": 1, "prune": 1}) {
 		t.Fatalf("summary: %v", r.Summary)
 	}
 }
@@ -266,5 +269,124 @@ func TestUsage(t *testing.T) {
 		if code, _, _ := runCLI(args...); code != cli.ExitError {
 			t.Errorf("%v: exit=%d", args, code)
 		}
+	}
+}
+
+// 一回実行（§2.2、E-O3・E-J14）：1 周目は作る・変える・消すを当て、宣言外は前の周の
+// 件数が無いので消さず（終了コード 3）、2 周目に消して収束する（0）。監査の鎖が
+// 続き、値は書かない。
+func TestReconcileOnce(t *testing.T) {
+	e := setup(t)
+	if err := os.RemoveAll(e.record); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("reconcile", "--intent", e.intent, "--config", e.config, "--record", e.record)
+	if code != cli.ExitRemaining {
+		t.Fatalf("1 周目 exit=%d stderr=%s\n%s", code, errOut, out)
+	}
+	for _, want := range []string{"reconcile: 作る 1・変える 1・消す 1・宣言外を消す 1", "- dns/record/stray", "消さない: 前の周の List の件数が無い"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("出力に %q が無い:\n%s", want, out)
+		}
+	}
+	code, out, errOut = runCLI("reconcile", "--intent", e.intent, "--config", e.config, "--record", e.record, "--json")
+	if code != cli.ExitOK {
+		t.Fatalf("2 周目 exit=%d stderr=%s\n%s", code, errOut, out)
+	}
+	var r struct {
+		Changes []struct {
+			Resource string `json:"resource"`
+			Op       string `json:"op"`
+			Outcome  string `json:"outcome"`
+			After    string `json:"after"`
+		} `json:"changes"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(r.Changes) != 4 || r.Changes[2].Resource != "dns/record/stray" || r.Changes[2].Outcome != "ok" || r.Changes[2].After != "none" {
+		t.Fatalf("%s", out)
+	}
+	code, out, _ = runCLI("reconcile", "--intent", e.intent, "--config", e.config, "--record", e.record)
+	if code != cli.ExitOK || !strings.HasPrefix(out, "reconcile: そのまま 3\n") {
+		t.Fatalf("3 周目 exit=%d\n%s", code, out)
+	}
+
+	code, out, errOut = runCLI("audit", "verify", "--record", e.record)
+	if code != cli.ExitOK || out != "監査の鎖: 4 行、切れ目なし\n" {
+		t.Fatalf("audit verify exit=%d %s %s", code, out, errOut)
+	}
+	data, err := os.ReadFile(filepath.Join(e.record, "audit", "000001.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "192.0.2.") {
+		t.Fatalf("監査に値を書いた:\n%s", data)
+	}
+	for _, kind := range []string{`"kind":"resource.apply"`, `"kind":"resource.delete"`, `"kind":"resource.prune"`} {
+		if !strings.Contains(string(data), kind) {
+			t.Errorf("監査に %s が無い:\n%s", kind, data)
+		}
+	}
+	// 書き換えれば audit verify が見つける（終了コード 1）。
+	if err := os.WriteFile(filepath.Join(e.record, "audit", "000001.jsonl"), []byte(strings.Replace(string(data), `"result":"ok"`, `"result":"error"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errOut := runCLI("audit", "verify", "--record", e.record); code != cli.ExitError || !strings.Contains(errOut, "書き換えられた") {
+		t.Fatalf("exit=%d %s", code, errOut)
+	}
+}
+
+// 予算を超えたら何も当てずに止まる（終了コード 4、E-J1・E-J14）。
+func TestReconcileBudgetHalt(t *testing.T) {
+	e := setup(t)
+	write(t, filepath.Join(e.intent, "policy.yaml"), `policies:
+  - name: default
+    select: {all: true}
+    budget: {per_cycle: 2}
+`)
+	before, _ := os.ReadFile(e.state)
+	code, out, errOut := runCLI("reconcile", "--intent", e.intent, "--config", e.config, "--record", e.record)
+	if code != cli.ExitHalted {
+		t.Fatalf("exit=%d stderr=%s\n%s", code, errOut, out)
+	}
+	if !strings.Contains(out, "止めた: policy default: 予算: 変更 3 が per_cycle 2 を超える") {
+		t.Fatalf("%s", out)
+	}
+	if after, _ := os.ReadFile(e.state); string(before) != string(after) {
+		t.Fatal("止めた周に provider に書いた")
+	}
+}
+
+// mode: report の Policy に当たるものは当てない（終了コード 3、E-I3）。
+func TestReconcileReport(t *testing.T) {
+	e := setup(t)
+	write(t, filepath.Join(e.intent, "policy.yaml"), "policies:\n  - {name: watch, select: {all: true}, mode: report}\n")
+	before, _ := os.ReadFile(e.state)
+	code, out, _ := runCLI("reconcile", "--intent", e.intent, "--config", e.config, "--record", e.record)
+	if code != cli.ExitRemaining || !strings.Contains(out, "知らせるだけ: policy watch は report") {
+		t.Fatalf("exit=%d\n%s", code, out)
+	}
+	if after, _ := os.ReadFile(e.state); string(before) != string(after) {
+		t.Fatal("report なのに provider に書いた")
+	}
+}
+
+func TestReconcileUsage(t *testing.T) {
+	e := setup(t)
+	cases := [][]string{
+		{"reconcile", "--intent", e.intent, "--config", e.config},
+		{"reconcile", "--intent", e.intent, "--config", e.config, "--record", e.record, "--once=false"},
+		{"audit"},
+		{"audit", "verify"},
+	}
+	for _, args := range cases {
+		if code, _, _ := runCLI(args...); code != cli.ExitError {
+			t.Errorf("%v: exit=%d", args, code)
+		}
+	}
+	write(t, filepath.Join(e.intent, "dup.yaml"), "resources:\n  - {type: dns/record, id: www}\n")
+	if code, _, _ := runCLI("reconcile", "--intent", e.intent, "--config", e.config, "--record", e.record); code != cli.ExitRejected {
+		t.Errorf("exit=%d", code)
 	}
 }

@@ -43,15 +43,27 @@ type Calls struct {
 	List    int
 }
 
+// Write は Apply・Delete の 1 回（呼ばれた順）。
+type Write struct {
+	Op string // "apply" か "delete"
+	ID core.ID
+}
+
 // Provider は偽の provider。
 type Provider struct {
-	mu         sync.Mutex
-	schema     core.Schema
-	state      map[core.ID]core.Observation
-	omit       map[core.ID]bool
-	observeErr error
-	stateFile  string
-	calls      Calls
+	mu           sync.Mutex
+	schema       core.Schema
+	state        map[core.ID]core.Observation
+	omit         map[core.ID]bool
+	observeErr   error
+	listErr      error
+	listPartial  bool
+	listHide     map[core.ID]bool
+	applyErr     map[core.ID]error
+	deleteRefuse map[core.ID]string
+	stateFile    string
+	calls        Calls
+	writes       []Write
 }
 
 var (
@@ -61,7 +73,55 @@ var (
 
 // New は schema の偽の provider を作る。置いていない ID の観測は Absent。
 func New(schema core.Schema) *Provider {
-	return &Provider{schema: schema, state: map[core.ID]core.Observation{}, omit: map[core.ID]bool{}}
+	return &Provider{schema: schema, state: map[core.ID]core.Observation{}, omit: map[core.ID]bool{},
+		listHide: map[core.ID]bool{}, applyErr: map[core.ID]error{}, deleteRefuse: map[core.ID]string{}}
+}
+
+// SetListError は List を err で失敗させる（nil で戻す）。
+func (p *Provider) SetListError(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.listErr = err
+}
+
+// SetListIncomplete は List の答えを Complete: false にする（ページの打ち切り・
+// 権限不足、E-K2・E-F3）。
+func (p *Provider) SetListIncomplete(partial bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.listPartial = partial
+}
+
+// HideFromList は id を List の答えから外す（List の欠けの注入。Observe には出る）。
+func (p *Provider) HideFromList(id core.ID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.listHide[id] = true
+}
+
+// FailApply は id の Apply を err で失敗させる（nil で戻す）。
+func (p *Provider) FailApply(id core.ID, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err == nil {
+		delete(p.applyErr, id)
+		return
+	}
+	p.applyErr[id] = err
+}
+
+// RefuseDelete は id の Delete を理由 reason で断る（*core.RefuseError、E-F1）。
+func (p *Provider) RefuseDelete(id core.ID, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.deleteRefuse[id] = reason
+}
+
+// Writes は Apply・Delete が呼ばれた順の記録（失敗・断りも含む）。
+func (p *Provider) Writes() []Write {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Write(nil), p.writes...)
 }
 
 // Set は id の観測の答えを置く。
@@ -126,6 +186,10 @@ func (p *Provider) Apply(_ context.Context, _ core.WriteContext, id core.ID, des
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls.Apply++
+	p.writes = append(p.writes, Write{Op: "apply", ID: id})
+	if err := p.applyErr[id]; err != nil {
+		return err
+	}
 	if err := p.readState(); err != nil {
 		return err
 	}
@@ -148,6 +212,10 @@ func (p *Provider) Delete(_ context.Context, _ core.WriteContext, id core.ID, _ 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls.Delete++
+	p.writes = append(p.writes, Write{Op: "delete", ID: id})
+	if reason, ok := p.deleteRefuse[id]; ok {
+		return &core.RefuseError{Reason: reason}
+	}
 	if err := p.readState(); err != nil {
 		return err
 	}
@@ -160,17 +228,20 @@ func (p *Provider) List(_ context.Context, r core.Range) (core.Listing, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls.List++
+	if p.listErr != nil {
+		return core.Listing{}, p.listErr
+	}
 	if err := p.readState(); err != nil {
 		return core.Listing{}, err
 	}
 	var ids []core.ID
 	for id, obs := range p.state {
-		if obs.Availability == core.Present && strings.HasPrefix(id.Name, r.Args["prefix"]) {
+		if obs.Availability == core.Present && !p.listHide[id] && strings.HasPrefix(id.Name, r.Args["prefix"]) {
 			ids = append(ids, id)
 		}
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
-	return core.Listing{IDs: ids, Complete: true}, nil
+	return core.Listing{IDs: ids, Complete: !p.listPartial}, nil
 }
 
 // Validate は範囲の引数・範囲の重なり・範囲の外の宣言を断る（E-I6・E-K8・N-K7）。

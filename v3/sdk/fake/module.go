@@ -30,6 +30,7 @@ import (
 //	  kinds:
 //	    record:
 //	      observe_only: false
+//	      destructive_delete: false  # 中身を失う種類（宣言外でも消さない）
 //	      fields:
 //	        value: string
 //	        zone: {type: string, identity: true}
@@ -89,6 +90,12 @@ func kindSchema(kind string, v any) (core.KindSchema, error) {
 				return ks, fmt.Errorf("settings.kinds.%s.observe_only に true か false を書く", kind)
 			}
 			ks.ObserveOnly = b
+		case "destructive_delete":
+			b, ok := m[k].(bool)
+			if !ok {
+				return ks, fmt.Errorf("settings.kinds.%s.destructive_delete に true か false を書く", kind)
+			}
+			ks.DestructiveDelete = b
 		case "fields":
 			fields, ok := m[k].(map[string]any)
 			if !ok {
@@ -102,7 +109,7 @@ func kindSchema(kind string, v any) (core.KindSchema, error) {
 				ks.Fields[name] = spec
 			}
 		default:
-			return ks, fmt.Errorf("settings.kinds.%s に知らない項目 %q（書ける項目: observe_only, fields）", kind, k)
+			return ks, fmt.Errorf("settings.kinds.%s に知らない項目 %q（書ける項目: observe_only, destructive_delete, fields）", kind, k)
 		}
 	}
 	return ks, nil

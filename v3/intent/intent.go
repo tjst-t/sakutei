@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/internal/yaml"
@@ -99,18 +100,19 @@ func LoadDir(dir string) ([]Document, error) {
 	return docs, nil
 }
 
-// Decoded は intent から読んだ Resource と Range。
+// Decoded は intent から読んだ Resource・Range・Policy。
 type Decoded struct {
 	Resources []core.Resource
 	Ranges    []core.Range
+	Policies  []core.Policy
 }
 
-// Decode は 1 つの Document の resources: と ranges: を読む。形の誤り・知らない
+// Decode は 1 つの Document の resources:・ranges:・policies: を読む。形の誤り・知らない
 // 項目は診断（Reject）にして返す。
 func Decode(doc Document) (Decoded, []core.Diagnostic) {
 	d := &decoder{file: doc.Path}
 	var out Decoded
-	top := d.object(doc.Root, "", "resources", "ranges")
+	top := d.object(doc.Root, "", "resources", "ranges", "policies")
 	if top == nil {
 		return out, d.diags
 	}
@@ -125,6 +127,13 @@ func Decode(doc Document) (Decoded, []core.Diagnostic) {
 		for i, item := range d.list(n, "ranges") {
 			if r, ok := d.rangeOf(item, fmt.Sprintf("ranges[%d]", i)); ok {
 				out.Ranges = append(out.Ranges, r)
+			}
+		}
+	}
+	if n := top["policies"]; n != nil {
+		for i, item := range d.list(n, "policies") {
+			if p, ok := d.policy(item, fmt.Sprintf("policies[%d]", i)); ok {
+				out.Policies = append(out.Policies, p)
 			}
 		}
 	}
@@ -365,6 +374,132 @@ func (d *decoder) rangeOf(n *yaml.Node, path string) (core.Range, bool) {
 		}
 	}
 	return r, len(d.diags) == before
+}
+
+// policy は Policy を読む（§3.6）。段 2 は select・mode・budget だけ。
+func (d *decoder) policy(n *yaml.Node, path string) (core.Policy, bool) {
+	obj := d.object(n, path, "name", "select", "mode", "budget")
+	if obj == nil {
+		return core.Policy{}, false
+	}
+	before := len(d.diags)
+	p := core.Policy{Origin: core.Origin{File: d.file, Line: n.Line}}
+	if obj["name"] == nil {
+		d.reject(n, path, "name を書く")
+	} else if s, ok := d.str(obj["name"], path+".name"); ok {
+		if s == "" {
+			d.reject(obj["name"], path+".name", "空でない名前を書く")
+		}
+		p.Name = s
+		path = "policy " + s
+	}
+	if v := obj["select"]; v == nil {
+		d.reject(n, path, "select を書く（全部に当てるなら {all: true}）")
+	} else {
+		p.Select = d.selector(v, path+".select")
+	}
+	if v := obj["mode"]; v != nil {
+		switch s, _ := d.str(v, path+".mode"); s {
+		case "apply":
+		case "report":
+			p.Mode = core.ModeReport
+		default:
+			d.reject(v, path+".mode", "mode は apply か report（%q が書かれている）", s)
+		}
+	}
+	if v := obj["budget"]; v != nil {
+		p.Budget = d.budget(v, path+".budget")
+	}
+	return p, len(d.diags) == before
+}
+
+// selector は select を読む。何にも当たらない select は断る（E-M2）。
+func (d *decoder) selector(n *yaml.Node, path string) core.Selector {
+	var s core.Selector
+	obj := d.object(n, path, "all", "type", "types", "labels")
+	if obj == nil {
+		return s
+	}
+	if v := obj["all"]; v != nil {
+		if b, ok := d.boolean(v, path+".all"); ok {
+			if !b {
+				d.reject(v, path+".all", "all は true だけを書く（絞るなら type・labels）")
+			}
+			s.All = b
+		}
+	}
+	addType := func(v *yaml.Node, p string) {
+		t, ok := d.str(v, p)
+		if !ok {
+			return
+		}
+		if err := core.ParseType(t); err != nil {
+			d.reject(v, p, "%v", err)
+			return
+		}
+		s.Types = append(s.Types, t)
+	}
+	if v := obj["type"]; v != nil {
+		addType(v, path+".type")
+	}
+	if v := obj["types"]; v != nil {
+		for i, t := range d.list(v, path+".types") {
+			addType(t, fmt.Sprintf("%s.types[%d]", path, i))
+		}
+	}
+	if v := obj["labels"]; v != nil {
+		s.Labels, _ = d.stringMap(v, path+".labels")
+	}
+	switch {
+	case s.All && (len(s.Types) > 0 || len(s.Labels) > 0):
+		d.reject(n, path, "all: true と type・labels は一緒に書けない")
+	case !s.All && len(s.Types) == 0 && len(s.Labels) == 0 && obj["all"] == nil:
+		d.reject(n, path, "当たり先を書く（all・type・types・labels）")
+	}
+	return s
+}
+
+// budget は予算を読む（E-J1）。書かない上限は core.Unlimited。
+func (d *decoder) budget(n *yaml.Node, path string) *core.Budget {
+	obj := d.object(n, path, "per_cycle", "destructive_per_cycle", "destructive_per_window", "window")
+	if obj == nil {
+		return nil
+	}
+	b := &core.Budget{PerCycle: core.Unlimited, DestructivePerCycle: core.Unlimited, DestructivePerWindow: core.Unlimited}
+	count := func(key string, dst *int) {
+		v := obj[key]
+		if v == nil {
+			return
+		}
+		i, ok := v.Scalar.(int)
+		if v.Kind != yaml.Scalar || !ok || i < 0 {
+			d.reject(v, path+"."+key, "0 以上の整数を書く")
+			return
+		}
+		*dst = i
+	}
+	count("per_cycle", &b.PerCycle)
+	count("destructive_per_cycle", &b.DestructivePerCycle)
+	count("destructive_per_window", &b.DestructivePerWindow)
+	if v := obj["window"]; v != nil {
+		if s, ok := d.str(v, path+".window"); ok {
+			w, err := time.ParseDuration(s)
+			if err != nil || w <= 0 {
+				d.reject(v, path+".window", "正の長さを書く（例 24h）")
+			}
+			b.Window = w
+		}
+	}
+	// 窓と累積の上限は対で書く（片方だけでは数えられない）。
+	switch {
+	case obj["destructive_per_window"] != nil && obj["window"] == nil:
+		d.reject(n, path, "destructive_per_window には window を書く")
+	case obj["window"] != nil && obj["destructive_per_window"] == nil:
+		d.reject(n, path, "window は destructive_per_window と一緒に書く")
+	case len(obj) == 0:
+		d.reject(n, path, "上限を 1 つ以上書く")
+	}
+	return b
 }
 
 // percent は "50%" か 50 を 0〜100 の整数にする。

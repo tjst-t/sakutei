@@ -23,7 +23,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 )
 
 // ID は Resource の識別子。Type は "<provider のインスタンス名>/<種類>"、Name は
@@ -134,6 +136,21 @@ type Range struct {
 	Origin         Origin
 }
 
+// Key は範囲の名前（"<provider>:<引数=値,…>"）。Record の目印の範囲ごとの件数の
+// 鍵にする（E-K2）。
+func (r Range) Key() string {
+	keys := make([]string, 0, len(r.Args))
+	for k := range r.Args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + r.Args[k]
+	}
+	return r.Provider + ":" + strings.Join(parts, ",")
+}
+
 // DefaultMaxDrop は max_drop を書かないときの値（E-K2）。
 const DefaultMaxDrop = 50
 
@@ -194,6 +211,9 @@ type FieldSpec struct {
 type KindSchema struct {
 	Fields      map[string]FieldSpec
 	ObserveOnly bool // 観測だけ。Apply・Delete を呼ばない（E-B7・E-E4・N-B5・N-B6・N-A7）
+	// DestructiveDelete は中身を失う種類（volume・DB・バケット）。宣言の外でも
+	// prune で消さない（不変条件 9、E-C3・N-C2）。
+	DestructiveDelete bool
 }
 
 // Schema は provider の種類と項目。Version は比べ方・正規形が変われば上げる
@@ -283,13 +303,45 @@ type Observer interface {
 	Observe(ctx context.Context, ids []ID) (map[ID]Observation, error)
 }
 
+// Lister は範囲の中の ID を列挙する口。prune の根拠は List の ID だけ
+// （不変条件 8、E-K2・E-F3）。
+type Lister interface {
+	List(ctx context.Context, r Range) (Listing, error)
+}
+
+// Reader は観測と列挙だけの口。plan と 1 周の判定はこれだけを受け取り、現実を
+// 変える関数を型として持たない（不変条件 2・30）。
+type Reader interface {
+	Observer
+	Lister
+}
+
 // Provider は 1 つの種類の装置とのやりとり（§3.3）。
 type Provider interface {
-	Observer
+	Reader
 	Apply(ctx context.Context, w WriteContext, id ID, desired Fields, current Observation) error // E-B12・E-D1
-	Delete(ctx context.Context, w WriteContext, id ID, current Observation) error                // E-F1・E-G1・E-C2
-	List(ctx context.Context, r Range) (Listing, error)                                          // E-K2・E-F3
+	// Delete は断るとき *RefuseError を返す（E-F1・E-G1・E-C2）。
+	Delete(ctx context.Context, w WriteContext, id ID, current Observation) error
 }
+
+// RefuseError は provider が Delete を断った理由（中身がある・子がある・keep の
+// 印がある）。コアは消さずに報告を続け、予算に数えない（不変条件 10、E-F1・E-C2）。
+type RefuseError struct {
+	Reason string
+}
+
+func (e *RefuseError) Error() string { return "削除を断った: " + e.Reason }
+
+// Clock は今の時刻。テストで差し替える（E-R4）。
+type Clock interface {
+	Now() time.Time
+}
+
+// SystemClock は計算機の時計。
+type SystemClock struct{}
+
+// Now は time.Now。
+func (SystemClock) Now() time.Time { return time.Now() }
 
 // Severity は診断の重さ（§3.8）。
 type Severity int

@@ -33,6 +33,7 @@ type Input struct {
 type Output struct {
 	Resources   []core.Resource
 	Ranges      []core.Range
+	Policies    []core.Policy
 	Diagnostics []core.Diagnostic
 }
 
@@ -43,7 +44,7 @@ type Expander interface {
 	Expand(ctx context.Context, in Input) (Output, error)
 }
 
-// Passthrough は intent に書いた resources: と ranges: をそのまま返す。
+// Passthrough は intent に書いた resources:・ranges:・policies: をそのまま返す。
 type Passthrough struct{}
 
 // Expand は文書の順に読み、診断も文書の順に返す。
@@ -53,6 +54,7 @@ func (Passthrough) Expand(_ context.Context, in Input) (Output, error) {
 		d, diags := intent.Decode(doc)
 		out.Resources = append(out.Resources, d.Resources...)
 		out.Ranges = append(out.Ranges, d.Ranges...)
+		out.Policies = append(out.Policies, d.Policies...)
 		out.Diagnostics = append(out.Diagnostics, diags...)
 	}
 	return out, nil
