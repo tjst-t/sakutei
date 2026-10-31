@@ -1,0 +1,350 @@
+// Copyright 2026 tjst-t
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package core は新しいコアの正準型（Resource・Range・Schema・Observation と
+// Provider のインターフェース）を持つ（設計 docs/core/README.md §3.1〜§3.3）。
+//
+// 項目に付けた E-…・N-… は docs/review/core-usecase-review.md のユースケース ID。
+// ID を付けられない項目は入れない。
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// ID は Resource の識別子。Type は "<provider のインスタンス名>/<種類>"、Name は
+// その種類の中の名前。intent 全体で一意（E-M3・N-M3）。
+type ID struct {
+	Type string
+	Name string
+}
+
+// String は "<provider>/<kind>/<name>" を返す。
+func (id ID) String() string { return id.Type + "/" + id.Name }
+
+// Provider は Type の provider のインスタンス名を返す。
+func (id ID) Provider() string {
+	p, _, _ := strings.Cut(id.Type, "/")
+	return p
+}
+
+// Kind は Type の種類を返す。
+func (id ID) Kind() string {
+	_, k, _ := strings.Cut(id.Type, "/")
+	return k
+}
+
+// Local は provider の中での ID（"<kind>/<name>"）。Range の除外が突き合わせる（E-D2）。
+func (id ID) Local() string { return id.Kind() + "/" + id.Name }
+
+// ParseType は "<provider>/<kind>" を確かめる。種類に "/" は含めない。
+func ParseType(s string) error {
+	p, k, ok := strings.Cut(s, "/")
+	if !ok || p == "" || k == "" || strings.Contains(k, "/") {
+		return fmt.Errorf("type %q は <provider>/<種類> の形でない", s)
+	}
+	return nil
+}
+
+// ParseRef は "<provider>/<kind>/<name>" を ID にする（depends_on の参照、E-J7）。
+func ParseRef(s string) (ID, error) {
+	parts := strings.SplitN(s, "/", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return ID{}, fmt.Errorf("参照 %q は <provider>/<種類>/<名前> の形でない", s)
+	}
+	return ID{Type: parts[0] + "/" + parts[1], Name: parts[2]}, nil
+}
+
+// Fields は宣言した項目だけを持つ（E-D7・E-B7）。観測の Fields は正規形。
+type Fields map[string]any
+
+// Ensure は在るべきか無いべきか。
+type Ensure int
+
+const (
+	// EnsurePresent は在るべき（既定）。
+	EnsurePresent Ensure = iota
+	// EnsureAbsent は名指しで消す（E-D3・N-A9）。
+	EnsureAbsent
+)
+
+func (e Ensure) String() string {
+	if e == EnsureAbsent {
+		return "absent"
+	}
+	return "present"
+}
+
+// Origin は宣言のファイルと行（E-M3：断るときにどこかを示す）。
+type Origin struct {
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
+}
+
+func (o Origin) String() string {
+	if o.File == "" {
+		return ""
+	}
+	if o.Line == 0 {
+		return o.File
+	}
+	return fmt.Sprintf("%s:%d", o.File, o.Line)
+}
+
+// Dependency は順序の依存（E-J7・E-B13・E-I5）。待ちの条件（when・on_unknown）は
+// Condition の段（§8 の段 4）で足す。
+type Dependency struct {
+	On ID
+}
+
+// Resource は宣言 1 件（§3.1）。
+type Resource struct {
+	ID        ID
+	Ensure    Ensure            // E-D3・N-A9
+	Fields    Fields            // E-D7・E-B7・N-I2・E-B14・E-A10
+	Labels    map[string]string // E-M1・E-M2・N-M5
+	DependsOn []Dependency      // E-J7・E-B13・E-I5
+	Reason    string            // N-J7・N-L8
+	Origin    Origin            // E-M3
+}
+
+// Range は「この provider のこの集合はこちらが管理する」境界（§3.2）。
+// 範囲は intent にだけ書く（E-I6・不変条件 24）。
+type Range struct {
+	Provider       string            // E-B2・E-I6・E-G1・E-B4
+	Args           map[string]string // List の引数（E-B2・E-I6・E-G1・E-B4）
+	Labels         map[string]string // E-D4・N-I3
+	Prune          bool              // 既定は消さない（E-C3・N-C2・N-F3・N-T1）
+	MaxDrop        int               // 百分率。既定 50（E-K2・N-K2）
+	ExternalOwners []Exclusion       // E-D2・E-I5・E-T2・N-T2・E-O1・N-O3
+	Origin         Origin
+}
+
+// DefaultMaxDrop は max_drop を書かないときの値（E-K2）。
+const DefaultMaxDrop = 50
+
+// Exclusion は外の持ち主のもの（触らない）。ID か IDPrefix のどちらか 1 つで、
+// provider の中での ID（"<kind>/<name>"）と突き合わせる（E-D2・E-T2）。
+type Exclusion struct {
+	Owner    string
+	ID       string
+	IDPrefix string
+	Reason   string
+}
+
+// Matches は provider の中での ID がこの除外に当たるか。
+func (e Exclusion) Matches(id ID) bool {
+	if e.ID != "" {
+		return id.Local() == e.ID
+	}
+	return e.IDPrefix != "" && strings.HasPrefix(id.Local(), e.IDPrefix)
+}
+
+// FieldType は項目の型（E-B12：順序のある List は全置換、Set は順不同で比べる）。
+type FieldType int
+
+const (
+	String FieldType = iota
+	Int
+	Bool
+	Duration
+	List
+	Set
+	Map
+)
+
+var fieldTypeNames = map[FieldType]string{
+	String: "string", Int: "int", Bool: "bool", Duration: "duration",
+	List: "list", Set: "set", Map: "map",
+}
+
+func (t FieldType) String() string { return fieldTypeNames[t] }
+
+// ParseFieldType は型の名前を FieldType にする。
+func ParseFieldType(s string) (FieldType, bool) {
+	for t, n := range fieldTypeNames {
+		if n == s {
+			return t, true
+		}
+	}
+	return 0, false
+}
+
+// FieldSpec は項目の型と、変われば作り直しになるか（E-A10・N-A8）。
+type FieldSpec struct {
+	Type     FieldType
+	Identity bool
+}
+
+// KindSchema は種類ごとの項目。
+type KindSchema struct {
+	Fields      map[string]FieldSpec
+	ObserveOnly bool // 観測だけ。Apply・Delete を呼ばない（E-B7・E-E4・N-B5・N-B6・N-A7）
+}
+
+// Schema は provider の種類と項目。Version は比べ方・正規形が変われば上げる
+// （E-J12・N-S1・N-P3）。
+type Schema struct {
+	Version string
+	Kinds   map[string]KindSchema
+}
+
+// Availability は観測の 4 値（E-K1・N-K1・E-A4）。
+type Availability int
+
+const (
+	// Unknown は分からない。届かない・読めない・覗けない・定義に合わない出力
+	// （E-K1・N-K1・E-A12・E-E6・E-B11）。Absent ではない。ゼロ値を Unknown に
+	// して、埋め忘れた観測を「無い」と読まない。
+	Unknown Availability = iota
+	// Present は在る。
+	Present
+	// Absent は確かに無い。
+	Absent
+	// Converging は相手が作業中（E-A4・E-D1・E-B14・E-A1）。
+	Converging
+)
+
+var availabilityNames = map[Availability]string{
+	Unknown: "unknown", Present: "present", Absent: "absent", Converging: "converging",
+}
+
+func (a Availability) String() string { return availabilityNames[a] }
+
+// ParseAvailability は名前を Availability にする。
+func ParseAvailability(s string) (Availability, bool) {
+	for a, n := range availabilityNames {
+		if n == s {
+			return a, true
+		}
+	}
+	return Unknown, false
+}
+
+// MarshalJSON は名前で書く。
+func (a Availability) MarshalJSON() ([]byte, error) { return json.Marshal(a.String()) }
+
+// UnmarshalJSON は名前を読む。
+func (a *Availability) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	v, ok := ParseAvailability(s)
+	if !ok {
+		return fmt.Errorf("availability %q を知らない", s)
+	}
+	*a = v
+	return nil
+}
+
+// Observation は観測の答え（§3.3）。Fields は Present のときだけ。Note は
+// Unknown・Converging の理由。
+type Observation struct {
+	Availability Availability `json:"availability"`
+	Fields       Fields       `json:"fields,omitempty"`
+	Note         string       `json:"note,omitempty"`
+}
+
+// Listing は List の結果。Complete でなければその範囲を消さない（E-K2・E-F3）。
+type Listing struct {
+	IDs      []ID
+	Complete bool
+}
+
+// WriteContext は Apply・Delete のときだけコアが渡す。provider は書き込み用の
+// 資格をこの中でだけ取り出す（E-G5・N-G3）。コアの外では作れない。
+type WriteContext struct {
+	_ writeToken
+}
+
+type writeToken struct{}
+
+// Observer は観測だけの口。比べる処理（plan）はこれだけを受け取り、現実を
+// 変える関数を型として持たない（不変条件 2・30、E-J9）。
+type Observer interface {
+	Schema() Schema
+	// Observe は ID の一覧をまとめて観測する（E-D8・N-D11・N-N1）。返さなかった
+	// ID は Unknown として扱う。
+	Observe(ctx context.Context, ids []ID) (map[ID]Observation, error)
+}
+
+// Provider は 1 つの種類の装置とのやりとり（§3.3）。
+type Provider interface {
+	Observer
+	Apply(ctx context.Context, w WriteContext, id ID, desired Fields, current Observation) error // E-B12・E-D1
+	Delete(ctx context.Context, w WriteContext, id ID, current Observation) error                // E-F1・E-G1・E-C2
+	List(ctx context.Context, r Range) (Listing, error)                                          // E-K2・E-F3
+}
+
+// Severity は診断の重さ（§3.8）。
+type Severity int
+
+const (
+	// Reject は読み込みで断る（E-B5・E-A7・N-B7・E-M3）。
+	Reject Severity = iota
+	// Warn は知らせるだけ（E-B5）。
+	Warn
+)
+
+func (s Severity) String() string {
+	if s == Warn {
+		return "warn"
+	}
+	return "reject"
+}
+
+// Diagnostic は読み込み・Expand・provider の検証の診断。
+type Diagnostic struct {
+	Severity Severity
+	Origin   Origin
+	Target   string // Resource の ID・Range など。無ければ空
+	Message  string
+}
+
+func (d Diagnostic) String() string {
+	var b strings.Builder
+	if o := d.Origin.String(); o != "" {
+		b.WriteString(o)
+		b.WriteString(": ")
+	}
+	if d.Target != "" {
+		b.WriteString(d.Target)
+		b.WriteString(": ")
+	}
+	b.WriteString(d.Message)
+	return b.String()
+}
+
+// Validator は読み込みのときに provider 固有の誤り（範囲の外の宣言・範囲の
+// 重なりなど）を断る任意の口（E-I7・E-A4・E-B3・E-I6・E-K8）。
+type Validator interface {
+	Validate(res []Resource, ranges []Range) []Diagnostic
+}
+
+// RejectError は読み込みで断った診断の一覧（終了コード 2）。
+type RejectError struct {
+	Diagnostics []Diagnostic
+}
+
+func (e *RejectError) Error() string {
+	lines := make([]string, len(e.Diagnostics))
+	for i, d := range e.Diagnostics {
+		lines[i] = d.String()
+	}
+	return strings.Join(lines, "\n")
+}

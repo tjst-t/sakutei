@@ -3,8 +3,13 @@
 BIN     := sakutei
 DEMODIR := .demo
 
+# 新しいコア（v3/、別の Go モジュール。設計は docs/core/README.md）も
+# build・vet・test・test-race で一緒に回す。
+V3 := cd v3 &&
+
 build:
 	go build -o $(BIN) ./cmd/sakutei
+	$(V3) go build -p $(TEST_P) ./...
 
 # 同時に回すパッケージの数（go test -p）。既定（CPU の数）だと CPU の多いホストで
 # テストのバイナリとそのスレッドが一度に千を超え、ほかのジョブと task の上限
@@ -14,14 +19,17 @@ TEST_P ?= 8
 
 test:
 	go test -p $(TEST_P) ./...
+	$(V3) go test -p $(TEST_P) ./...
 
 # race detector 付きのテスト。cgo が要るので gcc（C コンパイラ）が必要。
 # -count=1 で結果のキャッシュを使わず、毎回実際に回す。
 test-race:
 	CGO_ENABLED=1 go test -race -p $(TEST_P) -count=1 ./...
+	$(V3) CGO_ENABLED=1 go test -race -p $(TEST_P) -count=1 ./...
 
 vet:
 	go vet ./...
+	$(V3) go vet -p $(TEST_P) ./...
 
 check: build vet test
 
