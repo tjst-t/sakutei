@@ -5006,14 +5006,16 @@
       "dependsOn": [],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
-      "body": "設計書 docs/core/README.md §8 の段1。Resource・Range・Schema・Observation の型、intent とつなぎ方の設定ファイルの読み込みと検証、何もしない Expand、偽の provider、plan コマンドを作る。",
-      "doneWhen": "読み込みで断る規則（不変条件 24・25）のテストが通る。plan が観測と比べるだけで何も書かないことをテストで確かめる。make check と make test-race が通る。",
+      "labels": [
+        "core-v3"
+      ],
+      "body": "設計書 docs/core/README.md §8 の段1。新しいコアを作り始める。\n\n置き場所：リポジトリの main の中の別フォルダ v3/ に、別の Go モジュール（module github.com/tjst-t/sakutei/v3、標準ライブラリだけ）として作る。ルートの v2 のコードは変えない（あとで消す）。\n\n作るもの：\n- Resource・Range・Schema・Observation（ある・無い・分からない・作業中の4値）の型\n- intent とつなぎ方の設定ファイルの読み込みと検証（設計書の不変条件 24・25 の規則で断る）\n- 何もしない Expand（素通し）\n- 偽の provider（テスト用。観測の答えを自由に決められる）\n- plan コマンド（v3/cmd/sakutei）：観測して宣言と比べ、何が変わるかを出すだけで、何も書かない\n\n入れる項目には、設計書と同じく docs/review/core-usecase-review.md のユースケース ID をコメントで付ける。ID を付けられない項目は入れない。\n\nテストの仕組み：ルートの Makefile の check と test-race が v3/ も流すようにする（例：cd v3 && go build/vet/test）。.claude/verify.json にも v3 の build・vet・test を足す。go の並列は -p 8 に抑える（作業場所のスレッドの上限のため）。",
+      "doneWhen": "v3/ で、読み込みで断る規則（不変条件 24・25）のテストと、plan が観測と比べるだけで何も書かない（Record も provider も変えない）ことのテストが通る。ルートの GOFLAGS=-p=8 make check と make test-race が v3/ を含めて通る。",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T15:12:51.061Z",
+      "updatedAt": "2026-10-31T15:14:16.790Z",
       "closedAt": null,
       "extra": {}
     },
