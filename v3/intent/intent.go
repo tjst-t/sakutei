@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjst-t/sakutei/v3/condition"
 	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/internal/yaml"
 )
@@ -313,31 +314,62 @@ func (d *decoder) resource(n *yaml.Node, path string) (core.Resource, bool) {
 	}
 	if v := obj["depends_on"]; v != nil {
 		for i, dn := range d.list(v, target+".depends_on") {
-			dp := fmt.Sprintf("%s.depends_on[%d]", target, i)
-			dobj := d.object(dn, dp, "id")
-			if dobj == nil {
-				continue
+			if dep, ok := d.dependency(dn, fmt.Sprintf("%s.depends_on[%d]", target, i)); ok {
+				r.DependsOn = append(r.DependsOn, dep)
 			}
-			if dobj["id"] == nil {
-				d.reject(dn, dp, "id を書く")
-				continue
-			}
-			s, ok := d.str(dobj["id"], dp+".id")
-			if !ok {
-				continue
-			}
-			ref, err := core.ParseRef(s)
-			if err != nil {
-				d.reject(dobj["id"], dp, "%v", err)
-				continue
-			}
-			r.DependsOn = append(r.DependsOn, core.Dependency{On: ref})
 		}
 	}
 	if v := obj["reason"]; v != nil {
 		r.Reason, _ = d.str(v, target+".reason")
 	}
 	return r, len(d.diags) == before
+}
+
+// dependency は depends_on の 1 件を読む（§3.5）。id（名指しの上流、E-J7）と
+// when（観測で待つ条件、E-C4・N-C8・N-J5）の少なくとも一方を書く。on_unknown は
+// when と一緒に書く（N-H6）。
+func (d *decoder) dependency(n *yaml.Node, path string) (core.Dependency, bool) {
+	var dep core.Dependency
+	obj := d.object(n, path, "id", "when", "on_unknown")
+	if obj == nil {
+		return dep, false
+	}
+	before := len(d.diags)
+	if x := obj["id"]; x != nil {
+		if s, ok := d.str(x, path+".id"); ok {
+			ref, err := core.ParseRef(s)
+			if err != nil {
+				d.reject(x, path, "%v", err)
+			}
+			dep.On = ref
+		}
+	}
+	if x := obj["when"]; x != nil {
+		if s, ok := d.str(x, path+".when"); ok {
+			c, err := condition.Parse(s)
+			if err != nil {
+				d.reject(x, path+".when", "%v", err)
+			} else {
+				dep.When = c
+			}
+		}
+	}
+	if x := obj["on_unknown"]; x != nil {
+		if s, ok := d.str(x, path+".on_unknown"); ok {
+			disp, err := core.ParseDisposition(s)
+			if err != nil {
+				d.reject(x, path+".on_unknown", "%v", err)
+			}
+			dep.OnUnknown = disp
+		}
+		if obj["when"] == nil {
+			d.reject(x, path+".on_unknown", "on_unknown は when と一緒に書く")
+		}
+	}
+	if obj["id"] == nil && obj["when"] == nil {
+		d.reject(n, path, "id か when を書く")
+	}
+	return dep, len(d.diags) == before
 }
 
 func (d *decoder) rangeOf(n *yaml.Node, path string) (core.Range, bool) {
@@ -493,11 +525,12 @@ func (d *decoder) selector(n *yaml.Node, path string) core.Selector {
 
 // budget は予算を読む（E-J1）。書かない上限は core.Unlimited。
 func (d *decoder) budget(n *yaml.Node, path string) *core.Budget {
-	obj := d.object(n, path, "per_cycle", "destructive_per_cycle", "destructive_per_window", "window")
+	obj := d.object(n, path, "per_cycle", "destructive_per_cycle", "destructive_per_window", "window", "max_ineffective_applies")
 	if obj == nil {
 		return nil
 	}
-	b := &core.Budget{PerCycle: core.Unlimited, DestructivePerCycle: core.Unlimited, DestructivePerWindow: core.Unlimited}
+	b := &core.Budget{PerCycle: core.Unlimited, DestructivePerCycle: core.Unlimited, DestructivePerWindow: core.Unlimited,
+		MaxIneffectiveApplies: core.Unlimited}
 	count := func(key string, dst *int) {
 		v := obj[key]
 		if v == nil {
@@ -513,6 +546,15 @@ func (d *decoder) budget(n *yaml.Node, path string) *core.Budget {
 	count("per_cycle", &b.PerCycle)
 	count("destructive_per_cycle", &b.DestructivePerCycle)
 	count("destructive_per_window", &b.DestructivePerWindow)
+	// 効かない Apply の上限（E-J6）。0 は 1 回目で止まるので書けない。
+	if v := obj["max_ineffective_applies"]; v != nil {
+		i, ok := v.Scalar.(int)
+		if v.Kind != yaml.Scalar || !ok || i < 1 {
+			d.reject(v, path+".max_ineffective_applies", "1 以上の整数を書く")
+		} else {
+			b.MaxIneffectiveApplies = i
+		}
+	}
 	if v := obj["window"]; v != nil {
 		if s, ok := d.str(v, path+".window"); ok {
 			w, err := time.ParseDuration(s)

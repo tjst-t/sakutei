@@ -61,6 +61,8 @@ type Provider struct {
 	listHide     map[core.ID]bool
 	applyErr     map[core.ID]error
 	deleteRefuse map[core.ID]string
+	ineffective  map[core.ID]bool
+	behind       map[core.ID]core.ID
 	stateFile    string
 	calls        Calls
 	writes       []Write
@@ -74,7 +76,8 @@ var (
 // New は schema の偽の provider を作る。置いていない ID の観測は Absent。
 func New(schema core.Schema) *Provider {
 	return &Provider{schema: schema, state: map[core.ID]core.Observation{}, omit: map[core.ID]bool{},
-		listHide: map[core.ID]bool{}, applyErr: map[core.ID]error{}, deleteRefuse: map[core.ID]string{}}
+		listHide: map[core.ID]bool{}, applyErr: map[core.ID]error{}, deleteRefuse: map[core.ID]string{},
+		ineffective: map[core.ID]bool{}, behind: map[core.ID]core.ID{}}
 }
 
 // SetListError は List を err で失敗させる（nil で戻す）。
@@ -115,6 +118,26 @@ func (p *Provider) RefuseDelete(id core.ID, reason string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.deleteRefuse[id] = reason
+}
+
+// SetIneffective は id の Apply を「成功を返すが現実を変えない」にする（効かない
+// Apply の注入、E-J6・不変条件 14）。false で戻す。
+func (p *Provider) SetIneffective(id core.ID, on bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if on {
+		p.ineffective[id] = true
+	} else {
+		delete(p.ineffective, id)
+	}
+}
+
+// Behind は gate が Present になるまで id を観測できなくする（FW の奥のホスト、
+// E-J7）。id の観測は Unknown で、gate はこの provider の中の ID。
+func (p *Provider) Behind(id, gate core.ID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.behind[id] = gate
 }
 
 // Writes は Apply・Delete が呼ばれた順の記録（失敗・断りも含む）。
@@ -172,6 +195,10 @@ func (p *Provider) Observe(_ context.Context, ids []core.ID) (map[core.ID]core.O
 		if p.omit[id] {
 			continue
 		}
+		if gate, ok := p.behind[id]; ok && p.state[gate].Availability != core.Present {
+			out[id] = core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("%s の奥で届かない", gate)}
+			continue
+		}
 		obs, ok := p.state[id]
 		if !ok {
 			obs = core.Observation{Availability: core.Absent}
@@ -189,6 +216,9 @@ func (p *Provider) Apply(_ context.Context, _ core.WriteContext, id core.ID, des
 	p.writes = append(p.writes, Write{Op: "apply", ID: id})
 	if err := p.applyErr[id]; err != nil {
 		return err
+	}
+	if p.ineffective[id] {
+		return nil
 	}
 	if err := p.readState(); err != nil {
 		return err

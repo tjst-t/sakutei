@@ -59,6 +59,7 @@ type Option func(*options)
 type options struct {
 	modules map[string]load.Module
 	sinks   map[string]load.SinkModule
+	checks  map[string]core.CheckFunc
 	clock   core.Clock
 	wait    func(ctx context.Context, interval time.Duration, wake <-chan struct{}) bool
 	onCycle func(daemon.Cycle)
@@ -73,6 +74,11 @@ func WithModule(name string, m load.Module) Option {
 // 初めから組み込んである。
 func WithSink(name string, m load.SinkModule) Option {
 	return func(o *options) { o.sinks[name] = m }
+}
+
+// WithCheck は Condition の check(名前) で使う確かめを名前で組み込む（E-B9）。
+func WithCheck(name string, f core.CheckFunc) Option {
+	return func(o *options) { o.checks[name] = f }
 }
 
 // WithDaemonWait は常駐の周の間の待ちを差し替える（テスト用）。false を返せば
@@ -102,7 +108,7 @@ func Main(opts ...Option) {
 // Run はサブコマンドを動かし、終了コードを返す。
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...Option) int {
 	o := &options{modules: map[string]load.Module{}, sinks: map[string]load.SinkModule{"stdout": events.StdoutModule(stdout)},
-		clock: core.SystemClock{}}
+		checks: map[string]core.CheckFunc{}, clock: core.SystemClock{}}
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -170,7 +176,7 @@ func (c common) parse(name string, args []string, stderr io.Writer, needRecord b
 }
 
 func (c common) loadOptions(o *options) load.Options {
-	return load.Options{IntentDir: *c.intentDir, ConfigFile: *c.configFile, Modules: o.modules, Sinks: o.sinks}
+	return load.Options{IntentDir: *c.intentDir, ConfigFile: *c.configFile, Modules: o.modules, Sinks: o.sinks, Checks: o.checks}
 }
 
 func loadIntent(ctx context.Context, name string, c common, stderr io.Writer, o *options) (*load.Loaded, int, error) {
@@ -229,7 +235,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer, o *op
 // その誤りを返す）。plan と常駐の /plan が使う（不変条件 30）。
 func decide(ctx context.Context, loaded *load.Loaded, recd string, clock core.Clock) (plan.Result, error) {
 	in := plan.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
-		Readers: map[string]core.Reader{}, Now: clock.Now()}
+		Readers: map[string]core.Reader{}, Now: clock.Now(), Checks: loaded.Checks}
 	for n, p := range loaded.Providers {
 		in.Readers[n] = p
 	}
@@ -270,7 +276,8 @@ func runReconcile(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return code
 	}
 	r, err := cycle.Run(ctx, cycle.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
-		Providers: loaded.Providers, Record: rec, Clock: o.clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter})
+		Providers: loaded.Providers, Record: rec, Clock: o.clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter,
+		Checks: loaded.Checks})
 	if err != nil {
 		fmt.Fprintf(stderr, "sakutei reconcile: %v\n", err)
 		return ExitError

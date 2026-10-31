@@ -16,12 +16,16 @@ package plan
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/tjst-t/sakutei/v3/core"
+	"github.com/tjst-t/sakutei/v3/graph"
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
@@ -36,48 +40,63 @@ type Input struct {
 	// ReportOnly が空でなければ、当てる操作を全部 report にする（その理由）。
 	// Record が読めない周・ロックがほかにある周（E-M5・N-M7）。
 	ReportOnly string
+	// Checks は Condition の check(名前) の確かめ（E-B9）。
+	Checks map[string]core.CheckFunc
+	// Only が nil でなければ、この宣言だけを観測し直して判定する（同じ周の観測
+	// し直し、E-J7）。範囲の List と prune はしない。
+	Only map[core.ID]bool
+	// Used はこの周の前の波で当てた数（Policy ごと）。予算はこれと合わせて数える
+	// （E-J1・不変条件 20）。
+	Used map[string]BudgetUse
 }
 
 // Decide は List と Observe をして宣言と比べ、prune の守り・依存の待ち・Policy の
-// mode と予算で、操作ごとにこの周に当てるかを決める。現実も Record も変えない。
+// mode と予算・効かない回数で、操作ごとにこの周に当てるかを決める。現実も
+// Record も変えない。
 func Decide(ctx context.Context, in Input) Result {
 	out := Result{Summary: map[Op]int{}, ReportOnly: in.ReportOnly}
-	declared := make(map[core.ID]*core.Resource, len(in.Resources))
-	for i := range in.Resources {
-		declared[in.Resources[i].ID] = &in.Resources[i]
+	g := graph.New(in.Resources)
+	subjects := in.Resources
+	if in.Only != nil {
+		subjects = nil
+		for _, r := range in.Resources {
+			if in.Only[r.ID] {
+				subjects = append(subjects, r)
+			}
+		}
 	}
 
 	// 段 3：範囲ごとに List する。prune の根拠は List の ID だけ（不変条件 8）。
 	candidates := map[core.ID]int{} // 宣言外の ID → 範囲の番号
-	for i, rg := range in.Ranges {
-		st := listRange(ctx, rg, in.Readers[rg.Provider], in.Marks)
-		if st.Dropped && rg.Prune {
-			out.Halts = append(out.Halts, Halt{Scope: "range " + st.Range,
-				Reason: fmt.Sprintf("List が前の周の %d から %d に減った（max_drop %d%% を超える）。この範囲は消さない", *st.Baseline, st.Listed, rg.MaxDrop)})
+	if in.Only == nil {
+		for i, rg := range in.Ranges {
+			st := listRange(ctx, rg, in.Readers[rg.Provider], in.Marks)
+			if st.Dropped && rg.Prune {
+				out.Halts = append(out.Halts, Halt{Scope: "range " + st.Range,
+					Reason: fmt.Sprintf("List が前の周の %d から %d に減った（max_drop %d%% を超える）。この範囲は消さない", *st.Baseline, st.Listed, rg.MaxDrop)})
+			}
+			for _, id := range st.IDs {
+				if g.Resource(id) != nil {
+					continue
+				}
+				if excluded(rg, id) {
+					continue // 外の持ち主のもの（E-D2・E-T2）
+				}
+				if _, dup := candidates[id]; !dup {
+					candidates[id] = i
+				}
+			}
+			out.Ranges = append(out.Ranges, st)
 		}
-		for _, id := range st.IDs {
-			if _, ok := declared[id]; ok {
-				continue
-			}
-			if excluded(rg, id) {
-				continue // 外の持ち主のもの（E-D2・E-T2）
-			}
-			if _, dup := candidates[id]; !dup {
-				candidates[id] = i
-			}
-		}
-		out.Ranges = append(out.Ranges, st)
 	}
 
-	// 段 3：観測する。宣言・宣言に無い依存先・宣言外の候補を provider ごとに 1 回で。
+	// 段 3：観測する。対象の宣言・待ちの判定に要るもの（上流・when の参照・消す
+	// 順序を見る下流）・宣言外の候補を provider ごとに 1 回で（E-D8）。
 	var ids []core.ID
-	for _, r := range in.Resources {
+	for _, r := range subjects {
 		ids = append(ids, r.ID)
-		for _, d := range r.DependsOn {
-			if _, ok := declared[d.On]; !ok {
-				ids = append(ids, d.On)
-			}
-		}
+		ids = append(ids, g.Refs(r.ID)...)
+		ids = append(ids, g.Dependents(r.ID)...)
 	}
 	candIDs := make([]core.ID, 0, len(candidates))
 	for id := range candidates {
@@ -87,14 +106,24 @@ func Decide(ctx context.Context, in Input) Result {
 	ids = append(ids, candIDs...)
 	obs := Observe(ctx, ids, in.Readers)
 
-	// 段 4：比べる。
-	index := map[core.ID]int{}
-	for _, r := range in.Resources {
+	// 段 4：比べる。観測した宣言は全部比べる（上流が宣言どおりかを見る）。
+	ops := map[core.ID]Op{}
+	for id := range obs {
+		if r := g.Resource(id); r != nil {
+			ops[id] = Compare(*r, in.Readers[id.Provider()].Schema().Kinds[id.Kind()], obs[id]).Op
+		}
+	}
+	for _, r := range subjects {
 		ks := in.Readers[r.ID.Provider()].Schema().Kinds[r.ID.Kind()]
 		c := Compare(r, ks, obs[r.ID])
 		c.Destructive = c.Op == Delete || (c.Op == Update && c.Replace)
 		c.labels = r.Labels
-		index[r.ID] = len(out.Changes)
+		c.DesiredHash = DesiredHash(r)
+		if c.Op.Writes() {
+			for _, d := range g.Downstream(r.ID) {
+				c.Downstream = append(c.Downstream, d.String())
+			}
+		}
 		out.Changes = append(out.Changes, c)
 	}
 	for _, id := range candIDs {
@@ -105,36 +134,55 @@ func Decide(ctx context.Context, in Input) Result {
 	}
 
 	// 段 5：この周に当てるか。
+	env := &condEnv{obs: obs, g: g, checks: runChecks(ctx, subjects, in.Checks, obs)}
 	for i := range out.Changes {
 		c := &out.Changes[i]
-		if !c.Op.Writes() || c.Action != "" {
+		if !c.Op.Writes() {
 			continue
 		}
+		limit := core.Unlimited
+		for _, p := range in.Policies {
+			if p.Select.Matches(c.ID.Type, c.labels) {
+				c.Policies = append(c.Policies, p.Name)
+				if b := p.Budget; b != nil && b.MaxIneffectiveApplies != core.Unlimited && (limit == core.Unlimited || b.MaxIneffectiveApplies < limit) {
+					limit = b.MaxIneffectiveApplies
+				}
+			}
+		}
+		if limit == core.Unlimited {
+			limit = core.DefaultMaxIneffectiveApplies
+		}
+		c.IneffectiveLimit = limit
+		if c.Action != "" {
+			continue // prune の守り
+		}
 		c.Action = ActApply
-		// 上流が宣言どおりでなければ下流は待つ。Unknown の上流の下流を進めない
-		// （不変条件 3、E-J7・E-D6）。消す宣言は待たない（下流から消す順序は段 4）。
-		if c.Op == Create || c.Op == Update {
-			if why := waiting(declared[c.ID], out.Changes, index, obs); why != "" {
+		// 依存の待ち。Unknown の上流の下流を進めない（不変条件 3、E-J7・E-D6）。
+		switch c.Op {
+		case Create, Update:
+			if act, why := ready(g.Resource(c.ID), ops, obs, env); act != ActApply {
+				c.Action, c.Blocked = act, why
+				if act == ActHalt {
+					out.Halts = append(out.Halts, Halt{Scope: "resource " + c.Resource, Reason: why})
+				}
+			}
+		case Delete:
+			// 消す宣言は、それに依る宣言が無くなってから（下流から消す、§3.5）。
+			if why := dependentsLeft(c.ID, g, obs); why != "" {
 				c.Action, c.Blocked = ActWait, why
 			}
 		}
 	}
 	for i := range out.Changes {
 		c := &out.Changes[i]
-		if !c.Op.Writes() {
+		if c.Action != ActApply {
 			continue
 		}
 		var report []string
 		for _, p := range in.Policies {
-			if p.Select.Matches(c.ID.Type, c.labels) {
-				c.Policies = append(c.Policies, p.Name)
-				if p.Mode == core.ModeReport {
-					report = append(report, p.Name)
-				}
+			if p.Mode == core.ModeReport && has(c.Policies, p.Name) {
+				report = append(report, p.Name)
 			}
-		}
-		if c.Action != ActApply {
-			continue
 		}
 		// 当たる Policy の最も厳しいもの（report）が勝つ（E-J5・不変条件 19）。
 		switch {
@@ -142,6 +190,15 @@ func Decide(ctx context.Context, in Input) Result {
 			c.Action, c.Blocked = ActReport, fmt.Sprintf("policy %s は report", strings.Join(report, "・"))
 		case in.ReportOnly != "":
 			c.Action, c.Blocked = ActReport, in.ReportOnly
+		default:
+			// 効かない Apply が上限に達したものは当てない（不変条件 14、E-J6・E-K10）。
+			// 宣言を直せば数え直す。
+			if m, ok := in.Marks.Ineffective[c.Resource]; ok && m.Desired == c.DesiredHash && m.Count >= c.IneffectiveLimit {
+				c.Ineffective = m.Count
+				c.Action = ActHalt
+				c.Blocked = fmt.Sprintf("効かない Apply が %d 回続いた（max_ineffective_applies %d）。宣言を直すか現実を宣言どおりにすれば数え直す", m.Count, c.IneffectiveLimit)
+				out.Halts = append(out.Halts, Halt{Scope: "resource " + c.Resource, Reason: c.Blocked})
+			}
 		}
 	}
 	checkBudgets(&out, in)
@@ -151,6 +208,155 @@ func Decide(ctx context.Context, in Input) Result {
 	}
 	sort.SliceStable(out.Changes, func(i, j int) bool { return out.Changes[i].Resource < out.Changes[j].Resource })
 	return out
+}
+
+// DesiredHash は宣言（ensure と項目）のハッシュ。宣言外は空。
+func DesiredHash(r core.Resource) string {
+	data, _ := json.Marshal(struct {
+		Ensure string      `json:"ensure"`
+		Fields core.Fields `json:"fields"`
+	}{r.Ensure.String(), r.Fields})
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// condEnv は Condition を評価する環境。今の周の観測だけを引く（E-J9）。
+type condEnv struct {
+	obs     map[core.ID]core.Observation
+	g       *graph.Graph
+	checks  map[string]checkResult
+	desired core.Fields
+}
+
+type checkResult struct {
+	t   core.Tri
+	why string
+}
+
+func (e *condEnv) Observation(id core.ID) (core.Observation, bool) {
+	o, ok := e.obs[id]
+	return o, ok
+}
+
+func (e *condEnv) Select(s core.Selection) []core.ID { return e.g.Select(s) }
+
+func (e *condEnv) Desired() core.Fields { return e.desired }
+
+func (e *condEnv) Check(name string) core.Tri { return e.checks[name].t }
+
+// runChecks は対象の when が使う確かめを 1 回ずつ呼ぶ（E-B9）。登録の無い名前は
+// 不明。
+func runChecks(ctx context.Context, subjects []core.Resource, funcs map[string]core.CheckFunc, obs map[core.ID]core.Observation) map[string]checkResult {
+	out := map[string]checkResult{}
+	view := &condEnv{obs: obs}
+	for _, r := range subjects {
+		for _, d := range r.DependsOn {
+			if d.When == nil {
+				continue
+			}
+			for _, name := range d.When.Checks() {
+				if _, done := out[name]; done {
+					continue
+				}
+				f, ok := funcs[name]
+				if !ok {
+					out[name] = checkResult{core.TriUnknown, "登録した確かめに無い"}
+					continue
+				}
+				t, why := f(ctx, view)
+				out[name] = checkResult{t, why}
+			}
+		}
+	}
+	return out
+}
+
+// ready は依存の待ちを判定する（§3.5）。when があれば when が真になるまで待ち、
+// 不明なら on_unknown（wait・block・ignore）に従う（E-C4・N-C8・N-H6）。when が
+// 無ければ、宣言した上流は宣言どおり（None）、宣言に無い上流は Present まで待つ。
+// どちらでも、名指しの上流が Unknown・作業中なら待つ（不変条件 3）。止める
+// （block）ものが 1 つでもあれば待つより強い。
+func ready(r *core.Resource, ops map[core.ID]Op, obs map[core.ID]core.Observation, env *condEnv) (Action, string) {
+	if r == nil {
+		return ActApply, ""
+	}
+	env.desired = r.Fields
+	act, why := ActApply, ""
+	hold := func(a Action, msg string) {
+		if act == ActApply || (a == ActHalt && act != ActHalt) {
+			act, why = a, msg
+		}
+	}
+	for _, d := range r.DependsOn {
+		if d.When != nil {
+			switch d.When.Eval(env) {
+			case core.TriFalse:
+				hold(ActWait, fmt.Sprintf("when %q が偽%s", d.When.String(), env.checkNotes(d.When)))
+				continue
+			case core.TriUnknown:
+				switch d.OnUnknown {
+				case core.OnUnknownBlock:
+					hold(ActHalt, fmt.Sprintf("when %q が分からない（on_unknown: block）%s", d.When.String(), env.checkNotes(d.When)))
+					continue
+				case core.OnUnknownWait:
+					hold(ActWait, fmt.Sprintf("when %q が分からない%s", d.When.String(), env.checkNotes(d.When)))
+					continue
+				}
+			}
+			if d.HasOn() {
+				if a := obs[d.On].Availability; a == core.Unknown || a == core.Converging {
+					hold(ActWait, fmt.Sprintf("上流 %s が %s", d.On, a))
+				}
+			}
+			continue
+		}
+		if !d.HasOn() {
+			continue
+		}
+		if op, declared := ops[d.On]; declared {
+			if op != None {
+				hold(ActWait, fmt.Sprintf("上流 %s が %s", d.On, opLabel[op]))
+			}
+			continue
+		}
+		switch o := obs[d.On]; o.Availability {
+		case core.Present:
+		case core.Absent:
+			hold(ActWait, fmt.Sprintf("上流 %s が無い", d.On))
+		default:
+			hold(ActWait, fmt.Sprintf("上流 %s が %s", d.On, o.Availability))
+		}
+	}
+	return act, why
+}
+
+func (e *condEnv) checkNotes(c core.Condition) string {
+	var parts []string
+	for _, name := range c.Checks() {
+		if r := e.checks[name]; r.why != "" {
+			parts = append(parts, fmt.Sprintf("check(%s): %s", name, r.why))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "（" + strings.Join(parts, "・") + "）"
+}
+
+// dependentsLeft は id に依る宣言のうち、まだ無くなっていないものを返す。観測が
+// Absent でなければ（Unknown・作業中を含む）残っているとみる（不変条件 3）。
+func dependentsLeft(id core.ID, g *graph.Graph, obs map[core.ID]core.Observation) string {
+	var left []string
+	for _, d := range g.Dependents(id) {
+		if obs[d].Availability != core.Absent {
+			left = append(left, d.String())
+		}
+	}
+	if len(left) == 0 {
+		return ""
+	}
+	sort.Strings(left)
+	return "下流 " + strings.Join(left, ", ") + " が残る（下流から消す）"
 }
 
 // listRange は範囲を List し、前の周の件数と比べる。List の誤り・不完全・別の
@@ -231,30 +437,6 @@ func pruneChange(id core.ID, rg core.Range, st RangeStatus, r core.Reader, o cor
 	return c, true
 }
 
-// waiting は上流が済んでいなければ理由を返す。宣言した上流は宣言どおり（None）、
-// 宣言に無い上流は Present であること。
-func waiting(r *core.Resource, changes []Change, index map[core.ID]int, obs map[core.ID]core.Observation) string {
-	if r == nil {
-		return ""
-	}
-	for _, d := range r.DependsOn {
-		if i, ok := index[d.On]; ok {
-			if op := changes[i].Op; op != None {
-				return fmt.Sprintf("上流 %s が %s", d.On, opLabel[op])
-			}
-			continue
-		}
-		switch o := obs[d.On]; o.Availability {
-		case core.Present:
-		case core.Absent:
-			return fmt.Sprintf("上流 %s が無い", d.On)
-		default:
-			return fmt.Sprintf("上流 %s が %s", d.On, o.Availability)
-		}
-	}
-	return ""
-}
-
 // checkBudgets は Policy ごとに当てる操作を数え、どれか 1 つでも上限を超えれば
 // 超過分の保留でなく周全体を止める（不変条件 20、E-J1）。周をまたいだ壊す変更は
 // Record の目印の窓で数える。
@@ -265,6 +447,10 @@ func checkBudgets(out *Result, in Input) {
 		}
 		b := p.Budget
 		u := BudgetUse{Policy: p.Name, PerCycle: b.PerCycle, DestructivePerCycle: b.DestructivePerCycle, DestructivePerWindow: b.DestructivePerWindow}
+		// 前の波で当てた分と合わせて数える（同じ周の観測し直し、E-J7）。
+		if used, ok := in.Used[p.Name]; ok {
+			u.Changes, u.Destructive = used.Changes, used.Destructive
+		}
 		for _, c := range out.Changes {
 			if c.Action != ActApply || !has(c.Policies, p.Name) {
 				continue

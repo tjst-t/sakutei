@@ -17,6 +17,7 @@ package fake
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/tjst-t/sakutei/v3/core"
 )
@@ -31,6 +32,7 @@ import (
 //	    record:
 //	      observe_only: false
 //	      destructive_delete: false  # 中身を失う種類（宣言外でも消さない）
+//	      settle: 0s                 # Apply のあと読み直すまでの待ち
 //	      fields:
 //	        value: string
 //	        zone: {type: string, identity: true}
@@ -96,6 +98,13 @@ func kindSchema(kind string, v any) (core.KindSchema, error) {
 				return ks, fmt.Errorf("settings.kinds.%s.destructive_delete に true か false を書く", kind)
 			}
 			ks.DestructiveDelete = b
+		case "settle":
+			str, ok := m[k].(string)
+			d, err := time.ParseDuration(str)
+			if !ok || err != nil || d < 0 {
+				return ks, fmt.Errorf("settings.kinds.%s.settle に 0 以上の長さを書く（例 2s）", kind)
+			}
+			ks.Settle = d
 		case "fields":
 			fields, ok := m[k].(map[string]any)
 			if !ok {
@@ -109,7 +118,7 @@ func kindSchema(kind string, v any) (core.KindSchema, error) {
 				ks.Fields[name] = spec
 			}
 		default:
-			return ks, fmt.Errorf("settings.kinds.%s に知らない項目 %q（書ける項目: observe_only, destructive_delete, fields）", kind, k)
+			return ks, fmt.Errorf("settings.kinds.%s に知らない項目 %q（書ける項目: observe_only, destructive_delete, settle, fields）", kind, k)
 		}
 	}
 	return ks, nil

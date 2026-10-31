@@ -97,6 +97,12 @@ type Change struct {
 	Policies    []string `json:"policies,omitempty"`    // 当たった Policy（E-M2）
 	Action      Action   `json:"action,omitempty"`
 	Blocked     string   `json:"blocked,omitempty"` // 当てない理由
+	// Downstream は変わる宣言に（間接にも）依る宣言（N-J11・E-H5）。
+	Downstream []string `json:"downstream,omitempty"`
+	// Ineffective は続いた効かない Apply の数（E-J6・不変条件 14）。
+	Ineffective int `json:"ineffective,omitempty"`
+	// Wave は当てた波（1 から。同じ周の観測し直しで当てたものは 2 以降、E-J7）。
+	Wave int `json:"wave,omitempty"`
 
 	// reconcile が当てた結果。
 	Outcome Outcome `json:"outcome,omitempty"`
@@ -109,7 +115,11 @@ type Change struct {
 	// 残さない、不変条件 1）。
 	ID      core.ID          `json:"-"`
 	Current core.Observation `json:"-"`
-	labels  map[string]string
+	// DesiredHash は宣言のハッシュ（効かない回数を宣言ごとに数える）。
+	DesiredHash string `json:"-"`
+	// IneffectiveLimit は当たる Policy の max_ineffective_applies の最も小さいもの。
+	IneffectiveLimit int `json:"-"`
+	labels           map[string]string
 }
 
 // Outcome は当てた結果。
@@ -376,6 +386,9 @@ func (r Result) WriteText(w io.Writer) error {
 		if c.Range != "" {
 			fmt.Fprintf(&b, "    範囲: %s\n", c.Range)
 		}
+		if len(c.Downstream) > 0 {
+			fmt.Fprintf(&b, "    下流: %s\n", strings.Join(c.Downstream, ", "))
+		}
 		if c.Action != "" && c.Action != ActApply {
 			fmt.Fprintf(&b, "    %s: %s\n", actionLabel[c.Action], c.Blocked)
 		}
@@ -398,6 +411,12 @@ func (r Result) WriteText(w io.Writer) error {
 			after := opLabel[c.After]
 			if c.AfterNote != "" {
 				after += "（" + c.AfterNote + "）"
+			}
+			if c.Wave > 1 {
+				after += fmt.Sprintf("（波 %d）", c.Wave)
+			}
+			if c.Ineffective > 0 {
+				after += fmt.Sprintf("（効かない Apply %d 回目）", c.Ineffective)
 			}
 			fmt.Fprintf(&b, "    結果: 当てた。読み直し: %s\n", after)
 		case OutcomeError:

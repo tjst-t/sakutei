@@ -41,6 +41,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/config"
 	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/daemon"
+	"github.com/tjst-t/sakutei/v3/graph"
 	"github.com/tjst-t/sakutei/v3/plan"
 	"github.com/tjst-t/sakutei/v3/record"
 )
@@ -68,20 +69,14 @@ type Graph struct {
 	Edges []Edge   `json:"edges"`
 }
 
-// Edge は from が on に依る（on が上流）。
-type Edge struct {
-	From string `json:"from"`
-	On   string `json:"on"`
-}
+// Edge は from が on に依る（on が上流）。Kind は depends_on か when（§3.5）。
+type Edge = graph.Edge
 
-// GraphOf は Resource の依存を Graph にする。
+// GraphOf は Resource の依存を Graph にする（N-J11・E-H5）。
 func GraphOf(res []core.Resource) Graph {
-	g := Graph{Nodes: []string{}, Edges: []Edge{}}
+	g := Graph{Nodes: []string{}, Edges: graph.New(res).Edges()}
 	for _, r := range res {
 		g.Nodes = append(g.Nodes, r.ID.String())
-		for _, d := range r.DependsOn {
-			g.Edges = append(g.Edges, Edge{From: r.ID.String(), On: d.On.String()})
-		}
 	}
 	return g
 }

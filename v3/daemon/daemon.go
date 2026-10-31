@@ -102,7 +102,8 @@ func Run(ctx context.Context, opt Options) error {
 		} else {
 			interval = loaded.Cycle.Interval
 			r, err := cycle.Run(ctx, cycle.Input{Resources: loaded.Resources, Ranges: loaded.Ranges, Policies: loaded.Policies,
-				Providers: loaded.Providers, Record: opt.Record, Clock: clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter})
+				Providers: loaded.Providers, Record: opt.Record, Clock: clock, Sinks: loaded.Sinks, StuckAfter: loaded.Cycle.StuckAfter,
+				Checks: loaded.Checks})
 			if err != nil {
 				c.Err = err
 			} else {

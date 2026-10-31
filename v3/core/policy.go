@@ -88,4 +88,13 @@ type Budget struct {
 	DestructivePerCycle  int           // 1 周の壊す変更の数
 	DestructivePerWindow int           // 周をまたいだ壊す変更の累積（使用量は Record）
 	Window               time.Duration // DestructivePerWindow の窓
+	// MaxIneffectiveApplies は効かない Apply（当てて成功したのに読み直すとずれた
+	// まま）がこの回数続いたら、その Resource を止める（E-J6・E-K10・N-J12・N-Q5）。
+	// 書かなければ Unlimited で、どの Policy も書かなければ
+	// DefaultMaxIneffectiveApplies。
+	MaxIneffectiveApplies int
 }
+
+// DefaultMaxIneffectiveApplies は当たる Policy のどれも max_ineffective_applies を
+// 書かないときの上限（E-J6：同じ Apply を繰り返さず止める）。
+const DefaultMaxIneffectiveApplies = 3

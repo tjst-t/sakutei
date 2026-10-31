@@ -33,6 +33,7 @@ policies:
       destructive_per_cycle: 3
       destructive_per_window: 10
       window: 24h
+      max_ineffective_applies: 2
   - name: legacy
     select: {type: dns/record, labels: {site: legacy}}
     mode: report
@@ -42,9 +43,10 @@ policies:
 	}
 	want := []core.Policy{
 		{Name: "default", Select: core.Selector{All: true}, Origin: core.Origin{File: "p.yaml", Line: 3},
-			Budget: &core.Budget{PerCycle: 20, DestructivePerCycle: 3, DestructivePerWindow: 10, Window: 24 * time.Hour}},
+			Budget: &core.Budget{PerCycle: 20, DestructivePerCycle: 3, DestructivePerWindow: 10, Window: 24 * time.Hour,
+				MaxIneffectiveApplies: 2}},
 		{Name: "legacy", Select: core.Selector{Types: []string{"dns/record"}, Labels: map[string]string{"site": "legacy"}},
-			Mode: core.ModeReport, Origin: core.Origin{File: "p.yaml", Line: 10}},
+			Mode: core.ModeReport, Origin: core.Origin{File: "p.yaml", Line: 11}},
 	}
 	if !reflect.DeepEqual(l.Policies, want) {
 		t.Fatalf("got  %+v\nwant %+v", l.Policies, want)
@@ -54,7 +56,8 @@ policies:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b := l.Policies[0].Budget; *b != (core.Budget{PerCycle: core.Unlimited, DestructivePerCycle: 0, DestructivePerWindow: core.Unlimited}) {
+	if b := l.Policies[0].Budget; *b != (core.Budget{PerCycle: core.Unlimited, DestructivePerCycle: 0, DestructivePerWindow: core.Unlimited,
+		MaxIneffectiveApplies: core.Unlimited}) {
 		t.Fatalf("%+v", b)
 	}
 }

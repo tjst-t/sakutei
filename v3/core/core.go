@@ -107,11 +107,18 @@ func (o Origin) String() string {
 	return fmt.Sprintf("%s:%d", o.File, o.Line)
 }
 
-// Dependency は順序の依存（E-J7・E-B13・E-I5）。待ちの条件（when・on_unknown）は
-// Condition の段（§8 の段 4）で足す。
+// Dependency は順序と待ち（§3.5、E-J7・E-B13・E-I5）。On は名指しの上流（無くて
+// もよい。When だけの待ち、E-C4）。When があれば、真になるまで下流は操作しない
+// （E-C4・N-C8・N-J5・N-H6）。When が無ければ、宣言した上流は宣言どおり、宣言に
+// 無い上流は Present になるまで待つ。
 type Dependency struct {
-	On ID
+	On        ID
+	When      Condition
+	OnUnknown Disposition
 }
+
+// HasOn は名指しの上流があるか。
+func (d Dependency) HasOn() bool { return d.On != ID{} }
 
 // Resource は宣言 1 件（§3.1）。
 type Resource struct {
@@ -209,7 +216,9 @@ type FieldSpec struct {
 
 // KindSchema は種類ごとの項目。
 type KindSchema struct {
-	Fields      map[string]FieldSpec
+	Fields map[string]FieldSpec
+	// Settle は Apply のあと読み直すまでの待ち（E-J6・E-R3）。
+	Settle      time.Duration
 	ObserveOnly bool // 観測だけ。Apply・Delete を呼ばない（E-B7・E-E4・N-B5・N-B6・N-A7）
 	// DestructiveDelete は中身を失う種類（volume・DB・バケット）。宣言の外でも
 	// prune で消さない（不変条件 9、E-C3・N-C2）。

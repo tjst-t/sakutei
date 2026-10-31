@@ -19,6 +19,8 @@
 // 段 2 は §2.1 の段 0（ロック）・3〜6（観測・比べる・方針・当てる）・8（目印と
 // 監査）と、当てたものの読み直しを行う。判定は plan.Decide と同じ（不変条件 30）。
 // 段 3 で、段 8 の通知の状態・送り出しの列・sink への送り出し・健全性を足した。
+// 段 4 で、段 6 の波（上流が効いたら下流を同じ周に観測し直して当てる、E-J7）と
+// 段 7 の settle・効かない Apply の回数（不変条件 14）を足した。
 package cycle
 
 import (
@@ -30,6 +32,7 @@ import (
 
 	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/events"
+	"github.com/tjst-t/sakutei/v3/graph"
 	"github.com/tjst-t/sakutei/v3/plan"
 	"github.com/tjst-t/sakutei/v3/record"
 )
@@ -46,7 +49,19 @@ type Input struct {
 	Sinks map[string]core.Sink
 	// StuckAfter は intent の cycle.stuck_after（E-H1）。
 	StuckAfter int
+	// Checks は Condition の check(名前) の確かめ（E-B9）。
+	Checks map[string]core.CheckFunc
+	// Sleep は Apply のあとの settle を待つ（E-J6・E-R3）。nil なら時計で待つ。
+	// テストで差し替える（E-R4）。
+	Sleep func(ctx context.Context, d time.Duration)
 }
+
+// 同じ周の観測し直しの上限（§3.5、E-J7）。上流の Apply が効いたら、待っていた・
+// 観測できなかった下流をもう一度観測して当てる。
+const (
+	ReobserveRounds = 3
+	ReobserveTime   = 2 * time.Minute
+)
 
 // Run は 1 周回す。誤りを返すのはロックを試すこともできないときだけで、ほかの
 // 誤り（Record・監査に書けない）は Result.Errors に入れる。
@@ -60,7 +75,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	for n, p := range in.Providers {
 		readers[n] = p
 	}
-	pin := plan.Input{Resources: in.Resources, Ranges: in.Ranges, Policies: in.Policies, Readers: readers, Now: now}
+	pin := plan.Input{Resources: in.Resources, Ranges: in.Ranges, Policies: in.Policies, Readers: readers, Now: now, Checks: in.Checks}
 
 	// 段 0：ロック。取れなければ進めない周：観測して比べるだけで、何も書かない
 	// （E-M5・N-M7・N-S3）。
@@ -102,64 +117,92 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		return r, nil
 	}
 
-	var writes []int
-	for i, c := range r.Changes {
-		if c.Action == plan.ActApply {
-			writes = append(writes, i)
-		}
-	}
-	windows := nextWindows(r, marks)
-
-	// 発射の前に予算の窓の使用量を書く。書けなければ当てない（途中で止まっても
-	// 使った分を失わない、不変条件 20・21）。
-	if len(writes) > 0 {
-		pre := marks
-		pre.BudgetWindows = windows
-		if err := in.Record.WriteMarks(pre); err != nil {
-			errs = append(errs, "Record に書けない: "+err.Error())
-			block(&r, writes, "Record に書けないので当てない")
-			writes = nil
-		}
-	}
-
-	// 段 6：当てる。上流が済んでいない下流は Decide が wait にしたので、ここに
-	// 来るものはどの順で当ててもよい。
+	// 段 6・7：波ごとに当てて読み直す。上流が効いたら、待っていた・観測できなかった
+	// 下流を同じ周にもう一度観測して当てる（E-J7）。同じ Resource は 1 周に 1 回
+	// だけ当てる（不変条件 12）。上流が失敗・未確認なら下流は次の周（E-D6）。
+	g := graph.New(in.Resources)
 	byID := make(map[core.ID]*core.Resource, len(in.Resources))
 	for i := range in.Resources {
 		byID[in.Resources[i].ID] = &in.Resources[i]
 	}
-	for n, i := range writes {
-		c := &r.Changes[i]
-		fire(ctx, c, in.Providers[c.ID.Provider()], byID[c.ID])
-		if _, err := audit.Append(entry(c, now)); err != nil {
-			errs = append(errs, "監査に書けない: "+err.Error())
-			block(&r, writes[n+1:], "監査に書けないので当てない")
-			writes = writes[:n+1]
+	base := baseWindows(r)
+	firedDestructive := map[string]int{} // Policy → 当てた壊す変更（断られた削除を除く）
+	used := map[string]plan.BudgetUse{}  // Policy → この周に当てた数（次の波の予算）
+	fired := map[core.ID]bool{}
+	var allWrites []int
+	for wave := 1; ; wave++ {
+		var writes []int
+		for i, c := range r.Changes {
+			if c.Action == plan.ActApply && !fired[c.ID] {
+				writes = append(writes, i)
+			}
+		}
+		// 発射の前に予算の窓の使用量を書く。書けなければ当てない（途中で止まっても
+		// 使った分を失わない、不変条件 20・21）。
+		if len(writes) > 0 {
+			pre := marks
+			pre.BudgetWindows = windowsWith(base, firedDestructive, r, writes)
+			if err := in.Record.WriteMarks(pre); err != nil {
+				errs = append(errs, "Record に書けない: "+err.Error())
+				block(&r, writes, "Record に書けないので当てない")
+				writes = nil
+			}
+		}
+		stop := false
+		for n, i := range writes {
+			c := &r.Changes[i]
+			fire(ctx, c, in.Providers[c.ID.Provider()], byID[c.ID])
+			c.Wave = wave
+			fired[c.ID] = true
+			for _, p := range c.Policies {
+				u := used[p]
+				u.Changes++
+				if c.Destructive {
+					u.Destructive++
+					if c.Outcome != plan.OutcomeRefused {
+						firedDestructive[p]++ // 断られた削除は窓に数えない（不変条件 10）
+					}
+				}
+				used[p] = u
+			}
+			if _, err := audit.Append(entry(c, now)); err != nil {
+				errs = append(errs, "監査に書けない: "+err.Error())
+				block(&r, writes[n+1:], "監査に書けないので当てない")
+				writes = writes[:n+1]
+				stop = true
+				break
+			}
+		}
+		// settle を待って読み直す（観測しなかった値を「ずれ無し」と出さない、
+		// 不変条件 29。効いたかを見る、不変条件 14）。
+		settle(ctx, in.Sleep, r, writes, readers)
+		reread(ctx, &r, writes, readers, byID)
+		allWrites = append(allWrites, writes...)
+
+		if stop || ctx.Err() != nil || wave > ReobserveRounds || clock.Now().Sub(now) >= ReobserveTime {
 			break
 		}
+		only := reobserve(r, g, writes, fired)
+		if len(only) == 0 {
+			break
+		}
+		sub := pin
+		sub.Only, sub.Used = only, used
+		merge(&r, plan.Decide(ctx, sub))
 	}
-
-	// 当てたものを読み直す（観測しなかった値を「ずれ無し」と出さない、不変条件 29）。
-	reread(ctx, &r, writes, readers, byID)
 
 	// 段 8：目印を書く。
 	gone := map[core.ID]bool{}
-	for _, i := range writes {
+	for _, i := range allWrites {
 		c := r.Changes[i]
 		if c.Outcome == plan.OutcomeOK && (c.Op == plan.Delete || c.Op == plan.Prune) {
 			gone[c.ID] = true
 		}
-		// 断られた削除は予算に数えない（不変条件 10）。
-		if c.Outcome == plan.OutcomeRefused {
-			for _, p := range c.Policies {
-				if w, ok := windows[p]; ok && c.Destructive && w.Destructive > 0 {
-					w.Destructive--
-					windows[p] = w
-				}
-			}
-		}
 	}
-	next := record.Marks{Cycle: marks.Cycle + 1, At: now, RangeCounts: nextCounts(r, marks, gone), BudgetWindows: windows}
+	windows := windowsWith(base, firedDestructive, r, nil)
+	ineffective := countIneffective(&r, marks)
+	next := record.Marks{Cycle: marks.Cycle + 1, At: now, RangeCounts: nextCounts(r, marks, gone), BudgetWindows: windows,
+		Ineffective: ineffective}
 	if err := in.Record.WriteMarks(next); err != nil {
 		errs = append(errs, "Record に書けない: "+err.Error())
 	}
@@ -219,21 +262,149 @@ func RecordLoadError(rec *record.Record, clock core.Clock, loadErr error) error 
 	return err
 }
 
-// nextWindows は Policy ごとの予算の窓の、この周に当てる分を足した使用量。
-func nextWindows(r plan.Result, marks record.Marks) map[string]record.WindowUse {
+// baseWindows は Policy ごとの予算の窓の、この周より前の使用量（最初の判定の
+// Budgets から）。
+func baseWindows(r plan.Result) map[string]record.WindowUse {
 	out := map[string]record.WindowUse{}
 	for _, u := range r.Budgets {
-		if u.DestructivePerWindow == core.Unlimited {
-			continue
+		if u.DestructivePerWindow != core.Unlimited {
+			out[u.Policy] = record.WindowUse{Start: u.WindowStart, Destructive: u.WindowUsed - u.Destructive}
 		}
-		fired := 0
-		for _, c := range r.Changes {
-			if c.Action == plan.ActApply && c.Destructive && contains(c.Policies, u.Policy) {
-				fired++
+	}
+	return out
+}
+
+// windowsWith は窓の使用量に、この周に当てた分と、これから当てる writes の壊す
+// 変更を足す。
+func windowsWith(base map[string]record.WindowUse, fired map[string]int, r plan.Result, writes []int) map[string]record.WindowUse {
+	out := make(map[string]record.WindowUse, len(base))
+	for p, w := range base {
+		w.Destructive += fired[p]
+		for _, i := range writes {
+			if c := r.Changes[i]; c.Destructive && contains(c.Policies, p) {
+				w.Destructive++
 			}
 		}
-		// u.WindowUsed は止める前に数えた分を含むので、それを引いて実際に当てる分を足す。
-		out[u.Policy] = record.WindowUse{Start: u.WindowStart, Destructive: u.WindowUsed - u.Destructive + fired}
+		out[p] = w
+	}
+	return out
+}
+
+// reobserve は、この波で効いた（当てて読み直すと宣言どおり）ものに依る・それが
+// 依る宣言のうち、待っていたか観測できなかったものを返す（E-J7）。この周に当てた
+// ものは入れない（不変条件 12）。
+func reobserve(r plan.Result, g *graph.Graph, writes []int, fired map[core.ID]bool) map[core.ID]bool {
+	effective := map[core.ID]bool{}
+	for _, i := range writes {
+		if c := r.Changes[i]; c.Outcome == plan.OutcomeOK && c.After == plan.None {
+			effective[c.ID] = true
+		}
+	}
+	if len(effective) == 0 {
+		return nil
+	}
+	only := map[core.ID]bool{}
+	for _, c := range r.Changes {
+		if fired[c.ID] || g.Resource(c.ID) == nil || (c.Action != plan.ActWait && c.Op != plan.Unknown) {
+			continue
+		}
+		for _, n := range append(g.Refs(c.ID), g.Dependents(c.ID)...) {
+			if effective[n] {
+				only[c.ID] = true
+				break
+			}
+		}
+	}
+	return only
+}
+
+// merge は観測し直した判定を周の結果に入れる。予算はその判定が前の波の分と
+// 合わせて数え直したもので置き換える。
+func merge(r *plan.Result, sub plan.Result) {
+	index := make(map[string]int, len(r.Changes))
+	for i, c := range r.Changes {
+		index[c.Resource] = i
+	}
+	for _, c := range sub.Changes {
+		if i, ok := index[c.Resource]; ok {
+			r.Changes[i] = c
+		}
+	}
+	r.Halts = append(r.Halts, sub.Halts...)
+	if len(sub.Budgets) > 0 {
+		r.Budgets = sub.Budgets
+	}
+	r.Summary = map[plan.Op]int{}
+	for _, c := range r.Changes {
+		r.Summary[c.Op]++
+	}
+}
+
+// settle は当てて成功した種類の Settle の最も長いものを待つ（E-J6・E-R3）。
+func settle(ctx context.Context, sleep func(context.Context, time.Duration), r plan.Result, writes []int, readers map[string]core.Reader) {
+	var d time.Duration
+	for _, i := range writes {
+		c := r.Changes[i]
+		if c.Outcome != plan.OutcomeOK {
+			continue
+		}
+		if ks := readers[c.ID.Provider()].Schema().Kinds[c.ID.Kind()]; ks.Settle > d {
+			d = ks.Settle
+		}
+	}
+	if d <= 0 {
+		return
+	}
+	if sleep != nil {
+		sleep(ctx, d)
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
+}
+
+// countIneffective は効かない Apply を数える（不変条件 14、E-J6・E-K10）。当てて
+// 成功したのに読み直すとずれたままなら 1 つ足し、宣言どおりなら消す。読み直しが
+// Unknown・作業中なら数えない（不変条件 4）。宣言が変われば数え直す。上限に
+// 達したら止める。
+func countIneffective(r *plan.Result, marks record.Marks) map[string]record.IneffectiveMark {
+	out := map[string]record.IneffectiveMark{}
+	for i := range r.Changes {
+		c := &r.Changes[i]
+		prev, had := marks.Ineffective[c.Resource]
+		if had && prev.Desired != c.DesiredHash {
+			had = false
+		}
+		switch {
+		case c.Outcome == plan.OutcomeOK:
+			switch c.After {
+			case plan.None:
+			case plan.Unknown, plan.Converging:
+				if had {
+					out[c.Resource] = prev
+				}
+			default:
+				n := 1
+				if had {
+					n = prev.Count + 1
+				}
+				out[c.Resource] = record.IneffectiveMark{Count: n, Desired: c.DesiredHash}
+				c.Ineffective = n
+				if c.IneffectiveLimit > 0 && n >= c.IneffectiveLimit {
+					r.Halts = append(r.Halts, plan.Halt{Scope: "resource " + c.Resource,
+						Reason: fmt.Sprintf("効かない Apply が %d 回続いた（max_ineffective_applies %d）。次の周から当てない", n, c.IneffectiveLimit)})
+				}
+			}
+		case c.Final() == plan.None:
+		default:
+			if had {
+				out[c.Resource] = prev
+			}
+		}
 	}
 	return out
 }

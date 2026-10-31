@@ -90,6 +90,16 @@ type Marks struct {
 	RangeCounts map[string]int `json:"range_counts,omitempty"`
 	// BudgetWindows は Policy ごとの、周をまたいだ壊す変更の使用量（E-J1）。
 	BudgetWindows map[string]WindowUse `json:"budget_windows,omitempty"`
+	// Ineffective は Resource ごとの、続いた効かない Apply の数（E-J6・E-K10・
+	// 不変条件 14）。宣言が変われば数え直す。読み直して宣言どおりなら消す。
+	Ineffective map[string]IneffectiveMark `json:"ineffective,omitempty"`
+}
+
+// IneffectiveMark は効かない Apply の数と、数えたときの宣言のハッシュ（宣言を
+// 直したら上限から外す、E-J6）。観測の値は持たない（不変条件 1）。
+type IneffectiveMark struct {
+	Count   int    `json:"count"`
+	Desired string `json:"desired"`
 }
 
 // WindowUse は予算の窓 1 つの使用量。窓は Start から長さ分続き、過ぎれば 0 から

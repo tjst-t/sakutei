@@ -47,10 +47,11 @@ const (
 
 // world は 1 周ぶんの偽の現実と、そこで消してよいかを外から判定する材料。
 type world struct {
-	obs        map[core.ID]obsKind
-	listBroken bool // List の誤りか不完全
-	hidden     map[core.ID]bool
-	observeErr bool
+	obs         map[core.ID]obsKind
+	listBroken  bool // List の誤りか不完全
+	hidden      map[core.ID]bool
+	observeErr  bool
+	ineffective []core.ID
 }
 
 // 性質のテスト（§4 の「性質」、E-P1）：偽の provider にランダムな観測の並び・List の
@@ -135,7 +136,8 @@ func property(t *testing.T, seed int64) {
 	}
 
 	marker := fmt.Sprintf("obs-%d-", seed)
-	for cyc := 0; cyc < 4; cyc++ {
+	ineffective := map[core.ID]int{} // 続いた効かない Apply（不変条件 14）
+	for cyc := 0; cyc < 6; cyc++ {
 		h.p = fake.New(schema)
 		h.in.Providers["p"] = h.p
 		w := world{obs: map[core.ID]obsKind{}, hidden: map[core.ID]bool{}}
@@ -173,6 +175,10 @@ func property(t *testing.T, seed int64) {
 				h.p.HideFromList(id)
 				w.hidden[id] = true
 			}
+			if rng.Intn(2) == 0 {
+				h.p.SetIneffective(id, true) // 成功を返すが現実を変えない
+				w.ineffective = append(w.ineffective, id)
+			}
 		}
 		switch rng.Intn(8) {
 		case 0:
@@ -196,6 +202,7 @@ func property(t *testing.T, seed int64) {
 		r := h.run()
 		check(t, cyc, h, w, declaredSet, prev, r)
 		checkEvents(t, cyc, w, r)
+		checkIneffective(t, cyc, h, w, declaredSet, ineffective)
 	}
 
 	// 不変条件 1：Record に観測の値を書かない。
@@ -285,14 +292,24 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 		}
 	}
 
-	// 不変条件 20：予算を超えない。止めた周は 1 件も書かない。当てると決めたものは
-	// 全部当てる（超過分だけを保留しない）。
+	// 不変条件 20：予算を超えない。予算で止めた波は 1 件も書かない（超過分だけを
+	// 保留しない）。当てると決めたものは全部当てる。前の波で当てたものは、同じ周の
+	// 観測し直し（E-J7）の波が予算で止まっても残る。
 	budgetHalt := false
 	for _, hl := range r.Halts {
 		budgetHalt = budgetHalt || strings.HasPrefix(hl.Scope, "policy ")
 	}
-	if budgetHalt && len(writes) > 0 {
-		fail("予算で止めた周に %d 件書いた", len(writes))
+	for _, wr := range writes {
+		if c := find(r, wr.ID); c.Action != plan.ActApply {
+			fail("%s（%s）に書いた", wr.ID, c.Action)
+		}
+	}
+	if budgetHalt {
+		for _, c := range r.Changes {
+			if c.Action == plan.ActApply && c.Wave == 0 {
+				fail("予算で止めた周に、当てずに残した %s がある", c.Resource)
+			}
+		}
 	}
 	applied := 0
 	for _, c := range r.Changes {
@@ -324,6 +341,40 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 			if wr.ID.Kind() == "rec" {
 				fail("report なのに %s に書いた", wr.ID)
 			}
+		}
+	}
+}
+
+// checkIneffective は不変条件 14 を確かめる：同じ宣言の Resource に、効かない
+// Apply を上限（既定 3）を超えて続けない。効いた・宣言どおりだった周に数え直す。
+// 観測が確かでない周は数えも戻しもしない。
+func checkIneffective(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*core.Resource, count map[core.ID]int) {
+	t.Helper()
+	applied := map[core.ID]bool{}
+	for _, wr := range h.p.Writes() {
+		if wr.Op == "apply" {
+			applied[wr.ID] = true
+		}
+	}
+	ineff := map[core.ID]bool{}
+	for _, id := range w.ineffective {
+		ineff[id] = true
+	}
+	for id, r := range declared {
+		k := w.obs[id]
+		switch {
+		case applied[id] && ineff[id]:
+			count[id]++
+			if count[id] > core.DefaultMaxIneffectiveApplies {
+				t.Fatalf("周 %d: %s に効かない Apply を %d 回続けた", cyc, id, count[id])
+			}
+		case applied[id]:
+			count[id] = 0
+		case w.observeErr || k == obsUnknown || k == obsConverging || k == obsOmit:
+		case k == obsSame && r.Ensure == core.EnsurePresent:
+			count[id] = 0
+		case k == obsAbsent && r.Ensure == core.EnsureAbsent:
+			count[id] = 0
 		}
 	}
 }

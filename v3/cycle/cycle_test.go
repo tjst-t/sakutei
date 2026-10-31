@@ -370,20 +370,15 @@ func TestUnknownUpstreamBlocksDownstream(t *testing.T) {
 	if c := find(r, down.ID); c.Action != plan.ActWait || !strings.Contains(c.Blocked, "p/rec/up") {
 		t.Fatalf("%+v", c)
 	}
-	// 上流が無い（作る）周も下流は待つ。上流が済んだ次の周に下流を当てる。
+	// 上流が無い（作る）周は、上流を当てて効いたら同じ周に下流を観測し直して
+	// 当てる（E-J7）。
 	h.p.Set(up.ID, core.Observation{Availability: core.Absent})
 	h.p.Set(rid("rec", "external"), present(nil))
-	h.run()
-	if got := h.p.Writes(); len(got) != 2 || got[0].ID == down.ID && got[1].ID == down.ID {
-		t.Fatalf("1 周目の writes: %v", got)
-	}
-	for _, w := range h.p.Writes() {
-		if w.ID == down.ID {
-			t.Fatalf("上流を作る周に下流を当てた: %v", h.p.Writes())
-		}
-	}
 	r = h.run()
-	if c := find(r, down.ID); c.Outcome != plan.OutcomeOK || cli.ExitCode(r) != 0 {
+	if got := h.p.Writes(); len(got) != 3 || got[2].ID != down.ID {
+		t.Fatalf("writes: %v", got)
+	}
+	if c := find(r, down.ID); c.Outcome != plan.OutcomeOK || c.Wave != 2 || cli.ExitCode(r) != 0 {
 		t.Fatalf("%+v exit=%d", c, cli.ExitCode(r))
 	}
 }

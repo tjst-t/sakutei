@@ -24,9 +24,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tjst-t/sakutei/v3/condition"
 	"github.com/tjst-t/sakutei/v3/config"
 	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/expand"
+	"github.com/tjst-t/sakutei/v3/graph"
 	"github.com/tjst-t/sakutei/v3/intent"
 )
 
@@ -45,6 +47,9 @@ type Options struct {
 	Modules    map[string]Module
 	Sinks      map[string]SinkModule
 	Expander   expand.Expander // nil なら expand.Passthrough
+	// Checks は Condition の check(名前) で使う確かめ（E-B9）。登録していない名前は
+	// 読み込みで断る。
+	Checks map[string]core.CheckFunc
 }
 
 // Loaded は読み込みと検証を通った結果。Resources の Fields は Schema の正規形。
@@ -56,6 +61,7 @@ type Loaded struct {
 	Policies  []core.Policy
 	Cycle     core.CycleSettings   // 書かなければ既定の間隔
 	Sinks     map[string]core.Sink // つなぎ方の設定の sinks の名前 → 送り先
+	Checks    map[string]core.CheckFunc
 	Warnings  []core.Diagnostic
 }
 
@@ -83,7 +89,7 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 	if err != nil {
 		return nil, fmt.Errorf("expand: %w", err)
 	}
-	res, diags := Validate(out, providers)
+	res, diags := Validate(out, providers, opt.Checks)
 	var rejects, warns []core.Diagnostic
 	for _, d := range diags {
 		if d.Severity == core.Reject {
@@ -100,7 +106,7 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 		cyc = out.Cycles[0]
 	}
 	return &Loaded{Config: cfg, Providers: providers, Resources: res, Ranges: out.Ranges, Policies: out.Policies,
-		Cycle: cyc, Sinks: sinks, Warnings: warns}, nil
+		Cycle: cyc, Sinks: sinks, Checks: opt.Checks, Warnings: warns}, nil
 }
 
 func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]core.Sink, []core.Diagnostic) {
@@ -172,8 +178,9 @@ func reject(o core.Origin, target, format string, a ...any) core.Diagnostic {
 }
 
 // Validate は Expand の出力を検証し、Fields を正規形にした Resource を返す
-// （不変条件 25）。Expand の診断もそのまま含める。
-func Validate(out expand.Output, providers map[string]core.Provider) ([]core.Resource, []core.Diagnostic) {
+// （不変条件 25）。Expand の診断もそのまま含める。checks は Condition の check(名前)
+// で使える確かめ。
+func Validate(out expand.Output, providers map[string]core.Provider, checks map[string]core.CheckFunc) ([]core.Resource, []core.Diagnostic) {
 	diags := append([]core.Diagnostic(nil), out.Diagnostics...)
 	res := make([]core.Resource, 0, len(out.Resources))
 	seen := map[core.ID]core.Origin{}
@@ -185,7 +192,7 @@ func Validate(out expand.Output, providers map[string]core.Provider) ([]core.Res
 			continue
 		}
 		seen[r.ID] = r.Origin
-		r, ds := checkResource(r, providers)
+		r, ds := checkResource(r, providers, checks)
 		diags = append(diags, ds...)
 		res = append(res, r)
 	}
@@ -234,7 +241,7 @@ func kindOf(id core.ID, providers map[string]core.Provider) (core.KindSchema, st
 	return k, ""
 }
 
-func checkResource(r core.Resource, providers map[string]core.Provider) (core.Resource, []core.Diagnostic) {
+func checkResource(r core.Resource, providers map[string]core.Provider, checks map[string]core.CheckFunc) (core.Resource, []core.Diagnostic) {
 	var diags []core.Diagnostic
 	target := r.ID.String()
 	ks, why := kindOf(r.ID, providers)
@@ -268,60 +275,33 @@ func checkResource(r core.Resource, providers map[string]core.Provider) (core.Re
 	if r.Fields != nil {
 		r.Fields = norm
 	}
+	lookup := func(typ string) (core.KindSchema, string) { return kindOf(core.ID{Type: typ}, providers) }
+	hasCheck := func(name string) bool { _, ok := checks[name]; return ok }
 	for _, d := range r.DependsOn {
-		if _, why := kindOf(d.On, providers); why != "" {
-			diags = append(diags, reject(r.Origin, target, "depends_on %s: %s", d.On, why))
+		if d.HasOn() {
+			if _, why := kindOf(d.On, providers); why != "" {
+				diags = append(diags, reject(r.Origin, target, "depends_on %s: %s", d.On, why))
+			}
+		}
+		// when の参照を Schema と突き合わせる（E-M3：知らない種類・項目・確かめは断る）。
+		// desired.項目 はこの宣言の項目。
+		if d.When != nil {
+			for _, msg := range condition.Lint(d.When, lookup, &ks, hasCheck) {
+				diags = append(diags, reject(r.Origin, target, "depends_on の when %q: %s", d.When.String(), msg))
+			}
 		}
 	}
 	return r, diags
 }
 
-// checkCycles は宣言どうしの depends_on の循環を断る（E-J7・E-M3）。宣言に無い
-// 依存先（外の持ち主のもの）は辺にしない。
+// checkCycles は宣言どうしの依存（depends_on の id と when が名指しする対象）の
+// 循環を断る（E-J7・E-M3）。宣言に無い依存先（外の持ち主のもの）は辺にしない。
 func checkCycles(res []core.Resource) []core.Diagnostic {
-	byID := make(map[core.ID]*core.Resource, len(res))
-	for i := range res {
-		byID[res[i].ID] = &res[i]
-	}
-	const (
-		white = iota
-		grey
-		black
-	)
-	color := map[core.ID]int{}
+	g := graph.New(res)
 	var diags []core.Diagnostic
-	var stack []core.ID
-	var visit func(id core.ID)
-	visit = func(id core.ID) {
-		color[id] = grey
-		stack = append(stack, id)
-		for _, d := range byID[id].DependsOn {
-			if _, declared := byID[d.On]; !declared {
-				continue
-			}
-			switch color[d.On] {
-			case white:
-				visit(d.On)
-			case grey:
-				var path []string
-				for i := len(stack) - 1; i >= 0; i-- {
-					path = append([]string{stack[i].String()}, path...)
-					if stack[i] == d.On {
-						break
-					}
-				}
-				path = append(path, d.On.String())
-				r := byID[d.On]
-				diags = append(diags, reject(r.Origin, r.ID.String(), "depends_on が循環している: %s", strings.Join(path, " → ")))
-			}
-		}
-		stack = stack[:len(stack)-1]
-		color[id] = black
-	}
-	for i := range res {
-		if color[res[i].ID] == white {
-			visit(res[i].ID)
-		}
+	for _, path := range g.Cycles() {
+		r := g.Resource(path[len(path)-1])
+		diags = append(diags, reject(r.Origin, r.ID.String(), "depends_on が循環している: %s", graph.PathString(path)))
 	}
 	return diags
 }
