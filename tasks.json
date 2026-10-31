@@ -5276,6 +5276,29 @@
       "updatedAt": "2026-10-31T21:00:34.335Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "v3-8e-postgresql-sqlmigrate-ldap-provide",
+      "number": 228,
+      "kind": "task",
+      "title": "v3 段8e：postgresql・sqlmigrate・ldap の provider",
+      "status": "backlog",
+      "parent": "v3",
+      "dependsOn": [
+        "v3-7-expand-secret-backend"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "§8 の段8 を分けたもの。v2 の postgresql（connect_roles を含む）・sqlmigrate（SQLite と PostgreSQL、Procedure で動かす）・ldap を、新しいコアの Provider として v3/providers/ に書く。v2 と同じ統合テスト（PostgreSQL・LDAP のコンテナ）を v3 用に用意する（make のターゲットを分け、check・CI には入れない。コンテナの名前は v2 のものと重ならないようにする）。",
+      "doneWhen": "契約テストが通る。v3 用の PostgreSQL と LDAP の統合テストが通る。make check と make test-race が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-31T21:00:41.849Z",
+      "updatedAt": "2026-10-31T21:00:41.849Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
