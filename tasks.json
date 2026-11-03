@@ -5190,7 +5190,7 @@
       "number": 224,
       "kind": "task",
       "title": "v3 段9：v2 の intent の変換ツールと、import・同期の道具",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [
         "v3-8-provider",
@@ -5209,7 +5209,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-10-31T21:01:48.065Z",
+      "updatedAt": "2026-11-03T16:57:42.177Z",
       "closedAt": null,
       "extra": {}
     },
