@@ -960,10 +960,10 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | proxmox-fw | `proxmox` の `fw-rules`（ID `<クラスタ>/<VM 名>`）・`fw-rule` | 印の無い規則は List で種類 `fw-rule`（観測だけ、ID `<クラスタ>/<VM 名>/<位置>`）の宣言外として出す。規則の変更は `Classifier` の壊す変更。network_policy の実現先 `proxmox-fw` は `netpolicy.WithRealizer` で組み込み、作る宣言は同じ id の vm に依る | E-B6・E-B5 |
 | netconf | `netconf` | 2 段の Apply は `Transactor`（commit confirmed。Commit＝確定の commit、Rollback＝cancel-commit かセッションの終わり）。commit_group は Resource の `transaction.group`、confirm の observe:・check: は Condition。機器と部分木（`filter.<部分木>`・順を比べる道 `ordered.<部分木>`）は Range。観測は毎回新しいセッション。NACM で絞ったユーザーで動く（外を読み書きする rpc を送らない） | E-B7・E-B8・E-B9・E-B10・N-B1・N-B4 |
 | cli-device | `cli-device` | 機種の定義ファイルは settings。種類は定義の項目、ID は装置。扱う装置と項目は Range。定義の `actions` は `Invoker`。`Transactor` は定義に時間切れで戻る確定（`config.commit_confirmed`・`confirm`・`cancel`）がある機種だけ（取り消し `rollback` は確定しない変更を捨てるだけで、時間切れの戻しにならない） | E-B11・N-B1 |
-| postgresql | `postgresql` | 利用者の表がある DB の削除は `RefuseError`。scope は Range | E-F1・E-F3・N-F1・N-F7 |
-| sqlmigrate | `sqlmigrate`（観測と `Invoker`） | `strategy: task` は Procedure（`trigger: on_drift`・`invoke: migrate`・`on_failure` で rollback） | E-F2・N-F2 |
+| postgresql | `postgresql`（種類 `role`・`database`・`grant`・`extension`） | 利用者の表がある DB の削除は `RefuseError`。database は中身を失う種類（宣言の外でも prune しない）。scope は Range の `args.server`。パスワードは秘密の参照で、SCRAM の検証値で送る。観測用と書き込み用のロールを分ける | E-F1・E-F3・N-F1・N-F7・E-G5 |
+| sqlmigrate | `sqlmigrate`（種類 `database` は観測だけ＋`Invoker` の `migrate`・`rollback`） | `strategy: task` は Procedure（`trigger: on_drift`・`invoke: migrate`・`done_when`）。手順の `on_failure` の戻しの段が入るまでは、失敗したときの戻しは `migrate` の引数 `rollback_on_fail` | E-F2・N-F2 |
 | s3-bucket | `s3` | Object Lock の変更は `Classifier`（承認）。中身のあるバケットの削除は `RefuseError`。接頭辞は Range | E-C1・N-C7 |
-| ldap | `ldap` | base_dn・filter・scope は Range。子のある項目の削除は `RefuseError` | E-G1・N-G1 |
+| ldap | `ldap`（種類 `entry`、ID `<server>/<DN の正規形>`） | server・base_dn・filter・scope（LDAP の検索の scope）は Range。子のある項目と、宣言した項目の上の項目の削除は `RefuseError` | E-G1・N-G1 |
 | ansible | `ansible` | `DesiredObserver`（check mode）。List と prune は持たない | E-E3・N-E5・N-T3 |
 | template-file | `template-file` | `DesiredObserver` | E-E5・N-E8 |
 | host-file・systemd-unit（hostconf） | `hostconf`（種類 `file`・`unit`） | `restart_on` は Resource の項目のまま（入れ替えた時の digest の印はホストの側）。ホストは Range。中身は hash と stat だけ観測（`FieldSpec.Digest`） | E-D5・E-E2・N-D7・N-E1・N-E6・E-H7・N-H1（監視の設定のファイルもこれで配る） |

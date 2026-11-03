@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-v3-nftables integration-v3-redfish integration-v3-proxmox integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-v3-nftables integration-v3-redfish integration-v3-proxmox integration-v3-postgresql integration-v3-ldap integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -243,6 +243,63 @@ integration-v3-netconf:
 	if [ -n "$$left" ]; then \
 	  echo "integration-v3-netconf: containers were left behind; removing: $$left"; \
 	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	exit $$status
+
+# 新しいコアの postgresql と sqlmigrate の provider の統合テスト（v3 段 8e、E-F1・E-F2・
+# E-F3・N-F1・N-F2・N-F7）。v2 の integration-postgresql と同じ公式の postgres イメージ
+# （tag と digest で固定）でサーバと psql を動かすだけのクライアントを docker のネット
+# ワークに立て（postgresql は sakutei-v3pg-*、sqlmigrate は sakutei-v3sm-*。v2 の
+# sakutei-pgit-* と重ならないので同時に回せる）、v3 の CLI（cli.Run）で、postgresql は
+# 空から作る・手の変更を戻す・PUBLIC と BYPASSRLS・秘密の世代と拡張の版・何周しても
+# ずれない・利用者の表がある DB の削除を断る・止めると Unknown・観測用と書き込み用の
+# ロール・verify_passwords と pg_authid・connect_roles を、sqlmigrate は手順（on_drift →
+# migrate → done_when）・down・失敗で止まる・rollback_on_fail・advisory lock で二重に
+# 流さない・書き込み用の秘密が無い・止めると Unknown を確かめ、終わったら（失敗しても）
+# コンテナとネットワークを消す。docker と sudo（パスワードなし）が要るので、check・
+# test・CI には入れない。手順と結果は v3/providers/README.md。
+.PHONY: integration-v3-postgresql
+V3_POSTGRESQL_IT := ./postgresql/integration/ ./sqlmigrate/integration/
+integration-v3-postgresql:
+	$(V3P) go vet -tags integration_v3_postgresql $(V3_POSTGRESQL_IT)
+	@status=0; \
+	(cd v3/providers && go test -tags integration_v3_postgresql -count=1 -v -timeout 20m $(V3_POSTGRESQL_IT)) || status=$$?; \
+	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^sakutei-v3(pg|sm)-'); \
+	if [ -n "$$left" ]; then \
+	  echo "integration-v3-postgresql: containers were left behind; removing: $$left"; \
+	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	for net in sakutei-v3pg-net sakutei-v3sm-net; do \
+	  if sudo -n docker network ls --format '{{.Name}}' 2>/dev/null | grep -qx "$$net"; then \
+	    echo "integration-v3-postgresql: the network $$net was left behind; removing it"; \
+	    sudo -n docker network rm $$net >/dev/null || status=1; \
+	  fi; \
+	done; \
+	exit $$status
+
+# 新しいコアの ldap provider の統合テスト（v3 段 8e、E-G1・N-G1・E-G5・E-K1）。v2 の
+# integration-ldap と同じ 389 Directory Server の公式のイメージ（tag と digest で固定）を
+# docker で立て（sakutei-v3ldap-server・sakutei-v3ldap-client・ネットワーク
+# sakutei-v3ldap-net。v2 の sakutei-ldapit-* と重ならないので同時に回せる）、v3 の CLI
+# （cli.Run）で空から作る・手で変えたものを戻す・userPassword は書き込みだけ・何周しても
+# 書かない・StartTLS と LDAPS・bind の失敗は Unknown・子のある項目は prune しない・観測と
+# 書き込みの資格を分ける・止めると Unknown で何も消さないを確かめ、終わったら（失敗しても）
+# コンテナとネットワークを消す。docker と sudo（パスワードなし）が要るので、check・test・
+# CI には入れない。手順と結果は v3/providers/README.md。
+.PHONY: integration-v3-ldap
+V3_LDAP_IT := ./ldap/integration/
+integration-v3-ldap:
+	$(V3P) go vet -tags integration_v3_ldap $(V3_LDAP_IT)
+	@status=0; \
+	(cd v3/providers && go test -tags integration_v3_ldap -count=1 -v -timeout 15m $(V3_LDAP_IT)) || status=$$?; \
+	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-v3ldap-'); \
+	if [ -n "$$left" ]; then \
+	  echo "integration-v3-ldap: containers were left behind; removing: $$left"; \
+	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	if sudo -n docker network ls --format '{{.Name}}' 2>/dev/null | grep -qx sakutei-v3ldap-net; then \
+	  echo "integration-v3-ldap: the network sakutei-v3ldap-net was left behind; removing it"; \
+	  sudo -n docker network rm sakutei-v3ldap-net >/dev/null || status=1; \
 	fi; \
 	exit $$status
 

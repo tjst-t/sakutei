@@ -1,6 +1,6 @@
 # 新しいコアの provider（v3/providers）
 
-設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a・段 8b・段 8c・段 8d。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
+設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a・段 8b・段 8c・段 8d・段 8e。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
 
 | パッケージ | 中身 |
 |---|---|
@@ -23,6 +23,9 @@
 | `sinks/metrics` | 送り先 `metrics`：CycleDone と今の firing の一覧から Prometheus の値を作り `/metrics` で見せる。数えていない値は出さない。待ち受けは最初に送られたときに始める。TLS・クライアント証明書・読むだけのトークン・外向きの平文の明示は `listen.read` と同じ（E-H3・N-L4） |
 | `sinks/otlp` | 送り先 `otlp`：CycleDone を周の span、その前の出来事型を子の span にして OTLP/HTTP の JSON で送る。ID は Event の番号から決まる（送り直しても同じ）。欄の値は載せない（E-H3・N-H5） |
 | `approve`・`cmd/sakutei-approve` | 承認ツール：ネットワーク越しの承認・拒否を、CLI と同じ判断のファイルとして Record に書くだけ。承認者は前段の認証（クライアント証明書の CN か、認証をする proxy のヘッダ）から受け取る。申請者・要件に無い人・待っていない依頼は書く前に断る（不変条件 21、E-M4・N-M4・E-L3） |
+| `postgresql` | PostgreSQL のロール（種類 `role`、ID `<server>/<ロール>`、項目 `login`・`superuser`・`createdb`・`createrole`・`inherit`・`bypassrls`・`replication`・`connection_limit`・`member_of`・`password`（秘密の参照））・データベース（種類 `database`、ID `<server>/<DB>`、項目 `owner`・`connection_limit`・`encoding`・`lc_collate`・`lc_ctype`・`template`・`connect_roles`。中身を失う種類なので宣言の外でも prune しない）・権限（種類 `grant`、ID `<server>/<DB>/<ロール か PUBLIC>`、項目 `privileges`）・拡張（種類 `extension`、ID `<server>/<DB>/<拡張>`、項目 `version`）。psql を exec し、パスワードは SCRAM の検証値で送る。管理の範囲は Range の `args.server`。観測用と書き込み用の資格を分け、書き込み用は Apply・Delete の中でだけ読む。利用者の表がある DB の削除は `RefuseError`（E-F1・E-F3・N-F1・N-F7・E-G5） |
+| `sqlmigrate` | 版つきのマイグレーション（種類 `database`、ID は settings の `databases` の名前。観測だけ：`version`（schema_migrations の最大の版）・`latest`・`pending`）。SQLite（sqlite3 の CLI）と PostgreSQL（psql、advisory lock）。版は手順の `invoke` の `migrate`（上げ下げ・`rollback_on_fail`）と `rollback`（下げるだけ）でだけ変える（どちらも壊す操作）。v2 の `strategy: task` は `trigger: on_drift`・`invoke: migrate`・`done_when` に書き直す。観測用と書き込み用の資格を分け、書き込み用（`password_file` か秘密の参照 `password_secret`）は Invoke の中でだけ読む。List を持たず Delete は断る（E-F2・N-F2・E-G5） |
+| `ldap` | LDAP のディレクトリの項目（種類 `entry`、ID `<サーバ>/<DN の正規形>`、項目 `attributes`（属性の名前 → 値。値の集合で比べる）・`user_password`（秘密の参照。書き込みだけ）・`user_password_set`（観測だけ））。OpenLDAP の ldapsearch・ldapmodify を exec で呼ぶ。管理の範囲は Range の `args.server`・`args.base_dn`・`args.filter`・`args.scope`（sub・one）。LDAPS と StartTLS。観測用と書き込み用の bind を分ける。子のある項目・宣言した項目の上の項目の削除は `RefuseError`（E-G1・N-G1・E-G5） |
 | `cmd/sakutei` | 上の provider・Expand・保管先・送り先を `cli.Main(cli.WithModule(...), cli.WithExpander(...), cli.WithSecretBackend(...), cli.WithSink(...))` で組み込んだ CLI（E-O4・E-S4） |
 
 ホストへのつなぎ方（hostconf・nftables の live・guest-os）はコアの SDK `sdk/hostexec`（手元・ssh・sudo。ホスト鍵は known_hosts で確かめる）。netconf の ssh サブシステムと cli-device の対話（pty）・1 行の exec は、同じ `hosts:` の設定の上の `internal/sshstream`（接続を使い回さない・sudo を付けない・ssh の終了コード 255 は届かない）。
@@ -313,6 +316,143 @@ procedures:
 - 目印のファイルが無いのは観測の事実で、`marker` にその鍵が無いだけ（Condition では null）。読めない（権限・ディレクトリ・4 KiB より大きい）目印は Unknown。
 - 無いパスを「無い」とするのは上の一番近いディレクトリを覗けるときだけ（覗けない観測用のユーザーは見分けられないので Unknown）。ホストには sh・dd・od だけが要る（busybox でもよい）。
 
+## postgresql・sqlmigrate・ldap の例
+
+```yaml
+# config.yaml（つなぎ方だけ）
+secret_backends:
+  vault: {module: vault-kv2, settings: {address: "https://vault.example.com:8200", token_file: /etc/sakutei/vault-token}}
+providers:
+  pg:
+    module: postgresql
+    settings:
+      psql: /usr/bin/psql                 # 省略可（既定は PATH の psql）
+      servers:
+        main:                             # サーバの名前（ID の先頭）
+          host: db.example.net            # / で始まれば Unix ソケットのディレクトリ
+          port: 5432
+          dbname: postgres                # 管理用につなぐ DB（既定 postgres）
+          sslmode: verify-full
+          sslrootcert: /etc/sakutei/pg-ca.pem
+          connect_timeout: 10s            # 既定 10s
+          verify_passwords: false         # true で手で変えたパスワードをずれにする（観測用のロールに pg_authid の列が要る）
+          observe: {user: sakutei_ro, password_file: /etc/sakutei/pg-ro}     # 観測用（LOGIN だけでよい）
+          write: {user: sakutei, password_file: /etc/sakutei/pg-admin}       # 省略可。Apply・Delete だけが使う（E-G5）
+  db:
+    module: sqlmigrate
+    settings:
+      lock_timeout: 5s                             # DB の鍵（SQLite の書き込みの鍵・PostgreSQL の advisory lock）を待つ長さ
+      databases:
+        app:                                       # engine: sqlite（既定）
+          path: /var/lib/app/app.db
+          migrations: /etc/sakutei/migrations/app  # NNNN_<名前>.up.sql / .down.sql
+        orders:
+          engine: postgresql
+          host: db1.example.net
+          database: orders                         # 省けば ID
+          sslmode: verify-full
+          connect_timeout: 5s
+          migrations: /etc/sakutei/migrations/orders
+          observe: {user: sakutei_ro, password_file: /etc/sakutei/pg-ro}
+          write: {user: sakutei_migrate, password_secret: "vault:/db/orders#migrate"}   # か password_file
+  dir:
+    module: ldap
+    settings:
+      ldapsearch: /usr/bin/ldapsearch       # 省略可（既定は PATH の ldapsearch）
+      ldapmodify: /usr/bin/ldapmodify       # 省略可
+      servers:
+        dir1:                               # サーバの名前（ID の先頭）
+          uri: ldap://ldap.example.net:389  # ldap:// か ldaps://（1 つだけ）
+          starttls: true                    # ldap:// で StartTLS を必須にする（-ZZ）
+          ca_cert: /etc/sakutei/ldap-ca.pem # 省略可（LDAPTLS_CACERT。証明書はいつも確かめる）
+          timeout: 10s                      # 省略可（既定 10s）
+          observe: {bind_dn: "uid=sakutei-read,ou=system,dc=example,dc=com", password_file: /etc/sakutei/ldap-read}
+          write: {bind_dn: "cn=Directory Manager", password_file: /etc/sakutei/ldap-dm}   # 省けば observe を使う
+```
+
+```yaml
+# intent
+ranges:
+  - {provider: pg, args: {server: main}, prune: true}    # ロール・権限・拡張の宣言外を prune（DB は消さない）
+  - provider: dir
+    args: {server: dir1, base_dn: "dc=example,dc=com", filter: "(!(ou=outside))", scope: sub}
+    prune: true                                          # 宣言外を消す（子のある項目は消さない）
+resources:
+  - type: pg/role
+    id: main/app
+    fields: {login: true, connection_limit: 10, member_of: [pg_read_all_data], password: {secret: "vault:/db/app#password"}}
+  - type: pg/database
+    id: main/appdb
+    fields: {owner: app, encoding: UTF8, lc_collate: C, lc_ctype: C, template: template0, connect_roles: [sakutei_ro]}
+    depends_on: [{id: pg/role/main/app}]
+  - type: pg/grant
+    id: main/appdb/PUBLIC
+    fields: {privileges: []}                             # PUBLIC から全部外す
+    depends_on: [{id: pg/database/main/appdb}]
+  - type: pg/extension
+    id: main/appdb/hstore
+    fields: {version: "1.8"}
+    depends_on: [{id: pg/database/main/appdb}]
+  - {type: pg/database, id: main/olddb, ensure: absent} # 利用者の表があれば断る（RefuseError）
+  - {type: db/database, id: orders, fields: {version: 3}}
+  - type: dir/entry
+    id: dir1/ou=people,dc=example,dc=com
+    fields: {attributes: {objectClass: [top, organizationalUnit], ou: People}}
+  - type: dir/entry
+    id: dir1/uid=alice,ou=people,dc=example,dc=com      # DN は正規形（小文字・空白なし）
+    fields:
+      attributes:
+        objectClass: [top, inetOrgPerson]               # サーバが足す上位のクラスは在ってよい
+        uid: Alice                                      # 作るときの RDN の綴り
+        cn: Alice Liddell
+        sn: Liddell
+        mail: [alice@example.com, al@example.com]       # 値の集合（順は問わない）
+        uidNumber: "1000"                               # 数も文字列で書く
+      user_password: {secret: "vault:/ldap/alice#password"}
+    depends_on: [{id: dir/entry/dir1/ou=people,dc=example,dc=com}]
+procedures:
+  - name: migrate-orders                           # v2 の strategy: task を手順に書き直したもの
+    target: {type: db/database, id: orders}
+    trigger: on_drift
+    drift_fields: [version]
+    steps:
+      - name: approve
+        gate: {approval: {quorum: {n: 1, of: [bob]}}}
+      - name: migrate
+        invoke: {op: migrate, args: {version: "{desired.version}", rollback_on_fail: true}}
+    done_when: 'observe(db/database/{target}).version == desired.version'
+```
+
+postgresql の決まり：
+
+- psql はシェルを通さず、SQL は標準入力で渡し、接続の設定は子の環境変数（親の `PG*` は引き継がない）。名前はいつも quote する。パスワードのファイルは呼ぶたびに読み、0600 の一時的な passfile で渡して消す。
+- ロールのパスワードは Apply の直前に `WriteContext.Secret` で取り出し、SCRAM-SHA-256 の検証値にして送る（平文はサーバのログに出ない）。ロールのコメントに参照（世代つき）と検証値の sha256 を書き、観測はその参照を返すので、秘密の世代が変わったときだけ当て直す。`verify_passwords` なら pg_authid の検証値の sha256 が合わなければずれ、pg_authid を読めなければそのロールは Unknown。v2 が書いたコメントの形とは違うので、v2 でパスワードを設定したロールは 1 回設定し直す。
+- 観測は、宣言と意味が同じなら宣言の書き方を返す（encoding の `UTF-8`・ロケールの codeset・権限の `TEMP`・小文字。`connect_roles` は宣言が観測に含まれていれば同じ）。`template` は観測できず、作った後は比べない。`encoding`・`lc_collate`・`lc_ctype` を作った後に変える宣言は Apply が断る（作り直さない）。
+- PUBLIC の権限は DB が在れば在り、宣言どおりにする（空の集合で全部外す）。List に出さず（宣言しなければ触らない）、`ensure: absent` は書けない。ロールの権限は集合ちょうどで、空にはできない。
+- `connect_roles` は管理の境界の外のロール（つなぐロール・`pg_*`）にだけ書け、DB を作る Apply の中で CONNECT を与える。足すだけで外さない。
+- 管理の境界：`pg_*`・つなぐロール・`template0`・`template1`・`postgres`・管理用の DB・所有者の権限・`plpgsql` は List に出さず、宣言すれば読み込みで断る（`plpgsql` の宣言はできる）。List は snapshot と全部の DB の拡張が読めたときだけ完全。
+- データベースは中身を失う種類なので、宣言の外でも prune しない（不変条件 9。v2 は空の宣言外の DB を消したが、v3 では `ensure: absent` で名指しする）。
+- 届かない・認証の失敗・psql が無い・パスワードのファイルを読めない・壊れた出力は Unknown。Delete は利用者の表がある DB・接続を許さない DB、DB を持つか権限を持つロール、PostgreSQL が 2BP01 で断るロール・拡張を `RefuseError` で断る（CASCADE・DROP OWNED は使わない）。
+
+sqlmigrate の決まり：
+
+- 種類 `database` は観測だけ。宣言の `version` は収束ループが当てず、手順が `migrate` で合わせる。ディレクトリに無い版・観測だけの項目・`ensure: absent`・範囲は読み込みで断る。
+- 1 本は 1 つのトランザクション（BEGIN … SQL … schema_migrations の完了印 … COMMIT）。失敗した 1 本だけが巻き戻り、前に通した版は残る。`rollback_on_fail: true` なら呼んだときの版まで down で戻してから止める（手順の `on_failure` の戻しの段は後の段。いまは halt だけ）。トランザクションに入れられない文（CREATE INDEX CONCURRENTLY）は 25001 の失敗として止める。
+- 流す前に要る SQL を全部読み、sqlite3 のドットコマンド・psql のメタコマンド・足りない down があれば何も流さない。ファイルの中で COMMIT・ROLLBACK を書くと「確定したか分からない」誤りで止める。
+- 2 つの処理が同じ DB を動かしても同じ版を二度流さない：1 本ごとに鍵（SQLite は BEGIN IMMEDIATE、PostgreSQL は v2 と同じ鍵の `pg_advisory_xact_lock`）を `lock_timeout` まで待って取り、版が流す前のままかを確かめる。違えば何も流さず読み直して続ける。
+- 送れていない（`ErrNotSent`、次の周に送り直す）のは、まだ 1 本も確定していないときの「つながらない・認証の失敗・sqlite3／psql が無い・パスワードを読めない・鍵を待ちきれない」だけ。SQL の誤り・確定したあとの誤り・接続が途中で切れたときは手順を止める。
+- 読めない（届かない・壊れている・データベースが無い・鍵を待ちきれない）は Unknown。SQLite のファイルが無いのは版 0（置き場所があり sqlite3 が起動できるときだけ）。
+
+ldap の決まり：
+
+- 比べるのは宣言した属性だけで、宣言に無い属性は触らない。属性の名前は大文字小文字を問わない。値の集合をその一覧ちょうどにし、`""` と `[]` は「その属性が無い」。DN を値に持つ属性（member・uniqueMember・owner・seeAlso・manager など）は DN の正規形で比べる。観測の `attributes` は宣言した属性だけで、意味が同じなら宣言の書き方のまま、違えばサーバの値（並べた一覧か 1 つの文字列）を返す。
+- Range の `scope` は LDAP の検索の scope（`sub`・`one`）。v2 の scope（ID の `site=tokyo`）は v3 に無い。
+- 読み込みで断るもの：正規形でない ID・どの範囲にも入らない宣言（base_dn そのもの・scope が one の孫）・bind の DN・同じサーバの重なる範囲・objectClass の無い宣言・大文字小文字だけ違う同じ属性・操作属性（modifyTimestamp など）・`attributes` の中の userPassword・文字列でない値・空の値・オプションつきの属性の名前（`cn;lang-ja`）・RDN の値を含まない属性・`user_password_set` の宣言・settings の base_dn・filter・scope。値は文に出さない。
+- `user_password` は書き込みだけ：値は Apply の中で `WriteContext.Secret` で取り出し、ldapmodify の標準入力（base64 の LDIF）でだけ渡す。サーバに userPassword が在れば適合で、世代を上げても書き直さない（替えるときはサーバの userPassword を消せば次の周に今の値を書く）。観測用の DN にも userPassword の read を許す（読めないと無いと見えて毎周書く）。
+- bind のパスワードは settings の `password_file` からその都度読み、0600 の一時ファイルで `-y` に渡して消す。引数・環境変数・誤りの文には出さない。観測と List は `observe` の資格だけ、Apply・Delete は `write` の資格だけ（書き込み用のファイルが無くても plan は観測できる）。親の LDAP で始まる環境変数は引き継がず、`LDAPTLS_REQCERT=demand`。
+- 届かない・時間切れ・bind と TLS の失敗・コマンドが無い・パスワードのファイルを読めない・読めない出力・スキーマを読めないは Unknown（理由つき）。noSuchObject（32）だけが Absent。List は範囲のページに分けた検索で、最後まで読めなければ誤り（件数の上限で切れたときも）。base_dn そのもの・bind の DN・サブエントリ・tombstone は List に出さない。
+- Apply は宣言と違う属性だけを 1 つの modify の replace で書き、宣言どおりなら何も書かない。無ければ add で作る（葉の RDN は宣言の綴り）。親が無ければ誤りなので親を `depends_on` に書く。Delete は子の項目がある項目と、宣言した項目の上の項目を消さない（`RefuseError`）。コアは同じ周に宣言外の親の prune を子の作成より先に流すことがあるので、子がまだ作られていなくても断る（統合テストで見つけた）。
+
 ## Expand と秘密の保管先の例
 
 ```yaml
@@ -464,3 +604,56 @@ v2 の `make integration-proxmox` と同じ入れ子の Proxmox VE 9.2（ISO は
 2026-10-31 に Linux 7.0・qemu の入れ子の KVM・Proxmox VE 9.2 で 12 段とも通した（キャッシュの導入済みのディスクを使い、lab の起動を含めて約 280 秒。作る VM は 1 回の reconcile で収束した）。
 
 実機で見つけたこと（Proxmox VE 9.2）：作った直後の VM は `/cluster/resources` に仮の名前 `VM <vmid>` で載る（名前が空のときと同じく VM の設定で確かめる。偽の Proxmox の `ResourceLag` も真似る）。複製した VM のディスクの volume の番号は Proxmox が決める（テンプレートの cloud-init のドライブなどで飛ぶ）。
+
+## 統合テスト（postgres、v3 段 8e）
+
+```console
+$ make integration-v3-postgresql
+```
+
+v2 の `make integration-postgresql` と同じ公式の postgres イメージ（`postgres:17.11-bookworm`、tag と digest で固定。`SAKUTEI_IT_POSTGRES_IMAGE` で差し替えられる）で、サーバと psql を動かすだけのクライアントを docker のネットワークに立て、v3 の CLI（`cli.Run` の plan・reconcile と常駐）を向ける。postgresql provider（`postgresql/integration/`）は `sakutei-v3pg-server`・`sakutei-v3pg-client`・`sakutei-v3pg-net`、sqlmigrate（`sqlmigrate/integration/`）は `sakutei-v3sm-*` を使う（v2 の `sakutei-pgit-*` と重ならない）。build tag は両方 `integration_v3_postgresql`。ホストに psql は要らない（ラッパーのスクリプトでクライアントのコンテナの中で動かす）。docker と sudo（パスワードなし）が要るので、check・test・CI には入れない。コンテナとネットワークは終われば（落ちても）消す。
+
+postgresql：
+
+1. 空から作る：ロール（引用符を含む名前も）・DB（template0・C ロケール）・権限・拡張・PUBLIC から全部外す。宣言のパスワードでつなげ、pg_authid は SCRAM の検証値。宣言していない DB の PUBLIC は既定のまま。
+2. 手で変えるとずれ（パスワードも verify_passwords で）、1 周で戻る。
+3. PUBLIC と BYPASSRLS を手で変えると戻り、宣言しない属性（REPLICATION）は触らない。
+4. 秘密の新しい世代でパスワードを設定し直し（古いものではつなげない）、拡張の版を上げる。作った後の encoding の変更は Apply が断る（終了コード 1、DB は変わらない）。
+5. 何周してもずれず、パスワードを設定し直さない。
+6. 利用者の表がある DB の `ensure: absent` は断り（refused、行は残る）、空の DB は消す。宣言外の DB は unmanaged で prune しない。宣言外のロールは prune し、`pg_*`・管理用のロールは消さない。
+7. サーバを止めると全部 Unknown・List が不完全で何も当てない（終了コード 3）。
+8. 観測用（LOGIN だけ）と書き込み用のロール：書き込み用のパスワードのファイルが無くても plan は動き、reconcile は書けない。観測用のロールが流すのは `/* sakutei:… */` の読む問い合わせだけ（サーバのログで確かめる）で、CREATE DATABASE は書き込み用のロール。つなぐ 2 つのロールは List に出ず prune しない。
+9. verify_passwords：観測用のロールが pg_authid を読めなければ Unknown（理由に pg_authid）、管理用の DB で列の SELECT を与えるか pg_read_all_data なら比べられる（別の DB で与えた列の権限は効かない）。
+10. connect_roles：PUBLIC の CONNECT を外す DB に観測用のロールが繋がり、List は完全。手で REVOKE すると DB はずれ・拡張は Unknown・List は不完全で、1 周で戻る（その周は List が不完全なので終了コード 3）。宣言から外しても REVOKE しない。
+
+sqlmigrate（観測は読むだけのロール、invoke はデータベースの持ち主のロールで、そのパスワードは secret_backends から `password_secret` で取り出す）：
+
+1. 一回実行の reconcile で手順（on_drift → migrate → done_when）が 0 から 3 へ流し（E'' と $$ の引用・最後の ";" の無いファイル）、次の plan は何もしない。
+2. 常駐が宣言の 1 へ down を逆順に流す。
+3. 失敗する 0004：手順は止まり（42P01・版 3）、0004 は巻き戻り、次の周も送り直さない。
+4. `rollback_on_fail`：失敗したら呼んだときの版（1）に戻して止まる。
+5. CREATE INDEX CONCURRENTLY は 25001 で止まり、何も残さない。
+6. 2 つの常駐（別々の Record）：テストが advisory lock を持つ間はどちらも送れていない（55P03）。外すと同じ版を二度流さずに 3 になり、両方の手順が済む。
+7. 書き込み用の秘密が無い：plan は観測用の資格で読めて差分を出し、reconcile は何も流さず送れていない。秘密を戻すと収束する。
+8. サーバを止める（docker pause）と Unknown（終了コード 3）で何もしない。
+
+2026-10-31 に docker 29.1.3 で通した（postgresql は 2 テスト・15 段で約 150 秒、sqlmigrate は 8 段で約 43 秒）。
+
+## 統合テスト（389 Directory Server、v3 段 8e）
+
+```console
+$ make integration-v3-ldap
+```
+
+v2 の `make integration-ldap` と同じ 389 Directory Server のイメージ（`389ds/dirsrv:3.1`、tag と digest で固定。`SAKUTEI_IT_389DS_IMAGE` で差し替えられる）を docker で立て（`sakutei-v3ldap-server`・クライアント `sakutei-v3ldap-client`・ネットワーク `sakutei-v3ldap-net`。v2 の `sakutei-ldapit-*` と重ならない）、v3 の CLI（`cli.Run` の plan・reconcile、`ldap.Module`）を向けて回す（`ldap/integration/`、build tag `integration_v3_ldap`）。ldapsearch・ldapmodify はクライアントのコンテナの中で動かす（ラッパー。-y のファイルと CA は docker cp）。docker と sudo（パスワードなし）が要るので、check・test・CI には入れない。コンテナとネットワークは終われば（落ちても）消す。
+
+1. 空から作る（StartTLS）：plan は全部 create、reconcile で作り、objectClass にサーバが上位のクラスを足しても適合。userPassword はハッシュで保存され、宣言のパスワードで bind できる。`,`・`"`・Ü・改行を含む値、空白入りの member の DN。
+2. 手で変える（mail・description・member・objectClass の追加・宣言に無い telephoneNumber）とずれ、宣言した属性だけを戻す。
+3. userPassword は書き込みだけ：新しい世代でも書き直さず、サーバの userPassword を消すと次の周に今の値を書く。
+4. 何周しても書かない（5 周、modifyTimestamp が変わらない）。
+5. LDAPS でも適合。誤った bind のパスワードは全部 Unknown（理由つき）で List は不完全。
+6. prune の範囲：宣言外の葉は消し、宣言した子のある宣言外の項目は消さない（RefuseError）。filter の外と base_dn は消さない。
+7. 観測は読むだけの DN（ACI で read・search・compare だけ）、書き込みは Directory Manager：手で変えたものを戻し（modifiersName は Directory Manager）、bind の DN は宣言外に出ない。
+8. サーバを止めると全部 Unknown（終了コード 3）、List は不完全で prune しない。起こすと適合。
+
+2026-10-31 に Linux 7.0・docker 29.1.3 で通した（8 段・約 99 秒）。

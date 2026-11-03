@@ -132,4 +132,9 @@ $ cd v3 && go run ./cmd/sakutei alloc release <pool> <value> --intent <dir> --re
 - `core.Classifier`（§3.3、E-C2・E-B6・E-C1）：provider が作る・変える変更ごとに `Hint`（壊す・承認が要る・理由）を言う。壊す変更は予算の壊す変更に数え、承認が要る変更は承認が揃うまで当てない（当たる Policy に approval が無ければ、申請者でない 1 人の承認を頼む。`sakutei approve` で揃える）。理由は plan の `provider:` の行と JSON の `classified`・`needs_approval` に出る。
 - provider `proxmox`（種類 `vm`・`fw-rules`・観測だけの `volume`・`fw-rule`、network_policy の実現先 `proxmox-fw`）と `guest-os`（種類 `os`、観測だけ）は `providers/`（README に設定と intent の例・統合テスト）。
 
+段 8e の決まり（postgresql・sqlmigrate・ldap）：
+
+- provider `postgresql`・`sqlmigrate`・`ldap` は `providers/`（README に設定と intent の例・postgres の統合テスト `make integration-v3-postgresql`・389 Directory Server の統合テスト `make integration-v3-ldap`）。
+- sqlmigrate の v2 の `strategy: task` は Procedure（`trigger: on_drift`・`invoke: migrate`・`done_when`）に書き直す。手順の `on_failure` はいまも `halt` だけで、失敗したときの戻しは `migrate` の引数 `rollback_on_fail`（E-F2・N-F2）。
+
 テストはルートの `make check`・`make test-race` が一緒に回す（`providers/` も）。

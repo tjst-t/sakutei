@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Command sakutei は新しいコアに実の provider（dnszone・hostconf・nftables・
-// redfish・metrics-probe・netconf・cli-device・guest-os・proxmox）と
+// redfish・metrics-probe・netconf・cli-device・guest-os・proxmox・postgresql・
+// sqlmigrate・ldap）と
 // Expand のモジュール（template・netpolicy（実現先 nftables・proxmox-fw）・compat）と秘密の保管先（vault-kv2・
 // command）と Events の送り先（alertmanager・syslog・metrics・otlp）を組み込んだ CLI（設計 §6.1 の cli.Main(With…)、E-O4・E-S4）。どれも
 // コアの外のモジュールで、コアはインターフェースだけを知る。
@@ -28,9 +29,11 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/expanders/template"
 	"github.com/tjst-t/sakutei/v3/providers/guestos"
 	"github.com/tjst-t/sakutei/v3/providers/hostconf"
+	"github.com/tjst-t/sakutei/v3/providers/ldap"
 	"github.com/tjst-t/sakutei/v3/providers/metricsprobe"
 	"github.com/tjst-t/sakutei/v3/providers/netconf"
 	"github.com/tjst-t/sakutei/v3/providers/nftables"
+	"github.com/tjst-t/sakutei/v3/providers/postgresql"
 	"github.com/tjst-t/sakutei/v3/providers/proxmox"
 	"github.com/tjst-t/sakutei/v3/providers/redfish"
 	"github.com/tjst-t/sakutei/v3/providers/secretbackend"
@@ -38,6 +41,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/sinks/metrics"
 	"github.com/tjst-t/sakutei/v3/providers/sinks/otlp"
 	"github.com/tjst-t/sakutei/v3/providers/sinks/syslog"
+	"github.com/tjst-t/sakutei/v3/providers/sqlmigrate"
 	"github.com/tjst-t/sakutei/v3/sdk/fake"
 )
 
@@ -53,6 +57,9 @@ func Options() []cli.Option {
 		cli.WithModule("netconf", netconf.Module),
 		cli.WithModule("cli-device", clidevice.Module),
 		cli.WithModule("guest-os", guestos.Module),
+		cli.WithModule("postgresql", postgresql.Module),
+		cli.WithModule("sqlmigrate", sqlmigrate.Module),
+		cli.WithModule("ldap", ldap.Module),
 		cli.WithModule("fake", fake.Module),
 		cli.WithExpander("template", template.Expander{}),
 		cli.WithExpander("netpolicy", netpolicy.New(netpolicy.WithRealizer(proxmox.RealizerName, proxmox.Realizer{}))),
