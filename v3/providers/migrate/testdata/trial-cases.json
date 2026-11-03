@@ -3,137 +3,764 @@
     "v2 の試用の intent（docs/trial/）と、それぞれの最初の現実に対する v2 の plan の操作（段 9 の完了条件）。",
     "v2 の側は tests/acceptance/migrate_trial_test.go が v2 の plan で ops を確かめ、新しいコアの側は",
     "v3/providers/migrate/trial_test.go が sakutei-migrate で書き直して新しいコアの plan で同じ ops を確かめる。",
-    "files は作業ディレクトリに写すもの（リポジトリのルートからの相対）、replace は写したファイルの書き換え、",
-    "write は作業ディレクトリに書くもの。flags は v2 の plan と sakutei-migrate の両方に渡す（値の先頭の @ は作業",
-    "ディレクトリからのパス）。migrate は sakutei-migrate だけに渡す。",
-    "ops は v2 の plan の操作：<create|update|delete> <v2 の ID>（止めたものは末尾に ' (blocked)'）。Workflow・Task が",
-    "持つもの（v2 の workflow・task）は procedures に、観測できないものは unknown に分ける。",
-    "v3_ops は新しいコアの provider が現実を v2 と違って読む（直した）ために操作が違うときだけ書き、理由を v3_reason に書く。"
+    "intent はリポジトリのルートからの intent のディレクトリ（無ければ空のディレクトリ）。append は intent のファイルに",
+    "足す本文（run.sh が resources.yaml に planned_change を足すのと同じ。無いファイルなら作る）。files は作業ディレクトリに",
+    "写すもの、replace は写したファイルの書き換え、write は作業ディレクトリに書くもの。append と write の {{t <ずれ> <形> [tz]}} は",
+    "今からのずれの時刻（形は ymdhm・hm・dow）で、窓を今を挟むように・外すように書く。flags は v2 の plan と sakutei-migrate の",
+    "両方に渡す（値の先頭の @ は作業ディレクトリからのパス）。migrate は sakutei-migrate だけに渡す。",
+    "ops は v2 の plan の操作：<create|update|delete> <v2 の ID>。止めたものは末尾に ' (blocked)'、v2 の remediation の窓の外",
+    "（reconcile が知らせるだけ）は ' (report)'。Workflow・Task が持つもの（v2 の workflow・task）は procedures に、観測できない",
+    "ものは unknown に分ける。",
+    "v3_record は、新しいコアの側で先に reconcile を 1 回流して Record（前の周の件数・別枠の承認の依頼）を作り、現実を",
+    "写し直してから、v3_approve の人が別枠の依頼を sakutei approve で承認し、Record を読む plan で比べる（v2 は承認を intent に",
+    "書いていた。新しいコアは承認を Record に残す）。",
+    "v3_ops・v3_unknown は新しいコアの provider が現実を v2 と違って読む（直した）ために違うときだけ書き、理由を v3_reason に書く。"
   ],
   "cases": [
     {
       "name": "v1",
       "intent": "docs/trial/v1/intent",
-      "files": {"example.com.zone": "docs/trial/v1/initial/example.com.zone", "firewall.rules": "docs/trial/v1/initial/firewall.rules"},
-      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules"],
-      "ops": ["create dnszone//api.example.com./A", "update dnszone//www.example.com./A", "update nftables//inet/filter/sakutei_allow"]
+      "files": {
+        "example.com.zone": "docs/trial/v1/initial/example.com.zone",
+        "firewall.rules": "docs/trial/v1/initial/firewall.rules"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--ruleset",
+        "@firewall.rules"
+      ],
+      "ops": [
+        "create dnszone//api.example.com./A",
+        "update dnszone//www.example.com./A",
+        "update nftables//inet/filter/sakutei_allow"
+      ]
     },
     {
       "name": "allocation",
       "intent": "docs/trial/allocation/intent",
-      "files": {"example.com.zone": "docs/trial/allocation/initial/example.com.zone"},
-      "flags": ["--zone", "@example.com.zone", "--alloc-store", "@alloc.json"],
-      "ops": ["create dnszone//_port.app1.example.com./TXT", "create dnszone//_port.app2.example.com./TXT", "create dnszone//www.example.com./A"]
+      "files": {
+        "example.com.zone": "docs/trial/allocation/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--alloc-store",
+        "@alloc.json"
+      ],
+      "ops": [
+        "create dnszone//_port.app1.example.com./TXT",
+        "create dnszone//_port.app2.example.com./TXT",
+        "create dnszone//www.example.com./A"
+      ]
     },
     {
       "name": "observe",
       "intent": "docs/trial/observe/intent",
-      "files": {"example.com.zone": "docs/trial/observe/initial/example.com.zone", "firewall.rules": "docs/trial/observe/initial/firewall.rules"},
-      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules"],
+      "files": {
+        "example.com.zone": "docs/trial/observe/initial/example.com.zone",
+        "firewall.rules": "docs/trial/observe/initial/firewall.rules"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--ruleset",
+        "@firewall.rules"
+      ],
       "ops": []
     },
     {
       "name": "observe-messy",
       "intent": "docs/trial/observe/intent",
-      "files": {"example.com.zone": "docs/trial/observe/messy/example.com.zone", "firewall.rules": "docs/trial/observe/messy/firewall.rules"},
-      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules"],
-      "ops": ["create dnszone//mail.example.com./A"],
-      "v3_ops": ["create dnszone//mail.example.com./A", "update dnszone//api.example.com./A", "update dnszone//www.example.com./A"],
-      "v3_unknown": ["nftables//inet/filter/sakutei_allow"],
+      "files": {
+        "example.com.zone": "docs/trial/observe/messy/example.com.zone",
+        "firewall.rules": "docs/trial/observe/messy/firewall.rules"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--ruleset",
+        "@firewall.rules"
+      ],
+      "ops": [
+        "create dnszone//mail.example.com./A"
+      ],
+      "v3_ops": [
+        "create dnszone//mail.example.com./A",
+        "update dnszone//api.example.com./A",
+        "update dnszone//www.example.com./A"
+      ],
+      "v3_unknown": [
+        "nftables//inet/filter/sakutei_allow"
+      ],
       "v3_reason": "新しいコアの provider は手で書いた癖のあるファイルを v2 と違って読む（直した）。dnszone は $TTL を読み（api の TTL の無い行は 600。v2 は 300 と読んだ、docs/trial/observe/README.md の 8）、同じ名前の 2 行目の A を RRset の値として読む（www は 192.0.2.10 と 192.0.2.99。v2 は最初の行だけを見た）。nftables は同じ chain の 2 つ目の塊を、nft -f が足し合わせる中身を v2 のように見落とさず、読めない（Unknown）とする。書き直しの違いではない"
     },
     {
       "name": "planned-change",
       "intent": "docs/trial/planned-change/intent",
-      "files": {"example.com.zone": "docs/trial/planned-change/initial/example.com.zone", "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"},
-      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules"],
-      "ops": ["update dnszone/zone=example/a1.example.com./A", "update dnszone/zone=example/a2.example.com./A", "update dnszone/zone=example/a3.example.com./A",
-              "update nftables/fw=edge/inet/filter/sakutei_a", "update nftables/fw=edge/inet/filter/sakutei_b"]
+      "files": {
+        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--ruleset",
+        "@firewall.rules"
+      ],
+      "ops": [
+        "update dnszone/zone=example/a1.example.com./A",
+        "update dnszone/zone=example/a2.example.com./A",
+        "update dnszone/zone=example/a3.example.com./A",
+        "update nftables/fw=edge/inet/filter/sakutei_a",
+        "update nftables/fw=edge/inet/filter/sakutei_b"
+      ]
     },
     {
       "name": "planned-change-budget",
       "intent": "docs/trial/planned-change/intent",
-      "files": {"example.com.zone": "docs/trial/planned-change/initial/example.com.zone", "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"},
-      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules", "--max-changes-per-cycle", "1"],
-      "ops": ["update dnszone/zone=example/a1.example.com./A (blocked)", "update dnszone/zone=example/a2.example.com./A (blocked)", "update dnszone/zone=example/a3.example.com./A (blocked)",
-              "update nftables/fw=edge/inet/filter/sakutei_a (blocked)", "update nftables/fw=edge/inet/filter/sakutei_b (blocked)"]
+      "files": {
+        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--ruleset",
+        "@firewall.rules",
+        "--max-changes-per-cycle",
+        "1"
+      ],
+      "ops": [
+        "update dnszone/zone=example/a1.example.com./A (blocked)",
+        "update dnszone/zone=example/a2.example.com./A (blocked)",
+        "update dnszone/zone=example/a3.example.com./A (blocked)",
+        "update nftables/fw=edge/inet/filter/sakutei_a (blocked)",
+        "update nftables/fw=edge/inet/filter/sakutei_b (blocked)"
+      ]
     },
     {
       "name": "sync-import",
       "intent": "docs/trial/sync-import/intent",
-      "files": {"state.json": "docs/trial/sync-import/initial/state.json"},
-      "flags": ["--state", "@state.json"],
+      "files": {
+        "state.json": "docs/trial/sync-import/initial/state.json"
+      },
+      "flags": [
+        "--state",
+        "@state.json"
+      ],
       "ops": []
     },
     {
       "name": "workflow-gates",
       "intent": "docs/trial/workflow-gates/intent",
-      "files": {"state.json": "docs/trial/workflow-gates/initial/state.json"},
-      "flags": ["--state", "@state.json"],
-      "migrate": ["--approver", "bob", "--role", "platform-admin=alice,bob,carol,frank"],
+      "files": {
+        "state.json": "docs/trial/workflow-gates/initial/state.json"
+      },
+      "flags": [
+        "--state",
+        "@state.json"
+      ],
+      "migrate": [
+        "--approver",
+        "bob",
+        "--role",
+        "platform-admin=alice,bob,carol,frank"
+      ],
       "ops": [],
-      "procedures": ["fake//n1", "fake//n2", "fake//n3"]
+      "procedures": [
+        "fake//n1",
+        "fake//n2",
+        "fake//n3"
+      ]
     },
     {
       "name": "sharding-a",
       "intent": "docs/trial/sharding/repo/intent/site=a",
-      "files": {"example.com.zone": "docs/trial/sharding/initial/example.com.zone"},
-      "flags": ["--zone", "@example.com.zone"],
-      "ops": ["create dnszone/site=a/a-api.example.com./A", "create dnszone/site=a/a-www.example.com./A"]
+      "files": {
+        "example.com.zone": "docs/trial/sharding/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone"
+      ],
+      "ops": [
+        "create dnszone/site=a/a-api.example.com./A",
+        "create dnszone/site=a/a-www.example.com./A"
+      ]
     },
     {
       "name": "sharding-b",
       "intent": "docs/trial/sharding/repo/intent/site=b",
-      "files": {"example.com.zone": "docs/trial/sharding/initial/example.com.zone"},
-      "flags": ["--zone", "@example.com.zone"],
-      "ops": ["create dnszone/site=b/b-www.example.com./A"]
+      "files": {
+        "example.com.zone": "docs/trial/sharding/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone"
+      ],
+      "ops": [
+        "create dnszone/site=b/b-www.example.com./A"
+      ]
     },
     {
       "name": "sharding-c",
       "intent": "docs/trial/sharding/repo/intent/site=c",
-      "files": {"example.com.zone": "docs/trial/sharding/initial/example.com.zone"},
-      "flags": ["--zone", "@example.com.zone"],
-      "ops": ["create dnszone/site=c/c-www.example.com./A"]
+      "files": {
+        "example.com.zone": "docs/trial/sharding/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone"
+      ],
+      "ops": [
+        "create dnszone/site=c/c-www.example.com./A"
+      ]
     },
     {
       "name": "dr-mode-tokyo",
       "intent": "docs/trial/dr-mode/repo/intent/site=tokyo",
-      "files": {"reality.json": "docs/trial/dr-mode/initial/reality.json"},
-      "flags": ["--state", "@reality.json"],
-      "ops": ["create fake/site=tokyo/tk-db", "create fake/site=tokyo/tk-web"]
+      "files": {
+        "reality.json": "docs/trial/dr-mode/initial/reality.json"
+      },
+      "flags": [
+        "--state",
+        "@reality.json"
+      ],
+      "ops": [
+        "create fake/site=tokyo/tk-db",
+        "create fake/site=tokyo/tk-web"
+      ]
     },
     {
       "name": "dr-mode-osaka",
       "intent": "docs/trial/dr-mode/repo/intent/site=osaka",
-      "files": {"reality.json": "docs/trial/dr-mode/initial/reality.json"},
-      "flags": ["--state", "@reality.json"],
-      "ops": ["create fake/site=osaka/os-web"]
+      "files": {
+        "reality.json": "docs/trial/dr-mode/initial/reality.json"
+      },
+      "flags": [
+        "--state",
+        "@reality.json"
+      ],
+      "ops": [
+        "create fake/site=osaka/os-web"
+      ]
     },
     {
       "name": "sqlmigrate",
       "intent": "docs/trial/sqlmigrate/intent",
-      "files": {"databases.yaml": "docs/trial/sqlmigrate/databases.yaml", "migrations": "docs/trial/sqlmigrate/migrations"},
-      "write": {"data/.keep": ""},
-      "flags": ["--sqlmigrate-config", "@databases.yaml"],
+      "files": {
+        "databases.yaml": "docs/trial/sqlmigrate/databases.yaml",
+        "migrations": "docs/trial/sqlmigrate/migrations"
+      },
+      "write": {
+        "data/.keep": ""
+      },
+      "flags": [
+        "--sqlmigrate-config",
+        "@databases.yaml"
+      ],
       "ops": [],
-      "procedures": ["sqlmigrate//app"]
+      "procedures": [
+        "sqlmigrate//app"
+      ]
     },
     {
       "name": "redfish-os-install",
       "intent": "docs/trial/redfish-os-install/intent",
-      "files": {"bmcs.yaml": "docs/trial/redfish-os-install/bmcs.yaml", "hosts.yaml": "docs/trial/redfish-os-install/hosts.yaml",
-                "providers.yaml": "docs/trial/redfish-os-install/providers.yaml", "templates": "docs/trial/redfish-os-install/templates"},
-      "replace": [{"file": "bmcs.yaml", "old": "https://172.31.85.11", "new": "https://127.0.0.1:1"},
-                  {"file": "hosts.yaml", "old": "172.31.85.11", "new": "127.0.0.1"},
-                  {"file": "hosts.yaml", "old": "2222", "new": "1"}],
-      "write": {"secrets.json": "{\"secrets\": {\"bmc/node1\": {\"gen\": 1, \"value\": \"pw\"}, \"ssh/node1\": {\"gen\": 1, \"value\": \"key\"}}}",
-                "bmc-node1.pass": "pw", "node1.key": "key", "known_hosts": "", "answers/.keep": ""},
-      "flags": ["--redfish-config", "@bmcs.yaml", "--provider-config", "@providers.yaml"],
-      "migrate": ["--secret-file", "secretref:file/bmc/node1=@bmc-node1.pass", "--secret-file", "secretref:file/ssh/node1=@node1.key"],
-      "ops": ["update template-file//6f1b7c52-0e1a-4d2b-9c11-000000008501"],
-      "procedures": ["redfish-system//node1", "redfish-virtual-media//node1/cd"],
-      "v3_unknown": ["guest/os/node1", "redfish-system//node1"],
+      "files": {
+        "bmcs.yaml": "docs/trial/redfish-os-install/bmcs.yaml",
+        "hosts.yaml": "docs/trial/redfish-os-install/hosts.yaml",
+        "providers.yaml": "docs/trial/redfish-os-install/providers.yaml",
+        "templates": "docs/trial/redfish-os-install/templates"
+      },
+      "replace": [
+        {
+          "file": "bmcs.yaml",
+          "old": "https://172.31.85.11",
+          "new": "https://127.0.0.1:1"
+        },
+        {
+          "file": "hosts.yaml",
+          "old": "172.31.85.11",
+          "new": "127.0.0.1"
+        },
+        {
+          "file": "hosts.yaml",
+          "old": "2222",
+          "new": "1"
+        }
+      ],
+      "write": {
+        "secrets.json": "{\"secrets\": {\"bmc/node1\": {\"gen\": 1, \"value\": \"pw\"}, \"ssh/node1\": {\"gen\": 1, \"value\": \"key\"}}}",
+        "bmc-node1.pass": "pw",
+        "node1.key": "key",
+        "known_hosts": "",
+        "answers/.keep": ""
+      },
+      "flags": [
+        "--redfish-config",
+        "@bmcs.yaml",
+        "--provider-config",
+        "@providers.yaml"
+      ],
+      "migrate": [
+        "--secret-file",
+        "secretref:file/bmc/node1=@bmc-node1.pass",
+        "--secret-file",
+        "secretref:file/ssh/node1=@node1.key"
+      ],
+      "ops": [
+        "update template-file//6f1b7c52-0e1a-4d2b-9c11-000000008501"
+      ],
+      "procedures": [
+        "redfish-system//node1",
+        "redfish-virtual-media//node1/cd"
+      ],
+      "v3_unknown": [
+        "guest/os/node1",
+        "redfish-system//node1"
+      ],
       "v3_reason": "BMC と導入した OS には届かない（試験のために 127.0.0.1:1 に向けた）。v2 は node1 を Workflow が持つとして観測できないものに数えなかった。新しいコアは手順の対象も観測して Unknown と出す。guest/os/node1 は v2 では設定（guest_hosts・guest_markers）に書いていた目印の宣言"
+    },
+    {
+      "name": "planned-change-A3",
+      "intent": "docs/trial/planned-change/intent",
+      "files": {
+        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--ruleset",
+        "@firewall.rules",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "resources.yaml": "planned_change:\n  scope:\n    zone: example\n  kind: update\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +1h ymdhm}}\"\n  applicant: carol\n  approval:\n    pr: 7\n    approvers:\n      - alice\n"
+      },
+      "v3_record": true,
+      "v3_approve": [
+        "alice"
+      ],
+      "ops": [
+        "update dnszone/zone=example/a1.example.com./A",
+        "update dnszone/zone=example/a2.example.com./A",
+        "update dnszone/zone=example/a3.example.com./A",
+        "update nftables/fw=edge/inet/filter/sakutei_a (blocked)",
+        "update nftables/fw=edge/inet/filter/sakutei_b (blocked)"
+      ]
+    },
+    {
+      "name": "planned-change-A6",
+      "intent": "docs/trial/planned-change/intent",
+      "files": {
+        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--ruleset",
+        "@firewall.rules",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "resources.yaml": "planned_change:\n  scope:\n    zone: example\n  kind: update\n  max_count: 3\n  window: \"{{t +1h ymdhm}} .. {{t +2h ymdhm}}\"\n  applicant: carol\n  approval:\n    pr: 7\n    approvers:\n      - alice\n"
+      },
+      "v3_record": true,
+      "v3_approve": [
+        "alice"
+      ],
+      "ops": [
+        "update dnszone/zone=example/a1.example.com./A (blocked)",
+        "update dnszone/zone=example/a2.example.com./A (blocked)",
+        "update dnszone/zone=example/a3.example.com./A (blocked)",
+        "update nftables/fw=edge/inet/filter/sakutei_a (blocked)",
+        "update nftables/fw=edge/inet/filter/sakutei_b (blocked)"
+      ]
+    },
+    {
+      "name": "planned-change-A7",
+      "intent": "docs/trial/planned-change/intent",
+      "files": {
+        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--ruleset",
+        "@firewall.rules",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "resources.yaml": "planned_change:\n  scope:\n    zone: other\n  kind: update\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +1h ymdhm}}\"\n  applicant: carol\n  approval:\n    pr: 7\n    approvers:\n      - alice\n"
+      },
+      "v3_record": true,
+      "v3_approve": [
+        "alice"
+      ],
+      "ops": [
+        "update dnszone/zone=example/a1.example.com./A (blocked)",
+        "update dnszone/zone=example/a2.example.com./A (blocked)",
+        "update dnszone/zone=example/a3.example.com./A (blocked)",
+        "update nftables/fw=edge/inet/filter/sakutei_a (blocked)",
+        "update nftables/fw=edge/inet/filter/sakutei_b (blocked)"
+      ]
+    },
+    {
+      "name": "planned-change-B2",
+      "intent": "",
+      "append": {
+        "main.yaml": "version: \"1\"\nresources:\n  - provider: fake\n    id: keep-decom\n    deletion_policy: PruneWithinScope\n    scope:\n      pool: decom\n    fields:\n      name: keep-decom\n      size: \"1\"\n  - provider: fake\n    id: keep-other\n    deletion_policy: PruneWithinScope\n    scope:\n      pool: other\n    fields:\n      name: keep-other\n      size: \"1\"\nplanned_change:\n  scope:\n    pool: decom\n  kind: delete\n  max_count: 5\n  window: \"{{t -1h ymdhm}} .. {{t +1h ymdhm}}\"\n  applicant: carol\n  approval:\n    pr: 42\n    approvers:\n      - alice\n"
+      },
+      "write": {
+        "state.json": "{\n  \"resources\": {\n    \"keep-decom\": {\n      \"fields\": {\n        \"name\": \"keep-decom\",\n        \"size\": \"1\"\n      }\n    },\n    \"decom-1\": {\n      \"fields\": {\n        \"name\": \"decom-1\",\n        \"size\": \"1\"\n      }\n    },\n    \"decom-2\": {\n      \"fields\": {\n        \"name\": \"decom-2\",\n        \"size\": \"1\"\n      }\n    },\n    \"decom-3\": {\n      \"fields\": {\n        \"name\": \"decom-3\",\n        \"size\": \"1\"\n      }\n    },\n    \"decom-4\": {\n      \"fields\": {\n        \"name\": \"decom-4\",\n        \"size\": \"1\"\n      }\n    },\n    \"decom-5\": {\n      \"fields\": {\n        \"name\": \"decom-5\",\n        \"size\": \"1\"\n      }\n    },\n    \"keep-other\": {\n      \"fields\": {\n        \"name\": \"keep-other\",\n        \"size\": \"1\"\n      }\n    },\n    \"stray-1\": {\n      \"fields\": {\n        \"name\": \"stray-1\",\n        \"size\": \"1\"\n      }\n    },\n    \"stray-2\": {\n      \"fields\": {\n        \"name\": \"stray-2\",\n        \"size\": \"1\"\n      }\n    }\n  },\n  \"scopes\": {\n    \"keep-decom\": {\n      \"pool\": \"decom\"\n    },\n    \"decom-1\": {\n      \"pool\": \"decom\"\n    },\n    \"decom-2\": {\n      \"pool\": \"decom\"\n    },\n    \"decom-3\": {\n      \"pool\": \"decom\"\n    },\n    \"decom-4\": {\n      \"pool\": \"decom\"\n    },\n    \"decom-5\": {\n      \"pool\": \"decom\"\n    },\n    \"keep-other\": {\n      \"pool\": \"other\"\n    },\n    \"stray-1\": {\n      \"pool\": \"other\"\n    },\n    \"stray-2\": {\n      \"pool\": \"other\"\n    }\n  },\n  \"pruneable_capability\": true,\n  \"provider_version\": \"trial-1\"\n}"
+      },
+      "flags": [
+        "--state",
+        "@state.json",
+        "--max-destructive-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "v3_record": true,
+      "v3_approve": [
+        "alice"
+      ],
+      "ops": [
+        "delete fake/pool=decom/decom-1",
+        "delete fake/pool=decom/decom-2",
+        "delete fake/pool=decom/decom-3",
+        "delete fake/pool=decom/decom-4",
+        "delete fake/pool=decom/decom-5",
+        "delete fake/pool=other/stray-1 (blocked)",
+        "delete fake/pool=other/stray-2 (blocked)"
+      ]
+    },
+    {
+      "name": "planned-change-B4",
+      "intent": "",
+      "append": {
+        "main.yaml": "version: \"1\"\nresources:\n  - provider: fake\n    id: hpc-head\n    deletion_policy: PruneWithinScope\n    scope:\n      pool: hpc\n    fields:\n      name: hpc-head\n      size: \"1\"\n  - provider: fake\n    id: node-1-v2\n    deletion_policy: PruneWithinScope\n    scope:\n      pool: hpc\n      slot: 1\n    fields:\n      name: node-1-v2\n      size: \"1\"\n  - provider: fake\n    id: node-2-v2\n    deletion_policy: PruneWithinScope\n    scope:\n      pool: hpc\n      slot: 2\n    fields:\n      name: node-2-v2\n      size: \"1\"\n  - provider: fake\n    id: node-3-v2\n    deletion_policy: PruneWithinScope\n    scope:\n      pool: hpc\n      slot: 3\n    fields:\n      name: node-3-v2\n      size: \"1\"\nplanned_change:\n  scope:\n    pool: hpc\n  kind: reimage\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +1h ymdhm}}\"\n  applicant: carol\n  approval:\n    pr: 42\n    approvers:\n      - alice\n"
+      },
+      "write": {
+        "state.json": "{\n  \"resources\": {\n    \"hpc-head\": {\n      \"fields\": {\n        \"name\": \"hpc-head\",\n        \"size\": \"1\"\n      }\n    },\n    \"node-1-v1\": {\n      \"fields\": {\n        \"name\": \"node-1-v1\",\n        \"size\": \"1\"\n      }\n    },\n    \"node-2-v1\": {\n      \"fields\": {\n        \"name\": \"node-2-v1\",\n        \"size\": \"1\"\n      }\n    },\n    \"node-3-v1\": {\n      \"fields\": {\n        \"name\": \"node-3-v1\",\n        \"size\": \"1\"\n      }\n    },\n    \"node-4-v1\": {\n      \"fields\": {\n        \"name\": \"node-4-v1\",\n        \"size\": \"1\"\n      }\n    },\n    \"node-5-v1\": {\n      \"fields\": {\n        \"name\": \"node-5-v1\",\n        \"size\": \"1\"\n      }\n    }\n  },\n  \"scopes\": {\n    \"hpc-head\": {\n      \"pool\": \"hpc\"\n    },\n    \"node-1-v1\": {\n      \"pool\": \"hpc\",\n      \"slot\": \"1\"\n    },\n    \"node-2-v1\": {\n      \"pool\": \"hpc\",\n      \"slot\": \"2\"\n    },\n    \"node-3-v1\": {\n      \"pool\": \"hpc\",\n      \"slot\": \"3\"\n    },\n    \"node-4-v1\": {\n      \"pool\": \"hpc\",\n      \"slot\": \"4\"\n    },\n    \"node-5-v1\": {\n      \"pool\": \"hpc\",\n      \"slot\": \"5\"\n    }\n  },\n  \"pruneable_capability\": true,\n  \"provider_version\": \"trial-1\"\n}"
+      },
+      "flags": [
+        "--state",
+        "@state.json",
+        "--max-destructive-per-cycle",
+        "2",
+        "--max-destructive-per-window",
+        "2",
+        "--window-duration",
+        "24h",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "v3_record": true,
+      "v3_approve": [
+        "alice"
+      ],
+      "ops": [
+        "create fake/pool=hpc,slot=1/node-1-v2",
+        "create fake/pool=hpc,slot=2/node-2-v2",
+        "create fake/pool=hpc,slot=3/node-3-v2",
+        "delete fake/pool=hpc,slot=1/node-1-v1",
+        "delete fake/pool=hpc,slot=2/node-2-v1",
+        "delete fake/pool=hpc,slot=3/node-3-v1",
+        "delete fake/pool=hpc,slot=4/node-4-v1",
+        "delete fake/pool=hpc,slot=5/node-5-v1"
+      ]
+    },
+    {
+      "name": "remediation-in-window",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nremediation:\n  default: alert-only\n  tz: Asia/Tokyo\n  schedule:\n    - window: \"{{t -30m hm Asia/Tokyo}}-{{t +30m hm Asia/Tokyo}}\"\n      mode: auto\nresources:\n  - provider: dnszone\n    id: www.example.com./A\n    fields:\n      name: www.example.com.\n      type: A\n      value: 192.0.2.10\n      ttl: \"300\"\n"
+      },
+      "ops": [
+        "update dnszone//www.example.com./A"
+      ]
+    },
+    {
+      "name": "remediation-out-of-window",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nremediation:\n  schedule:\n    - window: \"{{t +1h hm}}-{{t +90m hm}}\"\n      mode: auto\nresources:\n  - provider: dnszone\n    id: www.example.com./A\n    fields:\n      name: www.example.com.\n      type: A\n      value: 192.0.2.10\n      ttl: \"300\"\n"
+      },
+      "ops": [
+        "update dnszone//www.example.com./A (report)"
+      ]
+    },
+    {
+      "name": "remediation-today",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nremediation:\n  schedule:\n    - window: \"{{t -30m dow}} {{t -30m hm}}-{{t +30m hm}}\"\n      mode: auto\nresources:\n  - provider: dnszone\n    id: www.example.com./A\n    fields:\n      name: www.example.com.\n      type: A\n      value: 192.0.2.10\n      ttl: \"300\"\n"
+      },
+      "ops": [
+        "update dnszone//www.example.com./A"
+      ]
+    },
+    {
+      "name": "remediation-tomorrow",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nremediation:\n  schedule:\n    - window: \"{{t 23h30m dow}} {{t -30m hm}}-{{t +30m hm}}\"\n      mode: auto\nresources:\n  - provider: dnszone\n    id: www.example.com./A\n    fields:\n      name: www.example.com.\n      type: A\n      value: 192.0.2.10\n      ttl: \"300\"\n"
+      },
+      "ops": [
+        "update dnszone//www.example.com./A (report)"
+      ]
+    },
+    {
+      "name": "remediation-default-alert-only",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nremediation:\n  default: alert-only\nresources:\n  - provider: dnszone\n    id: www.example.com./A\n    fields:\n      name: www.example.com.\n      type: A\n      value: 192.0.2.10\n      ttl: \"300\"\n"
+      },
+      "ops": [
+        "update dnszone//www.example.com./A (report)"
+      ]
+    },
+    {
+      "name": "profile-team-no-approver",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nresources:\n  - provider: dnszone\n    id: a1.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a1.example.com.\n      type: A\n      value: 198.51.100.1\n      ttl: \"300\"\n  - provider: dnszone\n    id: a2.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a2.example.com.\n      type: A\n      value: 198.51.100.2\n      ttl: \"300\"\n  - provider: dnszone\n    id: a3.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a3.example.com.\n      type: A\n      value: 198.51.100.3\n      ttl: \"300\"\nplanned_change:\n  scope:\n    pool: web\n  kind: update\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +3h ymdhm}}\"\n"
+      },
+      "migrate": [
+        "--approver",
+        "alice"
+      ],
+      "v3_record": true,
+      "v3_approve": [],
+      "ops": [
+        "update dnszone/pool=web/a1.example.com./A (blocked)",
+        "update dnszone/pool=web/a2.example.com./A (blocked)",
+        "update dnszone/pool=web/a3.example.com./A (blocked)"
+      ]
+    },
+    {
+      "name": "profile-team",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nresources:\n  - provider: dnszone\n    id: a1.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a1.example.com.\n      type: A\n      value: 198.51.100.1\n      ttl: \"300\"\n  - provider: dnszone\n    id: a2.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a2.example.com.\n      type: A\n      value: 198.51.100.2\n      ttl: \"300\"\n  - provider: dnszone\n    id: a3.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a3.example.com.\n      type: A\n      value: 198.51.100.3\n      ttl: \"300\"\nplanned_change:\n  scope:\n    pool: web\n  kind: update\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +3h ymdhm}}\"\n  approval:\n    pr: 7\n    approvers:\n      - alice\n"
+      },
+      "v3_record": true,
+      "v3_approve": [
+        "alice"
+      ],
+      "ops": [
+        "update dnszone/pool=web/a1.example.com./A",
+        "update dnszone/pool=web/a2.example.com./A",
+        "update dnszone/pool=web/a3.example.com./A"
+      ]
+    },
+    {
+      "name": "profile-enterprise-one",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nprofile: enterprise\nresources:\n  - provider: dnszone\n    id: a1.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a1.example.com.\n      type: A\n      value: 198.51.100.1\n      ttl: \"300\"\n  - provider: dnszone\n    id: a2.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a2.example.com.\n      type: A\n      value: 198.51.100.2\n      ttl: \"300\"\n  - provider: dnszone\n    id: a3.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a3.example.com.\n      type: A\n      value: 198.51.100.3\n      ttl: \"300\"\nplanned_change:\n  scope:\n    pool: web\n  kind: update\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +3h ymdhm}}\"\n  applicant: carol\n  approval:\n    pr: 7\n    approvers:\n      - alice\n"
+      },
+      "migrate": [
+        "--approver",
+        "bob"
+      ],
+      "v3_record": true,
+      "v3_approve": [
+        "alice"
+      ],
+      "ops": [
+        "update dnszone/pool=web/a1.example.com./A (blocked)",
+        "update dnszone/pool=web/a2.example.com./A (blocked)",
+        "update dnszone/pool=web/a3.example.com./A (blocked)"
+      ]
+    },
+    {
+      "name": "profile-enterprise-applicant",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nprofile: enterprise\nresources:\n  - provider: dnszone\n    id: a1.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a1.example.com.\n      type: A\n      value: 198.51.100.1\n      ttl: \"300\"\n  - provider: dnszone\n    id: a2.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a2.example.com.\n      type: A\n      value: 198.51.100.2\n      ttl: \"300\"\n  - provider: dnszone\n    id: a3.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a3.example.com.\n      type: A\n      value: 198.51.100.3\n      ttl: \"300\"\nplanned_change:\n  scope:\n    pool: web\n  kind: update\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +3h ymdhm}}\"\n  applicant: carol\n  approval:\n    pr: 7\n    approvers:\n      - carol\n      - alice\n"
+      },
+      "v3_record": true,
+      "v3_approve": [
+        "carol",
+        "alice"
+      ],
+      "ops": [
+        "update dnszone/pool=web/a1.example.com./A (blocked)",
+        "update dnszone/pool=web/a2.example.com./A (blocked)",
+        "update dnszone/pool=web/a3.example.com./A (blocked)"
+      ]
+    },
+    {
+      "name": "profile-enterprise",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nprofile: enterprise\nresources:\n  - provider: dnszone\n    id: a1.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a1.example.com.\n      type: A\n      value: 198.51.100.1\n      ttl: \"300\"\n  - provider: dnszone\n    id: a2.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a2.example.com.\n      type: A\n      value: 198.51.100.2\n      ttl: \"300\"\n  - provider: dnszone\n    id: a3.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a3.example.com.\n      type: A\n      value: 198.51.100.3\n      ttl: \"300\"\nplanned_change:\n  scope:\n    pool: web\n  kind: update\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +3h ymdhm}}\"\n  applicant: carol\n  approval:\n    pr: 7\n    approvers:\n      - alice\n      - bob\n"
+      },
+      "v3_record": true,
+      "v3_approve": [
+        "alice",
+        "bob"
+      ],
+      "ops": [
+        "update dnszone/pool=web/a1.example.com./A",
+        "update dnszone/pool=web/a2.example.com./A",
+        "update dnszone/pool=web/a3.example.com./A"
+      ]
+    },
+    {
+      "name": "profile-solo",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nprofile: solo\nresources:\n  - provider: dnszone\n    id: a1.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a1.example.com.\n      type: A\n      value: 198.51.100.1\n      ttl: \"300\"\n  - provider: dnszone\n    id: a2.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a2.example.com.\n      type: A\n      value: 198.51.100.2\n      ttl: \"300\"\n  - provider: dnszone\n    id: a3.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a3.example.com.\n      type: A\n      value: 198.51.100.3\n      ttl: \"300\"\nplanned_change:\n  scope:\n    pool: web\n  kind: update\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +3h ymdhm}}\"\n"
+      },
+      "v3_record": true,
+      "v3_approve": [],
+      "ops": [
+        "update dnszone/pool=web/a1.example.com./A (blocked)",
+        "update dnszone/pool=web/a2.example.com./A (blocked)",
+        "update dnszone/pool=web/a3.example.com./A (blocked)"
+      ]
+    },
+    {
+      "name": "profile-solo-no-cooling-off",
+      "intent": "",
+      "files": {
+        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+      },
+      "flags": [
+        "--zone",
+        "@example.com.zone",
+        "--max-changes-per-cycle",
+        "1",
+        "--audit-log",
+        "@audit.jsonl"
+      ],
+      "append": {
+        "main.yaml": "version: \"1\"\nprofile: solo\nresources:\n  - provider: dnszone\n    id: a1.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a1.example.com.\n      type: A\n      value: 198.51.100.1\n      ttl: \"300\"\n  - provider: dnszone\n    id: a2.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a2.example.com.\n      type: A\n      value: 198.51.100.2\n      ttl: \"300\"\n  - provider: dnszone\n    id: a3.example.com./A\n    scope:\n      pool: web\n    fields:\n      name: a3.example.com.\n      type: A\n      value: 198.51.100.3\n      ttl: \"300\"\nplanned_change:\n  scope:\n    pool: web\n  kind: update\n  max_count: 3\n  window: \"{{t -1h ymdhm}} .. {{t +3h ymdhm}}\"\n  cooling_off: 0s\n"
+      },
+      "ops": [
+        "update dnszone/pool=web/a1.example.com./A",
+        "update dnszone/pool=web/a2.example.com./A",
+        "update dnszone/pool=web/a3.example.com./A"
+      ]
     }
   ]
 }

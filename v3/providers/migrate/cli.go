@@ -42,7 +42,7 @@ func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 //
 //	sakutei-migrate --intent <v2 の intent> --out <dir> [--provider-config <file>]
 //	    [--zone <file>] [--ruleset <file>] [--state <file>] [--redfish-config <file>]
-//	    [--sqlmigrate-config <file>] [--alloc-store <file>] [--max-changes-per-cycle <n>]
+//	    [--sqlmigrate-config <file>] [--alloc-store <file>] [--audit-log <file>] [--max-changes-per-cycle <n>]
 //	    [--max-destructive-per-cycle <n>] [--max-destructive-per-window <n> --window-duration <長さ>]
 //	    [--mode alert-only] [--nft-host <名前>] [--role <ロール>=<名前>,…]…
 //	    [--approver <名前>]… [--secret-file <参照>=<ファイル>]…
@@ -58,7 +58,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	pc := fs.String("provider-config", "", "v2 の --provider-config のファイル")
 	nftHost := fs.String("nft-host", "local", "nftables の ruleset のファイルに付けるホストの名前")
 	flags := map[string]*string{}
-	for _, f := range []string{"zone", "ruleset", "ruleset-target", "state", "redfish-config", "sqlmigrate-config", "alloc-store",
+	for _, f := range []string{"zone", "ruleset", "ruleset-target", "state", "redfish-config", "sqlmigrate-config", "alloc-store", "audit-log",
 		"max-changes-per-cycle", "max-destructive-per-cycle", "max-destructive-per-window", "window-duration", "on-exceed", "mode"} {
 		flags[f] = fs.String(f, "", "v2 の --"+f)
 	}

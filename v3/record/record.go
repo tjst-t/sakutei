@@ -95,6 +95,26 @@ type Marks struct {
 	Ineffective map[string]IneffectiveMark `json:"ineffective,omitempty"`
 	// InputCounts は外部入力ごとの前の周の件数（E-K3）。欠けていた周は前の値を保つ。
 	InputCounts map[string]int `json:"input_counts,omitempty"`
+	// Lanes は別枠の Policy ごとの使用量と、宣言を初めて見た時刻（cooling-off の
+	// 時計、E-J2・N-J2）。枠は発射の直前に使い、失敗しても戻さない。
+	Lanes map[string]LaneMark `json:"lanes,omitempty"`
+}
+
+// LaneMark は別枠 1 つの目印。Fingerprint（select・kind・窓）が変われば別の宣言
+// として数え直す。max_count を変えただけなら使った分を保つ。
+type LaneMark struct {
+	Fingerprint string    `json:"fingerprint"`
+	Used        int       `json:"used"`
+	Seen        time.Time `json:"seen"`
+}
+
+// Lane は Policy name の別枠の目印（fingerprint が違えば空）。
+func (m Marks) Lane(name, fingerprint string) (LaneMark, bool) {
+	l, ok := m.Lanes[name]
+	if !ok || l.Fingerprint != fingerprint {
+		return LaneMark{Fingerprint: fingerprint}, false
+	}
+	return l, true
 }
 
 // IneffectiveMark は効かない Apply の数と、数えたときの宣言のハッシュ（宣言を

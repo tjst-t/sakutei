@@ -120,6 +120,10 @@ type Change struct {
 	// Handover は手順が受け持つ項目（drift_fields）のうちずれているもの。収束では
 	// 当てず手順を起こす（E-F2・E-A5・N-A4）。
 	Handover []string `json:"handover,omitempty"`
+	// Lane は入れた別枠の Policy（予算に数えない、E-J2）。LaneWeight は枠を使う
+	// 数（reimage の作成の側は 0）。
+	Lane       string `json:"lane,omitempty"`
+	LaneWeight int    `json:"-"`
 
 	// reconcile が当てた結果。
 	Outcome Outcome `json:"outcome,omitempty"`
@@ -200,13 +204,15 @@ type Halt struct {
 // Result は plan・reconcile の結果。文と JSON はこの 1 つの構造から作る
 // （不変条件 30）。
 type Result struct {
-	Verb       string        `json:"-"` // 文の頭（plan・reconcile）
-	Changes    []Change      `json:"changes"`
-	Summary    map[Op]int    `json:"summary"`
-	Ranges     []RangeStatus `json:"ranges,omitempty"`
-	Budgets    []BudgetUse   `json:"budgets,omitempty"`
-	Halts      []Halt        `json:"halts,omitempty"`
-	ReportOnly string        `json:"report_only,omitempty"`
+	Verb    string        `json:"-"` // 文の頭（plan・reconcile）
+	Changes []Change      `json:"changes"`
+	Summary map[Op]int    `json:"summary"`
+	Ranges  []RangeStatus `json:"ranges,omitempty"`
+	Budgets []BudgetUse   `json:"budgets,omitempty"`
+	Halts   []Halt        `json:"halts,omitempty"`
+	// Lanes は別枠の Policy の状態（開いたか・使った数・承認、E-J2）。
+	Lanes      []LaneStatus `json:"lanes,omitempty"`
+	ReportOnly string       `json:"report_only,omitempty"`
 	// AdvancedElsewhere はほかの処理が Record のロックを持ち、この周は進めなかった
 	// （E-M5・N-M7）。
 	AdvancedElsewhere bool     `json:"advanced_elsewhere,omitempty"`
@@ -499,6 +505,9 @@ func (r Result) WriteText(w io.Writer) error {
 		if len(c.Handover) > 0 {
 			fmt.Fprintf(&b, "    手順が受け持つ: %s\n", strings.Join(c.Handover, ", "))
 		}
+		if c.Lane != "" {
+			fmt.Fprintf(&b, "    別枠: policy %s（通常の予算に数えない）\n", c.Lane)
+		}
 		for _, f := range c.Fields {
 			mark := ""
 			if f.Identity {
@@ -551,6 +560,18 @@ func (r Result) WriteText(w io.Writer) error {
 		fmt.Fprintf(&b, "予算 %s: 変更 %s・壊す変更 %s", u.Policy, ratio(u.Changes, u.PerCycle), ratio(u.Destructive, u.DestructivePerCycle))
 		if u.DestructivePerWindow != core.Unlimited {
 			fmt.Fprintf(&b, "・窓の壊す変更 %s", ratio(u.WindowUsed, u.DestructivePerWindow))
+		}
+		fmt.Fprintln(&b)
+	}
+	for _, l := range r.Lanes {
+		fmt.Fprintf(&b, "別枠 %s（%s）: ", l.Policy, l.Kind)
+		if l.Open {
+			fmt.Fprintf(&b, "開いている。この周 %d・使った %d／max_count %d", l.Admitted, l.Used, l.MaxCount)
+		} else {
+			fmt.Fprintf(&b, "開いていない")
+		}
+		if l.Note != "" {
+			fmt.Fprintf(&b, "。%s", l.Note)
 		}
 		fmt.Fprintln(&b)
 	}

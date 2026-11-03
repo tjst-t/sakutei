@@ -539,7 +539,7 @@ func (d *decoder) rangeOf(n *yaml.Node, path string) (core.Range, bool) {
 
 // policy は Policy を読む（§3.6）。select・mode・budget・approval・applicant。
 func (d *decoder) policy(n *yaml.Node, path string) (core.Policy, bool) {
-	obj := d.object(n, path, "name", "select", "mode", "budget", "approval", "applicant")
+	obj := d.object(n, path, "name", "select", "mode", "budget", "approval", "applicant", "windows", "allow", "reason")
 	if obj == nil {
 		return core.Policy{}, false
 	}
@@ -580,6 +580,43 @@ func (d *decoder) policy(n *yaml.Node, path string) (core.Policy, bool) {
 			d.reject(v, path+".applicant", "applicant は approval と一緒に書く")
 		}
 	}
+	if v := obj["windows"]; v != nil {
+		for i, x := range d.list(v, path+".windows") {
+			s, ok := d.str(x, fmt.Sprintf("%s.windows[%d]", path, i))
+			if !ok {
+				continue
+			}
+			w, err := core.ParseWindow(s)
+			if err != nil {
+				d.reject(x, path+".windows", "%v", err)
+				continue
+			}
+			p.Windows = append(p.Windows, w)
+		}
+	}
+	if v := obj["reason"]; v != nil {
+		p.Reason, _ = d.str(v, path+".reason")
+	}
+	if v := obj["allow"]; v != nil {
+		p.Allow = d.allow(v, path+".allow")
+		// 別枠は予算の外の別の枠。方針（mode・budget）を持たない（E-J2）。
+		for _, k := range []string{"mode", "budget"} {
+			if obj[k] != nil {
+				d.reject(obj[k], path+"."+k, "allow（別枠）の Policy に %s は書けない（当たる変更の方針はほかの Policy に書く）", k)
+			}
+		}
+		// 全部に別枠を開かない（宣言の外の暴発を止める、E-J2）。
+		if p.Select.All {
+			d.reject(obj["select"], path+".select", "allow（別枠）の Policy の select に all は書けない（種類かラベルで絞る）")
+		}
+	}
+	if a := p.Approval; a != nil && p.Allow == nil {
+		if a.CoolingOff > 0 {
+			d.reject(obj["approval"], path+".approval.cooling_off", "cooling_off は allow（別枠）の Policy にだけ書ける")
+		} else if a.N == 0 {
+			d.reject(obj["approval"], path+".approval", "quorum（{n: 承認者の数, of: [承認者]}）を書く")
+		}
+	}
 	// 申請者が分からない依頼は申請者≠承認者を確かめられない（E-L2・N-L2）。
 	if p.Approval != nil && p.Approval.Separation && p.Applicant == "" {
 		d.reject(obj["approval"], path+".approval", "separation: true には applicant（申請者）を書く")
@@ -587,17 +624,55 @@ func (d *decoder) policy(n *yaml.Node, path string) (core.Policy, bool) {
 	return p, len(d.diags) == before
 }
 
+// allow は別枠を読む（§3.6、E-J2・E-A9・N-J2）。
+//
+//	allow: {kind: reimage, max_count: 48}
+func (d *decoder) allow(n *yaml.Node, path string) *core.Allow {
+	obj := d.object(n, path, "kind", "max_count")
+	if obj == nil {
+		return nil
+	}
+	a := &core.Allow{}
+	if v := obj["kind"]; v == nil {
+		d.reject(n, path, "kind（delete・update・create・reimage・destructive）を書く")
+	} else if s, ok := d.str(v, path+".kind"); ok {
+		for _, k := range core.AllowKinds {
+			if string(k) == s {
+				a.Kind = k
+			}
+		}
+		if a.Kind == "" {
+			d.reject(v, path+".kind", "kind は delete・update・create・reimage・destructive（%q が書かれている）", s)
+		}
+	}
+	if v := obj["max_count"]; v == nil {
+		d.reject(n, path, "max_count（窓の全体で通す数）を書く")
+	} else if i, ok := v.Scalar.(int); v.Kind != yaml.Scalar || !ok || i < 1 {
+		d.reject(v, path+".max_count", "1 以上の整数を書く")
+	} else {
+		a.MaxCount = i
+	}
+	return a
+}
+
 // approval は承認の要件を読む（§3.6、E-L2・N-L2）。
 //
 //	approval: {quorum: {n: 2, of: [alice, bob, carol]}, separation: true, timeout: 24h}
 func (d *decoder) approval(n *yaml.Node, path string) *core.Approval {
-	obj := d.object(n, path, "quorum", "separation", "timeout")
+	obj := d.object(n, path, "quorum", "separation", "timeout", "cooling_off")
 	if obj == nil {
 		return nil
 	}
 	a := &core.Approval{}
+	if v := obj["cooling_off"]; v != nil {
+		a.CoolingOff = d.positiveDuration(v, path+".cooling_off")
+	}
 	if q := obj["quorum"]; q == nil {
-		d.reject(n, path, "quorum（{n: 承認者の数, of: [承認者]}）を書く")
+		// cooling_off だけの承認（承認者を置かない別枠、E-J2）。別枠でない Policy と
+		// 手順の gate では断る（呼び出し元）。
+		if obj["cooling_off"] == nil {
+			d.reject(n, path, "quorum（{n: 承認者の数, of: [承認者]}）を書く")
+		}
 	} else if qo := d.object(q, path+".quorum", "n", "of"); qo != nil {
 		if v := qo["of"]; v == nil {
 			d.reject(q, path+".quorum", "of（承認者の一覧）を書く")
@@ -877,6 +952,9 @@ func (d *decoder) step(n *yaml.Node, path string, i int) (core.Step, bool) {
 				d.reject(v, p, "approval を書く")
 			} else {
 				st.Gate = d.approval(o["approval"], p+".approval")
+				if st.Gate != nil && (st.Gate.CoolingOff > 0 || st.Gate.N == 0) {
+					d.reject(o["approval"], p+".approval", "手順の gate には quorum を書く（cooling_off は allow の Policy だけ）")
+				}
 			}
 			if x := o["timeout"]; x != nil {
 				t := d.positiveDuration(x, p+".timeout")

@@ -380,12 +380,48 @@ func fakeResource(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) boo
 	return true
 }
 
-// fakeSettings は v2 の fake の state（{"resources": {<local>: {"fields": …}}}）を
-// 新しいコアの fake の state（{"fake/resource/<名前>": {"availability": "present",
-// "fields": …}}）に写し、種類の項目を全部文字列で宣言する（v2 の項目は文字列）。
+// v2fake は v2 の fake の state（{"resources": {<local>: {"fields": …}},
+// "scopes": {<local>: {…}}}）。
+type v2fake struct {
+	Resources map[string]struct {
+		Fields map[string]any `json:"fields"`
+	} `json:"resources"`
+	Scopes map[string]map[string]string `json:"scopes"`
+}
+
+// fakeState は v2 の fake の state を読む（無ければ空、1 回だけ読む）。
+func (c *conv) fakeState() *v2fake {
+	if c.fake != nil {
+		return c.fake
+	}
+	c.fake = &v2fake{}
+	path := c.setting("fake", "state")
+	if path == "" {
+		return c.fake
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			c.refuse("fake: state %s: %v", path, err)
+		}
+		return c.fake
+	}
+	if err := json.Unmarshal(data, c.fake); err != nil {
+		c.refuse("fake: state %s: %v", path, err)
+	}
+	return c.fake
+}
+
+// fakeSettings は v2 の fake の state を新しいコアの fake の state
+// （{"fake/resource/<名前>": {"availability": "present", "fields": …, "labels": …}}。
+// v2 の scope は現実のラベル）に写し、種類の項目を全部文字列で宣言する（v2 の
+// 項目は文字列）。
 func fakeSettings(c *conv, inst *instance) *obj {
 	names := map[string]bool{}
 	for _, r := range inst.res {
+		if r.out == nil {
+			continue
+		}
 		if f, ok := r.out.Get("fields").(*obj); ok {
 			for _, k := range f.Keys {
 				names[k] = true
@@ -393,29 +429,18 @@ func fakeSettings(c *conv, inst *instance) *obj {
 		}
 	}
 	state := map[string]any{}
-	if path := c.setting("fake", "state"); path != "" {
-		data, err := os.ReadFile(path)
-		if err != nil && !os.IsNotExist(err) {
-			c.refuse("fake: state %s: %v", path, err)
+	v2 := c.fakeState()
+	for local, res := range v2.Resources {
+		fs := map[string]any{}
+		for k, v := range res.Fields {
+			fs[k] = fmt.Sprint(v)
+			names[k] = true
 		}
-		if err == nil {
-			var v2 struct {
-				Resources map[string]struct {
-					Fields map[string]any `json:"fields"`
-				} `json:"resources"`
-			}
-			if err := json.Unmarshal(data, &v2); err != nil {
-				c.refuse("fake: state %s: %v", path, err)
-			}
-			for local, res := range v2.Resources {
-				fs := map[string]any{}
-				for k, v := range res.Fields {
-					fs[k] = fmt.Sprint(v)
-					names[k] = true
-				}
-				state["fake/resource/"+local] = map[string]any{"availability": "present", "fields": fs}
-			}
+		e := map[string]any{"availability": "present", "fields": fs}
+		if l := v2.Scopes[local]; len(l) > 0 {
+			e["labels"] = l
 		}
+		state["fake/resource/"+local] = e
 	}
 	data, _ := json.MarshalIndent(state, "", "  ")
 	c.files["fake-state.json"] = append(data, '\n')
@@ -431,6 +456,75 @@ func fakeSettings(c *conv, inst *instance) *obj {
 	return newObj().
 		Set("state", filepath.Join(c.in.OutDir, "fake-state.json")).
 		Set("kinds", newObj().Set("resource", newObj().Set("fields", fieldTypes)))
+}
+
+// fakeRanges は v2 の fake の PruneWithinScope を範囲にする。v2 は宣言の scope を
+// 含む scope（ラベルが多いもの）の宣言外も消した。新しいコアの fake の範囲は
+// ラベルがちょうど scope のものを選ぶので、宣言の scope と、それを含む今の現実の
+// scope ごとに範囲を 1 つ書く（後から現れた scope は範囲に入らない）。
+func (c *conv) fakeRanges(inst *instance) []any {
+	var prune []map[string]string
+	scopes := map[string]map[string]string{}
+	for _, r := range inst.res {
+		if r.out == nil {
+			continue
+		}
+		scopes[fakeScope(r.scope)] = r.scope
+		if r.prune {
+			prune = append(prune, r.scope)
+		}
+	}
+	if len(prune) == 0 {
+		return nil
+	}
+	covered := func(s map[string]string) bool {
+		for _, p := range prune {
+			ok := true
+			for k, v := range p {
+				if s[k] != v {
+					ok = false
+				}
+			}
+			if ok {
+				return true
+			}
+		}
+		return false
+	}
+	v2 := c.fakeState()
+	for local := range v2.Resources {
+		if s := v2.Scopes[local]; covered(s) {
+			scopes[fakeScope(s)] = s
+			c.realIDs[v2ID("fake", s, local)] = "fake/resource/" + local
+		}
+	}
+	keys := make([]string, 0, len(scopes))
+	for k := range scopes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []any
+	for _, k := range keys {
+		rg := newObj().Set("provider", "fake").Set("args", newObj().Set("scope", k))
+		if len(scopes[k]) > 0 {
+			rg.Set("labels", strObj(scopes[k]))
+		}
+		if covered(scopes[k]) {
+			rg.Set("prune", true)
+		}
+		out = append(out, rg)
+	}
+	c.note("fake: v2 の PruneWithinScope を、宣言の scope とそれを含む今の現実の scope ごとの範囲（scope）にした。後から現れた scope は範囲に入らない")
+	return out
+}
+
+func fakeScope(s map[string]string) string {
+	parts := make([]string, 0, len(s))
+	for k, v := range s {
+		parts = append(parts, k+"="+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 // --- redfish ---------------------------------------------------------------
@@ -794,7 +888,10 @@ func (c *conv) ranges() []any {
 		}
 		out = append(out, rg)
 	}
-	for _, name := range []string{"fake", "bmc", "answers", "guest", "db"} {
+	if inst := c.instances["fake"]; inst != nil {
+		out = append(out, c.fakeRanges(inst)...)
+	}
+	for _, name := range []string{"bmc", "answers", "guest", "db"} {
 		if inst := c.instances[name]; inst != nil && anyPrune(inst) {
 			c.refuse("%s: deletion_policy: PruneWithinScope は書き直せない（新しいコアの %s は範囲を持たない）", name, inst.module)
 		}

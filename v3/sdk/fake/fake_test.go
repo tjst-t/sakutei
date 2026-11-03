@@ -92,3 +92,48 @@ func TestModuleRejectsSettings(t *testing.T) {
 		}
 	}
 }
+
+// 範囲の scope は現実のラベルがちょうどそれのものを選ぶ（v2 の scope の書き直し）。
+// state のファイルのラベルは Apply・Delete のあとも残る。
+func TestScopeRanges(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	os.WriteFile(state, []byte(`{
+  "fake/resource/hpc-head": {"availability": "present", "fields": {"name": "hpc-head"}, "labels": {"pool": "hpc"}},
+  "fake/resource/node-1": {"availability": "present", "fields": {"name": "node-1"}, "labels": {"pool": "hpc", "slot": "1"}},
+  "fake/resource/other": {"availability": "present", "fields": {"name": "other"}}
+}`), 0o644)
+	p, err := fake.Module(map[string]any{"state": state, "kinds": map[string]any{"resource": map[string]any{"fields": map[string]any{"name": "string"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := func(scope string) []core.ID {
+		l, err := p.List(context.Background(), core.Range{Provider: "fake", Args: map[string]string{"scope": scope}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l.IDs
+	}
+	if ids := list("pool=hpc"); len(ids) != 1 || ids[0].Name != "hpc-head" {
+		t.Fatalf("%v", ids)
+	}
+	if ids := list("pool=hpc,slot=1"); len(ids) != 1 || ids[0].Name != "node-1" {
+		t.Fatalf("%v", ids)
+	}
+	head := core.ID{Type: "fake/resource", Name: "hpc-head"}
+	if err := p.Apply(context.Background(), core.WriteContext{}, head, core.Fields{"name": "x"}, core.Observation{}); err != nil {
+		t.Fatal(err)
+	}
+	if ids := list("pool=hpc"); len(ids) != 1 {
+		t.Fatalf("Apply がラベルを落とした: %v", ids)
+	}
+	v := p.(core.Validator)
+	ranges := []core.Range{{Provider: "fake", Args: map[string]string{"scope": "pool=hpc"}}, {Provider: "fake", Args: map[string]string{"scope": "pool=hpc"}}}
+	diags := v.Validate([]core.Resource{{ID: head, Labels: map[string]string{"pool": "hpc", "slot": "9"}}}, ranges)
+	msgs := ""
+	for _, d := range diags {
+		msgs += d.Message + "\n"
+	}
+	if !strings.Contains(msgs, "重なる") || !strings.Contains(msgs, "どの範囲にも入らない") {
+		t.Fatalf("%s", msgs)
+	}
+}

@@ -248,6 +248,8 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		if len(writes) > 0 {
 			pre := marks
 			pre.BudgetWindows = windowsWith(base, firedDestructive, r, writes)
+			// 別枠は発射の直前に使い、失敗しても戻さない（E-J2）。
+			pre.Lanes = lanesWith(r, func(i int) bool { return fired[r.Changes[i].ID] || containsInt(writes, i) })
 			if err := in.Record.WriteMarks(pre); err != nil {
 				errs = append(errs, "Record に書けない: "+err.Error())
 				block(&r, writes, "Record に書けないので当てない")
@@ -347,6 +349,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		}
 		sub := pin
 		sub.Only, sub.Used = only, used
+		sub.LaneUsed = laneFired(r, fired)
 		merge(&r, plan.Decide(ctx, sub))
 	}
 
@@ -362,6 +365,21 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		}
 		if _, err := audit.Append(record.Entry{At: now, Kind: "approval.request", Request: c.Request, Resource: c.Resource,
 			Policies: c.Policies, By: c.NewRequest.Applicant, Result: "ok"}); err != nil {
+			errs = append(errs, "監査に書けない: "+err.Error())
+		}
+	}
+
+	// 別枠の承認の依頼を書く（Policy ごとに 1 つ、E-J2・不変条件 21）。
+	for _, l := range r.Lanes {
+		if l.NewRequest == nil {
+			continue
+		}
+		if err := in.Record.WriteRequest(*l.NewRequest, l.Fresh); err != nil {
+			errs = append(errs, "承認の依頼を書けない: "+err.Error())
+			continue
+		}
+		if _, err := audit.Append(record.Entry{At: now, Kind: "approval.request", Request: l.Request,
+			Policies: []string{l.Policy}, By: l.NewRequest.Applicant, Result: "ok"}); err != nil {
 			errs = append(errs, "監査に書けない: "+err.Error())
 		}
 	}
@@ -401,7 +419,8 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	windows := windowsWith(base, firedDestructive, r, nil)
 	ineffective := countIneffective(&r, marks)
 	next := record.Marks{Cycle: marks.Cycle + 1, At: now, RangeCounts: nextCounts(r, marks, gone), BudgetWindows: windows,
-		Ineffective: ineffective, InputCounts: inputCounts(marks, in.InputCounts)}
+		Ineffective: ineffective, InputCounts: inputCounts(marks, in.InputCounts),
+		Lanes: lanesWith(r, func(i int) bool { return fired[r.Changes[i].ID] })}
 	if err := in.Record.WriteMarks(next); err != nil {
 		errs = append(errs, "Record に書けない: "+err.Error())
 	}
@@ -515,6 +534,45 @@ func windowsWith(base map[string]record.WindowUse, fired map[string]int, r plan.
 		out[p] = w
 	}
 	return out
+}
+
+// lanesWith は別枠の目印：前の周までに使った数に、この周に当てた（counted）
+// 別枠の変更の数を足す。宣言を初めて見た時刻（cooling-off の時計）を保つ。
+func lanesWith(r plan.Result, counted func(i int) bool) map[string]record.LaneMark {
+	if len(r.Lanes) == 0 {
+		return nil
+	}
+	out := make(map[string]record.LaneMark, len(r.Lanes))
+	for _, l := range r.Lanes {
+		m := record.LaneMark{Fingerprint: l.Fingerprint, Used: l.Used, Seen: l.Seen}
+		for i, c := range r.Changes {
+			if c.Lane == l.Policy && counted(i) {
+				m.Used += c.LaneWeight
+			}
+		}
+		out[l.Policy] = m
+	}
+	return out
+}
+
+// laneFired はこの周に別枠で当てた数（次の波の判定で枠を二重に使わない）。
+func laneFired(r plan.Result, fired map[core.ID]bool) map[string]int {
+	out := map[string]int{}
+	for _, c := range r.Changes {
+		if c.Lane != "" && fired[c.ID] {
+			out[c.Lane] += c.LaneWeight
+		}
+	}
+	return out
+}
+
+func containsInt(list []int, x int) bool {
+	for _, y := range list {
+		if y == x {
+			return true
+		}
+	}
+	return false
 }
 
 // reobserve は、この波で効いた（当てて読み直すと宣言どおり）ものに依る・それが

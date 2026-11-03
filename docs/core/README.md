@@ -419,12 +419,12 @@ func Effective(ps []Policy, op Operation, clock Clock, usage Usage) Decision
 |---|---|---|
 | `select` | 種類・ラベルで当たり先を選ぶ。宣言外（Range のラベル）にも当たる | E-M2・N-M2・E-M1 |
 | `mode: report` | 差分は知らせるだけ。観測と知らせは続ける | E-I3・E-Q1・N-Q2・N-I1 |
-| `windows` | 窓の外は report。手順の起動にも効く | E-J3・E-R1・N-J1・N-R3・N-A3 |
+| `windows` | 窓の外は report。手順の起動にも効く。別枠（`allow`）の Policy では窓は開く時間（窓の外は別枠を閉じて通常の予算で数える）。書き方は毎週 `"Sat,Sun 02:00-04:00 Asia/Tokyo"`（終わりが始めより前なら日をまたぎ、曜日は開く日）・決まった期間 `"2026-11-05 22:00 .. 2026-11-06 06:00 Asia/Tokyo"`・`"*"` | E-J3・E-R1・N-J1・N-R3・N-A3 |
 | `budget.per_cycle`・`destructive_per_cycle` | 一度に変えすぎない。超えたら超過分の保留でなく止める | E-J1 |
 | `budget.destructive_per_window`・`window` | 周をまたいだ「じわじわ全消し」を止める。使用量は Record | E-J1 |
 | `budget.max_ineffective_applies` | 効かない Apply を繰り返さず止める（人とツールの取り合い） | E-J6・E-K10・E-Q4・N-J12・N-Q5 |
 | `approval` | N-of-M・申請者≠承認者・cooling-off・期限。手順の gate と同じ型 | E-L2・N-L2・E-J10・N-G10 |
-| `allow` | 大量の正当な作業の別枠。別枠であって予算の免除ではない。宣言の外は通常の予算。枠は発射の直前に使い、失敗しても戻さない。`reimage` は削除と作成の対を 1 と数える | E-J2・E-A9・N-J2・N-A12・N-E9 |
+| `allow` | 大量の正当な作業の別枠。別枠であって予算の免除ではない（max_count で数えて止まる）。別枠の Policy は当たる変更を縛らず、窓の中で承認が揃い cooling-off が過ぎたときだけ開く。開いた別枠に入れた変更は通常の予算に数えず、通常の予算の超過でも止めない（止めるのは宣言の外の暴発）。宣言の外は通常の予算。枠は発射の直前に使い（Record の目印 `lanes`）、失敗しても戻さない。`reimage` は同じ種類・同じラベルの削除と作成の対を 1 と数える。承認は Policy ごとに 1 つの依頼（変更ごとでない）で、`approval.cooling_off` は宣言を初めて見た時刻から数える（`quorum` を書かず `cooling_off` だけなら承認者を置かない別枠）。`select: {all: true}` は断る | E-J2・E-A9・N-J2・N-A12・N-E9 |
 | `until`・`reason`・`by` | 一時的な Policy。期限で消える。読めなければ止める側に寄せる | E-J4・N-Q1・E-R2・N-R1 |
 | 合わせ方 | 複数当たれば最も厳しいものが勝つ（report は apply より、承認ありは無しより、小さい予算は大きい予算より） | E-J5・E-S1 |
 | `policy_sets` と `--policy-set` | 同じ intent で、観測だけの常駐と進める常駐を並べる。宣言に無い名前は断る | E-M5・N-M7・E-S5・E-J11 |
@@ -700,7 +700,7 @@ type AuditSink interface { // 任意：streams: [audit] で監査の鎖の行を
 | 18 | 手順の「済んだ」は観測で決める。不明は済んでいない。止まった手順の対象を自動で戻さない | 性質 |
 | **方針** | | |
 | 19 | 当たる Policy の最も厳しいものが勝つ。起動の引数・一時的な Policy は締める向きにしか効かない。report でも観測と知らせは続ける | 単体：`Effective` の全組み合わせ |
-| 20 | 予算を超えたら超過分の保留でなく止める。周をまたぐ窓を数える | 性質 |
+| 20 | 予算を超えたら超過分の保留でなく止める（開いた別枠に入れた変更は別の枠で数える）。周をまたぐ窓を数える | 性質 |
 | 21 | 承認は申請者≠承認者を強制し、要件を満たす異なる承認者だけ数える。承認・拒否・期限切れを監査に残す。Record に書けなければ別枠も承認も使わない | 単体／性質（Record の書き込み失敗を注入） |
 | 22 | 一時的な Policy は理由と期限を持ち、期限で消える。Record が読めない周は止める側に寄せる | 単体（時計の差し替え） |
 | 23 | provider の版が変わった周は、その provider の変更を report にする | 性質 |
@@ -766,7 +766,7 @@ record/
   "hashes": {"intent": "sha256:…", "inputs": "sha256:…", "expanded": "sha256:…"},
   "ineffective": {"pve/vm/app01": 1},
   "budget_window": {"start": "2026-11-05T00:00:00+09:00", "destructive": 4},
-  "allow_usage": {"decommission-rack-3": {"used": 12, "first_seen": "2026-11-04T10:00:00+09:00"}}
+  "lanes": {"decommission-rack-3": {"fingerprint": "sha256:…", "used": 12, "seen": "2026-11-04T10:00:00+09:00"}}
 }
 ```
 

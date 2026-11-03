@@ -22,8 +22,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tjst-t/sakutei/v3/cli"
+	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/intent"
 	"github.com/tjst-t/sakutei/v3/internal/yaml"
 )
@@ -61,16 +63,20 @@ func TestRefusesWhatHasNoHome(t *testing.T) {
 		in     func(*Input)
 		want   []string
 	}{
-		"planned_change": {www + "planned_change:\n  - scope: {zone: a}\n    kind: delete\n    max_count: 3\n    window: \"x\"\n", nil,
-			[]string{"planned_change は新しいコアの Policy の allow・windows に当たるが、まだ受け皿が無い"}},
-		"remediation の時間帯": {www + "remediation:\n  schedule:\n    - {window: \"Sat 02:00-04:00 UTC\", mode: Auto}\n", nil,
-			[]string{"remediation.schedule（時間帯）"}},
+		"planned_change の空の scope": {www + "planned_change:\n  - kind: delete\n    max_count: 3\n    window: \"2026-11-05 00:00 .. 2026-11-06 00:00\"\n", nil,
+			[]string{"scope（ラベル）が要る"}},
+		"planned_change の承認者": {www + "planned_change:\n  scope: {zone: a}\n  kind: update\n  max_count: 3\n  window: \"2026-11-05 00:00 .. 2026-11-06 00:00\"\n", nil,
+			[]string{"承認者が分からない"}},
+		"窓の中だけ知らせる時間帯": {www + "remediation:\n  default: auto\n  schedule:\n    - {window: \"Sat 02:00-04:00\", mode: alert-only}\n", nil,
+			[]string{"窓の中だけ知らせる窓は書けない"}},
+		"disruption": {"resources:\n  - {provider: fake, id: n1, fields: {v: \"2\"}}\nworkflows:\n  - workflow: w\n    target: {provider: fake}\n    disruption: {estimate: 20m}\n    stages: [{name: s, targets: [n1]}]\n    steps: [{apply: {v: \"2\"}}]\n", nil,
+			[]string{"disruption は新しいコアの手順の disruption に当たるが、まだ受け皿が無い"}},
 		"remediation の知らない項目": {www + "remediation: {mode: Auto}\n", nil, []string{"remediation.mode は書き直せない"}},
 		"知らない provider": {"resources:\n  - {provider: proxmox-vm, id: web, fields: {cores: \"2\"}}\n", nil,
 			[]string{"provider proxmox-vm は書き直せない"}},
 		"知らない項目": {"resources:\n  - provider: dnszone\n    id: www.example.com./A\n    ready_conditions: {x: y}\n    fields: {value: 192.0.2.20}\n", nil,
 			[]string{"項目 ready_conditions は書き直せない"}},
-		"知らない最上位": {www + "profile: solo\n", nil, []string{"最上位の profile は書き直せない"}},
+		"知らない最上位": {www + "network_policy: {}\n", nil, []string{"最上位の network_policy は書き直せない"}},
 		"scope だけで分かれていた ID": {"resources:\n  - {provider: dnszone, id: www.example.com./A, scope: {site: a}, fields: {value: 192.0.2.1}}\n  - {provider: dnszone, id: www.example.com./A, scope: {site: b}, fields: {value: 192.0.2.2}}\n", nil,
 			[]string{"dnszone/site=a/www.example.com./A と dnszone/site=b/www.example.com./A が同じ dns/record/www.example.com./A になる"}},
 		"ゾーンファイルの名前": {www, func(in *Input) { in.Flags["zone"] = "/srv/zones/db.example" },
@@ -105,7 +111,7 @@ func TestRefusesWhatHasNoHome(t *testing.T) {
 
 // 断ったときは何も書かず、終了コード 2。書き出す先が空でなければ上書きしない。
 func TestRunWritesNothingWhenRefused(t *testing.T) {
-	w := work(t, www+"planned_change: []\n")
+	w := work(t, www+"network_policy: {}\n")
 	var so, se bytes.Buffer
 	out := filepath.Join(w, "out")
 	if code := Run([]string{"--intent", filepath.Join(w, "intent"), "--zone", filepath.Join(w, "example.com.zone"), "--out", out}, &so, &se); code != ExitRefused {
@@ -287,5 +293,62 @@ workflows:
 	}
 	if !strings.Contains(out.Intent["main.yaml"], "trigger: on_drift") || !strings.Contains(out.Intent["main.yaml"], "- bob") {
 		t.Fatal(out.Intent["main.yaml"])
+	}
+}
+
+// planned_change は別枠の Policy にする。承認者は承認できる人（quorum.of）、数と
+// separation はプロファイル、v2 の監査ログで使った数を max_count から引く。
+func TestPlannedChangeBecomesLane(t *testing.T) {
+	pc := `profile: enterprise
+resources:
+  - {provider: dnszone, id: a1.example.com./A, scope: {zone: example}, fields: {value: 192.0.2.1}}
+planned_change:
+  scope: {zone: example}
+  kind: recreate
+  max_count: 5
+  window: "2026-11-05 00:00 .. 2026-11-06 00:00"
+  applicant: carol
+  approval: {pr: 7, approvers: [alice, bob]}
+`
+	w := work(t, pc)
+	os.WriteFile(filepath.Join(w, "audit.jsonl"), []byte(`{"kind":"planned_change.executed","planned_change":"zone=example|reimage|2026-11-05T00:00:00Z|2026-11-06T00:00:00Z","count":2}`+"\n"), 0o644)
+	out, err := Convert(input(w, "audit-log", filepath.Join(w, "audit.jsonl")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := yaml.Parse([]byte(out.Intent["main.yaml"]))
+	d, diags := intent.Decode(intent.Document{Path: "main.yaml", Root: n})
+	if len(diags) > 0 || len(d.Policies) != 1 {
+		t.Fatalf("%v\n%s", diags, out.Intent["main.yaml"])
+	}
+	p := d.Policies[0]
+	if p.Allow == nil || p.Allow.Kind != core.AllowReimage || p.Allow.MaxCount != 3 || p.Applicant != "carol" ||
+		p.Approval.N != 2 || !p.Approval.Separation || strings.Join(p.Approval.Of, ",") != "alice,bob" ||
+		p.Select.Labels["zone"] != "example" || !p.Windows[0].Contains(time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("%+v %+v\n%s", p, p.Approval, out.Intent["main.yaml"])
+	}
+	// solo は cooling-off だけ（承認者を置かない）。
+	out, err = Convert(input(work(t, strings.Replace(strings.Replace(pc, "enterprise", "solo\nsolo: {cooling_off: 30m}", 1), "  approval: {pr: 7, approvers: [alice, bob]}\n", "", 1))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Intent["main.yaml"], `cooling_off: "30m0s"`) || strings.Contains(out.Intent["main.yaml"], "quorum") {
+		t.Fatal(out.Intent["main.yaml"])
+	}
+}
+
+// remediation の時間帯は窓の Policy にする（default が alert-only で窓が auto）。
+func TestRemediationScheduleBecomesWindows(t *testing.T) {
+	out, err := Convert(input(work(t, www+"remediation:\n  tz: Asia/Tokyo\n  schedule:\n    - {window: \"Sat 02:00-04:00\", mode: auto}\n    - {window: \"22:00-23:00\", mode: auto}\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Intent["main.yaml"], `- "Sat 02:00-04:00 Asia/Tokyo"`) || !strings.Contains(out.Intent["main.yaml"], `- "22:00-23:00 Asia/Tokyo"`) {
+		t.Fatal(out.Intent["main.yaml"])
+	}
+	// "*" が auto ならいつでも当てる（Policy を書かない）。
+	out, err = Convert(input(work(t, www+"remediation:\n  schedule:\n    - {window: \"*\", mode: auto}\n")))
+	if err != nil || strings.Contains(out.Intent["main.yaml"], "policies") {
+		t.Fatalf("%v %s", err, out.Intent["main.yaml"])
 	}
 }

@@ -19,7 +19,10 @@
 // モジュール "fake"（Module）で、settings の state に置いた JSON のファイルが
 // 観測の答えになる（Apply・Delete はそのファイルを書き換える）。
 //
-// 範囲（Range）の引数は prefix 1 つ：名前がその接頭辞で始まるものが範囲。
+// 範囲（Range）の引数は prefix か scope：prefix は名前がその接頭辞で始まるもの、
+// scope（"k=v,k2=v2"、鍵の順）は現実のラベルがちょうどそれのもの（v2 の scope の
+// 書き直し、sakutei-migrate）。現実のラベルは SetLabels か state の "labels" で
+// 置く。宣言は scope の範囲にラベルで入る（宣言の labels がちょうど scope）。
 package fake
 
 import (
@@ -62,6 +65,7 @@ type Provider struct {
 	mu           sync.Mutex
 	schema       core.Schema
 	state        map[core.ID]core.Observation
+	labels       map[core.ID]map[string]string // 現実のラベル（範囲の scope で選ぶ）
 	omit         map[core.ID]bool
 	observeErr   error
 	listErr      error
@@ -368,6 +372,34 @@ func (p *Provider) Delete(_ context.Context, _ core.WriteContext, id core.ID, _ 
 	return p.writeState()
 }
 
+// SetLabels は現実のラベルを置く（範囲の scope で選ぶ）。
+func (p *Provider) SetLabels(id core.ID, labels map[string]string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.labels == nil {
+		p.labels = map[core.ID]map[string]string{}
+	}
+	p.labels[id] = labels
+}
+
+// ScopeString はラベルを範囲の scope の形（"k=v,…"、鍵の順）にする。
+func ScopeString(labels map[string]string) string {
+	parts := make([]string, 0, len(labels))
+	for k, v := range labels {
+		parts = append(parts, k+"="+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+// inRange は名前・ラベルが範囲に入るか。
+func inRange(r core.Range, name string, labels map[string]string) bool {
+	if scope, ok := r.Args["scope"]; ok {
+		return ScopeString(labels) == scope
+	}
+	return strings.HasPrefix(name, r.Args["prefix"])
+}
+
 // List は範囲の中の Present の ID を返す。
 func (p *Provider) List(_ context.Context, r core.Range) (core.Listing, error) {
 	p.mu.Lock()
@@ -381,7 +413,7 @@ func (p *Provider) List(_ context.Context, r core.Range) (core.Listing, error) {
 	}
 	var ids []core.ID
 	for id, obs := range p.state {
-		if obs.Availability == core.Present && !p.listHide[id] && strings.HasPrefix(id.Name, r.Args["prefix"]) {
+		if obs.Availability == core.Present && !p.listHide[id] && inRange(r, id.Name, p.labels[id]) {
 			ids = append(ids, id)
 		}
 	}
@@ -397,11 +429,26 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	}
 	for i, r := range ranges {
 		for k := range r.Args {
-			if k != "prefix" {
-				rej(r.Origin, "ranges", "fake の範囲の引数は prefix だけ（%q が書かれている）", k)
+			if k != "prefix" && k != "scope" {
+				rej(r.Origin, "ranges", "fake の範囲の引数は prefix か scope（%q が書かれている）", k)
 			}
 		}
+		_, scoped := r.Args["scope"]
+		if _, both := r.Args["prefix"]; both && scoped {
+			rej(r.Origin, "ranges", "fake の範囲に prefix と scope は一緒に書けない")
+		}
 		for _, q := range ranges[:i] {
+			_, qScoped := q.Args["scope"]
+			if scoped || qScoped {
+				// scope はちょうど同じラベルだけを選ぶので、同じ scope どうしだけが重なる。
+				// prefix の範囲とは名前とラベルで選び方が違うので一緒に書かない。
+				if scoped != qScoped {
+					rej(r.Origin, "ranges", "fake の範囲に prefix と scope を混ぜて書けない（%s）", q.Origin)
+				} else if r.Args["scope"] == q.Args["scope"] {
+					rej(r.Origin, "ranges", "scope %q の範囲が %s と重なる", r.Args["scope"], q.Origin)
+				}
+				continue
+			}
 			a, b := r.Args["prefix"], q.Args["prefix"]
 			if a != b && (strings.HasPrefix(a, b) || strings.HasPrefix(b, a)) {
 				rej(r.Origin, "ranges", "prefix %q の範囲が %s の prefix %q の範囲と重なる", a, q.Origin, b)
@@ -414,7 +461,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	for _, r := range res {
 		in := false
 		for _, rg := range ranges {
-			if strings.HasPrefix(r.ID.Name, rg.Args["prefix"]) {
+			if inRange(rg, r.ID.Name, r.Labels) {
 				in = true
 				break
 			}
@@ -451,29 +498,39 @@ func (p *Provider) readState() error {
 	if err != nil {
 		return err
 	}
-	var raw map[string]core.Observation
+	var raw map[string]stateEntry
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("%s: %w", p.stateFile, err)
 	}
 	state := make(map[core.ID]core.Observation, len(raw))
-	for ref, obs := range raw {
+	labels := map[core.ID]map[string]string{}
+	for ref, e := range raw {
 		id, err := core.ParseRef(ref)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p.stateFile, err)
 		}
-		state[id] = obs
+		state[id] = e.Observation
+		if len(e.Labels) > 0 {
+			labels[id] = e.Labels
+		}
 	}
-	p.state = state
+	p.state, p.labels = state, labels
 	return nil
+}
+
+// stateEntry は state のファイルの 1 件（観測の答えと現実のラベル）。
+type stateEntry struct {
+	core.Observation
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 func (p *Provider) writeState() error {
 	if p.stateFile == "" {
 		return nil
 	}
-	raw := make(map[string]core.Observation, len(p.state))
+	raw := make(map[string]stateEntry, len(p.state))
 	for id, obs := range p.state {
-		raw[id.String()] = obs
+		raw[id.String()] = stateEntry{Observation: obs, Labels: p.labels[id]}
 	}
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {

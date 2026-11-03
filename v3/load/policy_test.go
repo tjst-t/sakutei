@@ -62,6 +62,43 @@ policies:
 	}
 }
 
+// 窓と別枠を intent から読む（§3.6、E-J2・E-J3）。
+func TestLoadWindowsAndAllow(t *testing.T) {
+	l, err := run(t, baseConfig, map[string]string{"p.yaml": `
+policies:
+  - name: maint
+    select: {all: true}
+    windows: ["Sat,Sun 02:00-04:00 Asia/Tokyo", "2026-11-05 22:00 .. 2026-11-06 06:00 Asia/Tokyo"]
+  - name: decom
+    select: {labels: {rack: "3"}}
+    allow: {kind: reimage, max_count: 48}
+    windows: ["2026-11-05T22:00:00+09:00 .. 2026-11-06T06:00:00+09:00"]
+    approval: {quorum: {n: 2, of: [alice, bob]}, separation: true, cooling_off: 1h}
+    applicant: carol
+    reason: ラック 3 の入れ直し
+  - name: solo
+    select: {labels: {pool: web}}
+    allow: {kind: update, max_count: 3}
+    approval: {cooling_off: 2h}
+`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, d, s := l.Policies[0], l.Policies[1], l.Policies[2]
+	tokyo, _ := time.LoadLocation("Asia/Tokyo")
+	if len(m.Windows) != 2 || !m.Windows[0].Contains(time.Date(2026, 11, 7, 3, 0, 0, 0, tokyo)) || m.Windows[0].Contains(time.Date(2026, 11, 6, 3, 0, 0, 0, tokyo)) ||
+		!m.Windows[1].Contains(time.Date(2026, 11, 5, 13, 0, 0, 0, time.UTC)) {
+		t.Fatalf("%+v", m.Windows)
+	}
+	if *d.Allow != (core.Allow{Kind: core.AllowReimage, MaxCount: 48}) || d.Approval.CoolingOff != time.Hour || d.Reason == "" ||
+		!d.Windows[0].Contains(time.Date(2026, 11, 5, 14, 0, 0, 0, time.UTC)) {
+		t.Fatalf("%+v %+v", d, d.Approval)
+	}
+	if s.Approval.N != 0 || s.Approval.CoolingOff != 2*time.Hour {
+		t.Fatalf("%+v", s.Approval)
+	}
+}
+
 func TestLoadRejectsPolicies(t *testing.T) {
 	cases := []struct {
 		name, body string
@@ -79,7 +116,16 @@ func TestLoadRejectsPolicies(t *testing.T) {
 		{"窓だけ", "policies:\n  - {name: a, select: {all: true}, budget: {window: 1h}}\n", []string{"window は destructive_per_window と一緒に"}},
 		{"窓が無い", "policies:\n  - {name: a, select: {all: true}, budget: {destructive_per_window: 3}}\n", []string{"destructive_per_window には window を書く"}},
 		{"空の予算", "policies:\n  - {name: a, select: {all: true}, budget: {}}\n", []string{"上限を 1 つ以上"}},
-		{"段 2 に無い項目", "policies:\n  - {name: a, select: {all: true}, windows: [x]}\n", []string{`知らない項目 "windows"`}},
+		{"段 9 に無い項目", "policies:\n  - {name: a, select: {all: true}, observe_every: 2}\n", []string{`知らない項目 "observe_every"`}},
+		{"読めない窓", "policies:\n  - {name: a, select: {all: true}, windows: [\"Satu 02:00-04:00\"]}\n", []string{`曜日 "Satu"`}},
+		{"空の窓", "policies:\n  - {name: a, select: {all: true}, windows: [\"02:00-02:00\"]}\n", []string{"空"}},
+		{"知らない tz", "policies:\n  - {name: a, select: {all: true}, windows: [\"02:00-04:00 Asia/Tokio\"]}\n", []string{`tz "Asia/Tokio"`}},
+		{"allow の kind", "policies:\n  - {name: a, select: {labels: {a: b}}, allow: {kind: purge, max_count: 1}}\n", []string{"kind は delete・update"}},
+		{"allow の max_count", "policies:\n  - {name: a, select: {labels: {a: b}}, allow: {kind: delete, max_count: 0}}\n", []string{"1 以上の整数"}},
+		{"allow と mode", "policies:\n  - {name: a, select: {labels: {a: b}}, mode: report, allow: {kind: delete, max_count: 1}}\n", []string{"allow（別枠）の Policy に mode は書けない"}},
+		{"allow と all", "policies:\n  - {name: a, select: {all: true}, allow: {kind: delete, max_count: 1}}\n", []string{"select に all は書けない"}},
+		{"別枠でない cooling_off", "policies:\n  - {name: a, select: {all: true}, approval: {quorum: {n: 1, of: [x]}, cooling_off: 1h}}\n", []string{"cooling_off は allow"}},
+		{"quorum の無い承認", "policies:\n  - {name: a, select: {all: true}, approval: {timeout: 1h}}\n", []string{"quorum"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

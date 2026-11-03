@@ -60,6 +60,8 @@ type Input struct {
 	// Incomplete は宣言が欠けているかもしれない provider（外部入力が届かない）→
 	// 理由。その provider の範囲は消さない（E-K3・不変条件 26）。
 	Incomplete map[string]string
+	// LaneUsed はこの周の前の波で別枠に入れて当てた数（Policy ごと、E-J2）。
+	LaneUsed map[string]int
 }
 
 // Strip は手順が受け持つ項目を宣言から外す（収束が比べて当てるのは残りだけ、
@@ -192,7 +194,8 @@ func Decide(ctx context.Context, in Input) Result {
 		}
 		limit := core.Unlimited
 		for _, p := range in.Policies {
-			if p.Select.Matches(c.ID.Type, c.labels) {
+			// 別枠の Policy は当たる変更を縛らない（開いた別枠に入れるだけ、lane.go）。
+			if p.Allow == nil && p.Select.Matches(c.ID.Type, c.labels) {
 				c.Policies = append(c.Policies, p.Name)
 				if b := p.Budget; b != nil && b.MaxIneffectiveApplies != core.Unlimited && (limit == core.Unlimited || b.MaxIneffectiveApplies < limit) {
 					limit = b.MaxIneffectiveApplies
@@ -234,21 +237,29 @@ func Decide(ctx context.Context, in Input) Result {
 			}
 		}
 	}
+	outside := outsideWindows(in.Policies, in.Now)
 	for i := range out.Changes {
 		c := &out.Changes[i]
 		if c.Action != ActApply {
 			continue
 		}
-		var report []string
+		var report, closed []string
 		for _, p := range in.Policies {
-			if p.Mode == core.ModeReport && has(c.Policies, p.Name) {
+			switch {
+			case !has(c.Policies, p.Name):
+			case p.Mode == core.ModeReport:
 				report = append(report, p.Name)
+			case outside[p.Name]:
+				closed = append(closed, p.Name)
 			}
 		}
-		// 当たる Policy の最も厳しいもの（report）が勝つ（E-J5・不変条件 19）。
+		// 当たる Policy の最も厳しいもの（report）が勝つ（E-J5・不変条件 19）。窓の
+		// 外の Policy も report（E-J3）。
 		switch {
 		case len(report) > 0:
 			c.Action, c.Blocked = ActReport, fmt.Sprintf("policy %s は report", strings.Join(report, "・"))
+		case len(closed) > 0:
+			c.Action, c.Blocked = ActReport, fmt.Sprintf("policy %s の窓の外", strings.Join(closed, "・"))
 		case in.ReportOnly != "":
 			c.Action, c.Blocked = ActReport, in.ReportOnly
 		default:
@@ -266,6 +277,7 @@ func Decide(ctx context.Context, in Input) Result {
 		}
 	}
 	holdGroups(&out, fullByID)
+	admitLanes(&out, in)
 	checkBudgets(&out, in)
 
 	for _, c := range out.Changes {
@@ -625,7 +637,8 @@ func checkBudgets(out *Result, in Input) {
 			u.Changes, u.Destructive = used.Changes, used.Destructive
 		}
 		for _, c := range out.Changes {
-			if c.Action != ActApply || !has(c.Policies, p.Name) {
+			// 別枠に入れた変更は予算に数えない（max_count で数える、E-J2）。
+			if c.Action != ActApply || c.Lane != "" || !has(c.Policies, p.Name) {
 				continue
 			}
 			u.Changes++
@@ -659,9 +672,11 @@ func checkBudgets(out *Result, in Input) {
 	if !budgetHalted {
 		return
 	}
+	// 別枠に入れた変更は止めない（宣言した大量の作業は承認と max_count で区切った
+	// 別の枠。止めるのは宣言の外の暴発、E-J2）。
 	for i := range out.Changes {
-		if c := &out.Changes[i]; c.Action == ActApply {
-			c.Action, c.Blocked = ActHalt, "予算を超えたので周全体を止めた"
+		if c := &out.Changes[i]; c.Action == ActApply && c.Lane == "" {
+			c.Action, c.Blocked = ActHalt, "予算を超えたので周全体を止めた（別枠に入れた変更を除く）"
 		}
 	}
 }

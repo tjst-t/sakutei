@@ -33,7 +33,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/tjst-t/sakutei/v3/core"
 	"github.com/tjst-t/sakutei/v3/internal/yaml"
 	"github.com/tjst-t/sakutei/v3/providers/internal/yamlout"
 )
@@ -92,6 +94,10 @@ type conv struct {
 	notes    []string
 
 	ids       map[string]string // v2 の ID → 新しい ID
+	realIDs   map[string]string // 宣言の無い現実（fake の state）の v2 の ID → 新しい ID
+	profile   string            // v2 の profile（solo・team・enterprise。書かなければ team）
+	solo      *time.Duration    // v2 の solo.cooling_off
+	fake      *v2fake           // v2 の fake の state（読んだら置く）
 	instances map[string]*instance
 	resources []*v2res
 	files     map[string][]byte
@@ -134,7 +140,7 @@ func Convert(in Input) (*Output, error) {
 	if in.NftHost == "" {
 		in.NftHost = "local"
 	}
-	c := &conv{in: in, ids: map[string]string{}, instances: map[string]*instance{}, files: map[string][]byte{}}
+	c := &conv{in: in, ids: map[string]string{}, realIDs: map[string]string{}, instances: map[string]*instance{}, files: map[string][]byte{}}
 	if err := c.loadSettings(); err != nil {
 		return nil, err
 	}
@@ -146,6 +152,7 @@ func Convert(in Input) (*Output, error) {
 		file string
 		out  *obj
 		wfs  []*yaml.Node
+		pcs  []*yaml.Node
 		pols []any
 	}
 	var files []pending
@@ -174,13 +181,21 @@ func Convert(in Input) (*Output, error) {
 			case "observe_tiers":
 				c.note("%s: observe_tiers は捨てた（新しいコアは毎周観測する。§7.2）", d.name)
 			case "scopes":
-				c.scopes(d.name, v)
+				p.pols = append(p.pols, c.scopes(d.name, v)...)
+			case "profile":
+				c.setProfile(d.name, v)
+			case "solo":
+				c.setSolo(d.name, v)
 			case "remediation":
 				if pol := c.remediation(d.name, v); pol != nil {
 					p.pols = append(p.pols, pol)
 				}
 			case "planned_change":
-				c.refuse("%s: planned_change は新しいコアの Policy の allow・windows に当たるが、まだ受け皿が無い", d.name)
+				if v.Kind == yaml.Seq {
+					p.pcs = append(p.pcs, v.Seq...)
+				} else {
+					p.pcs = append(p.pcs, v)
+				}
 			default:
 				c.refuse("%s: 最上位の %s は書き直せない（受け皿が無いか、この道具がまだ知らない）", d.name, k)
 			}
@@ -192,6 +207,18 @@ func Convert(in Input) (*Output, error) {
 	// 参照する）。
 	for _, r := range c.resources {
 		c.dependsOn(r)
+	}
+	if c.solo != nil && c.profile != "solo" {
+		c.refuse("solo: は profile: solo のときだけ書ける（profile は %s）", c.profileName())
+	}
+	n := 0
+	for i := range files {
+		for _, pc := range files[i].pcs {
+			n++
+			if pol := c.plannedChange(files[i].file, n, pc); pol != nil {
+				files[i].pols = append(files[i].pols, pol)
+			}
+		}
 	}
 	for i := range files {
 		for j, wf := range files[i].wfs {
@@ -214,7 +241,14 @@ func Convert(in Input) (*Output, error) {
 	}
 	extra := c.extraResources()
 	ranges := c.ranges()
-	out := &Output{Intent: map[string]string{}, IDs: c.ids, Files: c.files}
+	ids := map[string]string{}
+	for k, v := range c.realIDs {
+		ids[k] = v
+	}
+	for k, v := range c.ids {
+		ids[k] = v
+	}
+	out := &Output{Intent: map[string]string{}, IDs: ids, Files: c.files}
 	for i, f := range files {
 		o := newObj()
 		if i == 0 && len(ranges) > 0 {
@@ -527,19 +561,39 @@ func (c *conv) dependsOn(r *v2res) {
 	}
 }
 
-// scopes は v2 の scopes（Sync Mode の宣言）を読む。sync の scope は収束させない
-// ので、新しいコアの intent には入れず、sakutei-import で現実を書き出す
-// （§7.2：同期は道具へ）。
-func (c *conv) scopes(file string, n *yaml.Node) {
+// scopes は v2 の scopes を読む。sync の scope は収束させないので、新しいコアの
+// intent には入れず、sakutei-import で現実を書き出す（§7.2：同期は道具へ）。
+// remediation: alert-only の scope は、その scope のラベルに当たる report の
+// Policy にする（E-I3・E-Q1）。
+func (c *conv) scopes(file string, n *yaml.Node) []any {
+	var out []any
 	for i, s := range n.Seq {
-		mode, _ := str(s.Map["mode"])
 		scope, _ := strMap(s.Map["scope"])
-		if mode != "sync" {
-			c.refuse("%s: scopes[%d] の mode %q は書き直せない（sync だけ）", file, i, mode)
-			continue
+		mode, _ := str(s.Map["mode"])
+		rem, _ := str(s.Map["remediation"])
+		for _, k := range s.Keys {
+			if k != "scope" && k != "mode" && k != "sync" && k != "remediation" {
+				c.refuse("%s: scopes[%d].%s は書き直せない", file, i, k)
+			}
 		}
-		c.note("%s: scope %s は Sync Mode（収束させない）。新しいコアの intent には入れない。現実の記録は sakutei-import で書き出す", file, scopeString(scope))
+		switch {
+		case mode == "sync":
+			c.note("%s: scope %s は Sync Mode（収束させない）。新しいコアの intent には入れない。現実の記録は sakutei-import で書き出す", file, scopeString(scope))
+		case mode != "":
+			c.refuse("%s: scopes[%d] の mode %q は書き直せない（sync だけ）", file, i, mode)
+		case strings.EqualFold(rem, "alert-only") || strings.EqualFold(rem, "alertonly"):
+			if len(scope) == 0 {
+				c.refuse("%s: scopes[%d] に scope が無い", file, i)
+				continue
+			}
+			out = append(out, newObj().Set("name", "scope-"+strings.NewReplacer("=", "-", ",", "-").Replace(scopeString(scope))).
+				Set("select", newObj().Set("labels", strObj(scope))).Set("mode", "report"))
+		case strings.EqualFold(rem, "auto") || rem == "":
+		default:
+			c.refuse("%s: scopes[%d].remediation %q は書き直せない", file, i, rem)
+		}
 	}
+	return out
 }
 
 func scopeString(m map[string]string) string {
@@ -551,35 +605,85 @@ func scopeString(m map[string]string) string {
 	return strings.Join(parts, ",")
 }
 
-// remediation は v2 の remediation のうち、時間帯の無いもの（default だけ）を
-// Policy にする（alert-only → report、Auto → 何も足さない）。v2 は default を
-// 省くと alert-only だった。時間帯（schedule）は Policy の windows に当たるが、
-// まだ受け皿が無い。
+// remediation は v2 の remediation（default・tz・schedule、E-J3）を Policy に
+// する。v2 は schedule の先に当たった窓の mode、どれにも当たらなければ default
+// （省けば alert-only）。新しいコアの窓は「窓の外は report」なので、書き直せる
+// のは「default が alert-only で、窓が全部 auto」（窓の Policy）と、窓の無い
+// default だけ。窓の中だけ知らせる（alert-only の窓）は書けない（freeze を使う）。
 func (c *conv) remediation(file string, n *yaml.Node) any {
 	if n.Kind != yaml.Map {
 		c.refuse("%s: remediation はマップ", file)
 		return nil
 	}
-	mode := "alert-only"
+	def, tz := "alert-only", ""
+	var windows []any
+	always, blocked := false, false
 	for _, k := range n.Keys {
+		v := n.Map[k]
 		switch k {
 		case "default":
-			mode, _ = str(n.Map[k])
+			def, _ = str(v)
 		case "tz":
+			tz, _ = str(v)
 		case "schedule":
-			c.refuse("%s: remediation.schedule（時間帯）は新しいコアの Policy の windows に当たるが、まだ受け皿が無い", file)
+			for i, e := range v.Seq {
+				w, _ := str(e.Map["window"])
+				mode, _ := str(e.Map["mode"])
+				switch {
+				case always:
+					continue // 先の "*" が勝つので届かない
+				case !strings.EqualFold(mode, "auto"):
+					c.refuse("%s: remediation.schedule[%d] は mode %q の窓。新しいコアの窓は「窓の外は report」なので、窓の中だけ知らせる窓は書けない（freeze を使う）", file, i, mode)
+					blocked = true
+				case strings.TrimSpace(w) == "*":
+					always = true
+				default:
+					if tz != "" {
+						w += " " + tz
+					}
+					windows = append(windows, w)
+				}
+			}
 		default:
 			c.refuse("%s: remediation.%s は書き直せない", file, k)
 		}
 	}
-	switch strings.ToLower(mode) {
-	case "alert-only", "alertonly":
-		return newObj().Set("name", "remediation").Set("select", newObj().Set("all", true)).Set("mode", "report")
-	case "auto":
+	// tz は schedule より後に書いてもよい。
+	if tz != "" {
+		for i, w := range windows {
+			if s := w.(string); !strings.HasSuffix(s, " "+tz) {
+				windows[i] = s + " " + tz
+			}
+		}
+	}
+	if blocked {
 		return nil
 	}
-	c.refuse("%s: remediation.default %q は書き直せない", file, mode)
-	return nil
+	switch strings.ToLower(def) {
+	case "auto":
+		if len(windows) > 0 {
+			c.note("%s: remediation の default が auto なので、auto の窓は意味を持たない（落とした）", file)
+		}
+		return nil
+	case "alert-only", "alertonly":
+	default:
+		c.refuse("%s: remediation.default %q は書き直せない", file, def)
+		return nil
+	}
+	if always {
+		return nil
+	}
+	p := newObj().Set("name", "remediation").Set("select", newObj().Set("all", true))
+	if len(windows) == 0 {
+		return p.Set("mode", "report")
+	}
+	for _, w := range windows {
+		if _, err := core.ParseWindow(w.(string)); err != nil {
+			c.refuse("%s: remediation の窓: %v", file, err)
+			return nil
+		}
+	}
+	return p.Set("windows", windows)
 }
 
 // runtimePolicy は v2 の起動の引数の予算と mode を、全部に当たる Policy にする

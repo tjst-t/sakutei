@@ -26,7 +26,7 @@ import (
 // テストに使う）。
 //
 //	settings:
-//	  state: /path/to/state.json   # 観測の答え。{"<provider>/<種類>/<名前>": {"availability": "present", "fields": {...}}}
+//	  state: /path/to/state.json   # 観測の答え。{"<provider>/<種類>/<名前>": {"availability": "present", "fields": {...}, "labels": {...}}}
 //	  version: fake/1              # Schema の版（既定 fake/1）
 //	  kinds:
 //	    record:

@@ -11,15 +11,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // trialCase は trial-cases.json の 1 件（v3/providers/migrate/trial_test.go と同じ形）。
 type trialCase struct {
 	Name       string            `json:"name"`
 	Intent     string            `json:"intent"`
+	Append     map[string]string `json:"append"`
 	Files      map[string]string `json:"files"`
 	Replace    []struct{ File, Old, New string }
 	Write      map[string]string `json:"write"`
@@ -46,7 +49,16 @@ func TestMigrateTrialV2Plan(t *testing.T) {
 		tc := tc
 		t.Run(tc.Name, func(t *testing.T) {
 			w := t.TempDir()
-			copyTree(t, filepath.Join(root, tc.Intent), filepath.Join(w, "intent"))
+			os.MkdirAll(filepath.Join(w, "intent"), 0o755)
+			if tc.Intent != "" {
+				copyTree(t, filepath.Join(root, tc.Intent), filepath.Join(w, "intent"))
+			}
+			now := time.Now()
+			for name, text := range tc.Append {
+				p := filepath.Join(w, "intent", name)
+				b, _ := os.ReadFile(p)
+				os.WriteFile(p, append(b, []byte(expandTimes(text, now))...), 0o600)
+			}
 			for dst, src := range tc.Files {
 				copyTree(t, filepath.Join(root, src), filepath.Join(w, dst))
 			}
@@ -60,7 +72,7 @@ func TestMigrateTrialV2Plan(t *testing.T) {
 			}
 			for name, s := range tc.Write {
 				os.MkdirAll(filepath.Dir(filepath.Join(w, name)), 0o755)
-				os.WriteFile(filepath.Join(w, name), []byte(s), 0o600)
+				os.WriteFile(filepath.Join(w, name), []byte(expandTimes(s, now)), 0o600)
 			}
 			args := []string{"plan", "--intent", filepath.Join(w, "intent"), "--json"}
 			for _, f := range tc.Flags {
@@ -84,6 +96,9 @@ func TestMigrateTrialV2Plan(t *testing.T) {
 				} `json:"operations"`
 				Workflow     []struct{ ID string } `json:"workflow"`
 				Unobservable []struct{ ID string } `json:"unobservable"`
+				Remediation  *struct {
+					Mode string `json:"mode"`
+				} `json:"remediation"`
 			}
 			if err := json.Unmarshal(out, &p); err != nil {
 				t.Fatalf("%v\n%s", err, out)
@@ -95,8 +110,11 @@ func TestMigrateTrialV2Plan(t *testing.T) {
 					continue
 				}
 				s := strings.ToLower(o.Kind) + " " + o.ID
-				if o.Blocked {
+				switch {
+				case o.Blocked:
 					s += " (blocked)"
+				case p.Remediation != nil && p.Remediation.Mode == "alert-only":
+					s += " (report)" // reconcile は知らせるだけ（remediation の窓の外）
 				}
 				ops = append(ops, s)
 			}
@@ -111,6 +129,35 @@ func TestMigrateTrialV2Plan(t *testing.T) {
 			sameSet(t, "unknown", unknown, tc.Unknown)
 		})
 	}
+}
+
+// timePlaceholder は表の {{t <ずれ> <形> [tz]}}（今からのずれの時刻。形は ymdhm・
+// hm・dow）。窓を「今を挟む」「今を外す」ように書く（新しいコアの側の試験と同じ）。
+var timePlaceholder = regexp.MustCompile(`\{\{t (\S+) (ymdhm|hm|dow)(?: (\S+))?\}\}`)
+
+func expandTimes(s string, now time.Time) string {
+	return timePlaceholder.ReplaceAllStringFunc(s, func(m string) string {
+		g := timePlaceholder.FindStringSubmatch(m)
+		d, err := time.ParseDuration(g[1])
+		if err != nil {
+			panic(err)
+		}
+		at := now.Add(d).UTC()
+		if g[3] != "" {
+			loc, err := time.LoadLocation(g[3])
+			if err != nil {
+				panic(err)
+			}
+			at = at.In(loc)
+		}
+		switch g[2] {
+		case "ymdhm":
+			return at.Format("2006-01-02 15:04")
+		case "hm":
+			return at.Format("15:04")
+		}
+		return at.Format("Mon")
+	})
 }
 
 func sameSet(t *testing.T, what string, got, want []string) {

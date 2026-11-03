@@ -21,8 +21,8 @@ import (
 )
 
 // Policy は「この範囲で、いつ、どこまで変えてよいか」（設計 §3.6）。段 2 は
-// select・mode・budget を持ち、段 5 で承認と一時的な Policy（期限・理由・誰が）を
-// 足した。窓・別枠は後の段。
+// select・mode・budget を持ち、段 5 で承認と一時的な Policy（期限・理由・誰が）を、
+// 段 9 で窓と別枠を足した。
 type Policy struct {
 	Name   string
 	Select Selector // E-M2・N-M2・E-M1
@@ -32,6 +32,14 @@ type Policy struct {
 	Approval *Approval
 	// Applicant は承認を頼む人。承認者に数えない（不変条件 21、E-L2）。
 	Applicant string
+	// Windows は窓（E-J3・E-R1・N-J1・N-R3）。別枠でない Policy は窓の外で
+	// report（当たる変更を知らせるだけ）。別枠の Policy は窓の中でだけ開く。
+	// 書かなければいつでも。
+	Windows []Window
+	// Allow は大量の正当な作業の別枠（E-J2・E-A9・N-J2）。窓の中で承認が揃えば、
+	// select と kind に合う変更を max_count まで通常の予算の外で通す。別枠は
+	// 予算の免除でない（数えて max_count で止まる、不変条件 9）。
+	Allow *Allow
 	// Until・Reason・By は一時的な Policy（freeze・その場の report・手順の段の
 	// policy）。Until を過ぎれば消える（不変条件 22、E-J4・N-Q1・E-R2・N-R1）。
 	Until  time.Time
@@ -52,6 +60,33 @@ type Approval struct {
 	Separation bool
 	// Timeout を過ぎた依頼は期限切れ（E-L2・E-L6）。0 は期限なし。
 	Timeout time.Duration
+	// CoolingOff は別枠の宣言を初めて見てから開くまで待つ長さ（E-J2・N-J2。
+	// 承認者を置かない運用で、宣言の取り消しに間を残す）。別枠の Policy だけ。
+	// N が 0 なら承認者は要らず、CoolingOff だけで開く。
+	CoolingOff time.Duration
+}
+
+// AllowKind は別枠に入れる変更の種類（E-J2・E-A9）。
+type AllowKind string
+
+const (
+	AllowDelete AllowKind = "delete" // 削除（ensure: absent と prune）
+	AllowUpdate AllowKind = "update" // 変更
+	AllowCreate AllowKind = "create" // 作成
+	// AllowReimage は同じ種類・同じラベルの削除と作成の対（入れ直し）。対を 1 と
+	// 数え、作成の側は数えない。
+	AllowReimage AllowKind = "reimage"
+	// AllowDestructive は壊す変更（削除・作り直し・provider が壊すと言った変更）。
+	AllowDestructive AllowKind = "destructive"
+)
+
+// AllowKinds は書ける種類。
+var AllowKinds = []AllowKind{AllowDelete, AllowUpdate, AllowCreate, AllowReimage, AllowDestructive}
+
+// Allow は別枠（§3.6 の allow）。
+type Allow struct {
+	Kind     AllowKind
+	MaxCount int // 窓の全体で通す数（Record に使用量を置く）
 }
 
 // Selector は Policy の当たり先。書いた条件を全部満たすものに当たる（E-M2）。

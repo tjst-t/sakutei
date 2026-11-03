@@ -441,6 +441,11 @@ func (c *conv) gate(at, applicant string, n *yaml.Node) *obj {
 			c.refuse("%s: manual_approval %q は書き直せない", at, s)
 			return nil
 		}
+		// requirements の無い gate はプロファイルの既定（enterprise は 2 人と
+		// 申請者≠承認者）。
+		if c.profileName() == "enterprise" {
+			need, separation = 2, true
+		}
 	} else if req := ma.Map["requirements"]; req != nil {
 		for _, k := range req.Keys {
 			v := req.Map[k]

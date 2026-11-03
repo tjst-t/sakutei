@@ -47,10 +47,11 @@ W=/tmp/sakutei-migrate-trial; rm -rf $W; mkdir -p $W; cp docs/trial/v1/initial/*
 /tmp/sakutei-v3 plan --intent $W/v3/intent --config $W/v3/config.yaml    # v2 の plan と同じ 3 件（作る 1・変える 2）
 ```
 
-- 書き直せないもの（新しいコアに受け皿がまだ無い `planned_change:`・`remediation:` の時間帯など）があれば、全部を挙げて何も書かない（終了コード 2）。
-- Workflow の gate の承認者は名前で渡す（`--role platform-admin=alice,bob`・`--approver bob`）。秘密の参照は `--secret-file secretref:file/bmc/node1=/path/to/password`。
+- `planned_change:` は別枠の Policy（`allow`・`windows`・`approval`・`applicant`）に、`remediation:` の時間帯は窓の Policy に、`profile:` は承認の数（team 1 人・enterprise 2 人と申請者≠承認者・solo は cooling-off）になる。v2 は承認者を intent に書いたが、新しいコアでは書き直したあと承認者が `sakutei approve <依頼>` で Record に残す（依頼は reconcile が書き、plan と `sakutei approvals` に出る）。
+- 書き直せないもの（Workflow の `disruption`、窓の中だけ知らせる `remediation` の窓など。どれも試用の intent には無い。一覧は `v3/README.md` の「段 9 の決まり」）があれば、全部を挙げて何も書かない（終了コード 2）。
+- Workflow の gate と planned_change の承認者は名前で渡す（`--role platform-admin=alice,bob`・`--approver bob`）。秘密の参照は `--secret-file secretref:file/bmc/node1=/path/to/password`。
 - 今の現実を宣言の形に書き出すのは `sakutei-import --intent <intent> --config <config> --out <file>`（`--every 1m` で同期、`--commit` で 1 回 1 commit）。
-- docs/trial の v2 の試用の intent 15 件で、書き直した intent の plan が v2 の plan と同じ操作を出すことを、`v3/providers/migrate` の試験が確かめる（表は `v3/providers/migrate/testdata/trial-cases.json`、決まりは `v3/README.md` の「段 9 の決まり」）。
+- docs/trial の v2 の試用の intent を全部（planned-change の planned_change の付いた intent と remediation-profile の時間帯・プロファイルの intent を含む 32 件。run.sh が今の時刻から書く窓は表に時刻の差し込みで書く）書き直して、新しいコアの plan が v2 の plan と同じ操作を出すことを、`v3/providers/migrate` の試験が確かめる（表は `v3/providers/migrate/testdata/trial-cases.json`。表に入れていない run.sh の手順（常駐で窓が開いて閉じる・`--mode`・`--freeze`・宣言の誤り・急減の判定）と、確かめた範囲は `v3/README.md` の「段 9 の決まり」）。
 
 ## 置いてあるもの（docs/trial/v1/）
 

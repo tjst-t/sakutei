@@ -31,9 +31,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tjst-t/sakutei/v3/cli"
 	"github.com/tjst-t/sakutei/v3/providers/dnszone"
@@ -42,12 +44,14 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/redfish"
 	"github.com/tjst-t/sakutei/v3/providers/sqlmigrate"
 	"github.com/tjst-t/sakutei/v3/providers/templatefile"
+	"github.com/tjst-t/sakutei/v3/record"
 	"github.com/tjst-t/sakutei/v3/sdk/fake"
 )
 
 type trialCase struct {
 	Name       string            `json:"name"`
 	Intent     string            `json:"intent"`
+	Append     map[string]string `json:"append"`
 	Files      map[string]string `json:"files"`
 	Replace    []struct{ File, Old, New string }
 	Write      map[string]string `json:"write"`
@@ -63,6 +67,11 @@ type trialCase struct {
 	// 観測できないものが v2 と違うときの期待（理由は V3Reason）。
 	Unknown   []string `json:"unknown"`
 	V3Unknown []string `json:"v3_unknown"`
+	// V3Record は、先に reconcile を 1 回流して Record（前の周の件数・別枠の承認の
+	// 依頼）を作り、現実を戻してから V3Approve の人が別枠の依頼を承認し、Record を
+	// 読む plan で比べる。
+	V3Record  bool     `json:"v3_record"`
+	V3Approve []string `json:"v3_approve"`
 }
 
 func modules() []cli.Option {
@@ -96,7 +105,16 @@ func loadCases(t *testing.T) []trialCase {
 // setup は作業ディレクトリに intent と最初の現実を写す。
 func setup(t *testing.T, tc trialCase) string {
 	w := t.TempDir()
-	copyTree(t, filepath.Join(repo, tc.Intent), filepath.Join(w, "v2intent"))
+	os.MkdirAll(filepath.Join(w, "v2intent"), 0o755)
+	if tc.Intent != "" {
+		copyTree(t, filepath.Join(repo, tc.Intent), filepath.Join(w, "v2intent"))
+	}
+	now := time.Now()
+	for name, text := range tc.Append {
+		p := filepath.Join(w, "v2intent", name)
+		b, _ := os.ReadFile(p)
+		os.WriteFile(p, append(b, []byte(expandTimes(text, now))...), 0o600)
+	}
 	for dst, src := range tc.Files {
 		copyTree(t, filepath.Join(repo, src), filepath.Join(w, dst))
 	}
@@ -110,9 +128,63 @@ func setup(t *testing.T, tc trialCase) string {
 	}
 	for name, s := range tc.Write {
 		os.MkdirAll(filepath.Dir(filepath.Join(w, name)), 0o755)
-		os.WriteFile(filepath.Join(w, name), []byte(s), 0o600)
+		os.WriteFile(filepath.Join(w, name), []byte(expandTimes(s, now)), 0o600)
 	}
 	return w
+}
+
+// timePlaceholder は表の {{t <ずれ> <形> [tz]}}（今からのずれの時刻。形は ymdhm・
+// hm・dow。v2 の側の試験と同じ）。
+var timePlaceholder = regexp.MustCompile(`\{\{t (\S+) (ymdhm|hm|dow)(?: (\S+))?\}\}`)
+
+func expandTimes(s string, now time.Time) string {
+	return timePlaceholder.ReplaceAllStringFunc(s, func(m string) string {
+		g := timePlaceholder.FindStringSubmatch(m)
+		d, err := time.ParseDuration(g[1])
+		if err != nil {
+			panic(err)
+		}
+		at := now.Add(d).UTC()
+		if g[3] != "" {
+			loc, err := time.LoadLocation(g[3])
+			if err != nil {
+				panic(err)
+			}
+			at = at.In(loc)
+		}
+		switch g[2] {
+		case "ymdhm":
+			return at.Format("2006-01-02 15:04")
+		case "hm":
+			return at.Format("15:04")
+		}
+		return at.Format("Mon")
+	})
+}
+
+// snapshot は作業ディレクトリのファイル（Record を除く）を覚え、戻す関数を返す
+// （先に流した reconcile が書き換えた現実を最初に戻す）。
+func snapshot(t *testing.T, w, record string) func() {
+	files := map[string][]byte{}
+	filepath.Walk(w, func(p string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && !strings.HasPrefix(p, record) {
+			files[p], _ = os.ReadFile(p)
+		}
+		return nil
+	})
+	return func() {
+		filepath.Walk(w, func(p string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() && !strings.HasPrefix(p, record) {
+				if _, ok := files[p]; !ok {
+					os.Remove(p)
+				}
+			}
+			return nil
+		})
+		for p, b := range files {
+			os.WriteFile(p, b, 0o600)
+		}
+	}
 }
 
 func abs(w string, args []string) []string {
@@ -152,8 +224,34 @@ func TestTrialPlansMatchV2(t *testing.T) {
 			}
 			so.Reset()
 			se.Reset()
-			code := cli.Run(context.Background(), []string{"plan", "--intent", filepath.Join(out, "intent"),
-				"--config", filepath.Join(out, "config.yaml"), "--json"}, &so, &se, modules()...)
+			planArgs := []string{"plan", "--intent", filepath.Join(out, "intent"), "--config", filepath.Join(out, "config.yaml"), "--json"}
+			if tc.V3Record {
+				rec := filepath.Join(w, "record")
+				restore := snapshot(t, w, rec)
+				code := cli.Run(context.Background(), []string{"reconcile", "--intent", filepath.Join(out, "intent"),
+					"--config", filepath.Join(out, "config.yaml"), "--record", rec}, &so, &se, modules()...)
+				if code == cli.ExitError || code == cli.ExitRejected {
+					t.Fatalf("reconcile: 終了コード %d\n%s%s\n%s", code, so.String(), se.String(), dump(out))
+				}
+				restore()
+				approvals, err := record.ReadApprovals(rec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for id, a := range approvals {
+					if a.Request.Kind != "lane" {
+						continue
+					}
+					for _, by := range tc.V3Approve {
+						// 申請者の承認は CLI が断る（v2 でも数えない）。
+						cli.Run(context.Background(), []string{"approve", id, "--record", rec, "--as", by}, &so, &se, modules()...)
+					}
+				}
+				so.Reset()
+				se.Reset()
+				planArgs = append(planArgs, "--record", rec)
+			}
+			code := cli.Run(context.Background(), planArgs, &so, &se, modules()...)
 			if code != cli.ExitOK {
 				t.Fatalf("plan: 終了コード %d\n%s%s\n%s", code, so.String(), se.String(), dump(out))
 			}
@@ -194,7 +292,11 @@ func TestTrialPlansMatchV2(t *testing.T) {
 						op = "update"
 					}
 					s := op + " " + name(c.Resource)
-					if c.Action != "apply" {
+					switch c.Action {
+					case "apply":
+					case "report":
+						s += " (report)" // 知らせるだけ（窓の外・mode: report）
+					default:
 						s += " (blocked)"
 					}
 					ops = append(ops, s)
