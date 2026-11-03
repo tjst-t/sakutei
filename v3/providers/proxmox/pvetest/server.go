@@ -30,7 +30,8 @@
 //     終わったとき。複製の間は VM に lock: clone）。
 //   - /pending と /cluster/resources の数は JSON の数で返す。
 //   - Options.ResourceLag が正なら、/cluster/resources の名前・status・template は
-//     pvestatd のように周期で写した古い値（作った直後の VM は名前が空）。今の
+//     pvestatd のように周期で写した古い値（作った直後の VM は名前が空。vmid が
+//     偶数なら仮の名前 "VM <vmid>"）。今の
 //     電源と lock は /status/current、名前とテンプレートは /config が正。
 //   - pool（Backlog #165）：作成・複製の pool（無い pool は 403 "Permission check
 //     failed (pool 'x' does not exist)"）、PUT /pools（poolid・vms・allow-move・
@@ -930,6 +931,9 @@ func (s *Server) resources(tok *PoolToken, typ string) []map[string]any {
 		}
 		if v.rrdName != "" {
 			m["name"] = v.rrdName
+		} else if s.opts.ResourceLag > 0 && v.VMID%2 == 0 {
+			// 写しの前の VM は名前が空か仮の名前（Proxmox VE 9.2 で確かめた）。
+			m["name"] = fmt.Sprintf("VM %d", v.VMID)
 		}
 		if v.Lock != "" {
 			m["lock"] = v.Lock

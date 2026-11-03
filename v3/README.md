@@ -2,11 +2,11 @@
 
 設計は `docs/core/README.md`、もとにした検討は `docs/review/core-usecase-review.md`。ルートの v2 のコードとは別の Go モジュール（`github.com/tjst-t/sakutei/v3`、標準ライブラリだけ）。互換は持たない。
 
-作る順番は設計書 §8 の 9 段。いまは **段 8a** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）と、段 5（Procedure・承認と承認の CLI・一時的な Policy の freeze）と、段 6（2 段の Apply・最初の実 provider の dnszone・hostconf・nftables と決まった道具 nft-guard。provider はコアの外のモジュール `providers/`）と、段 7（Expand の連鎖と外のコマンドの Expand・golden のテストの道具・外部入力・採番・秘密の世代と保管先。Expand のモジュール template・netpolicy・compat と保管先 vault-kv2・command は `providers/`）と、段 8a（Events の送り先 alertmanager・syslog・metrics・otlp と承認ツール sakutei-approve。どれも `providers/`）を足した。段 8 の残り（provider）は段 8b〜8f。
+作る順番は設計書 §8 の 9 段。いまは **段 8a** まで：段 1（型・intent とつなぎ方の設定の読み込みと検証・素通しの Expand・偽の provider・`plan`）に、段 2（1 周の処理 `cycle.Run`：Apply・Delete・List・prune の守り、Policy の mode と予算、Record のロック・前の周の目印・監査の鎖、`reconcile --once`、終了コード）と、段 3（常駐・起床・読み取り HTTP・Events の状態型と送り出しの列・stdout の送り先）と、段 4（Condition の三値の式と量化・Graph の順序と待ち・同じ周の観測し直し・settle と効かない Apply の回数）と、段 5（Procedure・承認と承認の CLI・一時的な Policy の freeze）と、段 6（2 段の Apply・最初の実 provider の dnszone・hostconf・nftables と決まった道具 nft-guard。provider はコアの外のモジュール `providers/`）と、段 7（Expand の連鎖と外のコマンドの Expand・golden のテストの道具・外部入力・採番・秘密の世代と保管先。Expand のモジュール template・netpolicy・compat と保管先 vault-kv2・command は `providers/`）と、段 8a（Events の送り先 alertmanager・syslog・metrics・otlp と承認ツール sakutei-approve。どれも `providers/`）を足した。段 8 の残り（provider）は段 8b〜8f（8b の redfish・metrics-probe と、8d の proxmox・guest-os は済んだ）。
 
 | パッケージ | 中身 |
 |---|---|
-| `core` | Resource・Range・Policy（承認 `Approval`・一時的な Policy の期限と理由）・Schema・Observation（ある・無い・分からない・作業中）と Provider の口（観測と列挙だけの `Reader`、一回きりの操作の `Invoker` と `ErrNotSent`）・Event と送り先の口 `Sink`（任意で今の firing の一覧を受け取る `StateSink`・監査の鎖を受け取る `AuditSink`）・周の設定・Condition の口（三値 `Tri`・`on_unknown`・確かめの `CheckFunc`）・Procedure と段 |
+| `core` | Resource・Range・Policy（承認 `Approval`・一時的な Policy の期限と理由）・Schema・Observation（ある・無い・分からない・作業中）と Provider の口（観測と列挙だけの `Reader`、一回きりの操作の `Invoker` と `ErrNotSent`、状況で壊す・承認の要る変更を言う `Classifier`、項目の比べ方 `FieldSpec.Match`）・Event と送り先の口 `Sink`（任意で今の firing の一覧を受け取る `StateSink`・監査の鎖を受け取る `AuditSink`）・周の設定・Condition の口（三値 `Tri`・`on_unknown`・確かめの `CheckFunc`）・Procedure と段 |
 | `approval` | 承認を数える（N-of-M・申請者≠承認者・拒否・期限切れ・使った依頼）。Policy の承認と手順の gate で同じ数え方。判断を書く前の確かめと書き込み（`Decide`。CLI と sakutei-approve で同じ） |
 | `procedure` | 手順を起こし・1 段ずつ進め・止め・観測で閉じる（`Run`。plan では何も書かずに次を出す） |
 | `condition` | 観測についての三値の式を読み（`Parse`）、評価し（`Eval`）、Schema と突き合わせる（`Lint`） |
@@ -125,5 +125,11 @@ $ cd v3 && go run ./cmd/sakutei alloc release <pool> <value> --intent <dir> --re
 
 - 契約テストの Transaction の戻り（§6.2、E-B3・E-B8・不変条件 17）：`sdk/contract.RunTxn(t, newTarget)` は確かめごとに新しい `TxnTarget`（Transactor を持つ provider・準備する宣言・時間切れ・時間切れを過ぎるまで待つ `Expire`）を作り、準備した変更が効く・確定すれば時間切れを過ぎても戻らない・Commit も Rollback もしなければ時間切れのあとに元に戻る・Rollback で戻る、を確かめる。偽の provider でも回す（`sdk/contract/txn_test.go`）。
 - provider `netconf`・`cli-device` は `providers/`（README に設定と intent の例・netopeer2 の統合テスト `make integration-v3-netconf`）。
+
+段 8d の決まり（proxmox・guest-os とコアの 2 つの口）：
+
+- `FieldSpec.Match`（§3.3、E-I7・E-D1・E-C2）：宣言と観測の比べ方を provider が決める項目。plan も、Apply のあとの読み直しも、契約テストも同じ比べ方を使う。観測に無い項目でも Match が等しいと言えば差分にしない（作るときだけ使う項目。作るときは Apply に渡す）。
+- `core.Classifier`（§3.3、E-C2・E-B6・E-C1）：provider が作る・変える変更ごとに `Hint`（壊す・承認が要る・理由）を言う。壊す変更は予算の壊す変更に数え、承認が要る変更は承認が揃うまで当てない（当たる Policy に approval が無ければ、申請者でない 1 人の承認を頼む。`sakutei approve` で揃える）。理由は plan の `provider:` の行と JSON の `classified`・`needs_approval` に出る。
+- provider `proxmox`（種類 `vm`・`fw-rules`・観測だけの `volume`・`fw-rule`、network_policy の実現先 `proxmox-fw`）と `guest-os`（種類 `os`、観測だけ）は `providers/`（README に設定と intent の例・統合テスト）。
 
 テストはルートの `make check`・`make test-race` が一緒に回す（`providers/` も）。

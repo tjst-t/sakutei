@@ -437,3 +437,19 @@ func TestAPIBasePath(t *testing.T) {
 		t.Fatalf("%+v", o)
 	}
 }
+
+// TestStaleResources は /cluster/resources の名前が pvestatd の写しで遅れる（作った
+// 直後は空か "VM <vmid>"）ときも、作った VM を「無い」と見て作り直さない（E-D1）。
+func TestStaleResources(t *testing.T) {
+	for _, vmid := range []int64{200, 201} {
+		e := newEnv(t, pvetest.Options{ResourceLag: 50})
+		r := web1(e)
+		r.Fields["vmid"] = vmid
+		if c := e.apply(t, r); c.Op != plan.None {
+			t.Fatalf("vmid %d: %+v", vmid, c)
+		}
+		if e.srv.Calls("clone") != 1 {
+			t.Fatalf("vmid %d: 複製 %d 回", vmid, e.srv.Calls("clone"))
+		}
+	}
+}

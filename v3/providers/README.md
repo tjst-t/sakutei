@@ -12,6 +12,7 @@
 | `metricsprobe` | /metrics（Prometheus の text 形式）を観測するだけ（module 名 `metrics-probe`）。種類 `series`（ID `<endpoint>/<メトリクス>[{ラベル="値",…}]`、項目 `series`・`value`（1 本のときだけ）・`sum`・`max`・`min`）。比べ方は Condition に書く。届かない・形が壊れている・一致する系列が無い・NaN は Unknown（E-H4・N-T4） |
 | `netconf` | NETCONF の機器の設定の部分木（種類 `subtree`、ID `<host>/<部分木>`、項目 `config`（宣言する XML）・`capabilities`（観測だけ））。機器と部分木（subtree filter・順を比べる道）は Range の `args.host`・`args.filter.<部分木>`・`args.ordered.<部分木>`。比べ方は名前空間・空白・兄弟の順・宣言に無い属性を問わない正規形。既定は観測だけで、`settings.apply: true` のとき `:confirmed-commit:1.0` の 2 段で当てる（`core.Transactor`：Prepare＝lock・edit-config・validate・commit confirmed、Commit＝確定の commit、Rollback＝discard・cancel-commit かセッションの終わり。確定しなければ機器の confirm-timeout で戻る）。NACM で部分木だけに絞ったユーザーで動く。commit_group は `apply.transaction.group`、確かめる先は `confirm` の `observe(…)`・`present(…)`・`check(…)`（E-B7・E-B8・E-B9・E-B10・N-B1・N-B4） |
 | `clidevice` | CLI でしか設定できない装置（種類＝機種の定義の項目、ID＝装置。項目のフィールドは文字列か秘密の参照）。機種の定義（観測のコマンドと読み方・変えるコマンドの雛形・確定と取り消し・`commit_confirmed`）は settings の `definition`（ファイルかマップ）。扱う装置と項目は Range の `args.host`・`args.items`。出力が定義に合わなければ Unknown。定義の `actions` は `core.Invoker`、`config.commit_confirmed`・`confirm`・`cancel` があれば `core.Transactor`（E-B11・N-B1） |
+| `proxmox` | Proxmox VE の VM と VM の FW の規則（REST API、API トークン）。種類 `vm`（ID `<クラスタ>/<VM 名>`、項目 `vmid`・`node`・`template`（作るときだけ）・`pool`・`cores`・`memory`・`disks`（宣言した slot だけ。大きくするだけ。`keep`・`volume=`）・`nics`（宣言した slot・キーだけ。`firewall`・`mtu`）・`firewall`（VM の FW の options、書いたキーだけ）・`ci_user`・`ci_ssh_keys`・`ci_ip`・`ci_gateway`・`ci_dns`・`ciupgrade`・`power`・`apply_pending`。観測だけ `lock`・`pending`・`current_values`）・`fw-rules`（ID `<クラスタ>/<VM 名>`、項目 `rules`：Sakutei の印のある規則の並び）・観測だけの `volume`（付け先の無い volume、`<クラスタ>/<VM 名>/unusedN`）と `fw-rule`（印の無い規則、`<クラスタ>/<VM 名>/<位置>`）。比べ方は `FieldSpec.Match`、volume の付け替え（承認の要る壊す変更）と規則の変更（壊す変更）は `core.Classifier`。keep のディスクが残る VM の削除は断る。一回きりの操作は `reboot`・`reset`（壊す）・`stop`（壊す）。範囲は `args.cluster`。network_policy の実現先 `proxmox-fw`（`proxmox.Realizer`）。偽の Proxmox は `proxmox/pvetest`、規則の文は `proxmox/fwrule`（E-D1・E-C2・E-B6・N-D1・N-D10・N-C12・E-G5） |
 | `guestos` | ゲスト OS を ssh 越しに観測するだけ（module 名 `guest-os`）。種類 `os`（ID はホストの名前、項目 `os_id`・`os_version_id`・`os_pretty_name`・`hostname`・`boot_id`・`markers`・`marker`）。目印のパスは Resource の項目 `markers`（名前 → 絶対パス）に書き、中身は観測の `marker`（名前 → 値、4 KiB まで）で `observe(guest/os/node1).marker.installed` と読む。宣言できるのは `markers` と期待の値 `os_id`・`os_version_id`・`hostname` だけ。届かない・認証・ホスト鍵・壊れた出力・読めない目印は Unknown（E-E4・E-A8・E-K1） |
 | `expanders/template` | Expand `go:template`：intent の `templates:` の雛形を、台の一覧（外部入力 `for_each` か intent の `items`）の 1 件ごとに宣言にする。全台に共通の値は `vars` に 1 か所。外部入力が届かなければ宣言を作らず Uncertain（E-A11・N-A14・N-E7・N-B15・E-K3） |
 | `expanders/netpolicy` | Expand `go:netpolicy`：intent の `network_policy:`（networks・allows・targets、domain・interfaces、reason・tags）を検査し、実現先ごとに nftables の base chain に展開する。重なり・理由の無い例外・重複・宣言に無い網・domain をまたぐ許可は Reject、隠れた許可・通らない許可は Warn。ほかの実現先は `netpolicy.WithRealizer`（E-B5） |
@@ -213,6 +214,71 @@ cli-device の決まり（機種の定義は `clidevice/testdata/example-device.
 - 定義の `actions` は `core.Invoker`（`Ops` の `Destructive` は定義の `destructive`）。届かない・1 つも打てていないときだけ `ErrNotSent`。
 - v2 の項目の `disruptive`（Apply を壊す変更に数える）は、コアの壊す変更の印（`Classifier`）が入るまで書けない（書けば読み込みで断る）。
 
+## Proxmox VE の例
+
+```yaml
+# config.yaml（つなぎ方だけ。観測用と書き込み用のトークンを分ける）
+providers:
+  pve:
+    module: proxmox
+    settings:
+      settle: 30s                           # Apply のあと読み直すまで（既定 30s）
+      clusters:
+        lab:
+          endpoint: https://pve1.example.net:8006
+          api_base_path: /api2/json         # 省けば /api2/json
+          node: pve1                        # node を宣言しない VM を作るノード
+          ca_file: /etc/sakutei/pve-ca.pem  # か insecure_skip_verify: true
+          task_wait: 2m                     # Apply が仕事（UPID）を待つ長さ
+          observe: {token_id: "sakutei-ro@pve!audit", token_file: /etc/sakutei/pve-ro.token}   # / に PVEAuditor
+          write:   {token_id: "sakutei@pve!sakutei", token_file: /etc/sakutei/pve-rw.token}
+```
+
+```yaml
+# intent
+pools:
+  - {name: vmids, range: "500-599"}
+ranges:
+  - provider: pve
+    args: {cluster: lab}                    # List と宣言外の報告の範囲
+    external_owners:
+      - {owner: stage0, id: vm/lab/sakutei-ctl, reason: "Sakutei 自身が動く VM"}
+resources:
+  - type: pve/vm
+    id: lab/mon1
+    fields:
+      vmid: {from_pool: vmids}
+      template: debian-13-cloud             # 作るときだけ使う full clone の元
+      pool: apps
+      cores: 2
+      memory: 4G
+      disks: "scsi0 storage=local-lvm size=32G, scsi1 storage=local-lvm size=100G keep"
+      nics: "net0 bridge=vmbr0 vlan=20 firewall=1"
+      firewall: "enable=1 policy_in=DROP policy_out=ACCEPT"
+      ci_user: ops
+      ci_ip: 192.0.2.21/24
+      ciupgrade: false
+      power: running
+  - type: pve/vm                            # 作り直し：前の VM の keep のディスクを引き取る
+    id: lab/mon2
+    fields:
+      vmid: 601
+      template: debian-14-cloud
+      disks: "scsi0 storage=local-lvm size=32G, scsi1 volume=local-lvm:vm-500-disk-1 keep"
+  - {type: pve/vm, id: lab/old, ensure: absent}
+network_policy: …                           # targets の realizer: proxmox-fw・provider: pve・id: lab/mon1
+```
+
+- 宣言した項目だけを比べる。`disks`・`nics` は宣言した slot だけを、`nics` の `mac`・`model`・`firewall`・`mtu` と `firewall` の options は書いたキーだけを比べる。`memory` の `4G` と `4096`、DNS の区切りなどの書き方の違いはずれにしない（provider の正規形、`FieldSpec.Match`）。`template` は作るときだけ使う。
+- ディスクは大きくするだけ（小さくする・ストレージを変えるのは Apply の誤り）。`vmid`・`node` を今の VM と違えるのも Apply の誤り（番号を変えない・移行は扱わない）。
+- 走っている VM の hotplug できない変更（`cores`・`memory` など）は Proxmox が pending に置く。宣言の値が pending にあればずれにせず重ねて書かない（観測の `pending` に名前が出る）。`apply_pending: reboot` なら 1 回再起動して効かせる。
+- 非同期の仕事（作成・複製・resize・電源・削除）は Apply が `task_wait` まで待つ。待ち切れなければ誤りにせず戻り、その VM の仕事が走る間（`/nodes/<node>/tasks?source=active`）と lock がある間の観測は Converging（provider は UPID を覚えない）。
+- 止めるのは正常停止（`power: stopped`）。強制の停止・再起動は手順の `invoke`（`stop`・`reset` は壊す操作、`reboot`）。
+- `volume=` の付け替え（持ち主の VM から Proxmox の reassign で外して付ける）は承認の要る壊す変更：当たる Policy に approval が無ければ申請者でない 1 人の承認を頼み、`sakutei approve` で揃うまで当てない。持ち主の VM が走っていれば何も変えずに待つ（`power: stopped` を宣言する）。付いたあとは volume の名前を比べない。
+- keep の印（VM の tags の `sakutei-keep-<slot>`）のあるディスクか unused が残る VM の `ensure: absent` は、何も書かずに断る（`DeleteRefused`）。付け先の無い volume（`unusedN`）と印の無い FW の規則は、観測だけの種類 `volume`・`fw-rule` として宣言外に出る（消さない）。
+- 触らない VM は Range の `external_owners`（`id: vm/<クラスタ>/<VM 名>`）。宣言すれば読み込みで断る。
+- 観測用のトークンに要るのは `/` の `PVEAuditor`（`/cluster/resources`・`/status/current`・`/pending`・`/firewall/*`・他人の仕事の一覧）。書き込み用のトークンは Apply・Delete・Invoke の中でだけ読む。
+
 ## ゲスト OS の例
 
 ```yaml
@@ -373,3 +439,28 @@ v2 の `make integration-netconf` と同じ netopeer2 のイメージ（`sysrepo
 9. 機器を止めると Unknown（0 以外で終わる）。
 
 2026-10-31 に docker 29.1.3 で通した（9 段・約 85 秒）。この netopeer2 のイメージは、コアの周で commit_group を戻したあと（8 の後半）同じ機器に次の commit confirmed を送ると netopeer2-server が SIGSEGV で落ちた（同じ rpc の並びを provider に直に送ると落ちず、手元の側では原因を絞れなかった）。v2 の統合テストも group を最後に回しているので、8 を g1〜g3 で最後に回している。
+
+## 統合テスト（入れ子の Proxmox VE）
+
+```console
+$ make integration-v3-proxmox
+```
+
+v2 の `make integration-proxmox` と同じ入れ子の Proxmox VE 9.2（ISO は版と sha256 で固定、自動導入の ISO を docker で作り qemu の入れ子の KVM で入れる。ISO・自動導入の ISO・導入済みのディスクは同じキャッシュ `SAKUTEI_IT_CACHE`、既定 `~/.cache/sakutei-it/proxmox` を使い回す）を、導入済みのディスクの上の使い捨ての overlay で立て、v3 の sakutei（`cmd/sakutei`）の CLI を向けて回し、終われば（落ちても）qemu を止める。KVM・qemu・docker・curl・ssh と sudo（パスワードなし）、初回は ISO とクラウドイメージを取るネットワークが要るので、check・test・CI には入れない。段（`proxmox/integration/proxmox_test.go`）：
+
+1. テンプレートから作る：採番の vmid（500〜509）で Debian 13 のクラウドイメージのテンプレートから複製し、resize・VLAN の NIC・cloud-init・起動まで 1 回の reconcile で収束する。VM に cloud-init の利用者と鍵で ssh で入れ、ホスト名・アドレス・CPU の数・ディスクの大きさが宣言どおり。
+2. 何周しても適合のまま：reconcile を続けても終了コード 0、plan に変える操作が無く、触らない VM（external_owners）とテンプレートは出ない。
+3. 手でメモリを変える（走っている VM なので pending に置かれる）と plan が memory だけのずれを出し、reconcile が戻して pending が消える。
+4. `cores` を変えると pending に置かれ、次の reconcile は重ねて書かない（終了コード 0）。`apply_pending: reboot` を足すと 1 回再起動して効き、VM の中の `nproc` が 3。
+5. 触らない VM（`external_owners` の `vm/it/sakutei-ctl`）を宣言すると読み込みで断り（終了コード 2）、その VM の設定の digest は変わらない。
+6. qemu を SIGSTOP で止めると plan はその VM を unknown にし、戻せば収束する。
+7. 宣言を外すと VM は宣言外（unmanaged）に出て、reconcile しても消えない（触らない VM・テンプレートは出ない）。
+8. `ciupgrade: false`・NIC の `firewall=1`・`mtu=1450`・VM の FW の options で作り（止めたまま）、手で NIC と options を変えると、観測用のトークン（`/` に `PVEAuditor`）の plan が nics と firewall のずれを出す。そのトークンだけの reconcile は書けずに失敗し、書き込み用のトークンを分けた設定の reconcile が戻す（書かないキー `ipfilter` は残す）。
+9. network_policy の実現先 proxmox-fw：手の規則を置いた VM に、口と向き（net0 は出る向き・net1 は入る向き、IPv4 と IPv6）の許可を当てると、`/etc/pve/firewall/550.fw` に印と reason の comment つきの規則が宣言の順に先頭に入り、手の規則は後ろに残って種類 `fw-rule` の宣言外に出る。置いた規則の port を手で変え先頭に手の規則を置くと、観測用のトークンの plan でもずれになり、reconcile が戻して手の規則を消さない。
+10. 作り直しでデータのディスクを引き継ぐ：keep の印（tags）のある前の VM の `ensure: absent` は断られて消えない。新しい VM の `volume=` は承認が揃うまで作らず（`sakutei approve`）、承認のあとに reassign で付け替えて中身（LV に書いた印）が残る。前の VM はそのあと消せ、keep でないディスクは一緒に消え、付け替えたディスクは残る。
+11. pool に入れて作り、手で pool から外すと plan が pool のずれを出して reconcile が戻す。無い pool は `does not exist` の誤り。
+12. 承認つきで消す：`approval` の Policy に当たる `ensure: absent` は承認の前に消さず、`sakutei approve` のあとに走っている VM を止めて消す。ほかの VM には触れない。
+
+2026-10-31 に Linux 7.0・qemu の入れ子の KVM・Proxmox VE 9.2 で 12 段とも通した（キャッシュの導入済みのディスクを使い、lab の起動を含めて約 280 秒。作る VM は 1 回の reconcile で収束した）。
+
+実機で見つけたこと（Proxmox VE 9.2）：作った直後の VM は `/cluster/resources` に仮の名前 `VM <vmid>` で載る（名前が空のときと同じく VM の設定で確かめる。偽の Proxmox の `ResourceLag` も真似る）。複製した VM のディスクの volume の番号は Proxmox が決める（テンプレートの cloud-init のドライブなどで飛ぶ）。

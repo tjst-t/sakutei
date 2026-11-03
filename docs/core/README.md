@@ -232,7 +232,7 @@ type Schema struct {
     Kinds   map[string]KindSchema
 }
 type KindSchema struct {
-    Fields      map[string]FieldSpec // {Type; Identity bool; Destructive DestructiveOn}
+    Fields      map[string]FieldSpec // {Type; Identity bool; Digest bool; Match func(desired, observed) bool; Destructive DestructiveOn}
     Settle      time.Duration        // Apply のあと読み直すまでの待ち
     ObserveOnly bool                 // 観測だけ。Apply・Delete を呼ばない
     DestructiveDelete bool           // 中身を失う種類（volume・DB・バケット）
@@ -277,6 +277,7 @@ type DesiredObserver interface {
 | `FieldSpec.Type` の Secret | 値を比べず世代で比べる。表示は伏せる | E-G2・N-L5 |
 | `FieldSpec.Type` の Float | 小数の値（/metrics の値・メモリの量）を Condition の大小で比べる。NaN・±Inf は型に合わない | E-H4・N-T4 |
 | `FieldSpec.Digest` | 観測は中身の sha256（`sha256:<hex>`）だけ。比べるときは宣言の値も sha256 にする。平文を観測・plan・Record に出さない（host のファイル・ユニットの中身） | E-E2・E-D5 |
+| `FieldSpec.Match` | 宣言と観測の比べ方を provider が決める項目（provider の正規形で吸収する）。宣言した slot・キーだけを比べる（VM の disks・nics・FW の options）・作るときだけ使う（template）・付け替えで名前の変わる volume を比べない・書き方の違い（`2G` と `2048`）をずれにしない。無ければ型の比べ方 | E-I7・E-D1・E-C2 |
 | `FieldSpec.Destructive` | create・update・delete のどれで壊すか。壊す変更は予算と承認 | E-C1・E-A1・N-D8・N-G10・N-C4 |
 | `Settle` | Apply のあと読み直すまで待つ | E-J6・E-R3 |
 | `ObserveOnly` | 観測だけの種類（在庫・operational の状態・golden config） | E-B7・E-E4・N-B5・N-B6・N-A7 |
@@ -955,8 +956,8 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | redfish-virtual-media | `redfish` の `virtual-media` | 変更なし | E-A3 |
 | redfish-bios | `redfish` の `bios`（ID `<node>/<属性>`、項目 `value`） | 保留中は Converging。属性の登録簿（読み取り専用・選べる値・範囲・型）の検査は `Validator` でなく Apply の直前：読み込みは BMC に触れないので、登録簿は Apply の前に BMC から読み、合わなければ送らずに Apply を失敗させる | E-A4・N-A3 |
 | redfish-firmware（多相 Task） | `redfish` の `firmware`（観測だけ。`version` と最新の更新の Task の `update_state`・`update_image`・`update_percent`・`update_message`）＋ `Invoker`（`verify`・`stage`（壊す）・`reset`・`force_restart`（壊す）） | 相は intent の Procedure に書き直す（§3.7 の例）。`stage` で送り、Task の完了は観測の `update_state` で待つ。すぐ効く部品は `stage` だけで版が変わり、再起動で効く部品（BIOS・`apply_time: OnReset`）は `reset` か `force_restart` で効かせる（`apply` という操作は無い）。危険区間は `critical`。`TargetDetermined` の判定は provider の中 | E-A5・N-A4 |
-| proxmox-vm | `proxmox` の `vm` | UPID の待ちは Apply の中か Converging。`keep`・`volume=` の付け替えは `Classifier`。keep の残る VM の削除は `RefuseError`。cluster の範囲は Range | E-D1・E-C2・N-D1・N-D10・N-C12・N-D3（置けるノードの集合は provider の項目で、今のノードが集合に入っていればずれにしない） |
-| proxmox-fw | `proxmox` の `fw-rules` | 印の無い規則は List で宣言外として出す。規則の変更は壊す印 | E-B6 |
+| proxmox-vm | `proxmox` の `vm`（ID `<クラスタ>/<VM 名>`） | UPID の待ちは Apply の中（`task_wait`）か、待ち切れなければ観測が VM の走っている仕事（`/nodes/<node>/tasks?source=active`）か lock を見て Converging（provider は UPID を覚えない）。宣言した slot・キーだけを比べる・template は作るときだけは `FieldSpec.Match`。`volume=` の付け替えは `Classifier`（壊す・承認が要る。当たる Policy に approval が無ければ申請者でない 1 人の承認）。keep の残る VM の削除は `RefuseError`（何も書かずに断る。持ち主の VM は `power: stopped` で止める）。付け先の無い volume は List が種類 `volume`（観測だけ）で出す。強制の停止は `Invoker` の `stop`（壊す。v2 の `power_off: graceful_then_force` の代わり）と `reboot`・`reset`（壊す）。cluster の範囲は Range（`args.cluster`）。触らない VM は Range の external_owners | E-D1・E-C2・N-D1・N-D10・N-C12（N-D3 の置けるノードの集合はまだ。v2 にも無い） |
+| proxmox-fw | `proxmox` の `fw-rules`（ID `<クラスタ>/<VM 名>`）・`fw-rule` | 印の無い規則は List で種類 `fw-rule`（観測だけ、ID `<クラスタ>/<VM 名>/<位置>`）の宣言外として出す。規則の変更は `Classifier` の壊す変更。network_policy の実現先 `proxmox-fw` は `netpolicy.WithRealizer` で組み込み、作る宣言は同じ id の vm に依る | E-B6・E-B5 |
 | netconf | `netconf` | 2 段の Apply は `Transactor`（commit confirmed。Commit＝確定の commit、Rollback＝cancel-commit かセッションの終わり）。commit_group は Resource の `transaction.group`、confirm の observe:・check: は Condition。機器と部分木（`filter.<部分木>`・順を比べる道 `ordered.<部分木>`）は Range。観測は毎回新しいセッション。NACM で絞ったユーザーで動く（外を読み書きする rpc を送らない） | E-B7・E-B8・E-B9・E-B10・N-B1・N-B4 |
 | cli-device | `cli-device` | 機種の定義ファイルは settings。種類は定義の項目、ID は装置。扱う装置と項目は Range。定義の `actions` は `Invoker`。`Transactor` は定義に時間切れで戻る確定（`config.commit_confirmed`・`confirm`・`cancel`）がある機種だけ（取り消し `rollback` は確定しない変更を捨てるだけで、時間切れの戻しにならない） | E-B11・N-B1 |
 | postgresql | `postgresql` | 利用者の表がある DB の削除は `RefuseError`。scope は Range | E-F1・E-F3・N-F1・N-F7 |

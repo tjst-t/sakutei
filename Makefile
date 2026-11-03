@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-v3-nftables integration-v3-redfish integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
+.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-v3-nftables integration-v3-redfish integration-v3-proxmox integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
 
 BIN     := sakutei
 DEMODIR := .demo
@@ -300,6 +300,20 @@ integration-otlp:
 	  sudo -n docker rm -f -v sakutei-otlpit-collector >/dev/null || status=1; \
 	fi; \
 	exit $$status
+
+# 新しいコアの proxmox provider の統合テスト（v3 段 8d）。v2 の integration-proxmox と
+# 同じ入れ子の Proxmox VE 9.2（ISO・自動導入の ISO・導入済みのディスクは同じキャッシュ
+# SAKUTEI_IT_CACHE、既定 ~/.cache/sakutei-it/proxmox を使い回す）を qemu で立て、v3 の
+# sakutei の CLI で VM の作成・適合・手の変更の戻し・pending・触らない VM・届かない
+# ときの Unknown・宣言外・NIC の firewall/mtu と FW の options・観測用のトークン・
+# network_policy の実現先 proxmox-fw・keep のディスクの付け替え・承認つきの削除・pool を
+# 回し、終われば（落ちても）qemu を止める。KVM・qemu・docker・curl・ssh と sudo
+# （パスワードなし）、初回は ISO を取るネットワークが要るので、check・test・CI には
+# 入れない。手順と結果は v3/providers/README.md。
+V3_PROXMOX_IT := ./proxmox/integration/
+integration-v3-proxmox:
+	$(V3P) go vet -tags integration_v3_proxmox $(V3_PROXMOX_IT)
+	$(V3P) go test -tags integration_v3_proxmox -count=1 -v -timeout 90m $(V3_PROXMOX_IT)
 
 # 外のモジュールから Sakutei を go get で取り込めるかを確かめる（ネットワークが要る。
 # check・test には入れない。CI とリリースの前の点検で回す）。VERSION はタグか commit。

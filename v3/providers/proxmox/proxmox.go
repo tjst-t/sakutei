@@ -666,8 +666,9 @@ func unknown(err error) core.Observation {
 }
 
 // resources はクラスタの VM の一覧を返す。/cluster/resources の名前は pvestatd の
-// 写しで、作った直後の VM は名前が空のことがある（「無い」と見てもう一度作らない
-// ように）。名前が空の qemu の項目は、VM の設定で名前とテンプレートかを確かめる。
+// 写しで、作った直後の VM は名前が空か仮の名前 "VM <vmid>" のことがある（Proxmox
+// VE 9.2 で確かめた。「無い」と見てもう一度作らないように）。そういう qemu の項目は、
+// VM の設定で名前とテンプレートかを確かめる。
 func (c *Cluster) resources(ctx context.Context, cl *Client) ([]Resource, error) {
 	res, err := cl.Resources(ctx)
 	if err != nil {
@@ -675,7 +676,7 @@ func (c *Cluster) resources(ctx context.Context, cl *Client) ([]Resource, error)
 	}
 	for i := range res {
 		r := &res[i]
-		if r.Type != "qemu" || r.Name != "" {
+		if r.Type != "qemu" || (r.Name != "" && r.Name != fmt.Sprintf("VM %d", r.VMID)) {
 			continue
 		}
 		cfg, err := cl.Config(ctx, r.Node, r.VMID)
