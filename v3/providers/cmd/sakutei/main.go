@@ -22,62 +22,12 @@ package main
 
 import (
 	"github.com/tjst-t/sakutei/v3/cli"
-	"github.com/tjst-t/sakutei/v3/providers/ansible"
-	"github.com/tjst-t/sakutei/v3/providers/clidevice"
-	"github.com/tjst-t/sakutei/v3/providers/dnszone"
-	"github.com/tjst-t/sakutei/v3/providers/expanders/compat"
-	"github.com/tjst-t/sakutei/v3/providers/expanders/netpolicy"
-	"github.com/tjst-t/sakutei/v3/providers/expanders/template"
-	"github.com/tjst-t/sakutei/v3/providers/guestos"
-	"github.com/tjst-t/sakutei/v3/providers/hostconf"
-	"github.com/tjst-t/sakutei/v3/providers/ldap"
-	"github.com/tjst-t/sakutei/v3/providers/metricsprobe"
-	"github.com/tjst-t/sakutei/v3/providers/netconf"
-	"github.com/tjst-t/sakutei/v3/providers/nftables"
-	"github.com/tjst-t/sakutei/v3/providers/postgresql"
-	"github.com/tjst-t/sakutei/v3/providers/proxmox"
-	"github.com/tjst-t/sakutei/v3/providers/redfish"
-	"github.com/tjst-t/sakutei/v3/providers/s3"
-	"github.com/tjst-t/sakutei/v3/providers/secretbackend"
-	"github.com/tjst-t/sakutei/v3/providers/sinks/alertmanager"
-	"github.com/tjst-t/sakutei/v3/providers/sinks/metrics"
-	"github.com/tjst-t/sakutei/v3/providers/sinks/otlp"
-	"github.com/tjst-t/sakutei/v3/providers/sinks/syslog"
-	"github.com/tjst-t/sakutei/v3/providers/sqlmigrate"
-	"github.com/tjst-t/sakutei/v3/providers/templatefile"
-	"github.com/tjst-t/sakutei/v3/sdk/fake"
+	"github.com/tjst-t/sakutei/v3/providers/builtin"
 )
 
-// Options は組み込むモジュール（試用の手順のテストも同じものを使う）。
-func Options() []cli.Option {
-	return []cli.Option{
-		cli.WithModule("dnszone", dnszone.Module),
-		cli.WithModule("hostconf", hostconf.Module),
-		cli.WithModule("nftables", nftables.Module),
-		cli.WithModule("redfish", redfish.Module),
-		cli.WithModule("proxmox", proxmox.Module),
-		cli.WithModule("metrics-probe", metricsprobe.Module),
-		cli.WithModule("netconf", netconf.Module),
-		cli.WithModule("cli-device", clidevice.Module),
-		cli.WithModule("guest-os", guestos.Module),
-		cli.WithModule("postgresql", postgresql.Module),
-		cli.WithModule("sqlmigrate", sqlmigrate.Module),
-		cli.WithModule("ldap", ldap.Module),
-		cli.WithModule("template-file", templatefile.Module),
-		cli.WithModule("ansible", ansible.Module),
-		cli.WithModule("s3", s3.Module),
-		cli.WithModule("fake", fake.Module),
-		cli.WithExpander("template", template.Expander{}),
-		cli.WithExpander("netpolicy", netpolicy.New(netpolicy.WithRealizer(proxmox.RealizerName, proxmox.Realizer{}))),
-		cli.WithExpander("compat", compat.Expander{}),
-		cli.WithSecretBackend(secretbackend.VaultKV2, secretbackend.VaultModule),
-		cli.WithSecretBackend(secretbackend.CommandName, secretbackend.CommandModule),
-		cli.WithSink("alertmanager", alertmanager.Module),
-		cli.WithSink("syslog", syslog.Module),
-		cli.WithSink("metrics", metrics.Module),
-		cli.WithSink("otlp", otlp.Module),
-	}
-}
+// Options は組み込むモジュール（試用の手順のテストも同じものを使う）。一覧は
+// builtin にある（sakutei-import と同じもの）。
+func Options() []cli.Option { return builtin.Options() }
 
 func main() {
 	cli.Main(Options()...)

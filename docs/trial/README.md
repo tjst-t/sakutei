@@ -29,11 +29,28 @@ v1 との違い：
 
 - つなぎ方の設定（`config.yaml`）と intent に分かれる。ゾーン（`zone`）と扱う table（`host`・`tables`）は intent の `ranges` に書く。
 - ID は dnszone が `<FQDN>/<型>`（種類 `dns/record`）、nftables が `<host>/<family>/<table>/<chain>`（種類 `fw/chain`）。`rules` はルール文のリスト。
-- import はまだ無い（段 9）。status の代わりに plan がずれを出す。
+- import は別の道具 `sakutei-import`（段 9、下の「v2 の intent を新しいコアへ書き直す」）。status の代わりに plan がずれを出す。
 - alert-only は `sakutei freeze`（理由・期限・誰が。`unfreeze` で終える）。
 - 宣言から外したものは `ranges` の `prune: false`（既定）なら消さず、宣言外として出す。`prune: true` にしても、前の周の件数が無ければ・予算（`budget.destructive_per_cycle`）を超えれば消さない。
 
 同じ手順と v1 の D3（宣言外の削除が予算で止まる）を `v3/providers/cmd/sakutei` の `TestTrial` が回す（`make test` に入る）。
+
+## v2 の intent を新しいコアへ書き直す（sakutei-migrate）
+
+v2 の intent と v2 に渡していた provider の設定（同じ名前の引数）を `sakutei-migrate` に渡すと、新しいコアの intent とつなぎ方の設定に書き直す。
+v1 の試用の intent なら：
+
+```sh
+cd v3/providers && go build -o /tmp/sakutei-migrate ./cmd/sakutei-migrate && go build -o /tmp/sakutei-v3 ./cmd/sakutei && cd ../..
+W=/tmp/sakutei-migrate-trial; rm -rf $W; mkdir -p $W; cp docs/trial/v1/initial/* $W/
+/tmp/sakutei-migrate --intent docs/trial/v1/intent --zone $W/example.com.zone --ruleset $W/firewall.rules --out $W/v3
+/tmp/sakutei-v3 plan --intent $W/v3/intent --config $W/v3/config.yaml    # v2 の plan と同じ 3 件（作る 1・変える 2）
+```
+
+- 書き直せないもの（新しいコアに受け皿がまだ無い `planned_change:`・`remediation:` の時間帯など）があれば、全部を挙げて何も書かない（終了コード 2）。
+- Workflow の gate の承認者は名前で渡す（`--role platform-admin=alice,bob`・`--approver bob`）。秘密の参照は `--secret-file secretref:file/bmc/node1=/path/to/password`。
+- 今の現実を宣言の形に書き出すのは `sakutei-import --intent <intent> --config <config> --out <file>`（`--every 1m` で同期、`--commit` で 1 回 1 commit）。
+- docs/trial の v2 の試用の intent 15 件で、書き直した intent の plan が v2 の plan と同じ操作を出すことを、`v3/providers/migrate` の試験が確かめる（表は `v3/providers/migrate/testdata/trial-cases.json`、決まりは `v3/README.md` の「段 9 の決まり」）。
 
 ## 置いてあるもの（docs/trial/v1/）
 

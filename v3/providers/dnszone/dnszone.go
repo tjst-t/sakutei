@@ -302,6 +302,22 @@ func (p *Provider) Observe(_ context.Context, ids []core.ID) (map[core.ID]core.O
 	return out, nil
 }
 
+// Declare は観測の項目を宣言の形にする（sakutei-import の importer.Declarer、
+// E-I1）。観測は value（1 つ目）と values（全部）の両方を返すが、宣言はどちらか
+// 1 つ：値が 1 つなら value、2 つ以上なら values。
+func (p *Provider) Declare(_ core.ID, observed core.Fields) core.Fields {
+	out := core.Fields{}
+	for k, v := range observed {
+		out[k] = v
+	}
+	if vs, ok := observed["values"].([]any); ok && len(vs) > 1 {
+		delete(out, "value")
+	} else {
+		delete(out, "values")
+	}
+	return out
+}
+
 // List はゾーンの SOA 以外の RRset（E-K2：読めなければ誤り）。
 func (p *Provider) List(_ context.Context, r core.Range) (core.Listing, error) {
 	zone := r.Args["zone"]

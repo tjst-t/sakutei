@@ -999,7 +999,7 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | secrets extract・break glass の記録 | 外へ | 道具と運用。break glass の使用は道具が監査に 1 行足す（E-G6・E-G7） |
 | importer・syncmode | 外へ | SDK の上の道具（現実→intent の片方向。Apply の経路につながない）（E-I1・E-I2・N-I5・E-Q2・N-Q3・N-E3・N-I1。他の道具からの変換 N-I7 も同じ形） |
 | 起動のフラグ 128 | 捨てる | 6 つ＋サブコマンド |
-| v2 の intent | 変換する | 変換の道具 `sakutei-migrate`（v2 の intent と provider 設定を読んで新しい intent とつなぎ方の設定を書く。範囲と除外は設定から intent へ動かす） |
+| v2 の intent | 変換する | 変換の道具 `sakutei-migrate`（v2 の intent と provider 設定を読んで新しい intent とつなぎ方の設定を書く。範囲と除外は設定から intent へ動かす。受け皿の無いものは断る）（N-I7） |
 
 ---
 

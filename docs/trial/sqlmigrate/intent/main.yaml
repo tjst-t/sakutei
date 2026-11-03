@@ -1,0 +1,11 @@
+# run.sh の手順 1 が書く intent（app を版 3 に。単純 Task、strategy: task）の写し。
+# run.sh は手順ごとに版・窓・rollback_on_fail を変えてこの形の intent を書く。
+# v2 の intent の書き直し（sakutei-migrate）の試験がこのファイルを使う。
+version: "1"
+resources:
+  - provider: sqlmigrate
+    id: app
+    update_policy:
+      strategy: task
+    fields:
+      version: "3"

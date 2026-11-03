@@ -1,0 +1,139 @@
+{
+  "_comment": [
+    "v2 の試用の intent（docs/trial/）と、それぞれの最初の現実に対する v2 の plan の操作（段 9 の完了条件）。",
+    "v2 の側は tests/acceptance/migrate_trial_test.go が v2 の plan で ops を確かめ、新しいコアの側は",
+    "v3/providers/migrate/trial_test.go が sakutei-migrate で書き直して新しいコアの plan で同じ ops を確かめる。",
+    "files は作業ディレクトリに写すもの（リポジトリのルートからの相対）、replace は写したファイルの書き換え、",
+    "write は作業ディレクトリに書くもの。flags は v2 の plan と sakutei-migrate の両方に渡す（値の先頭の @ は作業",
+    "ディレクトリからのパス）。migrate は sakutei-migrate だけに渡す。",
+    "ops は v2 の plan の操作：<create|update|delete> <v2 の ID>（止めたものは末尾に ' (blocked)'）。Workflow・Task が",
+    "持つもの（v2 の workflow・task）は procedures に、観測できないものは unknown に分ける。",
+    "v3_ops は新しいコアの provider が現実を v2 と違って読む（直した）ために操作が違うときだけ書き、理由を v3_reason に書く。"
+  ],
+  "cases": [
+    {
+      "name": "v1",
+      "intent": "docs/trial/v1/intent",
+      "files": {"example.com.zone": "docs/trial/v1/initial/example.com.zone", "firewall.rules": "docs/trial/v1/initial/firewall.rules"},
+      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules"],
+      "ops": ["create dnszone//api.example.com./A", "update dnszone//www.example.com./A", "update nftables//inet/filter/sakutei_allow"]
+    },
+    {
+      "name": "allocation",
+      "intent": "docs/trial/allocation/intent",
+      "files": {"example.com.zone": "docs/trial/allocation/initial/example.com.zone"},
+      "flags": ["--zone", "@example.com.zone", "--alloc-store", "@alloc.json"],
+      "ops": ["create dnszone//_port.app1.example.com./TXT", "create dnszone//_port.app2.example.com./TXT", "create dnszone//www.example.com./A"]
+    },
+    {
+      "name": "observe",
+      "intent": "docs/trial/observe/intent",
+      "files": {"example.com.zone": "docs/trial/observe/initial/example.com.zone", "firewall.rules": "docs/trial/observe/initial/firewall.rules"},
+      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules"],
+      "ops": []
+    },
+    {
+      "name": "observe-messy",
+      "intent": "docs/trial/observe/intent",
+      "files": {"example.com.zone": "docs/trial/observe/messy/example.com.zone", "firewall.rules": "docs/trial/observe/messy/firewall.rules"},
+      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules"],
+      "ops": ["create dnszone//mail.example.com./A"],
+      "v3_ops": ["create dnszone//mail.example.com./A", "update dnszone//api.example.com./A", "update dnszone//www.example.com./A"],
+      "v3_unknown": ["nftables//inet/filter/sakutei_allow"],
+      "v3_reason": "新しいコアの provider は手で書いた癖のあるファイルを v2 と違って読む（直した）。dnszone は $TTL を読み（api の TTL の無い行は 600。v2 は 300 と読んだ、docs/trial/observe/README.md の 8）、同じ名前の 2 行目の A を RRset の値として読む（www は 192.0.2.10 と 192.0.2.99。v2 は最初の行だけを見た）。nftables は同じ chain の 2 つ目の塊を、nft -f が足し合わせる中身を v2 のように見落とさず、読めない（Unknown）とする。書き直しの違いではない"
+    },
+    {
+      "name": "planned-change",
+      "intent": "docs/trial/planned-change/intent",
+      "files": {"example.com.zone": "docs/trial/planned-change/initial/example.com.zone", "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"},
+      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules"],
+      "ops": ["update dnszone/zone=example/a1.example.com./A", "update dnszone/zone=example/a2.example.com./A", "update dnszone/zone=example/a3.example.com./A",
+              "update nftables/fw=edge/inet/filter/sakutei_a", "update nftables/fw=edge/inet/filter/sakutei_b"]
+    },
+    {
+      "name": "planned-change-budget",
+      "intent": "docs/trial/planned-change/intent",
+      "files": {"example.com.zone": "docs/trial/planned-change/initial/example.com.zone", "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"},
+      "flags": ["--zone", "@example.com.zone", "--ruleset", "@firewall.rules", "--max-changes-per-cycle", "1"],
+      "ops": ["update dnszone/zone=example/a1.example.com./A (blocked)", "update dnszone/zone=example/a2.example.com./A (blocked)", "update dnszone/zone=example/a3.example.com./A (blocked)",
+              "update nftables/fw=edge/inet/filter/sakutei_a (blocked)", "update nftables/fw=edge/inet/filter/sakutei_b (blocked)"]
+    },
+    {
+      "name": "sync-import",
+      "intent": "docs/trial/sync-import/intent",
+      "files": {"state.json": "docs/trial/sync-import/initial/state.json"},
+      "flags": ["--state", "@state.json"],
+      "ops": []
+    },
+    {
+      "name": "workflow-gates",
+      "intent": "docs/trial/workflow-gates/intent",
+      "files": {"state.json": "docs/trial/workflow-gates/initial/state.json"},
+      "flags": ["--state", "@state.json"],
+      "migrate": ["--approver", "bob", "--role", "platform-admin=alice,bob,carol,frank"],
+      "ops": [],
+      "procedures": ["fake//n1", "fake//n2", "fake//n3"]
+    },
+    {
+      "name": "sharding-a",
+      "intent": "docs/trial/sharding/repo/intent/site=a",
+      "files": {"example.com.zone": "docs/trial/sharding/initial/example.com.zone"},
+      "flags": ["--zone", "@example.com.zone"],
+      "ops": ["create dnszone/site=a/a-api.example.com./A", "create dnszone/site=a/a-www.example.com./A"]
+    },
+    {
+      "name": "sharding-b",
+      "intent": "docs/trial/sharding/repo/intent/site=b",
+      "files": {"example.com.zone": "docs/trial/sharding/initial/example.com.zone"},
+      "flags": ["--zone", "@example.com.zone"],
+      "ops": ["create dnszone/site=b/b-www.example.com./A"]
+    },
+    {
+      "name": "sharding-c",
+      "intent": "docs/trial/sharding/repo/intent/site=c",
+      "files": {"example.com.zone": "docs/trial/sharding/initial/example.com.zone"},
+      "flags": ["--zone", "@example.com.zone"],
+      "ops": ["create dnszone/site=c/c-www.example.com./A"]
+    },
+    {
+      "name": "dr-mode-tokyo",
+      "intent": "docs/trial/dr-mode/repo/intent/site=tokyo",
+      "files": {"reality.json": "docs/trial/dr-mode/initial/reality.json"},
+      "flags": ["--state", "@reality.json"],
+      "ops": ["create fake/site=tokyo/tk-db", "create fake/site=tokyo/tk-web"]
+    },
+    {
+      "name": "dr-mode-osaka",
+      "intent": "docs/trial/dr-mode/repo/intent/site=osaka",
+      "files": {"reality.json": "docs/trial/dr-mode/initial/reality.json"},
+      "flags": ["--state", "@reality.json"],
+      "ops": ["create fake/site=osaka/os-web"]
+    },
+    {
+      "name": "sqlmigrate",
+      "intent": "docs/trial/sqlmigrate/intent",
+      "files": {"databases.yaml": "docs/trial/sqlmigrate/databases.yaml", "migrations": "docs/trial/sqlmigrate/migrations"},
+      "write": {"data/.keep": ""},
+      "flags": ["--sqlmigrate-config", "@databases.yaml"],
+      "ops": [],
+      "procedures": ["sqlmigrate//app"]
+    },
+    {
+      "name": "redfish-os-install",
+      "intent": "docs/trial/redfish-os-install/intent",
+      "files": {"bmcs.yaml": "docs/trial/redfish-os-install/bmcs.yaml", "hosts.yaml": "docs/trial/redfish-os-install/hosts.yaml",
+                "providers.yaml": "docs/trial/redfish-os-install/providers.yaml", "templates": "docs/trial/redfish-os-install/templates"},
+      "replace": [{"file": "bmcs.yaml", "old": "https://172.31.85.11", "new": "https://127.0.0.1:1"},
+                  {"file": "hosts.yaml", "old": "172.31.85.11", "new": "127.0.0.1"},
+                  {"file": "hosts.yaml", "old": "2222", "new": "1"}],
+      "write": {"secrets.json": "{\"secrets\": {\"bmc/node1\": {\"gen\": 1, \"value\": \"pw\"}, \"ssh/node1\": {\"gen\": 1, \"value\": \"key\"}}}",
+                "bmc-node1.pass": "pw", "node1.key": "key", "known_hosts": "", "answers/.keep": ""},
+      "flags": ["--redfish-config", "@bmcs.yaml", "--provider-config", "@providers.yaml"],
+      "migrate": ["--secret-file", "secretref:file/bmc/node1=@bmc-node1.pass", "--secret-file", "secretref:file/ssh/node1=@node1.key"],
+      "ops": ["update template-file//6f1b7c52-0e1a-4d2b-9c11-000000008501"],
+      "procedures": ["redfish-system//node1", "redfish-virtual-media//node1/cd"],
+      "v3_unknown": ["guest/os/node1", "redfish-system//node1"],
+      "v3_reason": "BMC と導入した OS には届かない（試験のために 127.0.0.1:1 に向けた）。v2 は node1 を Workflow が持つとして観測できないものに数えなかった。新しいコアは手順の対象も観測して Unknown と出す。guest/os/node1 は v2 では設定（guest_hosts・guest_markers）に書いていた目印の宣言"
+    }
+  ]
+}
