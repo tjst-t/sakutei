@@ -5264,7 +5264,7 @@
       "number": 227,
       "kind": "task",
       "title": "v3 段8d：proxmox（VM・FW）と guest-os の provider",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "v3",
       "dependsOn": [
         "v3-7-expand-secret-backend"
@@ -5278,7 +5278,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T21:00:34.335Z",
-      "updatedAt": "2026-10-31T22:47:52.888Z",
+      "updatedAt": "2026-11-03T15:33:30.620Z",
       "closedAt": null,
       "extra": {}
     },
