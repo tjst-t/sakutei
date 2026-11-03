@@ -5190,7 +5190,7 @@
       "number": 224,
       "kind": "task",
       "title": "v3 段9：v2 の intent の変換ツールと、import・同期の道具",
-      "status": "ready",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [
         "v3-8-provider",
@@ -5205,12 +5205,12 @@
       "labels": [],
       "body": "§8 の段9。sakutei-migrate。",
       "doneWhen": "v2 の試用の intent を全部変換して、新しいコアの plan が v2 の plan と同じ操作を出す。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-31T15:12:51.061Z",
-      "updatedAt": "2026-11-03T18:30:36.632Z",
-      "closedAt": null,
+      "updatedAt": "2026-11-03T18:31:09.758Z",
+      "closedAt": "2026-11-03T18:31:09.758Z",
       "extra": {}
     },
     {
