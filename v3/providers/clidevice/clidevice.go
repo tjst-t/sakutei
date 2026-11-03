@@ -169,7 +169,10 @@ func sameKind(a, b core.KindSchema) bool {
 		return false
 	}
 	for k, v := range a.Fields {
-		if b.Fields[k] != v {
+		// FieldSpec は比べ方の関数（Match）を持てるので項目ごとに比べる。cli-device は
+		// Match を使わない。
+		w, ok := b.Fields[k]
+		if !ok || w.Type != v.Type || w.Identity != v.Identity || w.Digest != v.Digest || (w.Match == nil) != (v.Match == nil) {
 			return false
 		}
 	}
