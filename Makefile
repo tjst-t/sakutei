@@ -372,6 +372,45 @@ integration-v3-proxmox:
 	$(V3P) go vet -tags integration_v3_proxmox $(V3_PROXMOX_IT)
 	$(V3P) go test -tags integration_v3_proxmox -count=1 -v -timeout 90m $(V3_PROXMOX_IT)
 
+# 新しいコアの s3 provider の統合テスト（v3 段 8f）。v2 の integration-s3 と同じ S3 互換の
+# サーバ（SeaweedFS と MinIO、tag と digest で固定）を docker で 127.0.0.1 の空いた
+# ポートに立て（コンテナは sakutei-v3s3-*。v2 の sakutei-s3it-* と重ならない）、v3 の
+# sakutei の CLI でバケットの作成・適合・手の変更の戻し・中身のあるバケットの削除の
+# 断り・観測用と書き込み用のキー・Object Lock（承認つきの保持の設定の変更）を回し、
+# 終わったら（失敗しても）コンテナを消す。docker と sudo（パスワードなし）が要るので、
+# check・test・CI には入れない。手順と結果は v3/providers/README.md。
+.PHONY: integration-v3-s3 integration-v3-ansible
+V3_S3_IT := ./s3/integration/
+integration-v3-s3:
+	$(V3P) go vet -tags integration_v3_s3 $(V3_S3_IT)
+	@status=0; \
+	(cd v3/providers && go test -tags integration_v3_s3 -count=1 -v -timeout 15m $(V3_S3_IT)) || status=$$?; \
+	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-v3s3-'); \
+	if [ -n "$$left" ]; then \
+	  echo "integration-v3-s3: containers were left behind; removing: $$left"; \
+	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
+	fi; \
+	exit $$status
+
+# 新しいコアの ansible provider の統合テスト（v3 段 8f）。v2 の integration-ansible と
+# 同じ版を固定した venv（ANSIBLE_IT_VENV。無ければ同じ手順で作る）の ansible-core を、
+# local 接続で一時ディレクトリを相手に v3 の sakutei の CLI から回す。python3（venv
+# モジュール）と、初回は PyPI に届くことが要るので、check・test・CI には入れない。
+# SAKUTEI_IT_ANSIBLE で手持ちの ansible を渡せる。手順と結果は v3/providers/README.md。
+V3_ANSIBLE_IT := ./ansible/integration/
+integration-v3-ansible:
+	$(V3P) go vet -tags integration_v3_ansible $(V3_ANSIBLE_IT)
+	@if [ -z "$$SAKUTEI_IT_ANSIBLE" ] && [ ! -x $(ANSIBLE_IT_VENV)/bin/ansible ]; then \
+	  echo "integration-v3-ansible: creating $(ANSIBLE_IT_VENV)"; \
+	  rm -rf $(ANSIBLE_IT_VENV) && python3 -m venv --without-pip $(ANSIBLE_IT_VENV) && \
+	  curl -sSfL -o $(ANSIBLE_IT_VENV)/$(PIP_WHEEL) $(PIP_WHEEL_URL) && \
+	  echo "$(PIP_WHEEL_SHA256)  $(ANSIBLE_IT_VENV)/$(PIP_WHEEL)" | sha256sum -c - && \
+	  $(ANSIBLE_IT_VENV)/bin/python3 $(ANSIBLE_IT_VENV)/$(PIP_WHEEL)/pip install --quiet --only-binary=:all: \
+	    -r $(ANSIBLE_IT)requirements.txt || { rm -rf $(ANSIBLE_IT_VENV); exit 1; }; \
+	fi
+	cd v3/providers && SAKUTEI_IT_ANSIBLE=$${SAKUTEI_IT_ANSIBLE:-$(ANSIBLE_IT_VENV)/bin/ansible} \
+	  go test -tags integration_v3_ansible -count=1 -v -timeout 15m $(V3_ANSIBLE_IT)
+
 # 外のモジュールから Sakutei を go get で取り込めるかを確かめる（ネットワークが要る。
 # check・test には入れない。CI とリリースの前の点検で回す）。VERSION はタグか commit。
 check-module:

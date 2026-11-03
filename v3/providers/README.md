@@ -1,6 +1,6 @@
 # 新しいコアの provider（v3/providers）
 
-設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a・段 8b・段 8c・段 8d・段 8e。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
+設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a・段 8b・段 8c・段 8d・段 8e・段 8f。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
 
 | パッケージ | 中身 |
 |---|---|
@@ -26,6 +26,9 @@
 | `postgresql` | PostgreSQL のロール（種類 `role`、ID `<server>/<ロール>`、項目 `login`・`superuser`・`createdb`・`createrole`・`inherit`・`bypassrls`・`replication`・`connection_limit`・`member_of`・`password`（秘密の参照））・データベース（種類 `database`、ID `<server>/<DB>`、項目 `owner`・`connection_limit`・`encoding`・`lc_collate`・`lc_ctype`・`template`・`connect_roles`。中身を失う種類なので宣言の外でも prune しない）・権限（種類 `grant`、ID `<server>/<DB>/<ロール か PUBLIC>`、項目 `privileges`）・拡張（種類 `extension`、ID `<server>/<DB>/<拡張>`、項目 `version`）。psql を exec し、パスワードは SCRAM の検証値で送る。管理の範囲は Range の `args.server`。観測用と書き込み用の資格を分け、書き込み用は Apply・Delete の中でだけ読む。利用者の表がある DB の削除は `RefuseError`（E-F1・E-F3・N-F1・N-F7・E-G5） |
 | `sqlmigrate` | 版つきのマイグレーション（種類 `database`、ID は settings の `databases` の名前。観測だけ：`version`（schema_migrations の最大の版）・`latest`・`pending`）。SQLite（sqlite3 の CLI）と PostgreSQL（psql、advisory lock）。版は手順の `invoke` の `migrate`（上げ下げ・`rollback_on_fail`）と `rollback`（下げるだけ）でだけ変える（どちらも壊す操作）。v2 の `strategy: task` は `trigger: on_drift`・`invoke: migrate`・`done_when` に書き直す。観測用と書き込み用の資格を分け、書き込み用（`password_file` か秘密の参照 `password_secret`）は Invoke の中でだけ読む。List を持たず Delete は断る（E-F2・N-F2・E-G5） |
 | `ldap` | LDAP のディレクトリの項目（種類 `entry`、ID `<サーバ>/<DN の正規形>`、項目 `attributes`（属性の名前 → 値。値の集合で比べる）・`user_password`（秘密の参照。書き込みだけ）・`user_password_set`（観測だけ））。OpenLDAP の ldapsearch・ldapmodify を exec で呼ぶ。管理の範囲は Range の `args.server`・`args.base_dn`・`args.filter`・`args.scope`（sub・one）。LDAPS と StartTLS。観測用と書き込み用の bind を分ける。子のある項目・宣言した項目の上の項目の削除は `RefuseError`（E-G1・N-G1・E-G5） |
+| `s3` | S3 互換のバケット（SigV4 は標準ライブラリ）。種類 `bucket`（ID `<endpoint>/<バケット>`、項目 `versioning`・`policy`（マップ。IAM の書き方の違いをそろえた正規形で比べる）・`lifecycle`（ルールの一覧。値を文字列に・順を問わない正規形）・`tags`（マップ）・`object_lock`（`enable_on_create`・`mode`・`days` か `years`・`enabled`。期間は Days にそろえて比べる）、観測だけ `creation_date`・`unsupported`）。endpoint の `fields` に無い設定は読まずに宣言を断り（`object_lock` は書いたときだけ）、`storage_class_aliases`・`api_base_path`。既にあるバケットの Object Lock の保持の変更は向きによらず承認の要る壊す変更（`core.Classifier`）。バケットは宣言外で消さず（DestructiveDelete）、中身のあるバケットの `ensure: absent` は断る。観測用と書き込み用の資格を分け、書き込み用は Apply・Delete の中でだけ読む。範囲は `args.endpoint`・`args.prefix`（接頭辞の重なりは断る）。偽の S3 は `s3/s3test`（E-C1・N-C7・E-G5・E-K1・E-K2・E-C3） |
+| `ansible` | 専用の provider の無い雑多な設定を Ansible のモジュール 1 つで覆う最小階級（module 名 `ansible`）。種類 `call`（ID は利用者が付ける名前、項目 `host`（inventory のホスト 1 台）・`module`（FQCN）・`args`（モジュールの引数、Map。値はテンプレートとして評価しない）・`destructive`（既定 false））。観測はモジュールを `--check --diff` で流す：宣言を Validate が ID ごとに覚えて Observe が使い（コアは宣言を Observe に渡さないので、設計 §3.3 の DesiredObserver をこの形にした）、changed なら観測の `module` を「<FQCN>（check mode で changed）」にして Update として出し、差分は `core.Classifier` の理由に出す。適用は同じ呼び出しを通常の実行で。`destructive: true` の変更を壊す変更として予算に数える（`core.Classifier`）。届かない・失敗・check mode を持たないモジュール・グループ名の host は Unknown。List・prune・Delete を持たない（消すのは引数の `state: absent`）。args の秘密の参照は断る（check mode の観測では値を取り出せないので、秘密は inventory の変数・ansible-vault に置く）。つなぎ方は settings の `inventory`・`ansible`（絶対パス）・`env`・`timeout`・`max_parallel`（E-E3・N-E5・E-K1） |
+| `templatefile` | 雛形（text/template）に台ごとの値を入れたファイルを書き出す（module 名 `template-file`）。種類 `file`（ID は `output_dir` からの相対パス、項目 `template`（`template_dir` からの相対パス、必須）・`hostname`・`address`・`ssh_authorized_keys`・`install_mark`・`vars`（名前 → 文字列））。雛形は `.ID`・`.Hostname`・`.Address`・`.SSHAuthorizedKeys`・`.InstallMark`・`.Vars.<名前>` と関数 `shquote`・`json`・`lines`（missingkey=error）。Validate が宣言を ID ごとに覚え、観測は宣言で描いた中身とファイルを比べる（無ければ Absent、違えば `template` の項目に両方の sha256 を出して Update。中身は出さない）。秘密の参照・秘密鍵は読み込みで断る。雛形が無いのは知らせるだけで、雛形が無い・読めない・描けない・書き出す先が読めないは Unknown。List を持たず Delete は断る（E-E5・N-E8・E-K1） |
 | `cmd/sakutei` | 上の provider・Expand・保管先・送り先を `cli.Main(cli.WithModule(...), cli.WithExpander(...), cli.WithSecretBackend(...), cli.WithSink(...))` で組み込んだ CLI（E-O4・E-S4） |
 
 ホストへのつなぎ方（hostconf・nftables の live・guest-os）はコアの SDK `sdk/hostexec`（手元・ssh・sudo。ホスト鍵は known_hosts で確かめる）。netconf の ssh サブシステムと cli-device の対話（pty）・1 行の exec は、同じ `hosts:` の設定の上の `internal/sshstream`（接続を使い回さない・sudo を付けない・ssh の終了コード 255 は届かない）。
@@ -453,6 +456,74 @@ ldap の決まり：
 - 届かない・時間切れ・bind と TLS の失敗・コマンドが無い・パスワードのファイルを読めない・読めない出力・スキーマを読めないは Unknown（理由つき）。noSuchObject（32）だけが Absent。List は範囲のページに分けた検索で、最後まで読めなければ誤り（件数の上限で切れたときも）。base_dn そのもの・bind の DN・サブエントリ・tombstone は List に出さない。
 - Apply は宣言と違う属性だけを 1 つの modify の replace で書き、宣言どおりなら何も書かない。無ければ add で作る（葉の RDN は宣言の綴り）。親が無ければ誤りなので親を `depends_on` に書く。Delete は子の項目がある項目と、宣言した項目の上の項目を消さない（`RefuseError`）。コアは同じ周に宣言外の親の prune を子の作成より先に流すことがあるので、子がまだ作られていなくても断る（統合テストで見つけた）。
 
+## S3・Ansible・雛形のファイルの例
+
+```yaml
+# config.yaml（つなぎ方だけ）
+providers:
+  s3:
+    module: s3
+    settings:
+      endpoints:
+        minio:
+          endpoint: https://s3.example.net:9000
+          api_base_path: /s3                            # 省けば前置き無し
+          region: us-east-1                             # 省けば us-east-1
+          addressing: path                              # path（既定）か virtual
+          ca_file: /etc/sakutei/s3-ca.pem               # か insecure_skip_verify: true（明示したときだけ）
+          fields: [versioning, policy, lifecycle, tags, object_lock]   # 省けば object_lock の外の 4 つ
+          storage_class_aliases: {VENDOR_COLD: GLACIER}
+          observe: {access_key: sakutei-ro, secret_key_file: /etc/sakutei/s3-ro.secret}
+          write:   {access_key_file: /etc/sakutei/s3-rw.id, secret_key_file: /etc/sakutei/s3-rw.secret}   # 省けば observe
+  ans:
+    module: ansible
+    settings:
+      inventory: /etc/sakutei/ansible/inventory.ini   # 絶対パス
+      ansible: /opt/ansible/bin/ansible               # 省くと PATH の ansible
+      env: {ANSIBLE_CONFIG: /etc/sakutei/ansible/ansible.cfg}
+      timeout: 5m
+      max_parallel: 4
+  answers:
+    module: template-file
+    settings:
+      template_dir: /etc/sakutei/templates
+      output_dir: /srv/http/answers
+```
+
+```yaml
+# intent
+ranges:
+  - {provider: s3, args: {endpoint: minio, prefix: app-}}
+resources:
+  - type: s3/bucket
+    id: minio/app-logs
+    fields:
+      versioning: Enabled
+      lifecycle: [{ID: expire-logs, Status: Enabled, Filter: {Prefix: logs/}, Expiration: {Days: 30}}]
+      tags: {env: prod}
+      object_lock: {enable_on_create: true, mode: COMPLIANCE, years: 7}
+  - {type: s3/bucket, id: minio/app-old, ensure: absent}   # 中身があれば断る
+  - type: ans/call
+    id: motd-web1
+    fields:
+      host: web1
+      module: ansible.builtin.lineinfile
+      args: {path: /etc/motd, line: managed by sakutei, create: true}
+  - type: answers/file
+    id: node1/answers.sh                                   # output_dir からの相対パス
+    fields:
+      template: alpine-answers.sh.tmpl
+      hostname: node1
+      address: 10.0.2.15/24
+      ssh_authorized_keys: ssh-ed25519 AAAA... sakutei
+      install_mark: install-2026-10-27
+      vars: {gateway: 10.0.2.2}
+```
+
+- s3：空のポリシー・ルール・タグは `{}`・`[]`・`{}` と書く（宣言すれば外す）。観測用の利用者に要る許可は `s3:ListAllMyBuckets`・`s3:GetBucketVersioning`・`s3:GetBucketPolicy`・`s3:GetLifecycleConfiguration`・`s3:GetBucketTagging`（`object_lock` を扱うなら `s3:GetBucketObjectLockConfiguration`、`ensure: absent` の前の中身の確かめに `s3:ListBucket`）。
+- ansible には「無い」が無いので、`ensure: absent`・範囲は読み込みで断る。消すのはモジュールの引数（`state: absent`）で宣言する。playbook を手順の一段として流す（N-T3）のはこの provider でなく、手順の `exec` の段。
+- template-file の雛形の値は文字列だけ（`port: "22"` のように引用する）。書き出したファイルを ISO や HTTP の置き場に入れるのは利用者の側。
+
 ## Expand と秘密の保管先の例
 
 ```yaml
@@ -657,3 +728,42 @@ v2 の `make integration-ldap` と同じ 389 Directory Server のイメージ（
 8. サーバを止めると全部 Unknown（終了コード 3）、List は不完全で prune しない。起こすと適合。
 
 2026-10-31 に Linux 7.0・docker 29.1.3 で通した（8 段・約 99 秒）。
+
+## 統合テスト（S3 互換のサーバ、v3 段 8f）
+
+```console
+$ make integration-v3-s3
+```
+
+v2 の `make integration-s3` と同じイメージ（tag と digest で固定）の SeaweedFS 4.51（必須）・MinIO RELEASE.2026-08-04（任意）・PUT の API を持たない SeaweedFS 3.80（任意）を docker で 127.0.0.1 の空いたポートに立て（コンテナは `sakutei-v3s3-*`。v2 の `sakutei-s3it-*` と重ならない。`SAKUTEI_IT_SEAWEEDFS_IMAGE`・`SAKUTEI_IT_MINIO_IMAGE`・`SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE` で差し替えられ、任意のものは取れなければその段を飛ばす）、v3 の CLI（`cli.Run` の plan・reconcile・approve、`s3.Module`）を向けて回し（`s3/integration/`、build tag `integration_v3_s3`）、終われば（落ちても）コンテナを消す。docker と sudo（パスワードなし）が要るので、check・test・CI には入れない。
+
+1. 空から作る：versioning・policy・lifecycle・tags を 1 回の reconcile で作り、次の plan は変えない（MinIO がポリシーを `{"AWS":["*"]}` の形で持ってもずれにならない）。
+2. 手で変えた policy と versioning は 2 項目の update のずれになり、reconcile が戻す。
+3. 何周しても宣言どおりで、ポリシーを書き換えない。
+4. `prune: true` の範囲でも宣言の外のバケット（中身のあるもの・空のもの）は消さずに unmanaged に出す。接頭辞の外のバケットは出ない。
+5. `ensure: absent`：空のバケットは消え、中身のあるバケットは refused（オブジェクトがある）で残る。手で空にすると次の周で消える。
+6. サーバを止める（docker pause）とその宣言は unknown・範囲は不完全・終了コード 3 で何もしない。動いているサーバは宣言どおり。戻せば収束する。
+7. API を持たない endpoint（SeaweedFS 3.80）：バケットは作り、versioning の PUT は NotImplemented と分かる誤りで止まる。宣言しない設定は比べない。
+8. endpoint の `fields`（policy・tags だけ）：ほかの設定は読まず、`versioning` の宣言は読み込みで断る（終了コード 2）。
+9. 観測用と書き込み用の利用者（MinIO の `mc admin`）：書き込み用の secret key のファイルが無くても plan は回り、reconcile は書かずに誤り。読むだけの利用者の書き込みは 403。書き込み用の利用者で収束する。観測の許可が 1 つでも欠ければ Unknown（無いとは読まない）。
+10. Object Lock：GOVERNANCE 1 日・COMPLIANCE 1 年で作って観測する。保持を 1 → 2 日に延ばす変更と既定の保持を外す変更は承認が揃うまで当てず、`sakutei approve` のあとに当てる。Object Lock の無い既にあるバケットへの `enable_on_create` は承認を求めず作り直さない誤りで止まる。MinIO の観測用の利用者は `s3:GetBucketObjectLockConfiguration` で読め、Put は 403。
+
+2026-11-03 に docker 29.1.3・SeaweedFS 4.51・3.80・MinIO RELEASE.2026-08-04 で 3 テスト 17 段とも通した（約 42 秒）。
+
+## 統合テスト（ansible-core、v3 段 8f）
+
+```console
+$ make integration-v3-ansible
+```
+
+v2 の `make integration-ansible` と同じ版を固定した venv（ansible-core 2.21.5、`~/.cache/sakutei/ansible-it-core-2.21.5`。無ければ同じ手順で作る）の ansible を、local 接続で一時ディレクトリを相手に v3 の CLI（`cli.Run` の plan・reconcile、`ansible.Module`）から回す（`ansible/integration/`、build tag `integration_v3_ansible`）。届かないホストは 127.0.0.1 の閉じたポートへの ssh。ansible は `SAKUTEI_IT_ANSIBLE`（絶対パス）で渡せ、ほかの版なら `SAKUTEI_IT_ANSIBLE_ANY=1` も。python3 と、初回は PyPI に届くことが要るので、check・test・CI には入れない。
+
+1. 空から：plan は module の Update と check mode の差分（provider の理由）を出して何も変えず、reconcile が当てて読み直しで宣言どおり（`{{ … }}` はテンプレートとして評価しない）。
+2. 手でファイルを変えると、変えた呼び出しだけがずれ（差分つき）、reconcile が戻す。
+3. reconcile を 5 回続けても変える操作が無く、ファイルを書き換えない。
+4. 届かないホストと check mode を持たないモジュール（ansible.builtin.command）は Unknown（理由つき、終了コード 3）で、コマンドは流れない。
+5. `destructive: true` の 2 つの呼び出しは予算の壊す変更に数え、`destructive_per_cycle: 1` を超える周は止まって（終了コード 4）何も当てない。予算を 2 に上げると全部当たる。
+6. グループ名の host は check mode の観測で 2 台に当たって Unknown になり当てない。args の秘密の参照・`ensure: absent`・範囲は読み込みで断る（終了コード 2）。
+7. 消すのはモジュールの引数：`state: absent` の lineinfile が行を消し、次の plan は宣言どおり。
+
+2026-11-03 に Linux 7.0・ansible-core 2.21.5 で 7 段とも通した（約 37 秒）。

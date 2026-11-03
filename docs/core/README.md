@@ -286,7 +286,7 @@ type DesiredObserver interface {
 | `Invoker` | 観測に残らない一回きりの操作（boot_once・reset・migrate・drain・upgrade）。Procedure からだけ呼ぶ | E-A2・E-B11・N-D4・N-E2・N-A11 |
 | `Classifier` | 状況で壊す変更（volume の付け替え・base chain の作成・保持の設定の変更）を計画のときに言う | E-C2・E-B3・E-C1 |
 | `Validator` | 読み込みのときに provider 固有の誤りを断る（範囲の外・確かめる先の不足・宣言だけで決まる値の誤り）。読み込みは相手に触れないので、相手から読まないと分からない決まり（BIOS の属性の登録簿など）は Apply の前に確かめる | E-I7・E-A4・E-B3 |
-| `DesiredObserver` | 宣言を見ないと観測できない縮退（Ansible の check mode・雛形ファイル）。この provider は List と prune を持てない | E-E3・E-E5・N-E5 |
+| `DesiredObserver` | 宣言を見ないと観測できない縮退（Ansible の check mode・雛形ファイル）。この provider は List と prune を持てない。コアは宣言を Observe に渡さないので、口としては持たず、provider の `Validate` が宣言を ID ごとに覚えて `Observe` が使う（guest-os の目印と同じ形。段 8f で決めた）。ずれは宣言した項目の 1 つ（ansible は `module`、template-file は `template`）の観測の値で表す | E-E3・E-E5・N-E5 |
 
 ### 3.4 Condition（観測についての三値の式）
 
@@ -964,8 +964,8 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | sqlmigrate | `sqlmigrate`（種類 `database` は観測だけ＋`Invoker` の `migrate`・`rollback`） | `strategy: task` は Procedure（`trigger: on_drift`・`invoke: migrate`・`done_when`）。手順の `on_failure` の戻しの段が入るまでは、失敗したときの戻しは `migrate` の引数 `rollback_on_fail` | E-F2・N-F2 |
 | s3-bucket | `s3` | Object Lock の変更は `Classifier`（承認）。中身のあるバケットの削除は `RefuseError`。接頭辞は Range | E-C1・N-C7 |
 | ldap | `ldap`（種類 `entry`、ID `<server>/<DN の正規形>`） | server・base_dn・filter・scope（LDAP の検索の scope）は Range。子のある項目と、宣言した項目の上の項目の削除は `RefuseError` | E-G1・N-G1 |
-| ansible | `ansible` | `DesiredObserver`（check mode）。List と prune は持たない | E-E3・N-E5・N-T3 |
-| template-file | `template-file` | `DesiredObserver` | E-E5・N-E8 |
+| ansible | `ansible` | `DesiredObserver` の縮退（check mode。Validate が覚えた宣言で流す）。List と prune は持たない。`destructive` は `Classifier`。args の秘密の参照は断る（観測では値を取り出せない。秘密は ansible の側に置く） | E-E3・N-E5・N-T3 |
+| template-file | `template-file` | `DesiredObserver` の縮退（Validate が覚えた宣言で描いてファイルと比べる。無ければ Absent）。`var.<名前>` は Map の項目 `vars` に | E-E5・N-E8 |
 | host-file・systemd-unit（hostconf） | `hostconf`（種類 `file`・`unit`） | `restart_on` は Resource の項目のまま（入れ替えた時の digest の印はホストの側）。ホストは Range。中身は hash と stat だけ観測（`FieldSpec.Digest`） | E-D5・E-E2・N-D7・N-E1・N-E6・E-H7・N-H1（監視の設定のファイルもこれで配る） |
 | guest-os | `guest-os`（種類 `os`、ID はホストの名前） | 観測だけ。目印は Resource の項目（`markers`：名前 → 絶対パス。中身は観測の `marker` で、Condition は `observe(guest/os/<host>).marker.<名前>` で読む）。コアは宣言を Observe に渡さないので、Validate が宣言の `markers` を覚えて Observe が読む。ホストは settings の `hosts`（つなぎ方だけ、`sdk/hostexec`） | E-E4・E-A8 |
 | metrics-probe | `metrics-probe` | 観測だけ。比べ方は provider の設定でなく Condition に移す（provider は値を返すだけ） | E-H4・N-T4 |
