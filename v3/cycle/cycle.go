@@ -99,6 +99,9 @@ type unknownReader struct {
 	unknown map[core.ID]string
 }
 
+// Unwrap は包んだ provider（任意の口 core.Classifier を引くため）。
+func (u unknownReader) Unwrap() core.Reader { return u.Reader }
+
 func (u unknownReader) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core.Observation, error) {
 	var ask []core.ID
 	out := map[core.ID]core.Observation{}

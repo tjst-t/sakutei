@@ -1,6 +1,6 @@
 # 新しいコアの provider（v3/providers）
 
-設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a・段 8b・段 8c。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
+設計 `docs/core/README.md` の §7.1・§8 の段 6・段 7・段 8a・段 8b・段 8c・段 8d。provider・Expand のモジュール・秘密の保管先・Events の送り先・承認ツールはコアの外のモジュールで、コア（`github.com/tjst-t/sakutei/v3`）のインターフェースだけを使う。この Go モジュールは `github.com/tjst-t/sakutei/v3/providers`（コアを `replace ../` で使う。標準ライブラリだけ）。
 
 | パッケージ | 中身 |
 |---|---|
@@ -12,6 +12,7 @@
 | `metricsprobe` | /metrics（Prometheus の text 形式）を観測するだけ（module 名 `metrics-probe`）。種類 `series`（ID `<endpoint>/<メトリクス>[{ラベル="値",…}]`、項目 `series`・`value`（1 本のときだけ）・`sum`・`max`・`min`）。比べ方は Condition に書く。届かない・形が壊れている・一致する系列が無い・NaN は Unknown（E-H4・N-T4） |
 | `netconf` | NETCONF の機器の設定の部分木（種類 `subtree`、ID `<host>/<部分木>`、項目 `config`（宣言する XML）・`capabilities`（観測だけ））。機器と部分木（subtree filter・順を比べる道）は Range の `args.host`・`args.filter.<部分木>`・`args.ordered.<部分木>`。比べ方は名前空間・空白・兄弟の順・宣言に無い属性を問わない正規形。既定は観測だけで、`settings.apply: true` のとき `:confirmed-commit:1.0` の 2 段で当てる（`core.Transactor`：Prepare＝lock・edit-config・validate・commit confirmed、Commit＝確定の commit、Rollback＝discard・cancel-commit かセッションの終わり。確定しなければ機器の confirm-timeout で戻る）。NACM で部分木だけに絞ったユーザーで動く。commit_group は `apply.transaction.group`、確かめる先は `confirm` の `observe(…)`・`present(…)`・`check(…)`（E-B7・E-B8・E-B9・E-B10・N-B1・N-B4） |
 | `clidevice` | CLI でしか設定できない装置（種類＝機種の定義の項目、ID＝装置。項目のフィールドは文字列か秘密の参照）。機種の定義（観測のコマンドと読み方・変えるコマンドの雛形・確定と取り消し・`commit_confirmed`）は settings の `definition`（ファイルかマップ）。扱う装置と項目は Range の `args.host`・`args.items`。出力が定義に合わなければ Unknown。定義の `actions` は `core.Invoker`、`config.commit_confirmed`・`confirm`・`cancel` があれば `core.Transactor`（E-B11・N-B1） |
+| `guestos` | ゲスト OS を ssh 越しに観測するだけ（module 名 `guest-os`）。種類 `os`（ID はホストの名前、項目 `os_id`・`os_version_id`・`os_pretty_name`・`hostname`・`boot_id`・`markers`・`marker`）。目印のパスは Resource の項目 `markers`（名前 → 絶対パス）に書き、中身は観測の `marker`（名前 → 値、4 KiB まで）で `observe(guest/os/node1).marker.installed` と読む。宣言できるのは `markers` と期待の値 `os_id`・`os_version_id`・`hostname` だけ。届かない・認証・ホスト鍵・壊れた出力・読めない目印は Unknown（E-E4・E-A8・E-K1） |
 | `expanders/template` | Expand `go:template`：intent の `templates:` の雛形を、台の一覧（外部入力 `for_each` か intent の `items`）の 1 件ごとに宣言にする。全台に共通の値は `vars` に 1 か所。外部入力が届かなければ宣言を作らず Uncertain（E-A11・N-A14・N-E7・N-B15・E-K3） |
 | `expanders/netpolicy` | Expand `go:netpolicy`：intent の `network_policy:`（networks・allows・targets、domain・interfaces、reason・tags）を検査し、実現先ごとに nftables の base chain に展開する。重なり・理由の無い例外・重複・宣言に無い網・domain をまたぐ許可は Reject、隠れた許可・通らない許可は Warn。ほかの実現先は `netpolicy.WithRealizer`（E-B5） |
 | `expanders/compat` | Expand `go:compat`：intent の `compatibility:`（部品の版の互換の表）。望む組み合わせが表に無ければ Reject、1 つずつ更新する途中の組み合わせは depends_on の `when` で止める（E-A7） |
@@ -23,7 +24,7 @@
 | `approve`・`cmd/sakutei-approve` | 承認ツール：ネットワーク越しの承認・拒否を、CLI と同じ判断のファイルとして Record に書くだけ。承認者は前段の認証（クライアント証明書の CN か、認証をする proxy のヘッダ）から受け取る。申請者・要件に無い人・待っていない依頼は書く前に断る（不変条件 21、E-M4・N-M4・E-L3） |
 | `cmd/sakutei` | 上の provider・Expand・保管先・送り先を `cli.Main(cli.WithModule(...), cli.WithExpander(...), cli.WithSecretBackend(...), cli.WithSink(...))` で組み込んだ CLI（E-O4・E-S4） |
 
-ホストへのつなぎ方（hostconf・nftables の live）はコアの SDK `sdk/hostexec`（手元・ssh・sudo。ホスト鍵は known_hosts で確かめる）。netconf の ssh サブシステムと cli-device の対話（pty）・1 行の exec は、同じ `hosts:` の設定の上の `internal/sshstream`（接続を使い回さない・sudo を付けない・ssh の終了コード 255 は届かない）。
+ホストへのつなぎ方（hostconf・nftables の live・guest-os）はコアの SDK `sdk/hostexec`（手元・ssh・sudo。ホスト鍵は known_hosts で確かめる）。netconf の ssh サブシステムと cli-device の対話（pty）・1 行の exec は、同じ `hosts:` の設定の上の `internal/sshstream`（接続を使い回さない・sudo を付けない・ssh の終了コード 255 は届かない）。
 
 ## つなぎ方の設定と intent の例
 
@@ -211,6 +212,40 @@ cli-device の決まり（機種の定義は `clidevice/testdata/example-device.
 - 2 段の Apply：定義の `config.commit_confirmed`（`{seconds}`・`{minutes}` に transaction.timeout が入る）・`confirm`（確定）・`cancel`（任意。すぐ戻す）を書いた機種だけ。Prepare は設定に入ってコマンド列と commit_confirmed を流し、Commit は新しいやりとりで confirm を流す。どれも無ければ装置の時間切れで戻る（不変条件 17）。書かない機種の宣言に `apply.transaction` を書くと Prepare で断る。
 - 定義の `actions` は `core.Invoker`（`Ops` の `Destructive` は定義の `destructive`）。届かない・1 つも打てていないときだけ `ErrNotSent`。
 - v2 の項目の `disruptive`（Apply を壊す変更に数える）は、コアの壊す変更の印（`Classifier`）が入るまで書けない（書けば読み込みで断る）。
+
+## ゲスト OS の例
+
+```yaml
+# config.yaml（つなぎ方だけ。観測用のユーザーでよい）
+providers:
+  guest:
+    module: guest-os
+    settings:
+      hosts:
+        node1:
+          ssh: {address: 192.0.2.21, user: monitor, key: /etc/sakutei/id_ed25519, known_hosts: /etc/sakutei/known_hosts}
+```
+
+```yaml
+# intent（目印は Resource の項目）
+resources:
+  - type: guest/os
+    id: node1
+    fields:
+      markers: {installed: /etc/sakutei-installed, cloud-init: /var/lib/cloud/instance/boot-finished}
+procedures:
+  - name: os-install
+    target: {type: bmc/system, id: node1}
+    trigger: manual                                # sakutei start os-install で起こす
+    steps:
+      # ISO を差す・1 回だけ CD 起動・電源 Off を待つ・On は redfish の段（E-A8）
+      - name: booted
+        wait: {when: 'observe(guest/os/node1).marker.installed == "sakutei-2026-10-27"', timeout: 30m}
+```
+
+- 目印のパスは観測のたびに読み直す（Validate が宣言の `markers` を ID ごとに覚え、Observe がそれを読む）。宣言の無い ID（Condition だけが参照する）は目印なしで観測する。
+- 目印のファイルが無いのは観測の事実で、`marker` にその鍵が無いだけ（Condition では null）。読めない（権限・ディレクトリ・4 KiB より大きい）目印は Unknown。
+- 無いパスを「無い」とするのは上の一番近いディレクトリを覗けるときだけ（覗けない観測用のユーザーは見分けられないので Unknown）。ホストには sh・dd・od だけが要る（busybox でもよい）。
 
 ## Expand と秘密の保管先の例
 

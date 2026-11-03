@@ -223,6 +223,12 @@ type FieldSpec struct {
 	// 宣言の値も Digest にする。中身の平文を観測・plan・Record に出さない
 	// （E-E2・E-D5）。Type は String だけ。
 	Digest bool
+	// Match は宣言の値と観測の値の比べ方を provider が決める項目（provider の
+	// 正規形で吸収する、E-I7・E-D1・E-C2）。宣言した slot・キーだけを比べる・
+	// 作るときだけ使う（template）・付け替えで名前の変わる volume を比べない、の
+	// ように等しさで比べられないもの。observed は観測に項目が無ければ nil。
+	// nil なら Type の比べ方（Equal）。
+	Match func(desired, observed any) bool
 }
 
 // KindSchema は種類ごとの項目。
@@ -437,6 +443,25 @@ func (d Diagnostic) String() string {
 // 重なりなど）を断る任意の口（E-I7・E-A4・E-B3・E-I6・E-K8）。
 type Validator interface {
 	Validate(res []Resource, ranges []Range) []Diagnostic
+}
+
+// Hint は状況で決まる変更の性質（§3.3 の Classifier、E-C2・E-B6・E-C1）。
+type Hint struct {
+	Field string
+	// Destructive は壊す変更（予算の壊す変更に数える、不変条件 9）。
+	Destructive bool
+	// NeedsApproval は承認が揃うまで当てない変更（E-C2）。当たる Policy に
+	// approval が無ければ、申請者でない 1 人の承認を求める。
+	NeedsApproval bool
+	Reason        string
+}
+
+// Classifier は状況で壊す・承認が要る変更（volume の付け替え・規則の変更・
+// 保持の設定の変更）を計画のときに言う任意の口（E-C2・E-B6・E-C1）。Schema の
+// 静的な印で言えないものだけに使う。現実に触れない（観測 current と宣言から
+// 決める）。
+type Classifier interface {
+	Classify(id ID, current Observation, desired Fields) []Hint
 }
 
 // RejectError は読み込みで断った診断の一覧（終了コード 2）。

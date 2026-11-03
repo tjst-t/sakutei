@@ -966,7 +966,7 @@ provider 作者は自分の provider と偽の相手（または模擬）を渡�
 | ansible | `ansible` | `DesiredObserver`（check mode）。List と prune は持たない | E-E3・N-E5・N-T3 |
 | template-file | `template-file` | `DesiredObserver` | E-E5・N-E8 |
 | host-file・systemd-unit（hostconf） | `hostconf`（種類 `file`・`unit`） | `restart_on` は Resource の項目のまま（入れ替えた時の digest の印はホストの側）。ホストは Range。中身は hash と stat だけ観測（`FieldSpec.Digest`） | E-D5・E-E2・N-D7・N-E1・N-E6・E-H7・N-H1（監視の設定のファイルもこれで配る） |
-| guest-os | `guest-os` | 観測だけ。目印は Resource の項目 | E-E4・E-A8 |
+| guest-os | `guest-os`（種類 `os`、ID はホストの名前） | 観測だけ。目印は Resource の項目（`markers`：名前 → 絶対パス。中身は観測の `marker` で、Condition は `observe(guest/os/<host>).marker.<名前>` で読む）。コアは宣言を Observe に渡さないので、Validate が宣言の `markers` を覚えて Observe が読む。ホストは settings の `hosts`（つなぎ方だけ、`sdk/hostexec`） | E-E4・E-A8 |
 | metrics-probe | `metrics-probe` | 観測だけ。比べ方は provider の設定でなく Condition に移す（provider は値を返すだけ） | E-H4・N-T4 |
 | secret backends（vault-kv2・command・file） | `secret/vault-kv2` ほか | 世代を返す `Generation` と `Resolve` のまま | E-G3・E-G4 |
 | （新規）台帳 | `ledger` | 観測できない資産（紙の台帳・テープ・旧機器）を宣言だけで持つ。観測は台帳のファイルの「最後に確かめた日からの経過」だけを返し、List と Apply を持たない（消さない・触らない） | E-I4・N-I6・N-C6・N-B19 |

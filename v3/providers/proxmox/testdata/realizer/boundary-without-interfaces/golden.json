@@ -1,0 +1,9 @@
+{
+  "diagnostics": [
+    {
+      "severity": "reject",
+      "target": "network_policy",
+      "message": "policy.yaml: network_policy.targets[0]: 実現先 router（proxmox-fw）: 境界には interfaces（どの NIC で受けてどの NIC から出すか）が要る"
+    }
+  ]
+}

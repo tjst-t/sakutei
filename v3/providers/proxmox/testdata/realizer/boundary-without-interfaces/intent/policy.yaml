@@ -1,0 +1,15 @@
+expand:
+  - kind: go:netpolicy
+network_policy:
+  networks:
+    - {name: office, cidrs: ["10.1.0.0/24"]}
+    - {name: dmz, cidrs: ["192.0.2.0/24"]}
+  allows:
+    - {from: office, to: dmz, proto: tcp, ports: [443], reason: "web"}
+  targets:
+    - name: router
+      realizer: proxmox-fw
+      kind: boundary
+      networks: [office, dmz]
+      provider: pve
+      id: lab/router

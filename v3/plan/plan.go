@@ -110,6 +110,11 @@ type Change struct {
 	Wave int `json:"wave,omitempty"`
 	// Request は承認の依頼の ID（当たる Policy に approval がある、E-L2・N-L2）。
 	Request string `json:"request,omitempty"`
+	// Classified は provider が状況で言った変更の性質（壊す・承認が要る）の理由
+	// （§3.3 の Classifier、E-C2・E-B6）。
+	Classified []string `json:"classified,omitempty"`
+	// NeedsApproval は provider が承認を求めた変更（E-C2）。
+	NeedsApproval bool `json:"needs_approval,omitempty"`
 	// ApprovedBy は数えた承認者（不変条件 21）。
 	ApprovedBy []string `json:"approved_by,omitempty"`
 	// Handover は手順が受け持つ項目（drift_fields）のうちずれているもの。収束では
@@ -388,6 +393,9 @@ func compare(r core.Resource, ks core.KindSchema, o core.Observation) Change {
 			want = core.Digest(s) // 平文を比べず・出さない（E-E2）
 		}
 		raw, ok := o.Fields[k]
+		if !ok && spec.Match != nil && spec.Match(want, nil) {
+			continue // 作るときだけ使う項目など（E-D1）
+		}
 		if !ok {
 			c.Fields = append(c.Fields, FieldChange{Name: k, Desired: want, Missing: true, Identity: spec.Identity})
 			continue
@@ -398,7 +406,7 @@ func compare(r core.Resource, ks core.KindSchema, o core.Observation) Change {
 			return Change{Resource: c.Resource, Op: Unknown, Reason: c.Reason, Origin: c.Origin,
 				Note: fmt.Sprintf("観測の項目 %q が定義に合わない: %v", k, err)}
 		}
-		if !core.Equal(spec.Type, want, got) {
+		if !matches(spec, want, got) {
 			c.Fields = append(c.Fields, FieldChange{Name: k, Desired: want, Observed: got, Identity: spec.Identity})
 		}
 	}
@@ -414,6 +422,15 @@ func compare(r core.Resource, ks core.KindSchema, o core.Observation) Change {
 		}
 	}
 	return c
+}
+
+// matches は宣言と観測を比べる。provider が比べ方を決めた項目はそれで（E-I7・
+// E-D1・E-C2）。
+func matches(spec core.FieldSpec, want, got any) bool {
+	if spec.Match != nil {
+		return spec.Match(want, got)
+	}
+	return core.Equal(spec.Type, want, got)
 }
 
 // WriteJSON は JSON で書く。
@@ -469,6 +486,9 @@ func (r Result) WriteText(w io.Writer) error {
 		}
 		if len(c.Downstream) > 0 {
 			fmt.Fprintf(&b, "    下流: %s\n", strings.Join(c.Downstream, ", "))
+		}
+		for _, why := range c.Classified {
+			fmt.Fprintf(&b, "    provider: %s\n", why)
 		}
 		if c.Action != "" && c.Action != ActApply {
 			fmt.Fprintf(&b, "    %s: %s\n", actionLabel[c.Action], c.Blocked)

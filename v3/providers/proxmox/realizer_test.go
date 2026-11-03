@@ -1,0 +1,38 @@
+// Copyright 2026 tjst-t
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package proxmox_test
+
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/tjst-t/sakutei/v3/expand"
+	"github.com/tjst-t/sakutei/v3/expand/expandtest"
+	"github.com/tjst-t/sakutei/v3/providers/expanders/netpolicy"
+	"github.com/tjst-t/sakutei/v3/providers/proxmox"
+)
+
+// TestRealizerGolden は network_policy の実現先 proxmox-fw の展開を golden で確かめる
+// （E-B6・E-B5・N-P5）。gateway は口を書いた関所の VM（口と向きごとの in・out と
+// iface=netN を族ごとに、reason を comment に）、boundary-without-interfaces は
+// 口を書かない境界の断り。
+func TestRealizerGolden(t *testing.T) {
+	x := netpolicy.New(netpolicy.WithRealizer(proxmox.RealizerName, proxmox.Realizer{}))
+	for _, dir := range expandtest.Cases(t, "testdata/realizer") {
+		t.Run(filepath.Base(dir), func(t *testing.T) {
+			expandtest.Golden(t, dir, map[string]expand.Expander{"netpolicy": x}, nil)
+		})
+	}
+}

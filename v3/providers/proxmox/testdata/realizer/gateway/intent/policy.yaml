@@ -1,0 +1,26 @@
+expand:
+  - kind: go:netpolicy
+network_policy:
+  networks:
+    - {name: a-infra, domain: tenant-a, cidrs: ["10.0.0.10", "10.0.0.11"]}
+    - {name: gw-a, domain: tenant-a, cidrs: ["10.0.0.1"]}
+    - {name: gw-a-svc, domain: service, cidrs: ["172.16.0.11", "2001:db8:16::11"]}
+    - {name: portal, domain: service, cidrs: ["172.16.1.0/24", "2001:db8:17::/64"]}
+  allows:
+    - {from: gw-a, to: a-infra, proto: udp, ports: [53, 88, 123], reason: "関所から DNS・KDC・NTP"}
+    - {from: gw-a, to: a-infra, proto: tcp, ports: [53, 88, 636], reason: "関所から DNS・KDC・LDAP"}
+    - {from: portal, to: gw-a-svc, proto: tcp, ports: ["8443-8444", 443], reason: "サービス側は 443 だけ; 古い口も"}
+    - {from: portal, to: gw-a-svc, proto: icmp, reason: "ping"}
+  targets:
+    - name: gw-a
+      realizer: proxmox-fw
+      kind: host
+      networks: [gw-a, gw-a-svc]
+      interfaces:
+        - {name: net0, domain: tenant-a}
+        - {name: net1, domain: service}
+      provider: pve
+      id: lab/gw-a
+      labels: {site: lab}
+      before: ["in ACCEPT proto=tcp dport=22 comment=管理"]
+      after: ["out DROP log=info"]

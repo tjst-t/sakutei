@@ -166,6 +166,7 @@ func Decide(ctx context.Context, in Input) Result {
 			}
 		}
 		c.Destructive = c.Op == Delete || (c.Op == Update && c.Replace)
+		classify(&c, r, in.Readers[r.ID.Provider()])
 		c.labels = r.Labels
 		c.DesiredHash = DesiredHash(r)
 		if c.Op.Writes() {
@@ -274,6 +275,32 @@ func Decide(ctx context.Context, in Input) Result {
 	return out
 }
 
+// classify は provider の Classifier に作る・変える変更の性質を聞く（§3.3、
+// E-C2・E-B6・E-C1）。壊す変更は予算の壊す変更に数え（不変条件 9）、承認が要る
+// 変更は承認が揃うまで当てない。
+func classify(c *Change, r core.Resource, rd core.Reader) {
+	if c.Op != Create && c.Op != Update {
+		return
+	}
+	for rd != nil {
+		if cl, ok := rd.(core.Classifier); ok {
+			for _, h := range cl.Classify(r.ID, c.Current, r.Fields) {
+				c.Destructive = c.Destructive || h.Destructive
+				c.NeedsApproval = c.NeedsApproval || h.NeedsApproval
+				if h.Reason != "" {
+					c.Classified = append(c.Classified, h.Reason)
+				}
+			}
+			return
+		}
+		u, ok := rd.(interface{ Unwrap() core.Reader })
+		if !ok {
+			return
+		}
+		rd = u.Unwrap()
+	}
+}
+
 // ChangeRequestID は変更 1 つの承認の依頼の ID。同じ宣言の同じ操作には同じ ID
 // （宣言を直せば頼み直す）。
 func ChangeRequestID(c Change) string {
@@ -299,6 +326,11 @@ func needApproval(c *Change, in Input, out *Result) {
 		if t := p.Approval.Timeout; t > 0 && (timeout == 0 || t < timeout) {
 			timeout = t
 		}
+	}
+	if len(rules) == 0 && c.NeedsApproval {
+		// provider が承認を求めた変更（E-C2）。当たる Policy に approval が無ければ
+		// 申請者でない 1 人の承認を求める。
+		rules = append(rules, approval.Rules("provider "+c.ID.Provider(), &core.Approval{N: 1}))
 	}
 	if len(rules) == 0 {
 		return
