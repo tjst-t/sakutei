@@ -169,14 +169,15 @@ func setup() error {
 		out, _ := docker("logs", "--tail", "20", serverName)
 		return fmt.Errorf("server: %v\n%s", err, out)
 	}
-	for db, sql := range map[string]string{
-		"postgres": "CREATE ROLE sm_observe LOGIN PASSWORD '" + observePW + "';\nCREATE ROLE sm_migrate LOGIN PASSWORD '" + migratePW + "';\n" +
-			"CREATE DATABASE " + smDB + " OWNER sm_migrate;\n",
-		smDB: "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n" +
-			"ALTER DEFAULT PRIVILEGES FOR ROLE sm_migrate IN SCHEMA public GRANT SELECT ON TABLES TO sm_observe;\n",
+	// 順に流す（smDB の中の SQL は、postgres で smDB を作ったあとでないと流せない）。
+	for _, step := range []struct{ db, sql string }{
+		{"postgres", "CREATE ROLE sm_observe LOGIN PASSWORD '" + observePW + "';\nCREATE ROLE sm_migrate LOGIN PASSWORD '" + migratePW + "';\n" +
+			"CREATE DATABASE " + smDB + " OWNER sm_migrate;\n"},
+		{smDB, "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n" +
+			"ALTER DEFAULT PRIVILEGES FOR ROLE sm_migrate IN SCHEMA public GRANT SELECT ON TABLES TO sm_observe;\n"},
 	} {
-		if out, err := psqlAs(adminUser, adminPW, db, sql); err != nil {
-			return fmt.Errorf("用意の SQL（%s）: %v\n%s", db, err, out)
+		if out, err := psqlAs(adminUser, adminPW, step.db, step.sql); err != nil {
+			return fmt.Errorf("用意の SQL（%s）: %v\n%s", step.db, err, out)
 		}
 	}
 	lab.migrations = filepath.Join(dir, "migrations")
