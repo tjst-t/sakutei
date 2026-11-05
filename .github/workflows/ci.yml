@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # go.mod の最小版と、最新の安定版の両方で確かめる
+        # go.mod（v3 と v3/providers）の最小版と、最新の安定版の両方で確かめる
         go: ["1.22", "stable"]
     steps:
       - uses: actions/checkout@v4
@@ -43,10 +43,10 @@ jobs:
         run: make test-race
 
   module:
-    # 外のモジュールから go get で取り込め、examples/external-provider が build できるか
-    # （v2.0.0 で module のパスに /v2 を付け忘れた再発防止）。タグではその版、main では
-    # その commit（擬似版）を取りに行く。PR はまだ公開されていないので回さない。
-    name: consumable as a Go module
+    # 外のモジュールから go get で 2 つのモジュール（github.com/tjst-t/sakutei/v3 と
+    # github.com/tjst-t/sakutei/v3/providers）を取り込み、build できるか。タグではその版、
+    # main ではその commit（擬似版）を取りに行く。PR はまだ公開されていないので回さない。
+    name: consumable as Go modules
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: go get github.com/tjst-t/sakutei/v2@<this version> and build the example
+      - name: go get github.com/tjst-t/sakutei/v3{,/providers}@<this version> and build
         run: |
           if [ "${{ github.ref_type }}" = tag ]; then v="${{ github.ref_name }}"; else v="${{ github.sha }}"; fi
           make check-module VERSION="$v"

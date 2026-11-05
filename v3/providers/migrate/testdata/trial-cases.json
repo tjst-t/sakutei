@@ -1,10 +1,10 @@
 {
   "_comment": [
-    "v2 の試用の intent（docs/trial/）と、それぞれの最初の現実に対する v2 の plan の操作（Stage 9 の完了条件）。",
-    "v2 の側は tests/acceptance/migrate_trial_test.go が v2 の plan で ops を確かめ、新しいコアの側は",
+    "v2 の試用の intent（v2 の docs/trial/ から testdata/trial/ に移した）と、それぞれの最初の現実に対する v2 の plan の操作（Stage 9 の完了条件）。",
+    "ops は v2 の plan で確かめた操作（v2 の実装を消すまでは v2 の側の試験が v2 の plan と突き合わせていた）。新しいコアの側は",
     "v3/providers/migrate/trial_test.go が sakutei-migrate で書き直して新しいコアの plan で同じ ops を確かめる。",
-    "intent はリポジトリのルートからの intent のディレクトリ（無ければ空のディレクトリ）。append は intent のファイルに",
-    "足す本文（run.sh が resources.yaml に planned_change を足すのと同じ。無いファイルなら作る）。files は作業ディレクトリに",
+    "intent は testdata/ からの intent のディレクトリ（無ければ空のディレクトリ）。append は intent のファイルに",
+    "足す本文（v2 の試用の run.sh が resources.yaml に planned_change を足すのと同じ。無いファイルなら作る）。files は作業ディレクトリに",
     "コピーするもの、replace はコピーしたファイルの書き換え、write は作業ディレクトリに書くもの。append と write の {{t <ずれ> <形> [tz]}} は",
     "今からのずれの時刻（形は ymdhm・hm・dow）で、window を今を挟むように・外すように書く。flags は v2 の plan と sakutei-migrate の",
     "両方に渡す（値の先頭の @ は作業ディレクトリからのパス）。migrate は sakutei-migrate だけに渡す。",
@@ -19,10 +19,10 @@
   "cases": [
     {
       "name": "v1",
-      "intent": "docs/trial/v1/intent",
+      "intent": "trial/v1/intent",
       "files": {
-        "example.com.zone": "docs/trial/v1/initial/example.com.zone",
-        "firewall.rules": "docs/trial/v1/initial/firewall.rules"
+        "example.com.zone": "trial/v1/initial/example.com.zone",
+        "firewall.rules": "trial/v1/initial/firewall.rules"
       },
       "flags": [
         "--zone",
@@ -38,9 +38,9 @@
     },
     {
       "name": "allocation",
-      "intent": "docs/trial/allocation/intent",
+      "intent": "trial/allocation/intent",
       "files": {
-        "example.com.zone": "docs/trial/allocation/initial/example.com.zone"
+        "example.com.zone": "trial/allocation/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -56,10 +56,10 @@
     },
     {
       "name": "observe",
-      "intent": "docs/trial/observe/intent",
+      "intent": "trial/observe/intent",
       "files": {
-        "example.com.zone": "docs/trial/observe/initial/example.com.zone",
-        "firewall.rules": "docs/trial/observe/initial/firewall.rules"
+        "example.com.zone": "trial/observe/initial/example.com.zone",
+        "firewall.rules": "trial/observe/initial/firewall.rules"
       },
       "flags": [
         "--zone",
@@ -71,10 +71,10 @@
     },
     {
       "name": "observe-messy",
-      "intent": "docs/trial/observe/intent",
+      "intent": "trial/observe/intent",
       "files": {
-        "example.com.zone": "docs/trial/observe/messy/example.com.zone",
-        "firewall.rules": "docs/trial/observe/messy/firewall.rules"
+        "example.com.zone": "trial/observe/messy/example.com.zone",
+        "firewall.rules": "trial/observe/messy/firewall.rules"
       },
       "flags": [
         "--zone",
@@ -93,14 +93,14 @@
       "v3_unknown": [
         "nftables//inet/filter/sakutei_allow"
       ],
-      "v3_reason": "新しいコアの provider は手で書いた癖のあるファイルを v2 と違って読む（直した）。dnszone は $TTL を読み（api の TTL の無い行は 600。v2 は 300 と読んだ、docs/trial/observe/README.md の 8）、同じ名前の 2 行目の A を RRset の値として読む（www は 192.0.2.10 と 192.0.2.99。v2 は最初の行だけを見た）。nftables は同じ chain の 2 つ目の塊を、nft -f が足し合わせる中身を v2 のように見落とさず、読めない（Unknown）とする。書き直しの違いではない"
+      "v3_reason": "新しいコアの provider は手で書いた癖のあるファイルを v2 と違って読む（直した）。dnszone は $TTL を読み（api の TTL の無い行は 600。v2 は 300 と読んだ、v2 の試用の手順 observe の 8）、同じ名前の 2 行目の A を RRset の値として読む（www は 192.0.2.10 と 192.0.2.99。v2 は最初の行だけを見た）。nftables は同じ chain の 2 つ目の塊を、nft -f が足し合わせる中身を v2 のように見落とさず、読めない（Unknown）とする。書き直しの違いではない"
     },
     {
       "name": "planned-change",
-      "intent": "docs/trial/planned-change/intent",
+      "intent": "trial/planned-change/intent",
       "files": {
-        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
-        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+        "example.com.zone": "trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "trial/planned-change/initial/firewall.rules"
       },
       "flags": [
         "--zone",
@@ -118,10 +118,10 @@
     },
     {
       "name": "planned-change-budget",
-      "intent": "docs/trial/planned-change/intent",
+      "intent": "trial/planned-change/intent",
       "files": {
-        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
-        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+        "example.com.zone": "trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "trial/planned-change/initial/firewall.rules"
       },
       "flags": [
         "--zone",
@@ -141,9 +141,9 @@
     },
     {
       "name": "sync-import",
-      "intent": "docs/trial/sync-import/intent",
+      "intent": "trial/sync-import/intent",
       "files": {
-        "state.json": "docs/trial/sync-import/initial/state.json"
+        "state.json": "trial/sync-import/initial/state.json"
       },
       "flags": [
         "--state",
@@ -153,9 +153,9 @@
     },
     {
       "name": "workflow-gates",
-      "intent": "docs/trial/workflow-gates/intent",
+      "intent": "trial/workflow-gates/intent",
       "files": {
-        "state.json": "docs/trial/workflow-gates/initial/state.json"
+        "state.json": "trial/workflow-gates/initial/state.json"
       },
       "flags": [
         "--state",
@@ -176,9 +176,9 @@
     },
     {
       "name": "sharding-a",
-      "intent": "docs/trial/sharding/repo/intent/site=a",
+      "intent": "trial/sharding/repo/intent/site=a",
       "files": {
-        "example.com.zone": "docs/trial/sharding/initial/example.com.zone"
+        "example.com.zone": "trial/sharding/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -191,9 +191,9 @@
     },
     {
       "name": "sharding-b",
-      "intent": "docs/trial/sharding/repo/intent/site=b",
+      "intent": "trial/sharding/repo/intent/site=b",
       "files": {
-        "example.com.zone": "docs/trial/sharding/initial/example.com.zone"
+        "example.com.zone": "trial/sharding/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -205,9 +205,9 @@
     },
     {
       "name": "sharding-c",
-      "intent": "docs/trial/sharding/repo/intent/site=c",
+      "intent": "trial/sharding/repo/intent/site=c",
       "files": {
-        "example.com.zone": "docs/trial/sharding/initial/example.com.zone"
+        "example.com.zone": "trial/sharding/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -219,9 +219,9 @@
     },
     {
       "name": "dr-mode-tokyo",
-      "intent": "docs/trial/dr-mode/repo/intent/site=tokyo",
+      "intent": "trial/dr-mode/repo/intent/site=tokyo",
       "files": {
-        "reality.json": "docs/trial/dr-mode/initial/reality.json"
+        "reality.json": "trial/dr-mode/initial/reality.json"
       },
       "flags": [
         "--state",
@@ -234,9 +234,9 @@
     },
     {
       "name": "dr-mode-osaka",
-      "intent": "docs/trial/dr-mode/repo/intent/site=osaka",
+      "intent": "trial/dr-mode/repo/intent/site=osaka",
       "files": {
-        "reality.json": "docs/trial/dr-mode/initial/reality.json"
+        "reality.json": "trial/dr-mode/initial/reality.json"
       },
       "flags": [
         "--state",
@@ -248,10 +248,10 @@
     },
     {
       "name": "sqlmigrate",
-      "intent": "docs/trial/sqlmigrate/intent",
+      "intent": "trial/sqlmigrate/intent",
       "files": {
-        "databases.yaml": "docs/trial/sqlmigrate/databases.yaml",
-        "migrations": "docs/trial/sqlmigrate/migrations"
+        "databases.yaml": "trial/sqlmigrate/databases.yaml",
+        "migrations": "trial/sqlmigrate/migrations"
       },
       "write": {
         "data/.keep": ""
@@ -267,12 +267,12 @@
     },
     {
       "name": "redfish-os-install",
-      "intent": "docs/trial/redfish-os-install/intent",
+      "intent": "trial/redfish-os-install/intent",
       "files": {
-        "bmcs.yaml": "docs/trial/redfish-os-install/bmcs.yaml",
-        "hosts.yaml": "docs/trial/redfish-os-install/hosts.yaml",
-        "providers.yaml": "docs/trial/redfish-os-install/providers.yaml",
-        "templates": "docs/trial/redfish-os-install/templates"
+        "bmcs.yaml": "trial/redfish-os-install/bmcs.yaml",
+        "hosts.yaml": "trial/redfish-os-install/hosts.yaml",
+        "providers.yaml": "trial/redfish-os-install/providers.yaml",
+        "templates": "trial/redfish-os-install/templates"
       },
       "replace": [
         {
@@ -325,10 +325,10 @@
     },
     {
       "name": "planned-change-A3",
-      "intent": "docs/trial/planned-change/intent",
+      "intent": "trial/planned-change/intent",
       "files": {
-        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
-        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+        "example.com.zone": "trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "trial/planned-change/initial/firewall.rules"
       },
       "flags": [
         "--zone",
@@ -357,10 +357,10 @@
     },
     {
       "name": "planned-change-A6",
-      "intent": "docs/trial/planned-change/intent",
+      "intent": "trial/planned-change/intent",
       "files": {
-        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
-        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+        "example.com.zone": "trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "trial/planned-change/initial/firewall.rules"
       },
       "flags": [
         "--zone",
@@ -389,10 +389,10 @@
     },
     {
       "name": "planned-change-A7",
-      "intent": "docs/trial/planned-change/intent",
+      "intent": "trial/planned-change/intent",
       "files": {
-        "example.com.zone": "docs/trial/planned-change/initial/example.com.zone",
-        "firewall.rules": "docs/trial/planned-change/initial/firewall.rules"
+        "example.com.zone": "trial/planned-change/initial/example.com.zone",
+        "firewall.rules": "trial/planned-change/initial/firewall.rules"
       },
       "flags": [
         "--zone",
@@ -490,7 +490,7 @@
       "name": "remediation-in-window",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -507,7 +507,7 @@
       "name": "remediation-out-of-window",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -524,7 +524,7 @@
       "name": "remediation-today",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -541,7 +541,7 @@
       "name": "remediation-tomorrow",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -558,7 +558,7 @@
       "name": "remediation-default-alert-only",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -575,7 +575,7 @@
       "name": "profile-team-no-approver",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -604,7 +604,7 @@
       "name": "profile-team",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -631,7 +631,7 @@
       "name": "profile-enterprise-one",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -662,7 +662,7 @@
       "name": "profile-enterprise-applicant",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -690,7 +690,7 @@
       "name": "profile-enterprise",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -718,7 +718,7 @@
       "name": "profile-solo",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",
@@ -743,7 +743,7 @@
       "name": "profile-solo-no-cooling-off",
       "intent": "",
       "files": {
-        "example.com.zone": "docs/trial/remediation-profile/initial/example.com.zone"
+        "example.com.zone": "trial/remediation-profile/initial/example.com.zone"
       },
       "flags": [
         "--zone",

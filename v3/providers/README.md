@@ -275,8 +275,8 @@ procedures:
 $ make integration-v3-redfish
 ```
 
-- v2 と同じ qemu-bmc 0.11.0（tag と digest で固定）を containerlab で 2 台立てる（`redfish/integration/topology.clab.yml`）。
-  - lab は `sakutei-v3rf`、管理ネットワークは 172.31.93.0/24。v2 の `make integration-redfish` の lab `sakutei-rf84` と重ならないので、同時に回せる。
+- qemu-bmc 0.11.0（tag と digest で固定）を containerlab で 2 台立てる（`redfish/integration/topology.clab.yml`）。
+  - lab は `sakutei-v3rf`、管理ネットワークは 172.31.93.0/24。ほかの `make integration-v3-*` と重ならないので、同時に回せる。
 - v3 の sakutei（`cmd/sakutei`）の CLI と daemon を、本物の Redfish に向けて回す。
 - 終わったら（失敗しても）lab を消す。
 - 要るもの：KVM・docker・containerlab・sudo（パスワードなし）。
@@ -438,8 +438,8 @@ two-phase Apply：
 $ make integration-v3-netconf
 ```
 
-- v2 の `make integration-netconf` と同じ netopeer2 のイメージ（`sysrepo/sysrepo-netopeer2`、tag と digest で固定）を使う。`SAKUTEI_IT_NETOPEER2_IMAGE` で差し替えられる。
-- docker で 4 台（`sakutei-v3nc-sw1`・`g1`〜`g3`）を 127.0.0.1 の空いたポートに立てる。v2 の `sakutei-ncit-*` と重ならない。
+- netopeer2 のイメージ（`sysrepo/sysrepo-netopeer2`、tag と digest で固定）を使う。`SAKUTEI_IT_NETOPEER2_IMAGE` で差し替えられる。
+- docker で 4 台（`sakutei-v3nc-sw1`・`g1`〜`g3`）を 127.0.0.1 の空いたポートに立てる。
 - v3 の CLI（`cli.Run` の plan・reconcile、`netconf.Module` と `cli.WithCheck`）を、本物の NETCONF over SSH に向けて回す（`netconf/integration/`、build tag `integration_v3_netconf`）。
 - 要るもの：docker・ssh・ssh-keygen・sudo（パスワードなし）。
 - コンテナは終われば（落ちても）消す。
@@ -458,7 +458,7 @@ step：
 
 2026-10-31 に docker 29.1.3 で通した（9 step・約 85 秒）。
 
-既知の問題：このイメージの netopeer2-server は、コアの cycle で commit_group を戻したあと（step 8 の後半）、同じ機器に次の commit confirmed を送ると SIGSEGV で落ちた。同じ rpc の並びを provider に直接送ると落ちず、手元では原因を絞れなかった。v2 の統合テストも group を最後に回しているので、step 8 を g1〜g3 で最後に回している。
+既知の問題：このイメージの netopeer2-server は、コアの cycle で commit_group を戻したあと（step 8 の後半）、同じ機器に次の commit confirmed を送ると SIGSEGV で落ちた。同じ rpc の並びを provider に直接送ると落ちず、手元では原因を絞れなかった。v2 の統合テストも group を最後に回していたので、step 8 を g1〜g3 で最後に回している。
 
 ## proxmox
 
@@ -580,7 +580,7 @@ pending と非同期のタスク：
 $ make integration-v3-proxmox
 ```
 
-- v2 の `make integration-proxmox` と同じ、入れ子の Proxmox VE 9.2 を使う。
+- 入れ子の Proxmox VE 9.2 を使う。
   - ISO はバージョンと sha256 で固定する。自動導入の ISO を docker で作り、qemu の入れ子の KVM で導入する。
   - ISO・自動導入の ISO・導入済みのディスクは、同じキャッシュ `SAKUTEI_IT_CACHE`（既定 `~/.cache/sakutei-it/proxmox`）を使い回す。
 - 導入済みのディスクの上の使い捨ての overlay で立て、v3 の sakutei（`cmd/sakutei`）の CLI を向けて回す。
@@ -923,9 +923,9 @@ Apply と Delete：
 $ make integration-v3-postgresql
 ```
 
-- v2 の `make integration-postgresql` と同じ公式の postgres イメージ（`postgres:17.11-bookworm`、tag と digest で固定）を使う。`SAKUTEI_IT_POSTGRES_IMAGE` で差し替えられる。
+- 公式の postgres イメージ（`postgres:17.11-bookworm`、tag と digest で固定）を使う。`SAKUTEI_IT_POSTGRES_IMAGE` で差し替えられる。
 - サーバと、psql を動かすだけのクライアントを docker のネットワークに立て、v3 の CLI（`cli.Run` の plan・reconcile と daemon）を向ける。
-- コンテナとネットワークの名前（v2 の `sakutei-pgit-*` と重ならない）：
+- コンテナとネットワークの名前：
   - postgresql provider（`postgresql/integration/`）：`sakutei-v3pg-server`・`sakutei-v3pg-client`・`sakutei-v3pg-net`
   - sqlmigrate（`sqlmigrate/integration/`）：`sakutei-v3sm-*`
 - build tag は両方 `integration_v3_postgresql`。
@@ -968,8 +968,8 @@ sqlmigrate の step（観測は読み取り専用のロール、invoke はデー
 $ make integration-v3-ldap
 ```
 
-- v2 の `make integration-ldap` と同じ 389 Directory Server のイメージ（`389ds/dirsrv:3.1`、tag と digest で固定）を使う。`SAKUTEI_IT_389DS_IMAGE` で差し替えられる。
-- docker で立てるもの（v2 の `sakutei-ldapit-*` と重ならない）：サーバ `sakutei-v3ldap-server`・クライアント `sakutei-v3ldap-client`・ネットワーク `sakutei-v3ldap-net`。
+- 389 Directory Server のイメージ（`389ds/dirsrv:3.1`、tag と digest で固定）を使う。`SAKUTEI_IT_389DS_IMAGE` で差し替えられる。
+- docker で立てるもの：サーバ `sakutei-v3ldap-server`・クライアント `sakutei-v3ldap-client`・ネットワーク `sakutei-v3ldap-net`。
 - v3 の CLI（`cli.Run` の plan・reconcile、`ldap.Module`）を向けて回す（`ldap/integration/`、build tag `integration_v3_ldap`）。
 - ldapsearch・ldapmodify はクライアントのコンテナの中で動かす（ラッパー。-y のファイルと CA は docker cp で渡す）。
 - 要るもの：docker・sudo（パスワードなし）。
@@ -1131,11 +1131,11 @@ Apply：
 $ make integration-v3-s3
 ```
 
-- v2 の `make integration-s3` と同じイメージ（tag と digest で固定）を、docker で 127.0.0.1 の空いたポートに立てる。
+- S3 互換のサーバのイメージ（tag と digest で固定）を、docker で 127.0.0.1 の空いたポートに立てる。
   - SeaweedFS 4.51（必須）
   - MinIO RELEASE.2026-08-04（任意）
   - PUT の API を持たない SeaweedFS 3.80（任意）
-- コンテナは `sakutei-v3s3-*`。v2 の `sakutei-s3it-*` と重ならない。
+- コンテナは `sakutei-v3s3-*`。
 - `SAKUTEI_IT_SEAWEEDFS_IMAGE`・`SAKUTEI_IT_MINIO_IMAGE`・`SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE` で差し替えられる。任意のイメージが取得できなければ、その step を飛ばす。
 - v3 の CLI（`cli.Run` の plan・reconcile・approve、`s3.Module`）を向けて回す（`s3/integration/`、build tag `integration_v3_s3`）。
 - 要るもの：docker・sudo（パスワードなし）。
@@ -1169,7 +1169,7 @@ step：
 $ make integration-v3-ansible
 ```
 
-- v2 の `make integration-ansible` と同じ、バージョンを固定した venv（ansible-core 2.21.5、`~/.cache/sakutei/ansible-it-core-2.21.5`）の ansible を使う。無ければ同じ手順で作る。
+- バージョンを固定した venv（ansible-core 2.21.5、`~/.cache/sakutei/ansible-it-core-2.21.5`）の ansible を使う。無ければ作る（入れるものは `ansible/integration/requirements.txt`）。
 - local 接続で一時ディレクトリを相手に、v3 の CLI（`cli.Run` の plan・reconcile、`ansible.Module`）から回す（`ansible/integration/`、build tag `integration_v3_ansible`）。
 - 到達できないホストは、127.0.0.1 の閉じたポートへの ssh で作る。
 - ansible は `SAKUTEI_IT_ANSIBLE`（絶対パス）で渡せる。別のバージョンなら `SAKUTEI_IT_ANSIBLE_ANY=1` も付ける。
@@ -1299,7 +1299,7 @@ v2 の intent と provider の設定を、v3 の intent・接続設定・ID の�
 | 採番の記録 | `allocations/` |
 
 - 書き直せないものがあれば、全部を挙げてエラーにする。
-- docs/trial の v2 の試用の intent 全部（planned_change と remediation-profile を含む 32 件）で、v3 のコアの plan が v2 の plan と同じ操作を出すことを確かめる（`migrate/testdata/trial-cases.json`）。
+- v2 の試用の intent 全部（planned_change と remediation-profile を含む 32 件。`migrate/testdata/trial/` に置いてある）で、v3 のコアの plan が v2 の plan と同じ操作を出すことを確かめる（`migrate/testdata/trial-cases.json`）。
 - 書き方の決まりは [../README.md](../README.md#stage-9-の決まりv2-の-intent-の書き直しと-import同期のツールどちらもコアの外の-providers) の「Stage 9 の決まり」。
 
 ### sakutei-import

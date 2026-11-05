@@ -1,7 +1,7 @@
 # Sakutei の新しいコア（v3）
 
 - 設計：`docs/core/README.md`。もとにした検討：`docs/review/core-usecase-review.md`。
-- ルートの v2 のコードとは別の Go モジュール（`github.com/tjst-t/sakutei/v3`、標準ライブラリだけ）。v2 との互換は持たない。
+- Go モジュール `github.com/tjst-t/sakutei/v3`（標準ライブラリだけ）。以前の実装（v2、モジュール `github.com/tjst-t/sakutei/v2`）との互換は持たない。v2 の実装はリポジトリから消した（最後の版は `v2.12.0`）。v2 の intent は `sakutei-migrate` で書き直す（Stage 9）。
 - 実の provider・sink・Expand のモジュール・secret backend・道具は、コアの外の Go モジュール `providers/`（`github.com/tjst-t/sakutei/v3/providers`）に置く。詳しくは [providers/README.md](providers/README.md)。
 
 作る順番は設計書 §8 の Stage 1〜9。**Stage 1〜9 はすべて実装済み**。
@@ -579,22 +579,22 @@ Procedure：
 
 完了条件の確認（`providers/migrate/testdata/trial-cases.json`、32 件）：
 
-- docs/trial の v2 の試用の intent を全部、それぞれの最初の現実に対して v2 の plan が出す操作を表に書く。v2 の側（`tests/acceptance/migrate_trial_test.go`）は v2 の plan と、新しいコアの側（`providers/migrate/trial_test.go`）は書き直した intent の plan と突き合わせる。
+- v2 の試用の intent を全部、それぞれの最初の現実に対して v2 の plan が出す操作を表に書く。新しいコアの側（`providers/migrate/trial_test.go`）は書き直した intent の plan と突き合わせる（v2 の実装を消すまでは、v2 の側の試験が v2 の plan と突き合わせていた）。v2 の試用の intent と最初の現実は `providers/migrate/testdata/trial/` にある（v2 の `docs/trial/` から移した）。
 - 対象の intent：
   - v1・allocation
   - observe（最初の現実と、癖のあるファイル）
   - planned-change（planned_change の無い資源、通常の budget で halt する形、A3 の専用の allow で通る、A6 の window の外、A7 の範囲の外、B2 の削除の allow、B4 の reimage の対）
   - sync-import・workflow-gates
   - sharding（a・b・c）・dr-mode（tokyo・osaka）
-  - sqlmigrate（run.sh が書く intent の写し `docs/trial/sqlmigrate/intent/`）
+  - sqlmigrate（v2 の試用の run.sh が書く intent の写し `providers/migrate/testdata/trial/sqlmigrate/intent/`）
   - redfish-os-install
   - remediation-profile（window の中・window の外・今日の曜日・明日の曜日・default の alert-only と、プロファイル team の承認なし・承認者 1 人・enterprise の承認者 1 人・申請者と 1 人・2 人・solo の cooling-off・cooling-off 0s）
-- run.sh が今の時刻から書く window は、表の `{{t <ずれ> <形> [tz]}}` で書く。
+- v2 の試用の run.sh が今の時刻から書く window は、表の `{{t <ずれ> <形> [tz]}}` で書く。
 - 比べるのは、収束が Apply する操作（作成・変更・削除・halt・window の外で通知だけ）と、観測できないもの。Procedure に渡したものは、v2 の Workflow・Task が持っていたものに収まること。
 - 承認の要る allow は、新しいコアの側で先に reconcile を 1 回流して Record に承認リクエストを作り、現実を戻し、v2 の intent に書いた承認者が `sakutei approve` してから plan で比べる（`v3_record`・`v3_approve`）。
 - 新しいコアの provider が現実を v2 と違って読む（直した）ところだけ、`v3_ops`・`v3_unknown` と理由 `v3_reason` を書く（observe の癖のあるファイル、到達できない BMC）。
 
-表に入れていない run.sh の手順：
+表に入れていない v2 の試用の run.sh の手順：
 
 - daemon で window が開いて閉じる、cooling-off の時計が再起動で延びない（新しいコアの単体テスト `cycle/lane_test.go` が確かめる）。
 - `--mode`・`--freeze` の引数（新しいコアは起動引数に Policy を持たず、`sakutei freeze` を使う）。
@@ -635,4 +635,4 @@ Procedure：
 
 ## テスト
 
-ルートの `make check`・`make test-race` が、v3 と `providers/` のテストも一緒に回す。
+ルートの `make check`・`make test-race` が、v3 と `providers/` のテストを回す。

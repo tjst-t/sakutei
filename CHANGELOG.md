@@ -1,8 +1,14 @@
 # 変更点（CHANGELOG）
 
-Sakutei のリリースごとの変更点。設計書の改訂は `docs/architecture/CHANGELOG-v3.*.md` を見る。`#nn` は Backlog の項目番号。
+Sakutei のリリースごとの変更点。`#nn` は Backlog の項目番号。v2.12.0 までの項目が引く v2 の文書・コード（`docs/architecture/`・`docs/providers/`・`pkg/`・`internal/` など）と v2 系の設計書の改訂（`docs/architecture/CHANGELOG-v3.*.md`）は、そのタグで読める。
 
 ## 未リリース
+
+### 削除
+
+- **v2 の実装（ルートのモジュール `github.com/tjst-t/sakutei/v2`）とその文書を消した。** ルートの `go.mod`・`cmd/`・`internal/`・`pkg/`・`tests/`・`examples/`・`templates/` と、v2 だけの文書（v2 系の設計書 `docs/architecture/`・`docs/DESIGN/`・provider ごとの説明 `docs/providers/`・運用の文書・`docs/web/`・`docs/examples/`・v2 の試用の手順）を消した。実装は `v3/`（`github.com/tjst-t/sakutei/v3`）と `v3/providers/`（`github.com/tjst-t/sakutei/v3/providers`）だけになった。v2 の intent は v3/providers の `sakutei-migrate` で変換できる。v2 の最後の版は v2.12.0。
+- Makefile と CI は v3 と v3/providers だけを回す（`make build`・`test`・`vet`・`check`・`test-race`・`integration-v3-*`）。v2 の `make demo`・`make integration-*`（`-v3-` の付かないもの）は消した。`make check-module` は v3 と v3/providers を外のモジュールから取り込めるかを確かめる。
+- `sakutei-migrate` のテストが読む v2 の試用の intent と最初の現実は `v3/providers/migrate/testdata/trial/` に、`integration-v3-ansible` が使う `requirements.txt` は `v3/providers/ansible/integration/` に移した。
 
 ## v2.12.0（2026-10-30）
 

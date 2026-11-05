@@ -1,31 +1,18 @@
-# v1 を実際に使って確かめる手順
+# 試用の手順
 
-v1（タグ v1.0.0）を、ファイル系の実 provider の dnszone（DNS のゾーンファイル）と nftables（ファイアウォールの ruleset ファイル）を相手に、
-`import` → `plan` → `reconcile` → 手でずらす → `status` → 常駐デーモン、の順で動かして確かめる。
-v2（Backlog #20）に入るかどうかは、この手順で v1 を使ってみてから決める（2026-10-21 の決定）。
+Sakutei（`v3/`・`v3/providers/`）を、ファイル系の実 provider の dnszone（DNS のゾーンファイル）と nftables（ファイアウォールの ruleset ファイル）を相手に動かして確かめる手順と、v2 の intent を書き直す手順。
 
-## まず知っておくこと
-
-- **相手はファイルだけ**。dnszone はゾーンファイルを、nftables は ruleset ファイルを読み書きする。DNS サーバへの反映（再読み込み）や
-  カーネルへの `nft -f` は Sakutei はしない。実機で試すなら、書き出されたファイルを自分で読み込ませる（下の「実機につなぐ」）。
-- **devenv について**：設計書の devenv（§26.2、物理 1 台にネストで段 0〜段 2 を再現する）はまだ無い。この手順は 1 つの作業ディレクトリ
-  （既定 `/tmp/sakutei-trial`）で完結する、いちばん小さい devenv である。
-- **ID の書き方**：dnszone は「FQDN/型」（例 `www.example.com./A`。`name` も同じ FQDN）。ゾーンファイルの `$ORIGIN` と `@` は解釈するので、
-  ファイルに相対名 `www` で書いても絶対名 `www.example.com.` で書いても同じレコードになる（`www.` は別のレコード）。intent に相対名の ID
-  （`www/A`）を書くとロードで拒否される。書き戻しはファイルの書き方を保つ（相対名の行は相対名のまま書き換え、新しいレコードは FQDN で足す）。
-  nftables は「family/table/chain」
-  （例 `inet/filter/sakutei_allow`）。迷ったら手順 1 の `import` が出す ID をそのまま使う。
-- **nftables の rules** は順序つきの 1 本の文字列で、ルールの区切りは ` ; `。並べ替えも差分になる。
+v2 の各機能の試用の手順（v1 の dnszone・nftables、sync-import・allocation・sharding・planned-change・workflow-gates・remediation-profile・dr-mode・observe・sqlmigrate・redfish-os-install）は v2 の実装と一緒に消した。タグ `v2.12.0` の `docs/trial/` で読める。その intent と最初の現実は、`sakutei-migrate` のテストの入力として `v3/providers/migrate/testdata/trial/` に移してある。
 
 ## v3 で試す（新しいコア、docs/trial/v3/）
 
-新しいコア（`v3/`、設計 `docs/core/README.md`）に実の provider（`v3/providers/` の dnszone・nftables）を組み込んだ `sakutei` で、同じ手順（plan → reconcile → 手動で変更する → 元に戻る → 通知だけにする → 宣言から外しても削除しない）を流す。
+新しいコア（`v3/`、設計 `docs/core/README.md`）に実の provider（`v3/providers/` の dnszone・nftables）を組み込んだ `sakutei` で、v2 の試用と同じ手順（plan → reconcile → 手動で変更する → 元に戻る → 通知だけにする → 宣言から外しても削除しない）を流す。
 
 ```sh
 docs/trial/v3/run.sh            # 作業ディレクトリは /tmp/sakutei-trial-v3（毎回作り直す）
 ```
 
-v1 との違い：
+v2（v1）との違い：
 
 - 接続設定（`config.yaml`）と intent に分かれる。ゾーン（`zone`）と扱う table（`host`・`tables`）は intent の `ranges` に書く。
 - ID は dnszone が `<FQDN>/<型>`（type `dns/record`）、nftables が `<host>/<family>/<table>/<chain>`（type `fw/chain`）。`rules` はルール文のリスト。
@@ -33,17 +20,18 @@ v1 との違い：
 - alert-only は `sakutei freeze`（理由・期限・誰が。`unfreeze` で終える）。
 - 宣言から外したものは `ranges` の `prune: false`（既定）なら削除せず、unmanaged として出す。`prune: true` にしても、前の cycle の件数が無いとき・budget（`budget.destructive_per_cycle`）を超えるときは削除しない。
 
-同じ手順と v1 の D3（unmanaged の削除が budget で halt する）を `v3/providers/cmd/sakutei` の `TestTrial` が回す（`make test` に入る）。
+同じ手順と v1 の試用の D3（unmanaged の削除が budget で halt する）を `v3/providers/cmd/sakutei` の `TestTrial` が回す（`make test` に入る）。
 
 ## v2 の intent を新しいコアへ書き直す（sakutei-migrate）
 
 v2 の intent と v2 に渡していた provider の設定（同じ名前の引数）を `sakutei-migrate` に渡すと、新しいコアの intent と接続設定に書き直す。
-v1 の試用の intent なら：
+v1 の試用の intent（`sakutei-migrate` のテストの入力として `v3/providers/migrate/testdata/trial/v1/` に置いてある）なら：
 
 ```sh
 cd v3/providers && go build -o /tmp/sakutei-migrate ./cmd/sakutei-migrate && go build -o /tmp/sakutei-v3 ./cmd/sakutei && cd ../..
-W=/tmp/sakutei-migrate-trial; rm -rf $W; mkdir -p $W; cp docs/trial/v1/initial/* $W/
-/tmp/sakutei-migrate --intent docs/trial/v1/intent --zone $W/example.com.zone --ruleset $W/firewall.rules --out $W/v3
+T=v3/providers/migrate/testdata/trial/v1
+W=/tmp/sakutei-migrate-trial; rm -rf $W; mkdir -p $W; cp $T/initial/* $W/
+/tmp/sakutei-migrate --intent $T/intent --zone $W/example.com.zone --ruleset $W/firewall.rules --out $W/v3
 /tmp/sakutei-v3 plan --intent $W/v3/intent --config $W/v3/config.yaml    # v2 の plan と同じ 3 件（作る 1・変える 2）
 ```
 
@@ -51,195 +39,12 @@ W=/tmp/sakutei-migrate-trial; rm -rf $W; mkdir -p $W; cp docs/trial/v1/initial/*
 - 書き直せないもの（Workflow の `disruption`、window の中だけ通知する `remediation` の window など。どれも試用の intent には無い。一覧は `v3/README.md` の「Stage 9 の決まり」）があれば、全部を挙げて何も書き出さない（終了コード 2）。
 - Workflow の gate と planned_change の承認者は名前で渡す（`--role platform-admin=alice,bob`・`--approver bob`）。秘密の参照は `--secret-file secretref:file/bmc/node1=/path/to/password`。
 - 今の現実を宣言の形に書き出すのは `sakutei-import --intent <intent> --config <config> --out <file>`（`--every 1m` で同期、`--commit` で 1 回 1 commit）。
-- docs/trial の v2 の試用の intent を全部（planned-change の planned_change の付いた intent と remediation-profile の時間帯・プロファイルの intent を含む 32 件。run.sh が今の時刻から書く window は、表では時刻を差し込む形で書く）書き直して、新しいコアの plan が v2 の plan と同じ操作を出すことを、`v3/providers/migrate` のテストで確かめる（表は `v3/providers/migrate/testdata/trial-cases.json`。表に入れていない run.sh の step（daemon で window が開いて閉じる・`--mode`・`--freeze`・宣言のエラー・急減の判定）と、確かめた範囲は `v3/README.md` の「Stage 9 の決まり」）。
-
-## 置いてあるもの（docs/trial/v1/）
-
-| ファイル | 中身 |
-|---|---|
-| `initial/example.com.zone` | 最初の現実。`www` の A レコードだけがある |
-| `initial/firewall.rules` | 最初の現実。base chain の `input`（policy drop）と、管理する regular chain の `sakutei_allow`（22 番だけ許可） |
-| `intent/main.yaml` | あるべき姿。`www` を 192.0.2.20 に、`api` を足す、`sakutei_allow` に 443 番を足す |
-| `run.sh` | 手順 1〜6 を通して流すスクリプト |
-
-## 通しで流す
-
-```sh
-docs/trial/v1/run.sh            # 作業ディレクトリは /tmp/sakutei-trial（毎回作り直す）
-```
-
-Go が要る（`go build` する）。リポジトリのファイルは書き換えない。
-
-## 1 つずつ流す
-
-`run.sh` と同じことを手で行う。作業ディレクトリで：
-
-```sh
-W=/tmp/sakutei-trial; rm -rf $W; mkdir -p $W
-cp docs/trial/v1/initial/* $W/; cp -r docs/trial/v1/intent $W/
-go build -o $W/sakutei ./cmd/sakutei
-cd $W
-ONE="--intent intent --zone example.com.zone --ruleset firewall.rules"
-```
-
-`plan`・`reconcile`・`status`・`import`・デーモンのどれも、dnszone のゾーンファイルは `--zone`、nftables の ruleset は `--ruleset` で渡す（fake provider は `--state`）。
-
-| 手順 | コマンド | 確かめること |
-|---|---|---|
-| 1. import | `./sakutei import --provider dnszone,nftables --zone example.com.zone --ruleset firewall.rules --out imported --samples 1` | いまの現実が intent の形で `imported/` に出る。全部 `ExplicitAbsentOnly`（消さない）。base chain の `input` は出ない（管理の外） |
-| 2. plan | `./sakutei plan $ONE` | `www` が UPDATE、`api` が CREATE、`sakutei_allow` が UPDATE（cause A／B 付き）。ファイルは変わらない |
-| 3. reconcile | `./sakutei reconcile $ONE` → もう一度 `plan` | 3 件が適用され、2 回目の plan は `Converged (no changes)` |
-| 4. ずれ | ゾーンファイルの `api` を手で書き換え → `./sakutei status --intent intent --zone example.com.zone --ruleset firewall.rules` → `reconcile` | status に `DRIFTED dnszone//api.example.com./A`（cause B）が出て、reconcile で元に戻る |
-| 5. alert-only | `www` を手で書き換え → `./sakutei reconcile $ONE --mode alert-only` | 「would be UPDATE」と知らせるだけで、ファイルは書き換えない |
-| 6. 消さない | intent から `api` を消して `plan` | `Converged`（削除の計画が出ない）。現実の `api` は残る。消すには `deletion_policy: PruneWithinScope` を明示する |
-
-## 常駐デーモン
-
-デーモンは intent に出てくる provider 名ごとに provider を引いて回す（Backlog #67）。dnszone・nftables の intent は次の形で回す：
-
-```sh
-./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 5s
-```
-
-別の端末からゾーンファイルや ruleset を手で書き換えて、次の周期の動きを見る。止めるのは Ctrl-C（周期の切れ目で止まる）。
-
-デーモンは `--cause-state` を受けない。原因タグを付けるための前の周の revision はメモリに持つので要らない（`--cause-state` は一回性の `plan`・`reconcile`・`status` が回をまたいで持ち越すためのもの。渡すと理由を言って終了コード 1 で断る、#165）。
-
-Sakutei を新しい版に入れ替えて provider の版が上がると、`--cause-state` を渡した最初の `reconcile` は差分を当てずに `ProviderUpgradeDiff`（原因タグ C）で 1 回止まる。確かめ方と進め方は [../provider-upgrade.md](../provider-upgrade.md)。
-
-### D1. 収束と自己修復（2026-10-21 に確かめた）
-
-初期状態（`docs/trial/v1/initial/`）から `--interval 1s` で起動する。
-
-- cycle 1 で 3 件を適用し、cycle 2 から `converged (no changes)`。SOA のシリアルは DNS の書き換え 2 回ぶん上がる（…01 → …03）。
-- ゾーンファイルの `api` の値と ruleset の `tcp dport 443 accept` を手で書き換えると、次の周期に
-  `DriftEvent ... [cause: B] drift B: value was "192.0.2.30" prev cycle now "198.51.100.99"` が出て、元に戻る。
-- base chain の `type filter hook input priority 0; policy drop;` は残る。
-
-### D2. alert-only（2026-10-21 に確かめた）
-
-収束させてから `--mode alert-only` を足して起動し、D1 と同じように手で書き換える。
-
-```sh
-./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 1s --mode alert-only
-```
-
-- 書き換えた次の周期に次のように出て（`alert-only: … detected` の要約の行はその後も毎周）、**ファイルは書き換えない**（手で変えた値が残り、SOA のシリアルも変わらない）。
-
-  ```
-  sakutei: cycle 4: alert-only: 2 drifted resource(s) detected — no changes applied
-  sakutei: cycle 4: DRIFT EVENT: would be UPDATE dnszone//api.example.com./A
-  sakutei: cycle 4: DRIFT EVENT: would be UPDATE nftables//inet/filter/sakutei_allow
-  ```
-- 気づいたこと：同じ知らせが毎周そのまま出続けた。設計 §22.3 は「firing / resolved の level 報告で、毎周同じアラートを撒かない」と決めている。Backlog #79 で直した：ずれの Event（`DriftEvent`・`DRIFT EVENT`）は書き換えた周に 1 回だけ出て、続く間は出ない（周の要約 `alert-only: 2 drifted resource(s) detected` の行は毎周出る）。手で戻すと、戻した周に 1 回だけ次の形で出る。
-
-  ```
-  sakutei: cycle 9: RESOLVED DriftWouldApply dnszone//api.example.com./A: resolved after 5 cycle(s) (firing since 2026-10-21T15:20:01Z)
-  ```
-
-  5 周（`--stuck-after` で変えられる）続くと、`[firing stuck count=5 since=…]` の付いた行が 1 回出て critical に上がる。JSON（`--log-format json`・`--event-log`）では `"state":"firing"`／`"resolved"`・`"since"`・`"count"`・`"class":"transient"`／`"stuck"` が付く。デーモンを起こし直すと、続いているずれは改めて 1 回出る。予算の halt・prune の急減 halt（D3）も同じく、始まった周と消えた周に 1 回ずつ。
-- `--log-format json` を足すと（デーモン・`reconcile`・`plan`。既定は `text`）、同じ知らせが 1 行 1 Event の JSON lines で出る（#77）。`DRIFT EVENT` は `{"kind":"DriftWouldApply","cycle":4,"resource":"dnszone//api.example.com./A","cause":"B","intent_revision":…}` の形。周の要約は `kind":"CycleSummary"`、そのほかのログ行は `"kind":"Log"` の同じ形の行になる。
-- `--event-log <path>` を足すと（デーモン・`reconcile`）、標準エラーへの出力はそのままに、知らせ（Event）をファイルにも JSON lines で追記する（#78）。1 Event を 1 行で書き切り、周の要約とそのほかのログ行は入れない。ファイルに書けなくても収束は止まらず、`sakutei: warn: event sink: …` の 1 行が出る。S4 監査ログ（`--audit-log`）とは別物。
-- `--event-webhook <url>` を足すと、知らせを 1 件ずつ同じ JSON で POST する。`--event-alertmanager <url>` を足すと、level の知らせ（ずれ・halt など）を Alertmanager の alert（`<url>/api/v2/alerts`）として firing・resolved で送り、firing の間は期限が切れないように送り直す（既定 1 分ごと）。warning 以上の edge の知らせは edge_ttl（既定 1 時間）で終わる alert として 1 回送る（#131、§22.3）。認証のヘッダ・TLS・送り直しの間隔・足す labels は `--event-notify-config <file>` に書く:
-
-  ```yaml
-  secret_store: secrets.json          # ヘッダの値はここから（SecretRef でしか書けない）
-  webhook:
-    headers:
-      Authorization: secretref:file/notify/webhook_auth
-    ca_file: ca.pem                   # 省略可。insecure_skip_verify: true は明示したときだけ
-  alertmanager:
-    resend_interval: 1m
-    edge_ttl: 1h
-    labels:
-      instance: sakutei-tokyo
-  ```
-
-  送り先が落ちていても収束は止まらない。送れないと `sakutei: warn: event sink: webhook …: … not delivered: …; retrying in …` の行が出て、待ちを挙げながら送り直す。
-
-  宛先は複数書ける（#154）。Alertmanager を複数台で動かす構成では、すべての Alertmanager に同じ alert を送る（重複は Alertmanager どうしが消す）。フラグを繰り返すか、`,` でつなぐ（`--event-alertmanager http://am-1:9093,http://am-2:9093`）。設定ファイルの `webhook.urls`・`alertmanager.urls` にも一覧で書け、フラグの宛先と合わせて使う（同じ宛先は 1 つにまとめる）。headers・TLS・時間・labels は全部の宛先に同じものを使う。宛先ごとに送り直し・待ち・待ち行列を持つので、1 台が落ちていても他へは送り続け、戻った宛先には待っていた resolved と firing の今を送る。宛先ごとの送りの状態は `/metrics`（`sakutei_notify_*`、[../metrics.md](../metrics.md)）と `--daemon-status`（`status --daemon-status` の `notify:` の行）に出る。
-
-  ```yaml
-  alertmanager:
-    urls:
-      - http://am-1:9093
-      - http://am-2:9093
-  ```
-
-### D3. 破壊的な操作の上限で halt（2026-10-21 に確かめた）
-
-ゾーンに intent に無いレコードを 2 件置き、intent 側を `deletion_policy: PruneWithinScope` にして、上限 1 件で起動する。
-
-```sh
-# ゾーン：www・old1・old2 の 3 件。intent：www だけを PruneWithinScope で宣言（old1・old2 が prune の対象になる）
-./sakutei --intent intent --zone example.com.zone --ruleset firewall.rules --interval 1s --max-destructive-per-cycle 1
-```
-
-- 毎周、2 件の DELETE を止めて halt する。**1 件も消さない**（上限 1 件に対して 2 件なので、1 件だけ消すこともしない）。`BUDGET HALTED` の Event は #79 から始まった周に 1 回だけ出る（`budget: blocked destructive op` の行と周の要約 `halted (2 op(s) held)` は毎周出る）。
-
-  ```
-  sakutei: budget: blocked destructive op DELETE dnszone//old1.example.com./A (budget limit)
-  sakutei: budget: blocked destructive op DELETE dnszone//old2.example.com./A (budget limit)
-  sakutei: cycle 1: BUDGET HALTED: rate-limit (per-cycle): 2 destructive ops (+ 0 in-flight = 2) exceeds max_destructive_per_cycle=1 (approve-large-change=0)
-  ```
-- `--approve-large-change 2` を足して起動し直すと、cycle 1 で 2 件を消す（`pruned=2`）。SOA のシリアルは 2 つ上がる。
-- 気づいたこと（2 つ）：
-  - halt した周の要約にも `converged (no changes)` と出て紛らわしい。Backlog #73（直した：止めた操作がある周の要約は `halted (N op(s) held)`）。
-  - 承認して 2 件を消したあと、cycle 2 から毎周 `prune HALT: List count dropped from 3 to 1 (67% > threshold 50%)` で prune が止まり続ける。
-    件数が減ったのは Sakutei 自身が承認つきで消したからだが、急減の判定（§12.4（b））は planned_change で消した分しか差し引かない。
-    また、止まった周は比べる基準の件数を更新しないので、デーモンを起こし直すまで止まり続ける。設計書 v3.13 §12.4（b）で「自分が prune で消した分は差し引く」と決め、Backlog #75 で直した（承認つきで 2 件消したあとも次の周から `converged (no changes)` が続く）。
-  - #75 の後に流し直すと、2 件を消した cycle 1 の要約が `converged (no changes)` と出ていた。Backlog #76（直した：prune で消した周の要約は `pruned=N` を出し、`converged` と出さない。止めた操作と同じ周なら `halted (N op(s) held) ... pruned=M`）。
-
-## 実機につなぐ（任意）
-
-ファイルを書き出すだけなので、実機で効き目を見るには自分で読み込ませる。
-
-- DNS：BIND なら `named-checkzone example.com example.com.zone` で確かめ、`rndc reload`。
-  レコードを書き換えた Apply では、Sakutei が同じ書き込みで SOA のシリアルを `YYYYMMDDnn`（UTC）に上げるので、セカンダリへの転送も起きる。
-  ゾーンのシリアルを別のツールや人が採番しているなら、`--zone-soa-serial keep` で上げないようにする。
-- nftables：`nft -c -f firewall.rules` で文法を確かめる（`-c` は読み込まない）。読み込むなら、ネットワーク名前空間など壊れてもよい場所で。
-
-## この手順を作ったときに見つかったこと（2026-10-21）
-
-| 見つかったこと | 扱い |
-|---|---|
-| デーモンが fake provider にしか対応していない。plan・reconcile に `--ruleset` が無い | Backlog #67（バグ）。直した（デーモンに `--zone`・`--ruleset`、plan・reconcile に `--ruleset`） |
-| **nftables の Apply が base chain の `type … hook … priority …; policy …;` の行を消す**（直す前は、手順 3 の後の ruleset で `input` の宣言行が消えていた） | Backlog #68（バグ・安全）。直した：Apply は管理する chain の行だけを書き直し、base chain・set/map などの行はバイト単位で残す |
-| dnszone が $ORIGIN を解釈しない。ゾーンに絶対名 `www.example.com.` で書いたレコードを、intent の `www/A` は「無い」とみなして CREATE する（同じ名前が 2 つになる）。パッケージコメントの ID の例（`www.example.com./A`）も実装と食い違う | Backlog #69 で直した。名前は $ORIGIN・`@` を解いた FQDN で比べ、ID は `www.example.com./A`。相対名の ID はロードで拒否する |
-| デーモンの非同期 Apply が同じファイルを同時に書き換え、変更を取りこぼす（初期状態から回すと cycle 2 で同じリソースを launch し直す。次の周期で直る）。2026-10-21 にデーモンを回して確認 | Backlog #72（バグ）で直した。dnszone・nftables の Apply は、ファイルを読んで書き換えて rename するまでを、ファイルのパスごとの排他（プロセス内の mutex と `<ファイル>.lock` の flock）の中で行う。Read・List・BulkObserve は共有の排他を取る。そのため作業ディレクトリに `example.com.zone.lock`・`firewall.rules.lock` ができる |
-| SOA のシリアルが上がらない | 設計書 v3.12 §29.1 で「書き換えた Apply のときだけ YYYYMMDDnn で上げる（既定。`--zone-soa-serial keep` で止める）」と決め、Backlog #70 で直した。括弧で複数行に分けた SOA も読めるようにした（シリアルの数字だけを置き換える） |
-
-## Redfish と Workflow で OS を入れる
-
-BMC（qemu-bmc 0.9.0）越しに、利用者が用意した自動インストールの ISO で OS を入れる手順と、2026-10-22 の試用の結果は
-[redfish-os-install/README.md](redfish-os-install/README.md)。
-
-## sqlmigrate で単純 Task を試す
-
-単純 Task（§6.2、`strategy: task`）を、実 provider の sqlmigrate（SQLite のマイグレーション）と本物の `sqlite3`・常駐の sakutei
-（`--task-store`）で回す手順（1-outstanding・メンテ窓・失敗と rollback・cancel・実行中に SIGKILL・版を下げる）と、2026-10-23 の試用の結果は
-[sqlmigrate/README.md](sqlmigrate/README.md)（Backlog #95）。
-
-## 機能ごとの試用（2026-10-23）
-
-v1 の機能のうち、それまで自動テストでしか確かめていなかったものを、このコンテナで実際の CLI とデーモンを回して確かめた（Backlog #96）。それぞれの手順・結果・見つけたことは各ディレクトリの README にある。
-
-| 手順 | 試したこと |
-|---|---|
-| [sync-import/](sync-import/README.md) | import（既存を intent に書き出す）と Sync Mode（現実を generated/ に記録して git にコミット） |
-| [allocation/](allocation/README.md) | 採番（ファイル版 AllocationAuthority・pools・HA 最小形） |
-| [sharding/](sharding/README.md) | 静的シャーディング（claim の git 配布・S2-free シャード・ハンドオフ）と inventory 検証 |
-| [planned-change/](planned-change/README.md) | planned_change（専用の予算レーン・kind の整合・reimage の対・承認情報） |
-| [workflow-gates/](workflow-gates/README.md) | Workflow の承認ゲート（単一・N-of-M・roles・separation・timeout、CLI と承認 API） |
-| [remediation-profile/](remediation-profile/README.md) | 直してよい時間帯（remediation schedule）と運用プロファイル（cooling-off） |
-| [dr-mode/](dr-mode/README.md) | DR モード（DR plan・break-glass・事後合流） |
-| [observe/](observe/README.md) | tier 別の Observe 頻度・BulkObserve・status とデーモンの状態 |
-| [sqlmigrate/](sqlmigrate/README.md) | 単純 Task（strategy: task）を本物の provider で：SQLite のマイグレーション（1-outstanding・メンテ窓・失敗と rollback・cancel・デーモンを殺したとき・版を下げる） |
+- v2 の試用の intent を全部（planned-change の planned_change の付いた intent と remediation-profile の時間帯・プロファイルの intent を含む 32 件。v2 の試用の run.sh が今の時刻から書いていた window は、表では時刻を差し込む形で書く）書き直して、新しいコアの plan が v2 の plan と同じ操作を出すことを、`v3/providers/migrate` のテストで確かめる（表は `v3/providers/migrate/testdata/trial-cases.json`、intent と最初の現実は `v3/providers/migrate/testdata/trial/`。表に入れていない v2 の run.sh の step（daemon で window が開いて閉じる・`--mode`・`--freeze`・宣言のエラー・急減の判定）と、確かめた範囲は `v3/README.md` の「Stage 9 の決まり」）。
 
 ## 試した結果の残し方
 
-v2 に入るかを決める材料にするので、気づいたことは Backlog に積む。
+気づいたことは Backlog に積む。
 
-- 動かない・危ない：kind `bug`。再現の手順（このページの手順の番号）を書く。
+- 動かない・危ない：kind `bug`。再現の手順を書く。
 - 使いにくい・足りない：kind `task`、ラベル `trial-feedback`。
 - 設計を変えないと直らない：本文にそう書き、人に聞く。

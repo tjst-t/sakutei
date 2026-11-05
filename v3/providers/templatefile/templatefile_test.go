@@ -29,8 +29,9 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/contract"
 )
 
-// trialTemplates は試用と統合テストが使う Alpine のテンプレートのディレクトリ（v2 と同じもの）。
-const trialTemplates = "../../../docs/trial/redfish-os-install/templates"
+// trialTemplates は v2 の試用が使った Alpine のテンプレートのディレクトリ（sakutei-migrate の
+// テストの入力と同じもの）。
+const trialTemplates = "../migrate/testdata/trial/redfish-os-install/templates"
 
 const answersTmpl = `HOSTNAME={{shquote .Hostname}}
 ADDRESS={{shquote .Address}}

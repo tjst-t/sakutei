@@ -16,8 +16,8 @@ package migrate
 
 // trial_test.go — Stage 9 の完了条件：v2 の試用の intent を全部書き直して、新しい
 // コアの plan が v2 の plan と同じ操作を出す。表（testdata/trial-cases.json）の ops は
-// v2 の plan の操作で、v2 の側の試験（tests/acceptance/migrate_trial_test.go）が v2 の
-// plan と突き合わせている。
+// v2 の plan の操作（v2 の実装を消すまでは v2 の側の試験が v2 の plan と突き合わせて
+// いた）。v2 の試用の intent と最初の現実は testdata/trial/ に置いてある。
 //
 // 比べるのは収束が現実に Apply する操作（作る・変える・消す。halt したものには印を付ける）。
 // v2 の Workflow・Task が持っていた宣言は、新しいコアでは Procedure に渡す（収束では
@@ -86,7 +86,8 @@ func modules() []cli.Option {
 	}
 }
 
-const repo = "../../.."
+// trialData は表の intent・files のパスの起点（testdata/trial/ の上）。
+const trialData = "testdata"
 
 func loadCases(t *testing.T) []trialCase {
 	data, err := os.ReadFile("testdata/trial-cases.json")
@@ -107,7 +108,7 @@ func setup(t *testing.T, tc trialCase) string {
 	w := t.TempDir()
 	os.MkdirAll(filepath.Join(w, "v2intent"), 0o755)
 	if tc.Intent != "" {
-		copyTree(t, filepath.Join(repo, tc.Intent), filepath.Join(w, "v2intent"))
+		copyTree(t, filepath.Join(trialData, tc.Intent), filepath.Join(w, "v2intent"))
 	}
 	now := time.Now()
 	for name, text := range tc.Append {
@@ -116,7 +117,7 @@ func setup(t *testing.T, tc trialCase) string {
 		os.WriteFile(p, append(b, []byte(expandTimes(text, now))...), 0o600)
 	}
 	for dst, src := range tc.Files {
-		copyTree(t, filepath.Join(repo, src), filepath.Join(w, dst))
+		copyTree(t, filepath.Join(trialData, src), filepath.Join(w, dst))
 	}
 	for _, r := range tc.Replace {
 		p := filepath.Join(w, r.File)

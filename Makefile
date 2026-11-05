@@ -1,73 +1,49 @@
-.PHONY: build test test-race vet check check-module demo clean integration-redfish integration-nftables integration-v3-nftables integration-v3-redfish integration-v3-proxmox integration-v3-postgresql integration-v3-ldap integration-s3 integration-postgresql integration-ansible integration-remote integration-guestos integration-netconf integration-ldap integration-proxmox integration-hostconf integration-vault integration-otlp
+.PHONY: build test test-race vet check check-module integration-v3-nftables integration-v3-redfish integration-v3-netconf integration-v3-postgresql integration-v3-ldap integration-v3-proxmox integration-v3-s3 integration-v3-ansible
 
-BIN     := sakutei
-DEMODIR := .demo
-
-# 新しいコア（v3/、別の Go モジュール。設計は docs/core/README.md）と、コアの外の
-# provider のモジュール（v3/providers/、また別の Go モジュール）も build・vet・
-# test・test-race で一緒に回す。
+# Sakutei は 2 つの Go モジュールからなる：コア（v3/、設計は docs/core/README.md）と、
+# コアの外の provider・Expand・secret backend・sink・道具（v3/providers/）。
+# build・vet・test・test-race はどちらも回す。
 V3 := cd v3 &&
 V3P := cd v3/providers &&
-
-build:
-	go build -o $(BIN) ./cmd/sakutei
-	$(V3) go build -p $(TEST_P) ./...
-	$(V3P) go build -p $(TEST_P) ./...
 
 # 同時に回すパッケージの数（go test -p）。既定（CPU の数）だと CPU の多いホストで
 # テストのバイナリとそのスレッドが一度に千を超え、ほかのジョブと task の上限
 # （cgroup の pids.max）を分け合う環境では fork/exec が EAGAIN で落ちて
-# 「[build failed]」になる。時間はほぼ受け入れテストで決まるので 8 で足りる。
+# 「[build failed]」になる。
 TEST_P ?= 8
 
+build:
+	$(V3) go build -p $(TEST_P) ./...
+	$(V3P) go build -p $(TEST_P) ./...
+
 test:
-	go test -p $(TEST_P) ./...
 	$(V3) go test -p $(TEST_P) ./...
 	$(V3P) go test -p $(TEST_P) ./...
 
 # race detector 付きのテスト。cgo が要るので gcc（C コンパイラ）が必要。
 # -count=1 で結果のキャッシュを使わず、毎回実際に回す。
 test-race:
-	CGO_ENABLED=1 go test -race -p $(TEST_P) -count=1 ./...
 	$(V3) CGO_ENABLED=1 go test -race -p $(TEST_P) -count=1 ./...
 	$(V3P) CGO_ENABLED=1 go test -race -p $(TEST_P) -count=1 ./...
 
 vet:
-	go vet ./...
 	$(V3) go vet -p $(TEST_P) ./...
 	$(V3P) go vet -p $(TEST_P) ./...
 
 check: build vet test
 
-# Redfish の統合テスト（#84、設計 §26.1 の 3 段目）。qemu-bmc 0.11.0 を containerlab
-# で 2 台立てて回し、終わったら（失敗しても）消す。KVM・docker・containerlab と
-# sudo（パスワードなし）が要るので、check・test・CI には入れない。
-# BIOS の設定（redfish-bios、#140）と FW の更新（redfish-firmware、#168。qemu-bmc の
-# UpdateService の模擬）の段も含む。同じ名前の lab を使うので、同時に 1 つだけ回す。手順と結果は docs/providers/redfish.md の「統合テスト」。
-REDFISH_IT := ./tests/integration/redfish/
-integration-redfish:
-	go vet -tags integration_redfish $(REDFISH_IT)
-	@status=0; \
-	go test -tags integration_redfish -count=1 -v -timeout 20m $(REDFISH_IT) || status=$$?; \
-	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^clab-sakutei-rf84-'; then \
-	  echo 'integration-redfish: the lab was left behind; destroying it'; \
-	  sudo -n docker unpause clab-sakutei-rf84-node1 clab-sakutei-rf84-node2 >/dev/null 2>&1; \
-	  sudo -n containerlab destroy --name sakutei-rf84 --cleanup || status=1; \
-	fi; \
-	exit $$status
+# 外のモジュールから 2 つのモジュール（github.com/tjst-t/sakutei/v3 と
+# github.com/tjst-t/sakutei/v3/providers）を go get で取り込めるかを確かめる（ネットワークが
+# 要る。check・test には入れない。CI とリリースの前の点検で回す）。VERSION はタグか commit。
+check-module:
+	@test -n "$(VERSION)" || { echo 'usage: make check-module VERSION=<tag-or-commit>'; exit 2; }
+	./scripts/check-module-consumable.sh $(VERSION)
 
-# nftables の live 版の統合テスト（#121）。本物の nft を `sudo -n unshare -n` の
-# 使い捨ての network namespace の中で回す（ホストの FW には触れない。namespace は
-# テストが終われば消える）。base chain の policy drop と締め出しの守り（#173）は、
-# sshd・nft の入った使い捨てのコンテナ（make integration-remote と同じイメージ）に
-# ssh で入って確かめ、終わればコンテナを消す。決まった道具 sakutei-nft-guard（#191）は
-# sudoers を道具だけに絞った利用者で同じように確かめる。nft・unshare・nsenter・docker・ssh と
-# sudo（パスワードなし）が要るので、check・test・CI には入れない。手順と結果は
-# docs/providers/nftables.md の「統合テスト」。
-NFTABLES_IT := ./tests/integration/nftables/
-integration-nftables:
-	go vet -tags integration_nftables $(NFTABLES_IT)
-	go test -tags integration_nftables -count=1 -v -timeout 10m $(NFTABLES_IT)
+# ansible-core を入れる venv（integration-v3-ansible）。版を固定し、pip も wheel の sha256 で固定する。
+ANSIBLE_IT_VENV  ?= $(HOME)/.cache/sakutei/ansible-it-core-2.21.5
+PIP_WHEEL        := pip-26.2.2-py3-none-any.whl
+PIP_WHEEL_URL    := https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/$(PIP_WHEEL)
+PIP_WHEEL_SHA256 := fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
 
 # 新しいコアの nftables provider の統合テスト（v3 段 6、不変条件 17）。本物の nft を
 # 使い捨ての network namespace（ip netns）の中で回し、2 段の Apply が確かめられれば
@@ -79,9 +55,9 @@ integration-nftables:
 integration-v3-nftables:
 	cd v3/providers && SAKUTEI_IT_NFT=1 go test -count=1 -v -run Kernel -timeout 5m ./nftables/
 
-# 新しいコアの redfish provider の統合テスト（v3 段 8b）。v2 と同じ qemu-bmc 0.11.0 を
-# containerlab で 2 台立て（lab sakutei-v3rf・管理ネット 172.31.93.0/24。v2 の
-# integration-redfish の sakutei-rf84 と重ならないので同時に回せる）、v3 の sakutei の
+# 新しいコアの redfish provider の統合テスト（v3 段 8b）。qemu-bmc 0.11.0 を
+# containerlab で 2 台立て（lab sakutei-v3rf・管理ネット 172.31.93.0/24。ほかの
+# integration-v3-* と重ならないので同時に回せる）、v3 の sakutei の
 # CLI と常駐で電源・起動先・仮想メディア・BIOS・FW の更新（手順の verify・stage・
 # reset）を回し、終わったら（失敗しても）lab を消す。KVM・docker・containerlab と
 # sudo（パスワードなし）が要るので、check・test・CI には入れない。手順と結果は
@@ -98,135 +74,9 @@ integration-v3-redfish:
 	fi; \
 	exit $$status
 
-# s3-bucket provider の統合テスト（#122）。docker で S3 互換のサーバ（MinIO・
-# SeaweedFS と、PUT の API を持たない古い SeaweedFS）を 127.0.0.1 の空いた
-# ポートに立てて回し、終わったら（失敗しても）コンテナを消す。docker と sudo
-# （パスワードなし）が要るので、check・test・CI には入れない。イメージは
-# SAKUTEI_IT_MINIO_IMAGE などで差し替えられる。手順と結果は
-# docs/providers/s3-bucket.md の「統合テスト」。
-S3_IT := ./tests/integration/s3/
-integration-s3:
-	go vet -tags integration_s3 $(S3_IT)
-	@status=0; \
-	go test -tags integration_s3 -count=1 -v -timeout 15m $(S3_IT) || status=$$?; \
-	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-s3it-'); \
-	if [ -n "$$left" ]; then \
-	  echo "integration-s3: containers were left behind; removing: $$left"; \
-	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
-	fi; \
-	exit $$status
-
-# postgresql provider の統合テスト（#125）と sqlmigrate の engine: postgresql の
-# 統合テスト（#126、常駐の sakutei で Task を回す）。docker の公式の postgres イメージ
-# （tag と digest で固定）でサーバと psql を動かすクライアントを立て（ホストに
-# psql は要らない）、終わったら（失敗しても）コンテナとネットワークを消す。
-# docker と sudo（パスワードなし）が要るので、check・test・CI には入れない。
-# イメージは SAKUTEI_IT_POSTGRES_IMAGE で差し替えられる。手順と結果は
-# docs/providers/postgresql.md と docs/providers/sqlmigrate.md の「統合テスト」。
-POSTGRESQL_IT := ./tests/integration/postgresql/
-integration-postgresql:
-	go vet -tags integration_postgresql $(POSTGRESQL_IT)
-	@status=0; \
-	go test -tags integration_postgresql -count=1 -v -timeout 15m $(POSTGRESQL_IT) || status=$$?; \
-	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-pgit-'); \
-	if [ -n "$$left" ]; then \
-	  echo "integration-postgresql: containers were left behind; removing: $$left"; \
-	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
-	fi; \
-	if sudo -n docker network ls --format '{{.Name}}' 2>/dev/null | grep -q '^sakutei-pgit-net$$'; then \
-	  sudo -n docker network rm sakutei-pgit-net >/dev/null || status=1; \
-	fi; \
-	exit $$status
-
-# ansible provider の統合テスト（#127）。本物の ansible-core を、版を固定した
-# 使い捨ての venv（ANSIBLE_IT_VENV、初回だけ作る。pip も wheel の sha256 で固定）
-# に入れ、local 接続で一時ディレクトリを相手に回す（テストの一時ディレクトリは
-# 終われば消える）。python3（venv モジュール）と、初回は PyPI に届くことが要る
-# ので、check・test・CI には入れない。SAKUTEI_IT_ANSIBLE で手持ちの ansible を
-# 渡せる（版が違えば SAKUTEI_IT_ANSIBLE_ANY=1 も）。手順と結果は
-# docs/providers/ansible.md の「統合テスト」。
-ANSIBLE_IT       := ./tests/integration/ansible/
-ANSIBLE_IT_VENV  ?= $(HOME)/.cache/sakutei/ansible-it-core-2.21.5
-PIP_WHEEL        := pip-26.2.2-py3-none-any.whl
-PIP_WHEEL_URL    := https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/$(PIP_WHEEL)
-PIP_WHEEL_SHA256 := fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
-integration-ansible:
-	go vet -tags integration_ansible $(ANSIBLE_IT)
-	@if [ -z "$$SAKUTEI_IT_ANSIBLE" ] && [ ! -x $(ANSIBLE_IT_VENV)/bin/ansible ]; then \
-	  echo "integration-ansible: creating $(ANSIBLE_IT_VENV)"; \
-	  rm -rf $(ANSIBLE_IT_VENV) && python3 -m venv --without-pip $(ANSIBLE_IT_VENV) && \
-	  curl -sSfL -o $(ANSIBLE_IT_VENV)/$(PIP_WHEEL) $(PIP_WHEEL_URL) && \
-	  echo "$(PIP_WHEEL_SHA256)  $(ANSIBLE_IT_VENV)/$(PIP_WHEEL)" | sha256sum -c - && \
-	  $(ANSIBLE_IT_VENV)/bin/python3 $(ANSIBLE_IT_VENV)/$(PIP_WHEEL)/pip install --quiet --only-binary=:all: \
-	    -r $(ANSIBLE_IT)requirements.txt || { rm -rf $(ANSIBLE_IT_VENV); exit 1; }; \
-	fi
-	SAKUTEI_IT_ANSIBLE=$${SAKUTEI_IT_ANSIBLE:-$(ANSIBLE_IT_VENV)/bin/ansible} \
-	  go test -tags integration_ansible -count=1 -v -timeout 15m $(ANSIBLE_IT)
-
-# ssh 越しの実行の層の統合テスト（#130）。docker で sshd・nft・sudo の入った
-# 使い捨てのコンテナを 2 台立て（ベースのイメージは tag と digest で固定。
-# nft のために NET_ADMIN）、手元の sakutei から ssh 越しに 2 台の nftables（live）と
-# dnszone を収束させ、終わったら（失敗しても）コンテナを消す。docker・ssh・
-# ssh-keygen と sudo（パスワードなし）が要るので、check・test・CI には入れない。
-# 手順と結果は docs/remote.md の「統合テスト」。
-REMOTE_IT := ./tests/integration/remote/
-integration-remote:
-	go vet -tags integration_remote $(REMOTE_IT)
-	@status=0; \
-	go test -tags integration_remote -count=1 -v -timeout 20m $(REMOTE_IT) || status=$$?; \
-	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-rmit-'); \
-	if [ -n "$$left" ]; then \
-	  echo "integration-remote: containers were left behind; removing: $$left"; \
-	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
-	fi; \
-	exit $$status
-
-# ゲスト OS の観測で OS 導入の完了を確かめる統合テスト（#86）。qemu-bmc 0.11.0 を
-# containerlab で 3 台立て、Alpine の自動インストールの ISO（docs/trial/
-# redfish-os-install/make-iso.sh で作る）で本当に OS を入れ、終わったら（失敗しても）
-# lab を消す。#139 で、1 回だけ CD から起動する手順（action boot_once・reset）と、
-# 宣言から書き出す応答ファイル（template-file、テストが HTTP で配る）の形にした。#88 で、
-# planned_change の reimage の宣言で入れ直しの Workflow が 1 回走ること（TestReimage）を足した。
-# KVM・docker・containerlab・sudo（パスワードなし）・ssh・xorriso・curl と、
-# 初回は Alpine の ISO とパッケージを取るネットワークが要る（取ったものは
-# SAKUTEI_IT_CACHE、既定 ~/.cache/sakutei-it/alpine に残す）。check・test・CI には
-# 入れない。手順と結果は docs/providers/guest-os.md の「統合テスト」。
-GUESTOS_IT := ./tests/integration/guestos/
-integration-guestos:
-	go vet -tags integration_guestos $(GUESTOS_IT)
-	@status=0; \
-	go test -tags integration_guestos -count=1 -v -timeout 50m $(GUESTOS_IT) || status=$$?; \
-	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^clab-sakutei-os86-'; then \
-	  echo 'integration-guestos: the lab was left behind; destroying it'; \
-	  sudo -n containerlab destroy --name sakutei-os86 --cleanup || status=1; \
-	fi; \
-	exit $$status
-
-# netconf provider の統合テスト（#141 の観測・#175 の 2 段の Apply・#176 の NACM で
-# 部分木だけに絞ったユーザー）。docker で
-# 公開の NETCONF サーバ（netopeer2 のコンテナ。tag と digest で固定）を 127.0.0.1
-# の空いたポートに立て、sakutei の CLI から ssh の netconf サブシステムで設定の
-# 部分木を観測し（適合・手で変えると drift・観測だけなら Apply は出ない・止めると
-# unknown）、Apply を許した設定で commit confirmed の 2 段で当てる（1.0 と 1.1 の
-# 流れで確定・確かめに失敗すると確定せず confirm-timeout で戻る）。終わったら
-# （失敗しても）コンテナを消す。docker・ssh・ssh-keygen と sudo（パスワードなし）が
-# 要るので、check・test・CI には入れない。イメージは SAKUTEI_IT_NETOPEER2_IMAGE で
-# 差し替えられる。手順と結果は docs/providers/netconf.md の「統合テスト」。
-NETCONF_IT := ./tests/integration/netconf/
-integration-netconf:
-	go vet -tags integration_netconf $(NETCONF_IT)
-	@status=0; \
-	go test -tags integration_netconf -count=1 -v -timeout 10m $(NETCONF_IT) || status=$$?; \
-	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-ncit-'); \
-	if [ -n "$$left" ]; then \
-	  echo "integration-netconf: containers were left behind; removing: $$left"; \
-	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
-	fi; \
-	exit $$status
-
-# 新しいコアの netconf provider の統合テスト（v3 段 8c、不変条件 17）。v2 の
-# integration-netconf と同じ netopeer2 のイメージ（tag と digest で固定）を docker で
-# 4 台（sakutei-v3nc-sw1・g1〜g3。v2 の sakutei-ncit-* と重ならないので同時に回せる）
+# 新しいコアの netconf provider の統合テスト（v3 段 8c、不変条件 17）。公開の NETCONF
+# サーバの netopeer2 のイメージ（tag と digest で固定）を docker で
+# 4 台（sakutei-v3nc-sw1・g1〜g3。ほかの integration-v3-* と重ならないので同時に回せる）
 # 127.0.0.1 の空いたポートに立て、v3 の CLI（cli.Run）で観測だけ・commit confirmed の
 # 2 段の Apply（1.0・1.1 の persist）・NACM で絞ったユーザー・確かめが通らなければ確定
 # せず戻る・Prepare のあと確定しなければ機器の時間切れで戻る・commit_group と confirm の
@@ -247,10 +97,10 @@ integration-v3-netconf:
 	exit $$status
 
 # 新しいコアの postgresql と sqlmigrate の provider の統合テスト（v3 段 8e、E-F1・E-F2・
-# E-F3・N-F1・N-F2・N-F7）。v2 の integration-postgresql と同じ公式の postgres イメージ
+# E-F3・N-F1・N-F2・N-F7）。公式の postgres イメージ
 # （tag と digest で固定）でサーバと psql を動かすだけのクライアントを docker のネット
-# ワークに立て（postgresql は sakutei-v3pg-*、sqlmigrate は sakutei-v3sm-*。v2 の
-# sakutei-pgit-* と重ならないので同時に回せる）、v3 の CLI（cli.Run）で、postgresql は
+# ワークに立て（postgresql は sakutei-v3pg-*、sqlmigrate は sakutei-v3sm-*。ほかの
+# integration-v3-* と重ならないので同時に回せる）、v3 の CLI（cli.Run）で、postgresql は
 # 空から作る・手の変更を戻す・PUBLIC と BYPASSRLS・秘密の世代と拡張の版・何周しても
 # ずれない・利用者の表がある DB の削除を断る・止めると Unknown・観測用と書き込み用の
 # ロール・verify_passwords と pg_authid・connect_roles を、sqlmigrate は手順（on_drift →
@@ -277,10 +127,10 @@ integration-v3-postgresql:
 	done; \
 	exit $$status
 
-# 新しいコアの ldap provider の統合テスト（v3 段 8e、E-G1・N-G1・E-G5・E-K1）。v2 の
-# integration-ldap と同じ 389 Directory Server の公式のイメージ（tag と digest で固定）を
+# 新しいコアの ldap provider の統合テスト（v3 段 8e、E-G1・N-G1・E-G5・E-K1）。
+# 389 Directory Server の公式のイメージ（tag と digest で固定）を
 # docker で立て（sakutei-v3ldap-server・sakutei-v3ldap-client・ネットワーク
-# sakutei-v3ldap-net。v2 の sakutei-ldapit-* と重ならないので同時に回せる）、v3 の CLI
+# sakutei-v3ldap-net。ほかの integration-v3-* と重ならないので同時に回せる）、v3 の CLI
 # （cli.Run）で空から作る・手で変えたものを戻す・userPassword は書き込みだけ・何周しても
 # 書かない・StartTLS と LDAPS・bind の失敗は Unknown・子のある項目は prune しない・観測と
 # 書き込みの資格を分ける・止めると Unknown で何も消さないを確かめ、終わったら（失敗しても）
@@ -303,63 +153,8 @@ integration-v3-ldap:
 	fi; \
 	exit $$status
 
-# host-file と systemd-unit の統合テスト（#155）。docker で systemd を PID 1 で動かす
-# 使い捨てのコンテナ（ベースは tag と digest で固定。sshd・sudo・podman。--privileged）
-# を立て、sakutei の CLI から ssh 越しにファイル・通常のユニット・podman の quadlet で
-# 動くコンテナを収束させ、依って立つファイルを書き換えるとユニットが 1 回だけ入れ
-# 替わること、sudo が通らない・sshd が止まると何もしないことを確かめ、終わったら
-# （失敗しても）コンテナを消す。quadlet が動かすイメージは手元の docker の alpine
-# （tag と digest で固定）を podman load で入れる。docker・ssh・ssh-keygen と sudo
-# （パスワードなし）が要るので、check・test・CI には入れない。手順と結果は
-# docs/providers/systemd-unit.md の「統合テスト」。
-HOSTCONF_IT := ./tests/integration/hostconf/
-integration-hostconf:
-	go vet -tags integration_hostconf $(HOSTCONF_IT)
-	@status=0; \
-	go test -tags integration_hostconf -count=1 -v -timeout 20m $(HOSTCONF_IT) || status=$$?; \
-	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^sakutei-hcit-'; then \
-	  echo 'integration-hostconf: the container was left behind; removing it'; \
-	  sudo -n docker rm -f -v sakutei-hcit-h1 >/dev/null || status=1; \
-	fi; \
-	exit $$status
-
-# Vault 形（KV v2）の秘密の取り出し先の統合テスト（#188）。docker で OpenBao
-# （tag と digest で固定）を dev モードで立て、token のファイルと AppRole で取り出し・
-# 版が上がったときの Apply・届かないときの unknown を確かめ、終わったら（失敗しても）
-# コンテナを消す。docker と sudo（パスワードなし）が要るので、check・test・CI には
-# 入れない。イメージは SAKUTEI_IT_OPENBAO_IMAGE で差し替えられる。手順と結果は
-# docs/providers/secret-backends.md の「統合テスト」。
-VAULT_IT := ./tests/integration/vault/
-integration-vault:
-	go vet -tags integration_vault $(VAULT_IT)
-	@status=0; \
-	go test -tags integration_vault -count=1 -v -timeout 10m $(VAULT_IT) || status=$$?; \
-	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^sakutei-vaultit-'; then \
-	  echo 'integration-vault: the container was left behind; removing it'; \
-	  sudo -n docker rm -f -v sakutei-vaultit-openbao >/dev/null || status=1; \
-	fi; \
-	exit $$status
-
-# トレースの出口（OTLP/HTTP）の統合テスト（#189）。docker で OpenTelemetry Collector
-# （contrib の配布。tag と digest で固定）を立て、平文の受け口と TLS・クライアント証明書・
-# bearer トークンを求める受け口に、常駐・plan・reconcile の span が届くこと、資格が違えば
-# 断られて収束は止めないこと、--otlp-endpoint が無ければ何も届かないことを確かめ、
-# 終わったら（失敗しても）コンテナを消す。docker と sudo（パスワードなし）が要るので、
-# check・test・CI には入れない。イメージは SAKUTEI_IT_OTELCOL_IMAGE で差し替えられる。
-# 手順と結果は docs/tracing.md の「統合テスト」。
-OTLP_IT := ./tests/integration/otlp/
-integration-otlp:
-	go vet -tags integration_otlp $(OTLP_IT)
-	@status=0; \
-	go test -tags integration_otlp -count=1 -v -timeout 10m $(OTLP_IT) || status=$$?; \
-	if sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^sakutei-otlpit-'; then \
-	  echo 'integration-otlp: the container was left behind; removing it'; \
-	  sudo -n docker rm -f -v sakutei-otlpit-collector >/dev/null || status=1; \
-	fi; \
-	exit $$status
-
-# 新しいコアの proxmox provider の統合テスト（v3 段 8d）。v2 の integration-proxmox と
-# 同じ入れ子の Proxmox VE 9.2（ISO・自動導入の ISO・導入済みのディスクは同じキャッシュ
+# 新しいコアの proxmox provider の統合テスト（v3 段 8d）。入れ子の
+# Proxmox VE 9.2（ISO・自動導入の ISO・導入済みのディスクはキャッシュ
 # SAKUTEI_IT_CACHE、既定 ~/.cache/sakutei-it/proxmox を使い回す）を qemu で立て、v3 の
 # sakutei の CLI で VM の作成・適合・手の変更の戻し・pending・触らない VM・届かない
 # ときの Unknown・宣言外・NIC の firewall/mtu と FW の options・観測用のトークン・
@@ -372,9 +167,9 @@ integration-v3-proxmox:
 	$(V3P) go vet -tags integration_v3_proxmox $(V3_PROXMOX_IT)
 	$(V3P) go test -tags integration_v3_proxmox -count=1 -v -timeout 90m $(V3_PROXMOX_IT)
 
-# 新しいコアの s3 provider の統合テスト（v3 段 8f）。v2 の integration-s3 と同じ S3 互換の
+# 新しいコアの s3 provider の統合テスト（v3 段 8f）。S3 互換の
 # サーバ（SeaweedFS と MinIO、tag と digest で固定）を docker で 127.0.0.1 の空いた
-# ポートに立て（コンテナは sakutei-v3s3-*。v2 の sakutei-s3it-* と重ならない）、v3 の
+# ポートに立て（コンテナは sakutei-v3s3-*。ほかの integration-v3-* と重ならない）、v3 の
 # sakutei の CLI でバケットの作成・適合・手の変更の戻し・中身のあるバケットの削除の
 # 断り・観測用と書き込み用のキー・Object Lock（承認つきの保持の設定の変更）を回し、
 # 終わったら（失敗しても）コンテナを消す。docker と sudo（パスワードなし）が要るので、
@@ -392,8 +187,8 @@ integration-v3-s3:
 	fi; \
 	exit $$status
 
-# 新しいコアの ansible provider の統合テスト（v3 段 8f）。v2 の integration-ansible と
-# 同じ版を固定した venv（ANSIBLE_IT_VENV。無ければ同じ手順で作る）の ansible-core を、
+# 新しいコアの ansible provider の統合テスト（v3 段 8f）。版を固定した
+# venv（ANSIBLE_IT_VENV。無ければ作る。入れるものは ansible/integration/requirements.txt）の ansible-core を、
 # local 接続で一時ディレクトリを相手に v3 の sakutei の CLI から回す。python3（venv
 # モジュール）と、初回は PyPI に届くことが要るので、check・test・CI には入れない。
 # SAKUTEI_IT_ANSIBLE で手持ちの ansible を渡せる。手順と結果は v3/providers/README.md。
@@ -406,111 +201,7 @@ integration-v3-ansible:
 	  curl -sSfL -o $(ANSIBLE_IT_VENV)/$(PIP_WHEEL) $(PIP_WHEEL_URL) && \
 	  echo "$(PIP_WHEEL_SHA256)  $(ANSIBLE_IT_VENV)/$(PIP_WHEEL)" | sha256sum -c - && \
 	  $(ANSIBLE_IT_VENV)/bin/python3 $(ANSIBLE_IT_VENV)/$(PIP_WHEEL)/pip install --quiet --only-binary=:all: \
-	    -r $(ANSIBLE_IT)requirements.txt || { rm -rf $(ANSIBLE_IT_VENV); exit 1; }; \
+	    -r v3/providers/ansible/integration/requirements.txt || { rm -rf $(ANSIBLE_IT_VENV); exit 1; }; \
 	fi
 	cd v3/providers && SAKUTEI_IT_ANSIBLE=$${SAKUTEI_IT_ANSIBLE:-$(ANSIBLE_IT_VENV)/bin/ansible} \
 	  go test -tags integration_v3_ansible -count=1 -v -timeout 15m $(V3_ANSIBLE_IT)
-
-# 外のモジュールから Sakutei を go get で取り込めるかを確かめる（ネットワークが要る。
-# check・test には入れない。CI とリリースの前の点検で回す）。VERSION はタグか commit。
-check-module:
-	@test -n "$(VERSION)" || { echo 'usage: make check-module VERSION=<tag-or-commit>'; exit 2; }
-	./scripts/check-module-consumable.sh $(VERSION)
-
-# ldap provider の統合テスト（#144）。docker で 389 Directory Server の公式の
-# イメージ（tag と digest で固定）のサーバと、ldapsearch・ldapmodify を動かす
-# クライアントを立て（ホストに OpenLDAP のクライアントは要らない）、sakutei の
-# CLI から StartTLS・LDAPS で項目を収束させ（空から作る・手で変えると戻る・何周
-# しても drift が出ない・子のある項目は prune されない・止めると unknown）、終わったら
-# （失敗しても）コンテナとネットワークを消す。docker と sudo（パスワードなし）が
-# 要るので、check・test・CI には入れない。イメージは SAKUTEI_IT_389DS_IMAGE で
-# 差し替えられる。手順と結果は docs/providers/ldap.md の「統合テスト」。
-LDAP_IT := ./tests/integration/ldap/
-integration-ldap:
-	go vet -tags integration_ldap $(LDAP_IT)
-	@status=0; \
-	go test -tags integration_ldap -count=1 -v -timeout 15m $(LDAP_IT) || status=$$?; \
-	left=$$(sudo -n docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^sakutei-ldapit-'); \
-	if [ -n "$$left" ]; then \
-	  echo "integration-ldap: containers were left behind; removing: $$left"; \
-	  sudo -n docker rm -f -v $$left >/dev/null || status=1; \
-	fi; \
-	if sudo -n docker network ls --format '{{.Name}}' 2>/dev/null | grep -q '^sakutei-ldapit-net$$'; then \
-	  sudo -n docker network rm sakutei-ldapit-net >/dev/null || status=1; \
-	fi; \
-	exit $$status
-
-# proxmox-vm provider の統合テスト（#143）。本物の Proxmox VE 9.2（ISO は版と
-# sha256 で固定）を proxmox-auto-install-assistant（docker の debian:trixie-slim、
-# digest で固定）で自動導入の ISO にし、qemu（入れ子の KVM）で入れて動かす。
-# sakutei の CLI からテンプレートの複製・手の変更の書き戻し・pending・触らない
-# VM・届かないときの unknown・削除を確かめ、終われば（落ちても）qemu を止める。
-# KVM・qemu・docker・curl と sudo（パスワードなし）、初回は ISO を取るネット
-# ワークが要る（ISO・自動導入の ISO・導入済みのディスクは SAKUTEI_IT_CACHE、既定
-# ~/.cache/sakutei-it/proxmox に残して使い回す）。check・test・CI には入れない。
-# 手順と結果は docs/providers/proxmox-vm.md の「統合テスト」。
-PROXMOX_IT := ./tests/integration/proxmox/
-integration-proxmox:
-	go vet -tags integration_proxmox $(PROXMOX_IT)
-	go test -tags integration_proxmox -count=1 -v -timeout 60m $(PROXMOX_IT)
-
-clean:
-	rm -rf $(BIN) $(DEMODIR)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# make demo — GUI を持たない収束エンジンの「レビュー面」を実演する。
-# dnszone（実 provider）を一時ディレクトリ .demo/ で動かし、次の物語を再生する:
-#   1) plan       宣言した2レコードが「これから作られる」ことを dry-run で見る
-#   2) reconcile  実体ファイル zone.db に収束させる
-#   3) status     適合レポート（drifted=0）
-#   4) ドリフト注入  誰かが zone.db を手で改ざん＋宣言外レコードを追加 → status が検知
-#   5) reconcile  触っていないのに元へ戻る（自己修復）
-#   6) status     再び適合（改ざんは戻り、宣言外は prune されず残る）
-# 見どころ: 改ざんは cause B（ドリフト）で plan/status が一致、宣言外は unmanaged で可視化。
-# すべて読み取り面（plan/status）に出るのがこのソフトのレビュー体験そのもの。
-# ─────────────────────────────────────────────────────────────────────────────
-demo: build
-	@rm -rf $(DEMODIR) && mkdir -p $(DEMODIR)/intent
-	@printf '%s\n' \
-	  '{' \
-	  '  "resources": [' \
-	  '    {"provider": "dnszone", "id": "www.example.com./A", "fields": {"name": "www.example.com.", "type": "A", "value": "192.0.2.10", "ttl": "300"}},' \
-	  '    {"provider": "dnszone", "id": "api.example.com./A", "fields": {"name": "api.example.com.", "type": "A", "value": "192.0.2.20", "ttl": "300"}}' \
-	  '  ]' \
-	  '}' > $(DEMODIR)/intent/zone.json
-	@echo ''
-	@echo '▶ intent（人が書く「あるべき姿」）: www=192.0.2.10, api=192.0.2.20'
-	@echo ''
-	@echo '════════ 1) sakutei plan — 何が変わるか（dry-run、まだ触らない）════════'
-	@./$(BIN) plan --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
-	@echo ''
-	@echo '════════ 2) sakutei reconcile — 1回収束（zone.db を実際に書く）════════'
-	@./$(BIN) reconcile --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
-	@echo ''
-	@echo '── 実体 zone.db ──'
-	@cat $(DEMODIR)/zone.db
-	@echo ''
-	@echo '════════ 3) sakutei status — 適合レポート（今そろっている？）════════'
-	@./$(BIN) status --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
-	@echo ''
-	@echo '▶ 誰かが zone.db を手で改ざん（www を 10.6.6.6 に + 宣言外 rogue を追加）'
-	@printf '%s\n' \
-	  'www.example.com. 300 IN A 10.6.6.6' \
-	  'api.example.com. 300 IN A 192.0.2.20' \
-	  'rogue.example.com. 300 IN A 192.0.2.99' > $(DEMODIR)/zone.db
-	@echo ''
-	@echo '════════ 4) sakutei status — ドリフト検知（触っていないのに気づく）════════'
-	@./$(BIN) status --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
-	@echo ''
-	@echo '════════ 5) sakutei reconcile — 自己修復（触っていないのに戻る）════════'
-	@./$(BIN) reconcile --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
-	@echo ''
-	@echo '── 実体 zone.db（www が戻り、rogue は prune されず残る＝確信なき減算はしない）──'
-	@cat $(DEMODIR)/zone.db
-	@echo ''
-	@echo '════════ 6) sakutei status — 再確認 ════════'
-	@./$(BIN) status --intent $(DEMODIR)/intent --zone $(DEMODIR)/zone.db || true
-	@echo ''
-	@echo '▶ 見どころ: 4)の www は cause B（ドリフト）で plan/status 一致。'
-	@echo '            rogue は unmanaged（宣言外・実在・prune 対象外）として可視化。'
-	@echo '            6)で www は自己修復済み、rogue は減算されず残る。'

@@ -1,10 +1,10 @@
 {
   "commands": [
-    { "name": "build", "command": "go build -p 8 ./..." },
-    { "name": "vet", "command": "go vet -p 8 ./..." },
-    { "name": "unit", "command": "go test -p 8 ./... -count=1" },
     { "name": "v3-build", "command": "cd v3 && go build -p 8 ./..." },
     { "name": "v3-vet", "command": "cd v3 && go vet -p 8 ./..." },
-    { "name": "v3-unit", "command": "cd v3 && go test -p 8 ./... -count=1" }
+    { "name": "v3-unit", "command": "cd v3 && go test -p 8 ./... -count=1" },
+    { "name": "v3-providers-build", "command": "cd v3/providers && go build -p 8 ./..." },
+    { "name": "v3-providers-vet", "command": "cd v3/providers && go vet -p 8 ./..." },
+    { "name": "v3-providers-unit", "command": "cd v3/providers && go test -p 8 ./... -count=1" }
   ]
 }
