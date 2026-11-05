@@ -14,9 +14,9 @@
 
 package redfish
 
-// bios.go は種類 bios（BIOS の属性 1 つ、E-A4・N-A3）。値は文字列で比べる
-// （数・真偽の属性も "3"・"true"）。PATCH は Bios/Settings（次の再起動で効く）で、
-// 保留中は Converging（重ねない・効かない回数に数えない）。
+// bios.go は type bios（BIOS の属性 1 つ、E-A4・N-A3）。値は文字列で比べる
+// （数値・真偽値の属性も "3"・"true"）。PATCH は Bios/Settings（次の再起動で効く）で、
+// 保留中は Converging（重ねて送らない・ineffective Apply の回数に数えない）。
 
 import (
 	"context"
@@ -29,7 +29,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/redfish/client"
 )
 
-// bios の項目。
+// bios の field。
 const (
 	FieldValue = "value"
 	// FieldPending は保留中の値（次の再起動で効く。無ければ ""）。観測だけ。
@@ -83,8 +83,8 @@ func observeBios(ctx context.Context, c client.Client, ids []core.ID) map[core.I
 	return out
 }
 
-// applyBios は属性を登録簿で確かめてから Bios/Settings に PATCH する（再起動は
-// しない）。保留中なら重ねない。
+// applyBios は属性を registry で確かめてから Bios/Settings に PATCH する（再起動は
+// しない）。保留中なら重ねて送らない。
 func applyBios(ctx context.Context, c client.Client, name string, want core.Fields) error {
 	s, ok := want[FieldValue].(string)
 	if !ok {
@@ -99,7 +99,7 @@ func applyBios(ctx context.Context, c client.Client, name string, want core.Fiel
 		return fmt.Errorf("BMC が BIOS の属性 %q を持たない（作れない）", name)
 	}
 	if _, pending := b.Pending[name]; pending && biosString(b.Pending[name]) != biosString(cur) || b.ResetPending {
-		return nil // 保留中：重ねない
+		return nil // 保留中：重ねて送らない
 	}
 	if biosString(cur) == s {
 		return nil
@@ -115,10 +115,10 @@ func applyBios(ctx context.Context, c client.Client, name string, want core.Fiel
 				}
 			}
 			if reg == nil {
-				return fmt.Errorf("BIOS の属性 %q が登録簿 %s に無い", name, b.AttributeRegistry)
+				return fmt.Errorf("BIOS の属性 %q が registry %s に無い", name, b.AttributeRegistry)
 			}
 		case client.IsRequest(err):
-			// 登録簿を持たない BMC：今の値の型で送る。
+			// registry を持たない BMC：今の値の型で送る。
 		default:
 			return err
 		}
@@ -130,8 +130,8 @@ func applyBios(ctx context.Context, c client.Client, name string, want core.Fiel
 	return c.PatchBiosSettings(ctx, map[string]any{name: v})
 }
 
-// biosValue は宣言の文字列を属性の型の値にし、登録簿の決まり（読み取り専用・
-// 選べる値・長さ・範囲）で確かめる（E-A4）。登録簿が無ければ今の値の型にする。
+// biosValue は宣言の文字列を属性の型の値にし、registry の制約（読み取り専用・
+// 選べる値・長さ・範囲）で確かめる（E-A4）。registry が無ければ今の値の型にする。
 func biosValue(name, s string, cur any, reg *client.RegistryAttribute) (any, error) {
 	typ := ""
 	switch cur.(type) {
@@ -152,7 +152,7 @@ func biosValue(name, s string, cur any, reg *client.RegistryAttribute) (any, err
 	case "Boolean":
 		b, err := strconv.ParseBool(s)
 		if err != nil {
-			return nil, fmt.Errorf("BIOS の属性 %q は真偽（\"true\"・\"false\"）", name)
+			return nil, fmt.Errorf("BIOS の属性 %q は真偽値（\"true\"・\"false\"）", name)
 		}
 		return b, nil
 	case "Integer":

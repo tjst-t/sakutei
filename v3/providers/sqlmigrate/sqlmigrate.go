@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package sqlmigrate はデータベースに版つきのマイグレーションを流す provider
+// Package sqlmigrate はデータベースにバージョンつきのマイグレーションを流す provider
 // （設計 §7.1 の sqlmigrate、E-F2・N-F2）。v2 の sqlmigrate（strategy: task の
 // 単純 Task。SQLite と PostgreSQL）を新しいコアに移した。コアの外のモジュールで、
-// コアの口 core.Provider・core.Validator・core.Invoker だけを持つ。
+// コアの interface core.Provider・core.Validator・core.Invoker だけを持つ。
 //
-//	providers:                                   # つなぎ方の設定
+//	providers:                                   # 接続設定（config ファイル）
 //	  db:
 //	    module: sqlmigrate
 //	    settings:
 //	      sqlite3: /usr/bin/sqlite3              # 省けば PATH の sqlite3
 //	      psql: /usr/bin/psql                    # 省けば PATH の psql
-//	      lock_timeout: 5s                       # DB の鍵を待つ長さ（既定 5s。0s は待たない）
+//	      lock_timeout: 5s                       # DB のロックを待つ長さ（既定 5s。0s は待たない）
 //	      databases:
 //	        app:                                 # ID（データベースの名前）
 //	          path: /var/lib/app/app.db          # engine: sqlite（既定）の DB のファイル
@@ -52,29 +52,29 @@
 //	        invoke: {op: migrate, args: {version: "{desired.version}", rollback_on_fail: true}}
 //	    done_when: 'observe(db/database/{target}).version == desired.version'
 //
-// 種類は database 1 つ（ID は settings.databases の名前）。観測だけ（ObserveOnly、
+// type は database 1 つ（ID は settings.databases の名前）。観測だけ（ObserveOnly、
 // E-F2・N-F2）：
 //
-//   - version は schema_migrations の最大の版（表が無ければ 0）。latest は
-//     マイグレーションのディレクトリの最新の版、pending は今の版より上の up の本数。
-//     宣言できるのは version だけ（ディレクトリに無い版は読み込みで断る、E-I7）。
-//   - 版を変えるのは手順の invoke の migrate・rollback だけ（invoke.go。収束
-//     ループは当てない、不変条件 15）。v2 の strategy: task は手順の
+//   - version は schema_migrations の最大のバージョン（表が無ければ 0）。latest は
+//     マイグレーションのディレクトリの最新のバージョン、pending は今のバージョンより上の up の本数。
+//     宣言できるのは version だけ（ディレクトリに無いバージョンは読み込み時にエラーにする（reject）、E-I7）。
+//   - バージョンを変えるのは Procedure の invoke の migrate・rollback だけ（invoke.go。収束
+//     ループは Apply しない、不変条件 15）。v2 の strategy: task は Procedure の
 //     trigger: on_drift・invoke: migrate・done_when に書き直す（§7.1）。
 //
 // 決まり：
 //
-//   - 読めない（sqlite3・psql が無い・届かない・認証の失敗・DB が鍵を持たれていて
+//   - 読めない（sqlite3・psql が無い・届かない・認証の失敗・DB がロックを持たれていて
 //     待ちきれない・壊れている・データベースが無い・マイグレーションのディレクトリが
-//     読めない）は Unknown（版 0 と読まない、不変条件 3、E-K1）。SQLite の DB の
-//     ファイルが無いのは「まだ何も流していない」＝版 0（置き場所のディレクトリが
+//     読めない）は Unknown（バージョン 0 と読まない、不変条件 3、E-K1）。SQLite の DB の
+//     ファイルが無いのは「まだ何も流していない」＝バージョン 0（置き場所のディレクトリが
 //     あり sqlite3 が起動できるときだけ。v2 と同じ）。
-//   - PostgreSQL の観測は observe の資格、invoke は write の資格（E-G5・N-G3）。
-//     書き込み用のパスワード（password_file か秘密の参照 password_secret）は
+//   - PostgreSQL の観測は observe の credential、invoke は write の credential（E-G5・N-G3）。
+//     書き込み用のパスワード（password_file か secret の参照 password_secret）は
 //     Invoke の中でだけ読む（WriteContext.Secret、E-G2）。パスワードは 0600 の
-//     一時的な passfile で psql に渡し、引数・環境変数の値・誤りの文に出さない。
-//   - データベースは作りも消しもしない：List を持たず（範囲を書けば読み込みで
-//     断る）、Delete は断る（*core.RefuseError）。ensure: absent も断る。
+//     一時的な passfile で psql に渡し、引数・環境変数の値・エラーメッセージに出さない。
+//   - データベースは作りも消しもしない：List を持たず（Range を書けば読み込み時に
+//     エラーにする（reject））、Delete は拒否する（*core.RefuseError）。ensure: absent も拒否する。
 package sqlmigrate
 
 import (
@@ -92,18 +92,18 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// Version は Schema の版。比べ方・正規形を変えたら上げる（E-J12）。
+// Version は Schema のバージョン。比べ方・正規形を変えたら上げる（E-J12）。
 const Version = "sqlmigrate/1"
 
-// KindDatabase は種類の名前。
+// KindDatabase は type の名前。
 const KindDatabase = "database"
 
-// database の項目。
+// database の field。
 const (
-	FieldVersion = "version" // 宣言する版
+	FieldVersion = "version" // 宣言するバージョン
 	// 観測だけ。
-	FieldLatest  = "latest"  // マイグレーションのディレクトリの最新の版
-	FieldPending = "pending" // 今の版より上の up の本数
+	FieldLatest  = "latest"  // マイグレーションのディレクトリの最新のバージョン
+	FieldPending = "pending" // 今のバージョンより上の up の本数
 )
 
 // engine の値。
@@ -112,7 +112,7 @@ const (
 	EnginePostgreSQL = "postgresql"
 )
 
-// DefaultLockTimeout は DB の鍵（SQLite の書き込みの鍵・PostgreSQL の advisory
+// DefaultLockTimeout は DB のロック（SQLite の書き込みのロック・PostgreSQL の advisory
 // lock）を待つ長さの既定。待ちきれなければ観測は Unknown、invoke は送れていない
 // （E-F2・不変条件 16）。
 const DefaultLockTimeout = 5 * time.Second
@@ -123,9 +123,9 @@ type Provider struct {
 	sqlite3     string
 	psql        string
 	lockTimeout time.Duration
-	// run は psql を起動する口（テストは偽の psql を差す）。
+	// run は psql を起動する関数（テストは偽の psql を差す）。
 	run runner
-	// readFile はパスワードのファイルを読む口（テストが読んだ回数を数える、E-G5）。
+	// readFile はパスワードのファイルを読む関数（テストが読んだ回数を数える、E-G5）。
 	readFile func(string) ([]byte, error)
 
 	mu    sync.Mutex
@@ -138,7 +138,7 @@ var (
 	_ core.Invoker   = (*Provider)(nil)
 )
 
-// database は 1 つのデータベースへのつなぎ方。
+// database は 1 つのデータベースへの接続設定。
 type database struct {
 	name       string
 	engine     string
@@ -147,7 +147,7 @@ type database struct {
 	pg         pgConn // postgresql
 }
 
-// pgConn は PostgreSQL へのつなぎ方（資格は observe と write に分ける、E-G5）。
+// pgConn は PostgreSQL への接続設定（credential は observe と write に分ける、E-G5）。
 type pgConn struct {
 	host, dbname, sslmode, sslrootcert string
 	port                               int
@@ -159,7 +159,7 @@ type pgConn struct {
 type credential struct {
 	user         string
 	passwordFile string
-	// passwordSecret は秘密の参照（"<backend>:<在りか>"）。write にだけ書ける
+	// passwordSecret は secret の参照（"<backend>:<在りか>"）。write にだけ書ける
 	// （WriteContext の中でだけ取り出せる、E-G2・E-G5）。
 	passwordSecret string
 }
@@ -192,7 +192,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 		case "databases":
 			m, ok := v.(map[string]any)
 			if !ok || len(m) == 0 {
-				return nil, errors.New("settings.databases にデータベースを 1 つ以上書く（名前 → つなぎ方）")
+				return nil, errors.New("settings.databases にデータベースを 1 つ以上書く（名前 → 接続設定）")
 			}
 			for name, dv := range m {
 				dm, ok := dv.(map[string]any)
@@ -206,7 +206,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 				p.dbs[name] = db
 			}
 		default:
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: databases, lock_timeout, psql, sqlite3）", k)
+			return nil, fmt.Errorf("settings に知らない field %q（書ける field: databases, lock_timeout, psql, sqlite3）", k)
 		}
 	}
 	if len(p.dbs) == 0 {
@@ -262,7 +262,7 @@ func parseDatabase(name string, m map[string]any) (*database, error) {
 	}
 	for k := range m {
 		if !has(keys, k) {
-			return nil, fmt.Errorf("engine %s に知らない項目 %q（書ける項目: %s）", db.engine, k, strings.Join(keys, ", "))
+			return nil, fmt.Errorf("engine %s に知らない field %q（書ける field: %s）", db.engine, k, strings.Join(keys, ", "))
 		}
 	}
 	if db.migrations, err = abs("migrations"); err != nil {
@@ -318,7 +318,7 @@ func parseDatabase(name string, m map[string]any) (*database, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("observe（観測用の資格 {user, password_file}）を書く")
+		return nil, errors.New("observe（観測用の credential {user, password_file}）を書く")
 	}
 	c.observe, c.write = obs, obs
 	if w, ok, err := parseCredential(m, "write", true); err != nil {
@@ -364,7 +364,7 @@ func parseCredential(m map[string]any, k string, write bool) (credential, bool, 
 			}
 			c.passwordSecret = s
 		default:
-			return credential{}, false, fmt.Errorf("%s に知らない項目 %q（書ける項目: %s。パスワードそのものは書けない）", k, ck, strings.Join(keys, ", "))
+			return credential{}, false, fmt.Errorf("%s に知らない field %q（書ける field: %s。パスワードそのものは書けない）", k, ck, strings.Join(keys, ", "))
 		}
 	}
 	if c.user == "" {
@@ -376,8 +376,8 @@ func parseCredential(m map[string]any, k string, write bool) (credential, bool, 
 	return c, true, nil
 }
 
-// Schema は種類 database。観測だけの項目も Condition から読めるよう Schema に置く
-// （宣言は Validate が断る）。
+// Schema は type database。観測だけの field も Condition から読めるよう Schema に置く
+// （宣言は Validate が拒否する）。
 func (p *Provider) Schema() core.Schema {
 	n := core.FieldSpec{Type: core.Int}
 	return core.Schema{Version: Version, Kinds: map[string]core.KindSchema{
@@ -385,7 +385,7 @@ func (p *Provider) Schema() core.Schema {
 	}}
 }
 
-// Validate は宣言を確かめる（E-I7・E-M3）。範囲は書けない（List を持たない）。
+// Validate は宣言を確かめる（E-I7・E-M3）。Range は書けない（List を持たない）。
 // マイグレーションのディレクトリは intent の側の材料として読む（DB には触れない）。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
@@ -393,12 +393,12 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		diags = append(diags, core.Diagnostic{Severity: core.Reject, Origin: o, Target: target, Message: fmt.Sprintf(format, a...)})
 	}
 	for _, rg := range ranges {
-		rej(rg.Origin, "ranges", "sqlmigrate は範囲を持たない（データベースは作りも消しもしないので List と prune が無い）")
+		rej(rg.Origin, "ranges", "sqlmigrate は Range を持たない（データベースは作りも消しもしないので List と prune が無い）")
 	}
 	for _, r := range res {
 		target := r.ID.String()
 		if r.ID.Kind() != KindDatabase {
-			rej(r.Origin, target, "種類 %q を知らない（database だけ）", r.ID.Kind())
+			rej(r.Origin, target, "type %q を知らない（database だけ）", r.ID.Kind())
 			continue
 		}
 		db, ok := p.dbs[r.ID.Name]
@@ -412,7 +412,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		}
 		for _, k := range sortedKeys(r.Fields) {
 			if k != FieldVersion {
-				rej(r.Origin, target, "項目 %q は観測だけで宣言できない（宣言できる項目: version）", k)
+				rej(r.Origin, target, "field %q は観測だけで宣言できない（宣言できる field: version）", k)
 			}
 		}
 		raw, ok := r.Fields[FieldVersion]
@@ -436,7 +436,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	return diags
 }
 
-// Observe はデータベースごとに今の版を読む（観測用の資格だけ、E-G5）。
+// Observe はデータベースごとに今のバージョンを読む（観測用の credential だけ、E-G5）。
 func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core.Observation, error) {
 	out := make(map[core.ID]core.Observation, len(ids))
 	for _, id := range ids {
@@ -447,7 +447,7 @@ func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core
 
 func (p *Provider) observe(ctx context.Context, id core.ID) core.Observation {
 	if id.Kind() != KindDatabase {
-		return core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("種類 %q を知らない", id.Kind())}
+		return core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("type %q を知らない", id.Kind())}
 	}
 	db, ok := p.dbs[id.Name]
 	if !ok {
@@ -467,8 +467,8 @@ func (p *Provider) observe(ctx context.Context, id core.ID) core.Observation {
 	}}
 }
 
-// currentVersion は今の版。w が nil なら観測用の資格、nil でなければ書き込み用の
-// 資格で読む（invoke の中の読み直し、E-G5）。読めなければ誤り（呼び手は Unknown・
+// currentVersion は今のバージョン。w が nil なら観測用の credential、nil でなければ書き込み用の
+// credential で読む（invoke の中の読み直し、E-G5）。読めなければエラー（呼び手は Unknown・
 // 送れていないにする）。
 func (p *Provider) currentVersion(ctx context.Context, db *database, w *core.WriteContext) (int64, error) {
 	if db.engine == EnginePostgreSQL {
@@ -482,18 +482,18 @@ func (p *Provider) List(context.Context, core.Range) (core.Listing, error) {
 	return core.Listing{}, errors.New("sqlmigrate は List を持たない")
 }
 
-// Apply は持たない。種類 database は観測だけで、版は手順の invoke（migrate・
+// Apply は持たない。type database は観測だけで、バージョンは Procedure の invoke（migrate・
 // rollback）だけが変える（不変条件 15、E-F2）。
 func (p *Provider) Apply(_ context.Context, _ core.WriteContext, id core.ID, _ core.Fields, _ core.Observation) error {
-	return fmt.Errorf("%s は観測だけ。版は手順の invoke（migrate・rollback）で変える", id)
+	return fmt.Errorf("%s は観測だけ。バージョンは Procedure の invoke（migrate・rollback）で変える", id)
 }
 
-// Delete は断る（データベースは消さない、E-F1）。
+// Delete は拒否する（データベースは消さない、E-F1）。
 func (p *Provider) Delete(context.Context, core.WriteContext, core.ID, core.Observation) error {
 	return &core.RefuseError{Reason: "sqlmigrate はデータベースを消さない"}
 }
 
-// parseVersion は版を読む。宣言の値（Int）と手順の引数（"{desired.version}" を
+// parseVersion はバージョンを読む。宣言の値（Int）と Procedure の引数（"{desired.version}" を
 // 置き換えた文字列）の両方を受ける。文字列は正規形（先頭の 0 も + も無い）だけ。
 func parseVersion(v any) (int64, error) {
 	if s, ok := v.(string); ok {

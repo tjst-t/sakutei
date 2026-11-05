@@ -16,26 +16,26 @@
 
 package integration
 
-// redfish_test.go — v2 の統合テスト（tests/integration/redfish）の段を、新しいコアの
-// redfish provider と sakutei（v3）で回す。前の段が作った現実を次の段が使うので、
+// redfish_test.go — v2 の統合テスト（tests/integration/redfish）の step を、新しいコアの
+// redfish provider と sakutei（v3）で回す。前の step が作った現実を次の step が使うので、
 // 1 つ落ちたら残りは回さない。
 //
 //	 1 plan は書かず、reconcile で電源・起動先・仮想メディアに収束し、次の plan は変えない（E-A1・E-A3）
 //	 2 手で変えた電源・起動先・仮想メディアを次の reconcile で戻す
-//	 3 既定の停止（GracefulShutdown）に応えない台に ForceOff を送らず、効かない Apply で
-//	   止まる（終了コード 4、E-J6）。強制停止は手順の壊す操作 force_off で（E-A1・N-A1）
+//	 3 既定の停止（GracefulShutdown）に応えない台に ForceOff を送らず、ineffective Apply で
+//	   halt する（終了コード 4、E-J6）。強制停止は Procedure の破壊的な操作 force_off で（E-A1・N-A1）
 //	 4 BMC を止める（docker pause）とそのノードは Unknown で何もしない。もう 1 台は収束する（E-K1）
-//	 5 boot_enabled: Once と power: ForceRestart は読み込みで断る（E-A2）
-//	 6 手順の boot_once と force_restart：CD から 1 回だけ起動し、BMC が上書きを Disabled に戻す（E-A2・N-A2）
-//	 7 BIOS の属性：Settings に 1 度だけ PATCH し、保留中は Converging で重ねない。読み取り専用は
-//	   送らない。手順の force_restart で効く（E-A4・N-A3）。
+//	 5 boot_enabled: Once と power: ForceRestart は読み込み時にエラーにする（E-A2）
+//	 6 Procedure の boot_once と force_restart：CD から 1 回だけ起動し、BMC が上書きを Disabled に戻す（E-A2・N-A2）
+//	 7 BIOS の属性：Settings に 1 度だけ PATCH し、保留中は Converging で重ねて送らない。読み取り専用は
+//	   送らない。Procedure の force_restart で効く（E-A4・N-A3）。
 //	   ディスクの無い VM は ACPI に応えず GracefulRestart では再起動しないので、6・7 は force_restart
-//	 8 FW の更新（BMC）：常駐が承認の前は何も送らず（イメージも取りに来ない）、承認の後に
-//	   verify・stage（critical）を 1 回ずつ送り、BMC の Task の完了を待って版で閉じる（E-A5・N-A4）
-//	 9 FW の更新（BIOS）：BMC の Task が終わっても版は再起動まで変わらず、手順の force_restart で効く
-//	10 FW の故障：イメージを断られる（400）と手順は止まって送り直さない。BMC の Task が Exception で
-//	   終わると版は変わらず、待ちの時間切れで止まる（不変条件 16）
-//	11 書き込み用の資格：書き込み用のパスワードのファイルが無くても plan は観測できて差分を出し、
+//	 8 FW の更新（BMC）：daemon は承認の前は何も送らず（イメージも取りに来ない）、承認の後に
+//	   verify・stage（critical）を 1 回ずつ送り、BMC の Task の完了を待ってバージョンで閉じる（E-A5・N-A4）
+//	 9 FW の更新（BIOS）：BMC の Task が終わってもバージョンは再起動まで変わらず、Procedure の force_restart で効く
+//	10 FW の故障：イメージを拒否される（400）と Procedure は止まって送り直さない。BMC の Task が Exception で
+//	   終わるとバージョンは変わらず、待ちのタイムアウトで止まる（不変条件 16）
+//	11 書き込み用の credential：書き込み用のパスワードのファイルが無くても plan は観測できて差分を出し、
 //	   reconcile は書かずに失敗する（E-G5・N-G3）
 
 import (
@@ -69,12 +69,12 @@ func TestRedfish(t *testing.T) {
 	}
 	for _, s := range steps {
 		if !t.Run(s.name, s.f) {
-			t.Fatalf("段 %s が落ちたので残りは回さない", s.name)
+			t.Fatalf("step %s が落ちたので残りは回さない", s.name)
 		}
 	}
 }
 
-// 立てた lab が想定どおりか（版・固定した値）。
+// 立てた lab が想定どおりか（バージョン・固定した値）。
 func stepLab(t *testing.T) {
 	var root struct{ RedfishVersion string }
 	if err := getJSON(node1, "/redfish/v1", &root); err != nil {
@@ -156,8 +156,8 @@ procedures:
 	for i := 0; i < 5 && code != 4; i++ {
 		out, code = sakutei(t, "reconcile")
 	}
-	if code != 4 || !strings.Contains(out, "効かない Apply") {
-		t.Fatalf("応えない台の停止が効かない Apply で止まらない: exit=%d\n%s", code, out)
+	if code != 4 || !strings.Contains(out, "ineffective Apply") {
+		t.Fatalf("応えない台の停止が ineffective Apply で halt しない: exit=%d\n%s", code, out)
 	}
 	for _, s := range w.states() {
 		if s == "Off" {
@@ -225,7 +225,7 @@ func stepReject(t *testing.T) {
 			t.Fatalf("%s: reconcile exit=%d\n%s", c.fields, code, out)
 		}
 		if after := mustSystem(t, node1); after != before {
-			t.Fatalf("断った宣言で BMC が変わった")
+			t.Fatalf("拒否した宣言で BMC が変わった")
 		}
 	}
 }
@@ -251,11 +251,11 @@ procedures:
 		t.Fatalf("start exit=%d\n%s", code, out)
 	}
 	var out string
-	for i := 0; i < 5 && !strings.Contains(out, "済んだ"); i++ {
+	for i := 0; i < 5 && !strings.Contains(out, "完了"); i++ {
 		out, _ = sakutei(t, "reconcile")
 	}
-	if !strings.Contains(out, "手順 cd-once bmc/system/node1: 済んだ") {
-		t.Fatalf("手順が済まない\n%s", out)
+	if !strings.Contains(out, "Procedure cd-once bmc/system/node1: 完了") {
+		t.Fatalf("Procedure が済まない\n%s", out)
 	}
 	// BMC は 1 回の起動で上書きを Disabled に戻す（Once が使われた）。
 	waitFor(t, time.Minute, "上書きが使われて Disabled", func() (bool, string) {
@@ -326,10 +326,10 @@ procedures:
 		t.Fatalf("保留中の reconcile exit=%d\n%s", code, out)
 	}
 	if n := biosPatches(node1) - patches; n != 2 {
-		t.Fatalf("Settings の PATCH が %d 回（want 2、保留中に重ねない）", n)
+		t.Fatalf("Settings の PATCH が %d 回（want 2、保留中に重ねて送らない）", n)
 	}
 
-	// 登録簿で読み取り専用の属性は送らない。
+	// registry で読み取り専用の属性は送らない。
 	other := "Bios"
 	if cur, _ := getBios(t, node2); cur.Attributes["BootMode"] == "Bios" {
 		other = "Uefi"
@@ -342,7 +342,7 @@ procedures:
 		t.Fatalf("node2 に保留中が付いた: %v", p.Attributes)
 	}
 
-	// 手順の force_restart で効く。
+	// Procedure の force_restart で効く。
 	writeIntent(t, intent)
 	if out, code := sakutei(t, "start", "bios-reboot", "--as", "alice"); code != 0 {
 		t.Fatalf("start exit=%d\n%s", code, out)
@@ -403,7 +403,7 @@ procedures:
 		reqs = pendingApprovals(t)
 		return len(reqs) == 1, fmt.Sprint(reqs)
 	})
-	time.Sleep(5 * time.Second) // 承認の前に何も送らないことを数周見る
+	time.Sleep(5 * time.Second) // 承認の前に何も送らないことを数 cycle 見る
 	if n, got := len(bmcTasks(t, node1))-tasks0, im.count("bmc-2.0.0.bin"); n != 0 || got != 0 {
 		t.Fatalf("承認の前に BMC の Task %d・イメージの取得 %d", n, got)
 	}
@@ -414,9 +414,9 @@ procedures:
 		v := getInventory(t, node1, "BMC").Version
 		return v == "2.0.0", v
 	})
-	waitFor(t, time.Minute, "手順が閉じる", func() (bool, string) {
+	waitFor(t, time.Minute, "Procedure が閉じる", func() (bool, string) {
 		out, _ := sakutei(t, "plan")
-		return len(changes(out)) == 0 && !strings.Contains(out, "手順 bmc-fw"), out
+		return len(changes(out)) == 0 && !strings.Contains(out, "Procedure bmc-fw"), out
 	})
 	stop()
 	all := bmcTasks(t, node1)
@@ -466,9 +466,9 @@ procedures:
 		return inv.Version == "BIOS-2.0.0" && inv.Status.State == "Enabled", fmt.Sprintf("%+v", inv)
 	})
 	waitFor(t, time.Minute, "node1 On", powerIs(node1, "On"))
-	waitFor(t, time.Minute, "手順が閉じる", func() (bool, string) {
+	waitFor(t, time.Minute, "Procedure が閉じる", func() (bool, string) {
 		out, _ := sakutei(t, "plan")
-		return len(changes(out)) == 0 && !strings.Contains(out, "手順 bios-fw"), out
+		return len(changes(out)) == 0 && !strings.Contains(out, "Procedure bios-fw"), out
 	})
 	stop()
 	if n := len(bmcTasks(t, node1)) - tasks0; n != 1 {
@@ -503,14 +503,14 @@ procedures:
 `+proc("bios-fw", "BIOS", "n2-bios-9.0.0.bin")+proc("bmc-fw", "BMC", "n2-bmc-9.0.0.bin"))
 	var out string
 	deadline := time.Now().Add(90 * time.Second)
-	for !(strings.Contains(out, "手順 bios-fw bmc/firmware/node2/BIOS: 止めた") && strings.Contains(out, "手順 bmc-fw bmc/firmware/node2/BMC: 止めた")) {
+	for !(strings.Contains(out, "Procedure bios-fw bmc/firmware/node2/BIOS: halt した") && strings.Contains(out, "Procedure bmc-fw bmc/firmware/node2/BMC: halt した")) {
 		if time.Now().After(deadline) {
-			t.Fatalf("故障で手順が止まらない\n%s", out)
+			t.Fatalf("故障で Procedure が halt しない\n%s", out)
 		}
 		out, _ = sakutei(t, "reconcile")
 		time.Sleep(3 * time.Second)
 	}
-	// 止まったあとは送り直さない（不変条件 16）。
+	// halt したあとは送り直さない（不変条件 16）。
 	for i := 0; i < 2; i++ {
 		out, _ = sakutei(t, "reconcile")
 	}
@@ -527,8 +527,8 @@ procedures:
 	if v := getInventory(t, node2, "BMC").Version; v != qemuBMCVer {
 		t.Fatalf("BMC が %s", v)
 	}
-	if !strings.Contains(out, "止めた") {
-		t.Fatalf("止めた理由が出ない\n%s", out)
+	if !strings.Contains(out, "halt した") {
+		t.Fatalf("halt した理由が出ない\n%s", out)
 	}
 }
 
@@ -537,7 +537,7 @@ func stepWriteCredentials(t *testing.T) {
 	if err := os.WriteFile(cfg, []byte(config(filepath.Join(lab.dir, "no-such-password"))), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	os.RemoveAll(recordDir()) // 10 段目で止めた手順を持ち込まない
+	os.RemoveAll(recordDir()) // Step 10 で止めた Procedure を持ち込まない
 	saved := lab.config
 	lab.config = cfg
 	defer func() { lab.config = saved }()
@@ -547,13 +547,13 @@ func stepWriteCredentials(t *testing.T) {
 	}
 	writeIntent(t, "resources:\n  - {type: bmc/virtual-media, id: node1/cd, fields: {image: "+want+"}}\n")
 	if out, code := sakutei(t, "plan"); code != 0 || len(changes(out)) != 1 {
-		t.Fatalf("書き込み用の資格が無くても plan は観測できる: exit=%d\n%s", code, out)
+		t.Fatalf("書き込み用の credential が無くても plan は観測できる: exit=%d\n%s", code, out)
 	}
 	out, code := sakutei(t, "reconcile")
 	if code != 1 || !strings.Contains(out, "パスワードのファイル") {
-		t.Fatalf("書き込み用の資格が無いのに exit=%d\n%s", code, out)
+		t.Fatalf("書き込み用の credential が無いのに exit=%d\n%s", code, out)
 	}
 	if m := mustMedia(t, node1); m.Image == want {
-		t.Fatalf("書き込み用の資格が無いのに書いた")
+		t.Fatalf("書き込み用の credential が無いのに書いた")
 	}
 }

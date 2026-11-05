@@ -14,9 +14,9 @@
 
 package migrate
 
-// alloc.go — v2 の採番の記録（--alloc-store のファイル）を新しいコアの採番の
-// ファイル（intent の allocations/<pool>.yaml、§3.8）にする。払った値を書き
-// 写さないと、新しいコアが同じ鍵に別の値を払い直す（不変条件 11）。
+// alloc.go — v2 の採番の記録（--alloc-store のファイル）を、新しいコアの採番の
+// ファイル（intent の allocations/<pool>.yaml、§3.8）にする。払い出した値をコピー
+// しないと、新しいコアが同じ鍵に別の値を払い出し直す（不変条件 11）。
 
 import (
 	"encoding/json"
@@ -30,7 +30,7 @@ import (
 )
 
 // allocations は v2 の採番の記録を読み、プールごとのファイルを intent に足す。
-// v2 の鍵 <provider>/<local>#<項目> は新しい鍵 <ID>#<項目> にする。
+// v2 の鍵 <provider>/<local>#<field> は新しい鍵 <ID>#<field> にする。
 func (c *conv) allocations(intent map[string]string) {
 	file := c.in.Flags["alloc-store"]
 	if file == "" {
@@ -38,7 +38,7 @@ func (c *conv) allocations(intent map[string]string) {
 	}
 	data, err := os.ReadFile(file)
 	if os.IsNotExist(err) {
-		return // v2 もまだ何も払っていない
+		return // v2 もまだ何も払い出していない
 	}
 	if err != nil {
 		c.refuse("alloc-store: %v", err)
@@ -68,12 +68,12 @@ func (c *conv) allocations(intent map[string]string) {
 		a := core.Allocation{Pool: p, Values: map[string]int64{}, Last: map[string]int64{}}
 		for owner, e := range v2.Allocations {
 			if e.State != "allocated" {
-				c.note("alloc-store: プール %s の %s は予約（%s）のまま。書き写さない", p, owner, e.State)
+				c.note("alloc-store: プール %s の %s は予約（%s）のまま。コピーしない", p, owner, e.State)
 				continue
 			}
 			key, ok := c.allocKey(owner)
 			if !ok {
-				c.refuse("alloc-store: プール %s の %s の宣言が無い（値 %d を書き写せない）", p, owner, e.Value)
+				c.refuse("alloc-store: プール %s の %s の宣言が無い（値 %d をコピーできない）", p, owner, e.Value)
 				continue
 			}
 			a.Values[key] = int64(e.Value)
@@ -87,8 +87,8 @@ func (c *conv) allocations(intent map[string]string) {
 	}
 }
 
-// allocKey は v2 の持ち主（<provider>/<local>#<項目>、scope を含めない）を
-// 新しい鍵（<provider>/<種類>/<名前>#<項目>）にする。
+// allocKey は v2 の owner（<provider>/<local>#<field>、scope を含めない）を
+// 新しい鍵（<provider>/<type>/<名前>#<field>）にする。
 func (c *conv) allocKey(owner string) (string, bool) {
 	ref, field, ok := strings.Cut(owner, "#")
 	if !ok {

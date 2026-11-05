@@ -17,7 +17,7 @@
 // base:1.1 のもの（chunked）になれる。
 //
 //   - running の設定を XML で持ち、get-config の subtree filter（RFC 6241 §6:
-//     選ぶ・中に入る・値で絞る）を当てて返す。
+//     選ぶ・中に入る・値で絞る）を適用して返す。
 //   - 受けた rpc の操作の名前を残す（edit-config などが来ていないことを確かめる）。
 //     commit confirmed は "commit-confirmed" と残す。Calls はセッションの番号も残す。
 //   - hello の Caps に :candidate があれば candidate を持つ（lock・unlock・
@@ -27,18 +27,18 @@
 //     縮められる）が過ぎるか、persist の無い commit confirmed を送ったセッションが
 //     終われば running を戻す（RFC 6241 §8.4）。1.1 なら persist・persist-id・
 //     cancel-commit。戻した理由は Rollbacks に残る。
-//   - YANG を持たないので、リストのエントリは子の name（無ければ最初の葉）で、
-//     LeafLists で名指しした葉は値で突き合わせる。
+//   - YANG を持たないので、リストのエントリは子の name（無ければ最初の leaf）で、
+//     LeafLists で名指しした leaf は値で突き合わせる。
 //   - Scope・ScopeOps で、部分木だけに絞ったユーザー（NACM）のように振る舞う
 //     （外の読みは黙って省き、外の書き込み・許さない操作は access-denied。
 //     Denials に残す。scope.go）。
 //   - TopAttrs・EmptyData で、get-config の返りの最上位の要素に（読むたびに
 //     変わる）属性を付ける機器・部分木が無いときに空の <configuration/> を返す
 //     機器のように振る舞う（#208）。
-//   - 止める（Down）・セッションを切る（Drop）・hello を壊す・rpc-error を返す
+//   - 停止する（Down）・セッションを切る（Drop）・hello を壊す・rpc-error を返す
 //     （SetRPCError・SetOpError）・行う前・応答の前に切る（SetDropBefore・
 //     SetDropAfter）・答える前に待つ（SetDelay）・running
-//     しだいで新しい接続を断る（RefuseDialsWhen）、を切り替えられる。
+//     しだいで新しい接続を拒否する（RefuseDialsWhen）、を切り替えられる。
 package netconffake
 
 import (
@@ -71,10 +71,10 @@ type Server struct {
 	OpsFile string
 	// TimeUnit は confirm-timeout の 1 の長さ（0 なら 1 秒）。
 	TimeUnit time.Duration
-	// LeafLists は値で突き合わせる葉（leaf-list）の名前（nil なら user-name と
+	// LeafLists は値で突き合わせる leaf（leaf-list）の名前（nil なら user-name と
 	// group）。
 	LeafLists []string
-	// RefuseDialsWhen が true を返す running の間は、新しい接続を断る（届かなく
+	// RefuseDialsWhen が true を返す running の間は、新しい接続を拒否する（届かなく
 	// なる設定。開いているセッションは切らない）。
 	RefuseDialsWhen func(running string) bool
 	// Scope があれば、部分木だけに絞ったユーザー（NACM）のように、Scope（subtree
@@ -84,7 +84,7 @@ type Server struct {
 	ScopeOps []string
 	// TopAttrs があれば、get-config の返りの最上位の要素ごとに、その返す
 	// 属性（xmlns:p="…" p:x="…" の形の XML の断片）を付ける（commit の時刻
-	// などの印を付ける機器、#208）。get-config のたびに呼ぶ。
+	// などの属性を付ける機器、#208）。get-config のたびに呼ぶ。
 	TopAttrs func() string
 	// EmptyData があれば、filter が何も選ばないとき <data> の中にこれを返す
 	// （部分木が無いときに空の <configuration/> を返す機器、#208）。
@@ -141,7 +141,7 @@ func (s *Server) SetRunning(x string) {
 	s.running = x
 }
 
-// SetDown で止める（つなげない・開いているセッションは切る）。false で戻す。
+// SetDown で停止する（接続できない・開いているセッションは切る）。false で戻す。
 func (s *Server) SetDown(down bool) {
 	s.mu.Lock()
 	s.down = down
@@ -280,21 +280,21 @@ func (s *Server) Dials() int {
 	return s.dials
 }
 
-// ClientHello は最後に受けた手元の hello。
+// ClientHello は最後に受けたクライアントの hello。
 func (s *Server) ClientHello() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastHello
 }
 
-// Framings はセッションごとの hello の後の区切り方。
+// Framings はセッションごとの hello の後の framing。
 func (s *Server) Framings() []netconf.Framing {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]netconf.Framing(nil), s.framings...)
 }
 
-// Dialer はこのサーバにつなぐ netconf.Dialer（net.Pipe）。止めていれば
+// Dialer はこのサーバにつなぐ netconf.Dialer（net.Pipe）。停止していれば
 // *hostexec.UnreachableError（届かない）。
 func (s *Server) Dialer(hostName string) netconf.Dialer {
 	return func(ctx context.Context) (io.ReadWriteCloser, error) {
@@ -402,7 +402,7 @@ func (s *Server) serve(c io.ReadWriteCloser) {
 	}
 }
 
-// sessionEnded は終わったセッションの lock を放し、persist の無い commit
+// sessionEnded は終わったセッションの lock を外し、persist の無い commit
 // confirmed を戻す（RFC 6241 §7.5・§8.4）。s.mu を持って呼ぶ。
 func (s *Server) sessionEnded(id int) {
 	if s.lockedBy == id {
@@ -638,7 +638,7 @@ func matches(f, d *elem) bool {
 	return f.Name.Local == d.Name.Local && (f.Name.Space == "" || f.Name.Space == d.Name.Space)
 }
 
-// filterNodes は data の兄弟に filter の兄弟を当てる（RFC 6241 §6）。
+// filterNodes は data の兄弟に filter の兄弟を適用する（RFC 6241 §6）。
 func filterNodes(data, filter []*elem) []*elem {
 	var out []*elem
 	for _, d := range data {
@@ -655,7 +655,7 @@ func filterNodes(data, filter []*elem) []*elem {
 	return out
 }
 
-// apply は 1 つの data の要素に 1 つの filter の要素を当てる。nil は選ばれない。
+// apply は 1 つの data の要素に 1 つの filter の要素を適用する。nil は選ばれない。
 func apply(d, f *elem) *elem {
 	if f.leaf() {
 		if f.Text == "" || f.Text == d.Text { // selection / content match

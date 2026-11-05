@@ -15,9 +15,9 @@
 package main
 
 // pve_test.go — proxmox を CLI から（偽の Proxmox に向けて）回す。作り直す VM が
-// 前の VM の keep のディスクを volume= で引き取る変更は承認が揃うまで当てず、
-// 承認のあとに作って付け替え、network_policy の実現先 proxmox-fw の規則を置き、
-// 手の規則は消さずに宣言外に出す（E-C2・E-B6・E-D1）。
+// 前の VM の keep のディスクを volume= で引き取る変更は、承認が揃うまで Apply しない。
+// 承認のあとに作って付け替え、network_policy の realizer proxmox-fw の規則を置く。
+// 手で足した規則は消さずに宣言に無いもの（unmanaged）として出す（E-C2・E-B6・E-D1）。
 
 import (
 	"bytes"
@@ -95,7 +95,7 @@ network_policy:
 	record := filepath.Join(dir, "record")
 	reconcile := func() (int, string) { return run(append([]string{"reconcile", "--record", record}, common...)...) }
 
-	// 付け替えは承認が揃うまで当てない。規則は VM が無いので失敗しても VM を壊さない。
+	// 付け替えは承認が揃うまで Apply しない。規則は VM が無いので失敗しても VM を壊さない。
 	code, out := reconcile()
 	if code == cli.ExitOK || !strings.Contains(out, "sakutei approve chg-") || !strings.Contains(out, "既にある volume") {
 		t.Fatalf("exit=%d\n%s", code, out)
@@ -112,7 +112,7 @@ network_policy:
 	if !ok || !strings.HasPrefix(vm.Config["scsi1"], "local-lvm:vm-121-disk-") || vm.Status != "running" {
 		t.Fatalf("exit=%d %+v\n%s", code, vm, out)
 	}
-	// 規則は VM ができた周か次の周に置く。手の規則を足しても消さず宣言外に出す。
+	// 規則は VM ができた cycle か次の cycle に置く。手で足した規則は消さず unmanaged として出す。
 	for i := 0; i < 3 && code != cli.ExitOK; i++ {
 		code, out = reconcile()
 	}

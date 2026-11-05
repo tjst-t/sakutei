@@ -33,16 +33,16 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/ansible"
 )
 
-// wantCore は make integration-v3-ansible が venv に入れる ansible-core の版
+// wantCore は make integration-v3-ansible が venv に入れる ansible-core のバージョン
 // （v2 の統合テストと同じ）。
 const wantCore = "2.21.5"
 
 var lab struct {
 	ansible string // ansible の実行ファイル
 	python  string // venv の python（local 接続の interpreter）
-	dir     string // 使い捨ての作業場所（ファイル・intent・設定・Record）
-	short   string // ansible の TMPDIR と ssh の ControlPath（unix socket のパス長の上限のため短い場所）
-	config  string // つなぎ方の設定
+	dir     string // 使い捨ての作業ディレクトリ（ファイル・intent・設定・Record）
+	short   string // ansible の TMPDIR と ssh の ControlPath（unix socket のパス長の上限のため短いパス）
+	config  string // 接続設定
 	version string
 }
 
@@ -62,7 +62,7 @@ func runMain(m *testing.M) int {
 func setup() error {
 	lab.ansible = os.Getenv("SAKUTEI_IT_ANSIBLE")
 	if lab.ansible == "" {
-		return fmt.Errorf("SAKUTEI_IT_ANSIBLE（ansible の実行ファイル）が無い（make integration-v3-ansible で回す）")
+		return fmt.Errorf("SAKUTEI_IT_ANSIBLE（ansible の実行ファイル）が無い（make integration-v3-ansible で実行する）")
 	}
 	if !filepath.IsAbs(lab.ansible) {
 		return fmt.Errorf("SAKUTEI_IT_ANSIBLE は絶対パスで渡す: %q", lab.ansible)
@@ -77,11 +77,11 @@ func setup() error {
 	}
 	m := regexp.MustCompile(`core ([0-9.]+)`).FindStringSubmatch(string(out))
 	if m == nil {
-		return fmt.Errorf("ansible --version の出力に core の版が無い: %q", out)
+		return fmt.Errorf("ansible --version の出力に core のバージョンが無い: %q", out)
 	}
 	lab.version = m[1]
 	if lab.version != wantCore && os.Getenv("SAKUTEI_IT_ANSIBLE_ANY") == "" {
-		return fmt.Errorf("ansible-core %s（want %s。ほかの版で回すなら SAKUTEI_IT_ANSIBLE_ANY=1）", lab.version, wantCore)
+		return fmt.Errorf("ansible-core %s（want %s。ほかのバージョンで動かすなら SAKUTEI_IT_ANSIBLE_ANY=1）", lab.version, wantCore)
 	}
 	fmt.Printf("integration-v3-ansible: ansible-core %s（%s）\n", lab.version, lab.ansible)
 	if lab.dir, err = os.MkdirTemp("", "sakutei-v3-ansible-it-"); err != nil {
@@ -127,7 +127,7 @@ func teardown() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 道具
+// ヘルパー
 // ─────────────────────────────────────────────────────────────────────────────
 
 func file(name string) string { return filepath.Join(lab.dir, "files", name) }
@@ -215,7 +215,7 @@ func wantOps(t *testing.T, step string, r plan.Result, want map[string]plan.Op) 
 	}
 }
 
-// settled は reconcile のあと（読み直しを含めて）宣言どおりかを返す。
+// settled は reconcile のあと（再観測を含めて）宣言どおりかを返す。
 func settled(r plan.Result, name string) bool { return changeOf(r, name).Final().Settled() }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,7 +239,7 @@ func TestAnsible(t *testing.T) {
 		return m
 	}
 
-	t.Run("空から：plan は check mode の差分を出して変えず、reconcile が当てる", func(t *testing.T) {
+	t.Run("空の状態から：plan は check mode の差分を出して変えず、reconcile が Apply する", func(t *testing.T) {
 		dir := intent(t, main)
 		r, code, stderr := run(t, "plan", dir)
 		if code != cli.ExitOK {
@@ -248,7 +248,7 @@ func TestAnsible(t *testing.T) {
 		wantOps(t, "plan", r, all(plan.Update))
 		c := changeOf(r, "motd")
 		if len(c.Fields) != 1 || c.Fields[0].Name != "module" || !strings.Contains(strings.Join(c.Classified, "\n"), "+managed by sakutei") {
-			t.Fatalf("plan が module のずれと check mode の差分を出さない:\n%s", dump(r))
+			t.Fatalf("plan が module の drift と check mode の差分を出さない:\n%s", dump(r))
 		}
 		if exists("motd") || exists("app.conf") {
 			t.Fatal("plan が現実を変えた")
@@ -259,10 +259,10 @@ func TestAnsible(t *testing.T) {
 		}
 		for _, n := range names {
 			if !settled(r, n) {
-				t.Fatalf("%s が読み直しで宣言どおりでない:\n%s", n, dump(r))
+				t.Fatalf("%s が再観測で宣言どおりでない:\n%s", n, dump(r))
 			}
 		}
-		// 同じファイルの 2 つの行は名前の順に当たる（並びは問わない）。
+		// 同じファイルの 2 つの行は名前の順に Apply される（並びは問わない）。
 		if got := read(t, "motd"); got != "managed by sakutei\nliteral {{ not_a_var }} kept\n" && got != "literal {{ not_a_var }} kept\nmanaged by sakutei\n" {
 			t.Fatalf("motd = %q（{{ }} はテンプレートとして評価しない）", got)
 		}
@@ -273,10 +273,10 @@ func TestAnsible(t *testing.T) {
 		if code != cli.ExitOK {
 			t.Fatalf("plan: exit=%d", code)
 		}
-		wantOps(t, "当てたあと", r, all(plan.None))
+		wantOps(t, "Apply したあと", r, all(plan.None))
 	})
 
-	t.Run("手で変えるとずれ、reconcile が戻す", func(t *testing.T) {
+	t.Run("手で変えると drift し、reconcile が戻す", func(t *testing.T) {
 		dir := intent(t, main)
 		if err := os.WriteFile(file("app.conf"), []byte("listen = 9999\n"), 0o640); err != nil {
 			t.Fatal(err)
@@ -301,24 +301,24 @@ func TestAnsible(t *testing.T) {
 		}
 	})
 
-	t.Run("何周しても宣言どおりのまま書き換えない", func(t *testing.T) {
+	t.Run("何 cycle 回しても宣言どおりのまま書き換えない", func(t *testing.T) {
 		dir := intent(t, main)
 		before := map[string]int64{"motd": mtime(t, "motd"), "app.conf": mtime(t, "app.conf")}
 		for i := 0; i < 5; i++ {
 			r, code, stderr := run(t, "reconcile", dir)
 			if code != cli.ExitOK {
-				t.Fatalf("周 %d: exit=%d\n%s\n%s", i, code, dump(r), stderr)
+				t.Fatalf("cycle %d: exit=%d\n%s\n%s", i, code, dump(r), stderr)
 			}
-			wantOps(t, fmt.Sprintf("周 %d", i), r, all(plan.None))
+			wantOps(t, fmt.Sprintf("cycle %d", i), r, all(plan.None))
 		}
 		for n, m := range before {
 			if mtime(t, n) != m {
-				t.Fatalf("宣言どおりの周が %s を書き換えた", n)
+				t.Fatalf("宣言どおりの cycle が %s を書き換えた", n)
 			}
 		}
 	})
 
-	t.Run("届かないホストと check mode を持たないモジュールは Unknown で、当てない", func(t *testing.T) {
+	t.Run("到達できないホストと check mode を持たないモジュールは Unknown で、Apply しない", func(t *testing.T) {
 		gone := call("gone-motd", "gone", "ansible.builtin.lineinfile", map[string]any{"path": "/tmp/sakutei-v3-never", "line": "x", "create": true}, "")
 		cmd := call("touch", "target", "ansible.builtin.command", map[string]any{"cmd": "touch " + file("touched")}, "")
 		dir := intent(t, main+gone+cmd)
@@ -327,8 +327,8 @@ func TestAnsible(t *testing.T) {
 			t.Fatalf("reconcile: exit=%d（want %d）\n%s\n%s", code, cli.ExitRemaining, dump(r), stderr)
 		}
 		wantOps(t, "観測できない", r, map[string]plan.Op{"gone-motd": plan.Unknown, "touch": plan.Unknown, "motd": plan.None})
-		if n := changeOf(r, "gone-motd").Note; !strings.Contains(n, "届かない") {
-			t.Fatalf("届かない理由が無い: %q", n)
+		if n := changeOf(r, "gone-motd").Note; !strings.Contains(n, "到達できない") {
+			t.Fatalf("到達できない理由が無い: %q", n)
 		}
 		if n := changeOf(r, "touch").Note; !strings.Contains(n, "check mode を持たない") {
 			t.Fatalf("check mode の理由が無い: %q", n)
@@ -338,7 +338,7 @@ func TestAnsible(t *testing.T) {
 		}
 	})
 
-	t.Run("destructive の呼び出しは予算の壊す変更に数える", func(t *testing.T) {
+	t.Run("destructive の呼び出しは budget の破壊的な変更に数える", func(t *testing.T) {
 		add := call("add", "target", "ansible.builtin.lineinfile", map[string]any{"path": file("additive"), "line": "a", "create": true}, "")
 		d1 := call("wipe-1", "target", "ansible.builtin.copy", map[string]any{"dest": file("d1"), "content": "wiped\n"}, ", destructive: true")
 		d2 := call("wipe-2", "target", "ansible.builtin.copy", map[string]any{"dest": file("d2"), "content": "wiped\n"}, ", destructive: true")
@@ -350,9 +350,9 @@ func TestAnsible(t *testing.T) {
 		if code != cli.ExitHalted {
 			t.Fatalf("reconcile: exit=%d（want %d）\n%s\n%s", code, cli.ExitHalted, dump(r), stderr)
 		}
-		// 壊す変更に数えるのは destructive: true の 2 つだけ（壊さない add は数えない）。
+		// 破壊的な変更に数えるのは destructive: true の 2 つだけ（破壊的でない add は数えない）。
 		if len(r.Budgets) != 1 || r.Budgets[0].Destructive != 2 || r.Budgets[0].Changes != 3 {
-			t.Fatalf("予算の数え方:\n%s", dump(r))
+			t.Fatalf("budget の数え方:\n%s", dump(r))
 		}
 		for n, want := range map[string]bool{"add": false, "wipe-1": true, "wipe-2": true} {
 			if c := changeOf(r, n); c.Destructive != want || c.Action != plan.ActHalt {
@@ -360,12 +360,12 @@ func TestAnsible(t *testing.T) {
 			}
 		}
 		if exists("additive") || exists("d1") || exists("d2") {
-			t.Fatalf("予算を超えて止めた周が当てた:\n%s", dump(r))
+			t.Fatalf("budget を超えて halt した cycle が Apply した:\n%s", dump(r))
 		}
 		dir = intent(t, policy(2)+main+add+d1+d2)
 		r, code, stderr = run(t, "reconcile", dir)
 		if code != cli.ExitOK {
-			t.Fatalf("予算を上げた reconcile: exit=%d\n%s\n%s", code, dump(r), stderr)
+			t.Fatalf("budget を上げた reconcile: exit=%d\n%s\n%s", code, dump(r), stderr)
 		}
 		for n, want := range map[string]string{"additive": "a\n", "d1": "wiped\n", "d2": "wiped\n"} {
 			if got := read(t, n); got != want {
@@ -374,17 +374,17 @@ func TestAnsible(t *testing.T) {
 		}
 	})
 
-	t.Run("グループ名の host は当てず、秘密の参照・ensure: absent・範囲は読み込みで断る", func(t *testing.T) {
+	t.Run("グループ名の host は Apply せず、secret の参照・ensure: absent・Range は読み込み時にエラーにする", func(t *testing.T) {
 		pair := call("pair", "pair", "ansible.builtin.lineinfile", map[string]any{"path": file("pair"), "line": "x", "create": true}, "")
-		// check mode の観測が 2 台の結果を受けて Unknown になり、当てない。
+		// check mode の観測が 2 ホストの結果を受けて Unknown になり、Apply しない。
 		r, code, _ := run(t, "reconcile", intent(t, "resources:\n"+pair))
-		if c := changeOf(r, "pair"); code != cli.ExitRemaining || c.Op != plan.Unknown || !strings.Contains(c.Note, "2 台に当たった") || exists("pair") {
+		if c := changeOf(r, "pair"); code != cli.ExitRemaining || c.Op != plan.Unknown || !strings.Contains(c.Note, "2 ホストにマッチした") || exists("pair") {
 			t.Fatalf("グループ名: exit=%d\n%s", code, dump(r))
 		}
 		for name, c := range map[string]struct{ body, want string }{
-			"秘密の参照":  {"resources:\n  - {type: ans/call, id: tok, fields: {host: target, module: ansible.builtin.copy, args: {dest: /tmp/x, content: {secret: \"file:app/token\"}}}}\n", "秘密の参照を書けない"},
-			"absent": {"resources:\n  - {type: ans/call, id: gone, ensure: absent}\n", "ensure: absent は書けない"},
-			"範囲":     {"ranges:\n  - {provider: ans, args: {host: target}}\n" + "resources:\n" + motd, "範囲を持たない"},
+			"secret の参照": {"resources:\n  - {type: ans/call, id: tok, fields: {host: target, module: ansible.builtin.copy, args: {dest: /tmp/x, content: {secret: \"file:app/token\"}}}}\n", "secret の参照を書けない"},
+			"absent":     {"resources:\n  - {type: ans/call, id: gone, ensure: absent}\n", "ensure: absent は書けない"},
+			"Range":      {"ranges:\n  - {provider: ans, args: {host: target}}\n" + "resources:\n" + motd, "Range を持たない"},
 		} {
 			if _, code, stderr := run(t, "plan", intent(t, c.body)); code != cli.ExitRejected || !strings.Contains(stderr, c.want) {
 				t.Fatalf("%s: exit=%d（want %d・%q）\n%s", name, code, cli.ExitRejected, c.want, stderr)

@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package otlp は Event からトレースの span を作って OTLP/HTTP（JSON の形）で送る
-// 送り先（module: otlp、設計 §3.9・§5.2・§5.6、E-H3・N-H5）。v2 の
+// Package otlp は Event からトレースの span を作って OTLP/HTTP（JSON 形式）で送る
+// sink（module: otlp、設計 §3.9・§5.2・§5.6、E-H3・N-H5）。v2 の
 // --otlp-endpoint（#189）を移した。
 //
-// span の作り方：CycleDone 1 つが周の span（name sakutei.cycle、始まり＝終わり −
-// duration_ms、属性に周の件数と予算の残り）。その前に積まれた出来事型（Applied・
-// Deleted・ProcedureStep…）は周の span の子（始まり＝終わり＝その時刻）。周の
-// span の無いまま残った出来事型は根の span にする。trace と span の ID は Event の
-// 番号から決める（送り直しても同じ ID）。欄の値は載せない（属性は種類・対象・
-// 宣言の labels・件数だけ、不変条件 27）。状態型は span にしない。
+// span の作り方：CycleDone 1 つが cycle の span（name sakutei.cycle、開始＝終了 −
+// duration_ms、属性に cycle の件数と budget の残り）。その前に積まれた edge Event
+// （Applied・Deleted・ProcedureStep…）は cycle の span の子（開始＝終了＝その時刻）。
+// cycle の span が無いまま残った edge Event は root span にする。trace と span の
+// ID は Event の番号から決める（送り直しても同じ ID）。field の値は載せない（属性は
+// kind・対象・宣言の labels・件数だけ、不変条件 27）。level Event は span にしない。
 package otlp
 
 import (
@@ -39,17 +39,17 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/sinks/internal/settings"
 )
 
-// Sink は OTLP/HTTP に送る送り先。
+// Sink は OTLP/HTTP に送る sink。
 type Sink struct {
 	url     string
 	client  *settings.Client
 	service string
-	// Instance は trace の ID を決める名前（同じ Record を使う常駐が 1 つでも、
-	// 別の Record の常駐と ID が重ならないように）。既定は service。
+	// Instance は trace の ID を決める名前（同じ Record を使う daemon が 1 つでも、
+	// 別の Record の daemon と ID が重ならないように）。既定は service。
 	instance string
 }
 
-// Module はつなぎ方の設定の module: otlp。
+// Module は接続設定の module: otlp。
 //
 //	settings:
 //	  endpoint: https://otel.example.com:4318   # /v1/traces を足す（パスを書けばそのまま）
@@ -88,7 +88,7 @@ func Module(m map[string]any) (core.Sink, error) {
 	}
 	c, err := settings.NewClient(t, timeout, tokenFile)
 	if err != nil {
-		return nil, fmt.Errorf("otlp の送り先: %w", err)
+		return nil, fmt.Errorf("otlp の sink: %w", err)
 	}
 	s.client = c
 	return s, nil
@@ -163,7 +163,7 @@ func intAttr(k string, v int) attr {
 
 const spanInternal = 1
 
-// spanNames は出来事型の span の名前。
+// spanNames は edge Event の span の名前。
 var spanNames = map[string]string{"Applied": "sakutei.apply", "Deleted": "sakutei.delete", "ProcedureStep": "sakutei.procedure_step"}
 
 // Spans は batch の span（送る順）。

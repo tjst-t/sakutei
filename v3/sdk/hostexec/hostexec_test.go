@@ -57,7 +57,7 @@ func TestLocalErrors(t *testing.T) {
 	}
 }
 
-// ホスト鍵を確かめない ssh・知らない項目は断る（E-E1）。
+// ホスト鍵を検証しない ssh・不明な field はエラーにする（E-E1）。
 func TestParseHosts(t *testing.T) {
 	hs, err := hostexec.ParseHosts(map[string]any{
 		"a": map[string]any{"local": true, "sudo": true, "prefix": []any{"ip", "netns", "exec", "x"}},
@@ -74,7 +74,7 @@ func TestParseHosts(t *testing.T) {
 		{"a": map[string]any{}},
 	} {
 		if _, err := hostexec.ParseHosts(bad); err == nil {
-			t.Errorf("断らない: %v", bad)
+			t.Errorf("エラーにならない: %v", bad)
 		}
 	}
 }

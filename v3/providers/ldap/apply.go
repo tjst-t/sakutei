@@ -14,9 +14,9 @@
 
 package ldap
 
-// apply.go — Apply と Delete。どちらも書き込み用の資格だけで bind する（その中の
-// 検索も含む、E-G5・N-G3）。読み直しはコアが Apply のあとに Observe で行う（効かない
-// Apply はコアが数えて止める、E-J6・不変条件 14）。
+// apply.go — Apply と Delete。どちらも書き込み用の credential だけで bind する（その中の
+// 検索も含む、E-G5・N-G3）。読み直しはコアが Apply のあとに Observe で行う（ineffective
+// Apply はコアが数えて halt する、E-J6・不変条件 14）。
 
 import (
 	"context"
@@ -80,7 +80,7 @@ func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, d
 	return nil
 }
 
-// create は項目を作る。既に在れば（別の誰かが先に作った・前の Apply が途中で
+// create は entry を作る。既に在れば（別の誰かが先に作った・前の Apply が途中で
 // 終わった）、宣言の属性を replace でそろえる。
 func (p *Provider) create(ctx context.Context, t target, cred credential, attrs []Attr) error {
 	leaf := make(RDN, len(t.dn[0]))
@@ -92,7 +92,7 @@ func (p *Provider) create(ctx context.Context, t target, cred credential, attrs 
 		}
 	}
 	// 葉の RDN：宣言した属性の値の綴りを使う。宣言していない属性なら値を足す
-	// （サーバによっては RDN の値が属性に無い項目を断る）。
+	// （サーバによっては RDN の値が属性に無い entry を拒否する）。
 	for i, ava := range leaf {
 		declared := false
 		for _, a := range attrs {
@@ -118,8 +118,8 @@ func (p *Provider) create(ctx context.Context, t target, cred credential, attrs 
 	case CodeAlreadyExists:
 		err = p.cl.modifyAs(ctx, t.srv, cred, ReplaceLDIF(t.dnStr, attrs))
 	case CodeNoSuchObject:
-		// 親の項目がまだ無い。親を先に作れば（depends_on、または次の周）作れる。
-		return fmt.Errorf("%s/%s の親の項目がまだ無い（親を depends_on に書く）: %w", t.srv.name, t.dnStr, err)
+		// 親の entry がまだ無い。親を先に作れば（depends_on、または次の cycle）作れる。
+		return fmt.Errorf("%s/%s の親の entry がまだ無い（親を depends_on に書く）: %w", t.srv.name, t.dnStr, err)
 	}
 	if err != nil {
 		return fmt.Errorf("%s/%s: %w", t.srv.name, t.dnStr, err)
@@ -127,20 +127,20 @@ func (p *Provider) create(ctx context.Context, t target, cred credential, attrs 
 	return nil
 }
 
-// refuseChildren は子の項目がある項目を消さないときの理由（E-G1・E-F1）。
-const refuseChildren = "子の項目がある項目は消さない（先に子を消すか移す）"
+// refuseChildren は子の entry がある entry を消さないときの理由（E-G1・E-F1）。
+const refuseChildren = "子の entry がある entry は消さない（先に子を消すか移す）"
 
-// Delete は項目を消す。無ければ何もしない。子の項目か宣言した項目が下にあれば
+// Delete は entry を消す。無ければ何もしない。子の entry か宣言した entry が下にあれば
 // *core.RefuseError（E-G1・E-F1・不変条件 10）。
 func (p *Provider) Delete(ctx context.Context, _ core.WriteContext, id core.ID, _ core.Observation) error {
 	t, err := p.target(id)
 	if err != nil {
 		return err
 	}
-	// 宣言した項目の上（親・祖先）は、子がまだ作られていなくても消さない（同じ周で
-	// 親の prune が子の作成より先に当たらないように、E-G1・E-C3）。
+	// 宣言した entry の上（親・祖先）は、子がまだ作られていなくても消さない（同じ cycle で
+	// 親の prune が子の作成より先に実行されないように、E-G1・E-C3）。
 	if child := p.declaredBelow(t); child != "" {
-		return &core.RefuseError{Reason: fmt.Sprintf("宣言した項目 %s の上の項目は消さない", child)}
+		return &core.RefuseError{Reason: fmt.Sprintf("宣言した entry %s の上の entry は消さない", child)}
 	}
 	cred := t.srv.write
 	es, err := p.cl.searchAs(ctx, t.srv, cred, searchRequest{Base: t.dnStr, Scope: ScopeOne, Filter: "(objectClass=*)", Attrs: []string{"1.1"}, SizeLimit: 1})
@@ -150,7 +150,7 @@ func (p *Provider) Delete(ctx context.Context, _ core.WriteContext, id core.ID, 
 	case code == CodeSizeLimitExceeded, err == nil && len(es) > 0:
 		return &core.RefuseError{Reason: refuseChildren}
 	case err != nil:
-		return fmt.Errorf("%s: 子の項目を確かめられない: %w", id, err)
+		return fmt.Errorf("%s: 子の entry を確かめられない: %w", id, err)
 	}
 	err = p.cl.modifyAs(ctx, t.srv, cred, DeleteLDIF(t.dnStr))
 	switch CodeOf(err) {
@@ -167,7 +167,7 @@ func (p *Provider) Delete(ctx context.Context, _ core.WriteContext, id core.ID, 
 	return fmt.Errorf("%s: %w", id, err)
 }
 
-// declaredBelow は t の下にある宣言（在るべき項目）の ID の名前を 1 つ返す（無ければ ""）。
+// declaredBelow は t の下にある宣言（在るべき entry）の ID の名前を 1 つ返す（無ければ ""）。
 func (p *Provider) declaredBelow(t target) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()

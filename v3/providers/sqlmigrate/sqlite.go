@@ -16,9 +16,9 @@ package sqlmigrate
 
 // sqlite.go は engine: sqlite（v2 と同じ、E-F2・N-F2）。Go の標準ライブラリだけで
 // 書くため、ドライバは入れず sqlite3 の CLI を os/exec で呼ぶ。シェルは通さない
-// （引数はパスだけ、SQL は標準入力）。-bail で最初の誤りで止まり 0 以外で終わる
-// （開いていたトランザクションは接続が閉じて巻き戻る）。鍵を待つ長さは -cmd の
-// .timeout で渡す（標準入力に行を足すと、誤りの「near line N」がファイルの行と
+// （引数はパスだけ、SQL は標準入力）。-bail で最初のエラーで止まり 0 以外で終わる
+// （開いていたトランザクションは接続が閉じて巻き戻る）。ロックを待つ長さは -cmd の
+// .timeout で渡す（標準入力に行を足すと、エラーの「near line N」がファイルの行と
 // ずれるため）。
 
 import (
@@ -60,9 +60,9 @@ func (p *Provider) sqlite(ctx context.Context, path, script string) (string, err
 		// 書いたので、どこまで確定したか分からない。
 		return "", &execError{kind: kindUnknown, msg: "sqlite3: トランザクションの外で COMMIT が流れた（ファイルの中でトランザクションを書いていないか）: " + msg}
 	case strings.Contains(msg, sqliteGuardName):
-		return "", &execError{kind: kindConflict, msg: "sqlite3: 版がほかの処理に動かされていた（何も流していない）"}
+		return "", &execError{kind: kindConflict, msg: "sqlite3: バージョンがほかの処理に動かされていた（何も流していない）"}
 	case strings.Contains(msg, "database is locked") || strings.Contains(msg, "database table is locked"):
-		// 書き込みの鍵を取れない（BEGIN IMMEDIATE か COMMIT で待ちきれない）。
+		// 書き込みのロックを取れない（BEGIN IMMEDIATE か COMMIT で待ちきれない）。
 		// どちらでもトランザクションは確定していない。
 		return "", &execError{kind: kindLocked, msg: "sqlite3: " + msg}
 	case strings.Contains(msg, "unable to open database file"):
@@ -91,8 +91,8 @@ func dbArg(path string) string {
 	return "." + string(filepath.Separator) + path
 }
 
-// sqliteCurrentVersion は schema_migrations の最大の版（表が無ければ 0）。DB の
-// ファイルが無いのは「まだ何も流していない」＝版 0。ただし置き場所のディレクトリが
+// sqliteCurrentVersion は schema_migrations の最大のバージョン（表が無ければ 0）。DB の
+// ファイルが無いのは「まだ何も流していない」＝バージョン 0。ただし置き場所のディレクトリが
 // 確かにあり、sqlite3 が起動できるときだけ（v2 と同じ、E-K1）。
 func (p *Provider) sqliteCurrentVersion(ctx context.Context, db *database) (int64, error) {
 	fi, err := os.Stat(db.path)
@@ -144,21 +144,21 @@ func (p *Provider) sqliteCurrentVersion(ctx context.Context, db *database) (int6
 
 const sqliteCreateTable = "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT);"
 
-// sqliteGuardName は版の確かめの制約の名前。誤りの文にこれがあれば、ほかの処理が
-// 先に版を動かした（何も流していない）。
+// sqliteGuardName はバージョンの確かめの制約の名前。エラーメッセージにこれがあれば、ほかの処理が
+// 先にバージョンを動かした（何も流していない）。
 const sqliteGuardName = "sakutei_another_runner_moved_the_version"
 
-// sqliteGuard は書き込みの鍵（BEGIN IMMEDIATE）を取ったあと、版が want のままかを
-// 確かめる（違えば CHECK 制約の誤りで止まり、トランザクションは巻き戻る）。別の
-// プロセスの sakutei が同じファイルを動かしても同じ版を二度流さない（E-F2）。
+// sqliteGuard は書き込みのロック（BEGIN IMMEDIATE）を取ったあと、バージョンが want のままかを
+// 確かめる（違えば CHECK 制約のエラーで止まり、トランザクションは巻き戻る）。別の
+// プロセスの sakutei が同じファイルを動かしても同じバージョンを二度流さない（E-F2）。
 func sqliteGuard(want int64) string {
 	return "CREATE TEMP TABLE IF NOT EXISTS sakutei_guard (ok INTEGER CONSTRAINT " + sqliteGuardName + " CHECK (ok = 1)); " +
 		"INSERT INTO temp.sakutei_guard SELECT (SELECT coalesce(max(version), 0) FROM schema_migrations) = " + strconv.FormatInt(want, 10) + "; "
 }
 
 // sqliteUpScript は 1 本の up をトランザクションで包み、同じトランザクションで
-// 完了印を書く。SQL の後ろの ";" は、最後の文に ";" が無いファイルでも次の文と
-// つながらないため。SQL の 1 行目は BEGIN と同じ行に続ける（sqlite3 の誤りの
+// 完了の記録を書く。SQL の後ろの ";" は、最後の文に ";" が無いファイルでも次の文と
+// つながらないため。SQL の 1 行目は BEGIN と同じ行に続ける（sqlite3 のエラーの
 // 「near line N」がファイルの行と一致するように）。
 func sqliteUpScript(v int64, sql string) string {
 	return "BEGIN IMMEDIATE; " + sqliteCreateTable + " " + sqliteGuard(v-1) + sql + "\n;\n" +
@@ -167,7 +167,7 @@ func sqliteUpScript(v int64, sql string) string {
 }
 
 // sqliteDownScript は 1 本の down をトランザクションで包み、同じトランザクションで
-// 完了印を消す。
+// 完了の記録を消す。
 func sqliteDownScript(v int64, sql string) string {
 	return "BEGIN IMMEDIATE; " + sqliteGuard(v) + sql + "\n;\n" +
 		"DELETE FROM schema_migrations WHERE version = " + strconv.FormatInt(v, 10) + ";\n" + versionMark + "COMMIT;\n"

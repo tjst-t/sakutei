@@ -41,7 +41,7 @@ func events(r plan.Result, kind string) []core.Event {
 
 // E-J7：空から組む構成（FW の許可 → その奥のホスト → ホストの上のもの）が 1 回の
 // reconcile で収束する。奥のものは上流が無い間は観測できない（Unknown）が、上流を
-// 当てて効いたら同じ周に観測し直して当てる。
+// Apply して効いたら同じ cycle に再観測して Apply する。
 func TestEmptyBuildConvergesInOneRun(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -57,7 +57,7 @@ func TestEmptyBuildConvergesInOneRun(t *testing.T) {
 	h.p.Behind(app.ID, host.ID)
 	h.p.Behind(cfg.ID, app.ID)
 
-	// plan は観測し直さない：最初の波だけを出し、下流は待つか分からない。
+	// plan は再観測しない：最初の wave だけを出し、下流は待つか Unknown。
 	pl := plan.Decide(context.Background(), plan.Input{Resources: h.in.Resources, Readers: map[string]core.Reader{"p": h.p}})
 	if c := find(pl, fw.ID); c.Action != plan.ActApply || strings.Join(c.Downstream, ",") != "p/rec/app,p/rec/cfg,p/rec/host" {
 		t.Fatalf("plan の fw: %+v", c)
@@ -77,7 +77,7 @@ func TestEmptyBuildConvergesInOneRun(t *testing.T) {
 	}
 	for i, w := range got {
 		if w.ID != want[i] {
-			t.Fatalf("当てた順 %v、want %v", got, want)
+			t.Fatalf("Apply した順 %v、want %v", got, want)
 		}
 		if c := find(r, w.ID); c.Wave != i+1 || c.After != plan.None {
 			t.Fatalf("%s: %+v", w.ID, c)
@@ -86,14 +86,14 @@ func TestEmptyBuildConvergesInOneRun(t *testing.T) {
 	if len(events(r, "Waiting")) != 0 || len(events(r, "Unknown")) != 0 {
 		t.Fatalf("収束したのに待ち・Unknown の Event がある: %+v", r.Events)
 	}
-	// 次の周は何もしない。
+	// 次の cycle は何もしない。
 	r = h.run()
 	if len(h.p.Writes()) != 4 || cli.ExitCode(r) != cli.ExitOK {
-		t.Fatalf("2 周目: writes=%v exit=%d", h.p.Writes(), cli.ExitCode(r))
+		t.Fatalf("2 cycle 目: writes=%v exit=%d", h.p.Writes(), cli.ExitCode(r))
 	}
 }
 
-// 観測し直しは回数 3 まで。5 段の鎖は 1 周で 4 段まで進み、残りは次の周。
+// 再観測は回数 3 まで。5 つ連なる依存は 1 cycle で 4 つまで進み、残りは次の cycle。
 func TestReobserveRoundLimit(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -108,18 +108,18 @@ func TestReobserveRoundLimit(t *testing.T) {
 	}
 	r := h.run()
 	if n := len(h.p.Writes()); n != 1+cycle.ReobserveRounds {
-		t.Fatalf("1 周目に %d 件当てた: %v", n, h.p.Writes())
+		t.Fatalf("1 cycle 目に %d 件 Apply した: %v", n, h.p.Writes())
 	}
 	if c := find(r, rid("rec", "e")); c.Action != plan.ActWait || cli.ExitCode(r) != cli.ExitRemaining {
 		t.Fatalf("%+v exit=%d", c, cli.ExitCode(r))
 	}
 	r = h.run()
 	if len(h.p.Writes()) != 5 || cli.ExitCode(r) != cli.ExitOK {
-		t.Fatalf("2 周目: %v exit=%d", h.p.Writes(), cli.ExitCode(r))
+		t.Fatalf("2 cycle 目: %v exit=%d", h.p.Writes(), cli.ExitCode(r))
 	}
 }
 
-// 上流の Apply が失敗・効かないなら、下流は同じ周に進めない（E-D6）。
+// 上流の Apply が失敗・ineffective なら、下流は同じ cycle に進めない（E-D6）。
 func TestReobserveNeedsEffectiveUpstream(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -138,7 +138,7 @@ func TestReobserveNeedsEffectiveUpstream(t *testing.T) {
 }
 
 // 消す宣言は下流から消す（§3.5）。下流が残る間は上流を消さず、下流が消えたら
-// 同じ周に上流を消す。
+// 同じ cycle に上流を消す。
 func TestDeleteDownstreamFirst(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -161,8 +161,8 @@ func TestDeleteDownstreamFirst(t *testing.T) {
 }
 
 // 不変条件 14：成功を返すが現実を変えない provider（人とツールの取り合い、E-J6・
-// E-K10）。効かない Apply を周をまたいで数え、上限（既定 3）で止める。止めた
-// あとは当てない。一回実行でも終了コード 4 で分かる。
+// E-K10）。ineffective Apply を cycle をまたいで数え、上限（既定 3）で halt する。halt した
+// あとは Apply しない。one-shot 実行でも終了コード 4 で分かる。
 func TestIneffectiveApplyHalts(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -174,7 +174,7 @@ func TestIneffectiveApplyHalts(t *testing.T) {
 		r := h.run()
 		c := find(r, a.ID)
 		if c.Outcome != plan.OutcomeOK || c.After != plan.Update || c.Ineffective != i {
-			t.Fatalf("%d 周目: %+v", i, c)
+			t.Fatalf("%d cycle 目: %+v", i, c)
 		}
 		want := cli.ExitRemaining
 		if i == core.DefaultMaxIneffectiveApplies {
@@ -184,16 +184,16 @@ func TestIneffectiveApplyHalts(t *testing.T) {
 			}
 		}
 		if code := cli.ExitCode(r); code != want {
-			t.Fatalf("%d 周目: 終了コード %d、want %d", i, code, want)
+			t.Fatalf("%d cycle 目: 終了コード %d、want %d", i, code, want)
 		}
 	}
 	m, err := h.rec.Marks()
 	if err != nil || m.Ineffective[a.ID.String()].Count != 3 {
-		t.Fatalf("目印: %+v %v", m.Ineffective, err)
+		t.Fatalf("marks: %+v %v", m.Ineffective, err)
 	}
 	r := h.run()
 	if c := find(r, a.ID); c.Action != plan.ActHalt || len(h.p.Writes()) != 3 || cli.ExitCode(r) != cli.ExitHalted {
-		t.Fatalf("上限のあとも当てた: %+v writes=%d", c, len(h.p.Writes()))
+		t.Fatalf("上限のあとも Apply した: %+v writes=%d", c, len(h.p.Writes()))
 	}
 
 	// 宣言を直せば数え直す。
@@ -209,11 +209,11 @@ func TestIneffectiveApplyHalts(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 	if m, _ := h.rec.Marks(); len(m.Ineffective) != 0 {
-		t.Fatalf("宣言どおりなのに目印が残る: %+v", m.Ineffective)
+		t.Fatalf("宣言どおりなのに marks が残る: %+v", m.Ineffective)
 	}
 }
 
-// 不変条件 14：読み直しが Unknown・作業中なら効かない回数に数えない（不変条件 4）。
+// 不変条件 14：再観測が Unknown・Converging なら ineffective の回数に数えない（不変条件 4）。
 // Policy の max_ineffective_applies は最も小さいものが勝つ（E-J5）。
 func TestIneffectiveCountsOnlyCertainRereads(t *testing.T) {
 	h := newHarness(t)
@@ -226,14 +226,14 @@ func TestIneffectiveCountsOnlyCertainRereads(t *testing.T) {
 		{Name: "tight", Select: core.Selector{All: true}, Budget: &core.Budget{PerCycle: core.Unlimited, DestructivePerCycle: core.Unlimited,
 			DestructivePerWindow: core.Unlimited, MaxIneffectiveApplies: 2}},
 	}
-	// 1 周目：当てたあと読み直すと作業中（Apply の中で Converging にする provider）。
+	// 1 cycle 目：Apply したあと再観測すると Converging（Apply の中で Converging にする provider）。
 	p := &convergingAfterApply{Provider: h.p}
 	h.in.Providers["p"] = p
 	r := h.run()
 	if c := find(r, a.ID); c.After != plan.Converging || c.Ineffective != 0 {
 		t.Fatalf("%+v", c)
 	}
-	// 2・3 周目：効かない。2 回で止まる。
+	// 2・3 cycle 目：ineffective Apply。2 回で halt する。
 	h.in.Providers["p"] = h.p
 	h.p.Set(a.ID, present(core.Fields{"value": "theirs"}))
 	h.p.SetIneffective(a.ID, true)
@@ -255,7 +255,7 @@ func (p *convergingAfterApply) Apply(ctx context.Context, w core.WriteContext, i
 }
 
 // E-C4：容量の門。プールの使用率が閾値を超えたら新しい VM を作らない（待つ）。
-// 観測できないプールは容量内と断じない（on_unknown: block で止めて知らせる）。
+// 観測できないプールは容量内と断じない（on_unknown: block で halt して通知する）。
 func TestCapacityGate(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -275,7 +275,7 @@ func TestCapacityGate(t *testing.T) {
 		t.Fatalf("Waiting が無い: %+v", r.Events)
 	}
 
-	// 観測できない：止める（終了コード 4、Halt）。
+	// 観測できない：halt する（終了コード 4、Halt）。
 	h.p.Set(pool, core.Observation{Availability: core.Unknown, Note: "届かない"})
 	r = h.run()
 	c = find(r, vm.ID)
@@ -323,8 +323,8 @@ func TestOnUnknownIgnore(t *testing.T) {
 	}
 }
 
-// 量化（N-B18・N-J3）と check（E-B9）：95% 以上が健全で、登録した確かめが通るまで
-// 待つ。確かめの理由を待ちの理由に出す。
+// quantifier（N-B18・N-J3）と check（E-B9）：95% 以上が healthy で、登録した check が通るまで
+// 待つ。check の理由を待ちの理由に出す。
 func TestQuantifiedConditionAndCheck(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -362,7 +362,7 @@ func TestQuantifiedConditionAndCheck(t *testing.T) {
 	}
 }
 
-// settle は当てた種類の最も長いものを 1 波に 1 回待ってから読み直す（E-J6・E-R3）。
+// settle は Apply した type の最も長いものを 1 wave に 1 回待ってから再観測する（E-J6・E-R3）。
 func TestSettleBeforeReread(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -381,7 +381,7 @@ func TestSettleBeforeReread(t *testing.T) {
 	}
 }
 
-// 予算は周の全部の波で数える（不変条件 20）。後の波で超えたらその波を止める。
+// budget は cycle の全部の wave で数える（不変条件 20）。後の wave で超えたらその wave を止める。
 func TestBudgetAcrossWaves(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil

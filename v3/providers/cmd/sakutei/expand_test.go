@@ -26,8 +26,8 @@ import (
 )
 
 // TestNetworkPolicyToNFTables は network_policy: を go:netpolicy で nftables の base
-// chain に展開し、実の nftables provider（ruleset のファイル）に当てる（E-B5）。
-// 展開した宣言はほかの宣言と同じ検証（Schema・範囲）を通る。
+// chain に展開し、実の nftables provider（ruleset のファイル）に Apply する（E-B5）。
+// 展開した宣言はほかの宣言と同じ検証（Schema・Range）を通る。
 func TestNetworkPolicyToNFTables(t *testing.T) {
 	w := t.TempDir()
 	rules := filepath.Join(w, "firewall.rules")
@@ -64,15 +64,15 @@ network_policy:
 	}
 	got, _ := os.ReadFile(rules)
 	if !strings.Contains(string(got), `ip saddr 10.1.0.0/24 ip daddr 192.0.2.0/24 tcp dport 443 accept comment "社内から公開の web"`) {
-		t.Fatalf("許可を ruleset に当てていない:\n%s", got)
+		t.Fatalf("許可を ruleset に Apply していない:\n%s", got)
 	}
 	if code, out := run(append([]string{"plan"}, common...)...); code != 0 || !strings.Contains(out, "そのまま 1") {
-		t.Fatalf("当てたあとの plan: %d\n%s", code, out)
+		t.Fatalf("Apply したあとの plan: %d\n%s", code, out)
 	}
-	// 重なる網は読み込みで断る（E-B5）。
+	// 重なるネットワークは読み込み時にエラーにする（E-B5）。
 	data, _ := os.ReadFile(filepath.Join(w, "intent", "net.yaml"))
 	os.WriteFile(filepath.Join(w, "intent", "net.yaml"), []byte(strings.Replace(string(data), "192.0.2.0/24", "10.1.0.0/16", 1)), 0o644)
 	if code, out := run(append([]string{"plan"}, common...)...); code != 2 || !strings.Contains(out, "重なる") {
-		t.Fatalf("重なる網: %d\n%s", code, out)
+		t.Fatalf("重なるネットワーク: %d\n%s", code, out)
 	}
 }

@@ -19,7 +19,7 @@ v2（Backlog #20）に入るかどうかは、この手順で v1 を使ってみ
 
 ## v3 で試す（新しいコア、docs/trial/v3/）
 
-新しいコア（`v3/`、設計 `docs/core/README.md`）に実の provider（`v3/providers/` の dnszone・nftables）を組み込んだ `sakutei` で、同じ手順（plan → reconcile → 手でずらす → 戻る → 知らせるだけ → 宣言から外しても消さない）を流す。
+新しいコア（`v3/`、設計 `docs/core/README.md`）に実の provider（`v3/providers/` の dnszone・nftables）を組み込んだ `sakutei` で、同じ手順（plan → reconcile → 手動で変更する → 元に戻る → 通知だけにする → 宣言から外しても削除しない）を流す。
 
 ```sh
 docs/trial/v3/run.sh            # 作業ディレクトリは /tmp/sakutei-trial-v3（毎回作り直す）
@@ -27,17 +27,17 @@ docs/trial/v3/run.sh            # 作業ディレクトリは /tmp/sakutei-trial
 
 v1 との違い：
 
-- つなぎ方の設定（`config.yaml`）と intent に分かれる。ゾーン（`zone`）と扱う table（`host`・`tables`）は intent の `ranges` に書く。
-- ID は dnszone が `<FQDN>/<型>`（種類 `dns/record`）、nftables が `<host>/<family>/<table>/<chain>`（種類 `fw/chain`）。`rules` はルール文のリスト。
-- import は別の道具 `sakutei-import`（段 9、下の「v2 の intent を新しいコアへ書き直す」）。status の代わりに plan がずれを出す。
+- 接続設定（`config.yaml`）と intent に分かれる。ゾーン（`zone`）と扱う table（`host`・`tables`）は intent の `ranges` に書く。
+- ID は dnszone が `<FQDN>/<型>`（type `dns/record`）、nftables が `<host>/<family>/<table>/<chain>`（type `fw/chain`）。`rules` はルール文のリスト。
+- import は別のツール `sakutei-import`（Stage 9、下の「v2 の intent を新しいコアへ書き直す」）。status の代わりに plan がずれを出す。
 - alert-only は `sakutei freeze`（理由・期限・誰が。`unfreeze` で終える）。
-- 宣言から外したものは `ranges` の `prune: false`（既定）なら消さず、宣言外として出す。`prune: true` にしても、前の周の件数が無ければ・予算（`budget.destructive_per_cycle`）を超えれば消さない。
+- 宣言から外したものは `ranges` の `prune: false`（既定）なら削除せず、unmanaged として出す。`prune: true` にしても、前の cycle の件数が無いとき・budget（`budget.destructive_per_cycle`）を超えるときは削除しない。
 
-同じ手順と v1 の D3（宣言外の削除が予算で止まる）を `v3/providers/cmd/sakutei` の `TestTrial` が回す（`make test` に入る）。
+同じ手順と v1 の D3（unmanaged の削除が budget で halt する）を `v3/providers/cmd/sakutei` の `TestTrial` が回す（`make test` に入る）。
 
 ## v2 の intent を新しいコアへ書き直す（sakutei-migrate）
 
-v2 の intent と v2 に渡していた provider の設定（同じ名前の引数）を `sakutei-migrate` に渡すと、新しいコアの intent とつなぎ方の設定に書き直す。
+v2 の intent と v2 に渡していた provider の設定（同じ名前の引数）を `sakutei-migrate` に渡すと、新しいコアの intent と接続設定に書き直す。
 v1 の試用の intent なら：
 
 ```sh
@@ -48,10 +48,10 @@ W=/tmp/sakutei-migrate-trial; rm -rf $W; mkdir -p $W; cp docs/trial/v1/initial/*
 ```
 
 - `planned_change:` は別枠の Policy（`allow`・`windows`・`approval`・`applicant`）に、`remediation:` の時間帯は窓の Policy に、`profile:` は承認の数（team 1 人・enterprise 2 人と申請者≠承認者・solo は cooling-off）になる。v2 は承認者を intent に書いたが、新しいコアでは書き直したあと承認者が `sakutei approve <依頼>` で Record に残す（依頼は reconcile が書き、plan と `sakutei approvals` に出る）。
-- 書き直せないもの（Workflow の `disruption`、窓の中だけ知らせる `remediation` の窓など。どれも試用の intent には無い。一覧は `v3/README.md` の「段 9 の決まり」）があれば、全部を挙げて何も書かない（終了コード 2）。
+- 書き直せないもの（Workflow の `disruption`、window の中だけ通知する `remediation` の window など。どれも試用の intent には無い。一覧は `v3/README.md` の「Stage 9 の決まり」）があれば、全部を挙げて何も書き出さない（終了コード 2）。
 - Workflow の gate と planned_change の承認者は名前で渡す（`--role platform-admin=alice,bob`・`--approver bob`）。秘密の参照は `--secret-file secretref:file/bmc/node1=/path/to/password`。
 - 今の現実を宣言の形に書き出すのは `sakutei-import --intent <intent> --config <config> --out <file>`（`--every 1m` で同期、`--commit` で 1 回 1 commit）。
-- docs/trial の v2 の試用の intent を全部（planned-change の planned_change の付いた intent と remediation-profile の時間帯・プロファイルの intent を含む 32 件。run.sh が今の時刻から書く窓は表に時刻の差し込みで書く）書き直して、新しいコアの plan が v2 の plan と同じ操作を出すことを、`v3/providers/migrate` の試験が確かめる（表は `v3/providers/migrate/testdata/trial-cases.json`。表に入れていない run.sh の手順（常駐で窓が開いて閉じる・`--mode`・`--freeze`・宣言の誤り・急減の判定）と、確かめた範囲は `v3/README.md` の「段 9 の決まり」）。
+- docs/trial の v2 の試用の intent を全部（planned-change の planned_change の付いた intent と remediation-profile の時間帯・プロファイルの intent を含む 32 件。run.sh が今の時刻から書く window は、表では時刻を差し込む形で書く）書き直して、新しいコアの plan が v2 の plan と同じ操作を出すことを、`v3/providers/migrate` のテストで確かめる（表は `v3/providers/migrate/testdata/trial-cases.json`。表に入れていない run.sh の step（daemon で window が開いて閉じる・`--mode`・`--freeze`・宣言のエラー・急減の判定）と、確かめた範囲は `v3/README.md` の「Stage 9 の決まり」）。
 
 ## 置いてあるもの（docs/trial/v1/）
 

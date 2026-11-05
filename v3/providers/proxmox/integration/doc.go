@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package integration は新しいコアの proxmox provider の統合テスト（v3 段 8d、
-// 設計 §6.2 の統合テスト・E-P3・N-P4）。v2 と同じ入れ子の Proxmox VE 9.2（ISO は版と
+// Package integration は新しいコアの proxmox provider の統合テスト（v3 Stage 8d、
+// 設計 §6.2 の統合テスト・E-P3・N-P4）。v2 と同じ入れ子の Proxmox VE 9.2（ISO はバージョンと
 // sha256 で固定、自動導入の ISO を docker で作り qemu の入れ子の KVM で入れる。
 // ISO・自動導入の ISO・導入済みのディスクは v2 と同じキャッシュ SAKUTEI_IT_CACHE、
 // 既定 ~/.cache/sakutei-it/proxmox を使い回す）に向けて、v3 の sakutei の CLI を
-// 回す：テンプレートから作る・何周しても適合・手の変更が戻る・pending を重ねず
+// 回す：テンプレートから作る・何 cycle 回しても適合・手の変更が戻る・pending を重ねず
 // apply_pending で再起動・触らない VM（external_owners）・届かないと Unknown・
-// 宣言の外は消さずに見せる・ciupgrade と NIC の firewall/mtu と VM の FW の options・
+// 宣言に無いもの（unmanaged）は消さずに見せる・ciupgrade と NIC の firewall/mtu と VM の FW の options・
 // 観測用（PVEAuditor）と書き込み用のトークン・network_policy の実現先 proxmox-fw・
 // keep のディスクの付け替え（承認つき）・承認つきの削除・pool。
 //

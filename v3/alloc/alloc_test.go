@@ -62,7 +62,7 @@ func TestResolve(t *testing.T) {
 		t.Fatalf("書き足しを受け入れていない: %+v", p.Writes)
 	}
 
-	// 同じ値を 2 つに払っているファイル・範囲の外は断る。
+	// 同じ値を 2 つに払っているファイル・範囲の外は reject する。
 	bad := core.Allocation{Pool: "vmid", Values: map[string]int64{"pve/vm/a#vmid": 100, "pve/vm/b#vmid": 100, "pve/vm/c#vmid": 500}}
 	if _, diags := alloc.Resolve(alloc.State{Pools: []core.Pool{pool}, Files: []core.Allocation{bad}}, nil, nil); len(diags) != 2 {
 		t.Fatalf("diags = %v", diags)

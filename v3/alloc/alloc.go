@@ -15,9 +15,9 @@
 // Package alloc は採番（設計 §3.8、N-B13・N-B12・N-A14）。正は intent のファイル
 // allocations/<pool>.yaml で、Record の alloc/<pool>.json はその写し（P5）。
 //
-// 宣言の項目に {from_pool: <pool>, block: …, template: …} と書くと、ファイルに値が
-// あればそれを差し込み、無ければ空きを選ぶ。選んだ値は、ロックを持つ周が当てる
-// 前にファイルと写しに書き足す（Persist）。plan は選ぶだけで書かない。
+// 宣言の field に {from_pool: <pool>, block: …, template: …} と書くと、ファイルに値が
+// あればそれを差し込み、無ければ空きを選ぶ。選んだ値は、ロックを持つ cycle が Apply
+// する前にファイルと写しに書き足す（Persist）。plan は選ぶだけで書かない。
 //
 // 二度払わない（不変条件 11）：値は宣言から消えても返さない（返すのは人の
 // Release）。reuse: false のプールは block ごとの最後の値（last）より上だけを払う。
@@ -42,7 +42,7 @@ import (
 // Dir は intent のディレクトリの中の採番のファイルの置き場。
 const Dir = "allocations"
 
-// Requests は宣言の項目の {from_pool: …} を集める。形の誤りは Reject。
+// Requests は宣言の field の {from_pool: …} を集める。形の誤りは Reject。
 func Requests(res []core.Resource) ([]core.AllocRequest, []core.Diagnostic) {
 	var reqs []core.AllocRequest
 	var diags []core.Diagnostic
@@ -55,14 +55,14 @@ func Requests(res []core.Resource) ([]core.AllocRequest, []core.Diagnostic) {
 			req := core.AllocRequest{Resource: r.ID, Field: k}
 			bad := func(format string, a ...any) {
 				diags = append(diags, core.Diagnostic{Severity: core.Reject, Origin: r.Origin, Target: r.ID.String(),
-					Message: fmt.Sprintf("項目 %q の採番: ", k) + fmt.Sprintf(format, a...)})
+					Message: fmt.Sprintf("field %q の採番: ", k) + fmt.Sprintf(format, a...)})
 			}
 			good := true
 			for _, mk := range sortedKeys(m) {
 				s, isStr := m[mk].(string)
 				switch {
 				case mk != "from_pool" && mk != "block" && mk != "template":
-					bad("知らない項目 %q（書ける項目: from_pool, block, template）", mk)
+					bad("知らない field %q（書ける field: from_pool, block, template）", mk)
 					good = false
 				case !isStr || s == "":
 					bad("%s に文字列を書く", mk)
@@ -98,7 +98,7 @@ type State struct {
 
 // Plan は採番の結果。
 type Plan struct {
-	// Values は要求の鍵 → 値（ファイルにあったものと、この周に選んだもの）。
+	// Values は要求の鍵 → 値（ファイルにあったものと、この cycle で選んだもの）。
 	Values map[string]int64
 	// Blocked は要求の鍵 → 値を出せない理由（その宣言は Unknown にする）。
 	Blocked map[string]string
@@ -108,10 +108,10 @@ type Plan struct {
 
 // Write はプール 1 つの書き込み。
 type Write struct {
-	Base   core.Allocation // 読み込みのときのファイル（周の間に変わっていないかを見る）
+	Base   core.Allocation // 読み込みのときのファイル（cycle の間に変わっていないかを見る）
 	Next   core.Allocation // 書く内容
 	File   string          // intent のディレクトリからのパス
-	New    []string        // この周に選んだ鍵
+	New    []string        // この cycle で選んだ鍵
 	Copy   bool            // 写しを書く（無い・ファイルが写しより進んだ）
 	WriteF bool            // ファイルを書く（新しい値がある）
 }
@@ -159,11 +159,11 @@ func Resolve(st State, reqs []core.AllocRequest, picker core.Allocator) (Plan, [
 	for _, r := range reqs {
 		p, ok := pools[r.Pool]
 		if !ok {
-			diags = append(diags, reject(core.Origin{}, r.Resource.String(), "項目 %q の採番: プール %q が pools: に無い", r.Field, r.Pool))
+			diags = append(diags, reject(core.Origin{}, r.Resource.String(), "field %q の採番: プール %q が pools: に無い", r.Field, r.Pool))
 			continue
 		}
 		if _, _, ok := p.Bounds(r.Block); !ok {
-			diags = append(diags, reject(core.Origin{}, r.Resource.String(), "項目 %q の採番: プール %s に block %q が無い", r.Field, r.Pool, r.Block))
+			diags = append(diags, reject(core.Origin{}, r.Resource.String(), "field %q の採番: プール %s に block %q が無い", r.Field, r.Pool, r.Block))
 			continue
 		}
 		byPool[r.Pool] = append(byPool[r.Pool], r)
@@ -294,7 +294,7 @@ func Same(a, b core.Allocation) bool {
 	return a.Pool == b.Pool && reflect.DeepEqual(norm(a.Values), norm(b.Values)) && reflect.DeepEqual(norm(a.Last), norm(b.Last))
 }
 
-// Substitute は宣言の {from_pool: …} を値にする。値の無い項目は宣言から外し、
+// Substitute は宣言の {from_pool: …} を値にする。値の無い field は宣言から外し、
 // その宣言を Unknown にする診断を返す（観測も Apply もしない、下流は待つ）。
 func Substitute(res []core.Resource, plan Plan) ([]core.Resource, []core.Diagnostic) {
 	var diags []core.Diagnostic
@@ -322,7 +322,7 @@ func Substitute(res []core.Resource, plan Plan) ([]core.Resource, []core.Diagnos
 					why = "値を選べなかった"
 				}
 				diags = append(diags, core.Diagnostic{Severity: core.Uncertain, Origin: r.Origin, Target: r.ID.String(),
-					Message: fmt.Sprintf("項目 %q の採番（プール %v）: %s", k, m["from_pool"], why)})
+					Message: fmt.Sprintf("field %q の採番（プール %v）: %s", k, m["from_pool"], why)})
 				continue
 			}
 			if t, _ := m["template"].(string); t != "" {
@@ -375,10 +375,10 @@ func Format(a core.Allocation) []byte {
 	return []byte(b.String())
 }
 
-// Persist は周が選んだ値を、ロックを持って当てる前にファイルと写しに書く
-// （ファイルが先、写しが後。写しに書けなくても次の周に書き直せる）。周の間に
+// Persist は cycle が選んだ値を、ロックを持って Apply する前にファイルと写しに書く
+// （ファイルが先、写しが後。写しに書けなくても次の cycle で書き直せる）。cycle の間に
 // ファイルか写しが変わったプール・書けなかったプールの新しい鍵を、理由つきで返す
-// （その宣言はこの周 Unknown にする）。書けたプールの新しい鍵は監査に残す。
+// （その宣言はこの cycle で Unknown にする）。書けたプールの新しい鍵は監査に残す。
 func Persist(intentDir string, rec *record.Record, audit func(pool, key string, v int64) error, writes map[string]Write) map[string]string {
 	failed := map[string]string{}
 	fail := func(w Write, why string) {
@@ -399,7 +399,7 @@ func Persist(intentDir string, rec *record.Record, audit func(pool, key string, 
 			continue
 		}
 		if !Same(cur, w.Base) {
-			fail(w, "採番のファイルが周の間に変わった。次の周に選び直す")
+			fail(w, "採番のファイルが cycle の間に変わった。次の cycle で選び直す")
 			continue
 		}
 		cp, err := record.ReadAlloc(rec.Dir(), name)
@@ -422,7 +422,7 @@ func Persist(intentDir string, rec *record.Record, audit func(pool, key string, 
 				continue
 			}
 		}
-		// 写しに書けなくても、ファイルは写しを含むので次の周に書き直せる。
+		// 写しに書けなくても、ファイルは写しを含むので次の cycle で書き直せる。
 		_ = rec.WriteAlloc(w.Next)
 		for _, k := range w.New {
 			if err := audit(name, k, w.Next.Values[k]); err != nil {

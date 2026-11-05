@@ -23,7 +23,7 @@ type Pool struct {
 	Lo, Hi int64
 	// Blocks は区切った範囲（N-B13）。要求は block で名指しする。
 	Blocks []Block
-	// Reuse が false なら、一度払った値は返しても二度と払わない。block ごとの
+	// Reuse が false なら、一度払い出した値は返しても二度と払い出さない。block ごとの
 	// 最後の値を採番のファイルの last に残す（N-B13・不変条件 11）。
 	Reuse  bool
 	Origin Origin
@@ -63,16 +63,16 @@ func (p Pool) Bounds(block string) (lo, hi int64, ok bool) {
 // （P5、N-B13・E-K4）。
 type Allocation struct {
 	Pool string `json:"pool"`
-	// Values は要求の鍵（"<type>/<id>#<項目>"）→ 払った値。宣言から消えても返さない
+	// Values は要求の key（"<type>/<id>#<field>"）→ 払い出した値。宣言から消えても返さない
 	// （N-B13・N-J4）。
 	Values map[string]int64 `json:"values"`
-	// Last は block（"" はプール全体）→ 払った最後の値。reuse: false のプールは
-	// これより大きい値だけを払う（不変条件 11）。
+	// Last は block（"" はプール全体）→ 払い出した最後の値。reuse: false のプールは
+	// これより大きい値だけを払い出す（不変条件 11）。
 	Last   map[string]int64 `json:"last,omitempty"`
 	Origin Origin           `json:"-"`
 }
 
-// AllocRequest は採番の要求（宣言の項目の {from_pool: <pool>, block: …, template: …}）。
+// AllocRequest は採番の要求（宣言の field の {from_pool: <pool>, block: …, template: …}）。
 type AllocRequest struct {
 	Resource ID
 	Field    string
@@ -81,12 +81,12 @@ type AllocRequest struct {
 	Template string // "{n}" を値に置き換える。空なら値は整数
 }
 
-// Key は採番のファイルの鍵（"<type>/<id>#<項目>"）。
+// Key は採番のファイルの key（"<type>/<id>#<field>"）。
 func (r AllocRequest) Key() string { return fmt.Sprintf("%s#%s", r.Resource, r.Field) }
 
 // Allocator は空きから値を選ぶ（§3.8。差し替えれば外の採番権威を使える、E-T4・N-T5）。
-// taken は払えない値（払って返していない値と、reuse: false のプールで一度払った
-// 値）。範囲は pool.Bounds(req.Block)。
+// taken は払い出せない値（払い出して返していない値と、reuse: false のプールで
+// 一度払い出した値）。範囲は pool.Bounds(req.Block)。
 type Allocator interface {
 	Pick(pool Pool, taken func(int64) bool, req AllocRequest) (int64, error)
 }
@@ -94,7 +94,7 @@ type Allocator interface {
 // FirstFree は既定の Allocator：範囲の中で使われていない最も小さい値。
 type FirstFree struct{}
 
-// Pick は空きの先頭を返す。空きが無ければ誤り（理由つきで止める、N-B13）。
+// Pick は空きの先頭を返す。空きが無ければエラー（理由つきで止める、N-B13）。
 func (FirstFree) Pick(pool Pool, taken func(int64) bool, req AllocRequest) (int64, error) {
 	lo, hi, ok := pool.Bounds(req.Block)
 	if !ok {

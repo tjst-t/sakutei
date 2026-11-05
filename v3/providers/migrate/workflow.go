@@ -17,15 +17,15 @@ package migrate
 // workflow.go — v2 の Workflow を新しいコアの Procedure にする（§7.2：単純 Task・
 // 多相 Task・Workflow は Procedure）。
 //
-//   - stage 1 つが手順 1 つ（stage ごとに gate と対象が違うため）。対象が 2 つ以上の
+//   - stage 1 つが Procedure 1 つ（stage ごとに gate と対象が違うため）。対象が 2 つ以上の
 //     stage は、対象の宣言にラベル workflow・workflow-stage を付けて選ぶ。
-//   - v2 は宣言してある間は済むまで走らせた。新しいコアは drift_fields（手順が
-//     対象に当てる項目）がずれたら起こす（trigger: on_drift）。収束ループは
-//     その項目を当てず手順に渡す（v2 が対象を Workflow に任せたのと同じ）。
+//   - v2 は宣言してある間は済むまで走らせた。新しいコアは drift_fields（Procedure が
+//     対象に Apply する field）がずれたら起こす（trigger: on_drift）。収束ループは
+//     その field を Apply せず Procedure に渡す（v2 が対象を Workflow に任せたのと同じ）。
 //   - 前の stage の対象が宣言どおりになるまで次の stage を起こさない
 //     （precondition。v2 の stage の順）。
 //   - invariant.min_active は count(…) の invariant に、verify: invariant は
-//     落とす（新しいコアは段を進める前に毎回 invariant を確かめる）。
+//     落とす（新しいコアは step を進める前に毎回 invariant を確かめる）。
 //   - gate の承認者は名前の並び。v2 の roles は --role で名前に、ロールの無い gate
 //     は --approver の名前にする。applicant_ne_approver は申請者を並びから外す。
 
@@ -103,7 +103,7 @@ func (c *conv) workflow(file string, i int, n *yaml.Node) []*obj {
 		case "trigger":
 			c.refuse("%s: trigger（reimage）は新しいコアの Policy の allow に当たるが、まだ受け皿が無い", at)
 		case "disruption":
-			c.refuse("%s: disruption は新しいコアの手順の disruption に当たるが、まだ受け皿が無い", at)
+			c.refuse("%s: disruption は新しいコアの Procedure の disruption に当たるが、まだ受け皿が無い", at)
 		default:
 			c.refuse("%s: %s は書き直せない", at, k)
 		}
@@ -112,7 +112,7 @@ func (c *conv) workflow(file string, i int, n *yaml.Node) []*obj {
 		c.refuse("%s: stages が無い", at)
 		return nil
 	}
-	// 対象の宣言にラベルを付け、手順が当てる項目（drift_fields）を決める。
+	// 対象の宣言にラベルを付け、Procedure が Apply する field（drift_fields）を決める。
 	targetRes := map[string]*v2res{}
 	for _, st := range stages {
 		for _, t := range st.targets {
@@ -167,7 +167,7 @@ func (c *conv) workflow(file string, i int, n *yaml.Node) []*obj {
 			}
 		}
 		if len(drift) == 0 {
-			c.refuse("%s: stage %s の対象の宣言に、手順が当てる項目が無い（drift_fields を決められない）", at, st.name)
+			c.refuse("%s: stage %s の対象の宣言に、Procedure が Apply する field が無い（drift_fields を決められない）", at, st.name)
 		}
 		p.Set("drift_fields", drift)
 		if si > 0 {
@@ -195,10 +195,11 @@ func (c *conv) workflow(file string, i int, n *yaml.Node) []*obj {
 	return procs
 }
 
-// dropStepResources は手順の段が当てる別の宣言（対象でないもの）を宣言から外す。
-// v2 は Workflow が済むまでその宣言を収束から外したが、新しいコアは手順の対象
-// だけを任せるので、残すと収束が手順の当てた値を宣言どおりに戻して取り合う
-// （例：導入中の CD を抜く）。終わりの値は手順の段が当てる。
+// dropStepResources は、Procedure の step が Apply する別の宣言（対象でないもの）を
+// 宣言から外す。v2 は Workflow が済むまでその宣言を収束から外した。新しいコアは
+// Procedure の対象だけを任せるので、残すと収束が Procedure の Apply した値を
+// 宣言どおりに戻して取り合う（例：導入中の CD を抜く）。終わりの値は Procedure の
+// step が Apply する。
 func (c *conv) dropStepResources(at string, stages []stage, steps []*yaml.Node, scope map[string]string) {
 	for _, s := range steps {
 		if s.Kind != yaml.Map || len(s.Keys) != 1 || s.Keys[0] != "apply" {
@@ -215,7 +216,7 @@ func (c *conv) dropStepResources(at string, stages []stage, steps []*yaml.Node, 
 				if r == nil || r.out == nil {
 					continue
 				}
-				c.note("%s: %s は手順の段が当てるので宣言から外した（新しいコアは手順の対象でない宣言を収束で戻すため。終わりの値は手順の最後の段が当てる）", at, r.v2id)
+				c.note("%s: %s は Procedure の step が Apply するので宣言から外した（新しいコアは Procedure の対象でない宣言を収束で戻すため。終わりの値は Procedure の最後の step が Apply する）", at, r.v2id)
 				r.out = nil
 				delete(c.ids, r.v2id)
 			}
@@ -233,8 +234,8 @@ func (c *conv) find(provider string, scope map[string]string, local string) *v2r
 	return nil
 }
 
-// driftFields は手順が対象に当てる項目のうち、対象の宣言にあるもの。当てる項目
-// が無ければ宣言の項目全部。
+// driftFields は、Procedure が対象に Apply する field のうち、対象の宣言にあるもの。
+// Apply する field が無ければ宣言の field 全部。
 func driftFields(r *v2res, applied map[string]bool) []any {
 	f, _ := r.out.Get("fields").(*obj)
 	if f == nil {
@@ -333,7 +334,7 @@ func known2() []string {
 	return s
 }
 
-// fieldsExpr は v2 の {resource, fields} を「全部の項目が等しい」式にする。
+// fieldsExpr は v2 の {resource, fields} を「全部の field が等しい」式にする。
 func (c *conv) fieldsExpr(at, typ string, n *yaml.Node) string {
 	res, _ := str(n.Map["resource"])
 	ref, ok := c.ref(at, typ, res)
@@ -356,12 +357,12 @@ func (c *conv) fieldsExpr(at, typ string, n *yaml.Node) string {
 	return strings.Join(parts, " and ")
 }
 
-// step は v2 の段 1 つ（apply・wait・require・action・verify）を書き直す。
-// applied には対象に当てる項目を足す。
+// step は v2 の step 1 つ（apply・wait・require・action・verify）を書き直す。
+// applied には対象に Apply する field を足す。
 func (c *conv) step(at, typ string, j int, n *yaml.Node, applied map[string]bool) *obj {
 	at = fmt.Sprintf("%s steps[%d]", at, j)
 	if n.Kind != yaml.Map || len(n.Keys) != 1 {
-		c.refuse("%s: 段は apply・wait・require・action・verify のどれか 1 つ", at)
+		c.refuse("%s: step は apply・wait・require・action・verify のどれか 1 つ", at)
 		return nil
 	}
 	k := n.Keys[0]
@@ -414,10 +415,10 @@ func (c *conv) step(at, typ string, j int, n *yaml.Node, applied map[string]bool
 		}
 		return newObj().Set("invoke", inv)
 	case "verify":
-		c.note("%s: verify: invariant は落とした（新しいコアは段を進める前に毎回 invariant を確かめる）", at)
+		c.note("%s: verify: invariant は落とした（新しいコアは step を進める前に毎回 invariant を確かめる）", at)
 		return nil
 	}
-	c.refuse("%s: 段 %s は書き直せない", at, k)
+	c.refuse("%s: step %s は書き直せない", at, k)
 	return nil
 }
 
@@ -426,7 +427,7 @@ func splitRef(ref string) (typ, id string) {
 	return parts[0] + "/" + parts[1], parts[2]
 }
 
-// gate は v2 の gate（manual_approval・timeout）を承認の段にする。
+// gate は v2 の gate（manual_approval・timeout）を承認の step にする。
 func (c *conv) gate(at, applicant string, n *yaml.Node) *obj {
 	ma := n.Map["manual_approval"]
 	if ma == nil {

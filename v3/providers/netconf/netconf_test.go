@@ -15,7 +15,7 @@
 package netconf_test
 
 // netconf_test.go — 偽の NETCONF サーバ（netconffake、base:1.0 だけのものと 1.1 のもの）
-// で provider を確かめる：契約テスト（§6.2）・Transaction の戻り（不変条件 17）・
+// で provider を確かめる。契約テスト（§6.2）・Transaction の戻り（不変条件 17）・
 // 比べ方（E-I7・E-B7）・NACM で絞ったユーザー（E-B10）・複数の台をまとめる準備（E-B9）・
 // 読み込みの検査。
 
@@ -100,7 +100,7 @@ func validate(t *testing.T, p *netconf.Provider, res []core.Resource, ranges ...
 	t.Helper()
 	for _, d := range p.Validate(res, ranges) {
 		if d.Severity == core.Reject {
-			t.Fatalf("断った: %s", d)
+			t.Fatalf("拒否された: %s", d)
 		}
 	}
 }
@@ -126,9 +126,9 @@ func countOps(srv *netconffake.Server, names ...string) int {
 	return n
 }
 
-// 契約テスト（§6.2、E-P2）：届かない・hello が壊れた・rpc-error・権限が無いは
-// Unknown、無い部分木は Absent、作って読む・冪等・正規形・List・書き込みの資格・
-// 消さない。
+// 契約テスト（§6.2、E-P2）。届かない・hello が壊れた・rpc-error・権限が無いは
+// Unknown、無い部分木は Absent。作って読む・冪等・正規形・List・書き込み用の
+// credential・消さないことも確かめる。
 func TestContract(t *testing.T) {
 	contract.Run(t, func(t *testing.T) contract.Target {
 		srv := newServer(running, caps10...)
@@ -152,7 +152,7 @@ func TestContract(t *testing.T) {
 			Create:    []core.Resource{{ID: id("sw1/if-new"), Fields: core.Fields{"config": newConfig}}},
 			Observed:  []core.ID{id("sw1/if-uplink"), id("sw1/system")},
 			Faults: map[string]func(){
-				"止めた":        func() { srv.SetDown(true) },
+				"停止した":       func() { srv.SetDown(true) },
 				"hello が壊れた": func() { srv.SetBadHello("<nonsense/>") },
 				"rpc-error":  func() { srv.SetRPCError("operation-failed") },
 				"権限が無い":      func() { srv.SetRPCError("access-denied") },
@@ -164,7 +164,7 @@ func TestContract(t *testing.T) {
 	})
 }
 
-// Transaction の戻り（§6.2、不変条件 17）：1.0（セッションの終わりで戻る）・1.1
+// Transaction の戻り（§6.2、不変条件 17）。1.0（セッションの終わりで戻る）・1.1
 // （cancel-commit）・1.1 の persist のどれでも、確定すれば戻らず、確定しなければ
 // 機器の confirm-timeout で戻り、Rollback で戻る。
 func TestTxnContract(t *testing.T) {
@@ -191,8 +191,8 @@ func TestTxnContract(t *testing.T) {
 	}
 }
 
-// 比べ方（E-I7・E-B7）：接頭辞・空白・兄弟の順・宣言に無い属性の違いは差分にしない。
-// 観測の config は意味が同じなら宣言の書き方で返す。手で変えればずれ。中身の無い
+// 比べ方（E-I7・E-B7）。接頭辞・空白・兄弟の順・宣言に無い属性の違いは差分にしない。
+// 観測の config は意味が同じなら宣言の書き方で返す。手で変えれば drift。中身の無い
 // <configuration/> は Absent。観測で送るのは get-config と close-session だけ。
 func TestCompare(t *testing.T) {
 	srv := newServer(running, caps10...)
@@ -249,9 +249,9 @@ func TestOrdered(t *testing.T) {
 	}
 }
 
-// 2 段の Apply の流れ（E-B8）：同じセッションで lock → get-config → edit-config →
-// validate → commit-confirmed、Commit で確定の commit。部分木の外は変えない。準備の
-// あとの観測は新しい接続で張る。
+// two-phase Apply の流れ（E-B8）。同じセッションで lock → get-config → edit-config →
+// validate → commit-confirmed、Commit で確定の commit。部分木の外は変えない。Prepare
+// のあとの観測は新しい接続で張る。
 func TestPrepareCommit(t *testing.T) {
 	srv := newServer(strings.Replace(running, "to core", "changed by hand", 1), caps10...)
 	p := provider(t, netconf.Options{Apply: true}, map[string]*netconffake.Server{"sw1": srv})
@@ -269,7 +269,7 @@ func TestPrepareCommit(t *testing.T) {
 	observe(t, p, res.ID)
 	observe(t, p, res.ID)
 	if srv.Dials() != dials+2 {
-		t.Fatalf("準備のあとの観測が新しい接続でない（%d → %d）", dials, srv.Dials())
+		t.Fatalf("Prepare のあとの観測が新しい接続でない（%d → %d）", dials, srv.Dials())
 	}
 	if err := txn.Commit(context.Background()); err != nil {
 		t.Fatal(err)
@@ -298,7 +298,8 @@ func TestPrepareCommit(t *testing.T) {
 	}
 }
 
-// 2 段でない宣言の Apply も 2 段：新しい接続で読み直して宣言どおりなら確定する。
+// apply.transaction を書かない宣言の Apply も two-phase Apply にする。新しい接続で
+// 読み直して宣言どおりなら確定する。
 // 機器が :candidate・:confirmed-commit を持たなければ何も送らない。
 func TestApply(t *testing.T) {
 	srv := newServer(strings.Replace(running, "to core", "changed by hand", 1), caps10...)
@@ -327,9 +328,9 @@ func TestApply(t *testing.T) {
 	}
 }
 
-// 部分木だけに絞ったユーザー（機器の側の NACM、E-B10）：部分木の中は観測と 2 段の
-// Apply が通り、外を読む・書く・ほかの rpc を送るが無い。外を書く宣言は access-denied
-// で断られ、理由を返し、機器は変わらない。
+// 部分木だけに絞ったユーザー（機器の側の NACM、E-B10）。部分木の中は観測と
+// two-phase Apply が通り、外を読む・書く・ほかの rpc を送ることが無い。外を書く宣言は
+// access-denied で拒否され、理由を返し、機器は変わらない。
 func TestScopedUser(t *testing.T) {
 	srv := newServer(strings.Replace(running, "to core", "changed by hand", 1), caps10...)
 	srv.Scope = uplinkFilter
@@ -354,7 +355,7 @@ func TestScopedUser(t *testing.T) {
 	}
 }
 
-// 複数の台を 1 回で準備する（commit_group、E-B9）：1 台でも準備できなければ、準備した
+// 複数の台を 1 回で準備する（commit_group、E-B9）。1 台でも準備できなければ、準備した
 // 台をすぐ戻す。Rollback で全部の台が戻る。
 func TestPrepareGroup(t *testing.T) {
 	g1, g2 := newServer(running, caps11...), newServer(running, caps11...)
@@ -383,7 +384,7 @@ func TestPrepareGroup(t *testing.T) {
 
 	g2.SetOpError("edit-config", "operation-failed")
 	if _, err := p.Prepare(context.Background(), core.WriteContext{}, changes, core.TxnOptions{Timeout: 30 * time.Second}); err == nil || !strings.Contains(err.Error(), "host g2") {
-		t.Fatalf("g2 が落ちるのに: %v", err)
+		t.Fatalf("g2 が失敗するのにエラーにならない: %v", err)
 	}
 	if g1.Running() != running || g1.Pending() {
 		t.Fatalf("準備した g1 を戻していない:\n%s", g1.Running())
@@ -402,19 +403,19 @@ func TestValidateRejects(t *testing.T) {
 		want   string
 	}{
 		{"知らない機器", nil, []core.Range{rangeOf("sw9", "filter.x", systemFilter)}, "hosts に無い"},
-		{"知らない引数", nil, []core.Range{rangeOf("sw1", "filter.x", systemFilter, "subtree", "x")}, "範囲の引数"},
+		{"知らない引数", nil, []core.Range{rangeOf("sw1", "filter.x", systemFilter, "subtree", "x")}, "Range の引数"},
 		{"filter が無い", nil, []core.Range{rangeOf("sw1")}, "filter.<部分木>"},
 		{"名前空間の無い filter", nil, []core.Range{rangeOf("sw1", "filter.x", "<system/>")}, "名前空間"},
 		{"ordered だけ", nil, []core.Range{rangeOf("sw1", "filter.x", systemFilter, "ordered.y", "a/b")}, "filter.y が無い"},
-		{"重なり", nil, []core.Range{rangeOf("sw1", "filter.x", systemFilter), rangeOf("sw1", "filter.x", systemFilter)}, "2 つの範囲"},
+		{"重なり", nil, []core.Range{rangeOf("sw1", "filter.x", systemFilter), rangeOf("sw1", "filter.x", systemFilter)}, "2 つの Range"},
 		{"prune", nil, []core.Range{{Provider: "nc", Args: map[string]string{"host": "sw1", "filter.x": systemFilter}, Prune: true}}, "prune"},
-		{"範囲の外", []core.Resource{{ID: id("sw1/other"), Fields: core.Fields{"config": declared}}}, []core.Range{sw1Range}, "範囲"},
+		{"Range の外", []core.Resource{{ID: id("sw1/other"), Fields: core.Fields{"config": declared}}}, []core.Range{sw1Range}, "Range"},
 		{"消す宣言", []core.Resource{{ID: ok.ID, Ensure: core.EnsureAbsent}}, []core.Range{sw1Range}, "消さない"},
 		{"filter が選ばない", []core.Resource{{ID: ok.ID, Fields: core.Fields{"config": systemFilter[:len(systemFilter)-2] + "><hostname>x</hostname></system>"}}}, []core.Range{sw1Range}, "選ばない"},
-		{"edit の属性", []core.Resource{{ID: ok.ID, Fields: core.Fields{"config": `<interfaces xmlns="` + ifNS + `" xmlns:nc="` + netconf.BaseNS + `" nc:operation="replace"><interface><name>uplink</name></interface></interfaces>`}}}, []core.Range{sw1Range}, "当て方"},
+		{"edit の属性", []core.Resource{{ID: ok.ID, Fields: core.Fields{"config": `<interfaces xmlns="` + ifNS + `" xmlns:nc="` + netconf.BaseNS + `" nc:operation="replace"><interface><name>uplink</name></interface></interfaces>`}}}, []core.Range{sw1Range}, "Apply の仕方"},
 		{"中身の無い宣言", []core.Resource{{ID: ok.ID, Fields: core.Fields{"config": `<interfaces xmlns="` + ifNS + `"/>`}}}, []core.Range{sw1Range}, "中身が無い"},
-		{"観測だけの項目", []core.Resource{{ID: ok.ID, Fields: core.Fields{"config": declared, "capabilities": []any{"x"}}}}, []core.Range{sw1Range}, "観測だけ"},
-		{"知らない項目", []core.Resource{{ID: ok.ID, Fields: core.Fields{"config": declared, "ordered": "x"}}}, []core.Range{sw1Range}, "知らない項目"},
+		{"観測だけの field", []core.Resource{{ID: ok.ID, Fields: core.Fields{"config": declared, "capabilities": []any{"x"}}}}, []core.Range{sw1Range}, "観測だけ"},
+		{"知らない field", []core.Resource{{ID: ok.ID, Fields: core.Fields{"config": declared, "ordered": "x"}}}, []core.Range{sw1Range}, "知らない field"},
 	}
 	for _, c := range cases {
 		var msgs []string
@@ -424,12 +425,12 @@ func TestValidateRejects(t *testing.T) {
 			}
 		}
 		if !strings.Contains(strings.Join(msgs, "\n"), c.want) {
-			t.Errorf("%s: %q を含む断りが無い: %v", c.name, c.want, msgs)
+			t.Errorf("%s: %q を含む Reject が無い: %v", c.name, c.want, msgs)
 		}
 	}
 }
 
-// つなぎ方の設定（§5.6）：ssh だけ。知らない項目・local は断る。
+// 接続設定（§5.6）。ssh だけ。知らない field・local はエラーにする。
 func TestModule(t *testing.T) {
 	ssh := map[string]any{"address": "192.0.2.1", "port": int64(830), "user": "ro", "key": "/k", "known_hosts": "/kh"}
 	if _, err := netconf.Module(map[string]any{"apply": true, "commit_flow": "1.1", "timeout": "60s", "hosts": map[string]any{
@@ -444,7 +445,8 @@ func TestModule(t *testing.T) {
 		{"hosts": map[string]any{"sw1": map[string]any{"ssh": ssh, "write": map[string]any{"local": true}}}},
 	} {
 		if _, err := netconf.Module(s); err == nil {
-			t.Errorf("断らない: %v", s)
+			t.Errorf("エラーにならない: %v", s)
+
 		}
 	}
 }

@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package integration は新しいコアの redfish provider の統合テスト（v3 段 8b、
+// Package integration は新しいコアの redfish provider の統合テスト（v3 Stage 8b、
 // 設計 §6.2 の統合テスト・E-P3・N-P4）。v2 と同じ qemu-bmc 0.11.0 を containerlab で
 // 2 台立て（lab sakutei-v3rf。v2 の sakutei-rf84 と重ならない）、v3 の sakutei の
-// CLI と常駐を本物の Redfish に向けて回す。
+// CLI と daemon を本物の Redfish に向けて回す。
 //
 // テストは build tag integration_v3_redfish の付いたファイルにあり、make check・
 // make test には入らない。回すのは make integration-v3-redfish（KVM・docker・
-// containerlab・sudo が要る）。手順と結果は v3/providers/README.md。
+// containerlab・sudo が要る）。実行方法と結果は v3/providers/README.md。
 package integration

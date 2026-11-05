@@ -29,7 +29,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/contract"
 )
 
-// trialTemplates は試用と統合テストが使う Alpine の雛形の置き場（v2 と同じもの）。
+// trialTemplates は試用と統合テストが使う Alpine のテンプレートのディレクトリ（v2 と同じもの）。
 const trialTemplates = "../../../docs/trial/redfish-os-install/templates"
 
 const answersTmpl = `HOSTNAME={{shquote .Hostname}}
@@ -116,7 +116,7 @@ func (e env) compare(t *testing.T, r core.Resource) plan.Change {
 	return plan.Compare(r, e.p.Schema().Kinds[templatefile.Kind], e.observe(t, r.ID))
 }
 
-// 無ければ Absent で作る。親のディレクトリを作り、0644 で書き、描いた中身と
+// 無ければ Absent で作る。親のディレクトリを作り、0644 で書き、render した中身と
 // 同じなら宣言どおり（E-E5・N-E8）。
 func TestCreateAndConverged(t *testing.T) {
 	e := newEnv(t)
@@ -148,7 +148,7 @@ func TestCreateAndConverged(t *testing.T) {
 	}
 }
 
-// 手で直されたファイル・雛形を直したときは template の項目が違うと観測し、
+// 手で直されたファイル・テンプレートを直したときは field template が違うと観測し、
 // 読める Update を出して書き直す。ファイルの中身は観測に出さない（E-E5）。
 func TestDriftIsUpdateWithoutContent(t *testing.T) {
 	e := newEnv(t)
@@ -178,10 +178,10 @@ func TestDriftIsUpdateWithoutContent(t *testing.T) {
 		t.Fatalf("書き直したあと: %+v", c)
 	}
 
-	// 雛形を直したら次の観測で違い、書き直す。
+	// テンプレートを直したら次の観測で違い、書き直す。
 	writeTemplate(t, e.tdir, "answers.tmpl", answersTmpl+"# v2\n")
 	if c := e.compare(t, r); c.Op != plan.Update {
-		t.Fatalf("雛形を直したあと: %+v", c)
+		t.Fatalf("テンプレートを直したあと: %+v", c)
 	}
 	e.apply(t, r)
 	if b, _ := os.ReadFile(file); string(b) != wantAnswers+"# v2\n" {
@@ -211,18 +211,18 @@ func TestApplyIdempotent(t *testing.T) {
 	}
 }
 
-// 宣言の無い ID・雛形が無い・壊れた雛形・書き出す先が読めないは Unknown
+// 宣言の無い ID・テンプレートが無い・壊れたテンプレート・書き出す先が読めないは Unknown
 // （Absent にしない、E-K1）。
 func TestUnknown(t *testing.T) {
 	cases := map[string]func(t *testing.T, e env){
 		"宣言が無い": func(t *testing.T, e env) { e.validate(t) },
-		"雛形が無い": func(t *testing.T, e env) {
+		"テンプレートが無い": func(t *testing.T, e env) {
 			if err := os.Remove(filepath.Join(e.tdir, "answers.tmpl")); err != nil {
 				t.Fatal(err)
 			}
 		},
-		"壊れた雛形":  func(t *testing.T, e env) { writeTemplate(t, e.tdir, "answers.tmpl", "{{.Hostname") },
-		"描けない雛形": func(t *testing.T, e env) { writeTemplate(t, e.tdir, "answers.tmpl", "{{.Vars.missing}}") },
+		"壊れたテンプレート":         func(t *testing.T, e env) { writeTemplate(t, e.tdir, "answers.tmpl", "{{.Hostname") },
+		"render できないテンプレート": func(t *testing.T, e env) { writeTemplate(t, e.tdir, "answers.tmpl", "{{.Vars.missing}}") },
 		"書き出す先がファイル": func(t *testing.T, e env) {
 			if err := os.WriteFile(e.odir, []byte("x"), 0o644); err != nil {
 				t.Fatal(err)
@@ -245,7 +245,7 @@ func TestUnknown(t *testing.T) {
 			}
 		})
 	}
-	t.Run("種類が違う", func(t *testing.T) {
+	t.Run("type が違う", func(t *testing.T) {
 		e := newEnv(t)
 		id := core.ID{Type: "answers/other", Name: "x"}
 		if o := e.observe(t, id); o.Availability != core.Unknown {
@@ -254,23 +254,23 @@ func TestUnknown(t *testing.T) {
 	})
 }
 
-// 書き方の誤りと秘密を読み込みで断る（E-E5・E-M3）。
+// 書き方の誤りと secret を読み込み時にエラーにする（E-E5・E-M3）。
 func TestValidateRejects(t *testing.T) {
 	cases := map[string]func(r *core.Resource){
-		"絶対パスの id":      func(r *core.Resource) { r.ID.Name = "/etc/passwd" },
-		".. の id":       func(r *core.Resource) { r.ID.Name = "../x" },
-		"正規でない id":      func(r *core.Resource) { r.ID.Name = "a//b" },
-		".. の template": func(r *core.Resource) { r.Fields[templatefile.FieldTemplate] = "../answers.tmpl" },
-		"template が無い":  func(r *core.Resource) { delete(r.Fields, templatefile.FieldTemplate) },
-		"秘密の参照":         func(r *core.Resource) { r.Fields[templatefile.FieldHostname] = "secretref:vault:/x" },
-		"秘密の参照の map":    func(r *core.Resource) { r.Fields[templatefile.FieldHostname] = map[string]any{"secret": "vault:/x"} },
+		"絶対パスの id":        func(r *core.Resource) { r.ID.Name = "/etc/passwd" },
+		".. の id":         func(r *core.Resource) { r.ID.Name = "../x" },
+		"正規でない id":        func(r *core.Resource) { r.ID.Name = "a//b" },
+		".. の template":   func(r *core.Resource) { r.Fields[templatefile.FieldTemplate] = "../answers.tmpl" },
+		"template が無い":    func(r *core.Resource) { delete(r.Fields, templatefile.FieldTemplate) },
+		"secret の参照":      func(r *core.Resource) { r.Fields[templatefile.FieldHostname] = "secretref:vault:/x" },
+		"secret の参照の map": func(r *core.Resource) { r.Fields[templatefile.FieldHostname] = map[string]any{"secret": "vault:/x"} },
 		"秘密鍵": func(r *core.Resource) {
 			r.Fields[templatefile.FieldSSHAuthorizedKeys] = "-----BEGIN OPENSSH PRIVATE KEY-----"
 		},
 		"vars の秘密鍵": func(r *core.Resource) {
 			r.Fields[templatefile.FieldVars] = map[string]any{"k": "-----BEGIN RSA PRIVATE KEY-----"}
 		},
-		"vars の秘密の参照": func(r *core.Resource) {
+		"vars の secret の参照": func(r *core.Resource) {
 			r.Fields[templatefile.FieldVars] = map[string]any{"k": map[string]any{"secret": "vault:/x"}}
 		},
 		"vars の名前":       func(r *core.Resource) { r.Fields[templatefile.FieldVars] = map[string]any{"gate-way": "x"} },
@@ -278,8 +278,8 @@ func TestValidateRejects(t *testing.T) {
 		"vars に無い値を使う": func(r *core.Resource) {
 			r.Fields[templatefile.FieldVars] = map[string]any{"other": "x"}
 		},
-		"知らない項目":         func(r *core.Resource) { r.Fields["var.gateway"] = "x" },
-		"種類が違う":          func(r *core.Resource) { r.ID.Type = "answers/other" },
+		"知らない field":     func(r *core.Resource) { r.Fields["var.gateway"] = "x" },
+		"type が違う":       func(r *core.Resource) { r.ID.Type = "answers/other" },
 		"ensure: absent": func(r *core.Resource) { r.Ensure = core.EnsureAbsent },
 	}
 	for name, f := range cases {
@@ -289,30 +289,30 @@ func TestValidateRejects(t *testing.T) {
 			f(&r)
 			d := e.p.Validate([]core.Resource{r}, nil)
 			if len(d) == 0 || d[0].Severity != core.Reject {
-				t.Fatalf("断らなかった: %v", d)
+				t.Fatalf("エラーにならなかった: %v", d)
 			}
 			for _, s := range []string{"PRIVATE KEY-----"} {
 				if strings.Contains(d[0].Message, s) {
-					t.Errorf("断る文に値が出た: %s", d[0].Message)
+					t.Errorf("エラーの文に値が出た: %s", d[0].Message)
 				}
 			}
 		})
 	}
-	t.Run("範囲", func(t *testing.T) {
+	t.Run("Range", func(t *testing.T) {
 		e := newEnv(t)
 		if d := e.p.Validate(nil, []core.Range{{Provider: "answers"}}); len(d) == 0 {
-			t.Fatal("範囲を断らなかった")
+			t.Fatal("Range がエラーにならなかった")
 		}
 	})
-	// 断った読み込みは前に覚えた宣言を変えない。
-	t.Run("断ったら覚えない", func(t *testing.T) {
+	// エラーにした読み込みは前に覚えた宣言を変えない。
+	t.Run("エラーなら覚えない", func(t *testing.T) {
 		e := newEnv(t)
 		r := answer("a.sh")
 		e.validate(t, r)
 		bad := answer("b.sh")
 		bad.Fields[templatefile.FieldHostname] = "secretref:x:y"
 		if d := e.p.Validate([]core.Resource{bad}, nil); len(d) == 0 {
-			t.Fatal("断らなかった")
+			t.Fatal("エラーにならなかった")
 		}
 		if o := e.observe(t, r.ID); o.Availability != core.Absent {
 			t.Fatalf("%+v", o)
@@ -320,7 +320,7 @@ func TestValidateRejects(t *testing.T) {
 	})
 }
 
-// 雛形が今読めない（権限）ときは読み込みで断らず、観測で Unknown（E-K1）。
+// テンプレートが今読めない（権限）ときは読み込み時にエラーにせず、観測で Unknown（E-K1）。
 func TestTemplateUnreadableIsNotReject(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root では権限で読めなくできない")
@@ -343,19 +343,19 @@ func TestModuleSettings(t *testing.T) {
 		"空":               {},
 		"output_dir が無い":  {"template_dir": "t"},
 		"template_dir が空": {"template_dir": "", "output_dir": "o"},
-		"知らない項目":          {"template_dir": "t", "output_dir": "o", "zone_dir": "z"},
+		"知らない field":      {"template_dir": "t", "output_dir": "o", "zone_dir": "z"},
 		"文字列でない":          {"template_dir": 1, "output_dir": "o"},
 	} {
 		if _, err := templatefile.Module(s); err == nil {
-			t.Errorf("%s: 断らなかった", name)
+			t.Errorf("%s: エラーにならなかった", name)
 		}
 	}
 }
 
-// 試用の Alpine の雛形（v2 と同じもの）が描ける。index .Vars の無い値は空。
+// 試用の Alpine のテンプレート（v2 と同じもの）を render できる。index .Vars の無い値は空。
 func TestTrialTemplate(t *testing.T) {
 	if _, err := os.Stat(trialTemplates); err != nil {
-		t.Skip("試用の雛形が無い")
+		t.Skip("試用のテンプレートが無い")
 	}
 	odir := t.TempDir()
 	p, err := templatefile.New(trialTemplates, odir)
@@ -388,7 +388,7 @@ func TestDeleteRefuses(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	if _, err := e.p.List(context.Background(), core.Range{}); err == nil {
-		t.Fatal("List が誤りでない")
+		t.Fatal("List がエラーを返さない")
 	}
 }
 
@@ -412,7 +412,7 @@ func TestContract(t *testing.T) {
 		e := newEnv(t)
 		created, drifted, kept := answer("new/answers.sh"), answer("drifted.sh"), answer("kept.sh")
 		drifted.Fields[templatefile.FieldHostname] = "node2"
-		// drifted は前の中身（秘密に見立てた値）、kept は宣言どおりの中身で置く。
+		// drifted は前の中身（secret に見立てた値）、kept は宣言どおりの中身で置く。
 		if err := os.MkdirAll(e.odir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -432,8 +432,8 @@ func TestContract(t *testing.T) {
 			Converge:  []core.Resource{drifted},
 			Observed:  []core.ID{kept.ID, drifted.ID},
 			Faults: map[string]func(){
-				"雛形が無い": func() { _ = os.Remove(filepath.Join(e.tdir, "answers.tmpl")) },
-				"壊れた雛形": func() { writeTemplate(t, e.tdir, "answers.tmpl", "{{.Hostname") },
+				"テンプレートが無い": func() { _ = os.Remove(filepath.Join(e.tdir, "answers.tmpl")) },
+				"壊れたテンプレート": func() { writeTemplate(t, e.tdir, "answers.tmpl", "{{.Hostname") },
 				"書き出す先がファイル": func() {
 					_ = os.RemoveAll(e.odir)
 					_ = os.WriteFile(e.odir, []byte("x"), 0o644)
@@ -446,9 +446,9 @@ func TestContract(t *testing.T) {
 	})
 }
 
-// 雛形のファイルが無いのは知らせるだけで断らず、そのファイルだけを Unknown に
-// する（Validate は周ごとに呼ばれるので、常駐の間に雛形を消しても intent 全体を
-// 断らない、E-K1）。
+// テンプレートのファイルが無いのは警告するだけでエラーにせず、そのファイルだけを
+// Unknown にする（Validate は cycle ごとに呼ばれるので、daemon の動作中にテンプレートを
+// 消しても intent 全体はエラーにしない、E-K1）。
 func TestMissingTemplateWarns(t *testing.T) {
 	e := newEnv(t)
 	r := answer("node1/answers.sh")

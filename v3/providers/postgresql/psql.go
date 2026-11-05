@@ -20,14 +20,14 @@ package postgresql
 //   - シェルは通さない。SQL は標準入力で渡し、引数は固定のオプションだけ。
 //   - 接続の設定（host・port・dbname・user・sslmode・sslrootcert・connect_timeout）は
 //     子プロセスの環境変数（PGHOST など）で渡す。親の PG* の環境変数は引き継が
-//     ない（PGSERVICE・PGOPTIONS などで黙って別の所へつながないように）。
-//   - つなぐロールのパスワードは呼ぶたびにファイルから読み（値を持たない、
+//     ない（PGSERVICE・PGOPTIONS などで黙って別の接続先へ接続しないように）。
+//   - 接続に使うロールのパスワードは呼ぶたびにファイルから読み（値を持たない、
 //     E-G2）、0600 の一時的な passfile に書いて PGPASSFILE で渡し、終われば消す。
-//     引数・環境変数の値・誤りの文には出さない。
+//     引数・環境変数の値・エラーメッセージには出さない。
 //   - -X（psqlrc を読まない）-w（パスワードを聞かない）-q -A -t で、結果は
-//     飾りの無い値だけ。読む問い合わせは結果を 1 つの JSON にして返す。
-//   - ON_ERROR_STOP で最初の誤りで止まり（終了コード 3）、VERBOSITY verbose で
-//     誤りに SQLSTATE を付けさせる。接続の失敗は終了コード 2。
+//     装飾の無い値だけ。読み取りのクエリは結果を 1 つの JSON にして返す。
+//   - ON_ERROR_STOP で最初のエラーで止まり（終了コード 3）、VERBOSITY verbose で
+//     エラーに SQLSTATE を付けさせる。接続の失敗は終了コード 2。
 
 import (
 	"bytes"
@@ -42,23 +42,23 @@ import (
 	"time"
 )
 
-// Server は 1 つのサーバへのつなぎ方（settings.servers.<名前>）。
+// Server は 1 つのサーバの接続設定（settings.servers.<名前>）。
 type Server struct {
 	Name           string
 	Host           string
 	Port           int
-	DBName         string // 管理用につなぐ DB（既定 postgres）
+	DBName         string // 管理用に接続する DB（既定 postgres）
 	SSLMode        string
 	SSLRootCert    string
 	ConnectTimeout time.Duration // PGCONNECT_TIMEOUT（秒に切り上げ、最小 2 秒）
-	// VerifyPasswords は pg_authid でパスワードが手で変わったかを確かめる（E-F1・N-F1）。
+	// VerifyPasswords は pg_authid でパスワードが手で変えられたかを確かめる（E-F1・N-F1）。
 	VerifyPasswords bool
-	// Observe は観測用の資格、Write は書き込み用の資格（write を書かなければ
+	// Observe は観測用の credential、Write は書き込み用の credential（write を書かなければ
 	// Observe と同じ、E-G5）。
 	Observe, Write Credential
 }
 
-// Credential はつなぐロールとそのパスワードのファイル（無ければ trust・peer の認証）。
+// Credential は接続に使うロールとそのパスワードのファイル（無ければ trust・peer の認証）。
 type Credential struct {
 	User         string
 	PasswordFile string
@@ -70,7 +70,7 @@ func (s *Server) outsideRole(role string) string {
 	case strings.HasPrefix(role, "pg_"):
 		return fmt.Sprintf("ロール %q は PostgreSQL のロール（pg_*）", role)
 	case role == s.Observe.User || role == s.Write.User:
-		return fmt.Sprintf("ロール %q は Sakutei がつなぐロール", role)
+		return fmt.Sprintf("ロール %q は Sakutei が接続に使うロール", role)
 	case strings.EqualFold(role, "public"):
 		return fmt.Sprintf("%q はロールでない（PUBLIC の権限は grant の id の最後に %s と書く）", role, PublicGrantee)
 	}
@@ -86,7 +86,7 @@ func (s *Server) outsideGrantee(role string) bool {
 // outsideDatabase は db が管理の境界の外なら理由を返す（E-F1）。
 func (s *Server) outsideDatabase(db string) string {
 	if systemDatabases[db] || db == s.DBName {
-		return fmt.Sprintf("データベース %q は PostgreSQL のものか Sakutei がつなぐもの", db)
+		return fmt.Sprintf("データベース %q は PostgreSQL のものか Sakutei が接続に使うもの", db)
 	}
 	return ""
 }
@@ -123,7 +123,7 @@ func ExecRunner(ctx context.Context, inv Invocation) (Result, error) {
 	case err == nil:
 		return res, nil
 	case ctx.Err() != nil:
-		// 時間切れ・取り消しで殺した。つながらないのと同じに扱う。
+		// タイムアウト・キャンセルで kill した。接続できないのと同じに扱う。
 		res.ExitCode = 2
 		res.Stderr += "\npsql: " + ctx.Err().Error()
 		return res, nil
@@ -135,7 +135,7 @@ func ExecRunner(ctx context.Context, inv Invocation) (Result, error) {
 }
 
 // RunnerFunc は「パス・引数・環境変数・標準入力 → 標準出力・標準エラー・終了
-// コード」の関数を Runner にする（偽の psql、pgfake.Server.Run を差すため）。
+// コード」の関数を Runner にする（fake の psql である pgfake.Server.Run を差し込むため）。
 func RunnerFunc(f func(ctx context.Context, path string, args, env []string, stdin string) (string, string, int, error)) Runner {
 	return func(ctx context.Context, inv Invocation) (Result, error) {
 		out, errOut, code, err := f(ctx, inv.Path, inv.Args, inv.Env, inv.Stdin)
@@ -151,25 +151,25 @@ var psqlArgs = []string{
 	"-f", "-",
 }
 
-// ErrorKind は psql の失敗の種類。
+// ErrorKind は psql の失敗の分類。
 type ErrorKind int
 
 const (
 	// KindNoPsql は psql を起動できない（無い・実行できない）。
 	KindNoPsql ErrorKind = iota + 1
-	// KindUnreachable はサーバにつながらない（終了コード 2・時間切れ）。
+	// KindUnreachable はサーバに接続できない（終了コード 2・タイムアウト）。
 	KindUnreachable
 	// KindAuth は認証の失敗・接続が許されない（pg_hba.conf など）。
 	KindAuth
-	// KindPassword はつなぐロールのパスワードのファイルを読めない。
+	// KindPassword は接続に使うロールのパスワードのファイルを読めない。
 	KindPassword
-	// KindSQL は SQL の誤り（終了コード 3。SQLState に SQLSTATE）。
+	// KindSQL は SQL のエラー（終了コード 3。SQLState に SQLSTATE）。
 	KindSQL
 	// KindOutput は psql の出力が読めない。
 	KindOutput
 )
 
-// Error は psql の 1 回の失敗。文にパスワードや SCRAM の検証値は入れない（E-G2）。
+// Error は psql の 1 回の失敗。メッセージにパスワードや SCRAM の検証値は入れない（E-G2）。
 type Error struct {
 	Kind     ErrorKind
 	Server   string
@@ -180,8 +180,8 @@ type Error struct {
 
 func (e *Error) Error() string {
 	what := map[ErrorKind]string{
-		KindNoPsql: "psql を起動できない", KindUnreachable: "届かない", KindAuth: "認証の失敗か接続が許されない",
-		KindPassword: "パスワードのファイルを読めない", KindSQL: "SQL の誤り " + e.SQLState, KindOutput: "psql の出力が読めない",
+		KindNoPsql: "psql を起動できない", KindUnreachable: "接続できない", KindAuth: "認証の失敗か接続が許されない",
+		KindPassword: "パスワードのファイルを読めない", KindSQL: "SQL のエラー " + e.SQLState, KindOutput: "psql の出力が読めない",
 	}[e.Kind]
 	s := "サーバ " + e.Server
 	if e.Database != "" {
@@ -204,15 +204,15 @@ func SQLStateOf(err error) string {
 }
 
 var (
-	// sqlErrorLine は VERBOSITY verbose の誤りの行（"ERROR:  42710: role ..."）。
+	// sqlErrorLine は VERBOSITY verbose のエラーの行（"ERROR:  42710: role ..."）。
 	sqlErrorLine = regexp.MustCompile(`(?m)(?:ERROR|FATAL|PANIC):\s+([0-9A-Z]{5}):\s*(.*)$`)
-	// authFailure は接続の時点で断られたことを示す文。
+	// authFailure は接続の時点で拒否されたことを示すメッセージ。
 	authFailure = regexp.MustCompile(`password authentication failed|no pg_hba\.conf entry|authentication failed|role "[^"]*" does not exist|pg_hba\.conf rejects|no password supplied|is not permitted to log in|SSL error|certificate|permission denied for database`)
-	// redactions は誤りの文から消すもの（SCRAM・md5 の検証値、E-G2）。
+	// redactions はエラーメッセージから消すもの（SCRAM・md5 の検証値、E-G2）。
 	redactions = regexp.MustCompile(`SCRAM-SHA-256\$[^'\s]*|md5[0-9a-f]{32}`)
 )
 
-// redact は誤りの文から検証値を消し、1 行にそろえて短くする。
+// redact はエラーメッセージから検証値を消し、1 行にそろえて短くする。
 func redact(s string) string {
 	s = redactions.ReplaceAllString(s, "***")
 	s = strings.Join(strings.Fields(s), " ")
@@ -222,8 +222,8 @@ func redact(s string) string {
 	return s
 }
 
-// Client は psql を呼ぶ口（接続の設定の渡し方・パスワードの passfile・誤りの
-// 分け方）。
+// Client は psql を呼ぶ client（接続設定の渡し方・パスワードの passfile・エラーの
+// 分類を受け持つ）。
 type Client struct {
 	psqlPath string
 	runner   Runner
@@ -241,7 +241,7 @@ func NewClient(psql string, runner Runner) *Client {
 	return &Client{psqlPath: psql, runner: runner}
 }
 
-// Run は srv の database（空なら管理用の DB）に cred のロールでつなぐ psql を
+// Run は srv の database（空なら管理用の DB）に cred のロールで接続する psql を
 // 1 回起動して script を流し、標準出力を返す。失敗は *Error。
 func (c *Client) Run(ctx context.Context, srv *Server, cred Credential, database, script string) (string, error) {
 	if database == "" {
@@ -296,7 +296,7 @@ func (c *Client) Run(ctx context.Context, srv *Server, cred Credential, database
 			return "", mk(KindAuth, "", stderr)
 		}
 		if m := sqlErrorLine.FindStringSubmatch(res.Stderr); m != nil && m[1] == "3D000" {
-			return "", mk(KindSQL, m[1], redact(m[2])) // つなぐ先の DB が無い
+			return "", mk(KindSQL, m[1], redact(m[2])) // 接続先の DB が無い
 		}
 		return "", mk(KindUnreachable, "", stderr)
 	case 3:

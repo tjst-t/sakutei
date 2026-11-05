@@ -17,14 +17,14 @@ package proxmox
 // normalize.go — 宣言の書き方と、Proxmox が設定に書き戻す表記を同じ正規形に
 // そろえる（永久 drift を出さない。v2 の proxmox-vm から移したもの、E-I7・E-D1）。
 //
-//   - 大きさ: "32G"・"32768M"・"33554432K" は同じ。正規形は割り切れる一番
+//   - サイズ: "32G"・"32768M"・"33554432K" は同じ。正規形は割り切れる一番
 //     大きい単位（T・G・M・K、どれでも割り切れなければバイト数）。
 //   - メモリ: MiB の整数。宣言は "2048"（MiB）・"2048M"・"2G"。観測は
-//     "2048" か "current=2048,..."（新しい版の書き方）。
-//   - ディスク: "<slot> storage=<storage> size=<大きさ> [keep]" を ", " でつなぐ
+//     "2048" か "current=2048,..."（新しいバージョンの書き方）。
+//   - ディスク: "<slot> storage=<storage> size=<サイズ> [keep]" を ", " でつなぐ
 //     （slot の順）。設定の "local-lvm:vm-100-disk-0,iothread=1,size=32G" から
 //     storage と size だけを取り（volume の名前は入れない：付け替えで変わる）、
-//     keep は VM の tags の印（KeepTag）があるときだけ出す。CD-ROM
+//     keep は VM の tags に marker（KeepTag）があるときだけ出す。CD-ROM
 //     （media=cdrom）・cloud-init のドライブ・unused は入れない。
 //   - NIC: "<slot> bridge=<bridge> [vlan=<tag>] mac=<mac> model=<model>
 //     [firewall=1] [mtu=<mtu>]"。MAC は小文字。設定の
@@ -50,7 +50,7 @@ import (
 	"strings"
 )
 
-// EntrySep は disks・nics の項目の区切り（正規形）。宣言は "," で区切れば
+// EntrySep は disks・nics の entry の区切り（正規形）。宣言は "," で区切れば
 // よく、前後の空白は無視する。
 const EntrySep = ", "
 
@@ -148,7 +148,7 @@ func slotLess(a, b string) bool {
 	return na < nb
 }
 
-// splitEntries は ", " か "," で区切った項目を返す（空は除く）。
+// splitEntries は ", " か "," で区切った entry を返す（空は除く）。
 func splitEntries(s string) []string {
 	var out []string
 	for _, e := range strings.Split(s, ",") {
@@ -182,7 +182,7 @@ func entryKV(e string, allowed ...string) (string, map[string]string, error) {
 
 // ---- ディスク ----
 
-// Disk は 1 つのディスク（slot・ストレージ・大きさ、Backlog #204 の volume・keep）。
+// Disk は 1 つのディスク（slot・ストレージ・サイズ、Backlog #204 の volume・keep）。
 type Disk struct {
 	Slot    string
 	Storage string
@@ -190,7 +190,7 @@ type Disk struct {
 	// Volume は宣言の volume の ID（"<storage>:<volume>"）：「この slot が空なら
 	// この既にある volume を付ける」（Backlog #204）。観測では空。
 	Volume string
-	// Keep は「消さない」の印（Backlog #204）。VM の tags の KeepTag(slot)。
+	// Keep は「消さない」の marker（Backlog #204）。VM の tags の KeepTag(slot)。
 	Keep bool
 }
 
@@ -208,14 +208,14 @@ func (d Disk) String() string {
 	return s
 }
 
-// KeepFlag は disks の項目の「消さない」の印（値を取らない語）。
+// KeepFlag は disks の entry の「消さない」の marker（値を取らない語）。
 const KeepFlag = "keep"
 
-// KeepTagPrefix は keep の印を VM の tags に置くときの頭（Backlog #204）。
+// KeepTagPrefix は keep の marker を VM の tags に置くときの prefix（Backlog #204）。
 // "sakutei-keep-scsi1" のように slot を足す。
 const KeepTagPrefix = "sakutei-keep-"
 
-// KeepTag は slot の keep の印の tag。
+// KeepTag は slot の keep の marker の tag。
 func KeepTag(slot string) string { return KeepTagPrefix + slot }
 
 // volumeRe は volume の ID（"<storage>:<volume>"）。
@@ -236,7 +236,7 @@ func VolumeOwner(volume string) int {
 	return n
 }
 
-// diskEntry は disks の項目を slot・key=value・keep の印に読む。
+// diskEntry は disks の entry を slot・key=value・keep の marker に読む。
 func diskEntry(e string, allowed ...string) (string, map[string]string, bool, error) {
 	var toks []string
 	keep := false
@@ -254,10 +254,10 @@ func diskEntry(e string, allowed ...string) (string, map[string]string, bool, er
 	return slot, kv, keep, err
 }
 
-// ParseDisks は宣言の disks を読む。大きさは GiB で割り切れること（新しい
-// ディスクは GiB で切り出すため）。項目は "<slot> storage=<storage>
-// size=<大きさ> [keep]" か、既にある volume を付ける "<slot>
-// volume=<storage>:<volume> [size=<大きさ>] [keep]"（Backlog #204）。
+// ParseDisks は宣言の disks を読む。サイズは GiB で割り切れること（新しい
+// ディスクは GiB で切り出すため）。entry は "<slot> storage=<storage>
+// size=<サイズ> [keep]" か、既にある volume を付ける "<slot>
+// volume=<storage>:<volume> [size=<サイズ>] [keep]"（Backlog #204）。
 func ParseDisks(s string) ([]Disk, error) {
 	var out []Disk
 	seen := map[string]bool{}
@@ -347,20 +347,20 @@ func diskFromConfig(slot, raw string) (Disk, bool) {
 
 // ---- NIC ----
 
-// NICModels は NIC の型。
+// NICModels は NIC の model。
 var NICModels = []string{"virtio", "e1000", "e1000e", "rtl8139", "vmxnet3"}
 
-// NIC は 1 つの NIC。宣言では MAC・型・firewall・mtu は書いたときだけ比べる。
+// NIC は 1 つの NIC。宣言では MAC・model・firewall・mtu は書いたときだけ比べる。
 type NIC struct {
 	Slot   string
 	Bridge string
 	VLAN   int // 0 はタグ無し。
 	MAC    string
 	Model  string
-	// Firewall は口の FW（"0"・"1"）。宣言では "" は書いていない、観測では
+	// Firewall は NIC の FW（"0"・"1"）。宣言では "" は書いていない、観測では
 	// "" は 0（Proxmox の既定）。
 	Firewall string
-	// MTU は口の MTU（0 は書いていない。1 は bridge の MTU を使う）。
+	// MTU は NIC の MTU（0 は書いていない。1 は bridge の MTU を使う）。
 	MTU int
 }
 
@@ -384,7 +384,7 @@ func (n NIC) String() string {
 	return s
 }
 
-// nicKeys は nics の項目のキー。
+// nicKeys は nics の entry のキー。
 var nicKeys = []string{"bridge", "vlan", "mac", "model", "firewall", "mtu"}
 
 var macRe = regexp.MustCompile(`^[0-9a-f]{2}(:[0-9a-f]{2}){5}$`)
@@ -519,7 +519,7 @@ func observedBool01(v string) string {
 }
 
 // nicConfig は宣言の NIC を設定の値にする。old（今の設定の値。無ければ ""）の
-// ほかのキー（rate・queues など）・宣言しない MAC・型・firewall・mtu は残す。
+// ほかのキー（rate・queues など）・宣言しない MAC・model・firewall・mtu は残す。
 func nicConfig(want NIC, old string) string {
 	cur := nicFromConfig(want.Slot, old)
 	model, mac := want.Model, want.MAC
@@ -662,10 +662,10 @@ func CanonSSHKeys(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// CheckSSHKeys は公開鍵の各行が "<型> <base64> [コメント]"（前に authorized_keys
-// のオプションがあってもよい）で、base64 の中身の型が書いた型と同じかを確かめる
-// （Proxmox は形の悪い鍵を設定の書き込みで断る。計画の時点で分かるようにする）。
-// 鍵の中身は文言に出さない。
+// CheckSSHKeys は公開鍵の各行が "<type> <base64> [コメント]"（前に authorized_keys
+// のオプションがあってもよい）で、base64 の中身の type が書いた type と同じかを確かめる
+// （Proxmox は形の悪い鍵を設定の書き込みで拒否する。plan の時点で分かるようにする）。
+// 鍵の中身はメッセージに出さない。
 func CheckSSHKeys(s string) error {
 	for i, line := range strings.Split(CanonSSHKeys(s), "\n") {
 		if line == "" {

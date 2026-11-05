@@ -17,26 +17,26 @@ package redfish
 // invoke.go は観測に残らない一回きりの操作（core.Invoker、Procedure の invoke
 // からだけ呼ぶ、不変条件 15、E-A2・N-A2・E-A5・N-A4）。
 //
-//	種類 system：
+//	type system：
 //	  boot_once      {target: Cd}   起動先の上書きを Once・target にする（PATCH だけで
 //	                                再起動しない。BMC は次の 1 回の起動で Disabled に戻す）
 //	  reset          {}             GracefulRestart（切れていれば On）
-//	  force_restart  {}             ForceRestart（切れていれば On）。壊す操作
-//	  force_off      {}             ForceOff。壊す操作（graceful で止まらない台、E-A1）
-//	種類 firmware：
+//	  force_restart  {}             ForceRestart（切れていれば On）。破壊的な操作
+//	  force_off      {}             ForceOff。破壊的な操作（graceful で止まらない台、E-A1）
+//	type firmware：
 //	  verify         {image_uri, sha256, image_username?, image_password?}
 //	                 イメージを取りに行って sha256 を確かめる（BMC には送らない）
 //	  stage          {image_uri, transfer?, apply_time?, sha256?, image_username?, image_password?}
 //	                 SimpleUpdate（transfer: simple_update、既定）か MultipartHttpPushUri への
-//	                 送信（transfer: multipart。sha256 を書けば送る中身を確かめる）。壊す操作
+//	                 送信（transfer: multipart。sha256 を書けば送る中身を確かめる）。破壊的な操作
 //	  reset・force_restart  その部品のノードの再起動（OnReset の更新を効かせる）
 //
 // 送れていない（BMC に届かない・電源の切り替えの途中・イメージを取りに行けない）
-// ときだけ core.ErrNotSent を返す（次の周に送り直してよい、不変条件 16）。直さない
-// と通らない理由（BMC が持たない起動先・更新できない部品・sha256 の不一致・知らない
-// 引数）と、送ったあとの誤りは ErrNotSent でない誤りで、手順を止める。
-// image_password は秘密の参照（"<backend>:<在りか>"）で書き、WriteContext.Secret で
-// 使う直前に取り出す（誤りの文に出さない、E-G2）。
+// ときだけ core.ErrNotSent を返す（次の cycle で送り直してよい、不変条件 16）。
+// 直さないと通らない理由（BMC が持たない起動先・更新できない部品・sha256 の不一致・
+// 未知の引数）と、送ったあとのエラーは ErrNotSent でないエラーで、Procedure を止める。
+// image_password は secret の参照（"<backend>:<path>"）で書き、WriteContext.Secret で
+// 使う直前に取り出す（エラーメッセージに出さない、E-G2）。
 
 import (
 	"context"
@@ -71,7 +71,7 @@ const (
 	TransferMultipart    = "multipart"
 )
 
-// Ops は種類 kind の操作（E-A2・E-A5・E-C1）。
+// Ops は type kind の操作（E-A2・E-A5・E-C1）。
 func (p *Provider) Ops(kind string) map[string]core.OpSpec {
 	switch kind {
 	case KindSystem:
@@ -105,11 +105,11 @@ func notSent(format string, a ...any) error {
 // Invoke は操作を 1 回だけ送る。
 func (p *Provider) Invoke(ctx context.Context, w core.WriteContext, id core.ID, op string, args core.Fields) error {
 	if _, ok := p.Ops(id.Kind())[op]; !ok {
-		return fmt.Errorf("種類 %q に操作 %q が無い", id.Kind(), op)
+		return fmt.Errorf("type %q に操作 %q が無い", id.Kind(), op)
 	}
 	for k := range args {
 		if !has(opArgs[op], k) {
-			return fmt.Errorf("操作 %s に知らない引数 %q（書ける引数: %s）", op, k, strings.Join(opArgs[op], ", "))
+			return fmt.Errorf("操作 %s に未知の引数 %q（書ける引数: %s）", op, k, strings.Join(opArgs[op], ", "))
 		}
 	}
 	nodeName, comp := split(id)
@@ -150,7 +150,7 @@ func (p *Provider) Invoke(ctx context.Context, w core.WriteContext, id core.ID, 
 		}
 		return p.stage(ctx, w, c, comp, spec)
 	}
-	return fmt.Errorf("操作 %q を知らない", op)
+	return fmt.Errorf("未知の操作 %q", op)
 }
 
 func argString(args core.Fields, k string) string {
@@ -223,7 +223,7 @@ func sendReset(ctx context.Context, c client.Client, sys client.System, t string
 type imageSpec struct {
 	uri, sha256, transfer, applyTime string
 	username                         string
-	password                         any // 秘密の参照（無ければ nil）
+	password                         any // secret の参照（無ければ nil）
 }
 
 func parseImage(args core.Fields, op string) (imageSpec, error) {
@@ -238,7 +238,7 @@ func parseImage(args core.Fields, op string) (imageSpec, error) {
 		}
 		ref, isStr := v.(string)
 		if _, err := core.ParseSecretRef(ref); !isStr || err != nil {
-			return s, errors.New("image_password は秘密の参照（\"<backend>:<在りか>\"）で書く（平文は書けない）")
+			return s, errors.New("image_password は secret の参照（\"<backend>:<path>\"）で書く（平文は書けない）")
 		}
 		s.password = ref
 	}
@@ -269,7 +269,7 @@ func parseImage(args core.Fields, op string) (imageSpec, error) {
 	case s.uri == "" || err != nil:
 		return s, fmt.Errorf("%s には image_uri（http・https の URL）を書く", op)
 	case u.User != nil:
-		return s, errors.New("image_uri に資格を書かない（image_username・image_password）")
+		return s, errors.New("image_uri に credential を書かない（image_username・image_password を使う）")
 	case u.Scheme == "http" || u.Scheme == "https":
 		if u.Host == "" {
 			return s, fmt.Errorf("image_uri %q にホストが無い", s.uri)
@@ -293,8 +293,8 @@ func redact(s string) string {
 	return u.String()
 }
 
-// fetch はイメージを取りに行って w に書き、sha256（小文字の 16 進）を返す。誤りに
-// 資格を出さない。
+// fetch はイメージを取りに行って w に書き、sha256（小文字の 16 進）を返す。エラーに
+// credential を出さない。
 func (p *Provider) fetch(ctx context.Context, w core.WriteContext, s imageSpec, dst io.Writer) (string, error) {
 	var rd io.Reader
 	u, _ := url.Parse(s.uri)
@@ -341,7 +341,7 @@ func (p *Provider) fetch(ctx context.Context, w core.WriteContext, s imageSpec, 
 }
 
 // stage は更新を BMC に渡す。送ったあと、その部品の新しい Task が観測できなければ
-// 誤り（もう一度は送らない）。
+// エラーにする（もう一度は送らない）。
 func (p *Provider) stage(ctx context.Context, w core.WriteContext, c client.Client, comp string, s imageSpec) error {
 	u, err := c.GetUpdateService(ctx)
 	if client.IsNoUpdateService(err) {

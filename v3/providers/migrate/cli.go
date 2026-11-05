@@ -29,7 +29,7 @@ import (
 // 終了コード。
 const (
 	ExitOK      = 0
-	ExitError   = 1 // 実行の誤り（読めない・書けない）
+	ExitError   = 1 // 実行時のエラー（読めない・書けない）
 	ExitRefused = 2 // 書き直せないものがある（何も書かない）
 )
 
@@ -47,14 +47,14 @@ func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 //	    [--mode alert-only] [--nft-host <名前>] [--role <ロール>=<名前>,…]…
 //	    [--approver <名前>]… [--secret-file <参照>=<ファイル>]…
 //
-// <out>/intent/ に intent を、<out>/config.yaml につなぎ方の設定を、
+// <out>/intent/ に intent を、<out>/config.yaml に接続設定を、
 // <out>/migrate-ids.json に v2 の ID と新しい ID の対応を書く。書き直せないものが
-// あれば全部を出して何も書かない。
+// あれば、それを全部出力して何も書かない。
 func Run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("sakutei-migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	intent := fs.String("intent", "", "v2 の intent のディレクトリ")
-	out := fs.String("out", "", "書き出す先（無いか空のディレクトリ）")
+	out := fs.String("out", "", "出力先（存在しないか空のディレクトリ）")
 	pc := fs.String("provider-config", "", "v2 の --provider-config のファイル")
 	nftHost := fs.String("nft-host", "local", "nftables の ruleset のファイルに付けるホストの名前")
 	flags := map[string]*string{}
@@ -63,14 +63,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		flags[f] = fs.String(f, "", "v2 の --"+f)
 	}
 	var roles, approvers, secrets multi
-	fs.Var(&roles, "role", "v2 の承認のロールの持ち主 <ロール>=<名前>,…（繰り返せる）")
-	fs.Var(&approvers, "approver", "ロールの無い gate の承認者（繰り返せる・, で区切れる）")
-	fs.Var(&secrets, "secret-file", "v2 の秘密の参照の中身を置いたファイル <参照>=<ファイル>（繰り返せる）")
+	fs.Var(&roles, "role", "v2 の承認のロールを持つ人 <ロール>=<名前>,…（繰り返し指定できる）")
+	fs.Var(&approvers, "approver", "ロールの無い gate の承認者（繰り返し指定できる・, で区切れる）")
+	fs.Var(&secrets, "secret-file", "v2 の secret の参照の値を置いたファイル <参照>=<ファイル>（繰り返し指定できる）")
 	if err := fs.Parse(args); err != nil {
 		return ExitError
 	}
 	if *intent == "" || *out == "" || fs.NArg() > 0 {
-		fmt.Fprintln(stderr, "sakutei-migrate: --intent と --out を書く")
+		fmt.Fprintln(stderr, "sakutei-migrate: --intent と --out を指定してください")
 		return ExitError
 	}
 	in := Input{IntentDir: *intent, ProviderConfig: *pc, OutDir: *out, NftHost: *nftHost,
@@ -81,7 +81,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	for _, r := range roles {
 		k, v, ok := strings.Cut(r, "=")
 		if !ok || k == "" || v == "" {
-			fmt.Fprintf(stderr, "sakutei-migrate: --role %q は <ロール>=<名前>,…\n", r)
+			fmt.Fprintf(stderr, "sakutei-migrate: --role %q は <ロール>=<名前>,… の形で指定する\n", r)
 			return ExitError
 		}
 		in.Roles[k] = append(in.Roles[k], splitList(v)...)
@@ -92,7 +92,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	for _, s := range secrets {
 		k, v, ok := strings.Cut(s, "=")
 		if !ok || k == "" || v == "" {
-			fmt.Fprintf(stderr, "sakutei-migrate: --secret-file %q は <参照>=<ファイル>\n", s)
+			fmt.Fprintf(stderr, "sakutei-migrate: --secret-file %q は <参照>=<ファイル> の形で指定する\n", s)
 			return ExitError
 		}
 		in.SecretFiles[k] = v
@@ -134,7 +134,7 @@ func splitList(s string) []string {
 	return out
 }
 
-// Write は結果を dir に書く（intent/・config.yaml・migrate-ids.json と写し）。
+// Write は結果を dir に書く（intent/・config.yaml・migrate-ids.json とファイルのコピー）。
 func (o *Output) Write(dir string) error {
 	files := map[string][]byte{"config.yaml": []byte(o.Config)}
 	for name, s := range o.Intent {

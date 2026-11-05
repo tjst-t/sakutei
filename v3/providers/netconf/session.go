@@ -14,17 +14,17 @@
 
 package netconf
 
-// session.go — NETCONF のセッション（RFC 6241、手元の側）。
+// session.go — NETCONF のセッション（RFC 6241、クライアントの側）。
 //
 //   - hello: こちらは base:1.0 と base:1.1 を出す。相手の hello に session-id と
 //     base:1.0 か base:1.1 が無ければ「hello が合わない」（ErrHello）。両方が
-//     base:1.1 なら、hello の後は chunked の区切り（RFC 6242 §4.1）。
+//     base:1.1 なら、hello の後は chunked の framing（RFC 6242 §4.1）。
 //   - 観測で送る rpc は get-config（running、subtree filter）と close-session
-//     だけ。2 段の Apply（apply.go、#175）は lock・unlock・edit-config・
+//     だけ。two-phase Apply（txn.go、#175）は lock・unlock・edit-config・
 //     validate・commit（confirmed）・discard-changes を足す。
 //   - rpc-reply の rpc-error（error-severity が error のもの）は *RPCError。
 //     warning だけなら成功として扱う。error-tag が access-denied のもの（NACM
-//     などで権限が無くて断られた、RFC 6241 付録 A・RFC 8341）は
+//     などで権限が無くて拒否された、RFC 6241 付録 A・RFC 8341）は
 //     IsAccessDenied で見分ける。
 //   - 機器について知ることは hello の capability だけから読む（<get> で
 //     netconf-state・yang-library を読みに行かない）。部分木だけに絞った
@@ -51,7 +51,7 @@ const (
 	CapBase11 = "urn:ietf:params:netconf:base:1.1"
 	// capPrefix は NETCONF 自身の capability の頭（短い名前にして記録する）。
 	capPrefix = "urn:ietf:params:netconf:"
-	// 2 段の Apply が見る capability（RFC 6241 §8）。
+	// two-phase Apply が見る capability（RFC 6241 §8）。
 	CapCandidate         = "urn:ietf:params:netconf:capability:candidate:1.0"
 	CapConfirmedCommit10 = "urn:ietf:params:netconf:capability:confirmed-commit:1.0"
 	CapConfirmedCommit11 = "urn:ietf:params:netconf:capability:confirmed-commit:1.1"
@@ -78,7 +78,7 @@ func (e *RPCError) Error() string {
 	return msg
 }
 
-// TagAccessDenied は権限が無くて断られたことを表す error-tag。
+// TagAccessDenied は権限が無くて拒否されたことを表す error-tag。
 const TagAccessDenied = "access-denied"
 
 // IsAccessDenied は err が access-denied の rpc-error か。
@@ -96,7 +96,7 @@ type Session struct {
 	nextID    int
 }
 
-// helloMsg は手元の hello。
+// helloMsg はクライアントの hello。
 const helloMsg = `<?xml version="1.0" encoding="UTF-8"?>` +
 	`<hello xmlns="` + BaseNS + `"><capabilities>` +
 	`<capability>` + CapBase10 + `</capability>` +
@@ -160,7 +160,8 @@ func (s *Session) readHello(msg []byte) error {
 // SessionID は相手が付けたセッションの番号。
 func (s *Session) SessionID() string { return s.sessionID }
 
-// Framing はこのセッションの区切り方。
+// Framing はこのセッションの framing。
+
 func (s *Session) Framing() Framing { return s.f.Framing() }
 
 // Capabilities は相手の hello の capability（そのまま）。
@@ -221,7 +222,7 @@ func (s *Session) GetConfig(ctx context.Context, filter string) ([]byte, error) 
 	return dataOf(reply)
 }
 
-// Lock・Unlock は datastore（"candidate" など）を締める・放す。
+// Lock は datastore（"candidate" など）を lock する。Unlock は unlock する。
 func (s *Session) Lock(ctx context.Context, target string) error {
 	_, err := s.rpc(ctx, `<lock><target><`+target+`/></target></lock>`)
 	return err
@@ -233,7 +234,7 @@ func (s *Session) Unlock(ctx context.Context, target string) error {
 	return err
 }
 
-// EditConfig は candidate に config（<config> の中身の XML）を当てる。
+// EditConfig は candidate に config（<config> の中身の XML）を適用する。
 // default-operation は既定（merge）のまま: 置き換え・消すは config の中の
 // operation 属性で書く。
 func (s *Session) EditConfig(ctx context.Context, config string) error {

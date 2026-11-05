@@ -52,17 +52,17 @@ func docs(t *testing.T, src string) []intent.Document {
 	return []intent.Document{{Path: "main.yaml", Root: n}}
 }
 
-// TestRunRejects は Expand の選び方の誤りを断る（E-M3）：組み込まれていない Go の
-// Expand・設定に無い外の Expand・同じ項目を 2 つが読む・Expand の読まない項目。
+// TestRunRejects は Expand の選び方の誤りを reject する（E-M3）：組み込まれていない Go の
+// Expand・設定に無い外の Expand・同じ field を 2 つが読む・Expand の読まない field。
 func TestRunRejects(t *testing.T) {
 	gos := map[string]expand.Expander{"a": adder{keys: []string{"x"}}, "b": adder{keys: []string{"x"}}, "c": adder{keys: []string{"resources"}}}
 	for name, c := range map[string]struct{ src, want string }{
-		"組み込まれていない":  {"expand:\n  - kind: go:nope\n", "組み込まれていない"},
-		"設定に無い exec": {"expand:\n  - kind: exec:nope\n", "expanders に無い"},
-		"同じ項目":       {"expand:\n  - kind: go:a\n  - kind: go:b\n", "2 つが読む"},
-		"intent の項目": {"expand:\n  - kind: go:c\n", "2 つが読む"},
-		"読まない項目":     {"network_policy: {}\n", "知らない項目"},
-		"kind の形":    {"expand:\n  - kind: python:x\n", "go:<名前> か exec:<名前>"},
+		"組み込まれていない":      {"expand:\n  - kind: go:nope\n", "組み込まれていない"},
+		"設定に無い exec":     {"expand:\n  - kind: exec:nope\n", "expanders に無い"},
+		"同じ field":       {"expand:\n  - kind: go:a\n  - kind: go:b\n", "2 つが読む"},
+		"intent の field": {"expand:\n  - kind: go:c\n", "2 つが読む"},
+		"読まない field":     {"network_policy: {}\n", "知らない field"},
+		"kind の形":        {"expand:\n  - kind: python:x\n", "go:<名前> か exec:<名前>"},
 	} {
 		out, err := expand.Run(context.Background(), docs(t, c.src), nil, gos, nil)
 		if err != nil {
@@ -78,7 +78,7 @@ func TestRunRejects(t *testing.T) {
 	}
 }
 
-// TestRunDependsOn は Expand が前の宣言に依存を足せることと、宣言に無い ID は断る
+// TestRunDependsOn は Expand が前の宣言に依存を足せることと、宣言に無い ID を reject する
 // ことを確かめる（E-A7）。
 func TestRunDependsOn(t *testing.T) {
 	www := core.ID{Type: "dns/record", Name: "www"}
@@ -94,17 +94,17 @@ func TestRunDependsOn(t *testing.T) {
 		t.Fatalf("依存を足していない: %+v", out.Resources)
 	}
 	if len(out.Diagnostics) != 1 || !strings.Contains(out.Diagnostics[0].Message, "宣言に無い") {
-		t.Fatalf("宣言に無い ID を断っていない: %v", out.Diagnostics)
+		t.Fatalf("宣言に無い ID を reject していない: %v", out.Diagnostics)
 	}
 }
 
-// TestExecFailure は外のコマンドが失敗すれば誤り（その周は読み込めない）。
+// TestExecFailure は外のコマンドが失敗すればエラー（その cycle は読み込めない）。
 func TestExecFailure(t *testing.T) {
 	_, err := expand.Run(context.Background(), docs(t, "expand:\n  - kind: exec:f\n"), nil, nil, map[string]string{"f": "/bin/false"})
 	if err == nil {
 		t.Fatal("失敗したコマンドを誤りにしない")
 	}
 	if _, err := expand.ParseExecOutput("x", []byte(`{"cycle": {}}`)); err == nil {
-		t.Fatal("出力の知らない項目を断らない")
+		t.Fatal("出力の知らない field を reject しない")
 	}
 }

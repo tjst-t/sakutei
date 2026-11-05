@@ -31,7 +31,7 @@ import (
 	"time"
 )
 
-// Files は書いたファイルの置き場。
+// Files は書いたファイルのパス。
 type Files struct {
 	CA         string
 	ServerCert string

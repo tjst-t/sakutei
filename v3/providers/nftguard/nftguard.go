@@ -14,27 +14,27 @@
 
 //go:build unix
 
-// Package nftguard は nftables provider の決まった道具 sakutei-nft-guard の中身
+// Package nftguard は nftables provider の専用ツール sakutei-nft-guard の実装
 // （設計 §7.1 の nft-guard、E-E1・E-B3）。対象のホストで root で走るのはこの
-// 道具だけにし、sudo で許すのも道具だけにする（sh・nft を直接は許さない）。
-// v2 の道具を移し、すぐ戻す rollback を足した（Transactor の Rollback）。
+// ツールだけにし、sudo で許すのもこのツールだけにする（sh・nft を直接は許さない）。
+// v2 のツールを移し、すぐ元に戻す rollback を足した（Transactor の Rollback）。
 //
-//   - 道具がやるのは決まった形の引数の次だけ：
-//     list <family> <name> json|handles（観測）・check・apply（標準入力の規則を
-//     確かめる・当てる）・arm <秒> [<family>/<name>...]（写しを取り、時間切れの
-//     後に戻す予約を置いて token を返す）・disarm <token>（予約を取り消す。確定）・
-//     rollback <token>（予約をすぐ使って写しに戻す）・status。
-//   - 扱ってよい表は、ホストの root だけが書ける道具の設定ファイル（既定
-//     /etc/sakutei/nft-guard.json、--config で変えられるが持ち主と権限を確かめる）
-//     に書く。呼び手からは渡さない。
+//   - ツールが受け付けるのは、決まった形の引数の次のコマンドだけ：
+//     list <family> <name> json|handles（観測）・check・apply（標準入力のルールを
+//     確かめる・Apply する）・arm <秒> [<family>/<name>...]（コピーを取り、時間切れの
+//     後に元に戻す rollback を予約して token を返す）・disarm <token>（予約を取り消す。
+//     確定）・rollback <token>（予約をすぐ実行してコピーに戻す）・status。
+//   - 扱ってよい table は、ホストの root だけが書けるツールの設定ファイル（既定
+//     /etc/sakutei/nft-guard.json。--config で変えられるが、持ち主と権限を確かめる）
+//     に書く。呼び出し側からは渡さない。
 //   - check・apply の標準入力は行ごとに構造として読む：add table・add chain
 //     （base chain は { type … hook … priority … ; policy … ; } だけ）・flush chain・
-//     delete chain・add rule の 5 つの形だけを、許した表のものだけ受ける。
-//   - 巻き戻しの写しは道具が自分で取り、root だけが読み書きできる状態の
-//     ディレクトリに置き、自分を setsid で切り離して起動し直して上限の後に流す。
-//     Sakutei との接続が切れても、Sakutei が居なくなっても戻る（不変条件 17）。
-//     取り消し・すぐ戻す・時間切れは写しのファイルの rename で決着する（先に
-//     動かした方が勝つ）。
+//     delete chain・add rule の 5 つの形を、許した table のものだけ受け付ける。
+//   - rollback 用のコピーはツールが自分で取り、root だけが読み書きできる state
+//     ディレクトリに置く。ツールは自分を setsid で切り離して起動し直し、上限の時間が
+//     過ぎたらコピーを流す。Sakutei との接続が切れても、Sakutei がいなくなっても元に
+//     戻る（不変条件 17）。取り消し・即時の rollback・時間切れは、コピーのファイルの
+//     rename で決着する（先に動いた方が勝つ）。
 package nftguard
 
 import (
@@ -70,12 +70,12 @@ const (
 	fireVerb          = "_fire"
 )
 
-// Config は道具の設定ファイル（JSON）。
+// Config はツールの設定ファイル（JSON）。
 //
 //	{
-//	  "tables": ["inet/sk"],                   // 必須。扱ってよい表（family/name）
+//	  "tables": ["inet/sk"],                   // 必須。扱ってよい table（family/name）
 //	  "nft": "/usr/sbin/nft",                  // 省略可。nft の絶対パス
-//	  "state_dir": "/run/sakutei-nft-guard",   // 省略可。写しと予約を置く
+//	  "state_dir": "/run/sakutei-nft-guard",   // 省略可。コピーと予約を置く
 //	  "max_rollback_seconds": 600              // 省略可。arm の秒の上限（1〜3600）
 //	}
 type Config struct {
@@ -108,13 +108,13 @@ func parseTable(s string) (table, bool) {
 	return table{f, n}, true
 }
 
-// Options は Main の外から決まるもの（本番は cmd/sakutei-nft-guard が決まった値を渡す）。
+// Options は Main の外から渡す設定（本番では cmd/sakutei-nft-guard が固定の値を渡す）。
 type Options struct {
 	// ConfigPath は設定ファイル（空なら DefaultConfigPath）。
 	ConfigPath string
-	// Self は巻き戻しのために起動し直す自分（空なら /proc/self/exe）。
+	// Self は rollback のために起動し直す自身のバイナリ（空なら /proc/self/exe）。
 	Self string
-	// ChildEnv は起動し直す自分に足す環境変数（テスト用）。
+	// ChildEnv は起動し直すプロセスに足す環境変数（テスト用）。
 	ChildEnv []string
 	Stdin    io.Reader
 	Stdout   io.Writer
@@ -133,7 +133,7 @@ func refuse(format string, a ...any) error {
 	return &exitErr{ExitRefused, fmt.Sprintf(format, a...)}
 }
 
-// Main は道具を 1 回走らせ、終了コードを返す。
+// Main はツールを 1 回実行し、終了コードを返す。
 func Main(args []string, o Options) int {
 	if o.ConfigPath == "" {
 		o.ConfigPath = DefaultConfigPath
@@ -265,8 +265,8 @@ func loadConfig(path string) (*Config, error) {
 	return &c, nil
 }
 
-// checkOwned は path が root か自分（実効 uid）の持ち物で、group・other が
-// 書けないこと（シンボリックリンクは辿った先）を確かめる。
+// checkOwned は path の持ち主が root か自プロセスの実効 uid で、group・other が
+// 書けないことを確かめる（シンボリックリンクは辿った先を見る）。
 func checkOwned(path string, dir bool) error {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -308,7 +308,7 @@ func (c *Config) tableNames() []string {
 	return out
 }
 
-// stateDir は状態のディレクトリを（無ければ 0700 で）作り、持ち主と権限を確かめる。
+// stateDir は state ディレクトリを（無ければ 0700 で）作り、持ち主と権限を確かめる。
 func (c *Config) stateDir() (string, error) {
 	if err := os.MkdirAll(c.StateDir, 0o700); err != nil {
 		return "", &exitErr{ExitConfig, fmt.Sprintf("state_dir: %v", err)}
@@ -333,7 +333,7 @@ func (c *Config) stateDir() (string, error) {
 // nft
 // ─────────────────────────────────────────────────────────────────────────────
 
-// nftFailed は nft が 0 以外で終わったこと（標準エラーはそのまま呼び手へ）。
+// nftFailed は nft が 0 以外で終わったこと（標準エラーはそのまま呼び出し側へ返す）。
 type nftFailed struct {
 	code   int
 	stderr []byte
@@ -432,8 +432,8 @@ func cmdApply(c *Config, check bool, o Options) error {
 	return err
 }
 
-// CheckScript は check・apply の標準入力を構造として読み、受けない行が 1 つでも
-// あれば（行の番号と理由つきの）ExitRefused の error を返す。
+// CheckScript は check・apply の標準入力を構造として読み、受け付けない行が 1 つでも
+// あれば（行番号と理由つきの）ExitRefused の error を返す。
 func (c *Config) CheckScript(in []byte) error {
 	if !strings.HasSuffix(string(in), "\n") && len(in) > 0 {
 		in = append(in, '\n')
@@ -521,7 +521,7 @@ func (c *Config) checkLine(line string) error {
 	return checkRule(strings.TrimSpace(rest))
 }
 
-// checkBaseSpec は add chain の { type T hook H priority P ; policy X ; } を見る。
+// checkBaseSpec は add chain の { type T hook H priority P ; policy X ; } を確かめる。
 func checkBaseSpec(f []string) error {
 	bad := errors.New("add chain: only a base chain's { type <type> hook <hook> priority <number> ; policy accept|drop ; } is taken")
 	if len(f) != 12 || f[0] != "{" || f[1] != "type" || f[3] != "hook" || f[5] != "priority" || f[7] != ";" ||
@@ -539,7 +539,7 @@ func checkBaseSpec(f []string) error {
 	return nil
 }
 
-// checkRule はルール文が 1 つの命令に収まる（表の外の命令を持ち込めない）かを見る。
+// checkRule はルール文が 1 つの命令に収まるか（table の外への命令を持ち込めないか）を確かめる。
 func checkRule(r string) error {
 	if r == "" {
 		return errors.New("add rule: an empty rule")
@@ -583,16 +583,16 @@ func checkRule(r string) error {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 巻き戻しの予約
+// rollback の予約
 // ─────────────────────────────────────────────────────────────────────────────
 
 // 予約のディレクトリ（state_dir/<token>）の中:
 //
-//	restore.nft  写し（流す前）。取り消すと disarmed.nft、流すと fired.nft に動く
+//	restore.nft  コピー（流す前）。取り消すと disarmed.nft、流すと fired.nft に移る
 //	fire_at      流す時刻（unix 秒）
-//	tables       写しを取った表
-//	nonce        起動し直した自分を確かめる
-//	pid          起動し直した自分の pid
+//	tables       コピーを取った table
+//	nonce        起動し直したプロセスを確かめる値
+//	pid          起動し直したプロセスの pid
 //	result       流した結果（nft の終了コード）
 
 func cmdArm(c *Config, args []string, o Options) error {
@@ -715,8 +715,8 @@ func readTrim(path string) string {
 	return strings.TrimSpace(string(b))
 }
 
-// cmdFire は起動し直した自分: 上限まで眠り、写しが残っていれば（取り消されて
-// いなければ）流す。
+// cmdFire は起動し直したプロセスの処理：上限の時刻まで眠り、コピーが残っていれば
+// （取り消されていなければ）流す。
 func cmdFire(c *Config, args []string) error {
 	if len(args) != 1 || !tokenRe.MatchString(args[0]) {
 		return refuse("not a rollback")
@@ -739,7 +739,7 @@ func cmdFire(c *Config, args []string) error {
 	return err
 }
 
-// fire は写しが残っていれば（取り消されていなければ）流す。流したら true。
+// fire はコピーが残っていれば（取り消されていなければ）流す。流したら true。
 func fire(c *Config, dir, why string) (bool, error) {
 	fired := filepath.Join(dir, "fired.nft")
 	if err := os.Rename(filepath.Join(dir, "restore.nft"), fired); err != nil {
@@ -763,8 +763,8 @@ func fire(c *Config, dir, why string) (bool, error) {
 	return true, nerr
 }
 
-// cmdRollback は予約をすぐ使って写しに戻す（Transactor の Rollback）。眠っている
-// 自分は止める。もう戻っていれば何もしない。
+// cmdRollback は予約をすぐ実行してコピーに戻す（Transactor の Rollback）。眠っている
+// プロセスは止める。もう元に戻っていれば何もしない。
 func cmdRollback(c *Config, args []string, o Options) error {
 	if len(args) != 1 || !tokenRe.MatchString(args[0]) {
 		return refuse("usage: rollback <token> (32 lowercase hex digits)")
@@ -818,7 +818,7 @@ func cmdDisarm(c *Config, args []string, o Options) error {
 	return err
 }
 
-// isFire は pid が token の巻き戻しの自分かどうか（pid の使い回しで別の
+// isFire は pid が token の rollback を待つプロセスかどうか（pid の再利用で別の
 // プロセスを止めないため）。
 func isFire(pid int, token string) bool {
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
@@ -861,7 +861,7 @@ func cmdStatus(c *Config, o Options) error {
 	return w.Flush()
 }
 
-// logf は syslog へ（届かなければ黙って捨てる）。
+// logf は syslog へ書く（届かなければ黙って捨てる）。
 func logf(p syslog.Priority, format string, a ...any) {
 	w, err := syslog.New(p|syslog.LOG_AUTHPRIV, Name)
 	if err != nil {

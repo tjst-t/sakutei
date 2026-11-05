@@ -33,7 +33,7 @@ type fixedClock struct{ t time.Time }
 
 func (c *fixedClock) Now() time.Time { return c.t }
 
-// human は段 5 の CLI を通しで回す環境（手順の操作を持つ偽の provider）。
+// human は Stage 5 の CLI を end-to-end で動かす環境（Procedure の操作を持つ偽の provider）。
 type human struct {
 	t                           *testing.T
 	intent, config, state, recd string
@@ -79,7 +79,7 @@ func (h *human) reconcile() (int, string) {
 
 var requestRe = regexp.MustCompile(`sakutei approve ([A-Za-z0-9._@-]+)`)
 
-// 不変条件 21：申請者と承認者が同じなら断る。承認者の一覧に無い人も断る。
+// 不変条件 21：申請者と承認者が同じなら拒否する。承認者の一覧に無い人も拒否する。
 func TestApproveCLI(t *testing.T) {
 	h := newHuman(t, `policies:
   - name: platform
@@ -183,7 +183,7 @@ func TestFreezeCLI(t *testing.T) {
 	}
 }
 
-// 手順を人が起こし（start）、gate を承認し、観測で閉じる。取り消し（cancel）。
+// Procedure を人が start し、gate を承認し、観測で閉じる。取り消し（cancel）。
 func TestStartAndCancelCLI(t *testing.T) {
 	h := newHuman(t, `resources:
   - {type: sw/device, id: gw1, fields: {note: a}}
@@ -202,15 +202,15 @@ procedures:
 		t.Fatal(errOut)
 	}
 	code, out := h.reconcile()
-	if code != cli.ExitRemaining || !strings.Contains(out, "手順 gw-upgrade sw/device/gw1: 進めている") {
+	if code != cli.ExitRemaining || !strings.Contains(out, "Procedure gw-upgrade sw/device/gw1: 実行中") {
 		t.Fatalf("exit=%d\n%s", code, out)
 	}
 	id := requestRe.FindStringSubmatch(out)[1]
 	if code, _, _ := h.run("approve", id, "--record", h.recd, "--as", "carol"); code != cli.ExitError {
-		t.Fatal("起こした人（申請者）の承認を受け付けた")
+		t.Fatal("start した人（申請者）の承認を受け付けた")
 	}
 	h.run("approve", id, "--record", h.recd, "--as", "alice")
-	if code, out := h.reconcile(); code != cli.ExitOK || !strings.Contains(out, "済んだ") {
+	if code, out := h.reconcile(); code != cli.ExitOK || !strings.Contains(out, "完了") {
 		t.Fatalf("exit=%d\n%s", code, out)
 	}
 	data, _ := os.ReadFile(h.state)
@@ -218,7 +218,7 @@ procedures:
 		t.Fatalf("送っていない: %s", data)
 	}
 
-	// もう一度起こして取り消す。
+	// もう一度 start して取り消す。
 	write(t, h.state, `{"sw/device/gw1": {"availability": "present", "fields": {"os": "1.0", "note": "a"}}}`+"\n")
 	h.run("start", "gw-upgrade", "--record", h.recd, "--as", "carol")
 	_, out = h.reconcile()
@@ -233,12 +233,12 @@ procedures:
 	if code, out := h.reconcile(); code != cli.ExitOK || !strings.Contains(out, "取り消した") {
 		t.Fatalf("exit=%d\n%s", code, out)
 	}
-	// 知らない手順を起こす頼みは断って片づける。
+	// 存在しない Procedure の start の依頼は拒否して片づける。
 	h.run("start", "nope", "--record", h.recd, "--as", "carol")
 	h.reconcile()
 	ents, _ := os.ReadDir(filepath.Join(h.recd, "commands"))
 	if len(ents) != 0 {
-		t.Fatalf("頼みが残る: %v", ents)
+		t.Fatalf("依頼が残る: %v", ents)
 	}
 	if code, out, _ := h.run("audit", "verify", "--record", h.recd); code != 0 {
 		t.Fatal(out)

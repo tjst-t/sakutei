@@ -21,7 +21,7 @@ package integration
 // 中から読み（ssh-keyscan をコンテナの loopback に向ける）、known_hosts に書く
 // （「初回だけ信じる」はしない）。
 //
-// 観測する部分木は ietf-netconf-acm の中（どの利用者も属さない group なので
+// 観測する部分木は ietf-netconf-acm の中（どのユーザーも属さない group なので
 // アクセスの制御には効かない）：
 //
 //   - <台>/acl-rules：rule-list "sakutei-it"。rule は ordered-by user なので範囲の
@@ -59,7 +59,7 @@ const (
 	netopeer2Image = "sysrepo/sysrepo-netopeer2:latest@sha256:36cc1d841c97f118d62f775024d60fb1ce210c3bca6b32135c1a9e5a358a1cc9"
 	nacmNS         = "urn:ietf:params:xml:ns:yang:ietf-netconf-acm"
 	baseNS         = "urn:ietf:params:xml:ns:netconf:base:1.0"
-	// txnTimeout は 2 段の Apply の confirm-timeout（確かめはその半分）。
+	// txnTimeout は two-phase Apply の confirm-timeout（check はその半分まで）。
 	txnTimeout = 10 * time.Second
 	scopedUser = "sakutei"
 )
@@ -105,7 +105,7 @@ const adminNACM = `<nacm xmlns="` + nacmNS + `"><groups><group><name>sakutei-it-
 	`<access-operations>*</access-operations><action>permit</action></rule></rule-list></nacm>`
 
 // scopedNACM は scopedUser に sw1/acl-rules と sw1/group の 2 つの部分木の読み書きと、
-// Sakutei が送る rpc の実行だけを許し、ほかは断る（E-B10）。
+// Sakutei が送る rpc の実行だけを許可し、ほかは拒否する（E-B10）。
 var scopedNACM = func() string {
 	var b strings.Builder
 	b.WriteString(`<nacm xmlns="` + nacmNS + `"><groups><group><name>sakutei-scoped</name><user-name>` + scopedUser + `</user-name></group></groups>`)
@@ -330,7 +330,7 @@ func group(name string, users ...string) string {
 	return b.String()
 }
 
-// config はつなぎ方の設定を書いてそのパスを返す。
+// config は接続設定を書いてそのパスを返す。
 func config(t *testing.T, name, user string, extra string, devs ...string) string {
 	t.Helper()
 	var b strings.Builder
@@ -398,7 +398,7 @@ func dump(r plan.Result) string {
 	return string(b)
 }
 
-// mainIntent は sw1 の 2 つの部分木（空白を入れ、group の利用者は機器と違う順）。
+// mainIntent は sw1 の 2 つの部分木（空白を入れ、group のユーザーは機器と違う順）。
 func mainIntent(t *testing.T, name string, txn bool) string {
 	t.Helper()
 	apply := ""
@@ -466,7 +466,7 @@ func TestNetconf(t *testing.T) {
 		wantOps(t, "宣言どおり", r, map[string]plan.Op{"nc/subtree/sw1/acl-rules": plan.None, "nc/subtree/sw1/group": plan.None})
 	})
 
-	t.Run("観測だけ：手で変えるとずれ、当てない", func(t *testing.T) {
+	t.Run("観測だけ：手で変えると drift、Apply しない", func(t *testing.T) {
 		changeByHand(t)
 		r, code, _ := run(t, "reconcile", obsIntent, observeOnly)
 		wantOps(t, "手で変えた", r, map[string]plan.Op{"nc/subtree/sw1/acl-rules": plan.Drift, "nc/subtree/sw1/group": plan.Drift})
@@ -479,9 +479,9 @@ func TestNetconf(t *testing.T) {
 	})
 
 	for _, c := range []struct{ name, cfg, intent string }{
-		{"2 段の Apply 1.0（transaction）", apply10, txnIntent},
-		{"2 段の Apply 1.1 persist（transaction）", apply11, txnIntent},
-		{"2 段の Apply 1.0（transaction を書かない宣言）", apply10, obsIntent},
+		{"two-phase Apply 1.0（transaction）", apply10, txnIntent},
+		{"two-phase Apply 1.1 persist（transaction）", apply11, txnIntent},
+		{"two-phase Apply 1.0（transaction を書かない宣言）", apply10, obsIntent},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			changeByHand(t)
@@ -489,32 +489,32 @@ func TestNetconf(t *testing.T) {
 			if code != cli.ExitOK {
 				t.Fatalf("reconcile: exit=%d\n%s\n%s", code, dump(r), stderr)
 			}
-			asDeclared(t, "当てたあと")
+			asDeclared(t, "Apply したあと")
 			time.Sleep(txnTimeout + 2*time.Second) // 確定したものは confirm-timeout を過ぎても戻らない
 			asDeclared(t, "confirm-timeout のあと")
 			r, code, _ = run(t, "reconcile", c.intent, c.cfg)
 			if code != cli.ExitOK {
-				t.Fatalf("次の周: exit=%d\n%s", code, dump(r))
+				t.Fatalf("次の cycle: exit=%d\n%s", code, dump(r))
 			}
 		})
 	}
 
-	t.Run("NACM で絞ったユーザー：中は観測し当て、外は断られる", func(t *testing.T) {
+	t.Run("NACM で絞ったユーザー：中は観測して Apply し、外は拒否される", func(t *testing.T) {
 		changeByHand(t)
 		since := time.Now().UTC().Format(time.RFC3339Nano)
 		r, code, stderr := run(t, "reconcile", txnIntent, scoped)
 		if code != cli.ExitOK {
 			t.Fatalf("reconcile: exit=%d\n%s\n%s", code, dump(r), stderr)
 		}
-		asDeclared(t, "絞ったユーザーが当てたあと")
+		asDeclared(t, "絞ったユーザーが Apply したあと")
 		logs, err := docker("logs", "--since", since, prefix+"sw1")
 		if err != nil {
 			t.Fatalf("docker logs: %v\n%s", err, logs)
 		}
-		// netopeer2 は断った rpc を "not authorized"、断った編集を "callback failed" と書く。
+		// netopeer2 は拒否した rpc を "not authorized"、拒否した編集を "callback failed" と書く。
 		for _, bad := range []string{"not authorized", "callback failed", "denied"} {
 			if strings.Contains(logs, bad) {
-				t.Fatalf("netopeer2 が断った（%q）:\n%s", bad, logs)
+				t.Fatalf("netopeer2 が拒否した（%q）:\n%s", bad, logs)
 			}
 		}
 		outside := intent(t, "intent-outside", fmt.Sprintf(`ranges:
@@ -532,15 +532,15 @@ resources:
 		if code == cli.ExitOK || c.Outcome != plan.OutcomeError || !strings.Contains(c.Error, "access-denied") || !strings.Contains(c.Error, "NACM") {
 			t.Fatalf("外を書く宣言: exit=%d\n%s\n%s", code, dump(r), stderr)
 		}
-		t.Logf("外を書く宣言の誤り: %s", c.Error)
+		t.Logf("外を書く宣言のエラー: %s", c.Error)
 		if after := runningNACM(t, "sw1"); after != before {
 			t.Fatalf("機器が変わった:\n%s\n→\n%s", before, after)
 		}
 	})
 
-	t.Run("確かめが通らなければ確定せず戻る", func(t *testing.T) {
-		// netconf ユーザの permit-all の前に NACM を読むのを断る規則：確定すると新しい
-		// 接続で部分木を読めない（読みの締め出し）。
+	t.Run("check が通らなければ確定せず戻る", func(t *testing.T) {
+		// netconf ユーザの permit-all の前に NACM の読み取りを拒否する規則。確定すると
+		// 新しい接続で部分木を読めない（読み取りの締め出し）。
 		lockout := intent(t, "intent-lockout", fmt.Sprintf(`ranges:
   - provider: nc
     args: {host: sw1, filter.admin-rules: '%s', ordered.admin-rules: nacm/rule-list/rule}
@@ -554,7 +554,7 @@ resources:
 		r, code, stderr := run(t, "reconcile", lockout, apply10)
 		took := time.Since(start)
 		c := changeOf(r, "nc/subtree/sw1/admin-rules")
-		t.Logf("締め出しの周（%s）: %s", took.Round(time.Second), c.Error)
+		t.Logf("締め出しの cycle（%s）: %s", took.Round(time.Second), c.Error)
 		if code != cli.ExitHalted || !c.RolledBack {
 			t.Fatalf("exit=%d\n%s\n%s", code, dump(r), stderr)
 		}
@@ -563,13 +563,14 @@ resources:
 		}
 		waitRestored(t, "戻し")
 		asDeclared(t, "戻したあと")
-		// 同じ宣言のまま当て直さない。
+		// 同じ宣言のまま Apply し直さない。
 		r, code, _ = run(t, "reconcile", lockout, apply10)
 		if code != cli.ExitHalted {
-			t.Fatalf("次の周: exit=%d\n%s", code, dump(r))
+			t.Fatalf("次の cycle: exit=%d\n%s", code, dump(r))
 		}
 		if strings.Contains(runningNACM(t, "sw1"), "deny-read-nacm") {
-			t.Fatal("当て直した")
+			t.Fatal("Apply し直した")
+
 		}
 	})
 
@@ -631,7 +632,7 @@ resources:
 	})
 
 	// commit_group の戻しは g1〜g3 で最後に回す：この netopeer2 のイメージは、コアの
-	// 周で group を戻したあと同じ機器に次の commit confirmed を送ると SIGSEGV で落ちた
+	// cycle で group を戻したあと同じ機器に次の commit confirmed を送ると SIGSEGV で落ちた
 	// （v2 の統合テストも group を最後に回している。README の「統合テスト」）。
 	t.Run("commit_group と check(…)", func(t *testing.T) {
 		groupCfg := config(t, "group.yaml", "netconf", "      apply: true\n", "g1", "g2", "g3")
@@ -665,7 +666,7 @@ resources:
 		r, code, stderr = run(t, "reconcile", groupIntent("bob"), groupCfg)
 		pass.Store(true)
 		if code != cli.ExitHalted {
-			t.Fatalf("確かめが通らない周: exit=%d\n%s\n%s", code, dump(r), stderr)
+			t.Fatalf("check が通らない cycle: exit=%d\n%s\n%s", code, dump(r), stderr)
 		}
 		for _, d := range []string{"g1", "g2", "g3"} {
 			if c := changeOf(r, "nc/subtree/"+d+"/group"); !c.RolledBack {
@@ -687,12 +688,12 @@ resources:
 		}
 	})
 
-	t.Run("止めると Unknown", func(t *testing.T) {
+	t.Run("機器を停止すると Unknown", func(t *testing.T) {
 		if out, err := docker("stop", "-t", "5", prefix+"sw1"); err != nil {
 			t.Fatalf("docker stop: %v\n%s", err, out)
 		}
 		r, code, _ := run(t, "reconcile", obsIntent, observeOnly)
-		wantOps(t, "止めた", r, map[string]plan.Op{"nc/subtree/sw1/acl-rules": plan.Unknown, "nc/subtree/sw1/group": plan.Unknown})
+		wantOps(t, "停止した", r, map[string]plan.Op{"nc/subtree/sw1/acl-rules": plan.Unknown, "nc/subtree/sw1/group": plan.Unknown})
 		if code == cli.ExitOK {
 			t.Fatalf("exit=%d", code)
 		}

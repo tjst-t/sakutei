@@ -29,7 +29,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/fake"
 )
 
-// flakyVault は止められる保管先（テスト用）。
+// flakyVault は止められる secret backend（テスト用）。
 type flakyVault struct {
 	mu       sync.Mutex
 	down     bool
@@ -57,9 +57,10 @@ func (v *flakyVault) Resolve(_ context.Context, _ string, gen string) (string, e
 	return v.value, nil
 }
 
-// TestSecretBackendDown は秘密の保管先が落ちたとき、それに依る宣言をその周 Unknown に
-// し（観測も Apply もしない）、下流も待たせることを確かめる（E-G4・不変条件 3・5）。
-// 世代が変われば当て直し、値は Record・出力・state のどこにも出ない（不変条件 27）。
+// TestSecretBackendDown は secret backend が落ちたとき、それに依る宣言をその cycle
+// Unknown にし（観測も Apply もしない）、下流も待たせることを確認する（E-G4・
+// 不変条件 3・5）。世代が変われば Apply し直し、値は Record・出力・state のどこにも
+// 出ない（不変条件 27）。
 func TestSecretBackendDown(t *testing.T) {
 	root := t.TempDir()
 	intent, cfg, state, rec := filepath.Join(root, "intent"), filepath.Join(root, "config.yaml"), filepath.Join(root, "state.json"), filepath.Join(root, "record")
@@ -115,26 +116,26 @@ secret_backends:
 		t.Fatalf("落ちている間に値を取り出した")
 	}
 
-	// 戻った：当てる。観測には世代つきの参照だけ。
+	// 戻った：Apply する。観測には世代つきの参照だけ。
 	v.down = false
 	if code, out := run(); code != 0 {
 		t.Fatalf("戻ったあと: 終了コード %d\n%s", code, out)
 	}
 	data, _ := os.ReadFile(state)
 	if !strings.Contains(string(data), "vault:/db/app#password@gen=1") {
-		t.Fatalf("世代つきの参照を当てていない:\n%s", data)
+		t.Fatalf("世代つきの参照を Apply していない:\n%s", data)
 	}
-	// 世代が同じなら当てない。
-	if code, out := run(); code != 0 || strings.Contains(out, "当てた") {
-		t.Fatalf("世代が同じなのに当てた: %d\n%s", code, out)
+	// 世代が同じなら Apply しない。
+	if code, out := run(); code != 0 || strings.Contains(out, "Apply した") {
+		t.Fatalf("世代が同じなのに Apply した: %d\n%s", code, out)
 	}
-	// 世代が変われば当て直す（E-G2・E-G3）。
+	// 世代が変われば Apply し直す（E-G2・E-G3）。
 	v.gen = 2
-	if code, out := run(); code != 0 || !strings.Contains(out, "当てた") {
-		t.Fatalf("新しい世代を当てていない: %d\n%s", code, out)
+	if code, out := run(); code != 0 || !strings.Contains(out, "Apply した") {
+		t.Fatalf("新しい世代を Apply していない: %d\n%s", code, out)
 	}
 	if v.resolved != 2 {
-		t.Errorf("値を取り出した回数 %d（want 2：当てたときだけ）", v.resolved)
+		t.Errorf("値を取り出した回数 %d（want 2：Apply したときだけ）", v.resolved)
 	}
 
 	// 値はどこにも出ない（不変条件 27）。
@@ -144,7 +145,7 @@ secret_backends:
 		}
 		b, _ := os.ReadFile(p)
 		if strings.Contains(string(b), value) {
-			t.Errorf("%s に秘密の値がある", p)
+			t.Errorf("%s に secret の値がある", p)
 		}
 		return nil
 	})
@@ -152,7 +153,7 @@ secret_backends:
 		t.Fatal(err)
 	}
 
-	// 平文は読み込みで断り、値を診断に出さない。
+	// 平文は読み込み時にエラーにし（reject）、値を診断に出さない。
 	write(t, filepath.Join(intent, "db.yaml"), `resources:
   - type: db/user
     id: app

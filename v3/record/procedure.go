@@ -29,9 +29,9 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// 段 5 の置き場（§5.1）。runs/ は周（ロックを持つ処理）だけが書く。approvals/・
+// Stage 5 の置き場（§5.1）。runs/ は cycle（ロックを持つ処理）だけが書く。approvals/・
 // temp-policies/・commands/ は CLI と承認ツールが書き（ロックは取らない。1 件 1
-// ファイルを一時ファイル＋rename で）、周が読んで監査に残し、片づける。
+// ファイルを一時ファイル＋rename で）、cycle が読んで監査に残し、片づける。
 const (
 	runsDir     = "runs"
 	approvalDir = "approvals"
@@ -39,33 +39,33 @@ const (
 	commandDir  = "commands"
 )
 
-// 手順の進みの状態。済んだ・取り消した手順は runs/ から消す（履歴は監査）。
+// Procedure の進みの状態。済んだ・取り消した Procedure は runs/ から消す（履歴は監査）。
 const (
 	RunRunning = "running"
 	RunHalted  = "halted"
 )
 
-// Run は手順 1 つ・対象 1 つの進み（§5.1 の runs/<procedure>/<target>.json、
+// Run は Procedure 1 つ・対象 1 つの進み（§5.1 の runs/<procedure>/<target>.json、
 // E-K5・N-K5・E-A2・E-F2）。観測の値は置かない（不変条件 1）。
 type Run struct {
 	Procedure string    `json:"procedure"`
-	Target    string    `json:"target"` // 対象の ID（"<provider>/<種類>/<名前>"）
+	Target    string    `json:"target"` // 対象の ID（"<provider>/<kind>/<name>"）
 	RunID     string    `json:"run_id"`
 	StartedAt time.Time `json:"started_at"`
 	StartedBy string    `json:"started_by,omitempty"` // sakutei start の --as（申請者）
-	Step      int       `json:"step"`                 // 今の段（0 から）。段の数と同じなら段は済んだ
+	Step      int       `json:"step"`                 // 今の step（0 から）。step の数と同じなら step は全部済んだ
 	StepName  string    `json:"step_name,omitempty"`
-	// StepStartedAt は今の段に入った時刻（wait の for と段の timeout）。
+	// StepStartedAt は今の step に入った時刻（wait の for と step の timeout）。
 	StepStartedAt time.Time `json:"step_started_at"`
 	// Sending は送信中の記録。送る前に書き、送り終えたら消す。再開のときに残って
-	// いれば二度送らず止める（不変条件 16、E-A2・N-A2）。
+	// いれば二度送らず halt する（不変条件 16、E-A2・N-A2）。
 	Sending *Sending `json:"sending,omitempty"`
 	State   string   `json:"state"`
-	Reason  string   `json:"reason,omitempty"` // 止めた理由
-	// Resume は止めた手順を続けるための承認の依頼（送れたか分からない・critical
-	// の段で止まった、E-A5・E-K5）。
+	Reason  string   `json:"reason,omitempty"` // halt した理由
+	// Resume は halt した Procedure を続けるための承認の依頼（送れたか分からない・critical
+	// の step で止まった、E-A5・E-K5）。
 	Resume string `json:"resume,omitempty"`
-	// Policies は段 policy で足した、この手順の間だけ効く Policy（E-Q3・N-D4）。
+	// Policies は policy の step で足した、この Procedure の間だけ効く Policy（E-Q3・N-D4）。
 	Policies []TempPolicy `json:"policies,omitempty"`
 }
 
@@ -121,10 +121,10 @@ func ReadRuns(dir string) ([]Run, error) {
 	return out, nil
 }
 
-// Runs は手順の進みを読む。
+// Runs は Procedure の進みを読む。
 func (r *Record) Runs() ([]Run, error) { return ReadRuns(r.dir) }
 
-// WriteRun は手順の進みを書く。ロックを持つ処理だけが呼ぶ。
+// WriteRun は Procedure の進みを書く。ロックを持つ処理だけが呼ぶ。
 func (r *Record) WriteRun(run Run) error {
 	path := runPath(r.dir, run.Procedure, run.Target)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -133,7 +133,7 @@ func (r *Record) WriteRun(run Run) error {
 	return writeJSON(path, run)
 }
 
-// RemoveRun は済んだ・取り消した手順の進みを消す。
+// RemoveRun は済んだ・取り消した Procedure の進みを消す。
 func (r *Record) RemoveRun(procedure, target string) error {
 	err := os.Remove(runPath(r.dir, procedure, target))
 	if errors.Is(err, os.ErrNotExist) {
@@ -145,17 +145,17 @@ func (r *Record) RemoveRun(procedure, target string) error {
 // 承認の依頼の状態。
 const (
 	RequestPending  = "pending"
-	RequestUsed     = "used"     // 承認を使った（発射の前に書く、不変条件 21）
+	RequestUsed     = "used"     // 承認を使った（実行の前に書く、不変条件 21）
 	RequestRejected = "rejected" // 拒否された
 	RequestExpired  = "expired"  // 期限が切れた
 )
 
 // ApprovalRequest は承認の依頼（approvals/<id>/request.json、E-L2・E-L6・N-L3）。
-// 周が書き、CLI と承認ツールは読むだけ。
+// cycle が書き、CLI と承認ツールは読むだけ。
 type ApprovalRequest struct {
 	ID        string     `json:"id"`
 	Kind      string     `json:"kind"`    // change・gate・resume
-	Subject   string     `json:"subject"` // 変える Resource、または手順の run と段
+	Subject   string     `json:"subject"` // 変える Resource、または Procedure の run と step
 	Applicant string     `json:"applicant,omitempty"`
 	Rules     []Rule     `json:"rules"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -165,9 +165,9 @@ type ApprovalRequest struct {
 	Audited map[string]string `json:"audited,omitempty"`
 }
 
-// Rule は依頼に要る承認 1 つ（当たる Policy・gate ごと）。
+// Rule は依頼に要る承認 1 つ（該当する Policy・gate ごと）。
 type Rule struct {
-	From       string   `json:"from"` // policy の名前・gate の段
+	From       string   `json:"from"` // policy の名前・gate の step
 	N          int      `json:"n"`
 	Of         []string `json:"of,omitempty"` // 空なら申請者でない誰でも
 	Separation bool     `json:"separation,omitempty"`
@@ -180,7 +180,7 @@ const (
 )
 
 // Decision は承認者 1 人の判断（approvals/<id>/by-<名前>.json）。CLI と承認ツール
-// が書く。認証はしない（承認ツールが前段の認証の結果から By を書く、§5.4）。
+// が書く。認証はしない（承認ツールが、手前で済ませた認証の結果から By を書く、§5.4）。
 type Decision struct {
 	By       string    `json:"by"`
 	Decision string    `json:"decision"`
@@ -305,7 +305,7 @@ func WriteDecision(dir, id string, d Decision) error {
 }
 
 // TempPolicy は一時的な Policy（temp-policies/<name>.json、§3.6、E-J4・N-Q1・
-// N-Q2）。理由と期限が必須。CLI が書き、周が監査に残して期限で消す。
+// N-Q2）。理由と期限が必須。CLI が書き、cycle が監査に残して期限で消す。
 type TempPolicy struct {
 	Name   string        `json:"name"`
 	Select core.Selector `json:"select"`
@@ -314,9 +314,9 @@ type TempPolicy struct {
 	By     string        `json:"by"`
 	At     time.Time     `json:"at"`
 	Until  time.Time     `json:"until"`
-	// Ended は unfreeze で終えた（<name>.json.end から読む。周が監査に残してから消す）。
+	// Ended は unfreeze で終えた（<name>.json.end から読む。cycle が監査に残してから消す）。
 	Ended *Ended `json:"-"`
-	// Audited は周が始まりを監査に残した。
+	// Audited は cycle が始まりを監査に残した。
 	Audited bool `json:"audited,omitempty"`
 }
 
@@ -332,7 +332,7 @@ func (t TempPolicy) Policy() core.Policy {
 	return core.Policy{Name: t.Name, Select: t.Select, Mode: core.ModeReport, Until: t.Until, Reason: t.Reason, By: t.By}
 }
 
-// Validate は理由・期限・名前・mode を確かめる（不変条件 22）。
+// Validate は理由・期限・名前・mode を検証する（不変条件 22）。
 func (t TempPolicy) Validate() error {
 	switch {
 	case !ValidName(t.Name):
@@ -352,7 +352,7 @@ func (t TempPolicy) Validate() error {
 func tempPath(dir, name string) string { return filepath.Join(dir, tempDir, name+".json") }
 
 // ReadTempPolicies は temp-policies/ の全部を名前順で読む。読めないファイルが
-// あれば誤り（周は全体を止める側に寄せる、不変条件 22）。
+// あればエラー（cycle は全体を止める側に寄せる、不変条件 22）。
 func ReadTempPolicies(dir string) ([]TempPolicy, error) {
 	root := filepath.Join(dir, tempDir)
 	ents, err := os.ReadDir(root)
@@ -397,7 +397,7 @@ func ReadTempPolicy(dir, name string) (TempPolicy, bool, error) {
 	if err := t.Validate(); err != nil {
 		return t, false, fmt.Errorf("%s: %w", path, err)
 	}
-	// 終えた印は別のファイル（CLI と周が同じファイルを書き合わない）。
+	// 終えた記録は別のファイル（CLI と cycle が同じファイルを書き合わない）。
 	var e Ended
 	switch err := readJSON(path+".end", &e); {
 	case err == nil:
@@ -408,7 +408,7 @@ func ReadTempPolicy(dir, name string) (TempPolicy, bool, error) {
 	return t, true, nil
 }
 
-// EndTempPolicy は一時的な Policy を終えた印を書く（sakutei unfreeze）。周が監査に
+// EndTempPolicy は一時的な Policy を終えた記録を書く（sakutei unfreeze）。cycle が監査に
 // 残してから消す。
 func EndTempPolicy(dir, name string, e Ended) error {
 	if !ValidName(name) {
@@ -420,7 +420,7 @@ func EndTempPolicy(dir, name string, e Ended) error {
 	return writeJSON(tempPath(dir, name)+".end", e)
 }
 
-// WriteTempPolicy は一時的な Policy を書く（CLI、周が監査の印を付ける）。
+// WriteTempPolicy は一時的な Policy を書く（CLI。監査に残した印は cycle が付ける）。
 func WriteTempPolicy(dir string, t TempPolicy) error {
 	if err := t.Validate(); err != nil {
 		return err
@@ -431,7 +431,7 @@ func WriteTempPolicy(dir string, t TempPolicy) error {
 	return writeJSON(tempPath(dir, t.Name), t)
 }
 
-// RemoveTempPolicy は期限が切れた・終えた一時的な Policy を消す（周だけ）。
+// RemoveTempPolicy は期限が切れた・終えた一時的な Policy を消す（cycle だけ）。
 func (r *Record) RemoveTempPolicy(name string) error {
 	for _, p := range []string{tempPath(r.dir, name), tempPath(r.dir, name) + ".end"} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -441,14 +441,14 @@ func (r *Record) RemoveTempPolicy(name string) error {
 	return nil
 }
 
-// MarkTempPolicyAudited は始まりを監査に残した印を付ける（周だけ）。
+// MarkTempPolicyAudited は始まりを監査に残した印を付ける（cycle だけ）。
 func (r *Record) MarkTempPolicyAudited(t TempPolicy) error {
 	t.Audited, t.Ended = true, nil
 	return writeJSON(tempPath(r.dir, t.Name), t)
 }
 
-// Command は CLI から周への頼み（commands/<名前>.json）：手順を起こす（start）・
-// 取り消す（cancel）。周が監査に残してから消す。
+// Command は CLI から cycle への頼み（commands/<名前>.json）：Procedure を起こす（start）・
+// 取り消す（cancel）。cycle が監査に残してから消す。
 type Command struct {
 	Kind      string    `json:"kind"` // start・cancel
 	Procedure string    `json:"procedure,omitempty"`
@@ -516,7 +516,7 @@ func (r *Record) RemoveCommand(file string) error {
 	return err
 }
 
-// Requests は CLI・承認ツールが書く置き場（常駐は書き込みがあれば起きる、§2.2）。
+// Requests は CLI・承認ツールが書く置き場（daemon は書き込みがあれば wake する、§2.2）。
 func Requests(dir string) []string {
 	return []string{filepath.Join(dir, approvalDir), filepath.Join(dir, tempDir), filepath.Join(dir, commandDir)}
 }

@@ -297,7 +297,7 @@ func ParseLifecycle(v any) ([]map[string]any, error) {
 	return rules, nil
 }
 
-// checkXMLNames は XML の要素の名前にできないキーと、配列の中の配列を断る。
+// checkXMLNames は XML の要素の名前にできないキーと、配列の中の配列をエラーにする。
 func checkXMLNames(v any, at string) error {
 	switch t := v.(type) {
 	case map[string]any:
@@ -586,7 +586,7 @@ func lifecycleFromXML(data []byte) ([]map[string]any, error) {
 		return nil, err
 	}
 	if root.name != "LifecycleConfiguration" {
-		return nil, fmt.Errorf("根の要素が %q", root.name)
+		return nil, fmt.Errorf("ルート要素が %q", root.name)
 	}
 	var rules []map[string]any
 	for _, c := range root.children {

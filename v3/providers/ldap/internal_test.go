@@ -46,7 +46,7 @@ func TestCanonicalDN(t *testing.T) {
 	}
 	for _, bad := range []string{"cn", "cn=#0401,dc=x", `cn=a\`, `cn="open`, "1x=a", `cn=a\qb`, "cn=a,,dc=x"} {
 		if _, err := CanonicalDN(bad); err == nil {
-			t.Errorf("CanonicalDN(%q): 誤りにならない", bad)
+			t.Errorf("CanonicalDN(%q): エラーにならない", bad)
 		}
 	}
 }
@@ -84,7 +84,7 @@ func TestUnderAndRange(t *testing.T) {
 	if !one.contains(child) || one.contains(grand) {
 		t.Errorf("scope one: child %v grandchild %v", one.contains(child), one.contains(grand))
 	}
-	// 範囲の重なり（E-K8）。
+	// Range の重なり（E-K8）。
 	sub := rangeSpec{server: "s", base: base.Canonical(), scope: ScopeSub}
 	people := rangeSpec{server: "s", base: child.Canonical(), scope: ScopeSub}
 	other := rangeSpec{server: "t", base: base.Canonical(), scope: ScopeSub}
@@ -131,10 +131,10 @@ func TestParseLDIF(t *testing.T) {
 		t.Errorf("base64 = %q %q", a.Attrs["cn"], a.Attrs["userpassword"])
 	}
 	if _, err := ParseLDIF("dn: x\nattr:< file:///etc/passwd\n"); err == nil {
-		t.Error("URL の値: 誤りにならない")
+		t.Error("URL の値: エラーにならない")
 	}
 	if _, err := ParseLDIF(" lead\n"); err == nil {
-		t.Error("先頭の継続の行: 誤りにならない")
+		t.Error("先頭の継続の行: エラーにならない")
 	}
 }
 

@@ -14,8 +14,8 @@
 
 //go:build unix
 
-// Command sakutei-nft-guard は nftables provider の決まった道具（設計 §7.1、
-// E-E1・E-B3）。対象のホストに置き、sudo で許すのはこの道具だけにする。
+// Command sakutei-nft-guard は nftables provider の専用ツール（設計 §7.1、
+// E-E1・E-B3）。対象のホストに置き、sudo で許すのはこのツールだけにする。
 package main
 
 import (
@@ -27,7 +27,7 @@ import (
 
 func main() {
 	fs := flag.NewFlagSet(nftguard.Name, flag.ContinueOnError)
-	config := fs.String("config", nftguard.DefaultConfigPath, "道具の設定ファイル（root の持ち物で group・other が書けない）")
+	config := fs.String("config", nftguard.DefaultConfigPath, "専用ツールの設定ファイル（root が所有し、group・other は書けないこと）")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(nftguard.ExitRefused)
 	}

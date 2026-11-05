@@ -18,19 +18,19 @@ package integration
 
 // sqlmigrate_test.go — v2 の統合テスト（tests/integration/postgresql の
 // sqlmigrate_integration_test.go）の場面を、新しいコアの sqlmigrate と v3 の CLI で
-// 回す。前の段が作った現実を次の段が使うので、1 つ落ちたら残りは回さない。
+// 回す。前の step が作った現実を次の step が使うので、1 つ落ちたら残りは回さない。
 //
-//	1 一回実行の reconcile で手順（on_drift → migrate → done_when）が 0 から 3 へ流し、
+//	1 one-shot 実行の reconcile で Procedure（on_drift → migrate → done_when）が 0 から 3 へ流し、
 //	  次の plan は何もしない（E-F2・N-F2）
-//	2 常駐が宣言の 1 へ down を逆順に流す
-//	3 失敗する 0004：手順は止まり、0004 は巻き戻り（版 3 のまま）、次の周も送り直さない
+//	2 daemon が宣言の 1 へ down を逆順に流す
+//	3 失敗する 0004：Procedure は halt し、0004 は巻き戻り（バージョン 3 のまま）、次の cycle も送り直さない
 //	  （不変条件 16・E-A9）
-//	4 rollback_on_fail：失敗したら呼んだときの版（1）に戻して止まる
+//	4 rollback_on_fail：失敗したら呼んだときのバージョン（1）に戻して止まる
 //	5 トランザクションに入れられない文（CREATE INDEX CONCURRENTLY）は 25001 で止まる
-//	6 2 つの常駐（別々の Record）が同じデータベースを 1 から 3 へ：テストが advisory lock を
-//	  持つ間はどちらも送れていない（55P03、ErrNotSent で次の周に送り直す）。外すと同じ版を
-//	  二度流さずに 3 になり、両方の手順が済む（E-F2）
-//	7 書き込み用の資格（秘密の参照の在りか）が無い：plan は観測用の資格で読めて差分を出し、
+//	6 2 つの daemon（別々の Record）が同じデータベースを 1 から 3 へ：テストが advisory lock を
+//	  持つ間はどちらも送れていない（55P03、ErrNotSent で次の cycle に送り直す）。外すと同じバージョンを
+//	  二度流さずに 3 になり、両方の Procedure が済む（E-F2）
+//	7 書き込み用の credential（secret の参照の在りか）が無い：plan は観測用の credential で読めて差分を出し、
 //	  reconcile は何も流さず送れていない（E-G5・N-G3・E-G2）
 //	8 サーバを止める（docker pause）と Unknown で何もしない（E-K1）
 //
@@ -91,7 +91,7 @@ func runMain(m *testing.M) int {
 	defer teardown()
 	ready := time.Now()
 	code := m.Run()
-	fmt.Printf("sqlmigrate の統合テスト: 用意 %s・段 %s\n", ready.Sub(start).Round(time.Second), time.Since(ready).Round(time.Second))
+	fmt.Printf("sqlmigrate の統合テスト: 用意 %s・step %s\n", ready.Sub(start).Round(time.Second), time.Since(ready).Round(time.Second))
 	return code
 }
 
@@ -276,7 +276,7 @@ func admin(t *testing.T, db, sql string) string {
 	return strings.TrimSpace(out)
 }
 
-// version は schema_migrations の版（sakutei の外から読む。表が無ければ "0"）。
+// version は schema_migrations のバージョン（sakutei の外から読む。表が無ければ "0"）。
 func version(t *testing.T) string {
 	t.Helper()
 	if admin(t, smDB, `SELECT to_regclass('schema_migrations') IS NOT NULL;`) != "t" {
@@ -297,7 +297,7 @@ func writeMigration(t *testing.T, name, sql string) {
 	}
 }
 
-// declare は版 v を宣言し、手順 migrate で合わせる intent を書く。
+// declare はバージョン v を宣言し、Procedure migrate で合わせる intent を書く。
 func declare(t *testing.T, v int, rollback bool) {
 	t.Helper()
 	intent := fmt.Sprintf(`resources:
@@ -352,7 +352,7 @@ func runOf(r *plan.Result) plan.RunStatus {
 	return plan.RunStatus{}
 }
 
-// converge は手順が済むまで一回実行の reconcile を回す。
+// converge は Procedure が済むまで one-shot 実行の reconcile を回す。
 func converge(t *testing.T, record, want string) {
 	t.Helper()
 	var out string
@@ -363,10 +363,10 @@ func converge(t *testing.T, record, want string) {
 			return
 		}
 	}
-	t.Fatalf("版 %s に収束しない（今 %s）\n%s", want, version(t), out)
+	t.Fatalf("バージョン %s に収束しない（今 %s）\n%s", want, version(t), out)
 }
 
-// halted は手順が止まるまで一回実行の reconcile を回し、止まった手順を返す。
+// halted は Procedure が halt するまで one-shot 実行の reconcile を回し、halt した Procedure を返す。
 func halted(t *testing.T, record string) plan.RunStatus {
 	t.Helper()
 	var s plan.RunStatus
@@ -377,12 +377,12 @@ func halted(t *testing.T, record string) plan.RunStatus {
 		s = runOf(&r)
 	}
 	if s.State != "halted" {
-		t.Fatalf("手順が止まらない\n%s", out)
+		t.Fatalf("Procedure が halt しない\n%s", out)
 	}
 	return s
 }
 
-// daemonRun は常駐の sakutei（cli.Run、周の間は 300ms）。
+// daemonRun は daemon の sakutei（cli.Run、cycle の間隔は 300ms）。
 type daemonRun struct {
 	mu     sync.Mutex
 	last   *plan.Result
@@ -471,7 +471,7 @@ func TestSQLMigrate(t *testing.T) {
 	}
 	for _, s := range steps {
 		if !t.Run(s.name, s.f) {
-			t.Fatalf("段 %s が落ちたので残りは回さない", s.name)
+			t.Fatalf("step %s が落ちたので残りは回さない", s.name)
 		}
 	}
 }
@@ -480,7 +480,7 @@ func stepUp(t *testing.T) {
 	declare(t, 3, false)
 	r, code, out := sakutei(t, "plan", "")
 	if code == cli.ExitError || code == cli.ExitRejected || runOf(&r).Procedure == "" || version(t) != "0" {
-		t.Fatalf("plan: exit=%d 版 %s\n%s", code, version(t), out)
+		t.Fatalf("plan: exit=%d バージョン %s\n%s", code, version(t), out)
 	}
 	converge(t, recordDir("up"), "3")
 	if got := tables(t); got != "orders,schema_migrations,users" {
@@ -504,10 +504,10 @@ func stepUp(t *testing.T) {
 func stepDown(t *testing.T) {
 	declare(t, 1, false)
 	d := startDaemon(t, recordDir("down"))
-	waitFor(t, "版 1 と手順が済む", time.Minute, func() (bool, string) {
+	waitFor(t, "バージョン 1 と Procedure が済む", time.Minute, func() (bool, string) {
 		r, _ := d.latest()
 		v := version(t)
-		return v == "1" && r != nil && !runOf(r).Active(), "版 " + v
+		return v == "1" && r != nil && !runOf(r).Active(), "バージョン " + v
 	})
 	d.stop()
 	if got := tables(t); got != "schema_migrations,users" {
@@ -524,19 +524,19 @@ func stepFailure(t *testing.T) {
 	converge(t, rec, "3")
 	declare(t, 4, false)
 	s := halted(t, rec)
-	if !strings.Contains(s.Reason, "0004_bad.up.sql") || !strings.Contains(s.Reason, "42P01") || !strings.Contains(s.Reason, "版 3") {
-		t.Errorf("止めた理由 %q（want 0004 が 42P01 で失敗し版 3）", s.Reason)
+	if !strings.Contains(s.Reason, "0004_bad.up.sql") || !strings.Contains(s.Reason, "42P01") || !strings.Contains(s.Reason, "バージョン 3") {
+		t.Errorf("止めた理由 %q（want 0004 が 42P01 で失敗しバージョン 3）", s.Reason)
 	}
 	if v := version(t); v != "3" {
-		t.Errorf("版 %s（want 3：0004 は巻き戻る）", v)
+		t.Errorf("バージョン %s（want 3：0004 は巻き戻る）", v)
 	}
 	if got := tables(t); strings.Contains(got, "half_done") {
 		t.Errorf("表 %q：失敗した 1 本が half_done を残した", got)
 	}
-	// 止まった手順は次の周も送り直さない。
+	// halt した Procedure は次の cycle も送り直さない。
 	r, code, out := sakutei(t, "reconcile", rec)
 	if code == cli.ExitOK || runOf(&r).State != "halted" || version(t) != "3" {
-		t.Fatalf("止まった手順: exit=%d\n%s", code, out)
+		t.Fatalf("halt した Procedure: exit=%d\n%s", code, out)
 	}
 }
 
@@ -546,11 +546,11 @@ func stepRollbackOnFail(t *testing.T) {
 	converge(t, rec, "1")
 	declare(t, 4, true)
 	s := halted(t, rec)
-	if !strings.Contains(s.Reason, "版 1 に戻した") || !strings.Contains(s.Reason, "0004_bad.up.sql") {
-		t.Errorf("止めた理由 %q（want 版 1 に戻した）", s.Reason)
+	if !strings.Contains(s.Reason, "バージョン 1 に戻した") || !strings.Contains(s.Reason, "0004_bad.up.sql") {
+		t.Errorf("止めた理由 %q（want バージョン 1 に戻した）", s.Reason)
 	}
 	if v := version(t); v != "1" {
-		t.Errorf("版 %s（want 1）", v)
+		t.Errorf("バージョン %s（want 1）", v)
 	}
 	if got := tables(t); got != "schema_migrations,users" {
 		t.Errorf("戻したあとの表 %q", got)
@@ -566,14 +566,14 @@ func stepConcurrently(t *testing.T) {
 		t.Errorf("止めた理由 %q（want 0002 が 25001）", s.Reason)
 	}
 	if v := version(t); v != "1" {
-		t.Errorf("版 %s（want 1）", v)
+		t.Errorf("バージョン %s（want 1）", v)
 	}
 	if got := admin(t, smDB, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'email';`); got != "0" {
 		t.Errorf("失敗した 1 本が users.email を残した")
 	}
 }
 
-// lockKey は sqlmigrate の pg_advisory_xact_lock の鍵（"sakutei:sqlmigrate" の FNV-1a）。
+// lockKey は sqlmigrate の pg_advisory_xact_lock のキー（"sakutei:sqlmigrate" の FNV-1a）。
 func lockKey() string {
 	h := fnv.New64a()
 	h.Write([]byte("sakutei:sqlmigrate"))
@@ -582,7 +582,7 @@ func lockKey() string {
 
 func stepTwoDaemons(t *testing.T) {
 	if v := version(t); v != "1" {
-		t.Fatalf("版 %s（want 1）", v)
+		t.Fatalf("バージョン %s（want 1）", v)
 	}
 	declare(t, 3, false)
 	held := make(chan error, 1)
@@ -593,13 +593,13 @@ func stepTwoDaemons(t *testing.T) {
 		}
 		held <- err
 	}()
-	waitFor(t, "テストが鍵を持つ", 30*time.Second, func() (bool, string) {
+	waitFor(t, "テストがロックを持つ", 30*time.Second, func() (bool, string) {
 		return admin(t, smDB, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted;`) == "1", ""
 	})
 	a := startDaemon(t, recordDir("race-a"))
 	b := startDaemon(t, recordDir("race-b"))
-	// 鍵を持たれている間はどちらも送れていない（55P03 → ErrNotSent、次の周に送り直す）。
-	waitFor(t, "両方の常駐が鍵を待ちきれず送れていない", 30*time.Second, func() (bool, string) {
+	// ロックを持たれている間はどちらも送れていない（55P03 → ErrNotSent、次の cycle に送り直す）。
+	waitFor(t, "両方の daemon がロックを待ちきれず送れていない", 30*time.Second, func() (bool, string) {
 		ok := true
 		var why []string
 		for _, d := range []*daemonRun{a, b} {
@@ -613,12 +613,12 @@ func stepTwoDaemons(t *testing.T) {
 		return ok, strings.Join(why, " / ")
 	})
 	if v := version(t); v != "1" {
-		t.Fatalf("鍵の間に版 %s（want 1）", v)
+		t.Fatalf("ロックの間にバージョン %s（want 1）", v)
 	}
 	if err := <-held; err != nil {
-		t.Fatalf("鍵を持つ: %v", err)
+		t.Fatalf("ロックを持つ: %v", err)
 	}
-	waitFor(t, "版 3 と両方の手順が済む", time.Minute, func() (bool, string) {
+	waitFor(t, "バージョン 3 と両方の Procedure が済む", time.Minute, func() (bool, string) {
 		v := version(t)
 		ok := v == "3"
 		for _, d := range []*daemonRun{a, b} {
@@ -627,7 +627,7 @@ func stepTwoDaemons(t *testing.T) {
 				ok = false
 			}
 		}
-		return ok, "版 " + v
+		return ok, "バージョン " + v
 	})
 	a.stop()
 	b.stop()
@@ -635,12 +635,12 @@ func stepTwoDaemons(t *testing.T) {
 		_, seen := d.latest()
 		for _, s := range seen {
 			if s.State == "halted" || s.Error != "" {
-				t.Errorf("常駐 %d の手順が止まった: %+v", i, s)
+				t.Errorf("daemon %d の Procedure が halt した: %+v", i, s)
 			}
 		}
 	}
 	if got := admin(t, smDB, `SELECT string_agg(version::text, ',' ORDER BY version) FROM schema_migrations;`); got != "1,2,3" {
-		t.Errorf("schema_migrations %q（want 1,2,3：同じ版を二度流さない）", got)
+		t.Errorf("schema_migrations %q（want 1,2,3：同じバージョンを二度流さない）", got)
 	}
 	if got := admin(t, smDB, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'email';`); got != "1" {
 		t.Errorf("users.email の列 %s（want 1）", got)
@@ -659,16 +659,16 @@ func stepWriteCredentials(t *testing.T) {
 	defer os.Rename(secret+".away", secret)
 	r, code, out := sakutei(t, "plan", "")
 	if code == cli.ExitError || code == cli.ExitRejected || runOf(&r).Procedure == "" {
-		t.Fatalf("書き込み用の資格が無いと plan が観測できない: exit=%d\n%s", code, out)
+		t.Fatalf("書き込み用の credential が無いと plan が観測できない: exit=%d\n%s", code, out)
 	}
 	for i := 0; i < 2; i++ {
 		r, _, out = sakutei(t, "reconcile", recordDir("nowrite"))
 	}
 	if s := runOf(&r); s.State == "halted" || !strings.Contains(s.Waiting, "送れていない") {
-		t.Fatalf("資格が無いのに送れていないでない: %+v\n%s", s, out)
+		t.Fatalf("credential が無いのに送れていないでない: %+v\n%s", s, out)
 	}
 	if v := version(t); v != "3" {
-		t.Fatalf("資格が無いのに流した（版 %s）", v)
+		t.Fatalf("credential が無いのに流した（バージョン %s）", v)
 	}
 	if err := os.Rename(secret+".away", secret); err != nil {
 		t.Fatal(err)
@@ -696,7 +696,7 @@ func stepUnreachable(t *testing.T) {
 		t.Fatalf("止めたサーバ: exit=%d %+v\n%s", code, c, out)
 	}
 	if v := version(t); v != "1" {
-		t.Fatalf("届かないのに流した（版 %s）", v)
+		t.Fatalf("届かないのに流した（バージョン %s）", v)
 	}
 	t.Logf("届かないときの観測: %s", c.Note)
 }

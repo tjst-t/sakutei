@@ -56,7 +56,7 @@ func TestCanonPolicy_Equivalents(t *testing.T) {
 		t.Error(`Principal "*" と {"AWS":["*"]} が違う`)
 	}
 	if !matchPolicy(map[string]any{}, map[string]any{}) || matchPolicy(map[string]any{}, nil) {
-		t.Error("空のポリシーの比べ方が誤り")
+		t.Error("空のポリシーの比べ方が誤っている")
 	}
 	other := `{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":{"AWS":"*"},"Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*"}]}`
 	if matchPolicy(decl(t, core.Map, a), decl(t, core.Map, other)) {
@@ -145,7 +145,7 @@ func TestObjectLock_ParseAndCanon(t *testing.T) {
 		`{"enable_on_create": "yes"}`, `{"Mode": "COMPLIANCE", "days": 3}`, `{"enabled": false, "mode": "GOVERNANCE", "days": 1}`,
 	} {
 		if _, err := ParseObjectLock(decl(t, core.Map, bad)); err == nil {
-			t.Errorf("ParseObjectLock(%s) が断らない", bad)
+			t.Errorf("ParseObjectLock(%s) がエラーにしない", bad)
 		}
 	}
 	// years の宣言は Days の観測と合う。enable_on_create は比べない。

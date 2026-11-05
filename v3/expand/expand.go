@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package expand は intent から Resource・Range などを作る純粋な変換の口（設計 §3.8）。
+// Package expand は intent から Resource・Range などを作る純粋な変換のインターフェース（設計 §3.8）。
 // コアは変換の中身を知らない。intent をそのまま読む Passthrough のあとに、intent の
 // expand: に書いた順に Expand を呼び、出力を足していく（Run）。Expand は Go で
 // 組み込むもの（cli.WithExpander）と、外のコマンド（Exec）がある。
@@ -37,28 +37,28 @@ type ExternalInput struct {
 }
 
 // Input は Expand に渡すもの。同じ Input に同じ出力を返す（N-P5・不変条件 26）。
-// 秘密の値・世代と採番の値は渡さない（コアが Expand のあとで差し込む）。
+// secret の値・世代と採番の値は渡さない（コアが Expand のあとで差し込む）。
 type Input struct {
 	Intent []intent.Document
 	Inputs map[string]ExternalInput
 	// Prior はそれより前（intent をそのまま読んだものと、前の Expand）の出力。
-	// 読むだけ（互換の表の照合などが使う、E-A7）。
+	// 読むだけ（compatibility table の照合などが使う、E-A7）。
 	Prior Output
 }
 
 // Output は Expand の結果。Run は前の出力にこれを足す。Diagnostics の Reject は
-// 読み込みで断り（E-B5・E-A7・N-B7）、Warn は知らせ（E-B5）、Uncertain はその
-// 宣言を Unknown にする（E-G4・E-K3）。
+// 読み込み時にエラーにし（E-B5・E-A7・N-B7）、Warn は通知し（E-B5）、Uncertain は
+// その宣言を Unknown にする（E-G4・E-K3）。
 type Output struct {
 	Resources   []core.Resource
 	Ranges      []core.Range
 	Policies    []core.Policy
 	Procedures  []core.Procedure
-	Cycles      []core.CycleSettings // intent の cycle:。2 つ以上は読み込みで断る
+	Cycles      []core.CycleSettings // intent の cycle:。2 つ以上は読み込み時にエラーにする
 	Pools       []core.Pool          // 採番のプール（N-B13）
 	Allocations []core.Allocation    // 採番のファイル（intent の allocations/、N-B13）
-	// DependsOn は前の出力の宣言に足す依存（宣言の ID → 依存）。互換の表が途中の
-	// 組み合わせを辺の Condition で止める（E-A7）。宣言に無い ID は断る。
+	// DependsOn は前の出力の宣言に足す依存（宣言の ID → 依存）。compatibility table が
+	// 途中の組み合わせを辺の Condition で止める（E-A7）。宣言に無い ID は reject する。
 	DependsOn   map[core.ID][]core.Dependency
 	Diagnostics []core.Diagnostic
 }
@@ -102,14 +102,14 @@ func (o *Output) add(x Output) {
 // 使わない。返すのは足す分だけ（Prior を返し直さない。前の宣言を変えるのは依存を
 // 足す DependsOn だけ）。
 type Expander interface {
-	// Keys は intent の最上位で、この Expand が読む項目（network_policy: など）。
-	// Passthrough はこれを読まずに断りもしない。
+	// Keys は intent の最上位で、この Expand が読む field（network_policy: など）。
+	// Passthrough はこれを読まず、reject もしない。
 	Keys() []string
 	Expand(ctx context.Context, in Input) (Output, error)
 }
 
-// Passthrough は intent に書いた最上位の項目をそのまま読む。claimed は Expand の
-// モジュールが読む項目。
+// Passthrough は intent に書いた最上位の field をそのまま読む。Claimed は Expand の
+// モジュールが読む field。
 type Passthrough struct {
 	Claimed []string
 }
@@ -133,12 +133,12 @@ func (p Passthrough) Expand(_ context.Context, in Input) (Output, error) {
 	return out, nil
 }
 
-// Keys は Passthrough が読む項目。
+// Keys は Passthrough が読む field。
 func (Passthrough) Keys() []string { return intent.TopKeys }
 
 // Run は Passthrough と、intent の expand: に書いた順の Expand を呼び、出力を
-// 足していく（§2.1 の段 2）。gos は Go で組み込んだ Expand、execs はつなぎ方の
-// 設定の expanders（名前 → コマンドのパス）。名前の無い Expand・同じ項目を 2 つの Expand が
+// 足していく（§2.1 の Stage 2）。gos は Go で組み込んだ Expand、execs は接続設定の
+// expanders（名前 → コマンドのパス）。名前の無い Expand・同じ field を 2 つの Expand が
 // 読む宣言は Reject の診断にして、Expand を呼ばずに返す。
 func Run(ctx context.Context, docs []intent.Document, inputs map[string]ExternalInput, gos map[string]Expander, execs map[string]string) (Output, error) {
 	steps := intent.ScanExpand(docs)
@@ -164,7 +164,7 @@ func Run(ctx context.Context, docs []intent.Document, inputs map[string]External
 		case "exec":
 			path, ok := execs[name]
 			if !ok {
-				diags = append(diags, reject(s.Origin, "expand", "外の Expand %q がつなぎ方の設定の expanders に無い", name))
+				diags = append(diags, reject(s.Origin, "expand", "外の Expand %q が接続設定の expanders に無い", name))
 				continue
 			}
 			ex = &Exec{Name: name, Path: path, Claimed: s.Keys}
@@ -172,7 +172,7 @@ func Run(ctx context.Context, docs []intent.Document, inputs map[string]External
 		}
 		for _, k := range keys {
 			if o, dup := owner[k]; dup {
-				diags = append(diags, reject(s.Origin, "expand", "intent の項目 %q を %s と %s の 2 つが読む", k, o, s.Kind))
+				diags = append(diags, reject(s.Origin, "expand", "intent の field %q を %s と %s の 2 つが読む", k, o, s.Kind))
 				continue
 			}
 			owner[k] = s.Kind
@@ -198,8 +198,8 @@ func Run(ctx context.Context, docs []intent.Document, inputs map[string]External
 	return out, nil
 }
 
-// Sections は文書の最上位の項目 key の値を、文書の順に集める（Expand のモジュールが
-// 自分の項目を読む）。
+// Sections は文書の最上位の field key の値を、文書の順に集める（Expand のモジュールが
+// 自分の field を読む）。
 func Sections(docs []intent.Document, key string) []Section {
 	var out []Section
 	for _, d := range docs {
@@ -212,7 +212,7 @@ func Sections(docs []intent.Document, key string) []Section {
 	return out
 }
 
-// Section は文書 1 つの中の Expand の項目。
+// Section は文書 1 つの中の Expand の field。
 type Section struct {
 	Doc   string
 	Line  int

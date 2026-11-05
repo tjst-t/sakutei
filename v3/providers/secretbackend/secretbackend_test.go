@@ -28,10 +28,10 @@ import (
 
 const value = "TOPSECRET-v"
 
-// fakeKV は KV v2 の mount "secret" に秘密 "app/db" を 1 つ持ち、AppRole を受ける。
+// fakeKV は KV v2 の mount "secret" に secret "app/db" を 1 つ持ち、AppRole を受け付ける。
 type fakeKV struct {
 	mu       sync.Mutex
-	versions []map[string]any // 添字 = 版-1
+	versions []map[string]any // 添字 = バージョン-1
 	logins   int
 	revoked  bool
 	sealed   bool
@@ -124,9 +124,9 @@ func TestVaultTokenFile(t *testing.T) {
 	f.versions = append(f.versions, map[string]any{"password": value + "2"})
 	f.mu.Unlock()
 	if gen, _ := v.Generation(ctx, "app/db"); gen != "2" {
-		t.Errorf("新しい版のあとの Generation = %q, want 2", gen)
+		t.Errorf("新しいバージョンのあとの Generation = %q, want 2", gen)
 	}
-	// 世代を決めればその版を読む。
+	// 世代を指定すればそのバージョンを読む。
 	if got, _ := v.Resolve(ctx, "app/db#password", "1"); got != value+"1" {
 		t.Errorf("Resolve(1) = %q", got)
 	}
@@ -135,14 +135,14 @@ func TestVaultTokenFile(t *testing.T) {
 	}
 	for _, p := range []string{"app/db#nope", "app/db#n", "app/db"} {
 		if _, err := v.Resolve(ctx, p, "1"); err == nil || strings.Contains(err.Error(), value) {
-			t.Errorf("Resolve(%s) = %v, want 値を含まない誤り", p, err)
+			t.Errorf("Resolve(%s) = %v, want 値を含まないエラー", p, err)
 		}
 	}
 	f.mu.Lock()
 	f.sealed = true
 	f.mu.Unlock()
 	if _, err := v.Generation(ctx, "app/db"); err == nil || !strings.Contains(err.Error(), "503") {
-		t.Errorf("封印中: %v, want HTTP 503", err)
+		t.Errorf("sealed: %v, want HTTP 503", err)
 	}
 }
 
@@ -178,7 +178,7 @@ func TestVaultAppRole(t *testing.T) {
 	}
 }
 
-// TestVaultUnreachable：届かなければ誤り（コアはその秘密に依る宣言を Unknown にする、E-G4）。
+// TestVaultUnreachable：接続できなければエラー（コアはその secret に依る宣言を Unknown にする、E-G4）。
 func TestVaultUnreachable(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	addr := srv.URL
@@ -187,8 +187,8 @@ func TestVaultUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Generation(context.Background(), "app/db"); err == nil || !strings.Contains(err.Error(), "届かない") {
-		t.Errorf("Generation = %v, want 届かない", err)
+	if _, err := v.Generation(context.Background(), "app/db"); err == nil || !strings.Contains(err.Error(), "接続できない") {
+		t.Errorf("Generation = %v, want 接続できない", err)
 	}
 }
 
@@ -200,12 +200,12 @@ func TestVaultSettings(t *testing.T) {
 		"認証が 2 つ":     {"address": "http://127.0.0.1:8200", "token_file": tok, "approle": map[string]any{"role_id_file": tok, "secret_id_file": tok}},
 		"approle が半分": {"address": "http://127.0.0.1:8200", "approle": map[string]any{"role_id_file": tok}},
 		"外への平文":       {"address": "http://vault.example:8200", "token_file": tok},
-		"知らない設定":      {"address": "https://vault.example:8200", "token_file": tok, "tokn": "x"},
-		"timeout の誤り": {"address": "https://vault.example:8200", "token_file": tok, "timeout": "soon"},
+		"未知の設定":       {"address": "https://vault.example:8200", "token_file": tok, "tokn": "x"},
+		"timeout が不正": {"address": "https://vault.example:8200", "token_file": tok, "timeout": "soon"},
 		"plain の型が違う": {"address": "http://vault.example:8200", "token_file": tok, "allow_plain_http": "true"},
 	} {
 		if _, err := VaultModule(s); err == nil {
-			t.Errorf("%s: 誤りを返さない", name)
+			t.Errorf("%s: エラーを返さない", name)
 		}
 	}
 	if _, err := VaultModule(map[string]any{"address": "http://vault.example:8200", "token_file": tok, "allow_plain_http": true}); err != nil {
@@ -226,7 +226,7 @@ func TestSplitKey(t *testing.T) {
 	}
 	for _, in := range []string{"#k", "app/db#", "app/../x", "a//b"} {
 		if _, _, err := SplitKey(in); err == nil {
-			t.Errorf("SplitKey(%q): 誤りを返さない", in)
+			t.Errorf("SplitKey(%q): エラーを返さない", in)
 		}
 	}
 }
@@ -288,8 +288,8 @@ func TestCommandTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Generation(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "時間切れ") {
-		t.Errorf("Generation = %v, want 時間切れ", err)
+	if _, err := c.Generation(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "タイムアウト") {
+		t.Errorf("Generation = %v, want タイムアウト", err)
 	}
 }
 
@@ -297,10 +297,10 @@ func TestCommandSettings(t *testing.T) {
 	for name, s := range map[string]map[string]any{
 		"command が無い": {},
 		"見つからない":      {"command": "/nonexistent/get-secret"},
-		"知らない設定":      {"command": "/bin/sh", "args": "x"},
+		"未知の設定":       {"command": "/bin/sh", "args": "x"},
 	} {
 		if _, err := CommandModule(s); err == nil {
-			t.Errorf("%s: 誤りを返さない", name)
+			t.Errorf("%s: エラーを返さない", name)
 		}
 	}
 }

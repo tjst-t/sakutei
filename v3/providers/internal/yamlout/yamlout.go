@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Package yamlout は sakutei-migrate と sakutei-import が書き出す YAML。コアの YAML の部分集合（v3/internal/yaml）が
-// そのまま読める形だけを出す：ブロックのマップと並び、文字列・整数・真偽。鍵の順は
-// 書いた順（Obj）で、読み返したときに同じ値になる。
+// そのまま読める形だけを出す：ブロック形式のマップとシーケンス、文字列・整数・真偽値。
+// キーの順は書いた順（Obj）で、読み返すと同じ値になる。
 package yamlout
 
 import (
@@ -25,7 +25,7 @@ import (
 	"strings"
 )
 
-// Obj は鍵の順を保つマップ。
+// Obj はキーの順を保つマップ。
 type Obj struct {
 	Keys []string
 	Vals map[string]any
@@ -34,7 +34,7 @@ type Obj struct {
 // New は空の Obj。
 func New() *Obj { return &Obj{Vals: map[string]any{}} }
 
-// Set は鍵を足す（あれば置き換える）。nil は書かない。
+// Set はキーを足す（あれば値を置き換える）。nil は書かない。
 func (o *Obj) Set(k string, v any) *Obj {
 	if v == nil {
 		return o
@@ -46,13 +46,13 @@ func (o *Obj) Set(k string, v any) *Obj {
 	return o
 }
 
-// Get は鍵の値（無ければ nil）。
+// Get はキーの値（無ければ nil）。
 func (o *Obj) Get(k string) any { return o.Vals[k] }
 
-// Len は鍵の数。
+// Len はキーの数。
 func (o *Obj) Len() int { return len(o.Keys) }
 
-// Sorted は Go のマップを鍵の順の Obj にする。
+// Sorted は Go のマップをキーの順に並べた Obj にする。
 func Sorted(m map[string]any) *Obj {
 	o := New()
 	for _, k := range sortedKeys(m) {
@@ -61,8 +61,8 @@ func Sorted(m map[string]any) *Obj {
 	return o
 }
 
-// Value は観測の値（map[string]any・[]any・[]string・整数・真偽・文字列）を書き
-// 出す形にする。マップは鍵の順にそろえる。
+// Value は観測の値（map[string]any・[]any・[]string・整数・真偽値・文字列）を書き
+// 出せる形にする。マップはキーの順にそろえる。
 func Value(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -105,7 +105,7 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
-// Emit は v を YAML の文書にする（header は頭のコメントの行）。
+// Emit は v を YAML の文書にする（header は先頭に置くコメントの行）。
 func Emit(v *Obj, header ...string) string {
 	var b strings.Builder
 	for _, h := range header {
@@ -122,7 +122,7 @@ func writeMap(b *strings.Builder, o *Obj, indent int) {
 	}
 }
 
-// writeEntry は「頭:」に値を続ける。マップと並びは次の行から 2 字下げる。
+// writeEntry は「キー:」に値を続ける。マップとシーケンスは次の行から 2 字下げる。
 func writeEntry(b *strings.Builder, head string, v any, indent int) {
 	switch x := v.(type) {
 	case *Obj:
@@ -153,7 +153,7 @@ func writeSeq(b *strings.Builder, items []any, indent int) {
 				b.WriteString(pad + "- {}\n")
 				continue
 			}
-			// 最初の鍵を「- 」の行に置き、残りを 2 字下げで続ける。
+			// 最初のキーを「- 」の行に置き、残りを 2 字下げで続ける。
 			for i, k := range x.Keys {
 				head := pad + "  " + key(k) + ":"
 				if i == 0 {
@@ -179,7 +179,7 @@ func key(k string) string {
 	return quote(k)
 }
 
-// plain は引用符なしで書いても文字列のまま読める字句（数・真偽・null に読まれる
+// plain は引用符なしで書いても文字列として読める字句（数値・真偽値・null と読まれる
 // もの、記号で始まるもの、: や # を含むものは除く）。
 var plain = regexp.MustCompile(`^[A-Za-z_/.][A-Za-z0-9_./@+=-]*$`)
 
@@ -201,7 +201,7 @@ func scalar(v any) string {
 	case nil:
 		return "null"
 	default:
-		panic(fmt.Sprintf("migrate: 書けない値 %T", v))
+		panic(fmt.Sprintf("yamlout: 書き出せない値 %T", v))
 	}
 }
 

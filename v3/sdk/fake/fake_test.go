@@ -88,12 +88,12 @@ func TestModuleRejectsSettings(t *testing.T) {
 		{"kinds": map[string]any{"r": map[string]any{"observe": true}}},
 	} {
 		if _, err := fake.Module(s); err == nil {
-			t.Errorf("%v: 断らなかった", s)
+			t.Errorf("%v: reject しなかった", s)
 		}
 	}
 }
 
-// 範囲の scope は現実のラベルがちょうどそれのものを選ぶ（v2 の scope の書き直し）。
+// Range の scope は現実のラベルがちょうどそれのものを選ぶ（v2 の scope の書き直し）。
 // state のファイルのラベルは Apply・Delete のあとも残る。
 func TestScopeRanges(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state.json")
@@ -133,7 +133,7 @@ func TestScopeRanges(t *testing.T) {
 	for _, d := range diags {
 		msgs += d.Message + "\n"
 	}
-	if !strings.Contains(msgs, "重なる") || !strings.Contains(msgs, "どの範囲にも入らない") {
+	if !strings.Contains(msgs, "重なる") || !strings.Contains(msgs, "どの Range にも入らない") {
 		t.Fatalf("%s", msgs)
 	}
 }

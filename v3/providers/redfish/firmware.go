@@ -14,13 +14,13 @@
 
 package redfish
 
-// firmware.go は種類 firmware（部品の FW の版と、その部品の最新の更新の Task。
-// 観測だけ、E-A5・N-A4）。更新そのものは Invoker の stage（invoke.go）で、
-// Procedure が段を進める（§3.7）。
+// firmware.go は type firmware（部品の FW のバージョンと、その部品の最新の更新の
+// Task。観測だけ、E-A5・N-A4）。更新そのものは Invoker の stage（invoke.go）で、
+// Procedure が step を進める（§3.7）。
 //
 // 「その部品の更新の Task」は TaskService の Task のうち、Payload の JsonBody の
 // Targets にその部品の @odata.id があるもの。Payload を返さない BMC（qemu-bmc
-// 0.11.0）では、Update の登録簿のメッセージ TargetDetermined の MessageArgs の
+// 0.11.0）では、Update の message registry の TargetDetermined の MessageArgs の
 // 1 つ目（部品の URI）で見分ける。いくつもあれば StartTime の新しいもの（読めない
 // StartTime は最も古いとみなす）。
 
@@ -34,7 +34,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/redfish/client"
 )
 
-// firmware の項目。
+// firmware の field。
 const (
 	FieldVersion = "version"
 	// 観測だけ。

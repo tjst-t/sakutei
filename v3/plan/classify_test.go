@@ -26,8 +26,8 @@ import (
 )
 
 // TestCompareMatch は provider が決めた比べ方（FieldSpec.Match）で比べる
-// （E-I7・E-D1）。観測に無い項目も Match が等しいと言えば差分にしない（作る
-// ときだけ使う項目）。
+// （E-I7・E-D1）。観測に無い field も Match が等しいと言えば差分にしない（作る
+// ときだけ使う field）。
 func TestCompareMatch(t *testing.T) {
 	ks := core.KindSchema{Fields: map[string]core.FieldSpec{
 		"memory":   {Type: core.String, Match: func(d, o any) bool { return strings.TrimSuffix(d.(string), "M") == o }},
@@ -53,8 +53,8 @@ type classified struct {
 
 func (c classified) Classify(core.ID, core.Observation, core.Fields) []core.Hint { return c.hints }
 
-// TestDecideClassifier は provider が状況で言った壊す変更を予算の壊す変更に数え、
-// 承認が要る変更を承認が揃うまで当てない（§3.3、E-C2・E-B6・不変条件 9・21）。
+// TestDecideClassifier は provider が状況で言った壊す変更を budget の壊す変更に数え、
+// 承認が要る変更を承認が揃うまで Apply しない（§3.3、E-C2・E-B6・不変条件 9・21）。
 func TestDecideClassifier(t *testing.T) {
 	ks := core.Schema{Version: "fake/1", Kinds: map[string]core.KindSchema{"vm": {Fields: map[string]core.FieldSpec{"disk": {Type: core.String}}}}}
 	vm := core.ID{Type: "pve/vm", Name: "a"}
@@ -77,7 +77,7 @@ func TestDecideClassifier(t *testing.T) {
 	budget := core.Policy{Name: "b", Select: core.Selector{All: true}, Budget: &core.Budget{PerCycle: core.Unlimited,
 		DestructivePerCycle: 0, DestructivePerWindow: core.Unlimited, MaxIneffectiveApplies: core.Unlimited}}
 	if c := decide(newP(core.Hint{Destructive: true}), budget); c.Action != plan.ActHalt {
-		t.Fatalf("壊す変更が予算に数えられない: %+v", c)
+		t.Fatalf("壊す変更が budget に数えられない: %+v", c)
 	}
 
 	c = decide(newP(core.Hint{Field: "disk", NeedsApproval: true, Reason: "volume を付け替える"}))

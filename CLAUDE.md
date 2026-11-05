@@ -4,152 +4,167 @@
 
 ## プロジェクト概要
 
-**Sakutei（作庭）** は、オンプレミス基盤全体（電源/BMC → ネットワーク → FW/SDN → ストレージ → ハイパーバイザ → VM → ゲスト OS → コンテナ）を対象とした**宣言的インフラ収束エンジン（コントロールプレーン）**の設計プロジェクト。
+**Sakutei（作庭）** は、オンプレミス基盤全体（電源/BMC → ネットワーク → FW/SDN → ストレージ → ハイパーバイザ → VM → ゲスト OS → コンテナ）を対象とした**宣言的インフラ収束エンジン（コントロールプレーン）**。
 
-Kubernetes からは *収束原理*（level-triggered な収束ループ）だけを借り、実装機構（apiserver・etcd・scheduler・admission・CRD）は意図的に捨てている。位置づけは「**Ansible の冪等性 + k8s のループ**」。最大の特徴は **観測 state レス**（キャッシュした「現在状態」を持たず毎周期リアルを再観測する）で、これにより Terraform の three-way-diff / state ドリフト問題を構造的に排除する。名称は平安期の作庭書『作庭記』に由来する。
+Kubernetes からは *収束原理*（level-triggered な収束ループ）だけを借り、実装機構（apiserver・etcd・scheduler・admission・CRD）は意図的に捨てている。位置づけは「**Ansible の冪等性 + k8s のループ**」。最大の特徴は **観測 state レス**（キャッシュした「現在状態」を持たず cycle ごとに現実を観測し直す）で、これにより Terraform の three-way diff / state ドリフト問題を構造的に排除する。名称は平安期の作庭書『作庭記』に由来する。
 
-> **現状:** 設計は v3.77（v3.4〜v3.11 は v1b・v1.5 の実装に設計書を追いつかせた改訂、v3.12〜v3.14 は v1 の試用で出た決定（SOA シリアル・自分の prune を急減判定から差し引く・level 報告の既定値）、v3.15・v3.16 は Redfish BMC provider（#48）の決まり、v3.17 は単純 Task の実 provider（sqlmigrate、#92）、v3.18 は sqlmigrate の試用で見つけた strategy: task の level 報告の穴を直した決まり（#112）、v3.19 は allocator Lookup キャッシュの cooldown 衝突バグ（#105）と dnszone / nftables の scope 固定（#106）の決まり、v3.20 は外部 provider の組み込み方（`pkg/cli`・`--provider-config`、§28.9）と CLI の直し（一回性コマンドの `--inventory-file`・`status` の観測できないものの報告と `--json`・`allocator release`／`list`、#114〜#119）、v3.21 は nftables の実の ruleset 版（live）と S3 互換のバケット provider（#121〜#123）、v3.22 は PostgreSQL・sqlmigrate の PostgreSQL 版・Ansible の provider と Workflow の複数 provider（#87、#125〜#127）、v3.23 は ssh 越しに離れたホストを扱う層・通知の口・ゲスト OS の観測・/metrics（#130・#131・#86・#54）と s3-bucket・postgresql の直し（#132・#133）。v3.24 は Workflow の一度きりの操作（action：Redfish の boot_once・reset）と応答ファイルを書く template-file（#139）。v3.25 は planned_change の reimage で入れ直しの Workflow を起こす `trigger: reimage`（#88）。v3.26 は採番の値を文字列に埋め込むテンプレート（`template: "192.0.2.{n}"`、#145）。v3.27 は Redfish の FW の版の観測と多相 Task での更新（`redfish-firmware`・承認の要る相、#148）。v3.28 は離れたホストのファイルと systemd のユニット（quadlet を含む）を保つ provider と、依って立つファイルを書き換えたら入れ替える口（#155）。v3.29 は通知の口の宛先を複数に（Alertmanager を複数台で動かす構成、#154）。v3.30 は /metrics の値を観測して require・ready_condition から参照する `metrics-probe`（#149）。v3.31 は status の宣言外（unmanaged）の検出を、prune しない型にも、宣言が 0 件でも設定されている provider にも行う決まり（#164）。v3.32 は宣言で消す明示の absent（`ensure: absent`、planned_change のレーンを承認にして予算にも数える、#163）。v3.33 は proxmox-vm の pool（作るときに渡し、違えば移す。v3.34 は原則「正しい状態は宣言に置き、ツールの中だけに持たない」（§1.7）と、採番の結果を宣言の側のファイルへ書き戻しそれを正として読む `write_back`（store は写しに下げる・`sakutei allocator import`、#157）。pool に絞ったトークン）と常駐が `--cause-state` を受けない決まり（#165）。v3.35 は Apply のあとに読み直して効いたかを確かめ、効かない Apply を上限で止める（oscillating、§11.1 Tier3 の配線）と一回性の `reconcile` の終了コード 4（#166）。v3.36 は触らない宣言を intent に入れる `external_owners:`（§7.3。provider の設定の除外は安全の網として残し、食い違えば読み込みで断る、#158）。v3.37 は Redfish の FW の更新を qemu-bmc 0.11.0 の UpdateService の模擬で確かめ、Payload を返さない BMC の Task を Update の `TargetDetermined` で見分ける決まり（#168）。v3.38 は List の ID の scope を宣言に合わせてから status の unmanaged・prune の集合差で突き合わせる決まり（#169）。v3.39 は /metrics と読み取りの口の TLS と認可（読むだけのトークン・クライアント証明書、外向きの平文は明示の旗のときだけ、#161）。v3.40 は管理 API に更新の口が無い装置の版を人の手順で合わせる Task（`update_policy.strategy: manual`、承認ゲートで人に頼み観測で閉じる・閉じなければ stuck、#150）。v3.41 は部品の版の互換の表（`compatibility:`、望む版の組み合わせと 1 つずつ更新する間の途中の組み合わせが表に合わなければ計画の時点で止め、depends_on の順序を案内する、#151）。v3.42 は CLI でしか設定できない装置を、機種の定義のファイルで観測・変更する汎用の provider（`cli-device`、#159）。v3.43 は proxmox-vm の cloud-init の初回のパッケージ更新 `ciupgrade`（書いたときだけ渡して比べる、#170）。v3.44 は全体を止める型の更新（Workflow の `disruption:`。時間帯・上流の積もり・見積もりと影響を出す止める前の承認ゲート・止める前の知らせ `Disruption`、#152）。v3.45 は NETCONF の 2 段の Apply（設定で明示したときだけ CommitConfirm を宣言、`:confirmed-commit:1.0` を主に同じセッションで commit confirmed → 新しい ssh 接続で確かめる → 確定。確かめられなければ機器の時間切れの巻き戻しに任せる、#175）。v3.46 は nftables の base chain の policy（既定の拒否）を宣言で管理し（intent が type・hook・priority・policy を書いたときだけ扱う）、base chain を変える Apply を締め出しの守り（写し・ホストの側の時間切れの巻き戻し・新しい接続での到達の確かめ。巻き戻されたら同じ差分の Apply を止める）に通す決まり（#173）。v3.47 は依存先の Apply が効いたあとに、観測できなかった依存元を同じ回でもう一度観測し（回数と時間の上限つき）、一回性の reconcile はその回のうちに Apply まで進め、常駐は次の周を繰り上げる決まり（#177）。v3.48 は NETCONF の観測と 2 段の Apply を機器の側（NACM）で部分木だけに絞ったユーザーで動かす決まり（外を読み書きする rpc を送らない・access-denied を理由つきで知らせる、#176）。v3.49 は base chain の変更の確かめる先を宣言（`confirm`）に書き、変更の前にも確かめ、base chain の作成・type/hook/priority/policy の変更を壊す変更として予算と承認ゲート（planned_change のレーン、kind `create` を足した。provider の口 `provider.ApprovalRequirer`）に通す決まり（#179）。v3.50 は HTTP の管理 API を使う provider（proxmox-vm・s3-bucket）の API のパスの前置きを provider の設定 `api_base_path` で変える決まり（実機と模擬で同じ intent を当てる、#160）。v3.51 は網の間の許可を機器に依らない抽象のリソースとして intent に書く `network_policy:`（網・許可と行ごとの reason・tags、既定の拒否。重なり・宣言に無い網・理由の無い例外・重複は読み込みで断り、隠れた許可を知らせる。実現先ごとに nftables の base chain へ展開して reason を comment に出す。別の実現先は `cli.WithRealizer`、§7.6、#174）。v3.52 は長く効く起動の引数（予算・既定の mode・settle・上限・間隔）を intent の `runtime:` に書き、旗が締める向きなら旗を使って status と level の Event `RuntimeTightened` に両方の値を出し、緩める向きと向きの無い食い違いは 1 行で起動を断る決まり（§26.7、#183）。v3.53 は provider の設定に残っていた管理の範囲（proxmox-vm のクラスタの scope・dnszone の `zone_scope`・nftables の `ruleset_scope`・`ruleset_tables`）を intent の `providers:` に書く共通の口（`provider.IntentRanges`。設定にだけあれば警告して読み、両方にあって違えば読み込みで断る。除外は `external_owners:` に寄せる、§7.7、#181）。v3.54 は同じ口で残りの provider の範囲（netconf の機器と部分木・ldap の検索の根と filter と scope・cli-device と host-file と systemd-unit と guest-os の扱うホスト・guest-os の目印・postgresql と s3-bucket の scope・s3-bucket のバケットの接頭辞）を intent に移し、何が範囲で何がつなぎ方かを §7.7 と docs/providers/ranges.md に書いた（#182）。v3.55 は freeze（`--freeze` と、動いている常駐を止めずに freeze する口 `sakutei freeze start`／`end`・`--freeze-state`）の始まり・終わり・期限切れを誰が・理由（必須）・期限つきで監査に残し、status と level の Event `Frozen` に出す決まり（§14.3、#184）。v3.56 は観測用と書き込み用の資格を分ける共通の口（`provider.WithWrite`・設定の `access`。書かない回は書き込み用の資格を取り出さず、無くても起動できる）と、ssh 越しの provider のホストの `observe:`・`write:`（§20.7、#185）。v3.57 は S4 監査にふつうの Apply と prune も残し（resource・変えた欄・cause・結果・レーンの承認者）、各行を前の行のハッシュで鎖にして `sakutei audit verify` で書き換え・切れ目を見つけ、書き換え・切り詰めをせず新しいファイルへ回し、syslog（RFC 5424、TCP と TLS）へ 1 件ずつ送って届かない間は手元に貯めて送り直す決まり（§26.3、#187）。v3.58 は同じ口で管理 API の provider（proxmox-vm・redfish・ldap・postgresql・s3-bucket）の資格を分け（対象の `observe:`・`write:`、Task の実行も書き込みの文脈）、観測用の最小の権限を各 provider の文書に書いた（#186）。v3.59 は nftables の離れたホストで root で走るものを決まった道具 `sakutei-nft-guard` 1 つにし（list・check・apply・arm・disarm・status だけ。扱う表はホストの root だけが書ける道具の設定ファイル、規則は構造として読み表の外を断る）、sudo をその道具だけに絞れるようにした決まり（`ruleset_guard_tool`、§20.7、#191）。v3.60 は SecretRef の取り出し先を足す口（`secret_backends:`・`pkg/sdk.SecretBackend`・`pkg/cli.WithSecretBackend`）と Vault 形（KV v2。token のファイルと AppRole、世代は KV の版）・外のコマンドの取り出し先（render のフェーズ1が世代を読んで ref に入れ、読めなければそのリソースを unknown にする、#188）。v3.61 は nftables の確かめる先（`confirm`）の先ごとに「変えたあとだけ確かめる」印 `after:` を書けるようにし（変える chain を通る経路の先は空からの初回に変える前に届かないため。全部に印の付いた宣言は読み込みで断る、§7.4、#192）。v3.62 はトレースの出口（周・観測・plan・Apply・Workflow の段を span にして OTLP/HTTP の JSON の形で出す。既定は出さず `--otlp-endpoint` を明示したときだけ、欄の値は載せず、送れなくても収束を止めない。宛先の TLS と認可は読み取りの口と同じ考え（`--otlp-config`・`--otlp-insecure`）、§26.8、#189）。v3.63 は `runtime:` の下の実行の種類ごとの欄 `daemon:`・`oneshot:`（種類の欄にあればそれ、無ければ共通の値。旗はその種類に効く値と突き合わせる、§26.7、#193）。v3.64 は network_policy の網の domain（アドレスの空間。書かなければ既定の domain、重なりは同じ domain の中でだけ断り、domain をまたぐ許可は断る）と、実現先の口（interface）ごとに見る domain を書き、口ごとに通る許可を入りと出の向きつきで realizer に渡す決まり（§7.6、#195）。v3.65 は proxmox-vm の NIC の `firewall`・`mtu` と VM の FW の options（`firewall:`。書いたときだけ比べて合わせる、#196）。v3.66 は postgresql のデータベースの欄 `connect_roles`（管理の境界の外のロール（観測用のロールなど）にデータベースの CONNECT を宣言で与える。作る Apply の中で付け、足すだけで外さない。`pg_authid` の列の権限は管理用の DB で与える、#203）。v3.67 は network_policy の本体の実現先 proxmox-fw（VM の FW の規則。口と向きごとの in・out と iface=netN、comment に印 `sakutei: ` と reason。provider `proxmox-fw` は印のある規則だけを書き換えて宣言の順に先頭に保ち、印の無い規則は消さずに status の unmanaged に出し、規則の変更を破壊的として予算に数える、#197）。v3.68 は netconf が比べる属性を宣言に書いたものだけにし（機器が付ける commit の時刻などの印で drift にしない）、中身の無い configuration を名前空間の有無を問わず absent と見る決まり（#208）。v3.69 は Workflow の「まだ済んでいない」を store でなく宣言（開いている planned_change）と観測（`done_when`）で決め、一回性の `reconcile` が `--workflow-store`（読むだけ）で done の対象を宣言どおりに保ち、進めるのは store の排他のロックを取った常駐だけ、halt の対象は触らず理由を level の Event `WorkflowTargetHeld` に出す決まり（§6.3、#209）。v3.70 は netconf の `commit_group`（同じ名前の複数の台の変更を同じ波に並べて 1 回の Apply にまとめ、全部の台で commit confirmed の確かめが通ったときだけ確定し、1 台でも落ちればどの台も確定しない。コアの口 `provider.CommitGrouper`、group の中の依存は読み込みで断り、1 つでも行けない member があれば group ごと止める。確定の途中で切れた台は unknown で、残る窓を docs に書いた、#199）。v3.71 は proxmox-vm のディスクの消さない印 `keep`（VM の tags に置く）と既にある volume を付ける `volume=`（作り直しでは前の VM から Proxmox の reassign で付け替え、承認の要る壊す変更。keep のディスクが残る VM は消さず、付け先の無い volume を status の unmanaged に出す、#204）。v3.72 は Workflow を進めない常駐（store を渡さない・`--workflow-observe-only`・alert-only・ほかがロックを持つ）を誤りにせず「別の処理が進める」として level の Event `WorkflowAdvancedElsewhere` と status の 1 行で知らせ、S4 監査に Workflow の run の始まり・手ごと・終わりを残し、手から出た `resource.apply` に run の id と手の番号を付ける決まり（§6.3・§26.3、#210）。v3.73 は NETCONF の 2 段の Apply の確かめる先（`confirm`）に、別のリソースの観測 `observe:<provider>/<scope>/<id>`（`expect:` の欄の部分集合。intent が宣言するリソースをその provider で観測用の資格・ふだんの範囲のまま読む）と名前で登録した確かめの関数 `check:<name>`（`pkg/cli.WithConfirmCheck`・realizer の `Output.Checks`。コアの口 `provider.Confirmer`）を足し、どちらも変えたあとだけ確かめて通らなければ確定しない決まり（self の無い confirm は断る。commit_group では全部の台の commit confirmed のあとに待つ、§23.4、#200）。v3.74 は s3-bucket の Object Lock（欄 `object_lock`。作るときの有効化は書いたときだけ送り、既定の保持は PutObjectLockConfiguration だけで掛け、期間は Days にそろえて比べる。endpoint の `fields` に書いたときだけ扱う。既にあるバケットの保持の設定を変える Update は向きによらず予算に数えて承認ゲートに通す、§29.1、#205）。v3.75 は `runtime:` の下の名前のついた常駐の役 `roles:`（常駐は `--runtime-role` で役を選び、役 → `daemon:` → 共通の順に値が効く。役の値は宣言なので緩くてよく、旗は役に効く値と今の決まりで突き合わせ、宣言に無い役は断り、status と監査に `runtime_role` を出す、§26.7、#213）。v3.76 は採番のプールの区切った範囲 `blocks:`（要求は `block:` で名指し、尽きたら理由つきで止める）と上がるだけで再利用しない `reuse: false`（block ごとの最後の値を書き戻しの `last:` に載せ、store を作り直しても解放した値を払わない。cooldown は使わない、§19.8、#206）。v3.77 は nftables の base chain の確かめる先（`confirm`）にも netconf と同じ口で別のリソースの観測 `observe:` と確かめの関数 `check:` を書け、いつも変えたあとだけ確かめて通らなければ時間切れで元の規則に戻す決まり（「全部に after:」は到達の先だけで数え、到達の先の無い宣言は読み込みで断る。共通の口 `internal/confirmafter`、§7.4・§23.4、#214）。経緯は `docs/architecture/CHANGELOG-v3.*.md`）。実装は **v1（v1a・v1b・v1.5）が完成**（タグ `v1.0.0`。試用での修正と Redfish BMC provider を足した `v1.1.0`、外の provider の口・nftables の live 版・s3-bucket・sqlmigrate を足した `v1.2.0`、PostgreSQL・Ansible の provider と Workflow の複数 provider を足した `v1.3.0`、離れたホスト・通知・ゲスト OS の観測・metrics を足した `v1.4.0`、多相 Task・OS の導入と入れ直し・BIOS・NETCONF の観測・読み取り専用の口を足した `v2.0.0`。変更点は `CHANGELOG.md`）。次は v1 を実際に使って確かめること（手順は `docs/trial/README.md`）。v2（Backlog #20）は v1 を試してから人が着手を決める。Redfish BMC provider（#48）は v1.1.0 で完了。
+- **ライセンス:** Apache-2.0。OSS の個人プロジェクト（作者個人が開発。将来の業務利用はありうる）。
+- **言語:** Go 1.22 以上・標準ライブラリのみ（外部依存なし）。
+
+## 現状：2 つの系統
+
+| | v2 系 | v3（新しいコア） |
+| --- | --- | --- |
+| 置き場所 | リポジトリのルート（`cmd/`・`pkg/`・`internal/`・`tests/`・`examples/`） | `v3/`（コア）と `v3/providers/`（provider・Expand・secret backend・sink・道具） |
+| Go モジュール | `github.com/tjst-t/sakutei/v2` | `github.com/tjst-t/sakutei/v3` と `github.com/tjst-t/sakutei/v3/providers`（別モジュール） |
+| 設計書 | `docs/architecture/spec/`（v3.77、8 部 29 節） | `docs/core/README.md` |
+| 状態 | リリース済み。最新はタグ `v2.12.0`（2026-10-30）。変更点は `CHANGELOG.md` | 設計書 §8 の Stage 1〜9 がすべて main に入っている。未リリース |
+| 入口の文書 | `README.md` の「v2 系」 | `v3/README.md`・`v3/providers/README.md` |
+
+- v3 はコアをゼロから作り直したもので、v2 との互換は持たない。v2 のユースケースは全部満たす（設計書 §7 に v2 から移すもの・捨てるものの表）。
+- v2 の intent は `sakutei-migrate`（`v3/providers/cmd/sakutei-migrate`）で v3 の intent と接続設定に書き直せる。手順は `docs/trial/README.md` の「v2 の intent を新しいコアへ書き直す」。
+- **v3 への移行が終わったら v2 のコードは削除する予定。** それまで v2 は直しだけにし、新しい機能は v3 に足す（設計書 §8 の方針）。
+- 設計書の「v3.77」は v2 系の設計書のバージョン番号で、v3（新しいコア）とは別のもの。取り違えない。
+- v2 系の設計書の改訂の経緯は `docs/architecture/CHANGELOG-v3.*.md`、リリースごとの変更点は `CHANGELOG.md`（`#nn` は Backlog の番号）にある。ここには繰り返さない。
 
 ## 仕事の管理（Backlog）
 
 - 仕事の一覧・優先順・状態は **Backlog**（git の `backlog` ブランチの `tasks.json`）が唯一の正。旧 `docs/ROADMAP.json` は廃止した（v1a のスプリント 1〜9 は Backlog に done のストーリー `v1a-1`〜`v1a-9` として移行済み。受け入れ条件の全文は git 履歴のコミット 9d7cf32 の `docs/ROADMAP.json` にある）。
-- 受け入れテストには `[AC-<スプリントID>-<ストーリー>-<番号>]`（例 `[AC-Sc7a647-2-1]`）のタグが付いている。旧スプリント ID と Backlog の対応は各ストーリーの本文に書いてある。
-- 新しい作業はストーリー → タスクに分けて Backlog に置き、完了条件は計測できる形で書く。
+- v2 の受け入れテストには `[AC-<スプリントID>-<ストーリー>-<番号>]`（例 `[AC-Sc7a647-2-1]`）のタグが付いている。旧スプリント ID と Backlog の対応は各ストーリーの本文に書いてある。
+- 新しい作業は Story → Task に分けて Backlog に置き、完了条件は計測できる形で書く。
 
 ## 開発コマンド
 
+ルートの Makefile が 3 つのモジュール（ルートの v2・`v3`・`v3/providers`）をまとめて回す。
+
 ```console
-$ make build      # ./sakutei をビルド
-$ make test       # 全テスト（tests/acceptance の受け入れ・chaos を含む）
-$ make vet        # go vet
+$ make build      # ./sakutei（v2）をビルドし、v3 と v3/providers もビルドする
+$ make test       # 全テスト（v2 の tests/acceptance の受け入れ・chaos、v3、v3/providers）
+$ make vet        # go vet（3 つのモジュール）
 $ make check      # build + vet + test
-$ make demo       # plan → converge → drift → self-heal のウォークスルー
-$ make test-race  # race 検出付きのテスト（cgo のため gcc が要る）
-$ make integration-redfish  # Redfish の統合テスト（qemu-bmc 0.11.0 × 2 を containerlab で。FW の更新の段を含む。KVM・docker・sudo が要る。check・CI には入れない）
-$ make integration-otlp     # トレースの出口の統合テスト（OpenTelemetry Collector を docker で。docker・sudo が要る。check・CI には入れない）
-$ make integration-proxmox  # proxmox-vm の統合テスト（Proxmox VE 9.2 を qemu で自動導入して動かす。KVM・qemu・docker・sudo が要る。check・CI には入れない）
+$ make test-race  # race detector 付きのテスト（3 つのモジュール。cgo のため gcc が要る）
+$ make demo       # v2 の sakutei で plan → converge → drift → self-heal を再生する
+$ make check-module VERSION=<tag|commit>  # 外のモジュールから v2 を go get で取り込めるか（ネットワークが要る）
 ```
 
-Go 1.22 以上。外部依存なし（stdlib のみ）。CI は `.github/workflows/ci.yml`（GitHub Actions）。push（main）と PR のたびに、Go 1.22 と最新の安定版で `make check` を、最新の安定版で `make test-race` を回す。
+- 同時に回すパッケージの数は `TEST_P`（既定 8）。CPU の多いホストで fork/exec が EAGAIN で落ちるのを避けるための値なので、むやみに上げない。
+- v3 だけを回すなら `cd v3 && go test ./...`・`cd v3/providers && go test ./...`。
+- CI は `.github/workflows/ci.yml`（GitHub Actions）。push（main とタグ）と PR のたびに、Go 1.22 と最新の stableで `make check` を、最新の stableで `make test-race` を回す。push では `make check-module` も回す。
+
+### 統合テスト
+
+本物の相手（カーネル・BMC の模擬・コンテナ・入れ子の VM）を使う。KVM・docker・sudo（パスワードなし）などが要るので、`check`・`test`・CI には入れない。要るものと手順は Makefile の各ターゲットのコメントにある。結果は v2 は `docs/providers/*.md`、v3 は `v3/providers/README.md` の「統合テスト」に書く。
+
+| v3 | v2 | 相手 |
+| --- | --- | --- |
+| `make integration-v3-nftables` | `make integration-nftables` | 使い捨ての network namespace の nft（v2 は ssh で入るコンテナも） |
+| `make integration-v3-redfish` | `make integration-redfish` | qemu-bmc 0.11.0 × 2（containerlab） |
+| `make integration-v3-netconf` | `make integration-netconf` | netopeer2（docker） |
+| `make integration-v3-proxmox` | `make integration-proxmox` | 入れ子の Proxmox VE 9.2（qemu） |
+| `make integration-v3-postgresql` | `make integration-postgresql` | PostgreSQL（docker。v3 は sqlmigrate も） |
+| `make integration-v3-ldap` | `make integration-ldap` | 389 Directory Server（docker） |
+| `make integration-v3-s3` | `make integration-s3` | S3 互換のサーバ（docker） |
+| `make integration-v3-ansible` | `make integration-ansible` | ansible-core（venv。初回は PyPI に届くことが要る） |
+| — | `make integration-remote`・`integration-guestos`・`integration-hostconf`・`integration-vault`・`integration-otlp` | sshd のコンテナ・qemu-bmc での OS 導入・systemd を PID 1 で動かすコンテナ・OpenBao（Vault 形の KV v2）・OpenTelemetry Collector |
+
+同じ名前の lab・コンテナを使うターゲットは同時に 1 つだけ回す。同時に回せるかどうかは各ターゲットのコメントに書いてある。
 
 ## リポジトリ構成
 
 ```
 .
-├── CLAUDE.md                                  # このファイル
-├── README.md
+├── CLAUDE.md                     # このファイル
+├── README.md                     # 入口（v2 系と v3 の紹介）
+├── CHANGELOG.md                  # v2 系のリリースごとの変更点
 ├── Makefile
-├── cmd/sakutei/                               # main（cli.Main() を呼ぶだけ）
-├── pkg/                                       # 公開 API: cli（CLI の入口。常駐ループ・plan・reconcile・status、§28.9）/
-│                                              #   core（正準型）/ netpolicy（網の間の許可、§7.6）/ provider / registry / sdk
-├── examples/external-provider/                # 外の provider を足した自前のバイナリの例（別の go.mod）
-├── internal/                                  # reconcile・diff・budget・prune・cause・render・loader・
-│                                              #   remediation・statusreport・fakeprovider・dnszone・nftables 等
-├── tests/acceptance/                          # 受け入れテスト・chaos テスト（AC タグ付き）
-├── tests/integration/redfish/                 # Redfish の統合テスト（build tag integration_redfish）
+├── cmd/sakutei/                  # v2: main（cli.Main() を呼ぶだけ）
+├── pkg/                          # v2: 公開 API。cli（CLI の入口、§28.9）/ core（正準型）/ provider /
+│                                 #   registry / sdk / netpolicy（network policy、§7.6）/ allocation
+├── internal/                     # v2: reconcile・diff・budget・prune・cause・render・loader・各 provider など
+├── tests/acceptance/             # v2: 受け入れテスト・chaos テスト（AC タグ付き）
+├── tests/integration/            # v2: 統合テスト（build tag 付き）
+├── examples/external-provider/   # v2: 外の provider を足した自前のバイナリの例（別の go.mod）
+├── templates/provider/           # v2: provider を書き始めるための雛形（§28.6）
+├── scripts/                      # check-module の確認スクリプト
+├── v3/                           # v3: 新しいコア（別モジュール）。パッケージの一覧は v3/README.md
+│   ├── cmd/sakutei/              #   コアだけの CLI（偽の provider）
+│   ├── sdk/                      #   provider SDK（contract・fake・hostexec）
+│   └── providers/                #   コアの外のモジュール。provider・Expand・secret backend・sink
+│       └── cmd/                  #   sakutei（全部を組み込んだ CLI）・sakutei-migrate・sakutei-import・
+│                                 #   sakutei-approve・sakutei-nft-guard
 └── docs/
-    ├── README.md                              # ドキュメント索引（まずここを見る）
-    ├── architecture/
-    │   ├── spec/                              # ★設計の正（source of truth）v3.77 分冊
-    │   │   ├── README.md                      #   索引（版・改訂規約・目次・§→ファイル対応）
-    │   │   └── part1〜part8-*.md              #   8部29節の本文（§番号は全部で一意）
-    │   ├── CHANGELOG-v3.0.md                  # v2.6→v3.0 構成対応マップ+分冊化の記録
-    │   └── old/                               # 旧版アーカイブ（編集しない）
-    │       ├── sakutei-design-v2.2〜v2.6.md   #   旧版設計書
-    │       ├── CHANGELOG-v2.3〜v2.6.md        #   各改訂の変更一覧（見送り理由つき）
-    │       └── reconciler-design-v1.md        #   コアの初期設計メモ（背景資料）
-    ├── examples/
-    │   └── proxmox-mysql-dbaas-schema.md      # Provider/合成リソースの worked example
-    ├── review/
-    │   ├── README.md, 01〜03-*-review.md      # 第1ラウンド: 設計レビュー3観点（対象: v2.2）
-    │   ├── scenarios/                         # 第1ラウンド: 20構成の適用可能性検討
-    │   ├── v2.3/ v2.4/ v2.5/ v2.6/            # 第2〜5ラウンド（差分再判定。v2.6 で収束宣言）
-    │   └── v3.0-audit-*.md                    # v3.0 の網羅性・整合性監査（反映済み）
-    └── web/
-        └── sakutei.html                       # ビジュアルなランディングページ
+    ├── README.md                 # ドキュメントの索引（まずここを見る）
+    ├── writing-style.md          # 文書の書き方（用語の表）
+    ├── core/README.md            # v3 の設計書
+    ├── architecture/spec/        # v2 系の設計書 v3.77（README.md + part1〜8）
+    ├── architecture/CHANGELOG-v3.*.md  # v2 系の設計書の改訂ごとの変更
+    ├── architecture/old/         # 旧バージョンのアーカイブ（編集しない）
+    ├── providers/                # v2 の provider ごとの説明
+    ├── trial/                    # 試用の手順（v1・v2 の各機能、v3 は trial/v3/）
+    ├── review/                   # 設計レビュー・適用可能性検討・v3 のもとにした検討
+    └── web/                      # ランディングページなど
 ```
 
-**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が唯一の「設計の正」（現行 v3.77。骨格は v2.6 と内容等価の全面再構成 v3.0 で、v3.1〜v3.77 は分冊を直接改訂）。`old/` は旧版（編集しない）、矛盾時は **spec/ が優先**。すべて日本語で書かれている。
+## v3 の作業の決まり
 
-## v3.0 の構成（8部29節・分冊）
+- **別モジュール。** `v3/` と `v3/providers/` はそれぞれ `go.mod` を持つ。ルートの v2 のパッケージを import しない（互換を持たない）。`v3/providers` は `replace` でコアを手元の `v3/` に向ける。
+- **標準ライブラリだけ。** v3 にも外部依存を入れない（YAML も `v3/internal/yaml` で読む）。
+- **コアと外の分担。** provider・Expand の実装・secret backend・Events の sink・承認ツール・import と同期の道具はコアの外の `v3/providers/` に置く。コアはインターフェースだけを持つ。provider 固有の起動の引数をコアに足さない。組み込む一覧は `v3/providers/builtin`。
+- **設計書が正。** 振る舞いを変えるときは `docs/core/README.md` を先に（または同時に）直す。各部品の決まりは §3、不変条件は §4（30 項。それぞれ守るテストが表にある）、作る順番は §8。Stage ごとの決まりは `v3/README.md` に書く。
+- **テスト。** 変更のあとは `make check` と `make test-race` を通す。provider は `sdk/contract` の契約テスト（`contract.Run`、Transactor を持つものは `contract.RunTxn`）を通す。Expand は `expand/expandtest.Golden` の golden テストを使う。
+- **用語。** v3 の用語は v2 と違うものがある（Task/Workflow → Procedure、planned_change → Policy の window と allow、原因タグ A〜E・シャード・claim・fencing・DR モードはやめた）。v3 の文書・コードでは v3 の用語を使う。
+
+## v2 系の設計（docs/architecture/spec/）
+
+**権威関係:** `docs/architecture/spec/`（README.md + part1〜8）が v2 系の「設計の正」（現行 v3.77。骨格は v2.6 と内容が同じ全面再構成 v3.0 で、v3.1〜v3.77 は分冊を直接改訂）。`old/` は旧バージョン（編集しない）、矛盾したら **spec/ が優先**。
 
 | 部 | 節 | ファイル | 内容 |
 | --- | --- | --- | --- |
 | I 思想と境界 | §1-3 | part1-philosophy.md | 課題認識 / 作る・委譲する・捨てる / **八つの原則**と適用境界 |
-| II 中核モデル | §4-7 | part2-core-model.md | 正準型と状態分類 S1-S4 / Provider 抽象 / 3プリミティブ / 所有と境界（provider の範囲 §7.7 を含む） |
+| II 中核モデル | §4-7 | part2-core-model.md | 正準型と状態分類 S1-S4 / Provider 抽象 / 3 プリミティブ / 所有と境界（provider の範囲 §7.7 を含む） |
 | III 収束機構 | §8-11 | part3-convergence.md | 収束ループ+早期収束パス / render / 差分と原因（cause tags）/ 多周期収束 |
 | IV 安全機構 | §12-15 | part4-safety.md | 削除の規律 / 変更予算+planned_change / 修復の統制+プロファイル / 隔離と防御（fencing）|
 | V スケールと分散 | §16-18 | part5-scale.md | 天井算術（BulkObserve）/ claim シャーディング+S2-free / 分散の原則 |
-| VI 衛星と外部世界 | §19-22 | part6-satellites.md | allocator / secret と資格 / DesiredSource と catalog / 委譲と停止影響表 |
-| VII 運用ライフサイクル | §23-26 | part7-operations.md | 段0・段0-minimal・段0-zero / ブラウンフィールド / 災害と復旧（DRモード）/ 検証と監査 |
+| VI 衛星と外部世界 | §19-22 | part6-satellites.md | allocator / secret と credential / DesiredSource と catalog / 委譲と停止影響表 |
+| VII 運用ライフサイクル | §23-26 | part7-operations.md | 段0・段0-minimal・段0-zero / ブラウンフィールド / 災害と復旧（DR モード）/ 検証と監査 |
 | VIII 実装 | §27-29 | part8-implementation.md | スライス v1a/v1b/v1.5/v2 / Provider SDK / 残る課題と既知の限界 |
 
-## 設計を貫く八つの原則（§3）
+### 設計を貫く八つの原則（§3）
 
-1. **level-triggered + 観測 state レス** — 毎周期 desired と actual を再導出し、観測状態を保持しない。
+1. **level-triggered + 観測 state レス** — cycle ごとに desired と actual を導出し直し、観測状態を保持しない。
 2. **いつ = 収束 / どう = 手続き** — 「いつ・どの順で変えるか」は収束が決め、「どう変えるか」は Task/Workflow が実行する。
-3. **確信が持てないとき、加算はしても減算はしない**（unknown ≠ absent、`pruneable:false` がデフォルト、分断/blast-radius 時は halt）。
+3. **確信が持てないとき、加算はしても減算はしない**（unknown ≠ absent、`pruneable:false` が既定、分断/blast-radius 時は halt する）。
 4. **持たない・委譲する** — 値/配置/予測/認可は自前で持たず外部に委ねる。
-5. **seam は今切る、split は後** — 拡張/分離の接点となる interface を早期に定義し、コアは変えずに後で分割する。
-6. **ownership がすべてを貫く** — `platform`（PR 必須・厳格）か `tenant`（即時書込・緩い）かの 1 軸が、書込経路/remediation/レート制限/blast-radius/source/シャード境界を決める。
-7. **シャード間協調は現実を介して行う** — シャード同士は問い合わせない。相手の作った現実を Observe して gate する。シャード間 RPC は正しさに関与しない。
-8. **衛星の停止は、変化を止めるが、維持を止めない** — 定常収束は衛星コールゼロで回る（割当事実は Release まで不変＝キャッシュ可）。allocator QPS は churn 比例。
+5. **seam は今切る、split は後** — 拡張/分離の接点となる interface を早めに定義し、コアは変えずに後で分割する。
+6. **ownership がすべてを貫く** — `platform`（PR 必須・厳格）か `tenant`（即時書き込み・緩い）かの 1 軸が、書き込み経路/remediation/レート制限/blast-radius/source/シャード境界を決める。
+7. **シャード間協調は現実を介して行う** — シャード同士は問い合わせない。相手の作った現実を Observe して gate する。
+8. **衛星の停止は、変化を止めるが、維持を止めない** — 定常収束は衛星への呼び出しゼロで回る。
 
-## 中核の用語（v3.0 の§参照つき）
+v3 ではこれを 5 つの原則（`docs/core/README.md` §1.2）に整理し直している。
 
-- **Provider / Lister**（§5）— `Schema`/`Capabilities`/`Read`/`Apply` + 集合列挙 `List`（prune の前提、complete-or-error）。階級: 完全/標準/最小 + 観測不能階級（`ledger_only`/`observability:none`）。
-- **BulkObserve**（§5）— バルク観測 capability。一貫性契約: 非アトミック宣言・complete-or-error・**prune 非流用の型分離**・SDK 等価性テスト。API 系ターゲットは単一デーモン1万規模に。
-- **Observation vs ConvergenceStatus**（§4, §10）— Observe は Availability（`ok`/`unknown`/`converging`）+ State を返し desired を知らない。`drifted`/`converged` は Diff から導出。
-- **3 プリミティブ**（§6）— Resource（宣言的・収束）/ Task（単純=v1.5、多相=v2）/ Workflow（順序+不変条件+承認ゲート。N-of-M・申請者≠承認者対応）。
-- **render パイプライン**（§9）— フェーズ1（外部入力解決・副作用あり）+ フェーズ2（決定的展開）。外部権威到達不能時は前回解決値を保持（空 desired を出さない）。
-- **cause tag A〜E**（§10）— A 意図 / B ドリフト / C ツール更新（ghost diff）/ D 波及 / E 外部入力。`intent_revision` と `rendered_revision`（scope 単位算出）の差で検出。
-- **早期収束パス**（§8）— 「edge-triggered な起床、level-triggered な真実」。`DesiredSource.Watch()` の ChangeHint（revision+scope のみ）で影響サブ DAG だけ即時に新鮮な Observe→Diff→Apply。cause A/E 限定・集合差 prune 禁止・予算共有。
-- **planned_change**（§13）— 大量正当作業の宣言（scope/種別/上限/窓/承認）。専用予算レーン（バイパスでなく別枠）。List 急減 halt と連動。`kind: reimage` で再イメージの delete 誤計上を回避。
-- **運用プロファイル**（§14）— solo（cooling-off で承認代替）/ team（既定）/ enterprise（N-of-M 既定）。remediation schedule（時間帯連動）との優先は most-restrictive-wins。
-- **claim-as-intent / S2-free シャード**（§17）— シャード割当を git の intent として宣言（`intent/<scope>/` 規約+sparse checkout+ミラー中継）。エッジは Resource 収束のみで S2 レス（全損→再イメージ→pull→復旧）。開店/閉店=claim 変更 PR のハンドオフ。
-- **external_owner**（§7）— 外部オーケストレータ（Heat/operator/VNFM/MHA 等）所有 scope の除外宣言+「観測して待つ」一方向協調 seam。
-- **SecretRef / 資格局所性**（§20）— 値は収束しない。自動マスク・JIT 解決。エッジの write 資格は拠点ローカル file SecretBackend（爆発半径=当該拠点）。
-- **DR モード**（§25）— DR intent プリステージ+書込 break-glass（署名付きローカルコミット・必ず検出・事後合流）。
-- **状態クラス S1〜S4**（§4）— S1 観測（保持しない）/ S2 進捗（quorum ストア+fencing で外部永続）/ S3 履歴（メモリ）/ S4 監査（append-only+WORM/外部即時 push）。
-- **devenv（坪庭）/ twin（縮景）**（§26）— 隔離検証 DC / デジタルツイン（render の外部入力差し替えで本番プールに触れない）。
+### 中核の用語（v2 系、§参照つき）
 
-## CLI（設計上の verb、§26）
+- **Provider / Lister**（§5）— `Schema`/`Capabilities`/`Read`/`Apply` + 集合列挙 `List`（prune の前提、complete-or-error）。
+- **BulkObserve**（§5）— バルク観測の capability。prune には使わない（型を分ける）。
+- **Observation vs ConvergenceStatus**（§4, §10）— Observe は Availability（`ok`/`unknown`/`converging`）+ State を返し desired を知らない。`drifted`/`converged` は Diff から導出する。
+- **3 プリミティブ**（§6）— Resource / Task（単純・多相）/ Workflow（順序+不変条件+承認ゲート）。
+- **render パイプライン**（§9）— フェーズ1（外部入力の解決）+ フェーズ2（決定的な展開）。外部の権威に届かないときは前回の解決値を保つ（空の desired を出さない）。
+- **cause tag A〜E**（§10）— A 意図 / B ドリフト / C ツール更新（ghost diff）/ D 波及 / E 外部入力。
+- **planned_change**（§13）— 大量の正当な作業の宣言（scope/種別/上限/window/承認）。専用の budget レーン。
+- **運用プロファイル**（§14）— solo / team（既定）/ enterprise。
+- **claim-as-intent / S2-free シャード**（§17）、**external_owner**（§7）、**SecretRef**（§20）、**DR モード**（§25）、**状態クラス S1〜S4**（§4）。
 
-```
-sakutei              # 常駐して回り続ける（本来の姿）  --claim <scope-selector>
-sakutei plan         # dry-run: 何が変わるか（Diff で止まる）
-sakutei reconcile    # 1 回収束（手動キック）  --expect-revision <rev>
-sakutei status       # drifted の一覧（適合レポート）
-sakutei import       # 既存リアルを intent として書き出す  --scope <範囲> --out intent/
-```
-`apply` は意図的に主 verb にしない。承認ゲート API: `POST /workflows/{id}/gates/{gate}/approve`。
+### v2 の CLI（§26）
 
-## 想定技術スタック
-
-- **言語:** Go（全 interface 定義が Go）。単一 `sakutei` バイナリ + サブコマンド。
-- **設定形式:** YAML + JSON（`Loader` 経由）、JSON Schema で検証。将来 CUE を検討（Starlark は round-trip 不可のため却下）。
-- **状態保存:** メモリ + file(git) が主。S2 のみ quorum ストア+fencing。**etcd や必須 DB プロセスなし。**
-- **シークレット:** HashiCorp Vault（KV v2）。段0-minimal は file SecretBackend。
-- **ブートストラップ:** 段0 = Proxmox 3ノード + Ceph + VM-HA を Ansible + 金庫で構築（1〜2台は段0-minimal）。
-- **検証:** fake Provider（主戦場）、containerlab、Podman、nftables、Proxmox nesting、chaos テスト（最重要）。
-
-## 実装スコープ（§27）
-
-- **v1a（コア実証 ≈10人月）:** コア型+収束ループ+安全機構（累積予算・List 完全性）+早期収束 seam+BulkObserve/--claim 型切り+最小 SDK+Provider 2 個（DNS が第一号）+devenv。
-- **v1b（brownfield・採番・分割）:** import/Sync Mode、tier 別 Observe 頻度、採番連携、静的シャーディング実装、inventory 検証。
-- **v1.5:** 単純 Task+最小 Workflow（直列+不変条件+N-of-M 手動承認）+remediation schedule+planned_change。
-- **v2+:** 多相 Task、自動段階ロールアウト/canary、DBSource、credential-broker、分散 Executor、動的ルーター、watch 併用、intent UI。
-- **実装着手前に決めるべき事項（旧 §26 カテゴリ A）は全て決定済み**（正準型・rendered_revision 算出・S2 永続化先ほか）。実装中に決める残課題と既知の限界は §29。
-- **位置づけ:** OSS 個人プロジェクトが第一歩（作者個人が開発。将来の業務利用はありうる）。ライセンス **Apache-2.0**。雇用主 IP 規程による着手制約はなし（§29.4 でクリア）。この前提により Provider SDK 公開 API 設計と段0-minimal が第一級に昇格。
-
-## 検証の履歴（設計の信頼根拠）
-
-20 の多様な構成（ホームラボ〜数百台 DC〜マルチサイト〜IaaS/SDN/PaaS/エッジ/金融/レガシー）に対する適用可能性検討を 5 ラウンド実施し、**v2.6 で収束を宣言**（2 ラウンド連続で新規設計ギャップゼロ）。最終判定: **◎6 / ○10 / △2 / ✗0**（△の 2 つは機器 API の制約と Sakutei 責務外の要素で、設計の到達上限として確定）。詳細は `docs/review/v2.6/README.md`。
+`sakutei`（daemon）・`plan`・`reconcile`・`status`・`import` が設計上の主 verb。`apply` は意図的に主 verb にしない。ほかのサブコマンドは `pkg/cli/main.go` の `printUsage` と `README.md` にある。
 
 ## 作業時の指針
 
-- ドキュメントはすべて日本語。追記・修正時も**日本語**で、既存の用語（英語機能名の component 名、庭園メタファの別名: 関守/台帳/図面/坪庭/縮景）を踏襲する。
-- 設計に関する記述を変更するときは `docs/architecture/spec/` を正とする。旧版やサンプルとの矛盾は spec/ に寄せる。**改訂は分冊（part1〜8）を直接編集**し、`CHANGELOG-vX.Y.md` を `docs/architecture/` に追加して `spec/README.md` の版番号を上げる（版ごとのファイル複製はしない。履歴は git）。大規模再構成時のみ `spec/` 一式を `old/vX.Y/` にスナップショットする。
-- `generated/` は自動生成専用（ヘッダ必須・直接コミット拒否）、`intent/` は人が書く intent の出力先（claim シャーディング時は `intent/<scope>/` 規約）。
+- **文書は `docs/writing-style.md` に従って書く。** 説明文は日本語、技術用語・コマンド名・見出し語は英語のまま。IT の現場でふつうのカタカナ語はそのまま使い、無理な和訳・漢語化・独自の和語の言い換え（「周」「口」「欄」など）をしない。用語の表に従う。
+- 既存の用語（英語の component 名、庭園メタファの別名: 関守/台帳/図面/坪庭/縮景）を踏襲する。コンポーネント名は機能的な英語名（reconciler / credential-broker / allocator / catalog）を使い、固有名詞は「Sakutei」だけ。
+- **v3 の設計を変えるとき**は `docs/core/README.md` を直す。
+- **v2 系の設計を変えるとき**は `docs/architecture/spec/` を正とする。旧バージョンやサンプルとの矛盾は spec/ に寄せる。改訂は分冊（part1〜8）を直接編集し、`docs/architecture/CHANGELOG-vX.Y.md` を足して `spec/README.md` のバージョン番号を上げる（バージョンごとのファイル複製はしない。履歴は git）。大規模な再構成のときだけ `spec/` 一式を `old/vX.Y/` にスナップショットする。
+- v2 のリリースの変更点は `CHANGELOG.md` の「未リリース」に書く。
+- `generated/` は自動生成専用（ヘッダ必須・直接コミット拒否）、`intent/` は人が書く intent の置き場。
 - **Schema 設計が最難関**（secret/managed/ordered/identity の誤宣言は安全保証を黙って無効化する。identity は運用上の変更頻度で選ぶ）。
-- コンポーネント名は機能的な英語名（reconciler / credential-broker / allocator / catalog）を使う。固有名詞は「Sakutei」のみ。
+- 公開リポジトリなので、社内のホスト名・特定ベンダーの機種名・内部の道具やプロジェクトの名前を文書・コード・テストに書かない。例のアドレスは文書用の範囲（`192.0.2.0/24` など）、ドメインは `example.com` を使う。

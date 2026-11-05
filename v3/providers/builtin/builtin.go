@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Package builtin は sakutei と sakutei-import に組み込むモジュールの一覧
-// （provider・Expand・秘密の保管先・Events の送り先）。どちらの道具も同じ
-// つなぎ方の設定を読むので、一覧を 1 か所に置く（E-O4・E-S4）。
+// （provider・Expand・secret backend・Events の sink）。どちらのツールも同じ
+// 接続設定（config ファイル）を読むので、一覧を 1 か所に置く（E-O4・E-S4）。
 package builtin
 
 import (
@@ -47,7 +47,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/fake"
 )
 
-// Modules は provider のモジュール（つなぎ方の設定の providers.<名前>.module）。
+// Modules は provider のモジュール（接続設定の providers.<名前>.module）。
 func Modules() map[string]load.Module {
 	return map[string]load.Module{
 		"dnszone":       dnszone.Module,
@@ -78,7 +78,7 @@ func Expanders() map[string]expand.Expander {
 	}
 }
 
-// SecretBackends は秘密の保管先のモジュール（file はコアが初めから持つ）。
+// SecretBackends は secret backend のモジュール（file はコアが初めから持つ）。
 func SecretBackends() map[string]load.SecretModule {
 	return map[string]load.SecretModule{
 		secretbackend.VaultKV2:    secretbackend.VaultModule,
@@ -86,7 +86,7 @@ func SecretBackends() map[string]load.SecretModule {
 	}
 }
 
-// Sinks は Events の送り先のモジュール。
+// Sinks は Events の sink のモジュール。
 func Sinks() map[string]load.SinkModule {
 	return map[string]load.SinkModule{
 		"alertmanager": alertmanager.Module,

@@ -26,8 +26,8 @@ import (
 
 var ssh = hostexec.SSH{HostName: "sw1", Address: "192.0.2.1", Port: 830, User: "ro", Key: "/k", KnownHosts: "/kh"}
 
-// ssh はホスト鍵を known_hosts で確かめ、接続を使い回さない（E-E1）。サブシステムと
-// 1 行は引用符で包まずに渡す。
+// ssh はホスト鍵を known_hosts で確かめ、接続を使い回さない（E-E1）。サブシステム名と
+// CLI の 1 行は引用符で包まずに渡す。
 func TestCommands(t *testing.T) {
 	sub := strings.Join(sshstream.SubsystemCommand(ssh, "netconf"), " ")
 	for _, want := range []string{"StrictHostKeyChecking=yes", "UserKnownHostsFile=/kh", "ControlPath=none", "-p 830", "-l ro", "-s -- 192.0.2.1 netconf"} {
@@ -40,11 +40,11 @@ func TestCommands(t *testing.T) {
 		t.Errorf("1 行: %q", line)
 	}
 	if sh := strings.Join(sshstream.ShellCommand(ssh), " "); !strings.Contains(sh, "-tt -- 192.0.2.1") {
-		t.Errorf("殻: %q", sh)
+		t.Errorf("シェル: %q", sh)
 	}
 }
 
-// 流れは相手の標準入出力。ssh の終了コード 255 は届かない。
+// stream は相手の標準入出力。ssh の終了コード 255 は到達できないエラーになる。
 func TestStream(t *testing.T) {
 	rw, err := sshstream.Start(context.Background(), "local", []string{"cat"}, false)
 	if err != nil {
@@ -63,12 +63,12 @@ func TestStream(t *testing.T) {
 	}
 	_, err = rw.Read(buf)
 	if !hostexec.IsUnreachable(err) || !strings.Contains(err.Error(), "refused") {
-		t.Fatalf("255 は届かない: %v", err)
+		t.Fatalf("255 は到達できないエラーになるはず: %v", err)
 	}
 	rw.Close()
 
 	if _, err := sshstream.RunLine(context.Background(), hostexec.Local{HostName: "l"}, "exit 3"); err == nil {
-		t.Fatal("0 以外の終了")
+		t.Fatal("0 以外の終了コードがエラーにならない")
 	}
 	out, err := sshstream.RunLine(context.Background(), hostexec.Local{HostName: "l"}, "echo 'a  b'")
 	if err != nil || string(out) != "a  b\n" {

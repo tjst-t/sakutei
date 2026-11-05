@@ -13,12 +13,12 @@
 // limitations under the License.
 
 // Package clidevice は CLI でしか設定できない装置を扱う汎用の provider（設計 §7.1、
-// E-B11・N-B1）。管理 API に設定の口が無い装置（syslog の宛先・NTP・ソフトの更新）に
-// ssh で CLI を打って観測し、コマンド列で変える。機種ごとの中身（どのコマンドで
-// 観測し、どう読み、どのコマンドで変えるか）は機種の定義（definition.go、settings）
+// E-B11・N-B1）。管理 API で設定できない装置（syslog の宛先・NTP・ソフトウェアの更新）に
+// ssh で CLI のコマンドを打って観測し、コマンド列で変える。機種ごとの中身（どのコマンドで
+// 観測し、出力をどう parse し、どのコマンドで変えるか）は機種の定義（definition.go、settings）
 // で与え、本体は機種を知らない。v2 の cli-device provider（#159）を移した。
 //
-//	providers:                                  # つなぎ方の設定
+//	providers:                                  # 接続設定
 //	  sw:
 //	    module: cli-device
 //	    settings:
@@ -29,41 +29,41 @@
 //	          write: {ssh: {address: 192.0.2.11, user: admin, key: /etc/sakutei/id_rw, known_hosts: /etc/sakutei/known_hosts}}
 //	          definition: /etc/sakutei/other.yaml  # 省略可（装置ごとの上書き）
 //
-//	ranges:                                     # intent（扱う装置と項目は範囲）
+//	ranges:                                     # intent（扱う装置と item が Range）
 //	  - {provider: sw, args: {host: sw1, items: "syslog,ntp"}}   # items を書かなければ定義の全部
 //	resources:
-//	  - type: sw/syslog                         # <provider>/<定義の項目>
+//	  - type: sw/syslog                         # <provider>/<定義の item>
 //	    id: sw1                                 # 装置
 //	    fields: {host: 192.0.2.53, port: "514"}
 //
 // 決まり：
 //
-//   - 種類は定義の項目（items）、ID は装置。項目のフィールドは文字列で、定義の
-//     secret: true のものは秘密の参照（core.Secret）。set の無い項目は観測だけ。
-//     同じ名前の項目を持つ定義どうしは、フィールドと秘密か・観測だけかがそろって
-//     いなければならない（Schema は 1 つ）。
-//   - 出力が定義に合わない（読み方が当たらない・当たりが 2 つ以上・要る項目が欠ける・
-//     エラーの印が出る・プロンプトが来ない・exec が 0 以外で終わる）ときは Unknown
-//     （Absent と取り違えない、E-K1）。Absent は定義の observe.absent が当たったとき
+//   - type は定義の item（items）、ID は装置。item の field は文字列で、定義で
+//     secret: true のものは secret の参照（core.Secret）。set の無い item は観測だけ。
+//     同じ名前の item を持つ定義どうしは、field・secret かどうか・観測だけかどうかが
+//     そろっていなければならない（Schema は 1 つ）。
+//   - 出力が定義に合わない（parser がマッチしない・マッチが 2 つ以上・要る field が
+//     欠ける・エラー行が出る・プロンプトが来ない・exec が 0 以外で終わる）ときは Unknown
+//     （Absent と取り違えない、E-K1）。Absent は定義の observe.absent がマッチしたとき
 //     だけ。1 回の Observe の中で同じコマンドの出力は使い回す。
-//   - Apply は 1 つの項目のコマンド列。流す前に同じやりとりで観測し、出力が定義に
-//     合わなければ何も流さない。宣言どおりなら流さない。エラーの印が出たらそこで
-//     止め、定義に rollback があれば取り消して確定しない。流した後は必ず観測し直し、
-//     宣言どおりでなければ誤り（コアが効かない回数で止める、不変条件 14）。
-//   - 2 段の Apply（core.Transactor）は定義の config.commit_confirmed・confirm がある
-//     装置だけ：Prepare は設定に入ってコマンド列と commit_confirmed（時間切れ =
-//     TxnOptions.Timeout）を流し、Commit は新しいやりとりで confirm を流す。Rollback は
-//     cancel があればそれを流し、無ければ何もしない。どちらも無ければ装置が時間切れで
+//   - Apply は 1 つの item のコマンド列。流す前に同じ session で観測し、出力が定義に
+//     合わなければ何も流さない。宣言どおりなら流さない。エラー行が出たらそこで
+//     止め、定義に rollback があれば取り消して commit しない。流した後は必ず再観測し、
+//     宣言どおりでなければエラー（コアが ineffective Apply の回数で halt する、不変条件 14）。
+//   - two-phase Apply（core.Transactor）は定義に config.commit_confirmed・confirm がある
+//     装置だけ。Prepare は設定モードに入ってコマンド列と commit_confirmed（timeout =
+//     TxnOptions.Timeout）を流し、Commit は新しい session で confirm を流す。Rollback は
+//     cancel があればそれを流し、無ければ何もしない。どちらも無ければ装置が timeout で
 //     戻す（不変条件 17）。
-//   - 秘密のフィールドは Apply の直前に WriteContext.Secret で取り出す（E-G2）。値は
-//     誤りの文・観測に出さない：観測は「このプロセスが書いた値と同じなら、そのときの
+//   - secret の field は Apply の直前に WriteContext.Secret で取り出す（E-G2）。値は
+//     エラーメッセージ・観測に出さない。観測は「このプロセスが書いた値と同じなら、そのときの
 //     参照（世代つき）」だけを返す（値は覚えず、プロセスごとの鍵の HMAC だけを覚える）。
-//     起こし直した後の最初の Apply は、装置の値が宣言の値と同じなら書かずに覚えるだけ。
-//   - 一度きりの操作（ソフトの更新）は定義の actions で、core.Invoker として Procedure
-//     から流す。つなげない・1 つもコマンドを打てていないときだけ core.ErrNotSent。
-//   - 観測用と書き込み用のつなぎ方を分けられる（hosts.<名前>.write、E-G5）。Apply・
+//     再起動した後の最初の Apply は、装置の値が宣言の値と同じなら書かずに覚えるだけ。
+//   - 一度きりの操作（ソフトウェアの更新）は定義の actions で、core.Invoker として
+//     Procedure から流す。接続できない・1 つもコマンドを打てていないときだけ core.ErrNotSent。
+//   - 観測用と書き込み用の接続を分けられる（hosts.<名前>.write、E-G5）。Apply・
 //     Delete・Prepare・Commit・Invoke だけが書き込み用を使う。
-//   - 1 つの装置へは同時に 1 つのやりとりだけ（装置の受けるセッションは少ない）。
+//   - 1 つの装置へは同時に 1 つの session だけ（装置が受け付けるセッション数は少ない）。
 package clidevice
 
 import (
@@ -83,10 +83,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/hostexec"
 )
 
-// Version は Schema の版。
+// Version は Schema のバージョン。
 const Version = "cli-device/1"
 
-// Host は 1 つの装置：つなぎ方と機種の定義。Write が nil なら Observe を使う。
+// Host は 1 つの装置の接続と機種の定義。Write が nil なら Observe を使う。
 type Host struct {
 	Observe Conn
 	Write   Conn
@@ -98,8 +98,8 @@ type hostState struct {
 	observe Conn
 	write   Conn
 	def     *Definition
-	// lock は 1 つの装置へのやりとりを 1 つにする（ctx で待ちをやめられるよう
-	// チャネル）。
+	// lock は 1 つの装置への session を 1 つにする（ctx で待ちをやめられるよう
+	// チャネルにする）。
 	lock chan struct{}
 }
 
@@ -110,8 +110,8 @@ type Provider struct {
 	key    []byte
 
 	mu      sync.Mutex
-	written map[string]string // HMAC(値) → 書いた参照（フィールドごと）
-	// items は装置 → 範囲の項目（Validate で受け取る）。
+	written map[string]string // HMAC(値) → 書いた参照（field ごと）
+	// items は装置 → Range の item（Validate で受け取る）。
 	items map[string]map[string]bool
 }
 
@@ -137,7 +137,7 @@ func New(hosts map[string]Host) (*Provider, error) {
 	for _, name := range sortedKeys(hosts) {
 		h := hosts[name]
 		if h.Observe == nil || h.Def == nil {
-			return nil, fmt.Errorf("cli-device: 装置 %s のつなぎ方と機種の定義が要る", name)
+			return nil, fmt.Errorf("cli-device: 装置 %s の接続と機種の定義が要る", name)
 		}
 		for _, in := range sortedKeys(h.Def.Items) {
 			it := h.Def.Items[in]
@@ -150,7 +150,7 @@ func New(hosts map[string]Host) (*Provider, error) {
 				ks.Fields[fn] = spec
 			}
 			if prev, ok := kinds[in]; ok && !sameKind(prev, ks) {
-				return nil, fmt.Errorf("cli-device: 項目 %s のフィールド・秘密か・観測だけかが機種の定義 %s と %s で違う（Schema は 1 つ）", in, owner[in], h.Def.Name)
+				return nil, fmt.Errorf("cli-device: item %s の field・secret かどうか・観測だけかどうかが機種の定義 %s と %s で違う（Schema は 1 つ）", in, owner[in], h.Def.Name)
 			}
 			kinds[in], owner[in] = ks, h.Def.Name
 		}
@@ -169,7 +169,7 @@ func sameKind(a, b core.KindSchema) bool {
 		return false
 	}
 	for k, v := range a.Fields {
-		// FieldSpec は比べ方の関数（Match）を持てるので項目ごとに比べる。cli-device は
+		// FieldSpec は比較の関数（Match）を持てるので要素ごとに比べる。cli-device は
 		// Match を使わない。
 		w, ok := b.Fields[k]
 		if !ok || w.Type != v.Type || w.Identity != v.Identity || w.Digest != v.Digest || (w.Match == nil) != (v.Match == nil) {
@@ -183,7 +183,7 @@ func sameKind(a, b core.KindSchema) bool {
 func Module(settings map[string]any) (core.Provider, error) {
 	for k := range settings {
 		if k != "hosts" && k != "definition" {
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: definition, hosts）", k)
+			return nil, fmt.Errorf("settings に未知の field %q（書ける field: definition, hosts）", k)
 		}
 	}
 	var def *Definition
@@ -238,7 +238,7 @@ func definitionOf(v any) (*Definition, error) {
 	case map[string]any:
 		return ParseDefinition(d)
 	}
-	return nil, errors.New("機種の定義のファイルかマップを書く")
+	return nil, errors.New("機種の定義はファイルのパスかマップで書く")
 }
 
 func connOf(name string, r hostexec.Runner, d *Definition) (Conn, error) {
@@ -254,7 +254,7 @@ func connOf(name string, r hostexec.Runner, d *Definition) (Conn, error) {
 	return runnerConn{r}, nil
 }
 
-// runnerConn は hostexec のつなぎ方の上の Conn（装置には sudo を付けない）。
+// runnerConn は hostexec の接続の上に作る Conn（装置には sudo を付けない）。
 type runnerConn struct{ r hostexec.Runner }
 
 func (c runnerConn) OpenShell(ctx context.Context) (io.ReadWriteCloser, error) {
@@ -265,23 +265,23 @@ func (c runnerConn) RunLine(ctx context.Context, line string) ([]byte, error) {
 	return sshstream.RunLine(ctx, c.r, line)
 }
 
-// Schema は項目ごとの種類（どの定義の項目も合わせたもの）。
+// Schema は item ごとの type（すべての定義の item を合わせたもの）。
 func (p *Provider) Schema() core.Schema { return p.schema }
 
-// locate は ID の装置と項目。
+// locate は ID の装置と item を返す。
 func (p *Provider) locate(id core.ID) (*hostState, *Item, error) {
 	h, ok := p.hosts[id.Name]
 	if !ok {
-		return nil, nil, fmt.Errorf("装置 %q がつなぎ方の設定の hosts に無い", id.Name)
+		return nil, nil, fmt.Errorf("装置 %q が接続設定の hosts に無い", id.Name)
 	}
 	it, ok := h.def.Items[id.Kind()]
 	if !ok {
-		return nil, nil, fmt.Errorf("項目 %q は機種の定義 %s に無い（%s）", id.Kind(), h.def.Name, strings.Join(sortedKeys(h.def.Items), " | "))
+		return nil, nil, fmt.Errorf("item %q は機種の定義 %s に無い（%s）", id.Kind(), h.def.Name, strings.Join(sortedKeys(h.def.Items), " | "))
 	}
 	return h, it, nil
 }
 
-// acquire は装置のやりとりの番を取る。
+// acquire は装置の session のロックを取る。
 func (h *hostState) acquire(ctx context.Context) (func(), error) {
 	select {
 	case h.lock <- struct{}{}:
@@ -291,8 +291,8 @@ func (h *hostState) acquire(ctx context.Context) (func(), error) {
 	}
 }
 
-// Validate は範囲（装置と項目）と宣言（フィールドの形、秘密は参照だけ）を確かめる
-// （E-B11・E-I6・E-K8）。値そのものは文言に出さない。
+// Validate は Range（装置と item）と宣言（field の形式、secret は参照だけ）を確かめる
+// （E-B11・E-I6・E-K8）。値そのものはメッセージに出さない。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
 	rej := func(o core.Origin, target, format string, a ...any) {
@@ -302,12 +302,12 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	for _, rg := range ranges {
 		for k := range rg.Args {
 			if k != "host" && k != "items" {
-				rej(rg.Origin, "ranges", "cli-device の範囲の引数は host と items（%q が書かれている）", k)
+				rej(rg.Origin, "ranges", "cli-device の Range の引数は host と items（%q が書かれている）", k)
 			}
 		}
 		h := p.hosts[rg.Args["host"]]
 		if h == nil {
-			rej(rg.Origin, "ranges", "host %q がつなぎ方の設定の hosts に無い", rg.Args["host"])
+			rej(rg.Origin, "ranges", "host %q が接続設定の hosts に無い", rg.Args["host"])
 			continue
 		}
 		if items[h.name] == nil {
@@ -315,11 +315,11 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		}
 		for _, in := range rangeItems(rg, h) {
 			if h.def.Items[in] == nil {
-				rej(rg.Origin, "ranges", "項目 %q は装置 %s の機種の定義 %s に無い", in, h.name, h.def.Name)
+				rej(rg.Origin, "ranges", "item %q は装置 %s の機種の定義 %s に無い", in, h.name, h.def.Name)
 				continue
 			}
 			if items[h.name][in] {
-				rej(rg.Origin, "ranges", "装置 %s の項目 %s が 2 つの範囲に入る", h.name, in)
+				rej(rg.Origin, "ranges", "装置 %s の item %s が 2 つの Range に入っている", h.name, in)
 			}
 			items[h.name][in] = true
 		}
@@ -332,18 +332,18 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 			continue
 		}
 		if !items[h.name][it.Name] {
-			rej(r.Origin, target, "装置 %s の項目 %s は範囲（ranges の host・items）に無い", h.name, it.Name)
+			rej(r.Origin, target, "装置 %s の item %s は Range（ranges の host・items）に無い", h.name, it.Name)
 			continue
 		}
 		if r.Ensure == core.EnsureAbsent {
 			if len(it.Unset) == 0 {
-				rej(r.Origin, target, "機種の定義 %s の項目 %s に unset が無い（消すと宣言できない）", h.def.Name, it.Name)
+				rej(r.Origin, target, "機種の定義 %s の item %s に unset が無い（ensure: absent を宣言できない）", h.def.Name, it.Name)
 			}
 			continue
 		}
 		for _, k := range sortedKeys(r.Fields) {
 			if it.Fields[k] == nil {
-				rej(r.Origin, target, "知らないフィールド %q（%s）", k, strings.Join(sortedKeys(it.Fields), " | "))
+				rej(r.Origin, target, "未知の field %q（%s）", k, strings.Join(sortedKeys(it.Fields), " | "))
 			}
 		}
 		for _, fn := range sortedKeys(it.Fields) {
@@ -351,10 +351,10 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 			v, ok := r.Fields[fn]
 			switch {
 			case !ok:
-				rej(r.Origin, target, "フィールド %q が要る（項目は全体で宣言する）", fn)
+				rej(r.Origin, target, "field %q が要る（item は全部の field を宣言する）", fn)
 			case f.Secret:
 				if _, err := core.Normalize(core.Secret, v); err != nil {
-					rej(r.Origin, target, "%s は秘密: 参照（{secret: \"<backend>:<在りか>\"}）で書く。値は書かない", fn)
+					rej(r.Origin, target, "%s は secret: 参照（{secret: \"<backend>:<path>\"}）で書く。値は書かない", fn)
 				}
 			default:
 				s, isStr := v.(string)
@@ -393,20 +393,20 @@ type observed struct {
 	values map[string]string
 }
 
-// mismatch は出力が定義に合わない（観測できない）。
+// mismatch は出力が定義に合わない（観測できない）ことを表す。
 type mismatch struct{ msg string }
 
 func (e *mismatch) Error() string { return e.msg }
 
-// reader は 1 つのやりとりで項目を観測する（同じコマンドの出力は使い回す）。
+// reader は 1 つの session で item を観測する（同じコマンドの出力は使い回す）。
 type reader struct {
 	d    *Definition
 	s    session
 	outs map[string]string
 }
 
-// observe は項目を観測する。出力は文言に載せない（秘密が含まれうる）。エラーの印の
-// 行だけは、秘密のフィールドの無い項目なら載せる。
+// observe は item を観測する。出力はメッセージに載せない（secret が含まれうる）。
+// エラー行だけは、secret の field が無い item なら載せる。
 func (rd *reader) observe(ctx context.Context, it *Item) (observed, error) {
 	out, ok := rd.outs[it.Command]
 	if !ok {
@@ -424,7 +424,7 @@ func (rd *reader) observe(ctx context.Context, it *Item) (observed, error) {
 		}
 	}
 	if n, line, bad := rd.d.errorLine(out); bad {
-		msg := fmt.Sprintf("%q の出力の %d 行目にエラーの印", it.Command, n)
+		msg := fmt.Sprintf("%q の出力の %d 行目がエラー行", it.Command, n)
 		if !it.hasSecret() {
 			msg += fmt.Sprintf(": %q", clip(line))
 		}
@@ -437,11 +437,11 @@ func (rd *reader) observe(ctx context.Context, it *Item) (observed, error) {
 	gone := it.Absent != nil && it.Absent.MatchString(out)
 	switch {
 	case found && gone:
-		return observed{}, &mismatch{fmt.Sprintf("%q の出力が項目と absent の両方に当たる", it.Command)}
+		return observed{}, &mismatch{fmt.Sprintf("%q の出力が item と absent の両方にマッチする", it.Command)}
 	case gone:
 		return observed{absent: true}, nil
 	case !found:
-		return observed{}, &mismatch{fmt.Sprintf("%q の出力が機種の定義に合わない（項目も absent も当たらない）", it.Command)}
+		return observed{}, &mismatch{fmt.Sprintf("%q の出力が機種の定義に合わない（item にも absent にもマッチしない）", it.Command)}
 	}
 	return observed{values: vals}, nil
 }
@@ -455,7 +455,7 @@ func (it *Item) hasSecret() bool {
 	return false
 }
 
-// mac は秘密の値の HMAC（このプロセスだけの鍵。値は覚えない）。
+// mac は secret の値の HMAC（このプロセスだけの鍵を使う。値は覚えない）。
 func (p *Provider) mac(field, v string) string {
 	h := hmac.New(sha256.New, p.key)
 	h.Write([]byte(field))
@@ -488,7 +488,7 @@ func unknown(note string) core.Observation {
 	return core.Observation{Availability: core.Unknown, Note: note}
 }
 
-// Observe は装置ごとに 1 つのやりとりで項目を観測する（E-D8）。
+// Observe は装置ごとに 1 つの session で item を観測する（E-D8）。
 func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core.Observation, error) {
 	out := map[core.ID]core.Observation{}
 	byHost := map[string][]core.ID{}
@@ -540,7 +540,7 @@ func (p *Provider) observeHost(ctx context.Context, h *hostState, ids []core.ID)
 	return out
 }
 
-// List は範囲の項目のうち装置に在るもの（宣言外の報告）。
+// List は Range の item のうち装置に Present のもの（宣言に無いもの（unmanaged）の報告用）。
 func (p *Provider) List(ctx context.Context, r core.Range) (core.Listing, error) {
 	h := p.hosts[r.Args["host"]]
 	if h == nil {
@@ -549,7 +549,7 @@ func (p *Provider) List(ctx context.Context, r core.Range) (core.Listing, error)
 	var ids []core.ID
 	for _, in := range rangeItems(r, h) {
 		if h.def.Items[in] == nil {
-			return core.Listing{}, fmt.Errorf("項目 %q が機種の定義に無い", in)
+			return core.Listing{}, fmt.Errorf("item %q が機種の定義に無い", in)
 		}
 		ids = append(ids, core.ID{Type: r.Provider + "/" + in, Name: h.name})
 	}

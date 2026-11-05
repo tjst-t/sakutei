@@ -45,7 +45,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/proxmox"
 )
 
-// 固定する版。
+// 固定するバージョン。
 const (
 	isoName   = "proxmox-ve_9.2-1.iso"
 	isoURL    = "https://enterprise.proxmox.com/iso/" + isoName
@@ -107,7 +107,7 @@ type lab struct {
 	qemu            *exec.Cmd
 	api             *proxmox.Client
 	secret          string
-	// cfg はつなぎ方の設定のファイル。intent は dir/intent、Record は dir/record。
+	// cfg は接続設定のファイル。intent は dir/intent、Record は dir/record。
 	cfg string
 }
 
@@ -143,7 +143,7 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// ensureISO は固定した版の ISO を取る（無ければ）。
+// ensureISO は固定したバージョンの ISO を取る（無ければ）。
 func ensureISO(t *testing.T, cache string) string {
 	path := filepath.Join(cache, isoName)
 	if sum, err := fileSHA256(path); err == nil && sum == isoSHA256 {
@@ -174,7 +174,7 @@ func ensureKey(t *testing.T, cache string) string {
 	return key
 }
 
-// ensureCloudImage は固定した版のクラウドイメージを取る（無ければ）。
+// ensureCloudImage は固定したバージョンのクラウドイメージを取る（無ければ）。
 func ensureCloudImage(t *testing.T, cache string) string {
 	path := filepath.Join(cache, cloudImage)
 	sum := func(p string) string {
@@ -242,8 +242,8 @@ chown ` + strconv.Itoa(os.Getuid()) + `:` + strconv.Itoa(os.Getgid()) + ` /work/
 }
 
 // moveFile は src を dst に移す。t.TempDir とキャッシュが別のファイルシステムに
-// あると os.Rename は EXDEV（invalid cross-device link）で断るので、そのときは
-// dst と同じディレクトリの一時ファイルへ写してから rename する。
+// あると os.Rename は EXDEV（invalid cross-device link）で失敗するので、そのときは
+// dst と同じディレクトリの一時ファイルへコピーしてから rename する。
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil || !errors.Is(err, syscall.EXDEV) {
 		return err
@@ -418,8 +418,8 @@ func startLab(t *testing.T) *lab {
 	return l
 }
 
-// writeConfig はつなぎ方の設定を書く（観測用のトークンと、あれば書き込み用の
-// トークン）。timeout は 1 つの要求の時間切れ。
+// writeConfig は接続設定を書く（観測用のトークンと、あれば書き込み用の
+// トークン）。timeout は 1 つのリクエストのタイムアウト。
 func (l *lab) writeConfig(t *testing.T, name, timeout, obsID, obsFile, writeID, writeFile string) string {
 	t.Helper()
 	write := ""
@@ -473,7 +473,7 @@ func (l *lab) vmSSH(t *testing.T, cmd string, within time.Duration) string {
 	return ""
 }
 
-// task は仕事を始めた呼び出しの結果（UPID とエラー）を受け、終わりを待つ。
+// task は task を始めた呼び出しの結果（UPID とエラー）を受け、終わりを待つ。
 func (l *lab) task(t *testing.T) func(string, error) {
 	return func(upid string, err error) { l.wait(t, upid, err) }
 }
@@ -518,7 +518,7 @@ func (l *lab) config(t *testing.T, vmid int) (cur, pending map[string]string) {
 }
 
 // status は vmid の今の電源（無ければ "absent"）。/cluster/resources の status は
-// pvestatd の写しで古いことがあるので /status/current で読む。
+// pvestatd のキャッシュで古いことがあるので /status/current で読む。
 func (l *lab) status(t *testing.T, vmid int) string {
 	t.Helper()
 	res, err := l.api.Resources(context.Background())

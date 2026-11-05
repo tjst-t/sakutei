@@ -36,8 +36,8 @@ import (
 // （書き換え・切り詰めはしない、不変条件 28）。
 var MaxAuditFile int64 = 8 << 20
 
-// Entry は監査の 1 行（§5.1、E-L1・N-L1）。値は書かず、変えた項目の名前だけ。
-// Seq と Prev は Append が付ける。Prev は前の行のハッシュで、行を鎖にする。
+// Entry は監査の 1 行（§5.1、E-L1・N-L1）。値は書かず、変えた field の名前だけ。
+// Seq と Prev は Append が付ける。Prev は前の行のハッシュで、行をハッシュチェーンにする。
 type Entry struct {
 	Seq      uint64    `json:"seq"`
 	Prev     string    `json:"prev"`
@@ -49,7 +49,7 @@ type Entry struct {
 	Error    string    `json:"error,omitempty"`
 	Policies []string  `json:"policies,omitempty"`
 	Reason   string    `json:"reason,omitempty"` // N-J7・N-L8
-	// 段 5：承認・一時的な Policy・手順（E-L1・E-L2・E-L6・N-L3・E-J4）。
+	// Stage 5：承認・一時的な Policy・Procedure（E-L1・E-L2・E-L6・N-L3・E-J4）。
 	By         string   `json:"by,omitempty"`          // した人（承認者・freeze した人・start した人）
 	Request    string   `json:"request,omitempty"`     // 承認の依頼の ID
 	ApprovedBy []string `json:"approved_by,omitempty"` // 数えた承認者
@@ -57,13 +57,13 @@ type Entry struct {
 	Run        string   `json:"run_id,omitempty"`
 	Step       string   `json:"step,omitempty"`
 	Op         string   `json:"op,omitempty"`
-	// 段 7：採番（alloc.assign・alloc.release、N-B13）。払った・返した値はプールの
-	// 番号で、秘密ではない。
+	// Stage 7：採番（alloc.assign・alloc.release、N-B13）。払い出した・返した値はプールの
+	// 番号で、secret ではない。
 	Pool  string `json:"pool,omitempty"`
 	Value *int64 `json:"value,omitempty"`
 }
 
-// Audit は監査の鎖への追記。
+// Audit は audit のハッシュチェーンへの追記。
 type Audit struct {
 	dir  string
 	seq  uint64
@@ -72,8 +72,8 @@ type Audit struct {
 	size int64 // 今のファイルの大きさ
 }
 
-// Audit は監査の鎖を開き、最後の行を読んで続きを書ける状態にする。最後の行が
-// 切れている・読めないときは断る（鎖を書き換えて直さない）。
+// Audit は audit のハッシュチェーンを開き、最後の行を読んで続きを書ける状態にする。
+// 最後の行が切れている・読めないときはエラーにする（チェーンを書き換えて直さない）。
 func (r *Record) Audit() (*Audit, error) {
 	dir := filepath.Join(r.dir, auditDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -105,7 +105,7 @@ func (r *Record) Audit() (*Audit, error) {
 		data = prevData
 	}
 	if data[len(data)-1] != '\n' {
-		return nil, fmt.Errorf("監査 %s の最後の行が切れている（audit verify で確かめる）", fileName(last))
+		return nil, fmt.Errorf("監査 %s の最後の行が切れている（audit verify で確認する）", fileName(last))
 	}
 	lines := bytes.Split(bytes.TrimSuffix(data, []byte("\n")), []byte("\n"))
 	line := lines[len(lines)-1]
@@ -151,8 +151,8 @@ func (a *Audit) Append(e Entry) (uint64, error) {
 	return e.Seq, nil
 }
 
-// Verify は監査の鎖を頭から辿り、行の数を返す。番号の飛び・ファイルの欠け・
-// 書き換え（前の行のハッシュの不一致）・切れた行を見つけたら誤りを返す
+// Verify は audit のハッシュチェーンを頭から辿り、行の数を返す。番号の飛び・ファイルの欠け・
+// 書き換え（前の行のハッシュの不一致）・切れた行を見つけたらエラーを返す
 // （E-L1・N-L1・不変条件 28）。Record を作らず、ロックも取らない。
 func Verify(dir string) (int, error) {
 	adir := filepath.Join(dir, auditDir)
@@ -230,7 +230,7 @@ func auditFiles(dir string) ([]int, error) {
 	return out, nil
 }
 
-// ReadAudit は監査の鎖の since より後の行を max 行まで順に返す（監査の送り先、
+// ReadAudit は audit のハッシュチェーンの since より後の行を max 行まで順に返す（監査の sink、
 // E-L1・N-L1）。ファイルの初めの番号で読み始めるファイルを選び、全部は読まない。
 // 最後の切れた行（書いている途中）は返さない。Record を作らず、ロックも取らない。
 func ReadAudit(dir string, since uint64, max int) ([]core.AuditLine, error) {

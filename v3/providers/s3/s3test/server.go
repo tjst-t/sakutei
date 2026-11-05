@@ -15,11 +15,11 @@
 // Package s3test は s3 provider のテスト用の偽の S3 互換サーバ（httptest、v2 の
 // internal/s3bucket/s3test から移した）。バケットの操作（ListBuckets・
 // CreateBucket・DeleteBucket・中身を見る ListObjectsV2 と、
-// バージョニング・ポリシー・ライフサイクル・タグ・Object Lock）だけを持ち、要求の SigV4 の
+// バージョニング・ポリシー・ライフサイクル・タグ・Object Lock）だけを持ち、リクエストの SigV4 の
 // 署名（Authorization・x-amz-content-sha256・Content-MD5）を検証する。
 //
 // テストから: API を NotImplemented にする（Options.NotImplemented）、GET を
-// 別のコードで断る（Options.GetStatus）、lifecycle の StorageClass を書き換えて
+// 別のコードで拒否する（Options.GetStatus）、lifecycle の StorageClass を書き換えて
 // 持つ（Options.StorageClassRewrite）、届かなくする（SetUnreachable：接続を切る）、
 // 状態コードを返す（SetFailStatus）、遅らせる（SetDelay）、壊れた本文を返す
 // （SetBroken）、ListBuckets のページを途中で切る（SetTruncate）、中身を入れる
@@ -29,7 +29,7 @@
 // Object Lock は AWS の形に沿う: PutObjectLockConfiguration の成功は 200
 // で本文は空、Get の XML は ObjectLockEnabled と Rule/DefaultRetention、一度も
 // 設定していないバケットの Get は 404 ObjectLockConfigurationNotFoundError。PUT
-// を断るのは、Days と Years の両方・どちらも無い・ObjectLockEnabled が Enabled
+// を拒否するのは、Days と Years の両方・どちらも無い・ObjectLockEnabled が Enabled
 // 以外（400 MalformedXML）、値が 0 以下・受けない mode（400 InvalidArgument）、
 // 持ち主でない（403 AccessDenied、SetForeign）。作るときの
 // x-amz-bucket-object-lock-enabled: true は Object Lock を有効にしバージョニングを
@@ -68,24 +68,24 @@ const (
 
 // Options は偽サーバの設定。
 type Options struct {
-	// AccessKey・SecretKey は受け付ける資格（既定 "test-access" / "test-secret"）。
+	// AccessKey・SecretKey は受け付ける credential（既定 "test-access" / "test-secret"）。
 	AccessKey, SecretKey string
 	// ReadOnlyAccessKey・ReadOnlySecretKey は読むだけのキー（読むだけのポリシーの
-	// 利用者）。GET・HEAD だけを受け付け、ほかは 403 AccessDenied。
+	// ユーザー）。GET・HEAD だけを受け付け、ほかは 403 AccessDenied。
 	ReadOnlyAccessKey, ReadOnlySecretKey string
 	// NotImplemented に挙げた API は 501 NotImplemented を返す。
 	NotImplemented []string
 	// PageSize が正なら ListBuckets をこの件数ずつ ContinuationToken で返す。
 	PageSize int
 	// VirtualHostBase が空でなければ、Host が "<bucket>.<VirtualHostBase>" の
-	// 要求を virtual-host 形式として読む。
+	// リクエストを virtual-host 形式として読む。
 	VirtualHostBase string
 	// PolicyRewrite が nil でなければ、PutBucketPolicy の本文をこれで書き換えて
 	// 持つ（endpoint がポリシーを別の形で持つことの再現）。
 	PolicyRewrite func(string) string
 	// GetStatus に挙げた API（APIVersioning など）の GET は、その状態コード
 	// （400・403 など）の InvalidRequest を返す（API を持たないことを 501 では
-	// なく別のコードで知らせる endpoint の再現）。
+	// なく別のコードで返す endpoint の再現）。
 	GetStatus map[string]int
 	// StorageClassRewrite が nil でなければ、PutBucketLifecycleConfiguration の
 	// StorageClass はこの表のキー（標準の名前）だけを受け付け（ほかは 400
@@ -103,7 +103,7 @@ type Options struct {
 	// 持って返す。
 	ObjectLockYearsAsDays bool
 	// BasePath が空でなければ、API をこのパスの下に置く（"/s3" なら
-	// "/s3/<bucket>"）。前置きの外の要求は 404（前置きの違う模擬の再現）。
+	// "/s3/<bucket>"）。前置きの外のリクエストは 404（前置きの違う模擬の再現）。
 	BasePath string
 }
 
@@ -175,27 +175,27 @@ func newServer(opts Options) *Server {
 // SetUnreachable は true の間、接続を応答なしで切る。
 func (s *Server) SetUnreachable(v bool) { s.mu.Lock(); s.unreachable = v; s.mu.Unlock() }
 
-// SetFailStatus は 0 でない間、すべての要求にその状態コードを返す。
+// SetFailStatus は 0 でない間、すべてのリクエストにその状態コードを返す。
 func (s *Server) SetFailStatus(code int) { s.mu.Lock(); s.failStatus = code; s.mu.Unlock() }
 
-// SetDelay は応答の前に d だけ待つ（時間切れの再現）。
+// SetDelay は応答の前に d だけ待つ（タイムアウトの再現）。
 func (s *Server) SetDelay(d time.Duration) { s.mu.Lock(); s.delay = d; s.mu.Unlock() }
 
 // SetBroken は true の間、GET に 200 で壊れた本文を返す（定義に合わない出力の再現）。
 func (s *Server) SetBroken(v bool) { s.mu.Lock(); s.broken = v; s.mu.Unlock() }
 
 // SetTruncate は true の間、ListBuckets を 1 件ずつのページにし、2 ページ目からを
-// 500 で断る（一覧が途中で切れる再現）。
+// 500 で拒否する（一覧が途中で切れる再現）。
 func (s *Server) SetTruncate(v bool) { s.mu.Lock(); s.truncate = v; s.mu.Unlock() }
 
-// Writes は accessKey のキーで送った GET・HEAD の外の要求の回数（断ったものも数える）。
+// Writes は accessKey のキーで送った GET・HEAD の外のリクエストの回数（拒否したものも数える）。
 func (s *Server) Writes(accessKey string) int { return s.KeyCalls(accessKey)["WRITE"] }
 
 // Calls は操作（"ListBuckets" など）ごとの呼ばれた回数を返す。
 func (s *Server) Calls(op string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls[op] }
 
-// KeyCalls は accessKey のキーで署名した要求の回数（GET・HEAD は "READ"、ほかは
-// "WRITE"。断った要求も数える）。
+// KeyCalls は accessKey のキーで署名したリクエストの回数（GET・HEAD は "READ"、ほかは
+// "WRITE"。拒否したリクエストも数える）。
 func (s *Server) KeyCalls(accessKey string) map[string]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -306,7 +306,7 @@ func (s *Server) Snapshot(name string) (versioning, policy, lifecycle string, ta
 	return b.versioning, b.policy, string(b.lifecycle), t, true
 }
 
-// ---- 要求 ----
+// ---- リクエスト ----
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
@@ -631,7 +631,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseObjectLock は PutObjectLockConfiguration の本文を AWS の決まりで読む。
-// 断るなら状態コードと Code を返す。
+// 拒否するなら状態コードと Code を返す。
 func (s *Server) parseObjectLock(body []byte) (*objectLock, int, string, string) {
 	var doc struct {
 		XMLName xml.Name

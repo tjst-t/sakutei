@@ -77,8 +77,8 @@ func open(t *testing.T, settings map[string]any) *alertmanager.Sink {
 }
 
 // E-H2：複数の宛先に送る。firing は今の一覧を endsAt = 今 + ttl で送り直し、
-// resolved は 1 回送る。stuck に上がれば印の無い前の alert を閉じる。1 台が落ちて
-// いても送れたとし、全部が落ちれば誤り（コアが次の周に送り直す）。
+// resolved は 1 回送る。stuck に上がれば stuck の label の無い前の alert を閉じる。
+// 1 台が落ちていても送れたとし、全部が落ちればエラー（コアが次の cycle に送り直す）。
 func TestAlertmanager(t *testing.T) {
 	am1, am2 := newReceiver(t), newReceiver(t)
 	tok := filepath.Join(t.TempDir(), "am.token")
@@ -134,10 +134,10 @@ func TestAlertmanager(t *testing.T) {
 		t.Errorf("resolved: %+v", got[1])
 	}
 	if got[2].Labels["alertname"] != "Applied" || !got[2].EndsAt.Equal(now.Add(alertmanager.DefaultIncidentTTL)) {
-		t.Errorf("出来事型: %+v", got[2])
+		t.Errorf("edge Event: %+v", got[2])
 	}
 
-	// 1 台が落ちても送れた。全部落ちれば誤り。誤りの文にトークンを出さない。
+	// 1 台が落ちても送れた。全部落ちればエラー。エラーメッセージにトークンを出さない。
 	am2.srv.Close()
 	if err := s.DeliverState(ctx, []core.Event{stuck}); err != nil {
 		t.Fatalf("1 台が落ちた: %v", err)
@@ -160,10 +160,10 @@ func TestAlertmanagerRejectsSettings(t *testing.T) {
 	}{
 		{"宛先なし", map[string]any{}, "urls に"},
 		{"外向きの平文", map[string]any{"urls": []any{"http://am.example.com:9093"}}, "plaintext: true"},
-		{"URL の資格", map[string]any{"urls": []any{"https://u:p@am.example.com"}}, "token_file に書く"},
-		{"知らない項目", map[string]any{"urls": []any{"https://am.example.com"}, "url": "x"}, "知らない項目 url"},
+		{"URL の credential", map[string]any{"urls": []any{"https://u:p@am.example.com"}}, "token_file に書く"},
+		{"不明な field", map[string]any{"urls": []any{"https://am.example.com"}, "url": "x"}, "不明な field url"},
 		{"予約の label", map[string]any{"urls": []any{"https://am.example.com"}, "labels": map[string]any{"alertname": "x"}}, "labels.alertname"},
-		{"長さ", map[string]any{"urls": []any{"https://am.example.com"}, "ttl": "soon"}, "ttl"},
+		{"duration", map[string]any{"urls": []any{"https://am.example.com"}, "ttl": "soon"}, "ttl"},
 	} {
 		_, err := alertmanager.Module(c.settings)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

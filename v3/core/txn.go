@@ -19,14 +19,14 @@ import (
 	"time"
 )
 
-// ConfirmPhase は確かめる時（§3.1 の confirm[].phase）。
+// ConfirmPhase は check する時点（§3.1 の confirm[].phase）。
 type ConfirmPhase int
 
 const (
-	// ConfirmAfter は変えたあと、確定の前に確かめる。通らなければ確定しない
+	// ConfirmAfter は変えたあと、確定の前に check する。通らなければ確定しない
 	// （E-B3・N-B9）。
 	ConfirmAfter ConfirmPhase = iota
-	// ConfirmBefore は変える前に確かめる。通らなければ変えない（E-B3・N-B9：
+	// ConfirmBefore は変える前に check する。通らなければ変えない（E-B3・N-B9：
 	// 前に届かない先は変えても戻るだけ）。
 	ConfirmBefore
 )
@@ -38,27 +38,27 @@ func (p ConfirmPhase) String() string {
 	return "after"
 }
 
-// Confirm は 2 段の Apply の確かめ 1 つ（E-B3・N-B9）。When は Condition の式で、
-// 到達の観測（probe）・別のリソースの観測・check(名前) を書く（E-B9・E-B13）。
+// Confirm は two-phase Apply（Transaction）の check 1 つ（E-B3・N-B9）。When は Condition の式で、
+// 到達の観測（probe）・別の Resource の観測・check(名前) を書く（E-B9・E-B13）。
 type Confirm struct {
 	Phase ConfirmPhase
 	When  Condition
 }
 
 // DefaultTxnTimeout は transaction.timeout を書かないときの値。provider は相手の
-// 側にこの時間の後に元へ戻す仕掛けを置き、コアは半分までに確かめる（E-B3・E-B8）。
+// 側にこの時間の後に元へ戻す仕掛けを置き、コアは半分までに check する（E-B3・E-B8）。
 const DefaultTxnTimeout = 30 * time.Second
 
-// TxnSpec は 2 段で当てる宣言（§3.1 の apply.transaction、E-B3・E-B8・N-B2・N-D5）。
+// TxnSpec は two-phase Apply（Transaction）の宣言（§3.1 の apply.transaction、E-B3・E-B8・N-B2・N-D5）。
 type TxnSpec struct {
-	// Group は同じ名前の宣言を 1 つにまとめる。全部で確かめが通ったときだけ確定し、
+	// Group は同じ名前の宣言を 1 つにまとめる。全部で check が通ったときだけ確定し、
 	// 1 つでも落ちればどれも確定しない（E-B9・N-B3・N-B14、不変条件 17）。
 	Group   string
 	Timeout time.Duration
 	Confirm []Confirm
 }
 
-// ApplyOptions は当て方（§3.1 の apply）。
+// ApplyOptions は Apply の仕方（§3.1 の apply）。
 type ApplyOptions struct {
 	Transaction *TxnSpec // E-B3・E-B8・N-B2・N-D5
 }
@@ -77,9 +77,9 @@ type TxnOptions struct {
 	Timeout time.Duration
 }
 
-// Transactor は 2 段で当てる任意の口（§3.3、E-B3・E-B8・E-B9・N-B2・N-D5・N-K9）。
-// Prepare は変更を当てたうえで、Timeout の後に元へ戻す仕掛けを相手の側に置く
-// （commit confirmed・nft-guard の arm）。コアは確かめが通ったときだけ Commit を
+// Transactor は two-phase Apply（Transaction）の任意のインターフェース（§3.3、E-B3・E-B8・E-B9・N-B2・N-D5・N-K9）。
+// Prepare は変更を Apply したうえで、Timeout の後に元へ戻す仕掛けを相手の側に置く
+// （commit confirmed・nft-guard の arm）。コアは check が通ったときだけ Commit を
 // 呼ぶ。呼ばなければ（コアが落ちても・接続が切れても）相手の時間切れで戻る
 // （不変条件 17）。
 type Transactor interface {
@@ -94,7 +94,7 @@ type Txn interface {
 	Rollback(ctx context.Context) error
 }
 
-// Txn は宣言の 2 段の Apply（無ければ nil）。
+// Txn は宣言の two-phase Apply（Transaction）（無ければ nil）。
 func (r Resource) Txn() *TxnSpec {
 	if r.Apply == nil {
 		return nil
@@ -102,7 +102,7 @@ func (r Resource) Txn() *TxnSpec {
 	return r.Apply.Transaction
 }
 
-// TxnKey は 2 段の Apply をまとめる単位の名前。group が無ければ宣言ごと。
+// TxnKey は two-phase Apply をまとめる単位の名前。group が無ければ宣言ごと。
 func (r Resource) TxnKey() string {
 	if t := r.Txn(); t != nil && t.Group != "" {
 		return "group " + t.Group

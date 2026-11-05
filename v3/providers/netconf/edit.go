@@ -20,15 +20,15 @@ package netconf
 // には触らない。YANG を持たないので、どこで置き換えるかは filter の形で決める
 // （RFC 6241 §6）:
 //
-//   - 子が content match（値つきの葉）だけの filter の要素・子の無い filter の
+//   - 子が content match（値つきの leaf）だけの filter の要素・子の無い filter の
 //     要素（selection）は「境目」: 宣言のその要素を operation="replace" で
 //     送り、機器にだけあるその要素（同じ名前の兄弟）を operation="remove" で
 //     消す。機器と宣言の要素の突き合わせは、content match があればその値、
-//     無ければ機器の要素の最初の葉（YANG のリストのキーは最初に書かれる、
-//     RFC 7950 §7.8.5）の名前と値で。葉の無い要素は名前だけで。
-//   - それ以外（containment）の要素は、そのまま中に入る（content match の葉は
+//     無ければ機器の要素の最初の leaf（YANG のリストのキーは最初に書かれる、
+//     RFC 7950 §7.8.5）の名前と値で。leaf の無い要素は名前だけで。
+//   - それ以外（containment）の要素は、そのまま中に入る（content match の leaf は
 //     どのエントリかを示すために写す）。operation は付けない（既定の merge）。
-//   - ordered で名指しした道の境目の要素には yang:insert="last" も付け、宣言の
+//   - ordered で名指ししたパスの境目の要素には yang:insert="last" も付け、宣言の
 //     順に並べ直す（ordered-by user の列）。
 //   - filter が選ばない宣言の要素はエラー（送れば filter の外を書く）。
 //
@@ -58,7 +58,7 @@ func buildEdit(filter, declared, current []*node, ordered orderedSet) (string, e
 	return b.String(), nil
 }
 
-// contentMatch は filter の要素 f が content match（値つきの葉）か。
+// contentMatch は filter の要素 f が content match（値つきの leaf）か。
 func contentMatch(f *node) bool { return len(f.children) == 0 && f.text != "" }
 
 // boundary は f が置き換えの境目か（子が content match だけ、または子が無い）。
@@ -98,8 +98,8 @@ func findChild(n *node, name xml.Name, text string) *node {
 	return nil
 }
 
-// keyLeaves は境目の要素 c（機器の側）を指す葉: filter の content match、
-// 無ければ c の最初の葉。葉が無ければ nil（名前だけで指す）。
+// keyLeaves は境目の要素 c（機器の側）を指す leaf: filter の content match、
+// 無ければ c の最初の leaf。leaf が無ければ nil（名前だけで指す）。
 func keyLeaves(f, c *node) []*node {
 	var keys []*node
 	for _, cm := range f.children {
@@ -252,7 +252,7 @@ func editLevel(b *strings.Builder, filter, declared, current []*node, parentPath
 	return nil
 }
 
-// writeRemove は機器にだけある要素 c を、それを指す葉 keys だけで
+// writeRemove は機器にだけある要素 c を、それを指す leaf keys だけで
 // operation="remove" で書く。
 func writeRemove(b *strings.Builder, c *node, keys []*node, parentNS string) {
 	b.WriteString("<" + c.name.Local)

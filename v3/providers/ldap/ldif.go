@@ -20,7 +20,7 @@ package ldap
 //   - 読む：ldapsearch -LLL の出力（"#" の行は飛ばす。折り返しの行は前の行に
 //     つなぐ。"名前:: base64" を解く）。
 //   - 書く：ldapmodify に渡す変更（add・modify の replace・delete）。DN と値は
-//     いつも base64（"名前:: ..."）で書くので、どんな値でもエスケープの誤りが無い。
+//     いつも base64（"名前:: ..."）で書くので、どんな値でもエスケープを誤らない。
 
 import (
 	"encoding/base64"
@@ -106,7 +106,7 @@ func ParseLDIF(text string) ([]Record, error) {
 	return out, nil
 }
 
-// Entry は検索の結果の 1 つの項目。
+// Entry は検索の結果の 1 つの entry。
 type Entry struct {
 	// DN はサーバが返した DN（書き方はサーバのまま）。
 	DN string
@@ -121,7 +121,7 @@ func entries(recs []Record) ([]Entry, error) {
 	out := make([]Entry, 0, len(recs))
 	for _, r := range recs {
 		if !strings.EqualFold(r[0].Name, "dn") {
-			return nil, fmt.Errorf("LDIF: dn で始まらない項目（%q）", r[0].Name)
+			return nil, fmt.Errorf("LDIF: dn で始まらない entry（%q）", r[0].Name)
 		}
 		e := Entry{DN: r[0].Value, Attrs: map[string][]string{}, Names: map[string]string{}}
 		for _, l := range r[1:] {
@@ -151,7 +151,7 @@ func writeB64(b *strings.Builder, name, value string) {
 	b.WriteByte('\n')
 }
 
-// AddLDIF は項目を作る変更。
+// AddLDIF は entry を作る変更。
 func AddLDIF(dn string, attrs []Attr) string {
 	var b strings.Builder
 	writeB64(&b, "dn", dn)
@@ -166,7 +166,7 @@ func AddLDIF(dn string, attrs []Attr) string {
 }
 
 // ReplaceLDIF は属性ごとに値をその一覧ちょうどにする変更（値が空なら属性を消す）。
-// 1 つの modify なので、サーバは全部を一度に当てるか、何もしない。
+// 1 つの modify なので、サーバは全部を一度に適用するか、何もしない。
 func ReplaceLDIF(dn string, attrs []Attr) string {
 	var b strings.Builder
 	writeB64(&b, "dn", dn)
@@ -182,7 +182,7 @@ func ReplaceLDIF(dn string, attrs []Attr) string {
 	return b.String()
 }
 
-// DeleteLDIF は項目を消す変更。
+// DeleteLDIF は entry を消す変更。
 func DeleteLDIF(dn string) string {
 	var b strings.Builder
 	writeB64(&b, "dn", dn)
@@ -299,7 +299,7 @@ func schemaList(toks []string, i int) ([]string, int) {
 }
 
 // impliedClasses は classes（小文字）の上位のクラスを全部たどった集合と "top"。
-// サーバ（389 Directory Server など）は項目に上位のクラスを足すので、宣言に
+// サーバ（389 Directory Server など）は entry に上位のクラスを足すので、宣言に
 // 書かなくても在ってよいクラス。
 func impliedClasses(classes []string, sup map[string][]string) []string {
 	seen := map[string]bool{"top": true}

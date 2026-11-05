@@ -73,7 +73,7 @@ func appendN(t *testing.T, rec *record.Record, from, n uint64) {
 	}
 }
 
-// 不変条件 28：送れない sink は位置を保ち、次の周に同じ位置から送り直す。ほかの
+// 不変条件 28：送れない sink は位置を保ち、次の cycle に同じ位置から送り直す。ほかの
 // sink は進む。止まった sink・panic する sink でも戻ってくる。
 func TestDeliverRetriesFromSamePosition(t *testing.T) {
 	rec, err := record.Open(filepath.Join(t.TempDir(), "record"))
@@ -121,7 +121,7 @@ type panicSink struct{}
 
 func (panicSink) Deliver(context.Context, []core.Event) error { panic("壊れた") }
 
-// 送り出しの列は回し、全部の sink が送ったファイルを消す。/events の読み手は
+// outbox はファイルを回し、全部の sink が送ったファイルを消す。/events の読み手は
 // 消えたファイルを飛ばして続きを読む。
 func TestOutboxRotateAndPrune(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "record")
@@ -206,7 +206,7 @@ func (s *auditSink) DeliverAudit(_ context.Context, batch []core.AuditLine) erro
 	return nil
 }
 
-// 監査の送り先（streams: [audit]、E-L1・N-L1）：送れたら位置を進め、送れなければ
+// audit の sink（streams: [audit]、E-L1・N-L1）：送れたら位置を進め、送れなければ
 // 位置を保って次に同じ位置から送り直す。回したファイルをまたいで続きから読む。
 func TestDeliverAudit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "record")
@@ -253,7 +253,7 @@ func TestDeliverAudit(t *testing.T) {
 		t.Fatalf("bad は 1 から送り直す: %v", bad.got)
 	}
 	if n, err := record.Verify(dir); err != nil || n != 9 {
-		t.Fatalf("送っても監査は変えない: %d %v", n, err)
+		t.Fatalf("送っても audit は変えない: %d %v", n, err)
 	}
 }
 
@@ -271,8 +271,8 @@ func (s *stateSink) DeliverState(_ context.Context, firing []core.Event) error {
 	return nil
 }
 
-// 続いている状態を送り直す送り先（core.StateSink）は、列が空の周も、列を送れない
-// 周も、今の firing の一覧を受け取る（E-H2・E-H3）。
+// 続いている状態を送り直す sink（core.StateSink）は、列が空の cycle も、列を送れない
+// cycle も、今の firing の一覧を受け取る（E-H2・E-H3）。
 func TestDeliverState(t *testing.T) {
 	rec, err := record.Open(filepath.Join(t.TempDir(), "record"))
 	if err != nil {

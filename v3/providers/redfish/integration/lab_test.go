@@ -17,7 +17,7 @@
 package integration
 
 // lab_test.go — lab の用意（TestMain が deploy し、終わったら失敗・中断でも
-// destroy する）と、Redfish を手で叩く口・sakutei を動かす口。
+// destroy する）と、Redfish を手で叩くヘルパー・sakutei を動かすヘルパー。
 
 import (
 	"bufio"
@@ -137,8 +137,8 @@ func preflight() error {
 	return nil
 }
 
-// prepare はトポロジ・ISO・sakutei（v3）のバイナリ・パスワードのファイル・つなぎ方の
-// 設定を作業場所に置く。
+// prepare はトポロジ・ISO・sakutei（v3）のバイナリ・パスワードのファイル・接続設定を
+// 作業場所に置く。
 func prepare() error {
 	topo, err := os.ReadFile("topology.clab.yml")
 	if err != nil {
@@ -169,7 +169,7 @@ func prepare() error {
 	return os.WriteFile(lab.config, []byte(config(filepath.Join(lab.dir, "bmc-password"))), 0o600)
 }
 
-// config はつなぎ方の設定。writePassword は node1 の書き込み用のパスワードのファイル。
+// config は接続設定。writePassword は node1 の書き込み用のパスワードのファイル。
 func config(writePassword string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "providers:\n  bmc:\n    module: redfish\n    settings:\n      settle: %s\n      nodes:\n", settle)
@@ -223,7 +223,7 @@ func destroy() {
 	}
 }
 
-// ---- Redfish を手で叩く（sakutei の Client とは別の、curl 相当の口）----
+// ---- Redfish を手で叩く（sakutei の Client とは別の、curl 相当のヘルパー）----
 
 var httpc = &http.Client{
 	Timeout:   5 * time.Second,
@@ -382,7 +382,7 @@ func (w *powerWatch) states() []string {
 	return append([]string(nil), w.seen...)
 }
 
-// faultDo は node2 の障害注入の口（topology の FAULT_API_ADDR）を叩く。
+// faultDo は node2 の障害注入の API（topology の FAULT_API_ADDR）を叩く。
 func faultDo(t *testing.T, method string, body any) {
 	t.Helper()
 	var rd io.Reader
@@ -475,7 +475,7 @@ func (l *lockedBuffer) String() string {
 	return l.b.String()
 }
 
-// startDaemon は常駐の sakutei を起こす。テストの終わりに必ず止める。
+// startDaemon は daemon の sakutei を起こす。テストの終わりに必ず止める。
 func startDaemon(t *testing.T) func() {
 	t.Helper()
 	out := &lockedBuffer{}
@@ -496,7 +496,7 @@ func startDaemon(t *testing.T) func() {
 				_ = cmd.Process.Kill()
 				<-done
 			}
-			t.Logf("常駐の出力:\n%s", out.String())
+			t.Logf("daemon の出力:\n%s", out.String())
 		})
 	}
 	t.Cleanup(stop)
@@ -512,7 +512,7 @@ type images struct {
 	body map[string]string
 }
 
-// newImages は名前 → 1 行目の版（"BMC 2.0.0" など）のイメージを配る。
+// newImages は名前 → 1 行目のバージョン（"BMC 2.0.0" など）のイメージを配る。
 func newImages(t *testing.T, heads map[string]string) *images {
 	t.Helper()
 	ln, err := net.Listen("tcp", net.JoinHostPort(gateway, "0"))

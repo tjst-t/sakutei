@@ -13,21 +13,21 @@
 // limitations under the License.
 
 // Package nftables は nftables の chain（順序のあるルール列）を宣言どおりに保つ
-// provider（設計 §7.1、E-B2・E-B3・E-B4・N-B9）。コアの外のモジュールで、コアの口
-// core.Provider・core.Validator・core.Transactor を持つ。
+// provider（設計 §7.1、E-B2・E-B3・E-B4・N-B9）。コアの外のモジュールで、コアの
+// interface core.Provider・core.Validator・core.Transactor を実装する。
 //
-//	providers:                                  # つなぎ方の設定
+//	providers:                                  # 接続設定（config ファイル）
 //	  fw:
 //	    module: nftables
 //	    settings:
 //	      hosts:
 //	        lab: {ruleset: /srv/fw/lab.rules}   # file：ruleset のファイル（FW には反映しない）
-//	        fw1:                                # live：カーネルの ruleset。root で走るのは道具だけ
+//	        fw1:                                # live：カーネルの ruleset。root で走るのは専用ツールだけ
 //	          ssh: {address: 192.0.2.1, user: sakutei, key: /etc/sakutei/id_ed25519, known_hosts: /etc/sakutei/known_hosts}
 //	          sudo: true
 //	          guard: [/usr/local/libexec/sakutei-nft-guard]
 //
-//	ranges:                                     # intent（範囲は intent にだけ書く）
+//	ranges:                                     # intent（Range は intent にだけ書く）
 //	  - provider: fw
 //	    args: {host: fw1, tables: "inet/filter"}
 //	resources:
@@ -38,24 +38,24 @@
 //	      transaction:
 //	        timeout: 30s
 //	        confirm:
-//	          - {phase: before, when: 'observe(probe/tcp/fw1:22).reachable == true'}
-//	          - {phase: after,  when: 'observe(probe/tcp/fw1:22).reachable == true'}
+//	          - {phase: before, when: 'check(mgmt-ssh)'}  # cli.WithCheck で組み込んだ check
+//	          - {phase: after,  when: 'check(mgmt-ssh)'}
 //
 // 決まり：
 //
-//   - 扱う table は Range の args.tables（E-B2）。範囲の外の table・宣言していない
-//     base chain・set・map は読まず書かない。List は範囲の table の regular chain
-//     だけを出す（E-B4）。
+//   - 扱う table は Range の args.tables（E-B2）。Range の外の table・宣言していない
+//     base chain・set・map は読まず、書かない。List は Range の table の regular chain
+//     だけを返す（E-B4）。
 //   - rules は順序のあるルール文のリスト（全置換、E-B12）。宣言は正規形（引用符の外の
-//     空白 1 つ）で書く（E-I7）。
-//   - type・hook・priority・policy の 4 つを書いた宣言が base chain の宣言（4 つとも
-//     要る。policy を書き忘れて既定の accept にしない）。宣言が regular chain なのに
-//     現実が base chain なら Unknown（既定の拒否の chain のルールを policy を言わずに
-//     変えない、E-B3）。
-//   - live の base chain の宣言には apply.transaction（2 段の Apply）を書く（締め出しの
-//     守り、E-B3）。Prepare は道具の arm（写しとホストの側の時間切れの戻し）と apply、
-//     Commit は disarm、Rollback は道具の rollback。Sakutei が落ちても接続が切れても、
-//     ホストの側で戻る（不変条件 17）。file の宣言には書けない（FW を変えない）。
+//     空白を 1 つにそろえた形）で書く（E-I7）。
+//   - type・hook・priority・policy の 4 つを書いた宣言が base chain の宣言になる。4 つとも
+//     必須（policy を書き忘れて既定の accept にしないため）。宣言が regular chain なのに
+//     現実が base chain なら Unknown にする（既定の拒否の chain のルールを、policy を
+//     宣言せずに変えない、E-B3）。
+//   - live の base chain の宣言には apply.transaction（two-phase Apply）を書く（締め出しの
+//     防止、E-B3）。Prepare は専用ツールの arm（コピーとホスト側の時間切れの rollback）と
+//     apply、Commit は disarm、Rollback は専用ツールの rollback。Sakutei が落ちても接続が
+//     切れても、ホスト側で元に戻る（不変条件 17）。file の宣言には書けない（FW を変えないため）。
 package nftables
 
 import (
@@ -71,10 +71,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/hostexec"
 )
 
-// Version は Schema の版。
+// Version は Schema のバージョン。
 const Version = "nftables/1"
 
-// Kind は chain の種類の名前。
+// Kind は chain の Resource の type の名前。
 const Kind = "chain"
 
 // host は 1 つのホスト：file か live。
@@ -88,7 +88,7 @@ type host struct {
 type Provider struct {
 	mu    sync.Mutex
 	hosts map[string]*host
-	// tables はホスト → 範囲の table（Validate で受け取る）。
+	// tables はホスト → Range の table（Validate で受け取る）。
 	tables map[string]map[string]bool
 	// regular は regular chain として宣言した ID（現実が base chain なら Unknown）。
 	regular map[core.ID]bool
@@ -104,7 +104,7 @@ var (
 func Module(settings map[string]any) (core.Provider, error) {
 	for k := range settings {
 		if k != "hosts" {
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: hosts）", k)
+			return nil, fmt.Errorf("settings に知らない field %q がある（書ける field: hosts）", k)
 		}
 	}
 	hs, err := hostexec.ParseHosts(settings["hosts"], "ruleset", "guard")
@@ -117,10 +117,10 @@ func Module(settings map[string]any) (core.Provider, error) {
 		if v, ok := h.Extra["ruleset"]; ok {
 			s, isStr := v.(string)
 			if !isStr || s == "" {
-				return nil, fmt.Errorf("settings.hosts.%s.ruleset にファイルを書く", name)
+				return nil, fmt.Errorf("settings.hosts.%s.ruleset にファイルのパスを書く", name)
 			}
 			if h.Runner != nil || h.Extra["guard"] != nil {
-				return nil, fmt.Errorf("settings.hosts.%s: ruleset（file）と local・ssh・guard（live）はどちらか", name)
+				return nil, fmt.Errorf("settings.hosts.%s: ruleset（file）と local・ssh・guard（live）はどちらか一方だけを書く", name)
 			}
 			ho.ruleset = s
 		} else {
@@ -140,7 +140,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 	return p, nil
 }
 
-// Schema は chain の項目。
+// Schema は chain の field。
 func (p *Provider) Schema() core.Schema {
 	return core.Schema{Version: Version, Kinds: map[string]core.KindSchema{
 		Kind: {Fields: map[string]core.FieldSpec{
@@ -164,7 +164,7 @@ func coords(id core.ID) (h, family, table, chain string, err error) {
 
 var baseFields = []string{"type", "hook", "priority", "policy"}
 
-// Validate は範囲と宣言を確かめ、範囲の table と regular chain の宣言を覚える
+// Validate は Range と宣言を確かめ、Range の table と regular chain の宣言を覚える
 // （E-B2・E-B3・E-I6・E-I7・E-K8）。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
@@ -175,12 +175,12 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	for _, rg := range ranges {
 		for k := range rg.Args {
 			if k != "host" && k != "tables" {
-				rej(rg.Origin, "ranges", "nftables の範囲の引数は host と tables（%q が書かれている）", k)
+				rej(rg.Origin, "ranges", "nftables の Range の引数は host と tables だけ（%q が書かれている）", k)
 			}
 		}
 		h, list := rg.Args["host"], rg.Args["tables"]
 		if p.hosts[h] == nil {
-			rej(rg.Origin, "ranges", "host %q がつなぎ方の設定の hosts に無い", h)
+			rej(rg.Origin, "ranges", "host %q が接続設定の hosts に無い", h)
 			continue
 		}
 		if list == "" {
@@ -194,11 +194,11 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 			t = strings.TrimSpace(t)
 			f, n, ok := strings.Cut(t, "/")
 			if !ok || !families[f] || !identRe.MatchString(n) {
-				rej(rg.Origin, "ranges", "table %q は <family>/<name>", t)
+				rej(rg.Origin, "ranges", "table %q は <family>/<name> の形で書く", t)
 				continue
 			}
 			if tables[h][t] {
-				rej(rg.Origin, "ranges", "host %s の table %s が 2 つの範囲に入る", h, t)
+				rej(rg.Origin, "ranges", "host %s の table %s が 2 つの Range に入っている", h, t)
 			}
 			tables[h][t] = true
 		}
@@ -214,10 +214,10 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		ho := p.hosts[h]
 		switch {
 		case ho == nil:
-			rej(r.Origin, target, "host %q がつなぎ方の設定の hosts に無い", h)
+			rej(r.Origin, target, "host %q が接続設定の hosts に無い", h)
 			continue
 		case !tables[h][family+"/"+table]:
-			rej(r.Origin, target, "table %s/%s は host %s の範囲（ranges の tables）に無い", family, table, h)
+			rej(r.Origin, target, "table %s/%s は host %s の Range（ranges の tables）に無い", family, table, h)
 			continue
 		}
 		if r.Ensure == core.EnsureAbsent {
@@ -233,29 +233,29 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		case n == 0:
 			regular[r.ID] = true
 		case n != len(baseFields):
-			rej(r.Origin, target, "base chain の宣言は type・hook・priority・policy の 4 つを書く（policy を書き忘れて既定の accept にしない）")
+			rej(r.Origin, target, "base chain の宣言は type・hook・priority・policy の 4 つすべてを書く（policy を書き忘れて既定の accept にしないため）")
 		default:
 			if s, _ := r.Fields["type"].(string); !types[s] {
-				rej(r.Origin, target, "type は filter・nat・route")
+				rej(r.Origin, target, "type は filter・nat・route のどれか")
 			}
 			if s, _ := r.Fields["hook"].(string); !hooks[s] {
-				rej(r.Origin, target, "hook は prerouting・input・forward・output・postrouting")
+				rej(r.Origin, target, "hook は prerouting・input・forward・output・postrouting のどれか")
 			}
 			if s, _ := r.Fields["policy"].(string); !policies[s] {
-				rej(r.Origin, target, "policy は accept か drop")
+				rej(r.Origin, target, "policy は accept か drop のどちらか")
 			}
 			if ho.guard != nil && r.Txn() == nil {
-				rej(r.Origin, target, "live の base chain は apply.transaction（2 段の Apply）で当てる（締め出しの守り、E-B3）")
+				rej(r.Origin, target, "live の base chain は apply.transaction（two-phase Apply）で Apply する（締め出しの防止、E-B3）")
 			}
 		}
 		if ho.ruleset != "" && r.Txn() != nil {
-			rej(r.Origin, target, "file の対象（ruleset）には apply.transaction を書けない（FW を変えない）")
+			rej(r.Origin, target, "file の対象（ruleset）には apply.transaction を書けない（FW を変えないため）")
 		}
 		if l, ok := r.Fields["rules"].([]any); ok {
 			for i, e := range l {
 				s, isStr := e.(string)
 				if !isStr {
-					rej(r.Origin, target, "rules[%d] は文字列", i)
+					rej(r.Origin, target, "rules[%d] は文字列で書く", i)
 					continue
 				}
 				if err := checkRule(s); err != nil {
@@ -278,7 +278,7 @@ func (p *Provider) managed(h, family, table string) bool {
 	return p.tables[h][family+"/"+table]
 }
 
-// readTables はホストの table を 1 回ずつ読む。
+// reader はホストの table を 1 回ずつ読む。
 type reader struct {
 	p     *Provider
 	files map[string]*rulesetFile
@@ -346,7 +346,7 @@ func (p *Provider) observe(ctx context.Context, rd *reader, id core.ID) core.Obs
 	}
 	ho := p.hosts[h]
 	if ho == nil || !p.managed(h, family, table) {
-		return unknown("範囲（ranges の tables）の外")
+		return unknown("Range（ranges の tables）の外")
 	}
 	t, err := rd.table(ctx, ho, family, table)
 	if err != nil {
@@ -363,7 +363,7 @@ func (p *Provider) observe(ctx context.Context, rd *reader, id core.ID) core.Obs
 	regular := p.regular[id]
 	p.mu.Unlock()
 	if c.base && regular {
-		return unknown("現実は base chain（policy " + c.def.policy + "）。type・hook・priority・policy も宣言する（E-B3）")
+		return unknown("現実は base chain（policy " + c.def.policy + "）。type・hook・priority・policy も宣言する必要がある（E-B3）")
 	}
 	f := core.Fields{"rules": toAny(c.rules)}
 	if c.base {
@@ -380,11 +380,11 @@ func toAny(l []string) []any {
 	return out
 }
 
-// List は範囲の table の regular chain（宣言していない base chain は出さない、E-B4）。
+// List は Range の table の regular chain を返す（宣言していない base chain は返さない、E-B4）。
 func (p *Provider) List(ctx context.Context, r core.Range) (core.Listing, error) {
 	ho := p.hosts[r.Args["host"]]
 	if ho == nil {
-		return core.Listing{}, fmt.Errorf("host %q が無い", r.Args["host"])
+		return core.Listing{}, fmt.Errorf("host %q が接続設定の hosts に無い", r.Args["host"])
 	}
 	rd := p.newReader()
 	var ids []core.ID
@@ -414,7 +414,7 @@ type chainOp struct {
 	cur                  *chainState
 }
 
-// op は宣言から変更を作る（今の chain を読み直して、作り直しが要るかを決める）。
+// op は宣言から変更を作る（今の chain を再観測して、作り直しが要るかを決める）。
 func (p *Provider) op(ctx context.Context, rd *reader, ch core.Change) (*host, chainOp, error) {
 	h, family, table, chain, err := coords(ch.ID)
 	if err != nil {
@@ -422,7 +422,7 @@ func (p *Provider) op(ctx context.Context, rd *reader, ch core.Change) (*host, c
 	}
 	ho := p.hosts[h]
 	if ho == nil || !p.managed(h, family, table) {
-		return nil, chainOp{}, fmt.Errorf("%s は範囲（ranges の tables）の外", ch.ID)
+		return nil, chainOp{}, fmt.Errorf("%s は Range（ranges の tables）の外", ch.ID)
 	}
 	t, err := rd.table(ctx, ho, family, table)
 	if err != nil {
@@ -440,7 +440,7 @@ func (p *Provider) op(ctx context.Context, rd *reader, ch core.Change) (*host, c
 			op.rules = append(op.rules, fmt.Sprint(e))
 		}
 	} else if op.cur != nil {
-		op.rules = op.cur.rules // rules を宣言しない：今のルールを保つ
+		op.rules = op.cur.rules // rules を宣言していなければ今のルールを保つ
 	}
 	if typ, ok := ch.Desired["type"].(string); ok {
 		d := baseDef{typ: typ}
@@ -449,12 +449,12 @@ func (p *Provider) op(ctx context.Context, rd *reader, ch core.Change) (*host, c
 		d.policy, _ = ch.Desired["policy"].(string)
 		op.base = &d
 	} else if op.cur != nil && op.cur.base {
-		return nil, chainOp{}, fmt.Errorf("%s の現実は base chain。type・hook・priority・policy も宣言する", ch.ID)
+		return nil, chainOp{}, fmt.Errorf("%s の現実は base chain。type・hook・priority・policy も宣言する必要がある", ch.ID)
 	}
 	return ho, op, nil
 }
 
-// Apply は 1 つの chain を当てる（2 段でない宣言）。
+// Apply は 1 つの chain を Apply する（two-phase Apply でない宣言）。
 func (p *Provider) Apply(ctx context.Context, _ core.WriteContext, id core.ID, desired core.Fields, _ core.Observation) error {
 	return p.write(ctx, []core.Change{{ID: id, Desired: desired}})
 }
@@ -515,9 +515,10 @@ func (p *Provider) writeFile(ho *host, ops []chainOp) error {
 	return writeAtomic(ho.ruleset, []byte(rf.text()))
 }
 
-// Prepare は 2 段の Apply の準備（E-B3・E-B8・不変条件 17）。ホストごとに、道具で
-// 確かめ（check）、変える table の写しとホストの側の時間切れの戻しを置き（arm）、
-// 1 つのトランザクションで流す（apply）。流せなければ置いた戻しをすぐ使う。
+// Prepare は two-phase Apply の準備（E-B3・E-B8・不変条件 17）。ホストごとに、専用
+// ツールで確かめ（check）、変える table のコピーとホスト側の時間切れの rollback を
+// 予約し（arm）、1 つのトランザクションで流す（apply）。流せなければ予約した
+// rollback をすぐ実行する。
 func (p *Provider) Prepare(ctx context.Context, _ core.WriteContext, changes []core.Change, opt core.TxnOptions) (core.Txn, error) {
 	rd := p.newReader()
 	byHost, order, err := p.ops(ctx, rd, changes)
@@ -529,12 +530,12 @@ func (p *Provider) Prepare(ctx context.Context, _ core.WriteContext, changes []c
 		ho := p.hosts[name]
 		if ho.guard == nil {
 			txn.Rollback(ctx)
-			return nil, fmt.Errorf("host %s は file の対象（2 段の Apply は live だけ）", name)
+			return nil, fmt.Errorf("host %s は file の対象（two-phase Apply は live だけ）", name)
 		}
 		body := script(byHost[name])
 		if _, err := ho.guard.run(ctx, body, "check"); err != nil {
 			txn.Rollback(ctx)
-			return nil, fmt.Errorf("host %s: nft -c に落ちた: %w", name, err)
+			return nil, fmt.Errorf("host %s: nft -c が失敗した: %w", name, err)
 		}
 		var tables []string
 		seen := map[string]bool{}
@@ -553,7 +554,7 @@ func (p *Provider) Prepare(ctx context.Context, _ core.WriteContext, changes []c
 		txn.armed = append(txn.armed, armed{host: ho, token: token})
 		if _, err := ho.guard.run(ctx, body, "apply"); err != nil {
 			txn.Rollback(ctx)
-			return nil, fmt.Errorf("host %s: nft -f に落ちた: %w", name, err)
+			return nil, fmt.Errorf("host %s: nft -f が失敗した: %w", name, err)
 		}
 	}
 	return txn, nil
@@ -564,21 +565,21 @@ type armed struct {
 	token string
 }
 
-// txn はホストごとに置いた戻しの仕掛け。
+// txn はホストごとに予約した rollback。
 type txn struct {
 	armed []armed
 }
 
-// Commit は仕掛けを外す（disarm）。もう戻っていれば誤り。
+// Commit は rollback の予約を取り消す（disarm）。もう元に戻っていればエラー。
 func (t *txn) Commit(ctx context.Context) error {
 	var errs []string
 	for _, a := range t.armed {
 		out, err := a.host.guard.run(ctx, nil, "disarm", a.token)
 		switch {
 		case err != nil:
-			errs = append(errs, fmt.Sprintf("host %s: 仕掛けを外せない（時間切れで戻るかもしれない）: %v", a.host.name, err))
+			errs = append(errs, fmt.Sprintf("host %s: disarm できない（時間切れで元に戻るかもしれない）: %v", a.host.name, err))
 		case strings.TrimSpace(string(out)) != "disarmed":
-			errs = append(errs, fmt.Sprintf("host %s: 外す前に時間切れで戻った", a.host.name))
+			errs = append(errs, fmt.Sprintf("host %s: disarm の前に時間切れで元に戻った", a.host.name))
 		}
 	}
 	if len(errs) > 0 {
@@ -587,7 +588,7 @@ func (t *txn) Commit(ctx context.Context) error {
 	return nil
 }
 
-// Rollback は仕掛けをすぐ使って写しに戻す（呼ばなくても時間切れで戻る）。
+// Rollback は予約した rollback をすぐ実行してコピーに戻す（呼ばなくても時間切れで戻る）。
 func (t *txn) Rollback(ctx context.Context) error {
 	var errs []string
 	for _, a := range t.armed {

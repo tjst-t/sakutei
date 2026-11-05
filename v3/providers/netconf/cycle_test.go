@@ -14,9 +14,9 @@
 
 package netconf_test
 
-// cycle_test.go — コアの周（cli.Run の reconcile）を偽の機器に当てる：commit_group
-// （transaction.group）の台は全部の確かめが通ったときだけ確定し、check(…)・
-// observe(…) の確かめが通らなければどの台も確定しない（E-B9・不変条件 17）。
+// cycle_test.go — コアの cycle（cli.Run の reconcile）を偽の機器に向けて回す。
+// commit_group（transaction.group）の台は全部の check が通ったときだけ確定し、
+// check(…)・observe(…) が通らなければどの台も確定しない（E-B9・不変条件 17）。
 
 import (
 	"bytes"
@@ -117,8 +117,8 @@ func groupIntent(desc, confirm string) string {
 	return b.String()
 }
 
-// commit_group：全部の台で check(mgmt) が通れば 3 台とも確定する。通らなければ
-// どの台も確定せず（すぐ戻す）、同じ宣言のまま当て直さない。
+// commit_group。全部の台で check(mgmt) が通れば 3 台とも確定する。通らなければ
+// どの台も確定せず（すぐ戻す）、同じ宣言のまま Apply し直さない。
 func TestCycleCommitGroupCheck(t *testing.T) {
 	l := newCycleLab(t, "g1", "g2", "g3")
 	l.intent(groupIntent("to spine", "check(mgmt)"))
@@ -142,10 +142,10 @@ func TestCycleCommitGroupCheck(t *testing.T) {
 	start := time.Now()
 	r, code, stderr = l.reconcile()
 	if code != cli.ExitHalted {
-		t.Fatalf("確かめが通らない周: exit=%d %+v\n%s", code, r.Changes, stderr)
+		t.Fatalf("check が通らない cycle: exit=%d %+v\n%s", code, r.Changes, stderr)
 	}
 	if d := time.Since(start); d < 1500*time.Millisecond {
-		t.Fatalf("確かめを %s で諦めた（timeout の半分まで待つ）", d)
+		t.Fatalf("check を %s で諦めた（timeout の半分まで待つ）", d)
 	}
 	for _, c := range r.Changes {
 		if !c.RolledBack || c.Outcome != plan.OutcomeError {
@@ -157,19 +157,19 @@ func TestCycleCommitGroupCheck(t *testing.T) {
 			t.Fatalf("%s が戻っていない:\n%s", h, s.Running())
 		}
 	}
-	// 同じ宣言のまま当て直さない（不変条件 13・14）。
+	// 同じ宣言のまま Apply し直さない（不変条件 13・14）。
 	r, code, _ = l.reconcile()
 	if code != cli.ExitHalted {
-		t.Fatalf("次の周: exit=%d", code)
+		t.Fatalf("次の cycle: exit=%d", code)
 	}
 	for h, s := range l.srvs {
 		if strings.Contains(s.Running(), "to leaf") {
-			t.Fatalf("%s に当て直した", h)
+			t.Fatalf("%s に Apply し直した", h)
 		}
 	}
 }
 
-// confirm の observe(…)：別のリソースの観測が期待と違えば確定しない（E-B9）。
+// confirm の observe(…)。別のリソースの観測が期待と違えば確定しない（E-B9）。
 func TestCycleConfirmObserve(t *testing.T) {
 	l := newCycleLab(t, "g1", "g2")
 	cfg := strings.ReplaceAll(strings.Replace(declared, "to core", "to spine", 1), "\n", " ")
@@ -191,7 +191,8 @@ func TestCycleConfirmObserve(t *testing.T) {
 		t.Fatalf("exit=%d %+v\n%s", code, r.Changes, stderr)
 	}
 
-	// g2 の部分木が無い（観測が期待と違う）：g1 を確定しない。
+	// g2 の部分木が Absent（観測が期待と違う）。g1 を確定しない。
+
 	l.srvs["g2"].SetRunning(`<system xmlns="urn:example:system"><hostname>g2</hostname></system>`)
 	l.intent(fmt.Sprintf(`resources:
   - type: nc/subtree

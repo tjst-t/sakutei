@@ -75,7 +75,7 @@ func observe(t *testing.T, p core.Provider, id core.ID) core.Observation {
 	return o[id]
 }
 
-// file の対象：観測・書き換え・新しい chain・消す。chain の外の行は残す（E-B2）。
+// file の対象：観測・書き換え・新しい chain の作成・削除。chain の外の行は残す（E-B2）。
 func TestFileTarget(t *testing.T) {
 	p, path := fileProvider(t, trialRules)
 	allow := chain("sakutei_allow", core.Fields{"rules": []any{"tcp dport 22 accept", "tcp dport 443 accept"}})
@@ -94,7 +94,7 @@ func TestFileTarget(t *testing.T) {
 	}
 	l, err := p.List(context.Background(), labRange[0])
 	if err != nil || !l.Complete || len(l.IDs) != 1 || l.IDs[0].Name != "lab/inet/filter/sakutei_allow" {
-		t.Fatalf("List（base chain は出さない）: %+v %v", l, err)
+		t.Fatalf("List（base chain は返さない）: %+v %v", l, err)
 	}
 
 	ctx := context.Background()
@@ -120,7 +120,7 @@ func TestFileTarget(t *testing.T) {
 	}
 }
 
-// 宣言が regular chain なのに現実が base chain なら Unknown（policy を言わずに
+// 宣言が regular chain なのに現実が base chain なら Unknown（policy を宣言せずに
 // 既定の拒否の chain を変えない、E-B3）。ファイルが無い・壊れていれば Unknown。
 func TestFileUnknown(t *testing.T) {
 	p, path := fileProvider(t, trialRules)
@@ -139,8 +139,8 @@ func TestFileUnknown(t *testing.T) {
 	}
 }
 
-// 不変条件 25：範囲の外・正規形でないルール・欠けた base chain・file への 2 段・
-// live の base chain の 1 段は読み込みで断る。
+// 不変条件 25：Range の外・正規形でないルール・欠けた base chain・file への
+// two-phase Apply・two-phase でない live の base chain は読み込み時にエラーにする（reject）。
 func TestValidateRejects(t *testing.T) {
 	live, err := nftables.Module(map[string]any{"hosts": map[string]any{
 		"lab": map[string]any{"ruleset": "/nonexistent"},
@@ -154,14 +154,14 @@ func TestValidateRejects(t *testing.T) {
 		r    core.Resource
 		want string
 	}{
-		{"範囲の外", core.Resource{ID: core.ID{Type: "fw/chain", Name: "lab/ip/nat/x"}}, "範囲"},
+		{"Range の外", core.Resource{ID: core.ID{Type: "fw/chain", Name: "lab/ip/nat/x"}}, "Range"},
 		{"知らない host", core.Resource{ID: core.ID{Type: "fw/chain", Name: "zz/inet/filter/x"}}, "hosts に無い"},
 		{"形", core.Resource{ID: core.ID{Type: "fw/chain", Name: "lab/inet/x"}}, "<host>/<family>/<table>/<chain>"},
 		{"空白", chain("x", core.Fields{"rules": []any{"tcp  dport 22 accept"}}), "正規形"},
 		{"命令の区切り", chain("x", core.Fields{"rules": []any{"accept; flush ruleset"}}), ";"},
 		{"欠けた base", chain("x", core.Fields{"type": "filter", "hook": "input"}), "4 つ"},
-		{"file に 2 段", core.Resource{ID: core.ID{Type: "fw/chain", Name: "lab/inet/filter/x"}, Apply: txn}, "file"},
-		{"live の base を 1 段", core.Resource{ID: core.ID{Type: "fw/chain", Name: "fw1/inet/filter/input"},
+		{"file に two-phase", core.Resource{ID: core.ID{Type: "fw/chain", Name: "lab/inet/filter/x"}, Apply: txn}, "file"},
+		{"live の base を two-phase なしで", core.Resource{ID: core.ID{Type: "fw/chain", Name: "fw1/inet/filter/input"},
 			Fields: core.Fields{"type": "filter", "hook": "input", "priority": int64(0), "policy": "drop"}}, "apply.transaction"},
 	}
 	ranges := append([]core.Range{{Provider: "fw", Args: map[string]string{"host": "fw1", "tables": "inet/filter"}}}, labRange...)
@@ -174,6 +174,6 @@ func TestValidateRejects(t *testing.T) {
 		})
 	}
 	if d := live.(core.Validator).Validate(nil, []core.Range{{Provider: "fw", Args: map[string]string{"host": "fw1"}}}); len(d) == 0 {
-		t.Fatal("tables の無い範囲を断らない")
+		t.Fatal("tables の無い Range を reject しない")
 	}
 }

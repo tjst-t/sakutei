@@ -97,7 +97,7 @@ func TestNICs(t *testing.T) {
 	if n.String() != "net0 bridge=vmbr0 vlan=20 mac=bc:24:11:aa:bb:cc model=virtio firewall=1" {
 		t.Errorf("nicFromConfig = %q", n)
 	}
-	// 宣言しない MAC・型と、ほかのキー（firewall）は残す。タグは宣言どおり（無ければ外す）。
+	// 宣言しない MAC・model と、ほかのキー（firewall）は残す。タグは宣言どおり（無ければ外す）。
 	if got := nicConfig(NIC{Slot: "net0", Bridge: "vmbr1"}, "e1000=BC:24:11:AA:BB:CC,bridge=vmbr0,firewall=1,tag=20"); got != "e1000=BC:24:11:AA:BB:CC,bridge=vmbr1,firewall=1" {
 		t.Errorf("nicConfig = %q", got)
 	}

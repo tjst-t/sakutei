@@ -40,7 +40,7 @@ func TestGraph(t *testing.T) {
 	if got := g.Upstream(id("c")); !reflect.DeepEqual(got, []core.ID{id("b"), ext}) {
 		t.Errorf("Upstream(c) = %v", got)
 	}
-	// 量化の選んだものは観測するが辺にしない。
+	// quantifier の選んだものは観測するが辺にしない。
 	if got := g.Upstream(id("d")); len(got) != 0 {
 		t.Errorf("Upstream(d) = %v", got)
 	}

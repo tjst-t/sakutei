@@ -20,8 +20,8 @@ package integration
 // object_lock_integration_test.go を移した）。seaweedfs（必須）と、使えれば minio に、
 // object_lock を fields に書いた endpoint（接頭辞 sk-lock-）を向け、作る・観測する・
 // 保持の設定を変える（承認が要る。v3 の sakutei approve で承認する）を回す。minio
-// では、観測用の利用者（GetBucketObjectLockConfiguration だけ）で Get が通り Put が
-// 断られることも確かめる。
+// では、観測用のユーザー（GetBucketObjectLockConfiguration だけ）で Get が通り Put が
+// 拒否されることも確かめる。
 
 import (
 	"context"
@@ -84,7 +84,7 @@ func TestS3ObjectLock(t *testing.T) {
 		}
 		for i := 0; i < 3; i++ {
 			if r, code, errOut := w.run(t, "reconcile"); code != cli.ExitOK || !converged(r) {
-				t.Fatalf("周 %d exit %d: %s\n%s", i, code, errOut, dump(r))
+				t.Fatalf("cycle %d exit %d: %s\n%s", i, code, errOut, dump(r))
 			}
 		}
 	})
@@ -155,7 +155,7 @@ func TestS3ObjectLock(t *testing.T) {
 				t.Errorf("%s: enable_on_create の食い違い: %+v", ep, c)
 			}
 			if lockOf(t, ep, "sk-lock-plain").Enabled {
-				t.Errorf("%s: 断ったのに Object Lock が有効", ep)
+				t.Errorf("%s: 拒否したのに Object Lock が有効", ep)
 			}
 		}
 		// PutObjectLockConfiguration で有効にする（承認つき）。endpoint が既にあるバケットに
@@ -175,13 +175,13 @@ func TestS3ObjectLock(t *testing.T) {
 			c := changeOf(r, "s3/bucket/"+ep+"/sk-lock-plain")
 			ol := lockOf(t, ep, "sk-lock-plain")
 			t.Logf("%s: 承認して既にあるバケットに掛けた: exit %d %s %q → %+v", ep, code, c.Outcome, c.Error, ol)
-			if !ol.Enabled && !strings.Contains(c.Error, "有効化を断った") {
-				t.Errorf("%s: 有効にも、理由つきの断りにもならない: %+v", ep, c)
+			if !ol.Enabled && !strings.Contains(c.Error, "有効化を拒否した") {
+				t.Errorf("%s: 有効にも、理由つきの拒否にもならない: %+v", ep, c)
 			}
 		}
 	})
 
-	t.Run("観測用の利用者は GetBucketObjectLockConfiguration で読む", func(t *testing.T) {
+	t.Run("観測用のユーザーは GetBucketObjectLockConfiguration で読む", func(t *testing.T) {
 		need(t, "minio")
 		minioUser(t, "sakutei-lock-ro", "sakutei-lock-ro-secret-0123", append(append([]string{}, readActions...), "s3:GetBucketObjectLockConfiguration"))
 		minioUser(t, "sakutei-lock-nolock", "sakutei-lock-nolock-secret-0123", readActions)
@@ -198,10 +198,10 @@ func TestS3ObjectLock(t *testing.T) {
 		}
 		ro := user("sakutei-lock-ro", "sakutei-lock-ro-secret-0123")
 		if ol, err := ro.GetObjectLock(ctx, "sk-lock-years"); err != nil || !ol.Enabled {
-			t.Errorf("観測用の利用者の Get: %+v, %v", ol, err)
+			t.Errorf("観測用のユーザーの Get: %+v, %v", ol, err)
 		}
 		if err := ro.PutObjectLock(ctx, "sk-lock-years", s3.ObjectLock{Mode: "COMPLIANCE", Years: 1}); s3.KindOf(err) != s3.KindAuth {
-			t.Errorf("観測用の利用者の Put: %v（want 403）", err)
+			t.Errorf("観測用のユーザーの Put: %v（want 403）", err)
 		}
 		if _, err := user("sakutei-lock-nolock", "sakutei-lock-nolock-secret-0123").GetObjectLock(ctx, "sk-lock-years"); s3.KindOf(err) != s3.KindAuth {
 			t.Errorf("s3:GetBucketObjectLockConfiguration の無い Get: %v（want 403）", err)

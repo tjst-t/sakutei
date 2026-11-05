@@ -14,8 +14,8 @@
 
 package migrate
 
-// providers.go — provider ごとの書き直し（設計 §7.1 の表）。v2 の provider 1 つが
-// 新しいコアのつなぎ方の設定の provider 1 つ（instance）と種類 1 つになる。
+// providers.go — provider ごとの書き直し（設計 §7.1 の表）。v2 の provider 1 つが、
+// 新しいコアの接続設定の provider 1 つ（instance）と type 1 つになる。
 
 import (
 	"encoding/json"
@@ -33,12 +33,12 @@ import (
 // kind は v2 の provider 1 つの書き直し方。
 type kind struct {
 	v2       string // v2 の provider の名前
-	instance string // つなぎ方の設定の provider の名前
+	instance string // 接続設定の provider の名前
 	module   string // 新しいコアのモジュール
-	typ      string // 種類（<instance>/<kind>）
-	// convert は宣言の ID と項目を書き直し、r.name と r.out の fields を置く。
+	typ      string // type（<instance>/<kind>）
+	// convert は宣言の ID と field を書き直し、r.name と r.out の fields を置く。
 	convert func(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) bool
-	// settings はつなぎ方の設定の settings を作る。
+	// settings は接続設定の settings を作る。
 	settings func(c *conv, inst *instance) *obj
 }
 
@@ -76,7 +76,7 @@ func known() []string {
 	return s
 }
 
-// typeOf は v2 の provider の名前の新しい種類（手順の参照の書き直しに使う）。
+// typeOf は v2 の provider の名前に対応する新しい type（Procedure の参照の書き直しに使う）。
 func typeOf(v2 string) (string, bool) {
 	for _, k := range kinds {
 		if k.v2 == v2 {
@@ -95,7 +95,7 @@ func kindOf(v2 string) *kind {
 	return nil
 }
 
-// instance はつなぎ方の設定の provider 1 つ。
+// instance は接続設定の provider 1 つ。
 type instance struct {
 	name   string
 	module string
@@ -118,8 +118,8 @@ func (c *conv) instance(k *kind) *instance {
 	return inst
 }
 
-// loadSettings は v2 の --provider-config と起動の引数を provider ごとの設定に
-// する（ファイルの値が勝つ、v2 と同じ）。
+// loadSettings は v2 の --provider-config と起動時の引数を provider ごとの設定に
+// する（ファイルの値が優先する、v2 と同じ）。
 func (c *conv) loadSettings() error {
 	c.settings = map[string]map[string]any{}
 	flag := func(provider, key, flagName string) {
@@ -146,7 +146,7 @@ func (c *conv) loadSettings() error {
 	}
 	for _, k := range n.Keys {
 		if k != "providers" {
-			return fmt.Errorf("%s: 最上位に知らない項目 %q（providers だけ）", c.in.ProviderConfig, k)
+			return fmt.Errorf("%s: 最上位に知らない field %q（providers だけ）", c.in.ProviderConfig, k)
 		}
 	}
 	ps := n.Map["providers"]
@@ -163,7 +163,7 @@ func (c *conv) loadSettings() error {
 			c.settings[name] = map[string]any{}
 		}
 		for k, v := range m {
-			// ファイルの中の相対パスはファイルの置き場から（v2 の --provider-config と同じ）。
+			// ファイルの中の相対パスはファイルのあるディレクトリから（v2 の --provider-config と同じ）。
 			if s, ok := v.(string); ok && pathKey(k) && s != "" && !filepath.IsAbs(s) {
 				v = filepath.Join(base, s)
 			}
@@ -206,12 +206,12 @@ func (c *conv) setting(provider, key string) string {
 	return s
 }
 
-// secretFile は v2 の秘密の参照を、中身を置いたファイルにする。
+// secretFile は v2 の secret の参照を、値を置いたファイルにする。
 func (c *conv) secretFile(at, ref string) string {
 	if p, ok := c.in.SecretFiles[ref]; ok {
 		return p
 	}
-	c.refuse("%s: 秘密の参照 %s は新しいコアではファイルで渡す（--secret-file %s=<ファイル>）", at, ref, ref)
+	c.refuse("%s: secret の参照 %s は新しいコアではファイルで渡す（--secret-file %s=<ファイル>）", at, ref, ref)
 	return ""
 }
 
@@ -224,15 +224,15 @@ func fields(r *v2res) *obj {
 	return f
 }
 
-// scalarOrPool は v2 の項目の値（文字列か {from_pool: …}）。
+// scalarOrPool は v2 の field の値（文字列か {from_pool: …}）。
 func scalarOrPool(c *conv, r *v2res, k string, n *yaml.Node) (any, bool) {
 	if n.Kind == yaml.Map {
 		if n.Map["from_pool"] == nil {
-			c.refuse("%s: 項目 %s のマップは from_pool だけ", r.v2id, k)
+			c.refuse("%s: field %s のマップは from_pool だけ", r.v2id, k)
 			return nil, false
 		}
-		// v2 の項目は文字列で、払った値を 10 進の文字列で入れた。新しいコアは
-		// 整数を入れるので、文字列の項目には {n} の template を足す。
+		// v2 の field は文字列で、払い出した値を 10 進の文字列で入れた。新しいコアは
+		// 整数を入れるので、文字列の field には {n} の template を足す。
 		o := value(n).(*obj)
 		if o.Get("template") == nil {
 			o.Set("template", "{n}")
@@ -241,12 +241,12 @@ func scalarOrPool(c *conv, r *v2res, k string, n *yaml.Node) (any, bool) {
 	}
 	s, ok := str(n)
 	if !ok {
-		c.refuse("%s: 項目 %s は文字列", r.v2id, k)
+		c.refuse("%s: field %s は文字列", r.v2id, k)
 	}
 	return s, ok
 }
 
-// intOr は数の字句なら整数にする（v2 の項目は全部文字列、新しいコアは型を持つ）。
+// intOr は数の字句なら整数にする（v2 の field は全部文字列、新しいコアは型を持つ）。
 func intOr(s string) any {
 	if n, err := strconv.Atoi(s); err == nil && strconv.Itoa(n) == s {
 		return n
@@ -267,9 +267,9 @@ func dnsRecord(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) bool {
 	for _, k := range keys {
 		switch k {
 		case "name", "type":
-			// ID に入っている。食い違えば v2 でも断られていたはず。
+			// ID に入っている。食い違えば v2 でもエラーになっていたはず。
 			if s, _ := str(f[k]); (k == "name" && !strings.EqualFold(s, fqdn)) || (k == "type" && !strings.EqualFold(s, typ)) {
-				c.refuse("%s: 項目 %s %q が id と食い違う", r.v2id, k, s)
+				c.refuse("%s: field %s %q が id と食い違う", r.v2id, k, s)
 			}
 		case "value":
 			v, ok := scalarOrPool(c, r, k, f[k])
@@ -280,7 +280,7 @@ func dnsRecord(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) bool {
 			s, _ := str(f[k])
 			out.Set("ttl", intOr(s))
 		default:
-			c.refuse("%s: dnszone の項目 %s は書き直せない", r.v2id, k)
+			c.refuse("%s: dnszone の field %s は書き直せない", r.v2id, k)
 		}
 	}
 	return true
@@ -328,14 +328,14 @@ func fwChain(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) bool {
 	for _, k := range keys {
 		s, ok := str(f[k])
 		if !ok {
-			c.refuse("%s: 項目 %s は文字列", r.v2id, k)
+			c.refuse("%s: field %s は文字列", r.v2id, k)
 			continue
 		}
 		switch k {
 		case "family", "table", "chain":
 			want := map[string]string{"family": parts[0], "table": parts[1], "chain": parts[2]}[k]
 			if s != want {
-				c.refuse("%s: 項目 %s %q が id と食い違う", r.v2id, k, s)
+				c.refuse("%s: field %s %q が id と食い違う", r.v2id, k, s)
 			}
 		case "rules":
 			rules := []any{}
@@ -350,7 +350,7 @@ func fwChain(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) bool {
 		case "priority":
 			out.Set(k, intOr(s))
 		default:
-			c.refuse("%s: nftables の項目 %s は書き直せない", r.v2id, k)
+			c.refuse("%s: nftables の field %s は書き直せない", r.v2id, k)
 		}
 	}
 	return true
@@ -372,7 +372,7 @@ func fakeResource(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) boo
 	for _, k := range keys {
 		s, ok := str(f[k])
 		if !ok {
-			c.refuse("%s: 項目 %s は文字列", r.v2id, k)
+			c.refuse("%s: field %s は文字列", r.v2id, k)
 			continue
 		}
 		out.Set(k, s)
@@ -414,8 +414,8 @@ func (c *conv) fakeState() *v2fake {
 
 // fakeSettings は v2 の fake の state を新しいコアの fake の state
 // （{"fake/resource/<名前>": {"availability": "present", "fields": …, "labels": …}}。
-// v2 の scope は現実のラベル）に写し、種類の項目を全部文字列で宣言する（v2 の
-// 項目は文字列）。
+// v2 の scope は現実のラベル）にコピーし、type の field を全部文字列で宣言する
+// （v2 の field は文字列）。
 func fakeSettings(c *conv, inst *instance) *obj {
 	names := map[string]bool{}
 	for _, r := range inst.res {
@@ -458,10 +458,10 @@ func fakeSettings(c *conv, inst *instance) *obj {
 		Set("kinds", newObj().Set("resource", newObj().Set("fields", fieldTypes)))
 }
 
-// fakeRanges は v2 の fake の PruneWithinScope を範囲にする。v2 は宣言の scope を
-// 含む scope（ラベルが多いもの）の宣言外も消した。新しいコアの fake の範囲は
-// ラベルがちょうど scope のものを選ぶので、宣言の scope と、それを含む今の現実の
-// scope ごとに範囲を 1 つ書く（後から現れた scope は範囲に入らない）。
+// fakeRanges は v2 の fake の PruneWithinScope を Range にする。v2 は、宣言の scope を
+// 含む scope（ラベルが多いもの）の unmanaged も消した。新しいコアの fake の Range は
+// ラベルがちょうど scope のものを選ぶ。そこで、宣言の scope と、それを含む今の現実の
+// scope ごとに Range を 1 つ書く（後から現れた scope は Range に入らない）。
 func (c *conv) fakeRanges(inst *instance) []any {
 	var prune []map[string]string
 	scopes := map[string]map[string]string{}
@@ -514,7 +514,7 @@ func (c *conv) fakeRanges(inst *instance) []any {
 		}
 		out = append(out, rg)
 	}
-	c.note("fake: v2 の PruneWithinScope を、宣言の scope とそれを含む今の現実の scope ごとの範囲（scope）にした。後から現れた scope は範囲に入らない")
+	c.note("fake: v2 の PruneWithinScope を、宣言の scope とそれを含む今の現実の scope ごとの Range（scope）にした。後から現れた scope は Range に入らない")
 	return out
 }
 
@@ -536,7 +536,7 @@ func passFields(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) bool 
 	for _, k := range keys {
 		s, ok := str(f[k])
 		if !ok {
-			c.refuse("%s: 項目 %s は文字列", r.v2id, k)
+			c.refuse("%s: field %s は文字列", r.v2id, k)
 			continue
 		}
 		out.Set(k, s)
@@ -545,7 +545,7 @@ func passFields(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) bool 
 }
 
 // bmcSettings は v2 の --redfish-config（bmcs.<node>.address・username・password
-// …）を settings.nodes にする。パスワードは秘密の参照からファイルへ。
+// …）を settings.nodes にする。パスワードは secret の参照からファイルへ置き換える。
 func bmcSettings(c *conv, inst *instance) *obj {
 	path := c.setting("redfish-system", "redfish_config")
 	if path == "" {
@@ -608,7 +608,7 @@ func templateFile(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) boo
 	for _, k := range keys {
 		s, ok := str(f[k])
 		if !ok {
-			c.refuse("%s: 項目 %s は文字列", r.v2id, k)
+			c.refuse("%s: field %s は文字列", r.v2id, k)
 			continue
 		}
 		if v, isVar := strings.CutPrefix(k, "var."); isVar {
@@ -619,7 +619,7 @@ func templateFile(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) boo
 		case "template", "hostname", "address", "ssh_authorized_keys", "install_mark":
 			out.Set(k, s)
 		default:
-			c.refuse("%s: template-file の項目 %s は書き直せない", r.v2id, k)
+			c.refuse("%s: template-file の field %s は書き直せない", r.v2id, k)
 		}
 	}
 	if vars.Len() > 0 {
@@ -642,8 +642,8 @@ func templateSettings(c *conv, inst *instance) *obj {
 
 // --- guest-os --------------------------------------------------------------
 
-// guestHosts は v2 の guest_hosts と guest_markers（設定）。v2 は目印を設定に
-// 書いた。新しいコアは宣言の項目 markers に書く（§7.1）。
+// guestHosts は v2 の guest_hosts と guest_markers（設定）を読む。v2 は marker を設定に
+// 書いた。新しいコアは宣言の field markers に書く（§7.1）。
 func (c *conv) guestHosts() (hosts []string, markers *obj) {
 	if c.settings["guest-os"] == nil {
 		return nil, nil
@@ -675,7 +675,7 @@ func (c *conv) guestHosts() (hosts []string, markers *obj) {
 	return hosts, markers
 }
 
-// extraResources は v2 で設定に書いていた宣言（guest-os の目印）を宣言にする。
+// extraResources は v2 で設定に書いていた宣言（guest-os の marker）を宣言にする。
 func (c *conv) extraResources() []any {
 	hosts, markers := c.guestHosts()
 	var out []any
@@ -745,7 +745,7 @@ func guestSettings(c *conv, inst *instance) *obj {
 		switch k {
 		case "hosts", "known_hosts":
 		case "secret_store":
-			// 秘密の参照は --secret-file でファイルに置き換えた。
+			// secret の参照は --secret-file でファイルに置き換えた。
 		default:
 			c.refuse("guest-os: %s の %s は書き直せない", path, k)
 		}
@@ -761,7 +761,7 @@ func sqlDatabase(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) bool
 	for _, k := range keys {
 		s, ok := str(f[k])
 		if k != "version" || !ok {
-			c.refuse("%s: sqlmigrate の項目は version だけ", r.v2id)
+			c.refuse("%s: sqlmigrate の field は version だけ", r.v2id)
 			continue
 		}
 		out.Set("version", intOr(s))
@@ -769,7 +769,7 @@ func sqlDatabase(c *conv, r *v2res, keys []string, f map[string]*yaml.Node) bool
 	return true
 }
 
-// taskProcedure は v2 の update_policy.strategy: task（単純 Task）を手順にする
+// taskProcedure は v2 の update_policy.strategy: task（単純 Task）を Procedure にする
 // （§7.1 の sqlmigrate：trigger: on_drift・invoke: migrate・done_when）。
 func (c *conv) taskProcedure(r *v2res, file *obj) {
 	up := r.node.Map["update_policy"]
@@ -855,9 +855,9 @@ func sqlSettings(c *conv, inst *instance) *obj {
 	return o.Set("databases", dbs)
 }
 
-// --- 範囲とつなぎ方の設定 ---------------------------------------------------
+// --- Range と接続設定 -----------------------------------------------------
 
-// ranges は v2 で設定・起動の引数にあった管理の範囲を intent の ranges にする
+// ranges は v2 で設定・起動時の引数にあった Range を intent の ranges にする
 // （不変条件 24）。deletion_policy: PruneWithinScope を書いた宣言があれば
 // prune: true。
 func (c *conv) ranges() []any {
@@ -893,7 +893,7 @@ func (c *conv) ranges() []any {
 	}
 	for _, name := range []string{"bmc", "answers", "guest", "db"} {
 		if inst := c.instances[name]; inst != nil && anyPrune(inst) {
-			c.refuse("%s: deletion_policy: PruneWithinScope は書き直せない（新しいコアの %s は範囲を持たない）", name, inst.module)
+			c.refuse("%s: deletion_policy: PruneWithinScope は書き直せない（新しいコアの %s は Range を持たない）", name, inst.module)
 		}
 	}
 	return out
@@ -908,9 +908,9 @@ func anyPrune(inst *instance) bool {
 	return false
 }
 
-// config はつなぎ方の設定を書く。
+// config は接続設定を書く。
 func (c *conv) config() (string, error) {
-	// 新しい ID の重なり（v2 では scope で分かれていたもの）は断る。
+	// 新しい ID の重なり（v2 では scope で分かれていたもの）はエラーにする。
 	seen := map[string]string{}
 	for v2, v3 := range c.ids {
 		if prev, ok := seen[v3]; ok {
@@ -933,5 +933,5 @@ func (c *conv) config() (string, error) {
 		ps.Set(n, newObj().Set("module", inst.module).Set("settings", inst.kinds[0].settings(c, inst)))
 	}
 	return yamlout.Emit(newObj().Set("providers", ps),
-		"sakutei-migrate が v2 の provider の設定から書き直したつなぎ方の設定（範囲・方針は intent にある）。"), nil
+		"sakutei-migrate が v2 の provider の設定から書き直した接続設定（Range・方針は intent にある）。"), nil
 }

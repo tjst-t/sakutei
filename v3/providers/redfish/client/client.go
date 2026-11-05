@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package client は物理サーバの BMC を Redfish で扱う HTTP クライアント（新しい
-// コアの redfish provider の下回り。v2 の internal/redfish から移した、設計
+// コアの redfish provider の下位層。v2 の internal/redfish から移した、設計
 // docs/core/README.md §7.1、E-A1〜E-A5）。
 //
 // 決まり：
@@ -26,7 +26,7 @@
 //     FW の更新（SimpleUpdate・multipart の送信、update.go）だけ。
 //   - 観測を持たない（P1）: System・Manager・VirtualMedia・Bios のパスは
 //     キャッシュせず、呼ぶたびに辿り直す。
-//   - 1 つの Client は 1 本の資格だけを持つ。provider は観測用の Client と、
+//   - 1 つの Client は 1 つの credential だけを持つ。provider は観測用の Client と、
 //     WriteContext の中でだけ作る書き込み用の Client を分ける（E-G5・N-G3）。
 //   - エラーは Error の Kind で分ける（errors.go）。届かない・タイムアウト・
 //     5xx・認証以外の想定外は KindUnreachable、401 / 403 は KindAuth、証明書の
@@ -76,7 +76,7 @@ const (
 // ServiceRoot は Redfish のサービスルート。
 const ServiceRoot = "/redfish/v1"
 
-// DefaultTimeout は Config.Timeout を指定しないときの 1 要求あたりの時間切れ。
+// DefaultTimeout は Config.Timeout を指定しないときの 1 要求あたりのタイムアウト。
 const DefaultTimeout = 10 * time.Second
 
 // maxBody は読む応答本文の上限（壊れた BMC に読み続けさせない）。
@@ -87,7 +87,7 @@ type Config struct {
 	// Endpoint は BMC のアドレス（例 "https://172.20.20.2"）。scheme を省けば
 	// https とみなす。http は受け付けない。
 	Endpoint string
-	// Credential は Basic 認証の資格（この Client のすべての要求に使う）。
+	// Credential は Basic 認証の credential（この Client のすべての要求に使う）。
 	Credential Credential
 	// CAFile は BMC の証明書を検証する CA（PEM）のファイル。指定すれば
 	// システムの CA の代わりにこれだけを使う。
@@ -95,7 +95,7 @@ type Config struct {
 	// InsecureSkipVerify は証明書を検証しない（自己署名をそのまま許す）。
 	// 明示したときだけ使う。
 	InsecureSkipVerify bool
-	// Timeout は 1 要求あたりの時間切れ。0 なら DefaultTimeout。
+	// Timeout は 1 要求あたりのタイムアウト。0 なら DefaultTimeout。
 	Timeout time.Duration
 	// SystemPath は使う ComputerSystem のパス（例 "/redfish/v1/Systems/1"）。
 	// 空なら /redfish/v1/Systems の最初のメンバー。
@@ -105,7 +105,7 @@ type Config struct {
 	ManagerPath string
 }
 
-// Credential は 1 本の Basic 認証の資格。
+// Credential は 1 つの Basic 認証の credential。
 type Credential struct {
 	Username string
 	Password string
@@ -158,11 +158,11 @@ type VirtualMedia struct {
 }
 
 // Bios は ComputerSystem の Bios の観測。値は JSON の
-// 文字列・数・真偽（encoding/json で読んだ string / float64 / bool）。
+// 文字列・数値・真偽値（encoding/json で読んだ string / float64 / bool）。
 type Bios struct {
 	// Path は読んだ Bios のパス。
 	Path string
-	// AttributeRegistry は Bios.AttributeRegistry（属性の登録簿の Id）。
+	// AttributeRegistry は Bios.AttributeRegistry（属性の registry の Id）。
 	AttributeRegistry string
 	// Attributes は今の値（Bios.Attributes）。
 	Attributes map[string]any
@@ -177,13 +177,13 @@ type Bios struct {
 	ResetPending bool
 }
 
-// AttributeRegistry は Bios の属性の登録簿（必要なところだけ）。
+// AttributeRegistry は Bios の属性の registry（必要なところだけ）。
 type AttributeRegistry struct {
 	ID         string
 	Attributes []RegistryAttribute
 }
 
-// RegistryAttribute は登録簿の 1 属性。
+// RegistryAttribute は registry の 1 属性。
 type RegistryAttribute struct {
 	AttributeName string   `json:"AttributeName"`
 	Type          string   `json:"Type"` // Enumeration / String / Integer / Boolean / Password
@@ -241,7 +241,7 @@ type HTTPClient struct {
 	sysPath string
 	mgrPath string
 	hc      *http.Client
-	// hcLong は時間切れを ctx に任せる http.Client（イメージの送信、update.go）。
+	// hcLong はタイムアウトを ctx に任せる http.Client（イメージの送信、update.go）。
 	hcLong *http.Client
 }
 
@@ -293,7 +293,7 @@ func New(cfg Config) (*HTTPClient, error) {
 	tr.TLSClientConfig = tlsCfg
 	tr.Proxy = nil
 
-	// リダイレクトは辿らない（資格を別の場所へ送らない）。3xx は想定外。
+	// リダイレクトは辿らない（credential を別の場所へ送らない）。3xx は想定外。
 	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &HTTPClient{
 		base:    u,
@@ -537,7 +537,7 @@ func (c *HTTPClient) GetBios(ctx context.Context) (Bios, error) {
 	case err == nil:
 		b.Pending = settings.Attributes
 	case IsRequest(err):
-		// Settings を持たない BMC: 保留中の変更は無い（PATCH は BMC が断る）。
+		// Settings を持たない BMC: 保留中の変更は無い（PATCH は BMC が拒否する）。
 	default:
 		return Bios{}, err
 	}
@@ -613,9 +613,9 @@ func (c *HTTPClient) GetAttributeRegistry(ctx context.Context, id string) (Attri
 		Message: fmt.Sprintf("no attribute registry %q", id)}
 }
 
-// registryMatches は登録簿のファイル f が Id id の登録簿か（Id が同じか、
+// registryMatches は registry のファイル f が Id id の registry か（Id が同じか、
 // Registry〈例 "BiosAttributeRegistry.1.0"〉が id〈例
-// "BiosAttributeRegistry.1.0.0"〉の版を除いた頭か）を返す。
+// "BiosAttributeRegistry.1.0.0"〉のバージョンを除いた先頭部分か）を返す。
 func registryMatches(f registryFileDoc, id string) bool {
 	if f.ID == id || f.Registry == id {
 		return true
@@ -744,8 +744,8 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte) (
 	return status, data, err
 }
 
-// doRaw は do の下回り。本文を rd（contentType つき、nil なら無し）で送り、応答の
-// header も返す。hc は使う http.Client（大きなイメージの送信では時間切れを
+// doRaw は do の下位層。本文を rd（contentType つき、nil なら無し）で送り、応答の
+// header も返す。hc は使う http.Client（大きなイメージの送信ではタイムアウトを
 // ctx に任せる、update.go）。
 func (c *HTTPClient) doRaw(ctx context.Context, hc *http.Client, method, path string, rd io.Reader, contentType string) (int, http.Header, []byte, error) {
 	ref, err := url.Parse(path)
@@ -754,7 +754,7 @@ func (c *HTTPClient) doRaw(ctx context.Context, hc *http.Client, method, path st
 	}
 	u := c.base.ResolveReference(ref)
 	if u.Host != c.base.Host || u.Scheme != c.base.Scheme {
-		// BMC が返したリンクで別のホストへ資格を送らない。
+		// BMC が返したリンクで別のホストへ credential を送らない。
 		return 0, nil, nil, &Error{Kind: KindUnreachable, Method: method, Path: path,
 			Message: "link points outside the BMC endpoint"}
 	}

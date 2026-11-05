@@ -13,9 +13,9 @@
 // limitations under the License.
 
 // Package compat は Expand のモジュール go:compat（設計 §3.8・§7.2、E-A7）。intent の
-// compatibility: に部品の版の互換の表を置き、望む版の組み合わせと、1 つずつ更新する
-// 間の途中の組み合わせが表に合うかを確かめる。v2 の internal/compat を、コアが表を
-// 知らない形に書き直した。
+// compatibility: に部品のバージョンの compatibility table を置き、望むバージョンの
+// 組み合わせと、1 つずつ更新する途中の組み合わせが表に合うかを確かめる。v2 の
+// internal/compat を、コアが表を知らない形に書き直した。
 //
 //	expand:
 //	  - kind: go:compat
@@ -29,16 +29,18 @@
 //	      - {bmc: "1.3", bios: "2.0"}
 //	      - {bmc: "1.3", bios: "2.1"}
 //
-// id は "<provider>/<種類>/<名前>" で、{名前} は "/" を含まない 1 区切りに合う。同じ
-// 値に合った宣言が 1 つの組（同じ装置）になる。表の行は組の全部の部品の版を書く
-// （"*" はどの版でもよい）。版は文字列の完全一致で比べる。
+// id は "<provider>/<type>/<名前>" で、{名前} は "/" を含まない 1 つのセグメントに
+// 一致する。変数の値が同じ宣言が 1 つの組（同じ装置）になる。表の行には組の全部の
+// 部品のバージョンを書く（"*" はどのバージョンでもよい）。バージョンは文字列の
+// 完全一致で比べる。
 //
-//   - 望む組み合わせ（宣言の版。宣言の無い部品はどの版でもよい）が表に無ければ、
-//     Reject の診断で読み込みで断る。
-//   - 途中の組み合わせは、版を宣言した部品ごとに depends_on の when を足して止める：
-//     「その部品だけを望む版にし、版を宣言したほかの部品は今の観測の版のまま」の
-//     組み合わせが表にあるときだけ当てる（`(observe(D).version == "2.0") or …`）。表に合わない
-//     あいだは待つ（Event Waiting）。ほかの部品が観測できなければ不明で待つ。
+//   - 望む組み合わせ（宣言のバージョン。宣言の無い部品はどのバージョンでもよい）が
+//     表に無ければ、Reject の診断で読み込み時にエラーにする（reject）。
+//   - 途中の組み合わせは、バージョンを宣言した部品ごとに depends_on の when を足して
+//     待たせる。「その部品だけを望むバージョンにし、バージョンを宣言したほかの部品は
+//     今観測しているバージョンのまま」の組み合わせが表にあるときだけ Apply する
+//     （`(observe(D).version == "2.0") or …`）。表に合わないあいだは待つ（Event
+//     Waiting）。ほかの部品が観測できなければ Unknown として待つ。
 //
 // コアは表を知らない。同じ入力に同じ出力（N-P5）。
 package compat
@@ -56,25 +58,25 @@ import (
 	"github.com/tjst-t/sakutei/v3/expand"
 )
 
-// Key は intent の最上位の項目。
+// Key は intent の最上位の key。
 const Key = "compatibility"
 
-// DefaultField は component の field を書かないときの版の項目。
+// DefaultField は component の field を書かないときのバージョンの field。
 const DefaultField = "version"
 
-// Any は表の行で「どの版でもよい」。
+// Any は表の行で「どのバージョンでもよい」。
 const Any = "*"
 
 // Component は表の部品 1 つ。
 type Component struct {
 	Name  string
-	ID    string // "<provider>/<種類>/<名前>"。名前に {変数} を書ける
+	ID    string // "<provider>/<type>/<名前>"。名前に {変数} を書ける
 	Field string
 	re    *regexp.Regexp
 	vars  []string
 }
 
-// Table は互換の表 1 つ。
+// Table は compatibility table 1 つ。
 type Table struct {
 	Name       string
 	Components []Component
@@ -189,7 +191,7 @@ func groups(t Table, ids []string) []group {
 }
 
 func checkGroup(t Table, g group, byID map[string]core.Resource, out *expand.Output) {
-	// 望む版（宣言の無い部品・項目は Any）。
+	// 望むバージョン（宣言の無い部品・field は Any）。
 	want := map[string]string{}
 	for _, c := range t.Components {
 		want[c.Name] = Any
@@ -204,7 +206,7 @@ func checkGroup(t Table, g group, byID map[string]core.Resource, out *expand.Out
 			Message: fmt.Sprintf("表 %s: %s の望む組み合わせ %s が allow に無い", t.Name, g.key, combo(t, want))})
 		return
 	}
-	// 途中の組み合わせ：版を宣言した部品 C を変えるとき、ほかの部品は今の版のまま。
+	// 途中の組み合わせ：バージョンを宣言した部品 C を変えるとき、ほかの部品は今のバージョンのまま。
 	for _, c := range t.Components {
 		v := want[c.Name]
 		if v == Any {
@@ -218,14 +220,14 @@ func checkGroup(t Table, g group, byID map[string]core.Resource, out *expand.Out
 			}
 			var terms []string
 			for _, d := range t.Components {
-				// 版を宣言していない部品はどの版でもよい（観測を待たない）。
+				// バージョンを宣言していない部品はどのバージョンでもよい（観測を待たない）。
 				if d.Name == c.Name || row[d.Name] == Any || want[d.Name] == Any {
 					continue
 				}
 				terms = append(terms, fmt.Sprintf("observe(%s).%s == %s", g.ids[d.Name], d.Field, strconv.Quote(row[d.Name])))
 			}
 			if len(terms) == 0 {
-				alts = nil // ほかの部品はどの版でもよい：条件は要らない
+				alts = nil // ほかの部品はどのバージョンでもよい：条件は要らない
 				break
 			}
 			alts = append(alts, "("+strings.Join(terms, " and ")+")")
@@ -300,7 +302,7 @@ func parseTable(item any) (Table, error) {
 	}
 	for k := range m {
 		if k != "name" && k != "components" && k != "allow" {
-			return Table{}, fmt.Errorf("知らない項目 %q（書ける項目: name, components, allow）", k)
+			return Table{}, fmt.Errorf("不明な field %q（書ける field: name, components, allow）", k)
 		}
 	}
 	var t Table
@@ -330,11 +332,11 @@ func parseTable(item any) (Table, error) {
 		}
 		for k := range cm {
 			if k != "id" && k != "field" {
-				return Table{}, fmt.Errorf("%s: 部品 %s: 知らない項目 %q", t.Name, n, k)
+				return Table{}, fmt.Errorf("%s: 部品 %s: 不明な field %q", t.Name, n, k)
 			}
 		}
 		if _, err := core.ParseRef(varRe.ReplaceAllString(c.ID, "x")); err != nil {
-			return Table{}, fmt.Errorf("%s: 部品 %s: id %q は <provider>/<種類>/<名前> の形でない", t.Name, n, c.ID)
+			return Table{}, fmt.Errorf("%s: 部品 %s: id %q が <provider>/<type>/<名前> の形でない", t.Name, n, c.ID)
 		}
 		pat := "^"
 		last := 0
@@ -356,7 +358,7 @@ func parseTable(item any) (Table, error) {
 	}
 	rows, _ := m["allow"].([]any)
 	if len(rows) == 0 {
-		return Table{}, fmt.Errorf("%s: allow（許す版の組み合わせ）を書く", t.Name)
+		return Table{}, fmt.Errorf("%s: allow（許すバージョンの組み合わせ）を書く", t.Name)
 	}
 	for i, raw := range rows {
 		rm, ok := raw.(map[string]any)
@@ -374,12 +376,12 @@ func parseTable(item any) (Table, error) {
 			case int, int64, float64:
 				row[k] = fmt.Sprint(x)
 			default:
-				return Table{}, fmt.Errorf("%s: allow[%d].%s: 版を文字列で書く", t.Name, i, k)
+				return Table{}, fmt.Errorf("%s: allow[%d].%s: バージョンを文字列で書く", t.Name, i, k)
 			}
 		}
 		for _, c := range cnames {
 			if _, ok := row[c]; !ok {
-				return Table{}, fmt.Errorf("%s: allow[%d]: 部品 %s の版を書く（どれでもよければ \"*\"）", t.Name, i, c)
+				return Table{}, fmt.Errorf("%s: allow[%d]: 部品 %s のバージョンを書く（どれでもよければ \"*\"）", t.Name, i, c)
 			}
 		}
 		t.Allow = append(t.Allow, row)

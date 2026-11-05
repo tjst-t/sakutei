@@ -13,17 +13,17 @@
 // limitations under the License.
 
 // Package migrate は v2 の intent と provider の設定を、新しいコアの intent と
-// つなぎ方の設定に書き直す（設計 §7.2 の「v2 の intent → sakutei-migrate」、§8 の
-// 段 9）。範囲（ゾーン・扱う table）と除外は v2 の設定・起動の引数から intent の
-// ranges へ動かす（不変条件 24）。
+// 接続設定に書き直す（設計 §7.2 の「v2 の intent → sakutei-migrate」、§8 の
+// Stage 9）。Range（ゾーン・扱う table）と除外は、v2 の設定・起動時の引数から
+// intent の ranges へ移す（不変条件 24）。
 //
 // 書き直せないもの（新しいコアに受け皿がまだ無い・捨てたもの・形の分からない
-// もの）は黙って落とさず、全部を Refusal にして返す。捨てたことが意味を変えない
+// もの）は黙って落とさない。全部を Refusal にして返す。捨てても意味が変わらない
 // もの（observe_tier・scopes の sync・version）は Notes に残す。
 //
-// v2 の ID（<provider>/<scope>/<local>）と新しい ID（<provider>/<種類>/<名前>）の
+// v2 の ID（<provider>/<scope>/<local>）と新しい ID（<provider>/<type>/<名前>）の
 // 対応は Output.IDs に出す。v2 の plan と新しいコアの plan を突き合わせる
-// （段 9 の完了条件）のに使う。
+// （Stage 9 の完了条件）のに使う。
 package migrate
 
 import (
@@ -46,22 +46,22 @@ type Input struct {
 	// v2 と同じく下のディレクトリは読まない）。
 	IntentDir string
 	// ProviderConfig は v2 の --provider-config の中身（{"providers": {<名前>: {…}}}）
-	// のファイル。空なら無い。
+	// のファイル。空なら指定なし。
 	ProviderConfig string
-	// Flags は v2 の起動の引数のうち provider の設定になるもの（zone・ruleset・
-	// state・redfish-config・sqlmigrate-config）。ProviderConfig より弱い（v2 と同じ）。
+	// Flags は v2 の起動時の引数のうち provider の設定になるもの（zone・ruleset・
+	// state・redfish-config・sqlmigrate-config）。ProviderConfig のほうが優先する（v2 と同じ）。
 	Flags map[string]string
-	// OutDir は書き出す先（写した fake の state の置き場をつなぎ方の設定に書く）。
+	// OutDir は出力先（コピーした fake の state の置き場所を接続設定に書く）。
 	OutDir string
 	// NftHost は nftables の file の対象に付けるホストの名前（既定 local）。
 	NftHost string
-	// Roles は v2 の承認のロールの持ち主（ロール → 名前）。新しいコアの承認は
+	// Roles は v2 の承認のロールを持つ人（ロール → 名前）。新しいコアの承認は
 	// 名前の並びで数えるので、roles を書いた gate にはこれが要る。
 	Roles map[string][]string
 	// Approvers は roles を書かない gate の承認者（v2 は誰でもよかった）。
 	Approvers []string
-	// SecretFiles は v2 の秘密の参照（secretref:…）→ 中身を置いたファイル。新しい
-	// コアの provider は資格をファイルで受け取る。
+	// SecretFiles は v2 の secret の参照（secretref:…）→ 値を置いたファイル。新しい
+	// コアの provider は credential をファイルで受け取る。
 	SecretFiles map[string]string
 }
 
@@ -69,13 +69,13 @@ type Input struct {
 type Output struct {
 	// Intent は intent のディレクトリからの相対パス → 中身。
 	Intent map[string]string
-	// Config はつなぎ方の設定（config.yaml）の中身。
+	// Config は接続設定（config.yaml）の中身。
 	Config string
-	// Files は OutDir からの相対パス → 中身（fake の state の写し）。
+	// Files は OutDir からの相対パス → 中身（fake の state のコピー）。
 	Files map[string][]byte
-	// IDs は v2 の ID → 新しい ID（<provider>/<種類>/<名前>）。
+	// IDs は v2 の ID → 新しい ID（<provider>/<type>/<名前>）。
 	IDs map[string]string
-	// Notes は落としたもの・意味の変わるところの知らせ。
+	// Notes は落としたもの・意味の変わるところの通知。
 	Notes []string
 }
 
@@ -112,7 +112,7 @@ type v2res struct {
 	v2id     string
 	node     *yaml.Node
 	out      *obj   // 新しい宣言
-	typ      string // 新しい種類（<provider>/<種類>）
+	typ      string // 新しい type（<provider>/<kind>）
 	name     string // 新しい名前
 	prune    bool
 	labels   map[string]string
@@ -179,7 +179,7 @@ func Convert(in Input) (*Output, error) {
 			case "workflows":
 				p.wfs = v.Seq
 			case "observe_tiers":
-				c.note("%s: observe_tiers は捨てた（新しいコアは毎周観測する。§7.2）", d.name)
+				c.note("%s: observe_tiers は捨てた（新しいコアは毎 cycle 観測する。§7.2）", d.name)
 			case "scopes":
 				p.pols = append(p.pols, c.scopes(d.name, v)...)
 			case "profile":
@@ -197,14 +197,14 @@ func Convert(in Input) (*Output, error) {
 					p.pcs = append(p.pcs, v)
 				}
 			default:
-				c.refuse("%s: 最上位の %s は書き直せない（受け皿が無いか、この道具がまだ知らない）", d.name, k)
+				c.refuse("%s: 最上位の %s は書き直せない（受け皿が無いか、このツールがまだ知らない）", d.name, k)
 			}
 		}
 		c.resources = append(c.resources, res...)
 		files = append(files, p)
 	}
-	// 宣言の ID がそろってから、依存・手順・設定を書き直す（別のファイルの ID を
-	// 参照する）。
+	// 宣言の ID がそろってから、依存・Procedure・設定を書き直す（別のファイルの ID を
+	// 参照するため）。
 	for _, r := range c.resources {
 		c.dependsOn(r)
 	}
@@ -359,7 +359,7 @@ func readDir(dir string) ([]doc, error) {
 	return docs, nil
 }
 
-// str は v2 の値を文字列にする（v2 の項目は文字列）。
+// str は v2 の値を文字列にする（v2 の field は文字列）。
 func str(n *yaml.Node) (string, bool) {
 	if n == nil || n.Kind != yaml.Scalar {
 		return "", false
@@ -450,7 +450,7 @@ func (c *conv) resource(file string, i int, n *yaml.Node) *v2res {
 	at = r.v2id
 	m, ok := mapping[provider]
 	if !ok {
-		c.refuse("%s: provider %s は書き直せない（この道具が知っている provider: %s）", at, provider, strings.Join(known(), ", "))
+		c.refuse("%s: provider %s は書き直せない（このツールが知っている provider: %s）", at, provider, strings.Join(known(), ", "))
 		return nil
 	}
 	ensureAbsent := false
@@ -467,7 +467,7 @@ func (c *conv) resource(file string, i int, n *yaml.Node) *v2res {
 				c.refuse("%s: deletion_policy %q は書き直せない", at, s)
 			}
 		case "observe_tier":
-			c.note("%s: observe_tier は捨てた（新しいコアは毎周観測する）", at)
+			c.note("%s: observe_tier は捨てた（新しいコアは毎 cycle 観測する）", at)
 		case "ensure":
 			switch s, _ := str(v); s {
 			case "absent":
@@ -481,7 +481,7 @@ func (c *conv) resource(file string, i int, n *yaml.Node) *v2res {
 				c.refuse("%s: update_policy は sqlmigrate の strategy: task だけを書き直せる", at)
 			}
 		default:
-			c.refuse("%s: 項目 %s は書き直せない", at, k)
+			c.refuse("%s: field %s は書き直せない", at, k)
 		}
 	}
 	fields := map[string]*yaml.Node{}
@@ -539,7 +539,7 @@ func (c *conv) dependsOn(r *v2res) {
 		if d.Kind == yaml.Map {
 			id, ok = str(d.Map["id"])
 			if d.Map["ready_condition"] != nil {
-				c.refuse("%s: depends_on の ready_condition は Condition（when）に書き直す（この道具はまだ書き直せない）", r.v2id)
+				c.refuse("%s: depends_on の ready_condition は Condition（when）に書き直す必要がある（このツールはまだ書き直せない）", r.v2id)
 			}
 		}
 		if !ok || id == "" {
@@ -562,8 +562,8 @@ func (c *conv) dependsOn(r *v2res) {
 }
 
 // scopes は v2 の scopes を読む。sync の scope は収束させないので、新しいコアの
-// intent には入れず、sakutei-import で現実を書き出す（§7.2：同期は道具へ）。
-// remediation: alert-only の scope は、その scope のラベルに当たる report の
+// intent には入れない。現実は sakutei-import で書き出す（§7.2：同期はツールへ）。
+// remediation: alert-only の scope は、その scope のラベルを選ぶ report の
 // Policy にする（E-I3・E-Q1）。
 func (c *conv) scopes(file string, n *yaml.Node) []any {
 	var out []any
@@ -606,10 +606,13 @@ func scopeString(m map[string]string) string {
 }
 
 // remediation は v2 の remediation（default・tz・schedule、E-J3）を Policy に
-// する。v2 は schedule の先に当たった窓の mode、どれにも当たらなければ default
-// （省けば alert-only）。新しいコアの窓は「窓の外は report」なので、書き直せる
-// のは「default が alert-only で、窓が全部 auto」（窓の Policy）と、窓の無い
-// default だけ。窓の中だけ知らせる（alert-only の窓）は書けない（freeze を使う）。
+// する。v2 は schedule で最初に合った window の mode を使い、どれにも合わなければ
+// default（省けば alert-only）を使った。新しいコアの window は「window の外は
+// report」なので、書き直せるのは次の 2 つだけ。
+//   - default が alert-only で、window が全部 auto（window の Policy）
+//   - window の無い default
+//
+// window の中だけ通知する（alert-only の window）は書けない（freeze を使う）。
 func (c *conv) remediation(file string, n *yaml.Node) any {
 	if n.Kind != yaml.Map {
 		c.refuse("%s: remediation はマップ", file)
@@ -631,9 +634,9 @@ func (c *conv) remediation(file string, n *yaml.Node) any {
 				mode, _ := str(e.Map["mode"])
 				switch {
 				case always:
-					continue // 先の "*" が勝つので届かない
+					continue // 先の "*" が優先するので使われない
 				case !strings.EqualFold(mode, "auto"):
-					c.refuse("%s: remediation.schedule[%d] は mode %q の窓。新しいコアの窓は「窓の外は report」なので、窓の中だけ知らせる窓は書けない（freeze を使う）", file, i, mode)
+					c.refuse("%s: remediation.schedule[%d] は mode %q の window。新しいコアの window は「window の外は report」なので、window の中だけ通知する window は書けない（freeze を使う）", file, i, mode)
 					blocked = true
 				case strings.TrimSpace(w) == "*":
 					always = true
@@ -662,7 +665,7 @@ func (c *conv) remediation(file string, n *yaml.Node) any {
 	switch strings.ToLower(def) {
 	case "auto":
 		if len(windows) > 0 {
-			c.note("%s: remediation の default が auto なので、auto の窓は意味を持たない（落とした）", file)
+			c.note("%s: remediation の default が auto なので、auto の window は意味を持たない（落とした）", file)
 		}
 		return nil
 	case "alert-only", "alertonly":
@@ -679,15 +682,15 @@ func (c *conv) remediation(file string, n *yaml.Node) any {
 	}
 	for _, w := range windows {
 		if _, err := core.ParseWindow(w.(string)); err != nil {
-			c.refuse("%s: remediation の窓: %v", file, err)
+			c.refuse("%s: remediation の window: %v", file, err)
 			return nil
 		}
 	}
 	return p.Set("windows", windows)
 }
 
-// runtimePolicy は v2 の起動の引数の予算と mode を、全部に当たる Policy にする
-// （新しいコアは方針を起動の引数に持たない、§5.5）。
+// runtimePolicy は v2 の起動時の引数の budget と mode を、全部を選ぶ Policy にする
+// （新しいコアは方針を起動時の引数に持たない、§5.5）。
 func (c *conv) runtimePolicy() *obj {
 	budget := newObj()
 	for _, f := range []struct{ flag, key string }{
@@ -710,7 +713,7 @@ func (c *conv) runtimePolicy() *obj {
 		budget.Set("window", w)
 	}
 	if e := c.in.Flags["on-exceed"]; e != "" && e != "halt-all" {
-		c.refuse("--on-exceed %s は書き直せない（新しいコアは予算を超えたら止める）", e)
+		c.refuse("--on-exceed %s は書き直せない（新しいコアは budget を超えたら halt する）", e)
 	}
 	p := newObj().Set("name", "default").Set("select", newObj().Set("all", true))
 	switch m := strings.ToLower(c.in.Flags["mode"]); m {

@@ -11,14 +11,14 @@ compatibility:
       - {bmc: "1.3", bios: "2.1"}
 resources:
   # n1 は bmc と bios の両方を上げる：bmc は bios が 2.0 のあいだに、bios は bmc が
-  # 1.3 のときだけ（途中の組み合わせを辺の Condition で止める）。
+  # 1.3 のときだけ（途中の組み合わせを依存の Condition で待たせる）。
   - type: fw/version
     id: n1-bmc
     fields: {version: "1.3"}
   - type: fw/version
     id: n1-bios
     fields: {version: "2.1"}
-  # n2 は bmc だけを宣言（bios はどの版でもよい）。
+  # n2 は bmc だけを宣言（bios はどのバージョンでもよい）。
   - type: fw/version
     id: n2-bmc
     fields: {version: "1.2"}

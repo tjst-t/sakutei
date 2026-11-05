@@ -25,9 +25,9 @@ import (
 )
 
 // TestRealizerGolden は network_policy の実現先 proxmox-fw の展開を golden で確かめる
-// （E-B6・E-B5・N-P5）。gateway は口を書いた関所の VM（口と向きごとの in・out と
-// iface=netN を族ごとに、reason を comment に）、boundary-without-interfaces は
-// 口を書かない境界の断り。
+// （E-B6・E-B5・N-P5）。gateway は interfaces を書いた関所の VM（interface と向きごとの
+// in・out と iface=netN を族ごとに、reason を comment に）、boundary-without-interfaces は
+// interfaces を書かない境界がエラーになること。
 func TestRealizerGolden(t *testing.T) {
 	x := netpolicy.New(netpolicy.WithRealizer(proxmox.RealizerName, proxmox.Realizer{}))
 	for _, dir := range expandtest.Cases(t, "testdata/realizer") {

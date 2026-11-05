@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-// 窓の形（E-J3・E-R1）：毎週・曜日の範囲・日をまたぐ窓（曜日は開く日）・決まった期間・tz。
+// window の形（E-J3・E-R1）：毎週・曜日の範囲・日をまたぐ window（曜日は開く日）・決まった期間・tz。
 func TestWindowContains(t *testing.T) {
 	at := func(s string) time.Time {
 		x, err := time.Parse(time.RFC3339, s)
@@ -62,11 +62,11 @@ func TestWindowContains(t *testing.T) {
 		}
 	}
 	if !InWindows(nil, time.Now()) {
-		t.Fatal("窓を書かなければいつでも")
+		t.Fatal("window を書かなければいつでも")
 	}
 	for _, bad := range []string{"25:00-26:00", "02:00-02:00", "Satu 02:00-04:00", "02:00", "02:00-04:00 Asia/Tokio", "2026-11-06 00:00 .. 2026-11-05 00:00", "x .. y"} {
 		if _, err := ParseWindow(bad); err == nil {
-			t.Errorf("%q を断らない", bad)
+			t.Errorf("%q をエラーにしない", bad)
 		}
 	}
 }

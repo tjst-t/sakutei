@@ -15,8 +15,8 @@
 package main
 
 // guestos_test.go — guest-os を CLI から（手元のホストに向けて）回す。下流は
-// ゲスト OS の目印が置かれるまで操作しない（depends_on の when）。目印のパスは
-// Resource の項目 markers に書き、宣言どおりなので guest/os はずれにならない
+// ゲスト OS の marker が置かれるまで操作しない（depends_on の when）。marker のパスは
+// Resource の field markers に書く。宣言どおりなので guest/os はずれにならない
 // （§7.1 の guest-os、E-E4・E-A8）。
 
 import (
@@ -81,18 +81,18 @@ func TestGuestOSMarkerGatesDownstream(t *testing.T) {
 		return json.Unmarshal(b, &m) == nil && m["dns/record/node1"] != nil
 	}
 
-	// 目印が無い間は下流を作らない。
+	// marker が無い間は下流を作らない。
 	if code, out := run("reconcile"); code != cli.ExitRemaining || applied() {
-		t.Fatalf("目印が無いのに: exit=%d\n%s", code, out)
+		t.Fatalf("marker が無いのに: exit=%d\n%s", code, out)
 	}
 	os.WriteFile(marker, []byte("sakutei-2026-10-31\n"), 0o644)
 	if code, out := run("reconcile"); code != cli.ExitOK || !applied() {
-		t.Fatalf("目印が置かれても: exit=%d\n%s", code, out)
+		t.Fatalf("marker が置かれても: exit=%d\n%s", code, out)
 	}
 	if code, out := run("plan"); code != cli.ExitOK || strings.Contains(out, "guest/os/node1") {
 		t.Fatalf("exit=%d\n%s", code, out)
 	}
-	// 観測だけの項目は宣言できない（終了コード 2）。
+	// 観測だけの field は宣言できない（終了コード 2）。
 	os.WriteFile(filepath.Join(dir, "intent", "guest.yaml"), []byte(`resources:
   - type: guest/os
     id: node1

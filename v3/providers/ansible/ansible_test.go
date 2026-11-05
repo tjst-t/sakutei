@@ -41,7 +41,7 @@ func motd(name, host string) core.Resource {
 func validate(t *testing.T, p *ansible.Provider, res ...core.Resource) {
 	t.Helper()
 	for _, d := range p.Validate(res, nil) {
-		t.Fatalf("Validate が断った: %s", d)
+		t.Fatalf("Validate がエラーにした: %s", d)
 	}
 }
 
@@ -67,8 +67,8 @@ func TestContract(t *testing.T) {
 			Converge: []core.Resource{motd("motd", "web1")},
 			Observed: []core.ID{id("motd")},
 			Faults: map[string]func(){
-				"届かない":          func() { fake.Unreachable["web1"] = true },
-				"ansible が走らない": func() { fake.Down = errors.New("ansible: exec: \"ansible\": executable file not found in $PATH") },
+				"到達できない":        func() { fake.Unreachable["web1"] = true },
+				"ansible が動かない": func() { fake.Down = errors.New("ansible: exec: \"ansible\": executable file not found in $PATH") },
 			},
 			Writes:  func() int { return fake.Writes },
 			Refuses: []contract.Refuse{{ID: id("motd")}},
@@ -76,8 +76,8 @@ func TestContract(t *testing.T) {
 	})
 }
 
-// 空から：check mode が changed なら module の Update、当てれば宣言どおり、手で
-// 変えればまたずれる（E-E3）。
+// 空の状態から。check mode が changed なら module の Update、Apply すれば宣言どおり、
+// 手で変えればまた drift する（E-E3）。
 func TestConvergeDriftAndBack(t *testing.T) {
 	fake := ansiblefake.New("web1")
 	p := ansible.New(fake, 0)
@@ -104,7 +104,7 @@ func TestConvergeDriftAndBack(t *testing.T) {
 	}
 	o = observe(t, p, r.ID)
 	if c := compare(p, r, o); c.Op != plan.None || o.Note != "" {
-		t.Fatalf("当てたあと %+v %+v", c, o)
+		t.Fatalf("Apply したあと %+v %+v", c, o)
 	}
 
 	fake.SetFile("web1", "/etc/motd", "someone else\n")
@@ -120,8 +120,8 @@ func TestConvergeDriftAndBack(t *testing.T) {
 	}
 }
 
-// 届かない・check mode を持たない・失敗・inventory に無い・宣言が無い・ansible が
-// 走らないは Unknown（E-K1）。当てない。
+// 到達できない・check mode を持たない・失敗・inventory に無い・宣言が無い・ansible が
+// 動かない、は Unknown（E-K1）。Apply しない。
 func TestUnobservable(t *testing.T) {
 	fake := ansiblefake.New("web1", "gone")
 	fake.Unreachable["gone"] = true
@@ -132,7 +132,7 @@ func TestUnobservable(t *testing.T) {
 	nohost := motd("nohost", "web9")
 	validate(t, p, gone, cmd, bad, nohost)
 	want := map[string]string{
-		"gone":   "届かない",
+		"gone":   "到達できない",
 		"touch":  "check mode を持たない",
 		"bad":    "Cannot resolve",
 		"nohost": "inventory に無い",
@@ -149,10 +149,10 @@ func TestUnobservable(t *testing.T) {
 		}
 	}
 	if fake.Applies != 0 {
-		t.Fatal("観測できないのに当てた")
+		t.Fatal("観測できないのに Apply した")
 	}
-	fake.Down = errors.New("ansible を走らせられない")
-	if o := observe(t, p, gone.ID); o.Availability != core.Unknown || !strings.Contains(o.Note, "走らせられない") {
+	fake.Down = errors.New("ansible を実行できない")
+	if o := observe(t, p, gone.ID); o.Availability != core.Unknown || !strings.Contains(o.Note, "実行できない") {
 		t.Fatalf("Down: %+v", o)
 	}
 }
@@ -169,28 +169,28 @@ func TestValidate(t *testing.T) {
 		ranges []core.Range
 		want   string
 	}{
-		"範囲":             {motd("m", "web1"), []core.Range{{Provider: "ans"}}, "範囲を持たない"},
+		"Range":          {motd("m", "web1"), []core.Range{{Provider: "ans"}}, "Range を持たない"},
 		"ensure: absent": {with(func(r *core.Resource) { r.Ensure = core.EnsureAbsent; r.Fields = nil }), nil, "ensure: absent"},
-		"種類":             {with(func(r *core.Resource) { r.ID.Type = "ans/playbook" }), nil, "種類は call"},
+		"type":           {with(func(r *core.Resource) { r.ID.Type = "ans/playbook" }), nil, "type は call"},
 		"host が無い":       {with(func(r *core.Resource) { delete(r.Fields, "host") }), nil, "host を書く"},
 		"グループ all":       {with(func(r *core.Resource) { r.Fields["host"] = "all" }), nil, "パターン・グループ"},
 		"パターン":           {with(func(r *core.Resource) { r.Fields["host"] = "web*" }), nil, "パターン・グループ"},
 		"短い名前":           {with(func(r *core.Resource) { r.Fields["module"] = "lineinfile" }), nil, "FQCN"},
 		"引数の名前":          {with(func(r *core.Resource) { r.Fields["args"] = map[string]any{"bad-key": "x"} }), nil, "引数の名前"},
 		"id の空白":         {with(func(r *core.Resource) { r.ID.Name = "a b" }), nil, "空白"},
-		"秘密の参照": {with(func(r *core.Resource) {
+		"secret の参照": {with(func(r *core.Resource) {
 			r.Fields["args"] = map[string]any{"dest": "/x", "content": map[string]any{"secret": "file:app/token"}}
-		}), nil, "args.content に秘密の参照"},
-		"入れ子の秘密の参照": {with(func(r *core.Resource) {
+		}), nil, "args.content に secret の参照"},
+		"入れ子の secret の参照": {with(func(r *core.Resource) {
 			r.Fields["args"] = map[string]any{"list": []any{"a", map[string]any{"secret": "vault:kv/x"}}}
-		}), nil, "args.list[1] に秘密の参照"},
+		}), nil, "args.list[1] に secret の参照"},
 	} {
 		diags := p.Validate([]core.Resource{c.res}, c.ranges)
 		if len(diags) == 0 || !strings.Contains(diags[0].String(), c.want) {
 			t.Errorf("%s: %v（want %q）", name, diags, c.want)
 		}
 	}
-	// secret という名前の引数は、秘密の参照の形でなければ書ける。
+	// secret という名前の引数は、secret の参照の形でなければ書ける。
 	ok := with(func(r *core.Resource) {
 		r.Fields["args"] = map[string]any{"opts": map[string]any{"secret": "plain words"}}
 		r.Fields["destructive"] = true
@@ -198,7 +198,7 @@ func TestValidate(t *testing.T) {
 	validate(t, p, ok)
 }
 
-// destructive: true の呼び出しの変更だけを壊す変更と言う。check mode の差分は
+// destructive: true の呼び出しの変更だけを破壊的な変更とする。check mode の差分は
 // 理由に出す（E-E3・不変条件 9）。
 func TestClassify(t *testing.T) {
 	fake := ansiblefake.New("web1")
@@ -226,7 +226,7 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-// host がグループ名（inventory の複数台）なら当てない。
+// host がグループ名（inventory の複数ホスト）なら Apply しない。
 func TestApplyRefusesGroup(t *testing.T) {
 	fake := ansiblefake.New("web1", "web2")
 	fake.Groups["web"] = []string{"web1", "web2"}
@@ -234,13 +234,13 @@ func TestApplyRefusesGroup(t *testing.T) {
 	r := motd("m", "web")
 	validate(t, p, r)
 	err := p.Apply(context.Background(), core.NewWriteContext(nil), r.ID, r.Fields, core.Observation{})
-	if err == nil || !strings.Contains(err.Error(), "2 台に当たる") {
+	if err == nil || !strings.Contains(err.Error(), "2 ホストにマッチする") {
 		t.Fatalf("err = %v", err)
 	}
 	if fake.Applies != 0 {
 		t.Fatal("グループに流した")
 	}
-	// 適用の失敗は知らせを添えて返す。
+	// Apply の失敗は ansible のメッセージを添えて返す。
 	bad := core.Resource{ID: id("bad"), Fields: core.Fields{"host": "web1", "module": "ansible.builtin.lineinfile", "args": map[string]any{"path": "/nope", "line": "x"}}}
 	if err := p.Apply(context.Background(), core.NewWriteContext(nil), bad.ID, bad.Fields, core.Observation{}); err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("失敗: %v", err)
@@ -254,11 +254,11 @@ func TestDeleteAndList(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := p.List(context.Background(), core.Range{Provider: "ans"}); err == nil {
-		t.Fatal("List が誤りを返さない")
+		t.Fatal("List がエラーを返さない")
 	}
 }
 
-// 同時に走らせる ansible は max_parallel まで。
+// 同時に実行する ansible は max_parallel まで。
 func TestMaxParallel(t *testing.T) {
 	fake := ansiblefake.New("web1")
 	fake.Block = make(chan struct{})
@@ -302,13 +302,13 @@ func TestSettings(t *testing.T) {
 		settings map[string]any
 		want     string
 	}{
-		"inventory が無い": {map[string]any{}, "settings.inventory を書く"},
-		"相対の inventory": {map[string]any{"inventory": "inv.ini"}, "絶対パス"},
-		"相対の ansible":   {map[string]any{"inventory": "/inv", "ansible": "venv/bin/ansible"}, "名前だけ"},
-		"知らない項目":        {map[string]any{"inventory": "/inv", "invetory": "/y"}, "知らない項目"},
-		"決まった env":      {map[string]any{"inventory": "/inv", "env": map[string]any{"ANSIBLE_STDOUT_CALLBACK": "json"}}, "変えられない"},
-		"timeout":       {map[string]any{"inventory": "/inv", "timeout": "soon"}, "timeout"},
-		"max_parallel":  {map[string]any{"inventory": "/inv", "max_parallel": 0}, "max_parallel"},
+		"inventory が無い":     {map[string]any{}, "settings.inventory を書く"},
+		"相対の inventory":     {map[string]any{"inventory": "inv.ini"}, "絶対パス"},
+		"相対の ansible":       {map[string]any{"inventory": "/inv", "ansible": "venv/bin/ansible"}, "名前だけ"},
+		"未知の field":         {map[string]any{"inventory": "/inv", "invetory": "/y"}, "未知の field"},
+		"provider が決める env": {map[string]any{"inventory": "/inv", "env": map[string]any{"ANSIBLE_STDOUT_CALLBACK": "json"}}, "変えられない"},
+		"timeout":           {map[string]any{"inventory": "/inv", "timeout": "soon"}, "timeout"},
+		"max_parallel":      {map[string]any{"inventory": "/inv", "max_parallel": 0}, "max_parallel"},
 	} {
 		if _, err := ansible.Module(c.settings); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v（want %q）", name, err, c.want)

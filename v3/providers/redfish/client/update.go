@@ -14,16 +14,16 @@
 
 package client
 
-// update.go は FW の更新に使う Redfish の口（E-A5・N-A4）: UpdateService とその FirmwareInventory、
+// update.go は FW の更新に使う Redfish の API（E-A5・N-A4）: UpdateService とその FirmwareInventory、
 // #UpdateService.SimpleUpdate、MultipartHttpPushUri への multipart の送信、
 // TaskService の Task。
 //
 //   - 観測を持たない（P1）: UpdateService・TaskService のパスはキャッシュせず、
 //     サービスルートから辿り直す。更新の Task の URI も持たない（provider は
 //     Task の Payload を見て、どの更新の Task かを毎回見つけ直す。Payload を
-//     返さない BMC（qemu-bmc 0.11.0）では、Update の登録簿のメッセージ
+//     返さない BMC（qemu-bmc 0.11.0）では、Update の message registry の
 //     TargetDetermined の MessageArgs を見る）。
-//   - SimpleUpdate の Password（イメージを取りに行く資格）は本文にだけ載せ、
+//   - SimpleUpdate の Password（イメージを取りに行く credential）は本文にだけ載せ、
 //     エラーの文言には本文を出さない（Error は Method と Path だけを持つ）。
 //   - SimpleUpdate・送信は 200 / 202 / 204 を受け付ける。202 の Location は
 //     Task の URI として返す（無くてもよい）。
@@ -68,7 +68,7 @@ func TaskFailed(state string) bool {
 	return false
 }
 
-// 更新を効かせる時（@Redfish.OperationApplyTime）。
+// 更新を効かせるタイミング（@Redfish.OperationApplyTime）。
 const (
 	ApplyImmediate = "Immediate"
 	ApplyOnReset   = "OnReset"
@@ -126,7 +126,7 @@ type UpdateRequest struct {
 	Targets []string
 	// ApplyTime は @Redfish.OperationApplyTime（空なら送らない）。
 	ApplyTime string
-	// Username・Password は ImageURI を取りに行く資格（空なら送らない）。
+	// Username・Password は ImageURI を取りに行く credential（空なら送らない）。
 	// Password はエラーの文言にもログにも出さない。
 	Username string
 	Password string
@@ -162,20 +162,21 @@ type TaskMessage struct {
 	Args    []string
 }
 
-// Update の登録簿（DMTF Update.1.0）のメッセージの名前（MessageId の
-// "Update.<版>." の後ろ）。
+// Update の message registry（DMTF Update.1.0）のメッセージの名前（MessageId の
+// "Update.<バージョン>." の後ろ）。
 const (
 	// MsgTargetDetermined の MessageArgs は（更新する部品の URI、イメージ）。
 	MsgTargetDetermined = "TargetDetermined"
 )
 
-// MessageIs は MessageId id が Update の登録簿（版を問わない）の name かを返す。
+// MessageIs は MessageId id が Update の message registry（バージョンを問わない）の
+// name かを返す。
 func MessageIs(id, name string) bool {
 	return strings.HasPrefix(id, "Update.") && strings.HasSuffix(id, "."+name)
 }
 
 // Reason は Task の Messages を「Message（MessageId）」の形で "; " でつなぐ
-// （失敗の理由を知らせる文言用。無ければ空）。
+// （失敗の理由を通知する文言用。無ければ空）。
 func (t *Task) Reason() string {
 	var parts []string
 	for _, m := range t.MessageDetails {
@@ -206,7 +207,7 @@ type UpdateClient interface {
 	SimpleUpdate(ctx context.Context, req UpdateRequest) (string, error)
 	// PushUpdate は MultipartHttpPushUri に UpdateParameters（Targets・
 	// ApplyTime）と UpdateFile（image、名前 filename）を multipart で送り、
-	// Task の URI を返す。時間切れは ctx に任せる。
+	// Task の URI を返す。タイムアウトは ctx に任せる。
 	PushUpdate(ctx context.Context, req UpdateRequest, filename string, image io.Reader) (string, error)
 	// ListTasks は TaskService の Task をすべて読む。無ければ ErrNoTaskService を
 	// 包んだ KindRequest のエラー。

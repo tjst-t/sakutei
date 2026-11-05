@@ -35,13 +35,13 @@ const ExecTimeout = 30 * time.Second
 // Exec は外のコマンドの Expand（§3.8 の exec:、E-A11・N-A14・E-A7）。stdin に入力の
 // JSON を 1 つ渡し、stdout から出力の JSON を 1 つ読む。
 //
-// 入力：{"intent": {"<項目>": [{"doc", "line", "value"}…]}, "inputs": {…},
+// 入力：{"intent": {"<field>": [{"doc", "line", "value"}…]}, "inputs": {…},
 // "prior": {"resources": [{"type", "id", "ensure", "labels", "fields", "reason"}…]}}。
-// intent は Claimed の項目だけ。
+// intent は Claimed の field だけ。
 //
 // 出力：intent と同じ形の resources:・ranges:・policies:・procedures: と、
 // diagnostics: [{"severity": "reject|warn|unknown", "target", "message"}]。
-// 終了コードが 0 でなければ誤り（その周は読み込めない）。同じ入力に同じ出力を
+// 終了コードが 0 でなければエラー（その cycle は読み込めない）。同じ入力に同じ出力を
 // 返すのはコマンドの責任（golden のテストで確かめる、N-P5）。
 type Exec struct {
 	Name    string
@@ -141,7 +141,7 @@ func ParseExecOutput(doc string, data []byte) (Output, error) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		if k != "resources" && k != "ranges" && k != "policies" && k != "procedures" {
-			return Output{}, fmt.Errorf("出力の知らない項目 %q（書ける項目: resources, ranges, policies, procedures, diagnostics）", k)
+			return Output{}, fmt.Errorf("出力の知らない field %q（書ける field: resources, ranges, policies, procedures, diagnostics）", k)
 		}
 	}
 	rest, _ := json.Marshal(raw)

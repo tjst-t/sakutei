@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package events は周の結果から Event を作り（設計 §3.9・§5.2）、sink へ送り出す。
+// Package events は cycle の結果から Event を作り（設計 §3.9・§5.2）、sink へ送る。
 //
-// 状態型の Event（Drift・Unknown・Converging・Unmanaged・Waiting・Halt・
-// DeleteRefused）は、キー（種類＋対象）ごとに firing になった周と resolved に
-// なった周にだけ送り出しの列へ積む（E-H1・N-H2）。続いた周は count を数え、
-// cycle.stuck_after の周数で 1 回だけ stuck を積む。確かめられなかった周
-// （対象が Unknown・作業中、範囲の List が不完全）には resolved にせず、count も
+// level Event（Drift・Unknown・Converging・Unmanaged・Waiting・Halt・
+// DeleteRefused）は、キー（Kind＋対象）ごとに firing になった cycle と resolved に
+// なった cycle にだけ outbox へ積む（E-H1・N-H2）。続いた cycle は count を数え、
+// cycle.stuck_after の cycle 数で 1 回だけ stuck を積む。確かめられなかった cycle
+// （対象が Unknown・Converging、Range の List が不完全）では resolved にせず、count も
 // 進めない（不変条件 29）。
 //
-// 通知の状態は Record に置き、メモリに持たない。だから一回実行の列と常駐が
+// 通知の状態は Record に置き、メモリに持たない。だから one-shot 実行の列と daemon が
 // 同じ Event を出す（不変条件 30、E-O3）。
 package events
 
@@ -35,7 +35,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/plan"
 )
 
-// 状態型の Event の種類（§5.2）。
+// level Event の Kind（§5.2）。
 const (
 	KindDrift         = "Drift"
 	KindUnknown       = "Unknown"
@@ -44,39 +44,39 @@ const (
 	KindWaiting       = "Waiting"
 	KindHalt          = "Halt"
 	KindDeleteRefused = "DeleteRefused"
-	// 段 5（§3.6・§3.7）。
+	// Stage 5（§3.6・§3.7）。
 	KindApprovalPending      = "ApprovalPending"      // 承認待ち（Policy・gate・続ける承認、E-L2）
 	KindFrozen               = "Frozen"               // 一時的な Policy が効いている（E-J4・N-Q1）
-	KindProcedureNeedsDaemon = "ProcedureNeedsDaemon" // 一回実行が critical の段の手前（§2.2）
+	KindProcedureNeedsDaemon = "ProcedureNeedsDaemon" // one-shot 実行が critical な step の手前にいる（§2.2）
 )
 
-// 出来事型の Event の種類（§5.2）。
+// edge Event の Kind（§5.2）。
 const (
 	KindApplied   = "Applied"
 	KindDeleted   = "Deleted"
 	KindCycleDone = "CycleDone"
-	// KindProcedureStep は手順の段を済ませた・手順が済んだ・取り消した（§3.7）。
+	// KindProcedureStep は Procedure の step を終えた・Procedure が終わった・取り消した（§3.7）。
 	KindProcedureStep = "ProcedureStep"
 )
 
 // Input は Derive の入力。
 type Input struct {
 	Result     plan.Result
-	Prev       []core.Event // 前の周までに firing の Event（Record の events/state.json）
+	Prev       []core.Event // 前の cycle までに firing の Event（Record の events/state.json）
 	Seq        uint64       // 最後に積んだ Event の番号
 	Now        time.Time
-	Duration   time.Duration // 周にかかった時間（CycleDone、N-H4）
+	Duration   time.Duration // cycle にかかった時間（CycleDone、N-H4）
 	StuckAfter int
 }
 
 // Output は Derive の結果。
 type Output struct {
-	Firing  []core.Event // 次の周に渡す firing の一覧
-	Emitted []core.Event // この周に送り出しの列へ積む Event（番号つき）
+	Firing  []core.Event // 次の cycle に渡す firing の一覧
+	Emitted []core.Event // この cycle に outbox へ積む Event（番号つき）
 	Seq     uint64       // 最後に積んだ番号
 }
 
-// Derive は周の結果から通知の状態を進める。入力だけから決まる（同じ Record と
+// Derive は cycle の結果から通知の状態を進める。入力だけから決まる（同じ Record と
 // 結果からは同じ Event、不変条件 30）。
 func Derive(in Input) Output {
 	r := in.Result
@@ -151,7 +151,7 @@ func Derive(in Input) Output {
 		}
 		add(e)
 	}
-	// 止まった手順の続ける承認（E-A5・E-K5）。
+	// halt した Procedure を続ける承認（E-A5・E-K5）。
 	for _, s := range r.Runs {
 		if s.State == "halted" && s.Request != "" {
 			add(core.Event{Kind: KindApprovalPending, Scope: "procedure " + s.Procedure + " " + s.Target, Labels: s.Labels, Message: s.Waiting})
@@ -169,8 +169,8 @@ func Derive(in Input) Output {
 		prev[e.Key()] = e
 	}
 
-	// 前から firing のもの：続いていれば数え、確かめて消えていれば resolved、
-	// 確かめられなければそのまま（不変条件 29）。
+	// 前から firing のもの：続いていれば数え、確認して消えていれば resolved、
+	// 確認できなければそのまま（不変条件 29）。
 	for _, key := range sortedKeys(prev) {
 		p := prev[key]
 		if cur, ok := now[key]; ok {
@@ -209,7 +209,7 @@ func Derive(in Input) Output {
 	}
 	sort.SliceStable(out.Firing, func(i, j int) bool { return out.Firing[i].Key() < out.Firing[j].Key() })
 
-	// 出来事型。
+	// edge Event。
 	for _, c := range r.Changes {
 		if c.Outcome != plan.OutcomeOK {
 			continue
@@ -237,7 +237,7 @@ func Derive(in Input) Output {
 		}
 		for _, name := range s.Passed {
 			emit(core.Event{Kind: KindProcedureStep, Type: core.IncidentEvent, Scope: scope, Labels: s.Labels,
-				Message: fmt.Sprintf("%s: 段 %s を済ませた", s.RunID, name)})
+				Message: fmt.Sprintf("%s: step %s を終えた", s.RunID, name)})
 		}
 		switch s.State {
 		case "done", "cancelled":
@@ -249,29 +249,29 @@ func Derive(in Input) Output {
 	return out
 }
 
-// confirmed は前の周に firing だった p が、この周に確かめて消えたか。
+// confirmed は前の cycle に firing だった p が、この cycle に確かめて消えたかを返す。
 func confirmed(p core.Event, changes map[string]plan.Change, ranges map[string]plan.RangeStatus) bool {
 	if p.Resource == "" {
 		switch {
 		case strings.HasPrefix(p.Scope, "range "):
-			// 範囲の List の不完全・急減：範囲が完全に List できた周に消える。
-			// 範囲を宣言から外したなら消える。
+			// Range の List の不完全・急減：Range を完全に List できた cycle に消える。
+			// Range を宣言から外したときも消える。
 			st, ok := ranges[strings.TrimPrefix(p.Scope, "range ")]
 			return !ok || st.Complete
 		default:
-			// Policy の予算は毎周数え直す。
+			// Policy の budget は cycle ごとに数え直す。
 			return true
 		}
 	}
 	c, ok := changes[p.Resource]
 	if !ok {
 		if p.Kind == KindUnmanaged {
-			// 宣言外：その範囲が完全に List できて出てこなかった（または範囲を
-			// 外した）ときだけ消える。
+			// unmanaged：その Range を完全に List できて出てこなかった（または
+			// Range を外した）ときだけ消える。
 			st, ok := ranges[p.Scope]
 			return !ok || st.Complete
 		}
-		// 宣言から外し、どの範囲の宣言外にも出ない。
+		// 宣言から外し、どの Range の unmanaged にも出ない。
 		return true
 	}
 	f := c.Final()
@@ -285,7 +285,7 @@ func confirmed(p core.Event, changes map[string]plan.Change, ranges map[string]p
 		return false
 	}
 	if p.Kind == KindDeleteRefused {
-		// 消す操作がまだ残る（この周は試していない）なら、断りが続くかは分からない。
+		// 消す操作がまだ残る（この cycle では試していない）なら、reject が続くかは分からない。
 		return f != plan.Delete && f != plan.Prune
 	}
 	return true
@@ -330,7 +330,7 @@ func note(c plan.Change) string {
 	return c.Note
 }
 
-// cycleDone は周の件数と時間（E-H3・N-H4）。数えたものだけを載せる。
+// cycleDone は cycle の件数と時間（E-H3・N-H4）。数えたものだけを載せる。
 func cycleDone(r plan.Result, d time.Duration) core.Event {
 	v := map[string]int{"duration_ms": int(d / time.Millisecond)}
 	for _, c := range r.Changes {
@@ -362,7 +362,7 @@ func cycleDone(r plan.Result, d time.Duration) core.Event {
 		}
 	}
 	return core.Event{Kind: KindCycleDone, Type: core.IncidentEvent, Values: v,
-		Message: fmt.Sprintf("drift %d・unknown %d・止めた %d", v["drift"], v["unknown"], v["halts"])}
+		Message: fmt.Sprintf("drift %d・unknown %d・halt %d", v["drift"], v["unknown"], v["halts"])}
 }
 
 func sortedKeys(m map[string]core.Event) []string {

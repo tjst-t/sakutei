@@ -14,7 +14,7 @@
 
 package redfish
 
-// system.go は種類 system（電源・起動先の上書き、E-A1・N-A1）と virtual-media
+// system.go は type system（電源・起動先の上書き、E-A1・N-A1）と virtual-media
 // （CD、E-A3）。
 
 import (
@@ -27,7 +27,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/redfish/client"
 )
 
-// system の項目。
+// system の field。
 const (
 	FieldPower       = "power"
 	FieldBootEnabled = "boot_enabled"
@@ -43,7 +43,7 @@ const (
 	FieldResetTypes  = "reset_types"  // ResetType@Redfish.AllowableValues
 )
 
-// virtual-media の項目。
+// virtual-media の field。
 const (
 	FieldImage = "image"
 	// 観測だけ。
@@ -89,11 +89,11 @@ func observeSystem(ctx context.Context, c client.Client, ids []core.ID) map[core
 	}
 	switch sys.PowerState {
 	case client.PowerPoweringOn, client.PowerPoweringOff:
-		// BMC が電源を切り替えている途中。重ねない（E-A1）。
+		// BMC が電源を切り替えている途中。重ねて送らない（E-A1）。
 		return fill(ids, core.Observation{Availability: core.Converging, Note: "電源が " + sys.PowerState})
 	case client.PowerOn, client.PowerOff:
 	default:
-		return fill(ids, core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("知らない PowerState %q", sys.PowerState)})
+		return fill(ids, core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("未知の PowerState %q", sys.PowerState)})
 	}
 	macs := sys.MACAddresses
 	if macs == nil {
@@ -115,7 +115,7 @@ func observeSystem(ctx context.Context, c client.Client, ids []core.ID) map[core
 }
 
 // applySystem は起動先を先に、電源を後に変える。BMC を読み直して、ずれている
-// ものだけを送る（冪等）。電源の切り替えの途中なら重ねない。
+// ものだけを送る（冪等）。電源の切り替えの途中なら重ねて送らない。
 func applySystem(ctx context.Context, c client.Client, want core.Fields) error {
 	sys, err := c.GetSystem(ctx)
 	if err != nil {
@@ -140,7 +140,7 @@ func applySystem(ctx context.Context, c client.Client, want core.Fields) error {
 				}
 			}
 		default:
-			return fmt.Errorf("boot_enabled %q は当てられない", enabled)
+			return fmt.Errorf("boot_enabled %q は Apply できない", enabled)
 		}
 	}
 	power, ok := want[FieldPower].(string)
@@ -152,12 +152,12 @@ func applySystem(ctx context.Context, c client.Client, want core.Fields) error {
 	case power == client.PowerOn && sys.PowerState == client.PowerOff:
 		reset = client.ResetOn
 	case power == client.PowerOff && sys.PowerState == client.PowerOn:
-		// 強制停止はしない（壊す操作は force_off、E-A1）。
+		// 強制停止はしない（破壊的な操作は force_off、E-A1）。
 		reset = client.ResetGracefulShutdown
 	case power != client.PowerOn && power != client.PowerOff:
-		return fmt.Errorf("power %q は当てられない", power)
+		return fmt.Errorf("power %q は Apply できない", power)
 	default:
-		return nil // 宣言どおりか切り替えの途中：重ねない
+		return nil // 宣言どおりか切り替えの途中：重ねて送らない
 	}
 	if len(sys.ResetTypes) > 0 && !has(sys.ResetTypes, reset) {
 		return fmt.Errorf("BMC が ResetType %s を持たない（選べる値: %s）", reset, strings.Join(sys.ResetTypes, ", "))

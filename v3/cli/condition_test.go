@@ -26,7 +26,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/fake"
 )
 
-// 空から組む構成を intent に書き、一回実行 1 回で収束する（E-J7）。plan は下流を
+// 空から組む構成を intent に書き、one-shot 実行 1 回で収束する（E-J7）。plan は下流を
 // 待ちとして見せ、上流に下流を出す（N-J11）。check(名前) は WithCheck で組み込む
 // （E-B9）。
 func TestReconcileBuildsFromEmpty(t *testing.T) {
@@ -70,10 +70,10 @@ func TestReconcileBuildsFromEmpty(t *testing.T) {
 		t.Fatalf("plan: %d\n%s", code, out)
 	}
 	code, out = run("reconcile", "--intent", intent, "--config", cfg, "--record", rec)
-	if code != cli.ExitOK || !strings.Contains(out, "（波 3）") {
+	if code != cli.ExitOK || !strings.Contains(out, "（wave 3）") {
 		t.Fatalf("reconcile: %d\n%s", code, out)
 	}
-	// 登録の無い確かめは読み込みで断る。
+	// 登録の無い check は読み込み時にエラーにする（reject）。
 	var stdout, stderr bytes.Buffer
 	code = cli.Run(context.Background(), []string{"plan", "--intent", intent, "--config", cfg}, &stdout, &stderr, cli.WithModule("fake", fake.Module))
 	if code != cli.ExitRejected || !strings.Contains(stderr.String(), "check(ok)") {

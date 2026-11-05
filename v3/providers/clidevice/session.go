@@ -14,16 +14,16 @@
 
 package clidevice
 
-// session.go — 装置の CLI とのやりとり。
+// session.go — 装置の CLI との session。
 //
 //   - exec：コマンド 1 つを ssh の exec の 1 行として流す（Conn.RunLine）。0 以外の
 //     終了は失敗。
-//   - interactive：pty つきの殻を開き（OpenShell）、プロンプトの行が出るまで読む。
-//     ページ送りの印（pager）が最後の行に出たらキーを打ち、印は出力から消す。
-//     打ったコマンドのこだま（pty の echo）は出力の先頭から外す。
+//   - interactive：pty つきの shell を開き（OpenShell）、プロンプトの行が出るまで読む。
+//     ページ送りのプロンプト（pager）が最後の行に出たらキーを打ち、それは出力から消す。
+//     打ったコマンドの echo（pty の echo）は出力の先頭から外す。
 //
-// 出力は端末として読む: "\r\n" は改行、行の途中の "\r" は行の頭に戻る（後ろの
-// 文字で上書きされる）、"\b" は 1 文字消す、ESC の制御列は捨てる。
+// 出力は端末として読む。"\r\n" は改行、行の途中の "\r" は行頭に戻る（後ろの
+// 文字で上書きされる）、"\b" は 1 文字消す、ESC のエスケープシーケンスは捨てる。
 
 import (
 	"context"
@@ -36,23 +36,23 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/hostexec"
 )
 
-// Conn は 1 つの装置へのつなぎ方（ssh、テストでは偽の装置）。届かないときは
+// Conn は 1 つの装置への接続（ssh、テストでは偽の装置）。到達できないときは
 // *hostexec.UnreachableError、exec の 0 以外の終了は *hostexec.ExitError を返す。
 type Conn interface {
-	// OpenShell は pty つきの殻を開く（interactive）。
+	// OpenShell は pty つきの shell を開く（interactive）。
 	OpenShell(ctx context.Context) (io.ReadWriteCloser, error)
 	// RunLine は 1 行を exec で流す（exec）。
 	RunLine(ctx context.Context, line string) ([]byte, error)
 }
 
-// session は開いたやりとり。
+// session は開いている装置との session。
 type session interface {
-	// do は cmd を打ち、出力（行は "\n" 区切り、こだまとプロンプトを除く）を返す。
+	// do は cmd を打ち、出力（行は "\n" 区切り、echo とプロンプトを除く）を返す。
 	do(ctx context.Context, cmd string) (string, error)
 	close()
 }
 
-// cmdFailed はコマンドが失敗として終わった（exec の 0 以外の終了）。
+// cmdFailed はコマンドが失敗として終わったことを表す（exec の 0 以外の終了）。
 type cmdFailed struct {
 	out    string
 	reason string
@@ -60,7 +60,7 @@ type cmdFailed struct {
 
 func (e *cmdFailed) Error() string { return e.reason }
 
-// open は d の型でやりとりを開く。
+// open は d の mode で session を開く。
 func (d *Definition) open(ctx context.Context, c Conn) (session, error) {
 	if d.Mode == ModeExec {
 		return &execSession{d: d, c: c}, nil
@@ -124,12 +124,12 @@ type shellSession struct {
 	d      *Definition
 	rw     io.ReadWriteCloser
 	chunks chan []byte
-	// readErr は chunks が閉じた訳（pump が閉じる前に書く）。
+	// readErr は chunks が閉じた理由（pump が閉じる前に書く）。
 	readErr error
 	raw     []byte
 }
 
-// pump は読んだ塊を chunks に送る。終われば閉じる。
+// pump は読んだ chunk を chunks に送る。終われば閉じる。
 func (s *shellSession) pump() {
 	buf := make([]byte, 4096)
 	for {
@@ -145,7 +145,7 @@ func (s *shellSession) pump() {
 	}
 }
 
-// pagerMark は「ここで行の頭に戻る」の印（ページ送りの印を消すのに使う。
+// pagerMark は「ここで行頭に戻る」を表すマーカー（ページ送りのプロンプトを消すのに使う。
 // 端末の出力に NUL は来ない）。
 const pagerMark = 0
 
@@ -194,7 +194,7 @@ func (s *shellSession) do(ctx context.Context, cmd string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// こだま（打った行。前にプロンプトが付くこともある）を外す。
+	// echo（打った行。前にプロンプトが付くこともある）を外す。
 	if len(lines) > 0 && strings.HasSuffix(strings.TrimRight(lines[0], " "), strings.TrimRight(cmd, " ")) {
 		lines = lines[1:]
 	}
@@ -210,7 +210,7 @@ func (s *shellSession) close() {
 
 func (s *shellSession) abort() {
 	_ = s.rw.Close()
-	// pump が送りかけの塊で止まらないよう、閉じるまで読み捨てる。
+	// pump が送りかけの chunk で止まらないよう、閉じるまで読み捨てる。
 	go func() {
 		for range s.chunks {
 		}
@@ -268,7 +268,7 @@ func screen(raw []byte) (lines []string, partial string) {
 	return lines, string(cur)
 }
 
-// errorLine は out の中でエラーの印に当たる最初の行（1 から）。
+// errorLine は out の中で errors にマッチする最初の行（1 始まり）を返す。
 func (d *Definition) errorLine(out string) (int, string, bool) {
 	for i, l := range strings.Split(out, "\n") {
 		for _, re := range d.Errors {
@@ -280,7 +280,7 @@ func (d *Definition) errorLine(out string) (int, string, bool) {
 	return 0, "", false
 }
 
-// clip は文言に載せる行の頭（200 文字まで）。
+// clip はメッセージに載せる行の先頭（200 文字まで）を返す。
 func clip(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) > 200 {

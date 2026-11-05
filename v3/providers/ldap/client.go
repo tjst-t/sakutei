@@ -22,11 +22,11 @@ package ldap
 //     変更（LDIF）は標準入力で渡す。
 //   - bind は simple bind（-x -D）。パスワードは呼ぶたびに settings の
 //     password_file から読み（値を持たない、E-G2）、0600 の一時ファイルに書いて
-//     -y で渡し、終われば消す。引数・環境変数・誤りの文には出さない（不変条件 27）。
-//   - 観測用と書き込み用の 2 本の資格（E-G5・N-G3）：どちらで bind するかは呼ぶ側が
+//     -y で渡し、終われば消す。引数・環境変数・エラーの文には出さない（不変条件 27）。
+//   - 観測用と書き込み用の 2 本の credential（E-G5・N-G3）：どちらで bind するかは呼ぶ側が
 //     決める。書き込み用は Apply・Delete の中でだけ渡す。
 //   - LDAPS（ldaps://）と StartTLS（-ZZ：TLS にできなければ失敗）。CA は
-//     LDAPTLS_CACERT、証明書の確かめは LDAPTLS_REQCERT=demand（利用者の ldaprc の
+//     LDAPTLS_CACERT、証明書の検証は LDAPTLS_REQCERT=demand（利用者の ldaprc の
 //     TLS_REQCERT never などで緩めさせない）。親の LDAP で始まる環境変数は引き継が
 //     ない（E-G1）。
 //   - 終了コードは LDAP の結果コード（32 noSuchObject、49 invalidCredentials、
@@ -109,7 +109,7 @@ const (
 	CodeAlreadyExists       = 68
 )
 
-// ErrorKind は失敗の種類。
+// ErrorKind は失敗の分類。
 type ErrorKind int
 
 const (
@@ -148,7 +148,7 @@ func (e *Error) Error() string {
 	case KindCredential:
 		what = "bind のパスワードのファイルを読めない"
 	case KindLDAP:
-		what = "LDAP の誤り " + strconv.Itoa(e.Code)
+		what = "LDAP のエラー " + strconv.Itoa(e.Code)
 	case KindOutput:
 		what = "ldap のコマンドの出力を読めない"
 	}
@@ -191,7 +191,7 @@ func oneLine(s string) string {
 	return s
 }
 
-// credential は 1 本の資格（bind の DN とパスワードのファイル）。
+// credential は 1 本の credential（bind の DN とパスワードのファイル）。
 type credential struct {
 	bindDN       string
 	passwordFile string
@@ -199,7 +199,7 @@ type credential struct {
 }
 
 // password はパスワードのファイルを読む（末尾の改行は落とす）。値は持ち続けない
-// （E-G2）。誤りの文にはパスのほかを出さない。
+// （E-G2）。エラーの文にはパスのほかを出さない。
 func (c credential) password() (string, error) {
 	b, err := os.ReadFile(c.passwordFile)
 	if err != nil {
@@ -208,13 +208,13 @@ func (c credential) password() (string, error) {
 	return strings.TrimRight(string(b), "\r\n"), nil
 }
 
-// client は ldap コマンドを呼ぶ口。
+// client は ldap コマンドを呼ぶ部品。
 type client struct {
 	search, modify string
 	runner         Runner
 }
 
-// SearchScope は検索の範囲。
+// SearchScope は検索の scope。
 type SearchScope string
 
 const (
@@ -231,12 +231,12 @@ type searchRequest struct {
 	Attrs  []string
 	// Paged は結果をページに分けて受け取る（サーバの件数の上限に当たらないため。List）。
 	Paged bool
-	// SizeLimit は返す項目の数の上限（0 は付けない）。超えたら結果コード 4。
+	// SizeLimit は返す entry の数の上限（0 は付けない）。超えたら結果コード 4。
 	SizeLimit int
 }
 
-// searchAs は cred で bind して検索し、項目を返す。失敗は *Error（結果コード 4 で
-// 切れたときも、読めた項目と一緒に *Error を返す）。
+// searchAs は cred で bind して検索し、entry を返す。失敗は *Error（結果コード 4 で
+// 切れたときも、読めた entry と一緒に *Error を返す）。
 func (c *client) searchAs(ctx context.Context, srv *server, cred credential, req searchRequest) ([]Entry, error) {
 	args := []string{"-LLL", "-o", "ldif-wrap=no"}
 	if srv.timeout > 0 {

@@ -38,18 +38,18 @@ import (
 // VaultKV2 はモジュールの名前。
 const VaultKV2 = "vault-kv2"
 
-// DefaultVaultKey は在りかに "#<鍵>" が無いときに読む鍵。
+// DefaultVaultKey はパスに "#<key>" が無いときに読む key。
 const DefaultVaultKey = "value"
 
-// Vault は Vault KV v2 の保管先（OpenBao も同じ API）。
+// Vault は Vault KV v2 の secret backend（OpenBao も同じ API）。
 //
-// 在りかは "<秘密のパス>#<鍵>"（{secret: "vault:/db/app#password"}）。"#<鍵>" が
-// 無ければ鍵は value。世代は KV の版：Generation はメタデータの current_version
-// だけを読み（値は読まない）、Resolve はその版の値を読む。
+// パスは "<secret のパス>#<key>"（{secret: "vault:/db/app#password"}）。"#<key>" が
+// 無ければ key は value。世代は KV のバージョン。Generation はメタデータの
+// current_version だけを読み（値は読まない）、Resolve はそのバージョンの値を読む。
 //
-// 認証はトークンのファイル（要求ごとに読み直すので、エージェントが入れ替えて
-// よい）か AppRole（role_id と secret_id をファイルから。トークンはリースの 3 分の 2
-// まで使い、403 が返れば 1 回だけログインし直す）。
+// 認証はトークンのファイルか AppRole のどちらか。トークンのファイルはリクエストごとに
+// 読み直すので、agent が入れ替えてよい。AppRole は role_id と secret_id をファイルから
+// 読む。トークンはリース期間の 3 分の 2 まで使い、403 が返れば 1 回だけログインし直す。
 type Vault struct {
 	base      *url.URL
 	mount     string
@@ -73,7 +73,7 @@ type Vault struct {
 //	ca_file           サーバの証明書の CA（PEM、任意）
 //	token_file        トークンのファイル、または
 //	approle           {role_id_file, secret_id_file, mount（既定 approle）}
-//	timeout           要求ごとの上限（既定 10s）
+//	timeout           リクエストごとのタイムアウト（既定 10s）
 //	allow_plain_http  true で loopback でない http を許す
 func VaultModule(settings map[string]any) (core.SecretBackend, error) {
 	return NewVault(settings)
@@ -111,7 +111,7 @@ func NewVault(settings map[string]any) (*Vault, error) {
 		return nil, fmt.Errorf("%s: address %q: https://<ホスト>[:<ポート>] を書く", kind, addr)
 	}
 	if u.Scheme == "http" && !isLoopback(u.Hostname()) && !plain {
-		return nil, fmt.Errorf("%s: address %q は loopback でない http：トークンと値が平文で流れる（https を使うか allow_plain_http: true を書く）", kind, addr)
+		return nil, fmt.Errorf("%s: address %q は loopback でない http。トークンと値が平文で流れる（https を使うか allow_plain_http: true を書く）", kind, addr)
 	}
 	v := &Vault{base: u, mount: strings.Trim(get("mount"), "/"), namespace: get("namespace"), tokenFile: get("token_file"), appMount: "approle"}
 	if v.mount == "" {
@@ -139,7 +139,7 @@ func NewVault(settings map[string]any) (*Vault, error) {
 	case v.tokenFile != "" && approle:
 		return nil, fmt.Errorf("%s: token_file と approle はどちらか 1 つ", kind)
 	case v.tokenFile == "" && !approle:
-		return nil, fmt.Errorf("%s: 認証が無い：token_file か approle を書く", kind)
+		return nil, fmt.Errorf("%s: 認証の設定が無い。token_file か approle を書く", kind)
 	}
 	timeout, err := timeoutSetting(kind, settings, 10*time.Second)
 	if err != nil {
@@ -158,7 +158,7 @@ func NewVault(settings map[string]any) (*Vault, error) {
 		tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	}
 	v.client = &http.Client{Timeout: timeout, Transport: tr,
-		// 転送はトークンをほかへ運びうる。Vault は転送を要らない。
+		// リダイレクトはトークンを別の宛先へ運びうる。Vault にリダイレクトは要らない。
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return v, nil
 }
@@ -171,7 +171,7 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// SplitKey は在りかを KV の秘密のパスと鍵に分ける。
+// SplitKey はパスを KV の secret のパスと key に分ける。
 func SplitKey(path string) (secret, key string, err error) {
 	secret, key = path, DefaultVaultKey
 	if i := strings.LastIndex(path, "#"); i >= 0 {
@@ -179,17 +179,17 @@ func SplitKey(path string) (secret, key string, err error) {
 	}
 	secret = strings.Trim(secret, "/")
 	if secret == "" || key == "" {
-		return "", "", fmt.Errorf("%s: 在りか %q: <秘密のパス>[#<鍵>] を書く", VaultKV2, path)
+		return "", "", fmt.Errorf("%s: パス %q: <secret のパス>[#<key>] を書く", VaultKV2, path)
 	}
 	for _, seg := range strings.Split(secret, "/") {
 		if seg == "" || seg == "." || seg == ".." {
-			return "", "", fmt.Errorf("%s: 在りか %q: 空・.・.. の段は書けない", VaultKV2, path)
+			return "", "", fmt.Errorf("%s: パス %q: 空・.・.. の要素は書けない", VaultKV2, path)
 		}
 	}
 	return secret, key, nil
 }
 
-// Generation は秘密の今の KV の版（メタデータだけを読む）。
+// Generation は secret の現在の KV のバージョンを返す（メタデータだけを読む）。
 func (v *Vault) Generation(ctx context.Context, path string) (string, error) {
 	secret, _, err := SplitKey(path)
 	if err != nil {
@@ -209,15 +209,15 @@ func (v *Vault) Generation(ctx context.Context, path string) (string, error) {
 	}
 	cur := out.Data.CurrentVersion
 	if cur <= 0 {
-		return "", fmt.Errorf("%s: %s のメタデータに今の版が無い", VaultKV2, secret)
+		return "", fmt.Errorf("%s: %s のメタデータに現在のバージョンが無い", VaultKV2, secret)
 	}
 	if ver, ok := out.Data.Versions[strconv.FormatInt(cur, 10)]; ok && (ver.Destroyed || ver.DeletionTime != "") {
-		return "", fmt.Errorf("%s: %s の今の版 %d は消されている", VaultKV2, secret, cur)
+		return "", fmt.Errorf("%s: %s の現在のバージョン %d は削除されている", VaultKV2, secret, cur)
 	}
 	return strconv.FormatInt(cur, 10), nil
 }
 
-// Resolve は版 gen（空なら今の版）の鍵の値。
+// Resolve はバージョン gen（空なら現在のバージョン）の key の値を返す。
 func (v *Vault) Resolve(ctx context.Context, path, gen string) (string, error) {
 	secret, key, err := SplitKey(path)
 	if err != nil {
@@ -227,7 +227,7 @@ func (v *Vault) Resolve(ctx context.Context, path, gen string) (string, error) {
 	if gen != "" {
 		n, err := strconv.ParseInt(gen, 10, 64)
 		if err != nil || n <= 0 {
-			return "", fmt.Errorf("%s: 世代 %q は KV の版でない", VaultKV2, gen)
+			return "", fmt.Errorf("%s: 世代 %q は KV のバージョンでない", VaultKV2, gen)
 		}
 		q.Set("version", gen)
 	}
@@ -237,15 +237,15 @@ func (v *Vault) Resolve(ctx context.Context, path, gen string) (string, error) {
 		} `json:"data"`
 	}
 	if err := v.get(ctx, "/v1/"+v.mount+"/data/"+escapePath(secret), q, &out); err != nil {
-		return "", fmt.Errorf("%s: %s（版 %s）: %w", VaultKV2, secret, gen, err)
+		return "", fmt.Errorf("%s: %s（バージョン %s）: %w", VaultKV2, secret, gen, err)
 	}
 	raw, ok := out.Data.Data[key]
 	if !ok {
-		return "", fmt.Errorf("%s: %s（版 %s）に鍵 %q が無い", VaultKV2, secret, gen, key)
+		return "", fmt.Errorf("%s: %s（バージョン %s）に key %q が無い", VaultKV2, secret, gen, key)
 	}
 	s, ok := raw.(string)
 	if !ok {
-		return "", fmt.Errorf("%s: %s（版 %s）の鍵 %q は文字列でない", VaultKV2, secret, gen, key)
+		return "", fmt.Errorf("%s: %s（バージョン %s）の key %q は文字列でない", VaultKV2, secret, gen, key)
 	}
 	return s, nil
 }
@@ -258,7 +258,7 @@ func escapePath(p string) string {
 	return strings.Join(segs, "/")
 }
 
-// statusError は 2xx でない答え。Vault の errors だけを引く（データは引かない）。
+// statusError は 2xx でないレスポンス。Vault の errors だけを引用する（データは引用しない）。
 type statusError struct {
 	code   int
 	detail string
@@ -268,11 +268,11 @@ func (e *statusError) Error() string {
 	msg := "HTTP " + strconv.Itoa(e.code)
 	switch e.code {
 	case http.StatusNotFound:
-		msg += "（その秘密か版が無い）"
+		msg += "（その secret かバージョンが無い）"
 	case http.StatusForbidden:
 		msg += "（権限が無い）"
 	case http.StatusServiceUnavailable:
-		msg += "（封印中か待機中）"
+		msg += "（sealed か standby）"
 	}
 	if e.detail != "" {
 		msg += ": " + e.detail
@@ -280,7 +280,7 @@ func (e *statusError) Error() string {
 	return msg
 }
 
-// get は認証した GET を送り、2xx の JSON を out に読む。
+// get は認証付きの GET を送り、2xx の JSON を out に読む。
 func (v *Vault) get(ctx context.Context, path string, q url.Values, out any) error {
 	for attempt := 0; ; attempt++ {
 		token, err := v.authToken(ctx)
@@ -314,12 +314,12 @@ func (v *Vault) do(req *http.Request, out any) error {
 	}
 	resp, err := v.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("届かない: %w", err)
+		return fmt.Errorf("接続できない: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return fmt.Errorf("答えを読めない: %w", err)
+		return fmt.Errorf("レスポンスを読めない: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
 		var e struct {
@@ -329,13 +329,13 @@ func (v *Vault) do(req *http.Request, out any) error {
 		return &statusError{code: resp.StatusCode, detail: clip(strings.Join(e.Errors, "; "))}
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		// 読み取りの誤りの文は本文（値）を引きうるので包まない。
-		return errors.New("答えが JSON として読めない")
+		// JSON のパースエラーは本文（値）を引用しうるので wrap しない。
+		return errors.New("レスポンスが JSON として読めない")
 	}
 	return nil
 }
 
-// authToken は次の要求のトークン。
+// authToken は次のリクエストに使うトークンを返す。
 func (v *Vault) authToken(ctx context.Context) (string, error) {
 	if v.tokenFile != "" {
 		b, err := os.ReadFile(v.tokenFile)
@@ -387,7 +387,7 @@ func (v *Vault) authToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("AppRole のログイン: %w", err)
 	}
 	if out.Auth.ClientToken == "" {
-		return "", errors.New("AppRole のログイン: 答えにトークンが無い")
+		return "", errors.New("AppRole のログイン: レスポンスにトークンが無い")
 	}
 	v.token = out.Auth.ClientToken
 	v.expires = time.Time{}

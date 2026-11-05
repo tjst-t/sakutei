@@ -89,7 +89,7 @@ func (e *env) run(o Options, args ...string) (int, string) {
 }
 
 // 書き出した宣言を intent に入れると、plan は変えるものが無い（今の現実をそのまま
-// 写している）。external_owners に当たるものは書かない。
+// 書き出している）。external_owners に当たるものは書かない。
 func TestImportedIntentConverges(t *testing.T) {
 	e := newEnv(t)
 	out := e.p("intent/imported.yaml")
@@ -111,7 +111,7 @@ func TestImportedIntentConverges(t *testing.T) {
 	var so, se bytes.Buffer
 	pc := cli.Run(context.Background(), []string{"plan", "--intent", e.p("intent"), "--config", e.p("config.yaml")}, &so, &se,
 		cli.WithModule("dnszone", dnszone.Module), cli.WithModule("nftables", nftables.Module))
-	if pc != cli.ExitOK || strings.Contains(so.String(), "\n+ ") || strings.Contains(so.String(), "\n~ ") || strings.Contains(so.String(), "宣言外") {
+	if pc != cli.ExitOK || strings.Contains(so.String(), "\n+ ") || strings.Contains(so.String(), "\n~ ") || strings.Contains(so.String(), "unmanaged") {
 		t.Fatalf("plan %d:\n%s%s\n--- imported\n%s", pc, so.String(), se.String(), s)
 	}
 }
@@ -212,7 +212,7 @@ func TestSyncStopsOnHandEdit(t *testing.T) {
 	if got, _ := os.ReadFile(out); string(got) != edited {
 		t.Fatal("手で書き換えたファイルを上書きした")
 	}
-	// 道具の書いたものでないファイルも上書きしない。
+	// このツールが書いたものでないファイルも上書きしない。
 	os.WriteFile(e.p("other.yaml"), []byte("resources: []\n"), 0o644)
 	if code, _ := e.run(opts(), "--out", e.p("other.yaml")); code != ExitEdited {
 		t.Fatalf("%d", code)
@@ -238,7 +238,7 @@ func TestSyncCommits(t *testing.T) {
 		return string(out)
 	}
 	git("init", "-q")
-	os.WriteFile(filepath.Join(repo, "other.txt"), []byte("x\n"), 0o644) // 道具の commit に入れない
+	os.WriteFile(filepath.Join(repo, "other.txt"), []byte("x\n"), 0o644) // このツールの commit に入れない
 	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
 		t.Setenv(k, "t")
 	}

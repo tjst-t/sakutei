@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package contract は provider の契約テスト（設計 §6.2、E-P2）。provider の作者は
-// 自分の provider と偽の相手（または模擬）を Target にして Run を回す。
+// 自分の provider と fake の相手（またはエミュレータ）を Target にして Run を実行する。
 //
 //	func TestContract(t *testing.T) {
 //		contract.Run(t, func(t *testing.T) contract.Target {
@@ -22,9 +22,9 @@
 //		})
 //	}
 //
-// Run は確かめごとに新しい Target を作る（前の確かめの現実を持ち込まない）。
-// Target に書かなかった確かめ（作れる宣言が無い・List を持たない・Invoker が
-// 無いなど）は飛ばす。
+// Run はテストケースごとに新しい Target を作る（前のケースの現実を持ち込まない）。
+// Target に書かなかったケース（作れる宣言が無い・List を持たない・Invoker が
+// 無いなど）はスキップする。
 package contract
 
 import (
@@ -42,41 +42,41 @@ import (
 	"github.com/tjst-t/sakutei/v3/plan"
 )
 
-// Target は 1 つの確かめに使う provider と相手。
+// Target は 1 つのテストケースに使う provider と相手。
 type Target struct {
 	Provider core.Provider
 	// Resources は Validate に渡す宣言（Create・Converge は足して渡す）。
 	Resources []core.Resource
-	// Ranges は Validate と List に渡す範囲。
+	// Ranges は Validate と List に渡す Range。
 	Ranges []core.Range
 	// Absent は確かに無い対象（E-P2）。
 	Absent []core.ID
 	// Create は Absent から作れる宣言（作って読む・冪等、E-P2）。
 	Create []core.Resource
-	// Converge は在る対象を宣言どおりにする宣言（作れない種類：電源・起動先）。
+	// Converge は Present の対象を宣言どおりにする宣言（作れない type：電源・起動先）。
 	// 宣言は今の現実と違う値にする。
 	Converge []core.Resource
-	// Observed は在る対象（Present を返す、観測だけの種類を含む）。正規形の
-	// 確かめと、届かないときの確かめに使う。
+	// Observed は Present を返す対象（観測だけの type を含む）。正規形の確認と、
+	// 届かないときの確認に使う。
 	Observed []core.ID
 	// Faults は相手に届かなくする（接続を切る・5xx・時間切れ・認証失敗・壊れた
 	// 出力）。名前 → 注入する関数（E-K1・E-E6・E-P2）。
 	Faults map[string]func()
 	// Truncate は List のページを途中で切る（E-K2）。
 	Truncate func()
-	// Writes は相手に書いた回数（冪等の確かめ）。nil なら観測だけで確かめる。
+	// Writes は相手に書いた回数（冪等の確認）。nil なら観測だけで確認する。
 	Writes func() int
-	// Secrets は誤りの文・Note・Fields に出てはいけない値（E-G2・N-L5）。
+	// Secrets はエラーの文・Note・Fields に出てはいけない値（E-G2・N-L5）。
 	Secrets []string
-	// WriteCredentialReads は書き込み用の資格を読んだ回数（E-G5）。
+	// WriteCredentialReads は書き込み用の credential を読んだ回数（E-G5）。
 	WriteCredentialReads func() int
 	// Invokes は一回きりの操作（E-A2）。
 	Invokes []Invoke
-	// Refuses は断るべき削除（E-F1・E-C2）。
+	// Refuses は拒否すべき削除（E-F1・E-C2）。
 	Refuses []Refuse
-	// Settle は Apply のあと Converging のあいだ読み直す上限（既定 2 秒）。
+	// Settle は Apply のあと Converging のあいだ再観測する上限（既定 2 秒）。
 	Settle time.Duration
-	// Secret は WriteContext が秘密の参照から値を取り出す先（無ければ空）。
+	// Secret は WriteContext が secret の参照から値を取り出す先（無ければ空）。
 	Secret core.SecretResolver
 }
 
@@ -86,23 +86,23 @@ type Invoke struct {
 	Op   string
 	Args core.Fields
 	// NotSent は送れない状況にする（電源の切り替え中・相手に届かない）。nil なら
-	// 送れる場合だけ確かめる。
+	// 送れる場合だけ確認する。
 	NotSent func()
-	// Failed は送ったが相手が断る状況にする。そのとき ErrNotSent を返さない
-	// （送れたか分からない誤りは二度送らない、不変条件 16）。
+	// Failed は送ったが相手が拒否する状況にする。そのとき ErrNotSent を返さない
+	// （送れたか分からないエラーは二度送らない、不変条件 16）。
 	Failed func()
 }
 
-// Refuse は断るべき削除 1 つ。Prepare（無くてもよい）が断る条件を作る。
+// Refuse は拒否すべき削除 1 つ。Prepare（無くてもよい）が拒否の条件を作る。
 type Refuse struct {
 	ID      core.ID
 	Prepare func()
 }
 
-// Run は契約テストを回す。newTarget は確かめごとに呼ぶ。
+// Run は契約テストを実行する。newTarget はテストケースごとに呼ぶ。
 func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 	t.Helper()
-	// base は確かめの一覧（Faults の名前・Invokes）を作るためだけに使う。
+	// base はテストケースの一覧（Faults の名前・Invokes）を作るためだけに使う。
 	base := newTarget(t)
 	sub := func(name string, f func(t *testing.T, tg Target, w *watch)) {
 		t.Run(name, func(t *testing.T) {
@@ -123,7 +123,7 @@ func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 		res := append(append(append([]core.Resource(nil), tg.Resources...), tg.Create...), tg.Converge...)
 		for _, d := range v.Validate(res, tg.Ranges) {
 			if d.Severity == core.Reject {
-				t.Errorf("書いた宣言を断った: %s", d)
+				t.Errorf("書いた宣言を reject した: %s", d)
 			}
 		}
 	})
@@ -155,12 +155,12 @@ func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 			obs := w.observe(t, ids)
 			for _, id := range ids {
 				if o, ok := obs[id]; ok && o.Availability != core.Unknown {
-					t.Errorf("%s: %s（want unknown。届かないのに無い・在ると答えた）", id, o.Availability)
+					t.Errorf("%s: %s（want unknown。届かないのに Absent・Present と答えた）", id, o.Availability)
 				}
 			}
 			for _, rg := range tg.Ranges {
 				if l, err := w.list(rg); err == nil && l.Complete {
-					t.Errorf("範囲 %s: 届かないのに List が完全（%d 件）", rg.Key(), len(l.IDs))
+					t.Errorf("Range %s: 届かないのに List が完全（%d 件）", rg.Key(), len(l.IDs))
 				}
 			}
 		})
@@ -224,16 +224,16 @@ func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 			for k, v := range o.Fields {
 				spec, ok := ks.Fields[k]
 				if !ok {
-					t.Errorf("%s: 観測の項目 %q が Schema に無い（Condition が読めない）", id, k)
+					t.Errorf("%s: 観測の field %q が Schema に無い（Condition から参照できない）", id, k)
 					continue
 				}
 				n, err := core.Normalize(spec.Type, v)
 				if err != nil {
-					t.Errorf("%s: 観測の項目 %q が型 %s に合わない: %v", id, k, spec.Type, err)
+					t.Errorf("%s: 観測の field %q が型 %s に合わない: %v", id, k, spec.Type, err)
 					continue
 				}
 				if !reflect.DeepEqual(n, v) {
-					t.Errorf("%s: 観測の項目 %q が正規形でない（%#v → %#v）", id, k, v, n)
+					t.Errorf("%s: 観測の field %q が正規形でない（%#v → %#v）", id, k, v, n)
 				}
 			}
 		}
@@ -241,22 +241,22 @@ func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 
 	sub("List の完全さ", func(t *testing.T, tg Target, w *watch) {
 		if len(tg.Ranges) == 0 {
-			t.Skip("範囲が無い（List を持たない）")
+			t.Skip("Range が無い（List を持たない）")
 		}
 		validate(t, tg)
 		for _, rg := range tg.Ranges {
 			l, err := w.list(rg)
 			if err != nil {
-				t.Fatalf("範囲 %s: %v", rg.Key(), err)
+				t.Fatalf("Range %s: %v", rg.Key(), err)
 			}
 			if !l.Complete {
-				t.Errorf("範囲 %s: 届くのに List が不完全", rg.Key())
+				t.Errorf("Range %s: 届くのに List が不完全", rg.Key())
 			}
 			// Observe と List の一致（E-D8）。
 			obs := w.observe(t, l.IDs)
 			for _, id := range l.IDs {
 				if obs[id].Availability != core.Present {
-					t.Errorf("範囲 %s: List に出た %s が Observe で %s", rg.Key(), id, obs[id].Availability)
+					t.Errorf("Range %s: List に出た %s が Observe で %s", rg.Key(), id, obs[id].Availability)
 				}
 			}
 		}
@@ -264,13 +264,13 @@ func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 			tg.Truncate()
 			for _, rg := range tg.Ranges {
 				if l, err := w.list(rg); err == nil && l.Complete {
-					t.Errorf("範囲 %s: ページを途中で切ったのに List が完全", rg.Key())
+					t.Errorf("Range %s: ページを途中で切ったのに List が完全", rg.Key())
 				}
 			}
 		}
 	})
 
-	sub("書き込みの資格", func(t *testing.T, tg Target, w *watch) {
+	sub("書き込みの credential", func(t *testing.T, tg Target, w *watch) {
 		if tg.WriteCredentialReads == nil {
 			t.Skip("WriteCredentialReads が無い")
 		}
@@ -280,13 +280,13 @@ func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 			_, _ = w.list(rg)
 		}
 		if n := tg.WriteCredentialReads(); n != 0 {
-			t.Errorf("観測と List で書き込み用の資格を %d 回読んだ（WriteContext の外）", n)
+			t.Errorf("観測と List で書き込み用の credential を %d 回読んだ（WriteContext の外）", n)
 		}
 		if len(tg.Create)+len(tg.Converge) > 0 {
 			r := append(append([]core.Resource(nil), tg.Create...), tg.Converge...)[0]
 			_ = w.apply(r, w.observe(t, []core.ID{r.ID})[r.ID], tg.Secret)
 			if tg.WriteCredentialReads() == 0 {
-				t.Errorf("Apply で書き込み用の資格を読まなかった（数え方が誤っている）")
+				t.Errorf("Apply で書き込み用の credential を読まなかった（数え方が間違っている）")
 			}
 		}
 	})
@@ -301,7 +301,7 @@ func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 		}
 		for _, c := range tg.Invokes {
 			if _, ok := inv.Ops(c.ID.Kind())[c.Op]; !ok {
-				t.Errorf("種類 %s の Ops に %s が無い", c.ID.Kind(), c.Op)
+				t.Errorf("type %s の Ops に %s が無い", c.ID.Kind(), c.Op)
 			}
 		}
 	})
@@ -325,19 +325,19 @@ func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 			})
 		}
 		if c0.Failed != nil {
-			sub(fmt.Sprintf("Invoke の送信/%s %s/断られた", c0.Op, c0.ID), func(t *testing.T, tg Target, w *watch) {
+			sub(fmt.Sprintf("Invoke の送信/%s %s/拒否された", c0.Op, c0.ID), func(t *testing.T, tg Target, w *watch) {
 				validate(t, tg)
 				c := tg.Invokes[i]
 				c.Failed()
 				err := w.invoke(c, tg.Secret)
 				if err == nil || errors.Is(err, core.ErrNotSent) {
-					t.Errorf("送って断られたのに %v（want ErrNotSent でない誤り）", err)
+					t.Errorf("送って拒否されたのに %v（want ErrNotSent 以外のエラー）", err)
 				}
 			})
 		}
 	}
 
-	sub("Delete の断り", func(t *testing.T, tg Target, w *watch) {
+	sub("Delete の拒否", func(t *testing.T, tg Target, w *watch) {
 		if len(tg.Refuses) == 0 {
 			t.Skip("Refuses が無い")
 		}
@@ -354,52 +354,52 @@ func Run(t *testing.T, newTarget func(t *testing.T) Target) {
 			err := w.delete(c.ID, before)
 			var re *core.RefuseError
 			if !errors.As(err, &re) {
-				t.Errorf("%s: 断るべき削除が %v（want *core.RefuseError）", c.ID, err)
+				t.Errorf("%s: 拒否すべき削除が %v（want *core.RefuseError）", c.ID, err)
 			}
 			if tg.Writes != nil && tg.Writes() != n {
-				t.Errorf("%s: 断った削除が相手に書いた", c.ID)
+				t.Errorf("%s: 拒否した削除が相手に書き込んだ", c.ID)
 			}
 			after := w.observe(t, []core.ID{c.ID})[c.ID]
 			if before.Availability != after.Availability || !reflect.DeepEqual(before.Fields, after.Fields) {
-				t.Errorf("%s: 断った削除で現実が変わった", c.ID)
+				t.Errorf("%s: 拒否した削除で現実が変わった", c.ID)
 			}
 		}
 	})
 }
 
-// lintSchema は Schema の矛盾を断る（E-P2）。
+// lintSchema は Schema の矛盾を検出する（E-P2）。
 func lintSchema(t *testing.T, s core.Schema) {
 	if s.Version == "" {
-		t.Error("Schema.Version が空（比べ方が変わった周を見分けられない、E-J12）")
+		t.Error("Schema.Version が空（比べ方が変わった cycle を見分けられない、E-J12）")
 	}
 	if len(s.Kinds) == 0 {
-		t.Error("種類が無い")
+		t.Error("type が無い")
 	}
 	for kind, ks := range s.Kinds {
 		if strings.Contains(kind, "/") || kind == "" {
-			t.Errorf("種類 %q の名前に / を含めない", kind)
+			t.Errorf("type 名 %q に / を含めない", kind)
 		}
 		if ks.ObserveOnly && ks.DestructiveDelete {
-			t.Errorf("種類 %s: 観測だけで中身を失う削除は矛盾", kind)
+			t.Errorf("type %s: 観測だけの type で中身を失う削除は矛盾", kind)
 		}
 		if ks.Settle < 0 {
-			t.Errorf("種類 %s: Settle が負", kind)
+			t.Errorf("type %s: Settle が負", kind)
 		}
 		for name, f := range ks.Fields {
 			if f.Digest && f.Type != core.String {
-				t.Errorf("種類 %s の項目 %s: Digest は String だけ", kind, name)
+				t.Errorf("type %s の field %s: Digest は String だけ", kind, name)
 			}
 			if f.Identity && f.Type == core.Secret {
-				t.Errorf("種類 %s の項目 %s: 秘密は identity にできない", kind, name)
+				t.Errorf("type %s の field %s: Secret は identity にできない", kind, name)
 			}
 			if f.Identity && ks.ObserveOnly {
-				t.Errorf("種類 %s の項目 %s: 観測だけの種類に identity は要らない（作り直さない）", kind, name)
+				t.Errorf("type %s の field %s: 観測だけの type に identity は要らない（作り直さない）", kind, name)
 			}
 		}
 	}
 }
 
-// validate は宣言と範囲を Validate に渡す（範囲を覚える provider がある）。
+// validate は宣言と Range を Validate に渡す（Range を覚える provider がある）。
 func validate(t *testing.T, tg Target) {
 	t.Helper()
 	v, ok := tg.Provider.(core.Validator)
@@ -409,7 +409,7 @@ func validate(t *testing.T, tg Target) {
 	res := append(append(append([]core.Resource(nil), tg.Resources...), tg.Create...), tg.Converge...)
 	for _, d := range v.Validate(res, tg.Ranges) {
 		if d.Severity == core.Reject {
-			t.Fatalf("書いた宣言を断った: %s", d)
+			t.Fatalf("書いた宣言を reject した: %s", d)
 		}
 	}
 }
@@ -435,7 +435,7 @@ func allIDs(tg Target) []core.ID {
 	return ids
 }
 
-// applyAndCheck は宣言を当てて読み直し、宣言どおりかを確かめる（E-P2・E-I7）。
+// applyAndCheck は宣言を Apply して再観測し、宣言どおりかを確認する（E-P2・E-I7）。
 func applyAndCheck(t *testing.T, tg Target, w *watch, r core.Resource) {
 	t.Helper()
 	cur := w.observe(t, []core.ID{r.ID})[r.ID]
@@ -452,7 +452,7 @@ func applyAndCheck(t *testing.T, tg Target, w *watch, r core.Resource) {
 	}
 }
 
-// settle は Converging のあいだ読み直す（Settle まで）。
+// settle は Converging のあいだ再観測する（Settle まで）。
 func settle(t *testing.T, tg Target, w *watch, id core.ID) core.Observation {
 	t.Helper()
 	limit := tg.Settle
@@ -469,7 +469,7 @@ func settle(t *testing.T, tg Target, w *watch, id core.ID) core.Observation {
 	}
 }
 
-// watch は provider の呼び出しを通し、外に出た文（誤り・Note・Fields）を集める。
+// watch は provider の呼び出しを中継し、外に出た文（エラー・Note・Fields）を集める。
 type watch struct {
 	p   core.Provider
 	out []string
@@ -486,7 +486,7 @@ func (w *watch) observe(t *testing.T, ids []core.ID) map[core.ID]core.Observatio
 	obs, err := w.p.Observe(context.Background(), ids)
 	w.seen(err)
 	if err != nil {
-		t.Fatalf("Observe が誤りを返した（届かないなら Unknown で返す）: %v", err)
+		t.Fatalf("Observe がエラーを返した（届かないなら Unknown を返す）: %v", err)
 	}
 	for _, o := range obs {
 		w.out = append(w.out, o.Note)
@@ -521,7 +521,7 @@ func (w *watch) invoke(c Invoke, s core.SecretResolver) error {
 	return err
 }
 
-// checkSecrets は集めた文に秘密の値が無いかを確かめる（不変条件 27、E-G2・N-L5）。
+// checkSecrets は集めた文に secret の値が無いかを確認する（不変条件 27、E-G2・N-L5）。
 func (w *watch) checkSecrets(t *testing.T, secrets []string) {
 	t.Helper()
 	for _, s := range secrets {
@@ -530,7 +530,7 @@ func (w *watch) checkSecrets(t *testing.T, secrets []string) {
 		}
 		for _, o := range w.out {
 			if strings.Contains(o, s) {
-				t.Errorf("秘密の値が外に出た: %q", o)
+				t.Errorf("secret の値が外に出た: %q", o)
 			}
 		}
 	}

@@ -14,25 +14,25 @@
 
 // Package condition は観測についての三値の式（設計 §3.4）を読み、評価する。
 //
-//	式      := 論理和
-//	論理和  := 論理積 ("or" 論理積)*
-//	論理積  := 否定 ("and" 否定)*
-//	否定    := "not" 否定 | 比較
-//	比較    := 項 (演算子 項)?            演算子: == != < <= > >= in contains
-//	項      := 定数 | 参照 | 量化 | "(" 式 ")"
-//	参照    := observe(<type>/<id>).<項目>(.<項目>)*
-//	         | present(<type>/<id>) | absent(<type>/<id>)
-//	         | desired.<項目> | it.<項目> | check(<名前>)
-//	量化    := all(<選び方>, 式) | any(<選び方>, 式) | count(<選び方>, 式)
-//	選び方  := <type>[<ラベル>=<値>, ...]
-//	定数    := "文字列" | '文字列' | 数 | true | false | [定数, ...]
+//	式         := 論理和
+//	論理和     := 論理積 ("or" 論理積)*
+//	論理積     := 否定 ("and" 否定)*
+//	否定       := "not" 否定 | 比較
+//	比較       := 項 (演算子 項)?            演算子: == != < <= > >= in contains
+//	項         := 定数 | 参照 | quantifier | "(" 式 ")"
+//	参照       := observe(<type>/<id>).<field>(.<field>)*
+//	           | present(<type>/<id>) | absent(<type>/<id>)
+//	           | desired.<field> | it.<field> | check(<名前>)
+//	quantifier := all(<選び方>, 式) | any(<選び方>, 式) | count(<選び方>, 式)
+//	選び方     := <type>[<ラベル>=<値>, ...]
+//	定数       := "文字列" | '文字列' | 数 | true | false | [定数, ...]
 //
-// 算術・文字列の加工・現在時刻は持たない（N-G4・N-R2・E-I4：期限は provider が
-// 残り時間を観測の値として返す）。
+// 算術・文字列の加工・現在時刻は持たない（N-G4・N-R2・E-I4）。期限は provider が
+// 残り時間を観測の値として返す。
 //
 // 三値の決まり：
 //   - 参照が Unknown・Converging・観測していない対象を指すと不明。Absent の対象と
-//     観測に無い項目は「無い」（null）で、不明ではない。
+//     観測に無い field は「無い」（null）で、不明ではない。
 //   - 不明を含む比較は不明。null との == は偽、!= は真、大小・in・contains は偽。
 //   - and・or・not は三値の論理（偽 and 不明 = 偽、真 or 不明 = 真）。
 //   - all は 1 件でも偽なら偽、偽が無く不明があれば不明。any は 1 件でも真なら真。
@@ -61,7 +61,7 @@ type Expr struct {
 
 var _ core.Condition = (*Expr)(nil)
 
-// Parse は式を読む。形の誤りは読み込みで断る（不変条件 25、E-M3）。
+// Parse は式を読む。形の誤りは読み込み時にエラーにする（reject、不変条件 25、E-M3）。
 func Parse(src string) (*Expr, error) {
 	p := &parser{src: src}
 	p.skip()
@@ -135,7 +135,7 @@ func (e *Expr) Direct() []core.ID {
 	return dedup(out)
 }
 
-// Checks は使う確かめの名前。
+// Checks は式が使う check の名前。
 func (e *Expr) Checks() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -149,12 +149,12 @@ func (e *Expr) Checks() []string {
 	return out
 }
 
-// KindLookup は "<provider>/<種類>" の Schema を引く。無ければ理由を返す。
+// KindLookup は "<provider>/<type>" の Schema を引く。無ければ理由を返す。
 type KindLookup func(typ string) (core.KindSchema, string)
 
-// Lint は式の参照を Schema と突き合わせる（E-M3：知らない provider・種類・項目・
-// 確かめは読み込みで断る）。desired は desired.項目 を引く宣言の種類（無ければ nil
-// で、desired を書けない）。
+// Lint は式の参照を Schema と突き合わせる（E-M3）。知らない provider・type・field・
+// check は読み込み時にエラーにする（reject）。desired は desired.<field> を引く宣言の
+// type。nil なら desired は書けない。
 func Lint(c core.Condition, kinds KindLookup, desired *core.KindSchema, hasCheck func(string) bool) []string {
 	e, ok := c.(*Expr)
 	if !ok {
@@ -163,7 +163,7 @@ func Lint(c core.Condition, kinds KindLookup, desired *core.KindSchema, hasCheck
 	var out []string
 	field := func(what string, ks core.KindSchema, path []string) {
 		if _, ok := ks.Fields[path[0]]; !ok {
-			out = append(out, fmt.Sprintf("%s に項目 %q が無い（ある項目: %s）", what, path[0], strings.Join(fieldNames(ks), ", ")))
+			out = append(out, fmt.Sprintf("%s に field %q が無い（ある field: %s）", what, path[0], strings.Join(fieldNames(ks), ", ")))
 		}
 	}
 	var visit func(n node, it *core.Selection)
@@ -181,7 +181,7 @@ func Lint(c core.Condition, kinds KindLookup, desired *core.KindSchema, hasCheck
 			}
 		case desN:
 			if desired == nil {
-				out = append(out, "desired は手順の対象か宣言の中でだけ書ける")
+				out = append(out, "desired は Procedure の対象か宣言の中でだけ書ける")
 			} else {
 				field("desired", *desired, x.path)
 			}
@@ -243,7 +243,7 @@ type vkind int
 
 const (
 	vUnknown vkind = iota // 不明
-	vNull                 // 無い（Absent の対象・観測に無い項目）
+	vNull                 // 無い（Absent の対象・観測に無い field）
 	vVal                  // 値
 	vCount                // count の結果（真の件数 lo、不明を全部真とみた件数 hi）
 )

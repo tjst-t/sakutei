@@ -14,9 +14,9 @@
 
 package postgresql
 
-// apply.go — Apply と Delete。どちらも書き込み用の資格でつなぎ（中の読み直しも、
-// E-G5）、その場で読み直した現実と宣言から文を組み立てる。宣言どおりの項目には
-// 何も流さない（冪等、E-P2）。Apply のあとの読み直しはコアがする（E-J6）。
+// apply.go — Apply と Delete。どちらも書き込み用の credential で接続し（中での再観測も、
+// E-G5）、その場で読み直した現実と宣言から SQL 文を組み立てる。宣言どおりの field には
+// 何も流さない（冪等、E-P2）。Apply のあとの再観測はコアがする（E-J6）。
 
 import (
 	"context"
@@ -28,12 +28,12 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// writer は書き込み用の資格のつなぎ方（WriteContext の中でだけ作る、E-G5）。
+// writer は書き込み用の credential の接続を返す（WriteContext の中でだけ作る、E-G5）。
 func (p *Provider) writer(_ core.WriteContext, srv *Server) conn {
 	return conn{c: p.client, srv: srv, cred: srv.Write}
 }
 
-// execSQL は文を流す（BEGIN / COMMIT で囲むかは呼ぶ側）。
+// execSQL は SQL 文を流す（BEGIN / COMMIT で囲むかは呼ぶ側が決める）。
 func execSQL(ctx context.Context, c conn, database string, b *sqlBuilder) error {
 	if b.err != nil {
 		return b.err
@@ -42,7 +42,7 @@ func execSQL(ctx context.Context, c conn, database string, b *sqlBuilder) error 
 	return err
 }
 
-// Apply は宣言の項目を当てる（E-F1・E-F3・N-F1・N-F7）。
+// Apply は宣言の field を Apply する（E-F1・E-F3・N-F1・N-F7）。
 func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, desired core.Fields, _ core.Observation) error {
 	t, err := p.parse(id)
 	if err != nil {
@@ -59,7 +59,7 @@ func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, d
 	case KindExtension:
 		return applyExtension(ctx, c, t, desired)
 	}
-	return fmt.Errorf("種類 %q を知らない", t.kind)
+	return fmt.Errorf("未知の type %q", t.kind)
 }
 
 // ---- ロール ----
@@ -114,7 +114,7 @@ func (p *Provider) applyRole(ctx context.Context, w core.WriteContext, c conn, t
 				return fmt.Errorf("password: %w", err)
 			}
 			if v == "" {
-				return errors.New("password: 秘密の値が空")
+				return errors.New("password: secret の値が空")
 			}
 			verifier, err := ScramVerifier(v)
 			if err != nil {
@@ -174,7 +174,7 @@ func (p *Provider) applyRole(ctx context.Context, w core.WriteContext, c conn, t
 
 // ---- データベース ----
 
-// createOnly は作るときだけ使う項目（作った後は変えられない、E-F1）。
+// createOnly は作るときだけ使う field（作った後は変えられない、E-F1）。
 var createOnly = []struct {
 	field string
 	canon func(string) string
@@ -221,7 +221,7 @@ func applyDatabase(ctx context.Context, c conn, t target, want core.Fields) erro
 			return err
 		}
 		// 境界の外のロールの CONNECT は同じ Apply の中で与える（PUBLIC の CONNECT を
-		// 外すのは DB が在ってからなので、それより前になる、E-F3・N-F7）。
+		// 外すのは DB ができてからなので、それより前になる、E-F3・N-F7）。
 		roles := strs(want[FieldConnectRoles])
 		if len(roles) == 0 {
 			return nil
@@ -365,7 +365,7 @@ func applyExtension(ctx context.Context, c conn, t target, want core.Fields) err
 
 // ---- 削除 ----
 
-// Delete は消す。中身（利用者の表）を失う・PostgreSQL が頼りを理由に断るものは
+// Delete は消す。中身（利用者の表）を失うもの・PostgreSQL が依存を理由に拒否するものは
 // *core.RefuseError（CASCADE・DROP OWNED は使わない、E-F1・E-C3）。
 func (p *Provider) Delete(ctx context.Context, w core.WriteContext, id core.ID, _ core.Observation) error {
 	t, err := p.parse(id)
@@ -440,14 +440,14 @@ func (p *Provider) Delete(ctx context.Context, w core.WriteContext, id core.ID, 
 		b.raw("DROP EXTENSION IF EXISTS ").ident(t.extension).end()
 		err := execSQL(ctx, c, t.database, &b)
 		if SQLStateOf(err) == "2BP01" {
-			return &core.RefuseError{Reason: fmt.Sprintf("拡張 %q にほかのオブジェクトが頼っている（Sakutei は CASCADE を使わない）: %v", t.extension, err)}
+			return &core.RefuseError{Reason: fmt.Sprintf("拡張 %q にほかのオブジェクトが依存している（Sakutei は CASCADE を使わない）: %v", t.extension, err)}
 		}
 		return err
 	}
-	return fmt.Errorf("種類 %q を知らない", t.kind)
+	return fmt.Errorf("未知の type %q", t.kind)
 }
 
-// sortedSet は重なりを除いて名前の順に並べる。
+// sortedSet は重複を除いて名前の順に並べる。
 func sortedSet(xs []string) []string {
 	seen := map[string]bool{}
 	for _, x := range xs {

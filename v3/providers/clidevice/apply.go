@@ -14,7 +14,7 @@
 
 package clidevice
 
-// apply.go — 変え方：Apply・Delete（コマンド列）、2 段の Apply（core.Transactor）、
+// apply.go — 変更の処理。Apply・Delete（コマンド列）、two-phase Apply（core.Transactor）、
 // 一度きりの操作（core.Invoker）。
 
 import (
@@ -29,10 +29,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/hostexec"
 )
 
-// resolved は雛形に入れる値と、伏せる値。
+// resolved はテンプレートに入れる値と、伏せる値。
 type resolved struct {
 	values map[string]string
-	refs   map[string]string // 秘密のフィールド → 参照（世代つき）
+	refs   map[string]string // secret の field → 参照（世代つき）
 	hide   []string          // 伏せる値
 	mask   map[string]bool
 }
@@ -41,27 +41,27 @@ func newResolved() resolved {
 	return resolved{values: map[string]string{}, refs: map[string]string{}, mask: map[string]bool{}}
 }
 
-// resolve は宣言の値を確かめ、秘密は書き込みの文脈で取り出す（E-G2・E-G5）。値は
-// 文言に出さない。
+// resolve は宣言の値を確かめ、secret は WriteContext で取り出す（E-G2・E-G5）。値は
+// メッセージに出さない。
 func resolve(ctx context.Context, w core.WriteContext, want core.Fields, fields map[string]*Field) (resolved, error) {
 	r := newResolved()
 	for _, fn := range sortedKeys(fields) {
 		f := fields[fn]
 		v, ok := want[fn]
 		if !ok {
-			return r, fmt.Errorf("フィールド %q に値が無い", fn)
+			return r, fmt.Errorf("field %q に値が無い", fn)
 		}
 		if f.Secret {
 			ref, err := core.Normalize(core.Secret, v)
 			if err != nil {
-				return r, fmt.Errorf("%s は秘密の参照でない", fn)
+				return r, fmt.Errorf("%s は secret の参照でない", fn)
 			}
 			sv, err := w.Secret(ctx, ref)
 			if err != nil {
-				return r, fmt.Errorf("%s: 秘密を取り出せない: %v", fn, err)
+				return r, fmt.Errorf("%s: secret を取り出せない: %v", fn, err)
 			}
 			if err := f.check(sv); err != nil {
-				return r, fmt.Errorf("%s: 秘密の値が機種の定義の形に合わない", fn)
+				return r, fmt.Errorf("%s: secret の値が機種の定義の形式に合わない", fn)
 			}
 			r.values[fn], r.refs[fn], r.mask[fn] = sv, ref.(string), true
 			if sv != "" {
@@ -81,7 +81,7 @@ func resolve(ctx context.Context, w core.WriteContext, want core.Fields, fields 
 	return r, nil
 }
 
-// redact は s の中の秘密の値を伏せる。
+// redact は s の中の secret の値を伏せる。
 func (r resolved) redact(s string) string {
 	for _, v := range r.hide {
 		s = strings.ReplaceAll(s, v, "***")
@@ -89,7 +89,7 @@ func (r resolved) redact(s string) string {
 	return s
 }
 
-// differs は観測が宣言（取り出した値）と違うフィールドの名前。
+// differs は観測が宣言（取り出した値）と違う field の名前を返す。
 func (r resolved) differs(o observed) []string {
 	var out []string
 	for _, fn := range sortedKeys(r.values) {
@@ -100,7 +100,7 @@ func (r resolved) differs(o observed) []string {
 	return out
 }
 
-// runner は開いたやりとりでコマンドを順に流す。
+// runner は開いた session でコマンドを順に流す。
 type runner struct {
 	d   *Definition
 	s   session
@@ -108,8 +108,8 @@ type runner struct {
 	ctx context.Context
 }
 
-// run は cmd を打ち、失敗（エラーの印・0 以外の終了・やりとりの失敗）を返す。
-// shown は文言に載せる形（秘密は伏せる）。
+// run は cmd を打ち、失敗（エラー行・0 以外の終了・session の失敗）を返す。
+// shown はメッセージに載せる形（secret は伏せる）。
 func (x runner) run(cmd, shown string) error {
 	out, err := x.s.do(x.ctx, cmd)
 	if err != nil {
@@ -132,18 +132,18 @@ func (x runner) run(cmd, shown string) error {
 	return nil
 }
 
-// unreachable は装置に届かず、コマンドを打てていない。
+// unreachable は装置に到達できず、コマンドを打てていないことを表す。
 type unreachable struct{ msg string }
 
 func (e *unreachable) Error() string { return e.msg }
 
-// first は最初のコマンドが届かずに落ちたか（何も送れていない）。
+// first は最初のコマンドが到達できずに失敗したか（何も送れていない）を返す。
 func first(i int, err error) bool {
 	var u *unreachable
 	return i == 0 && errors.As(err, &u)
 }
 
-// lines は流すコマンド（そのままと、文言に載せる形）。
+// lines は流すコマンド（そのままの形と、メッセージに載せる形）。
 type lines struct{ raw, shown []string }
 
 func (l *lines) add(t Template, r resolved) {
@@ -151,8 +151,8 @@ func (l *lines) add(t Template, r resolved) {
 	l.shown = append(l.shown, t.render(r.values, r.mask))
 }
 
-// sequence はコマンドの列を流す（config なら設定の入り方・確定・出方で囲む。
-// commitWith があれば確定の代わりにそれを流す）。失敗したら取り消し（あれば）を流し、
+// sequence はコマンドの列を流す（config なら設定モードの enter・commit・leave で囲む。
+// commitWith があれば commit の代わりにそれを流す）。失敗したら取り消し（あれば）を流し、
 // どこまで流れたかを書いた error を返す。sentAny は装置に何か 1 つでも打ったか。
 func (x runner) sequence(l lines, config bool, commitWith []string) (sentAny bool, err error) {
 	cfg := x.d.Config
@@ -163,7 +163,7 @@ func (x runner) sequence(l lines, config bool, commitWith []string) (sentAny boo
 			sentAny = sentAny || !first(n, err)
 			n++
 			if err != nil {
-				return sentAny, fmt.Errorf("設定に入れない: %w; %d 個のコマンドはどれも流していない", err, len(l.raw))
+				return sentAny, fmt.Errorf("設定モードに入れない: %w; %d 個のコマンドはどれも流していない", err, len(l.raw))
 			}
 		}
 	}
@@ -183,22 +183,22 @@ func (x runner) sequence(l lines, config bool, commitWith []string) (sentAny boo
 		}
 		for _, c := range commit {
 			if err := x.run(c, c); err != nil {
-				return sentAny, fmt.Errorf("%d 個のコマンドは流れたが確定に落ちた: %v%s", len(l.raw), err, x.undo(config))
+				return sentAny, fmt.Errorf("%d 個のコマンドは流れたが commit に失敗した: %v%s", len(l.raw), err, x.undo(config))
 			}
 		}
 		for _, c := range cfg.Leave {
 			if err := x.run(c, c); err != nil {
-				return sentAny, fmt.Errorf("設定を出られない: %w", err)
+				return sentAny, fmt.Errorf("設定モードを出られない: %w", err)
 			}
 		}
 	}
 	return sentAny, nil
 }
 
-// undo は失敗の後始末：取り消しがあれば取り消して（確定せずに）設定を出る。無ければ
-// 設定を出るだけ（流れたところまでは装置に残る。次の周が観測し直す）。
+// undo は失敗の後始末をする。取り消しがあれば取り消して（commit せずに）設定モードを
+// 出る。無ければ出るだけ（流れたところまでは装置に残る。次の cycle が再観測する）。
 func (x runner) undo(config bool) string {
-	none := "; 機種の定義に取り消しが無い：流れたところは装置に残り、次の周が観測し直す"
+	none := "; 機種の定義に取り消し（rollback）が無い。流れたところは装置に残り、次の cycle が再観測する"
 	if !config {
 		return none
 	}
@@ -208,7 +208,7 @@ func (x runner) undo(config bool) string {
 		note = "; 取り消した（" + strings.Join(cfg.Rollback, ", ") + "）。確定していない"
 		for _, c := range cfg.Rollback {
 			if err := x.run(c, c); err != nil {
-				note = fmt.Sprintf("; 取り消しに落ちた: %v", err)
+				note = fmt.Sprintf("; 取り消しに失敗した: %v", err)
 				break
 			}
 		}
@@ -230,8 +230,8 @@ func ranNote(done []string) string {
 	return fmt.Sprintf("その前に %d 個流した: %s", len(done), strings.Join(q, ", "))
 }
 
-// matches は観測が宣言どおりか。秘密の値が同じなら、その参照を覚える（観測で
-// 返すため）。
+// matches は観測が宣言どおりかを返す。secret の値が同じなら、その参照を覚える
+// （観測で返すため）。
 func (p *Provider) matches(r resolved, o observed, del bool) bool {
 	if del {
 		return o.absent
@@ -247,7 +247,7 @@ func (p *Provider) matches(r resolved, o observed, del bool) bool {
 	return true
 }
 
-// change は 1 つの項目の変更（Apply・Delete・Prepare）。
+// change は 1 つの item の変更（Apply・Delete・Prepare）。
 type change struct {
 	id  core.ID
 	it  *Item
@@ -263,12 +263,12 @@ func (p *Provider) changeOf(ctx context.Context, w core.WriteContext, id core.ID
 	c := change{id: id, it: it, del: del, r: newResolved()}
 	if del {
 		if len(it.Unset) == 0 {
-			return nil, change{}, &core.RefuseError{Reason: fmt.Sprintf("機種の定義 %s の項目 %s に unset が無い", h.def.Name, it.Name)}
+			return nil, change{}, &core.RefuseError{Reason: fmt.Sprintf("機種の定義 %s の item %s に unset が無い", h.def.Name, it.Name)}
 		}
 		return h, c, nil
 	}
 	if len(it.Set) == 0 {
-		return nil, change{}, fmt.Errorf("%s: 項目 %s は機種の定義 %s で観測だけ（set が無い）。手順の invoke か人の手で変える", id, it.Name, h.def.Name)
+		return nil, change{}, fmt.Errorf("%s: item %s は機種の定義 %s で観測だけ（set が無い）。Procedure の invoke か人の手で変える", id, it.Name, h.def.Name)
 	}
 	if c.r, err = resolve(ctx, w, desired, it.Fields); err != nil {
 		return nil, change{}, fmt.Errorf("%s: %w", id, err)
@@ -284,7 +284,7 @@ func (c change) commands() []Template {
 	return c.it.Set
 }
 
-// Apply は 1 つの項目を宣言どおりにする。
+// Apply は 1 つの item を宣言どおりにする。
 func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, desired core.Fields, _ core.Observation) error {
 	h, c, err := p.changeOf(ctx, w, id, desired, false)
 	if err != nil {
@@ -293,7 +293,7 @@ func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, d
 	return p.write(ctx, h, c)
 }
 
-// Delete は項目を unset で消す。unset の無い項目は断る（E-F1）。
+// Delete は item を unset で消す。unset の無い item は reject する（E-F1）。
 func (p *Provider) Delete(ctx context.Context, w core.WriteContext, id core.ID, _ core.Observation) error {
 	h, c, err := p.changeOf(ctx, w, id, nil, true)
 	if err != nil {
@@ -316,10 +316,10 @@ func (p *Provider) write(ctx context.Context, h *hostState, c change) error {
 	defer s.close()
 	rd := &reader{d: h.def, s: s}
 
-	// 流す前に観測する：定義に合わなければ何もしない。宣言どおりなら流さない。
+	// 流す前に観測する。定義に合わなければ何もしない。宣言どおりなら流さない。
 	before, err := rd.observe(ctx, c.it)
 	if err != nil {
-		return fmt.Errorf("%s: 何も流していない：変える前の観測に落ちた: %v", prefix, err)
+		return fmt.Errorf("%s: 何も流していない。変える前の観測に失敗した: %v", prefix, err)
 	}
 	if p.matches(c.r, before, c.del) {
 		return nil
@@ -333,10 +333,10 @@ func (p *Provider) write(ctx context.Context, h *hostState, c change) error {
 	if _, err := x.sequence(l, config, nil); err != nil {
 		return fmt.Errorf("%s: %s", prefix, c.r.redact(err.Error()))
 	}
-	// 流した後は必ず観測し直す。
+	// 流した後は必ず再観測する。
 	after, err := rd.observe(ctx, c.it)
 	if err != nil {
-		return fmt.Errorf("%s: %d 個のコマンドは流れたが、あとの観測に落ちた: %s", prefix, len(l.raw), c.r.redact(err.Error()))
+		return fmt.Errorf("%s: %d 個のコマンドは流れたが、その後の観測に失敗した: %s", prefix, len(l.raw), c.r.redact(err.Error()))
 	}
 	if !p.matches(c.r, after, c.del) {
 		return fmt.Errorf("%s: %d 個のコマンドは流れたが、装置が宣言どおりでない: %s", prefix, len(l.raw), c.r.explain(c.it, after, c.del))
@@ -347,14 +347,14 @@ func (p *Provider) write(ctx context.Context, h *hostState, c change) error {
 func (r resolved) explain(it *Item, o observed, del bool) string {
 	switch {
 	case del:
-		return "項目がまだ在る"
+		return "item がまだ Present"
 	case o.absent:
-		return "項目が無いと観測した"
+		return "item を Absent と観測した"
 	}
 	var notes []string
 	for _, fn := range r.differs(o) {
 		if it.Fields[fn].Secret {
-			notes = append(notes, fn+"（秘密）が違う")
+			notes = append(notes, fn+"（secret）が違う")
 		} else {
 			notes = append(notes, fmt.Sprintf("%s は %q（宣言 %q）", fn, o.values[fn], r.values[fn]))
 		}
@@ -363,11 +363,11 @@ func (r resolved) explain(it *Item, o observed, del bool) string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2 段の Apply（core.Transactor、E-B8・不変条件 17）
+// two-phase Apply（core.Transactor、E-B8・不変条件 17）
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Prepare は装置ごとに、設定に入ってコマンド列を流し、commit_confirmed（時間切れで
-// 装置が戻す確定）で終える。どこかで落ちれば、準備した装置を戻す。
+// Prepare は装置ごとに、設定モードに入ってコマンド列を流し、commit_confirmed（時間切れで
+// 装置が戻す確定）で終える。どこかで失敗すれば、準備した装置を戻す。
 func (p *Provider) Prepare(ctx context.Context, w core.WriteContext, changes []core.Change, opt core.TxnOptions) (core.Txn, error) {
 	timeout := opt.Timeout
 	if timeout <= 0 {
@@ -380,7 +380,7 @@ func (p *Provider) Prepare(ctx context.Context, w core.WriteContext, changes []c
 			return nil, err
 		}
 		if len(h.def.Config.CommitConfirmed) == 0 {
-			return nil, fmt.Errorf("%s: 機種の定義 %s に config.commit_confirmed が無い（2 段の Apply を持たない）", ch.ID, h.def.Name)
+			return nil, fmt.Errorf("%s: 機種の定義 %s に config.commit_confirmed が無い（two-phase Apply に対応しない）", ch.ID, h.def.Name)
 		}
 		byHost[h.name] = append(byHost[h.name], c)
 	}
@@ -399,8 +399,8 @@ func (p *Provider) Prepare(ctx context.Context, w core.WriteContext, changes []c
 	return t, nil
 }
 
-// stage は 1 台に変更と commit_confirmed を流す。どの項目も宣言どおりなら何も流さず
-// false。
+// stage は 1 つの装置に変更と commit_confirmed を流す。どの item も宣言どおりなら
+// 何も流さずに false を返す。
 func (p *Provider) stage(ctx context.Context, h *hostState, cs []change, timeout time.Duration) (bool, error) {
 	release, err := h.acquire(ctx)
 	if err != nil {
@@ -421,7 +421,7 @@ func (p *Provider) stage(ctx context.Context, h *hostState, cs []change, timeout
 	for _, c := range cs {
 		before, err := rd.observe(ctx, c.it)
 		if err != nil {
-			return false, fmt.Errorf("何も流していない：%s の変える前の観測に落ちた: %v", c.id, err)
+			return false, fmt.Errorf("何も流していない。%s の変える前の観測に失敗した: %v", c.id, err)
 		}
 		if p.matches(c.r, before, c.del) {
 			continue
@@ -452,7 +452,7 @@ type txn struct {
 	hosts []*hostState
 }
 
-// Commit は装置ごとに新しいやりとりで confirm を流す。
+// Commit は装置ごとに新しい session で confirm を流す。
 func (t *txn) Commit(ctx context.Context) error {
 	return t.each(ctx, func(d *Definition) []string { return d.Config.Confirm })
 }
@@ -479,7 +479,7 @@ func (t *txn) each(ctx context.Context, cmds func(*Definition) []string) error {
 	return nil
 }
 
-// runConfig は設定に入って cmds を流し、出る。
+// runConfig は設定モードに入って cmds を流し、出る。
 func (p *Provider) runConfig(ctx context.Context, h *hostState, cmds []string) error {
 	release, err := h.acquire(ctx)
 	if err != nil {
@@ -504,7 +504,7 @@ func (p *Provider) runConfig(ctx context.Context, h *hostState, cmds []string) e
 // 一度きりの操作（core.Invoker、E-B11・E-A2）
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Ops は項目 kind を持つ機種の定義の actions。
+// Ops は item kind を持つ機種の定義の actions を返す。
 func (p *Provider) Ops(kind string) map[string]core.OpSpec {
 	out := map[string]core.OpSpec{}
 	for _, h := range p.hosts {
@@ -520,7 +520,7 @@ func (p *Provider) Ops(kind string) map[string]core.OpSpec {
 	return out
 }
 
-// Invoke は装置 id.Name で操作 op のコマンド列を 1 回流す。つなげない・1 つも
+// Invoke は装置 id.Name で操作 op のコマンド列を 1 回流す。接続できない・1 つも
 // コマンドを打てていないときだけ core.ErrNotSent（不変条件 16）。
 func (p *Provider) Invoke(ctx context.Context, w core.WriteContext, id core.ID, op string, args core.Fields) error {
 	h, ok := p.hosts[id.Name]
@@ -533,7 +533,7 @@ func (p *Provider) Invoke(ctx context.Context, w core.WriteContext, id core.ID, 
 	}
 	for k := range args {
 		if a.Args[k] == nil {
-			return fmt.Errorf("%w: 操作 %s に知らない引数 %q", core.ErrNotSent, op, k)
+			return fmt.Errorf("%w: 操作 %s に未知の引数 %q", core.ErrNotSent, op, k)
 		}
 	}
 	r, err := resolve(ctx, w, args, a.Args)

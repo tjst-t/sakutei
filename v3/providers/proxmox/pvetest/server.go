@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package pvetest は provider proxmox のテスト用の偽の Proxmox VE（httptest。v2 の
-// proxmox-vm の偽のサーバを移したもの、E-P2）。
+// Package pvetest は provider proxmox のテスト用の fake の Proxmox VE（httptest。v2 の
+// proxmox-vm の fake サーバを移したもの、E-P2）。
 // provider が使う API（/cluster/resources・VM の作成・複製・設定・pending・
-// resize・電源・削除・仕事の状態）だけを持ち、API トークンの認証を確かめる。
+// resize・電源・削除・task の状態）だけを持ち、API トークンの認証を確かめる。
 //
 // 本物に合わせた振る舞い:
 //
@@ -25,12 +25,12 @@
 //     付け（大文字）、"virtio=<MAC>,bridge=..." の形で持つ。
 //   - 走っている VM の ColdKeys（既定 cores・memory）の変更は pending に置き、
 //     start・reboot で効く。
-//   - 作成・複製・電源・削除・resize は仕事（UPID）。Options.TaskPolls が 0 なら
-//     すぐに終わり、正なら状態をその回数だけ問い合わせると終わる（効き目は
+//   - 作成・複製・電源・削除・resize は task（UPID）。Options.TaskPolls が 0 なら
+//     すぐに終わり、正なら状態をその回数だけ問い合わせると終わる（効果が出るのは
 //     終わったとき。複製の間は VM に lock: clone）。
 //   - /pending と /cluster/resources の数は JSON の数で返す。
 //   - Options.ResourceLag が正なら、/cluster/resources の名前・status・template は
-//     pvestatd のように周期で写した古い値（作った直後の VM は名前が空。vmid が
+//     pvestatd のように定期的にコピーした古い値（作った直後の VM は名前が空。vmid が
 //     偶数なら仮の名前 "VM <vmid>"）。今の
 //     電源と lock は /status/current、名前とテンプレートは /config が正。
 //   - pool（Backlog #165）：作成・複製の pool（無い pool は 403 "Permission check
@@ -48,10 +48,10 @@
 //     /firewall/rules/<pos>。Proxmox VE 9.2 で確かめた決まりに合わせる：作ると
 //     いつも先頭（pos 0）に入り、enable を渡さなければ 0。PUT の moveto は「元の
 //     位置 moveto の規則の前」に入れる（後ろへ動かすと moveto-1 に着く、並びの
-//     外なら最後）。GET の項目は並び全体の digest を持ち、PUT・DELETE に渡した
-//     digest が違えば断る。PUT の delete は欄を消す。type・action・iface（netN）・
+//     外なら最後）。GET の要素は並び全体の digest を持ち、PUT・DELETE に渡した
+//     digest が違えば拒否する。PUT の delete は field を消す。type・action・iface（netN）・
 //     知らないキーの誤りは 400。
-//   - 走っている仕事の一覧：GET /nodes/<node>/tasks（source=active・vmid）。
+//   - 走っている task の一覧：GET /nodes/<node>/tasks（source=active・vmid）。
 //   - volume（Backlog #204）：ディスクの volume を台帳に持つ（作る・複製で
 //     切り出し、在る volume を指すドライブは台帳に無ければ 500）。本物と同じく、
 //     VM の持ち物（vm-<vmid>-…）の slot を設定から外すと unusedN になり（ほかの VM
@@ -64,8 +64,8 @@
 //
 // テストから: 現実を手で変える（SetConfig・SetFirewall・SetRules・SetStatus・SetLock・SetPool）、ノードを落とす
 // （SetNodeOffline：資源の status が unknown、ノードの API が 595）、届かなく
-// する（SetUnreachable）、遅らせる（SetDelay）、壊れた応答を返す（SetBroken）、
-// 次の仕事を失敗させる（FailNextTask）。
+// する（SetUnreachable）、遅らせる（SetDelay）、壊れたレスポンスを返す（SetBroken）、
+// 次の task を失敗させる（FailNextTask）。
 package pvetest
 
 import (
@@ -84,26 +84,26 @@ import (
 	"time"
 )
 
-// Options は偽サーバの設定。
+// Options は fake サーバの設定。
 type Options struct {
 	// TokenID・Secret は受け付けるトークン（既定 "root@pam!sakutei" / "test-secret"）。
 	TokenID, Secret string
 	// Nodes はノードの名前（既定 ["pve1", "pve2"]）。
 	Nodes []string
-	// TaskPolls は仕事が終わるまでの状態の問い合わせの回数（0 ならすぐ終わる）。
+	// TaskPolls は task が終わるまでの状態の問い合わせの回数（0 ならすぐ終わる）。
 	TaskPolls int
 	// ColdKeys は走っている VM では pending に置くキー（既定 cores・memory）。
 	ColdKeys []string
 	// ResourceLag が正なら、/cluster/resources の名前・status・template を
-	// pvestatd のように周期で写す：この回数の一覧ごとに 1 回だけ今の値に
+	// pvestatd のように定期的にコピーする：この回数の一覧ごとに 1 回だけ今の値に
 	// 更新する。作った直後の VM は名前が空・status が空で載る。
 	ResourceLag int
 	// Pools は在る pool の名前。
 	Pools []string
 	// PoolTokens は pool に絞ったトークン（TokenID・Secret のほかに受け付ける）。
 	PoolTokens []PoolToken
-	// BasePath は API のパスの前置き（既定 "/api2/json"、"/" は前置き無し）。
-	// 前置きの違う模擬の再現（#160）。
+	// BasePath は API のパスの prefix（既定 "/api2/json"、"/" は prefix 無し）。
+	// prefix の違う mock の再現（#160）。
 	BasePath string
 	// AuditTokenID・AuditSecret は読むだけのトークン（ACL が / に PVEAuditor、
 	// #186）。GET だけを受け付け、ほかは 403。
@@ -121,7 +121,7 @@ type PoolToken struct {
 	PoolAudit, PoolAllocate bool
 }
 
-// VM は偽サーバの VM。
+// VM は fake サーバの VM。
 type VM struct {
 	VMID     int
 	Node     string
@@ -140,7 +140,7 @@ type VM struct {
 	// Rules は VM の FW の規則（並びの順。キー → 値、enable は "0"・"1"）。
 	Rules []map[string]string
 
-	// rrd は /cluster/resources に載せる写し（ResourceLag のとき）。
+	// rrd は /cluster/resources に載せるコピー（ResourceLag のとき）。
 	rrdName, rrdStatus string
 	rrdTemplate        bool
 }
@@ -155,7 +155,7 @@ type task struct {
 	finish func()
 }
 
-// Server は偽の Proxmox VE。
+// Server は fake の Proxmox VE。
 type Server struct {
 	*httptest.Server
 	opts Options
@@ -175,11 +175,11 @@ type Server struct {
 	calls       map[string]int
 	resCalls    int
 	byToken     map[string]map[string]int // トークン → "GET"・"WRITE" → 回数
-	// volumes は在る volume（"<storage>:<name>" → 大きさのバイト数、#204）。
+	// volumes は在る volume（"<storage>:<name>" → サイズのバイト数、#204）。
 	volumes map[string]int64
 }
 
-// New は偽サーバを立てる（HTTP）。
+// New は fake サーバを立てる（HTTP）。
 func New(opts Options) *Server {
 	if opts.TokenID == "" {
 		opts.TokenID = "root@pam!sakutei"
@@ -210,8 +210,8 @@ func New(opts Options) *Server {
 func (s *Server) TokenID() string { return s.opts.TokenID }
 func (s *Server) Secret() string  { return s.opts.Secret }
 
-// TokenCalls は tokenID のトークンで受けた要求の回数（"GET" と、ほかの "WRITE"。
-// 断った要求も数える）。
+// TokenCalls は tokenID のトークンで受けたリクエストの回数（"GET" と、ほかの "WRITE"。
+// 拒否したリクエストも数える）。
 func (s *Server) TokenCalls(tokenID string) map[string]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -225,19 +225,19 @@ func (s *Server) TokenCalls(tokenID string) map[string]int {
 // SetUnreachable は true の間、接続を切る。
 func (s *Server) SetUnreachable(v bool) { s.mu.Lock(); s.unreachable = v; s.mu.Unlock() }
 
-// SetFailStatus は 0 でない間、すべての要求にその状態コードを返す。
+// SetFailStatus は 0 でない間、すべてのリクエストにその状態コードを返す。
 func (s *Server) SetFailStatus(code int) { s.mu.Lock(); s.failStatus = code; s.mu.Unlock() }
 
-// SetDelay は応答を d だけ遅らせる（時間切れの注入）。
+// SetDelay はレスポンスを d だけ遅らせる（タイムアウトの注入）。
 func (s *Server) SetDelay(d time.Duration) { s.mu.Lock(); s.delay = d; s.mu.Unlock() }
 
-// SetBroken は応答の本文を JSON でないものにする（壊れた出力の注入）。
+// SetBroken はレスポンスの body を JSON でないものにする（壊れた出力の注入）。
 func (s *Server) SetBroken(v bool) { s.mu.Lock(); s.broken = v; s.mu.Unlock() }
 
 // SetNodeOffline はノードを落とす（true）・戻す（false）。
 func (s *Server) SetNodeOffline(node string, v bool) { s.mu.Lock(); s.offline[node] = v; s.mu.Unlock() }
 
-// FailNextTask は次の kind（"qmclone"・"qmstart" など）の仕事を msg で失敗させる。
+// FailNextTask は次の kind（"qmclone"・"qmstart" など）の task を msg で失敗させる。
 func (s *Server) FailNextTask(kind, msg string) { s.mu.Lock(); s.failNext[kind] = msg; s.mu.Unlock() }
 
 // Calls は操作（"resources"・"pending"・"config"・"create"・"clone"・"resize"・
@@ -273,7 +273,7 @@ func (s *Server) AddVM(vm VM) {
 	s.vms[vm.VMID] = &vm
 }
 
-// Volume は volume が在るか（と大きさ）を返す（#204）。
+// Volume は volume が在るか（とサイズ）を返す（#204）。
 func (s *Server) Volume(volid string) (int64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -411,7 +411,7 @@ func (s *Server) moveDisk(vm *VM, form url.Values) (any, *apiError) {
 	}), nil
 }
 
-// VM は vmid の VM の写しを返す。
+// VM は vmid の VM のコピーを返す。
 func (s *Server) VM(vmid int) (VM, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -429,7 +429,7 @@ func (s *Server) VM(vmid int) (VM, bool) {
 	return out, true
 }
 
-// VMByName は名前の VM の写しを返す。
+// VMByName は名前の VM のコピーを返す。
 func (s *Server) VMByName(name string) (VM, bool) {
 	s.mu.Lock()
 	id := 0
@@ -523,7 +523,7 @@ func (s *Server) SetLock(vmid int, lock string) {
 	}
 }
 
-// FinishTasks は走っている仕事をすべて終わらせる。
+// FinishTasks は走っている task をすべて終わらせる。
 func (s *Server) FinishTasks() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -532,7 +532,7 @@ func (s *Server) FinishTasks() {
 	}
 }
 
-// RunningTasks は走っている仕事の数を返す。
+// RunningTasks は走っている task の数を返す。
 func (s *Server) RunningTasks() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -708,7 +708,7 @@ func (s *Server) route(tok *PoolToken, method, path string, form url.Values) (an
 		return map[string]any{"status": "stopped", "exitstatus": t.exit, "upid": upid}, nil
 	}
 	if parts := strings.Split(strings.Trim(path, "/"), "/"); len(parts) == 3 && parts[0] == "nodes" && parts[2] == "tasks" && method == http.MethodGet {
-		// 走っている仕事の一覧（source=active・vmid だけ）。
+		// 走っている task の一覧（source=active・vmid だけ）。
 		s.calls["tasks"]++
 		if s.offline[parts[1]] {
 			return nil, errf(595, "no route to host")
@@ -857,7 +857,7 @@ func (s *Server) nodeKnown(n string) bool {
 }
 
 // checkPoolParam は作成・複製の pool を確かめる（本物と同じく、無い pool は
-// 権限の検査で断る）。pool に絞ったトークンはその pool を渡したときだけ作れる。
+// 権限の検査で拒否する）。pool に絞ったトークンはその pool を渡したときだけ作れる。
 func (s *Server) checkPoolParam(tok *PoolToken, pool string) *apiError {
 	if pool != "" && !s.pools[pool] {
 		return errf(http.StatusForbidden, "Permission check failed (pool '%s' does not exist)", pool)
@@ -932,7 +932,7 @@ func (s *Server) resources(tok *PoolToken, typ string) []map[string]any {
 		if v.rrdName != "" {
 			m["name"] = v.rrdName
 		} else if s.opts.ResourceLag > 0 && v.VMID%2 == 0 {
-			// 写しの前の VM は名前が空か仮の名前（Proxmox VE 9.2 で確かめた）。
+			// コピーの前の VM は名前が空か仮の名前（Proxmox VE 9.2 で確かめた）。
 			m["name"] = fmt.Sprintf("VM %d", v.VMID)
 		}
 		if v.Lock != "" {
@@ -1017,7 +1017,7 @@ func (s *Server) normalize(vm *VM, key, value string) (string, *apiError) {
 			return out + fmt.Sprintf(",size=%dG", n), nil
 		}
 		if !strings.Contains(opts, "media=cdrom") {
-			// 在る volume を付ける（#204）。本物と同じく大きさを書き足す。
+			// 在る volume を付ける（#204）。本物と同じくサイズを書き足す。
 			bytesOf, ok := s.volumes[vol]
 			if !ok {
 				return "", errf(http.StatusInternalServerError, "%s: volume '%s' does not exist", key, vol)
@@ -1171,7 +1171,7 @@ func (s *Server) setFirewall(vm *VM, form url.Values) *apiError {
 	return nil
 }
 
-// ruleKeys は規則の欄（type・action のほか）。
+// ruleKeys は規則の field（type・action のほか）。
 var ruleKeys = map[string]*regexp.Regexp{
 	"iface": netRe, "source": regexp.MustCompile(`^[A-Za-z0-9+_.:/,-]+$`), "dest": regexp.MustCompile(`^[A-Za-z0-9+_.:/,-]+$`),
 	"proto": regexp.MustCompile(`^[a-z0-9-]+$`), "dport": regexp.MustCompile(`^[A-Za-z0-9:,-]+$`), "sport": regexp.MustCompile(`^[A-Za-z0-9:,-]+$`),
@@ -1209,7 +1209,7 @@ func (s *Server) listRules(vm *VM) []map[string]any {
 	return out
 }
 
-// setRuleFields は form の欄を r に写す（確かめてから）。
+// setRuleFields は form の field を r に写す（確かめてから）。
 func setRuleFields(r map[string]string, form url.Values) *apiError {
 	for _, k := range sortedKeys(form) {
 		v := form.Get(k)

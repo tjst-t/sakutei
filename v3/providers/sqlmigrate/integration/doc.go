@@ -13,15 +13,15 @@
 // limitations under the License.
 
 // Package integration は新しいコアの sqlmigrate provider（engine: postgresql）の
-// 統合テスト（v3 段 8e、設計 §6.2 の統合テスト・E-P3・N-P4、E-F2・N-F2）。v2 と
+// 統合テスト（v3 Stage 8e、設計 §6.2 の統合テスト・E-P3・N-P4、E-F2・N-F2）。v2 と
 // 同じ公式の postgres イメージ（tag と digest で固定）でサーバ（sakutei-v3sm-server）
 // と psql を動かすだけのクライアント（sakutei-v3sm-client）を docker の
 // ネットワーク sakutei-v3sm-net に立て（v2 の sakutei-pgit-*・postgresql provider の
-// sakutei-v3pg-* と重ならない）、v3 の CLI（cli.Run の plan・reconcile と常駐、
-// sqlmigrate.Module）で v2 の strategy: task を書き直した手順（trigger: on_drift・
+// sakutei-v3pg-* と重ならない）、v3 の CLI（cli.Run の plan・reconcile と daemon、
+// sqlmigrate.Module）で v2 の strategy: task を書き直した Procedure（trigger: on_drift・
 // invoke: migrate・done_when）を本物の PostgreSQL に向けて回す：0→3・3→1 の down・
 // 失敗する 1 本で止まる・rollback_on_fail・トランザクションに入れられない文
-// （25001）・2 つの常駐と advisory lock・書き込み用の資格が無い・止めると Unknown。
+// （25001）・2 つの daemon と advisory lock・書き込み用の credential が無い・止めると Unknown。
 //
 // テストは build tag integration_v3_postgresql の付いたファイルにあり、make check・
 // make test には入らない。docker と sudo（パスワードなし）が要る。コンテナと

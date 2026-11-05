@@ -26,9 +26,9 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/nftables"
 )
 
-// fakeGuard は道具の代わりのスクリプト：呼ばれ方と標準入力を log に書く。table は
-// 無い（list は nft の「No such file」で終わる）。FAIL_APPLY のファイルがあれば apply に
-// 落ちる。
+// fakeGuard は専用ツールの代わりのスクリプト：呼ばれ方と標準入力を log に書く。table は
+// 無い（list は nft の「No such file」で終わる）。FAIL_APPLY のファイルがあれば apply が
+// 失敗する。
 const fakeGuard = `#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/log"
@@ -65,8 +65,8 @@ var liveID = core.ID{Type: "fw/chain", Name: "fw1/inet/sk/input"}
 var liveDesired = core.Fields{"type": "filter", "hook": "input", "priority": int64(0), "policy": "drop",
 	"rules": []any{"ct state established,related accept"}}
 
-// live の 2 段：check → arm（写しと時間切れの戻し）→ apply、Commit は disarm
-// （E-B3・不変条件 17）。道具が受ける形のスクリプトを渡す。
+// live の two-phase Apply：check → arm（コピーと時間切れの rollback）→ apply、Commit は
+// disarm（E-B3・不変条件 17）。専用ツールが受け付ける形のスクリプトを渡す。
 func TestLivePrepareCommit(t *testing.T) {
 	p, dir := liveProvider(t)
 	if o := observe(t, p, liveID); o.Availability != core.Absent {
@@ -93,12 +93,12 @@ add table inet sk`
 	}
 }
 
-// apply に落ちれば置いた戻しをすぐ使い、確定しない。
+// apply が失敗すれば予約した rollback をすぐ実行し、確定しない。
 func TestLivePrepareApplyFails(t *testing.T) {
 	p, dir := liveProvider(t)
 	os.WriteFile(filepath.Join(dir, "FAIL_APPLY"), nil, 0o644)
 	if _, err := p.(core.Transactor).Prepare(context.Background(), core.WriteContext{}, []core.Change{{ID: liveID, Desired: liveDesired}}, core.TxnOptions{Timeout: 10 * time.Second}); err == nil {
-		t.Fatal("落ちない")
+		t.Fatal("失敗しない")
 	}
 	log, _ := os.ReadFile(filepath.Join(dir, "log"))
 	if !strings.Contains(string(log), "rollback 0123456789abcdef0123456789abcdef") || strings.Contains(string(log), "disarm") {

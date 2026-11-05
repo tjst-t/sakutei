@@ -16,33 +16,33 @@ package netconf
 
 // canon.go — 設定の XML の正規形（Backlog #141）。
 //
-// 比べるのは「意味」で、書き方の違いはずれにしない:
+// 比べるのは「意味」で、書き方の違いは drift にしない:
 //
 //   - 名前空間: 接頭辞は捨て、名前空間の URI で比べる（xmlns:if="…" と
 //     xmlns="…" は同じ）。要素の名前空間は親と違うときだけ xmlns="…" で書く。
 //   - 値の中の接頭辞（identityref など。"ianaift:ethernetCsmacd"）は、その
 //     接頭辞がその場で宣言されていれば {URI}名前 に書き換える（機器は自分の
 //     接頭辞で返す）。宣言されていない接頭辞の値（時刻・IPv6 など）はそのまま。
-//   - 空白: 子要素を持つ要素の間の空白は捨てる。値（葉の文字）は前後の空白を
+//   - 空白: 子要素を持つ要素の間の空白は捨てる。値（leaf のテキスト）は前後の空白を
 //     落とす。<a/> と <a></a> は同じ。
 //   - 属性: xmlns の宣言は捨て、残りを（名前空間, 名前）の順に並べる。名前空間
 //     つきの属性は、その要素で a0・a1… の接頭辞を宣言して書く（正規形も XML
 //     として読み直せる）。比べるのは宣言に書いた属性だけ（Backlog #208）:
-//     機器の側の属性は、宣言の同じ道（ordered と同じ書き方）の要素に同じ名前
+//     機器の側の属性は、宣言の同じパス（ordered と同じ書き方）の要素に同じ名前
 //     （名前空間, 名前）の属性があるときだけ残す（onlyDeclaredAttrs）。機器が
-//     付ける印（commit の時刻・利用者など）でずれにしない。
+//     付ける属性（commit の時刻・ユーザーなど）で drift にしない。
 //   - 中身の無い最上位の要素（子も値も無い。名前空間の有無も属性も問わない）は
 //     部分木が無いことを表す（contentNodes）。部分木が無いときに空の
 //     <configuration/> を返す機器がある。
 //   - 兄弟の順: 既定では順を問わない（比べるときに並べ替える）。順に意味の
-//     ある列（ordered-by user のリストなど）は ordered で名指しした道
+//     ある列（ordered-by user のリストなど）は ordered で名指ししたパス
 //     （"acl/aces/ace" のように、部分木の頭からの要素の名前を / でつなぐ）の
 //     要素だけ、同じ名前の兄弟の間で元の順を保つ。
 //   - コメント・処理命令・DOCTYPE は捨てる。
 //
 // 正規形は比べるためと見せるための形で、機器に送らない（送る形は edit.go）。
-// v2 の internal/netconf/canon.go を移した（ずれの説明の行は Observation に
-// 載せる口が無いので持たない）。
+// v2 の internal/netconf/canon.go を移した（drift の説明の行は Observation に
+// 載せる interface が無いので持たない）。
 
 import (
 	"bytes"
@@ -60,7 +60,7 @@ type node struct {
 	name     xml.Name // Space は名前空間の URI
 	attrs    []xml.Attr
 	children []*node
-	text     string // 前後の空白を落とした文字（子を持つ要素では空白だけなら空）
+	text     string // 前後の空白を落としたテキスト（子を持つ要素では空白だけなら空）
 }
 
 // maxDepth は XML の入れ子の深さの上限（壊れた・悪意のある入力で止まる）。
@@ -152,10 +152,10 @@ func resolveQName(v string, scope map[string]string) string {
 	return "{" + uri + "}" + m[2]
 }
 
-// orderedSet は順を保つ道の集合（"a/b/c"）。
+// orderedSet は順を保つパスの集合（"a/b/c"）。
 type orderedSet map[string]bool
 
-// ParseOrdered は "acl/aces/ace, x/y" を読む。道は要素の名前（接頭辞なし）を
+// ParseOrdered は "acl/aces/ace, x/y" を読む。パスは要素の名前（接頭辞なし）を
 // "/" でつないだもの。
 func ParseOrdered(s string) (orderedSet, error) {
 	out := orderedSet{}
@@ -177,7 +177,7 @@ func ParseOrdered(s string) (orderedSet, error) {
 var xmlName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]*$`)
 
 // canonical は top の正規形の文字列。sorted なら順を問わない兄弟を並べ替える
-// （ordered の道の要素は同じ名前の兄弟の間で元の順のまま）。sorted でなければ
+// （ordered のパスの要素は同じ名前の兄弟の間で元の順のまま）。sorted でなければ
 // 元の順のまま書く（観測の値として見せる形）。
 func canonical(top []*node, sorted bool, ordered orderedSet) string {
 	var b strings.Builder
@@ -195,7 +195,7 @@ type placed struct {
 }
 
 // arrange は兄弟の列を書く順に並べ、それぞれの正規形を作る。sorted なら
-// （名前空間, 名前）の順、同じ名前の中は正規形の順（ordered の道は元の順）。
+// （名前空間, 名前）の順、同じ名前の中は正規形の順（ordered のパスは元の順）。
 func arrange(nodes []*node, parentPath, parentNS string, sorted bool, ordered orderedSet) []placed {
 	type item struct {
 		placed
@@ -301,7 +301,7 @@ func hasContent(n *node) bool { return len(n.children) > 0 || n.text != "" }
 // contentNodes は最上位の要素のうち中身のあるものだけを返す。部分木が機器に
 // 無いとき、名前空間の無い（rpc-reply の base:1.0 を受け継ぐ）空の
 // <configuration/> を返す機器がある（#208）。中身の無い要素は、名前空間の
-// 有無を問わず「無い」と見る。
+// 有無を問わず Absent と見る。
 func contentNodes(top []*node) []*node {
 	var out []*node
 	for _, n := range top {
@@ -312,7 +312,8 @@ func contentNodes(top []*node) []*node {
 	return out
 }
 
-// attrSet は宣言に書いた属性（要素の道と属性の名前空間・名前）の集合。
+// attrSet は宣言に書いた属性（要素のパスと属性の名前空間・名前）の集合。
+
 type attrSet map[string]bool
 
 func attrKey(path string, name xml.Name) string {

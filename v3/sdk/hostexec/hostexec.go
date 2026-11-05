@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package hostexec は provider SDK の「ホストでコマンドを走らせる層」（設計 §6.1、
-// E-E1・N-E1）。手元で走らせる Local と、agent を置かずに ssh で離れたホストに
-// 入る SSH を、同じ口 Runner で使う。
+// Package hostexec は provider SDK の「ホストでコマンドを実行する層」（設計 §6.1、
+// E-E1・N-E1）。手元で実行する Local と、agent を置かずに ssh で離れたホストに
+// 入る SSH を、同じ interface Runner で使う。
 //
-// 決まり：
+// ルール：
 //
-//   - 引数は argv で渡し、離れたホストではシェルの引用符で 1 つずつ包む（呼び手の
-//     値がシェルの命令にならない）。
-//   - ssh はホスト鍵を known_hosts で確かめ、知らない鍵は拒む（StrictHostKeyChecking
-//     yes、BatchMode）。known_hosts と鍵のファイルは必須（E-E1）。
-//   - sudo は `sudo -n` で、パスワードを聞かない。走らせるのは provider が決めた
-//     コマンドだけ（nftables は決まった道具 sakutei-nft-guard だけ）。
-//   - 終了コードが 0 でなければ *ExitError（コマンドは走った）。走らせられない・
+//   - 引数は argv で渡し、離れたホストではシェルの引用符で 1 つずつ囲む（呼び出し側
+//     の値がシェルのコマンドとして解釈されない）。
+//   - ssh はホスト鍵を known_hosts で検証し、知らない鍵は拒否する
+//     （StrictHostKeyChecking yes、BatchMode）。known_hosts と鍵のファイルは必須（E-E1）。
+//   - sudo は `sudo -n` で、パスワードを聞かない。実行するのは provider が決めた
+//     コマンドだけ（nftables は専用ツール sakutei-nft-guard だけ）。
+//   - 終了コードが 0 でなければ *ExitError（コマンドは実行された）。実行できない・
 //     ssh が届かない（ssh の終了コード 255）は *UnreachableError。provider は
 //     届かないとき Absent でなく Unknown を返す（不変条件 3）。
 package hostexec
@@ -41,14 +41,14 @@ import (
 	"time"
 )
 
-// Runner はホストでコマンドを 1 つ走らせる。
+// Runner はホストでコマンドを 1 つ実行する。
 type Runner interface {
 	Run(ctx context.Context, argv []string, stdin []byte) ([]byte, error)
-	// Name はホストの名前（設定の hosts の鍵）。
+	// Name はホストの名前（設定の hosts のキー）。
 	Name() string
 }
 
-// ExitError はコマンドが 0 以外で終わったこと。
+// ExitError はコマンドが 0 以外の終了コードで終わったことを表す。
 type ExitError struct {
 	Code   int
 	Stderr string
@@ -62,7 +62,7 @@ func (e *ExitError) Error() string {
 	return fmt.Sprintf("終了コード %d: %s", e.Code, msg)
 }
 
-// UnreachableError はコマンドを走らせられなかった（届かない・ssh が落ちた）。
+// UnreachableError はコマンドを実行できなかったことを表す（届かない・ssh が落ちた）。
 type UnreachableError struct {
 	Host string
 	Err  error
@@ -74,16 +74,16 @@ func (e *UnreachableError) Error() string {
 
 func (e *UnreachableError) Unwrap() error { return e.Err }
 
-// IsUnreachable は err が届かないことか。
+// IsUnreachable は err が「届かない」を表すかを返す。
 func IsUnreachable(err error) bool {
 	var u *UnreachableError
 	return errors.As(err, &u)
 }
 
-// DefaultTimeout は 1 つのコマンドの上限。
+// DefaultTimeout は 1 つのコマンドのタイムアウト。
 const DefaultTimeout = 60 * time.Second
 
-// Local は手元で走らせる。Prefix は argv の前に足す（例 sudo -n、ip netns exec）。
+// Local は手元で実行する。Prefix は argv の前に足す（例 sudo -n、ip netns exec）。
 type Local struct {
 	HostName string
 	Prefix   []string
@@ -93,7 +93,7 @@ type Local struct {
 // Name はホストの名前。
 func (l Local) Name() string { return l.HostName }
 
-// Run は argv を走らせる。
+// Run は argv を実行する。
 func (l Local) Run(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
 	full := append(append([]string(nil), l.Prefix...), argv...)
 	if l.Sudo {
@@ -102,7 +102,7 @@ func (l Local) Run(ctx context.Context, argv []string, stdin []byte) ([]byte, er
 	return run(ctx, l.HostName, full, stdin, false)
 }
 
-// SSH は ssh で離れたホストに入って走らせる。
+// SSH は ssh で離れたホストに入って実行する。
 type SSH struct {
 	HostName   string
 	Address    string
@@ -112,14 +112,14 @@ type SSH struct {
 	KnownHosts string // known_hosts のファイル
 	Sudo       bool
 	Binary     string // 既定 ssh
-	// Fresh は接続を使い回さない（締め出しの確かめで新しい接続を張る、E-B3）。
+	// Fresh は接続を使い回さない（締め出しの確認で新しい接続を張る、E-B3）。
 	Fresh bool
 }
 
 // Name はホストの名前。
 func (s SSH) Name() string { return s.HostName }
 
-// Command は ssh の argv（テストで確かめる）。
+// Command は ssh の argv（テストで確認する）。
 func (s SSH) Command(argv []string) []string {
 	bin := s.Binary
 	if bin == "" {
@@ -149,12 +149,12 @@ func (s SSH) Command(argv []string) []string {
 	return append(out, strings.Join(quoted, " "))
 }
 
-// Run は argv を ssh 越しに走らせる。ssh の終了コード 255 は届かない。
+// Run は argv を ssh 越しに実行する。ssh の終了コード 255 は「届かない」として扱う。
 func (s SSH) Run(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
 	return run(ctx, s.HostName, s.Command(argv), stdin, true)
 }
 
-// Quote は POSIX のシェルの単一引用符で包む。
+// Quote は POSIX シェルの単一引用符で囲む。
 func Quote(s string) string {
 	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./=:,@+%") == "" {
 		return s
@@ -180,7 +180,7 @@ func run(ctx context.Context, host string, argv []string, stdin []byte, viaSSH b
 	case err == nil:
 		return stdout.Bytes(), nil
 	case ctx.Err() != nil:
-		return nil, &UnreachableError{Host: host, Err: fmt.Errorf("時間切れ: %w", ctx.Err())}
+		return nil, &UnreachableError{Host: host, Err: fmt.Errorf("タイムアウト: %w", ctx.Err())}
 	case errors.As(err, &ee):
 		if viaSSH && ee.ExitCode() == 255 {
 			return nil, &UnreachableError{Host: host, Err: errors.New(strings.TrimSpace(stderr.String()))}
@@ -191,7 +191,7 @@ func run(ctx context.Context, host string, argv []string, stdin []byte, viaSSH b
 	}
 }
 
-// ParseHosts は provider の settings の hosts を読む（つなぎ方、§5.6）。
+// ParseHosts は provider の settings の hosts を読む（接続設定、§5.6）。
 //
 //	hosts:
 //	  local: {local: true, sudo: false, prefix: [ip, netns, exec, lab]}
@@ -199,8 +199,8 @@ func run(ctx context.Context, host string, argv []string, stdin []byte, viaSSH b
 //	    ssh: {address: 192.0.2.1, user: sakutei, port: 22, key: /etc/sakutei/id_ed25519, known_hosts: /etc/sakutei/known_hosts}
 //	    sudo: true
 //
-// extra はホストごとに provider が読む項目の名前（ほかは断る）。読んだ値は
-// Host.Extra に入る。
+// extra はホストごとに provider が読む field の名前（それ以外の field はエラーに
+// する）。読んだ値は Host.Extra に入る。
 func ParseHosts(v any, extra ...string) (map[string]Host, error) {
 	m, ok := v.(map[string]any)
 	if !ok || len(m) == 0 {
@@ -224,10 +224,10 @@ func ParseHosts(v any, extra ...string) (map[string]Host, error) {
 	return out, nil
 }
 
-// Host はホスト 1 つのつなぎ方。
+// Host はホスト 1 つの接続設定。
 type Host struct {
 	Runner Runner
-	// Fresh は管理の経路を新しい接続で確かめる Runner（ssh なら ControlPath=none）。
+	// Fresh は管理の経路を新しい接続で確認する Runner（ssh なら ControlPath=none）。
 	Fresh Runner
 	Extra map[string]any
 }
@@ -269,7 +269,7 @@ func parseHost(name string, m map[string]any, extra []string) (Host, error) {
 			if !contains(extra, k) {
 				all := append([]string{"local", "prefix", "ssh", "sudo"}, extra...)
 				sort.Strings(all)
-				return h, fmt.Errorf("知らない項目 %q（書ける項目: %s）", k, strings.Join(all, ", "))
+				return h, fmt.Errorf("不明な field %q（使える field: %s）", k, strings.Join(all, ", "))
 			}
 			h.Extra[k] = v
 		}
@@ -335,12 +335,12 @@ func parseSSH(v any) (*SSH, error) {
 			}
 			s.Port = int(n)
 		default:
-			return nil, fmt.Errorf("知らない項目 %q（書ける項目: address, binary, key, known_hosts, port, user）", k)
+			return nil, fmt.Errorf("不明な field %q（使える field: address, binary, key, known_hosts, port, user）", k)
 		}
 	}
-	// ホスト鍵を確かめずに入らない（E-E1）。
+	// ホスト鍵を検証せずに接続しない（E-E1）。
 	if s.Address == "" || s.Key == "" || s.KnownHosts == "" {
-		return nil, errors.New("address・key・known_hosts を書く（ホスト鍵を確かめずに入らない）")
+		return nil, errors.New("address・key・known_hosts を書く（ホスト鍵を検証せずに接続しない）")
 	}
 	return s, nil
 }

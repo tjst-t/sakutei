@@ -24,7 +24,7 @@ import (
 	"testing"
 )
 
-// recorder は来た要求の Host とパスを覚える。
+// recorder は来たリクエストの Host とパスを覚える。
 type recorder struct {
 	mu   sync.Mutex
 	seen []string

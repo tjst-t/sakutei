@@ -33,12 +33,12 @@
     {
       "severity": "warn",
       "target": "network_policy",
-      "message": "shadowed: policy.yaml: network_policy.allows[1] (office → dmz tcp 443): 効かない：policy.yaml: network_policy.allows[0]（office → dmz tcp 80,443）がすでに全部を許している（理由: \"社内から公開の web\"）（理由: \"重ねて書いた\"）"
+      "message": "shadowed: policy.yaml: network_policy.allows[1] (office → dmz tcp 443): 効かない。policy.yaml: network_policy.allows[0]（office → dmz tcp 80,443）がすでに全部を許している（理由: \"社内から公開の web\"）（理由: \"重ねて書いた\"）"
     },
     {
       "severity": "warn",
       "target": "network_policy",
-      "message": "unreached: policy.yaml: network_policy.allows[5] (office → lab tcp 8080): この許可を通す実現先が無い（その網の間の境界も、宛先の網のホストも無い）（理由: \"lab には実現先が無い\"）"
+      "message": "unreached: policy.yaml: network_policy.allows[5] (office → lab tcp 8080): この許可を通す実現先が無い（そのネットワーク間の境界も、宛先のネットワークのホストも無い）（理由: \"lab には実現先が無い\"）"
     }
   ]
 }

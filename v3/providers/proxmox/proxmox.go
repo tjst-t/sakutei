@@ -14,11 +14,11 @@
 
 // Package proxmox は Proxmox VE の VM と VM の FW の規則を宣言どおりに保つ
 // provider（設計 §7.1 の proxmox の vm・fw-rules、E-D1・E-C2・E-B6・N-D1・N-D10・
-// N-C12）。v2 の proxmox-vm と proxmox-fw を 1 つのモジュールの種類にした。REST API
-// を net/http で叩き、認証は API トークン。コアの外のモジュールで、コアの口
+// N-C12）。v2 の proxmox-vm と proxmox-fw を 1 つのモジュールの type にした。REST API
+// を net/http で呼び、認証は API トークン。コアの外のモジュールで、コアの interface
 // core.Provider・core.Validator・core.Classifier・core.Invoker だけを持つ。
 //
-//	providers:                                  # つなぎ方の設定
+//	providers:                                  # 接続設定
 //	  pve:
 //	    module: proxmox
 //	    settings:
@@ -26,11 +26,11 @@
 //	      clusters:
 //	        lab:
 //	          endpoint: https://pve1.example.net:8006
-//	          api_base_path: /api2/json         # 省けば /api2/json（"/" は前置き無し）
+//	          api_base_path: /api2/json         # 省けば /api2/json（"/" は prefix 無し）
 //	          node: pve1                        # node を宣言しない VM を作るノード
 //	          ca_file: /etc/sakutei/pve-ca.pem  # か insecure_skip_verify: true（明示したときだけ）
-//	          timeout: 15s                      # 1 つの要求の時間切れ
-//	          task_wait: 2m                     # Apply が非同期の仕事（UPID）を待つ長さ
+//	          timeout: 15s                      # 1 つのリクエストのタイムアウト
+//	          task_wait: 2m                     # Apply が非同期の task（UPID）を待つ長さ
 //	          observe: {token_id: "sakutei-ro@pve!audit", token_file: /etc/sakutei/pve-ro.token}
 //	          write:   {token_id: "sakutei@pve!sakutei", token_file: /etc/sakutei/pve-rw.token}   # 省けば observe
 //
@@ -58,35 +58,35 @@
 //	    id: lab/mon1
 //	    fields: {rules: ["in ACCEPT iface=net0 proto=tcp dport=443 comment=web"]}
 //
-// 種類（ID の <クラスタ> は settings.clusters の名前）：
+// type（ID の <クラスタ> は settings.clusters の名前）：
 //
 //   - vm（ID <クラスタ>/<VM 名>）：VM を名前で引く（vmid を ID にしないのは採番で
-//     配れるようにするため）。項目と比べ方は vm.go。無ければ template から full
+//     配れるようにするため）。field と比べ方は vm.go。無ければ template から full
 //     clone するか空から作り、pool・CPU・メモリ・ディスク（大きくするだけ）・NIC・
 //     VM の FW の options・cloud-init・電源を合わせる（E-D1・N-D1）。ensure: absent
-//     で消す（走っていれば止めてからディスクごと）。keep の印のあるディスクが残る
-//     VM の削除は断る（*core.RefuseError、E-C2）。既にある volume の付け替えは
-//     承認の要る壊す変更（Classifier、E-C2・N-C12・N-D10）。
+//     で消す（走っていれば止めてからディスクごと）。keep の marker のあるディスクが残る
+//     VM の削除は拒否する（*core.RefuseError、E-C2）。既にある volume の付け替えは
+//     承認の要る破壊的変更（Classifier、E-C2・N-C12・N-D10）。
 //   - fw-rules（ID <クラスタ>/<VM 名>）：VM の FW の規則のうち Sakutei が置いた
-//     もの（comment の印 "sakutei"）の並び。fw.go（E-B6）。規則の変更は壊す変更
+//     もの（comment の marker "sakutei"）の並び。fw.go（E-B6）。規則の変更は破壊的変更
 //     （Classifier）。
 //   - volume（ID <クラスタ>/<VM 名>/unusedN）：VM の付け先の無い volume。観測だけ
-//     で、List が出す（status の宣言外に出る、E-C2・N-D10）。宣言はできない。
-//   - fw-rule（ID <クラスタ>/<VM 名>/<位置>）：印の無い規則 1 つ。観測だけで、
-//     List が出す（宣言外として見せ、消さない、E-B6）。宣言はできない。
+//     で、List が出す（status の unmanaged に出る、E-C2・N-D10）。宣言はできない。
+//   - fw-rule（ID <クラスタ>/<VM 名>/<位置>）：marker の無い規則 1 つ。観測だけで、
+//     List が出す（unmanaged として見せ、消さない、E-B6）。宣言はできない。
 //
 // 決まり：
 //
-//   - 届かない・5xx・時間切れ・認証の失敗・壊れた出力・ノードが落ちて status が
-//     unknown は Unknown（無いと読まない、不変条件 3、E-K1）。VM に lock がある・
-//     その VM の仕事（UPID）が走っている間は Converging（重ねない、E-D1）。
+//   - 届かない・5xx・タイムアウト・認証の失敗・壊れた出力・ノードが落ちて status が
+//     unknown は Unknown（Absent と読まない、不変条件 3、E-K1）。VM に lock がある・
+//     その VM の task（UPID）が走っている間は Converging（重ねない、E-D1）。
 //   - 書き込み用のトークン（settings.clusters.<名前>.write）は Apply・Delete・
 //     Invoke の中でだけ読む（E-G5）。観測と List は observe のトークンだけを使う。
-//   - VM と規則の並びは宣言の外で消さない（DestructiveDelete、E-C3）。消すのは
+//   - VM と規則の並びは宣言に無いものを消さない（DestructiveDelete、E-C3）。消すのは
 //     ensure: absent の名指しだけ。触らない VM は Range の external_owners に書く
 //     （E-D2）。
 //   - Range は args {cluster: <名前>}。Range を書いた provider では、どの Range にも
-//     入らないクラスタの宣言を断る（E-I6）。
+//     入らないクラスタの宣言をエラーにする（E-I6）。
 package proxmox
 
 import (
@@ -102,10 +102,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// Version は Schema の版。比べ方・正規形を変えたら上げる（E-J12）。
+// Version は Schema のバージョン。比べ方・正規形を変えたら上げる（E-J12）。
 const Version = "proxmox/1"
 
-// 種類の名前。
+// type の名前。
 const (
 	KindVM      = "vm"
 	KindFWRules = "fw-rules"
@@ -113,13 +113,13 @@ const (
 	KindFWRule  = "fw-rule"
 )
 
-// DefaultSettle は Apply のあと読み直すまでの待ちの既定（settings.settle で
-// 変える）。電源の操作は Proxmox の仕事が終わってからも VM の status が少しの
+// DefaultSettle は Apply のあと読み直すまでの待ち時間の既定値（settings.settle で
+// 変える）。電源の操作は Proxmox の task が終わってからも VM の status が少しの
 // あいだ前の値を返すことがある（E-J6・E-R3）。
 const DefaultSettle = 30 * time.Second
 
-// DefaultTaskWait は Apply が非同期の仕事（UPID）の終わりを待つ長さの既定。
-// 過ぎれば待つのをやめ、仕事が走る間の観測は Converging（E-D1）。
+// DefaultTaskWait は Apply が非同期の task（UPID）の終わりを待つ長さの既定値。
+// 過ぎれば待つのをやめ、task が走る間の観測は Converging（E-D1）。
 const DefaultTaskWait = 2 * time.Minute
 
 // vmName は VM の名前（Proxmox の決まり：DNS の名前）。
@@ -139,7 +139,7 @@ var (
 	_ core.Invoker    = (*Provider)(nil)
 )
 
-// Cluster は 1 つのクラスタへのつなぎ方。
+// Cluster は 1 つのクラスタへの接続設定。
 type Cluster struct {
 	Name string
 	// obs は観測用のトークンの Client。
@@ -150,11 +150,11 @@ type Cluster struct {
 	write tokenFile
 	// Node は node を宣言しない VM を作るノード（空なら node の宣言が要る）。
 	Node string
-	// TaskWait は Apply が非同期の仕事を待つ長さ。
+	// TaskWait は Apply が非同期の task を待つ長さ。
 	TaskWait time.Duration
 }
 
-// tokenFile は API トークンの ID と、secret を置いたファイル。secret は要求の
+// tokenFile は API トークンの ID と、secret を置いたファイル。secret はリクエストの
 // たびに読む（値を持たない、E-G2）。
 type tokenFile struct {
 	id, file string
@@ -185,7 +185,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 		case "clusters":
 			m, ok := v.(map[string]any)
 			if !ok || len(m) == 0 {
-				return nil, errors.New("settings.clusters にクラスタを 1 つ以上書く（名前 → つなぎ方）")
+				return nil, errors.New("settings.clusters にクラスタを 1 つ以上書く（名前 → 接続設定）")
 			}
 			for name, cv := range m {
 				cm, ok := cv.(map[string]any)
@@ -202,7 +202,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 			s, _ := v.(string)
 			d, err := time.ParseDuration(s)
 			if err != nil || d < 0 || (k == "poll" && d == 0) {
-				return nil, fmt.Errorf("settings.%s は長さ（30s など）", k)
+				return nil, fmt.Errorf("settings.%s は時間の長さで書く（30s など）", k)
 			}
 			if k == "settle" {
 				p.settle = d
@@ -210,7 +210,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 				p.poll = d
 			}
 		default:
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: clusters, poll, settle）", k)
+			return nil, fmt.Errorf("settings に知らない field %q がある（書ける field: clusters, poll, settle）", k)
 		}
 	}
 	if len(p.clusters) == 0 {
@@ -242,7 +242,7 @@ func parseCluster(name string, m map[string]any) (*Cluster, error) {
 		}
 		d, err := time.ParseDuration(s)
 		if err != nil || d < 0 || (!zero && d == 0) {
-			return 0, false, fmt.Errorf("%s %q は正の長さ（15s など）", k, s)
+			return 0, false, fmt.Errorf("%s %q は正の時間の長さで書く（15s など）", k, s)
 		}
 		return d, true, nil
 	}
@@ -267,7 +267,7 @@ func parseCluster(name string, m map[string]any) (*Cluster, error) {
 			case "token_file":
 				t.file = s
 			default:
-				return tokenFile{}, false, fmt.Errorf("%s に知らない項目 %q（書ける項目: token_file, token_id。secret そのものは書けない）", k, tk)
+				return tokenFile{}, false, fmt.Errorf("%s に知らない field %q がある（書ける field: token_file, token_id。secret そのものは書けない）", k, tk)
 			}
 		}
 		if t.id == "" || t.file == "" {
@@ -279,7 +279,7 @@ func parseCluster(name string, m map[string]any) (*Cluster, error) {
 		switch k {
 		case "endpoint", "api_base_path", "node", "ca_file", "insecure_skip_verify", "timeout", "task_wait", "observe", "write":
 		default:
-			return nil, fmt.Errorf("知らない項目 %q（書ける項目: api_base_path, ca_file, endpoint, insecure_skip_verify, node, observe, task_wait, timeout, write）", k)
+			return nil, fmt.Errorf("知らない field %q がある（書ける field: api_base_path, ca_file, endpoint, insecure_skip_verify, node, observe, task_wait, timeout, write）", k)
 		}
 	}
 	var err error
@@ -301,7 +301,7 @@ func parseCluster(name string, m map[string]any) (*Cluster, error) {
 	if v, ok := m["insecure_skip_verify"]; ok {
 		b, isBool := v.(bool)
 		if !isBool {
-			return nil, errors.New("insecure_skip_verify は true か false")
+			return nil, errors.New("insecure_skip_verify は true か false で書く")
 		}
 		c.cfg.InsecureSkipVerify = b
 	}
@@ -375,8 +375,8 @@ func (p *Provider) clusterNames() []string {
 	return names
 }
 
-// Schema は 4 つの種類。観測だけの項目も Condition から読めるよう Schema に置く
-// （宣言は Validate が断る）。
+// Schema は 4 つの type。観測だけの field も Condition から読めるよう Schema に置く
+// （宣言は Validate がエラーにする）。
 func (p *Provider) Schema() core.Schema {
 	str := core.FieldSpec{Type: core.String}
 	num := core.FieldSpec{Type: core.Int}
@@ -392,7 +392,7 @@ func (p *Provider) Schema() core.Schema {
 	}}
 }
 
-// Validate は宣言を確かめる（現実に触れない、E-I7・E-M3・E-I6）。範囲は
+// Validate は宣言を検証する（現実に触れない、E-I7・E-M3・E-I6）。Range は
 // args {cluster: <名前>} だけ。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
@@ -404,7 +404,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		name, ok := rg.Args["cluster"]
 		switch {
 		case len(rg.Args) != 1 || !ok:
-			rej(rg.Origin, "ranges", "proxmox の範囲は args {cluster: <名前>} だけ")
+			rej(rg.Origin, "ranges", "proxmox の Range は args {cluster: <名前>} だけ")
 			continue
 		case p.clusters[name] == nil:
 			rej(rg.Origin, "ranges", "クラスタ %q が settings.clusters に無い（ある: %s）", name, strings.Join(p.clusterNames(), ", "))
@@ -420,11 +420,11 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 			continue
 		}
 		if len(ranged) > 0 && !ranged[c.Name] {
-			rej(r.Origin, target, "クラスタ %s がどの範囲（ranges の args.cluster）にも入らない", c.Name)
+			rej(r.Origin, target, "クラスタ %s がどの Range（ranges の args.cluster）にも入らない", c.Name)
 		}
 		switch r.ID.Kind() {
 		case KindVolume, KindFWRule:
-			rej(r.Origin, target, "種類 %s は宣言の外のものを見せるためだけで、宣言できない（volume は vm の disks の volume= で付け、手の規則は fw-rules の rules に書いてから手で消す）", r.ID.Kind())
+			rej(r.Origin, target, "type %s は宣言に無いもの（unmanaged）を見せるためだけのもので、宣言できない（volume は vm の disks の volume= で付ける。手で置いた規則は fw-rules の rules に書いてから手で消す）", r.ID.Kind())
 			continue
 		}
 		if rest != "" {
@@ -492,11 +492,11 @@ func (p *Provider) observe(ctx context.Context, c *Cluster, cl *Client, id core.
 	case KindVolume:
 		return observeVolume(ctx, c, cl, r, rest)
 	}
-	return core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("種類 %q を知らない", id.Kind())}
+	return core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("type %q を知らない", id.Kind())}
 }
 
 // lookupVM は res から名前が vm の VM を引き、電源と lock を読む。ok が false なら
-// 観測は o で決まる（無い・分からない・作業中）。
+// 観測は o で決まる（Absent・Unknown・Converging）。
 func lookupVM(ctx context.Context, c *Cluster, cl *Client, vm string, res []Resource) (*Resource, core.Observation, bool) {
 	found := findVM(res, vm)
 	switch {
@@ -527,13 +527,13 @@ func lookupVM(ctx context.Context, c *Cluster, cl *Client, vm string, res []Reso
 		return nil, unknown(err), false
 	}
 	if len(busy) > 0 {
-		return nil, core.Observation{Availability: core.Converging, Note: fmt.Sprintf("VM %d の仕事 %s が走っている", r.VMID, strings.Join(busy, ", "))}, false
+		return nil, core.Observation{Availability: core.Converging, Note: fmt.Sprintf("VM %d の task %s が走っている", r.VMID, strings.Join(busy, ", "))}, false
 	}
 	return &r, core.Observation{}, true
 }
 
-// List は範囲のクラスタの VM（テンプレートを除く）と、その付け先の無い volume・
-// Sakutei の規則の並び・印の無い規則を返す（E-C2・E-B6・E-D4）。一覧と VM の
+// List は Range のクラスタの VM（テンプレートを除く）と、その付け先の無い volume・
+// Sakutei の規則の並び・marker の無い規則を返す（E-C2・E-B6・E-D4）。一覧と VM の
 // 設定・規則が全部読め、どの VM も名前で一意に引けるときだけ完全（E-K2）。
 func (p *Provider) List(ctx context.Context, rg core.Range) (core.Listing, error) {
 	name := rg.Args["cluster"]
@@ -608,14 +608,14 @@ func managedVMs(res []Resource) ([]Resource, error) {
 	return out, nil
 }
 
-// Apply は種類ごとに現実を読み直し、宣言とずれているものだけを変える（冪等）。
+// Apply は type ごとに現実を読み直し、宣言とずれているものだけを変える（冪等）。
 func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, desired core.Fields, _ core.Observation) error {
 	c, vm, rest, err := p.coords(id)
 	if err != nil {
 		return err
 	}
 	if rest != "" {
-		return fmt.Errorf("%s は宣言の外のものを見せるための ID で、変えない", id)
+		return fmt.Errorf("%s は宣言に無いもの（unmanaged）を見せるための ID で、変えない", id)
 	}
 	cl, err := c.writer(w)
 	if err != nil {
@@ -627,10 +627,10 @@ func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, d
 	case KindFWRules:
 		return applyFW(ctx, c, cl, vm, desired)
 	}
-	return fmt.Errorf("種類 %q には Apply が無い（観測だけ）", id.Kind())
+	return fmt.Errorf("type %q には Apply が無い（観測だけ）", id.Kind())
 }
 
-// Delete は VM を消す・Sakutei の規則を外す。宣言の外のものを見せる種類は断る。
+// Delete は VM を消す・Sakutei の規則を外す。unmanaged を見せる type は拒否する。
 func (p *Provider) Delete(ctx context.Context, w core.WriteContext, id core.ID, _ core.Observation) error {
 	c, vm, rest, err := p.coords(id)
 	if err != nil {
@@ -638,13 +638,13 @@ func (p *Provider) Delete(ctx context.Context, w core.WriteContext, id core.ID, 
 	}
 	switch id.Kind() {
 	case KindVolume, KindFWRule:
-		return &core.RefuseError{Reason: "付け先の無い volume と手の規則は Sakutei が消さない（Proxmox で手で消す）"}
+		return &core.RefuseError{Reason: "付け先の無い volume と手で置いた規則は Sakutei が消さない（Proxmox で手で消す）"}
 	}
 	if rest != "" {
 		return fmt.Errorf("%s の id は <クラスタ>/<VM 名>", id.Kind())
 	}
 	// keep の volume が残る VM は消さない（観測用のトークンで先に確かめ、何も
-	// 書かずに断る、E-C2）。
+	// 書かずに拒否する、E-C2）。
 	if id.Kind() == KindVM {
 		if err := p.keepGuard(ctx, c, c.obs, vm); err != nil {
 			return err
@@ -660,14 +660,14 @@ func (p *Provider) Delete(ctx context.Context, w core.WriteContext, id core.ID, 
 	return p.destroy(ctx, c, cl, vm)
 }
 
-// unknown は Client の誤りの観測（届かない・認証の失敗・壊れた出力、E-K1）。
+// unknown は Client のエラーの観測（届かない・認証の失敗・壊れた出力、E-K1）。
 func unknown(err error) core.Observation {
 	return core.Observation{Availability: core.Unknown, Note: err.Error()}
 }
 
 // resources はクラスタの VM の一覧を返す。/cluster/resources の名前は pvestatd の
-// 写しで、作った直後の VM は名前が空か仮の名前 "VM <vmid>" のことがある（Proxmox
-// VE 9.2 で確かめた。「無い」と見てもう一度作らないように）。そういう qemu の項目は、
+// キャッシュで、作った直後の VM は名前が空か仮の名前 "VM <vmid>" のことがある（Proxmox
+// VE 9.2 で確かめた。Absent と見てもう一度作らないように）。そういう qemu の要素は、
 // VM の設定で名前とテンプレートかを確かめる。
 func (c *Cluster) resources(ctx context.Context, cl *Client) ([]Resource, error) {
 	res, err := cl.Resources(ctx)

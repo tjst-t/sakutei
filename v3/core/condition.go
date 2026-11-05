@@ -48,7 +48,7 @@ type Disposition int
 const (
 	// OnUnknownWait は待つ（既定、E-I5・N-J5）。
 	OnUnknownWait Disposition = iota
-	// OnUnknownBlock は止めて知らせる。容量の門（E-C4：観測できないプールを容量内と
+	// OnUnknownBlock は止めて通知する。容量の門（E-C4：観測できないプールを容量内と
 	// 断じない）。
 	OnUnknownBlock
 	// OnUnknownIgnore は真とみなす。報告だけの条件（N-H6）。
@@ -69,28 +69,28 @@ func ParseDisposition(s string) (Disposition, error) {
 	return OnUnknownWait, fmt.Errorf("on_unknown は wait・block・ignore のどれか（%q が書かれている）", s)
 }
 
-// Selection は量化の選び方 <type>[<ラベル>=<値>, ...]（N-B16・N-F4・N-B18・N-J3）。
-// 宣言した Resource のうち、種類が Type でラベルを全部持つものを選ぶ。
+// Selection は quantifier の選び方 <type>[<ラベル>=<値>, ...]（N-B16・N-F4・N-B18・N-J3）。
+// 宣言した Resource のうち、type が Type でラベルを全部持つものを選ぶ。
 type Selection struct {
 	Type   string
 	Labels map[string]string
 }
 
-// ObservationView は今の周の観測を引く口。周をまたいだ値は引けない（E-J9）。
+// ObservationView は今の cycle の観測を引くインターフェース。cycle をまたいだ値は引けない（E-J9）。
 type ObservationView interface {
-	// Observation は id の今の周の観測。観測していなければ false。
+	// Observation は id の今の cycle の観測。観測していなければ false。
 	Observation(id ID) (Observation, bool)
 }
 
-// ConditionEnv は Condition を評価する環境。今の周の観測だけを引き、外へ問い
+// ConditionEnv は Condition を評価する環境。今の cycle の観測だけを引き、外へ問い
 // 合わせない（E-J9：plan と reconcile が同じ判定をする）。
 type ConditionEnv interface {
 	ObservationView
-	// Select は量化の選び方に当たる宣言の ID。
+	// Select は quantifier の選び方に当たる宣言の ID。
 	Select(s Selection) []ID
-	// Desired は対象の宣言の項目（desired.項目、E-A5・E-A6・E-F2）。無ければ nil。
+	// Desired は対象の宣言の field（desired.<field>、E-A5・E-A6・E-F2）。無ければ nil。
 	Desired() Fields
-	// Check は登録した確かめの今の周の結果（E-B9）。
+	// Check は登録した check の今の cycle の結果（E-B9）。
 	Check(name string) Tri
 }
 
@@ -98,17 +98,17 @@ type ConditionEnv interface {
 type Condition interface {
 	// Eval は env の観測だけで評価する。
 	Eval(env ConditionEnv) Tri
-	// Refs は観測すべき対象（コアが評価の前に観測する）。量化は sel で選んだ ID。
+	// Refs は観測すべき対象（コアが評価の前に観測する）。quantifier は sel で選んだ ID。
 	Refs(sel func(Selection) []ID) []ID
 	// Direct は名指しで参照する対象（observe・present・absent）。順序の辺にする
-	// （E-J7：循環を読み込みで断る）。量化の選んだものは辺にしない。
+	// （E-J7：循環は読み込み時にエラーにする）。quantifier の選んだものは辺にしない。
 	Direct() []ID
-	// Checks は使う確かめの名前。
+	// Checks は使う check の名前。
 	Checks() []string
 	// String は書いたままの式。
 	String() string
 }
 
-// CheckFunc は式で書けない確かめ（相手の台から見た経路など）を Go で書いたもの
-// （E-B9）。今の周の観測を受け取り、三値と理由を返す。
+// CheckFunc は式で書けない check（相手の台から見た経路など）を Go で書いたもの
+// （E-B9）。今の cycle の観測を受け取り、三値と理由を返す。
 type CheckFunc func(ctx context.Context, obs ObservationView) (Tri, string)

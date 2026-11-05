@@ -157,11 +157,11 @@ func TestContract(t *testing.T) {
 			Converge: []core.Resource{e.res(bucket("app-old"), core.Fields{"versioning": "Enabled", "policy": map[string]any{}, "lifecycle": []any{}})},
 			Observed: []core.ID{bucket("app-old"), bucket("app-full")},
 			Faults: map[string]func(){
-				"接続を切る": func() { e.srv.SetUnreachable(true) },
-				"5xx":   func() { e.srv.SetFailStatus(http.StatusInternalServerError) },
-				"時間切れ":  func() { e.srv.SetDelay(time.Second) },
-				"認証の失敗": func() { e.srv.SetFailStatus(http.StatusForbidden) },
-				"壊れた出力": func() { e.srv.SetBroken(true) },
+				"接続を切る":  func() { e.srv.SetUnreachable(true) },
+				"5xx":    func() { e.srv.SetFailStatus(http.StatusInternalServerError) },
+				"タイムアウト": func() { e.srv.SetDelay(time.Second) },
+				"認証の失敗":  func() { e.srv.SetFailStatus(http.StatusForbidden) },
+				"壊れた出力":  func() { e.srv.SetBroken(true) },
 			},
 			Truncate:             func() { e.srv.SetTruncate(true) },
 			Writes:               e.writes,
@@ -172,7 +172,7 @@ func TestContract(t *testing.T) {
 	})
 }
 
-// TestCreateAndDrift は作って宣言どおりになり、手の変更がずれとして見えて戻り、
+// TestCreateAndDrift は作って宣言どおりになり、手動の変更がずれとして見えて戻り、
 // 書き方の違い（Principal "*"・ルールの順・years）がずれにならない（E-C1・E-I7）。
 func TestCreateAndDrift(t *testing.T) {
 	e := newEnv(t, s3test.Options{ObjectLockYearsAsDays: true}, nil)
@@ -194,7 +194,7 @@ func TestCreateAndDrift(t *testing.T) {
 	e.srv.SetPolicy("app-a", `{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":"*","Action":"s3:GetObject","Resource":"arn:aws:s3:::app-a/*"}]}`)
 	c := e.compare(t, r)
 	if c.Op != plan.Update || len(c.Fields) != 2 {
-		t.Fatalf("手の変更のあと: %s %+v", c.Op, c.Fields)
+		t.Fatalf("手動の変更のあと: %s %+v", c.Op, c.Fields)
 	}
 	if err := e.apply(t, r); err != nil {
 		t.Fatal(err)
@@ -221,8 +221,8 @@ func TestCreateAndDrift(t *testing.T) {
 }
 
 // TestObjectLockApproval は既にあるバケットの保持の設定の変更が、向きによらず承認の
-// 要る壊す変更で、作るとき・宣言どおりのとき・宣言どおりにできないときは何も
-// 言わない（E-C1）。
+// 要る破壊的変更で、作るとき・宣言どおりのとき・宣言どおりにできないときは何も
+// 返さない（E-C1）。
 func TestObjectLockApproval(t *testing.T) {
 	e := newEnv(t, s3test.Options{}, nil)
 	lock := func(m map[string]any) core.Resource { return e.res(bucket("app-l"), core.Fields{"object_lock": m}) }
@@ -247,10 +247,10 @@ func TestObjectLockApproval(t *testing.T) {
 		r := lock(tc.to)
 		h := e.p.Classify(r.ID, e.observe(t, r.ID), r.Fields)
 		if len(h) != 1 || !h[0].NeedsApproval || !h[0].Destructive || !strings.Contains(h[0].Reason, tc.want) {
-			t.Errorf("%v: %+v（want 承認の要る壊す変更 %q）", tc.to, h, tc.want)
+			t.Errorf("%v: %+v（want 承認の要る破壊的変更 %q）", tc.to, h, tc.want)
 		}
 	}
-	// 外せない Object Lock を外す宣言は承認を求めず、Apply が何も書かずに断る。
+	// 外せない Object Lock を外す宣言は承認を求めず、Apply が何も書かずに拒否する。
 	off := lock(map[string]any{"enabled": false})
 	if h := e.p.Classify(off.ID, e.observe(t, off.ID), off.Fields); len(h) != 0 {
 		t.Errorf("外す宣言に %+v", h)
@@ -260,9 +260,9 @@ func TestObjectLockApproval(t *testing.T) {
 		t.Errorf("外す Apply: %v", err)
 	}
 	if e.writes() != n {
-		t.Error("断った Apply が書いた")
+		t.Error("拒否した Apply が書いた")
 	}
-	// Object Lock の無い既にあるバケットに enable_on_create は作り直さずに断る。
+	// Object Lock の無い既にあるバケットに enable_on_create は作り直さずに拒否する。
 	e.srv.CreateBucket("app-plain")
 	plain := e.res(bucket("app-plain"), core.Fields{"object_lock": map[string]any{"enable_on_create": true}})
 	if h := e.p.Classify(plain.ID, e.observe(t, plain.ID), plain.Fields); len(h) != 0 {
@@ -307,7 +307,7 @@ func TestObjectLockWithoutCreateTimeEnable(t *testing.T) {
 }
 
 // TestFieldsAndNotImplemented は endpoint の fields に無い設定を読みに行かず、宣言
-// すれば断り、API を持たない設定は unsupported に出て、宣言すれば Apply が分かる文で
+// すればエラーにし、API を持たない設定は unsupported に出て、宣言すれば Apply が分かる文で
 // 止まる（E-C1）。
 func TestFieldsAndNotImplemented(t *testing.T) {
 	e := newEnv(t, s3test.Options{NotImplemented: []string{s3test.APITagging}, GetStatus: map[string]int{s3test.APILifecycle: 400}},
@@ -374,7 +374,7 @@ func TestStorageClassAliases(t *testing.T) {
 	}
 }
 
-// TestDelete は空のバケットを消し、中身のあるバケットは何も書かずに断る（E-F1）。
+// TestDelete は空のバケットを消し、中身のあるバケットは何も書かずに拒否する（E-F1）。
 func TestDelete(t *testing.T) {
 	e := newEnv(t, s3test.Options{}, nil)
 	e.srv.CreateBucket("app-empty")
@@ -393,11 +393,11 @@ func TestDelete(t *testing.T) {
 		t.Errorf("中身のあるバケット: %v（書いた %d 回）", err, e.writes()-n)
 	}
 	if !e.p.Schema().Kinds["bucket"].DestructiveDelete {
-		t.Error("バケットは中身を失う種類")
+		t.Error("バケットは中身を失う type")
 	}
 }
 
-// TestValidateRanges は範囲の引数・重なり・範囲の外の宣言を断る（E-I6）。
+// TestValidateRanges は Range の args・重なり・Range の外の宣言をエラーにする（E-I6）。
 func TestValidateRanges(t *testing.T) {
 	e := newEnv(t, s3test.Options{}, nil)
 	rg := func(args map[string]string) core.Range { return core.Range{Provider: "s3", Args: args} }
@@ -406,7 +406,7 @@ func TestValidateRanges(t *testing.T) {
 		res    []core.Resource
 		want   string
 	}{
-		{[]core.Range{rg(map[string]string{"endpoint": "fake", "prefix": "app-"})}, []core.Resource{{ID: bucket("other")}}, "どの範囲"},
+		{[]core.Range{rg(map[string]string{"endpoint": "fake", "prefix": "app-"})}, []core.Resource{{ID: bucket("other")}}, "どの Range"},
 		{[]core.Range{rg(map[string]string{"endpoint": "fake", "prefix": "app-"}), rg(map[string]string{"endpoint": "fake", "prefix": "app-x"})}, nil, "重なる"},
 		{[]core.Range{rg(map[string]string{"endpoint": "fake"}), rg(map[string]string{"endpoint": "fake", "prefix": "b"})}, nil, "重なる"},
 		{[]core.Range{rg(map[string]string{"endpoint": "nope"})}, nil, "settings.endpoints に無い"},
@@ -414,7 +414,7 @@ func TestValidateRanges(t *testing.T) {
 		{[]core.Range{rg(map[string]string{"endpoint": "fake", "bucket": "a"})}, nil, "endpoint と prefix だけ"},
 		{[]core.Range{rg(map[string]string{"endpoint": "fake", "prefix": "A_"})}, nil, "使えない文字"},
 		{[]core.Range{rng()}, []core.Resource{{ID: core.ID{Type: "s3/bucket", Name: "fake/Bad_Name"}}}, "バケット名でない"},
-		{[]core.Range{rng()}, []core.Resource{{ID: core.ID{Type: "s3/object", Name: "fake/a-b"}}}, "種類"},
+		{[]core.Range{rng()}, []core.Resource{{ID: core.ID{Type: "s3/object", Name: "fake/a-b"}}}, "type"},
 		{[]core.Range{rng()}, []core.Resource{e.res(bucket("app-v"), core.Fields{"versioning": "On"})}, "versioning"},
 		{[]core.Range{rng()}, []core.Resource{e.res(bucket("app-v"), core.Fields{"tags": map[string]any{"a": 1}})}, "文字列"},
 		{[]core.Range{rng()}, []core.Resource{e.res(bucket("app-v"), core.Fields{"lifecycle": []any{map[string]any{"ID": "a"}}})}, "Status"},
@@ -432,7 +432,7 @@ func TestValidateRanges(t *testing.T) {
 			t.Errorf("%v %v: %v（want %q）", tc.ranges, tc.res, diags, tc.want)
 		}
 	}
-	// 2 つの接頭辞に分けた範囲（重ならない）の List は自分の接頭辞だけを返す。
+	// 2 つの接頭辞に分けた Range（重ならない）の List は自分の接頭辞だけを返す。
 	e.srv.CreateBucket("app-one")
 	e.srv.CreateBucket("db-one")
 	two := []core.Range{rg(map[string]string{"endpoint": "fake", "prefix": "app-"}), rg(map[string]string{"endpoint": "fake", "prefix": "db-"})}
@@ -445,7 +445,7 @@ func TestValidateRanges(t *testing.T) {
 	}
 }
 
-// TestModuleSettings は settings の誤りを断る（secret key そのものは書けない）。
+// TestModuleSettings は settings の不正な値をエラーにする（secret key そのものは書けない）。
 func TestModuleSettings(t *testing.T) {
 	ok := map[string]any{"endpoint": "http://127.0.0.1:9000", "observe": map[string]any{"access_key": "a", "secret_key_file": "/x"}}
 	with := func(k string, v any) map[string]any {
@@ -462,14 +462,14 @@ func TestModuleSettings(t *testing.T) {
 	}{
 		{map[string]any{}, "settings.endpoints"},
 		{map[string]any{"endpoints": map[string]any{"a/b": ok}}, "名前"},
-		{map[string]any{"endpoints": map[string]any{"a": with("secret_key", "x")}}, "知らない項目"},
+		{map[string]any{"endpoints": map[string]any{"a": with("secret_key", "x")}}, "知らない field"},
 		{map[string]any{"endpoints": map[string]any{"a": with("observe", map[string]any{"access_key": "a", "secret_key": "x"})}}, "secret key そのものは書けない"},
 		{map[string]any{"endpoints": map[string]any{"a": with("observe", map[string]any{"secret_key_file": "/x"})}}, "access_key"},
 		{map[string]any{"endpoints": map[string]any{"a": with("endpoint", "s3.example.net")}}, "http://host:port"},
 		{map[string]any{"endpoints": map[string]any{"a": with("api_base_path", "s3")}}, "api_base_path"},
 		{map[string]any{"endpoints": map[string]any{"a": with("fields", []any{"acl"})}}, "fields[0]"},
 		{map[string]any{"endpoints": map[string]any{"a": with("addressing", "dns")}}, "addressing"},
-		{map[string]any{"endpoints": map[string]any{"a": with("insecure_skip_verify", true), "b": ok}, "x": 1}, "知らない項目"},
+		{map[string]any{"endpoints": map[string]any{"a": with("insecure_skip_verify", true), "b": ok}, "x": 1}, "知らない field"},
 	} {
 		if _, err := s3.Module(tc.settings); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%v: %v（want %q）", tc.settings, err, tc.want)
@@ -480,7 +480,7 @@ func TestModuleSettings(t *testing.T) {
 	}
 }
 
-// TestAPIBasePath は API のパスの前置きの下の endpoint に当てる。
+// TestAPIBasePath は API のパスの前置きの下の endpoint に対して動かす。
 func TestAPIBasePath(t *testing.T) {
 	e := newEnv(t, s3test.Options{BasePath: "/gw/s3"}, map[string]any{"api_base_path": "/gw/s3/"})
 	r := e.res(bucket("app-b"), core.Fields{"versioning": "Enabled"})
@@ -490,7 +490,7 @@ func TestAPIBasePath(t *testing.T) {
 	if c := e.compare(t, r); c.Op != plan.None {
 		t.Fatalf("%s %+v", c.Op, c.Fields)
 	}
-	// 前置きを書かなければ届かない（Unknown。無いと読まない）。
+	// 前置きを書かなければ届かない（Unknown。Absent と読まない）。
 	n := newEnv(t, s3test.Options{BasePath: "/gw/s3"}, nil)
 	if o := n.observe(t, bucket("app-b")); o.Availability != core.Unknown {
 		t.Errorf("前置き無し: %s", o.Availability)

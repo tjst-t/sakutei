@@ -33,10 +33,10 @@ var (
 	policies = map[string]bool{"accept": true, "drop": true}
 )
 
-// priorityNames は nft の priority の名前（nft(8)）。ファイルの読みで数に直す。
+// priorityNames は nft の priority の名前（nft(8)）。ファイルを読むときに数値に直す。
 var priorityNames = map[string]int64{"raw": -300, "mangle": -150, "dstnat": -100, "filter": 0, "security": 50, "srcnat": 100}
 
-// parsePriority は "0"・"-150"・"filter"・"filter + 10"・"mangle - 5" を数にする。
+// parsePriority は "0"・"-150"・"filter"・"filter + 10"・"mangle - 5" を数値にする。
 func parsePriority(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
@@ -131,8 +131,8 @@ func afterQuota(out []string) bool {
 	return false
 }
 
-// checkRule は nft のスクリプトの 1 行に埋め込めるルール文かを見る（決まった道具の
-// 検査と同じ：引用符の外の ; # $ \ と改行・閉じない引用符と括弧を受けない）。
+// checkRule は nft のスクリプトの 1 行に埋め込めるルール文かを確かめる（専用ツールの
+// 検査と同じ：引用符の外の ; # $ \ と改行・閉じていない引用符と括弧を受け付けない）。
 func checkRule(r string) error {
 	if strings.TrimSpace(r) == "" {
 		return errors.New("空のルール")
@@ -177,7 +177,7 @@ type baseDef struct {
 	priority          int64
 }
 
-// spec は add chain の { } の中身（決まった道具が受ける形）。
+// spec は add chain の { } の中身（専用ツールが受け付ける形）。
 func (d baseDef) spec() string {
 	return fmt.Sprintf("{ type %s hook %s priority %d ; policy %s ; }", d.typ, d.hook, d.priority, d.policy)
 }

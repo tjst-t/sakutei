@@ -16,7 +16,7 @@ package redfishtest
 
 // update.go は偽 BMC の FW の更新（#148）。DMTF の Redfish の仕様に沿って次を
 // 真似る（qemu-bmc は 0.11.0 から UpdateService の模擬を持ち、統合テストの
-// 10 段目が本物で確かめる。違いは Options の NoTaskPayload と
+// Step 10 が本物で確かめる。違いは Options の NoTaskPayload と
 // SetImageRejected で寄せる、#168）:
 //
 //   - /redfish/v1/UpdateService: ServiceEnabled・FirmwareInventory・
@@ -30,9 +30,9 @@ package redfishtest
 //     部品は 400。
 //   - Task は Running で始まり、Options.UpdateDuration で終わる（時刻は
 //     Options.Now、要求を受けたときに進める）。終わるとき、イメージ（AddImage
-//     で置いたもの。SimpleUpdate は URI、送信は中身で引く）が無い・資格が合わない・
+//     で置いたもの。SimpleUpdate は URI、送信は中身で引く）が無い・credential が合わない・
 //     SetUpdateFails のときは Exception。Immediate なら部品の Version をすぐ
-//     イメージの版に、OnReset なら次の起動（Reset）で効く保留にして Completed。
+//     イメージのバージョンに、OnReset なら次の起動（Reset）で効く保留にして Completed。
 //   - Task の Payload の JsonBody は要求の本文（JSON の文字列）から Password を
 //     除いたもの。Options.NoTaskPayload なら Payload を返さない（qemu-bmc
 //     0.11.0 と同じ）。
@@ -42,8 +42,8 @@ package redfishtest
 //     ときに UpdateSuccessful・AwaitToActivate（OnReset）・ApplyFailed
 //     （Exception）。
 //
-// 試験用の口: AddImage・SetUpdateFails・SetImageRejected（受けた要求を 400
-// Update.1.0.VerificationFailed で断り Task を作らない。qemu-bmc の障害
+// テスト用のメソッド: AddImage・SetUpdateFails・SetImageRejected（受けた要求を 400
+// Update.1.0.VerificationFailed で拒否し Task を作らない。qemu-bmc の障害
 // firmware-image-rejected と同じ）・FirmwareVersion・SetFirmwareVersion・
 // UpdateRequests（更新の要求を受けた回数）・ClearTasks（BMC の再起動で Task が
 // 消えた、の代役）。
@@ -112,14 +112,14 @@ type Image struct {
 	Content []byte
 	// Version はこのイメージを入れたあとの部品の Version。
 	Version string
-	// Username・Password は URI を取りに行くのに要る資格（空なら要らない）。
+	// Username・Password は URI を取りに行くのに要る credential（空なら要らない）。
 	Username string
 	Password string
 }
 
 type fwComponent struct {
 	FirmwareItem
-	pending string // OnReset で次の起動に効く版
+	pending string // OnReset で次の起動に効くバージョン
 }
 
 type fwTask struct {
@@ -167,7 +167,7 @@ func (s *Server) initUpdate() {
 	}
 }
 
-// ---- 試験用の口 ----
+// ---- テスト用のメソッド ----
 
 // AddImage は BMC が取りに行ける（送られてくる）イメージを置く。
 func (s *Server) AddImage(img Image) {
@@ -180,7 +180,7 @@ func (s *Server) AddImage(img Image) {
 func (s *Server) SetUpdateFails(v bool) { s.mu.Lock(); s.fw.fail = v; s.mu.Unlock() }
 
 // SetImageRejected は true のあいだ、受けた更新の要求を 400
-// （Update.1.0.VerificationFailed）で断り、Task を作らない（数えもしない）。
+// （Update.1.0.VerificationFailed）で拒否し、Task を作らない（数えもしない）。
 func (s *Server) SetImageRejected(v bool) { s.mu.Lock(); s.fw.rejected = v; s.mu.Unlock() }
 
 // FirmwareVersion は部品 id の今の Version を返す。
@@ -194,7 +194,7 @@ func (s *Server) FirmwareVersion(id string) string {
 	return ""
 }
 
-// FirmwarePending は部品 id の、次の起動で効く版を返す（無ければ空）。
+// FirmwarePending は部品 id の、次の起動で効くバージョンを返す（無ければ空）。
 func (s *Server) FirmwarePending(id string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -205,7 +205,7 @@ func (s *Server) FirmwarePending(id string) string {
 	return ""
 }
 
-// SetFirmwareVersion は部品 id の Version を直接変える（人が別の道具で更新した、
+// SetFirmwareVersion は部品 id の Version を直接変える（人が別のツールで更新した、
 // の代役）。
 func (s *Server) SetFirmwareVersion(id, version string) {
 	s.mu.Lock()
@@ -315,7 +315,7 @@ type updateParamsDoc struct {
 	Password  string   `json:"Password"`
 }
 
-// checkParams は Targets と ApplyTime を確かめ、断るなら理由を返す。
+// checkParams は Targets と ApplyTime を確かめ、拒否するなら理由を返す。
 func (s *Server) checkParams(p *updateParamsDoc) string {
 	if len(p.Targets) == 0 {
 		return "Targets is required."

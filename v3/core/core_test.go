@@ -54,7 +54,7 @@ func TestNormalizeAndEqual(t *testing.T) {
 		v any
 	}{{String, 1}, {Int, "1"}, {Int, 1.5}, {Bool, "true"}, {Duration, "soon"}, {List, "a"}, {Map, []any{}}, {Float, "1"}, {Float, math.NaN()}} {
 		if _, err := Normalize(c.t, c.v); err == nil {
-			t.Errorf("%s %v: 断らなかった", c.t, c.v)
+			t.Errorf("%s %v: エラーにしなかった", c.t, c.v)
 		}
 	}
 }
@@ -66,12 +66,12 @@ func TestRefs(t *testing.T) {
 	}
 	for _, bad := range []string{"a/b", "a//c", "/b/c"} {
 		if _, err := ParseRef(bad); err == nil {
-			t.Errorf("%q を断らなかった", bad)
+			t.Errorf("%q をエラーにしなかった", bad)
 		}
 	}
 	for _, bad := range []string{"a", "a/b/c", "/b", "a/"} {
 		if ParseType(bad) == nil {
-			t.Errorf("type %q を断らなかった", bad)
+			t.Errorf("type %q をエラーにしなかった", bad)
 		}
 	}
 	e := Exclusion{IDPrefix: "vm/1"}

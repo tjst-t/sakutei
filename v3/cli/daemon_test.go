@@ -48,7 +48,7 @@ func (s *syncBuf) String() string {
 	return s.b.String()
 }
 
-// stdout の送り先（§8 の段 3）：一回実行でも Event を 1 行 1 件の JSON で書く。
+// stdout の sink（§8 の Stage 3）：one-shot 実行でも Event を 1 行 1 件の JSON で書く。
 func TestReconcileStdoutSink(t *testing.T) {
 	e := setup(t)
 	write(t, e.config, readFile(t, e.config)+"sinks:\n  out:\n    module: stdout\n")
@@ -61,15 +61,15 @@ func TestReconcileStdoutSink(t *testing.T) {
 			t.Errorf("%q が無い:\n%s", want, out)
 		}
 	}
-	// 送り終えた Event は次の周に送らない。
+	// 送り終えた Event は次の cycle に送らない。
 	_, out, _ = runCLI("reconcile", "--intent", e.intent, "--config", e.config, "--record", e.record)
 	if strings.Contains(out, `"state":"firing","resource":"dns/record/stray"`) || !strings.Contains(out, `"state":"resolved","resource":"dns/record/stray"`) {
-		t.Errorf("2 周目:\n%s", out)
+		t.Errorf("2 cycle 目:\n%s", out)
 	}
 }
 
-// 常駐（§2.2）：周を回し、読み取り HTTP で /status・/health・/plan を返す。stdout は
-// 送り先、ログは stderr。ctx の終わりで終了コード 0。
+// daemon（§2.2）：cycle を回し、read-only HTTP API で /status・/health・/plan を返す。
+// stdout は sink、ログは stderr。ctx の終わりで終了コード 0。
 func TestDaemonServesReadHTTP(t *testing.T) {
 	e := setup(t)
 	write(t, e.config, readFile(t, e.config)+"listen:\n  read: {address: \"127.0.0.1:0\"}\n")
@@ -93,15 +93,15 @@ func TestDaemonServesReadHTTP(t *testing.T) {
 	select {
 	case <-cycled:
 	case code := <-done:
-		t.Fatalf("常駐が終わった exit=%d %s", code, stderr.String())
+		t.Fatalf("daemon が終わった exit=%d %s", code, stderr.String())
 	case <-time.After(10 * time.Second):
-		t.Fatalf("周を回さない: %s", stderr.String())
+		t.Fatalf("cycle を回さない: %s", stderr.String())
 	}
-	m := regexp.MustCompile(`読み取り HTTP: (http://\S+)`).FindStringSubmatch(stderr.String())
+	m := regexp.MustCompile(`read-only HTTP API: (http://\S+)`).FindStringSubmatch(stderr.String())
 	if m == nil {
 		t.Fatalf("待ち受けの宛先を書かない: %s", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "周 1: reconcile: ") {
+	if !strings.Contains(stderr.String(), "cycle 1: reconcile: ") {
 		t.Errorf("ログ: %s", stderr.String())
 	}
 	for path, want := range map[string]string{
@@ -127,14 +127,14 @@ func TestDaemonServesReadHTTP(t *testing.T) {
 			t.Fatalf("exit=%d %s", code, stderr.String())
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("ctx が終わっても常駐が終わらない")
+		t.Fatal("ctx が終わっても daemon が終わらない")
 	}
 	if stdout.String() != "" {
-		t.Errorf("送り先の無い常駐が stdout に書いた: %s", stdout.String())
+		t.Errorf("sink の無い daemon が stdout に書いた: %s", stdout.String())
 	}
 }
 
-// 初めの読み込みで断れば常駐を始めない（終了コード 2）。
+// 最初の読み込みで reject すれば daemon を始めない（終了コード 2）。
 func TestDaemonRejectsAtStart(t *testing.T) {
 	e := setup(t)
 	write(t, filepath.Join(e.intent, "dup.yaml"), "resources:\n  - {type: dns/record, id: www}\n")
@@ -142,7 +142,7 @@ func TestDaemonRejectsAtStart(t *testing.T) {
 		t.Fatalf("exit=%d %s", code, errOut)
 	}
 	if code, _, _ := runCLI("--intent", e.intent); code != cli.ExitError {
-		t.Fatalf("引数の足りない常駐 exit=%d", code)
+		t.Fatalf("引数の足りない daemon exit=%d", code)
 	}
 }
 

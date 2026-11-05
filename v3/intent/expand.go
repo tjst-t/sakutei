@@ -25,8 +25,8 @@ import (
 
 // ExpandStep は intent の expand: の 1 つ（§3.8、E-A11・N-A14・E-B5・E-A7）。
 // Kind は "go:<名前>"（cli.WithExpander で組み込んだもの）か "exec:<名前>"
-// （つなぎ方の設定の expanders.<名前>）。Keys は exec の Expand が読む intent の
-// 最上位の項目（go の Expand は自分で言う）。
+// （接続設定の expanders.<名前>）。Keys は exec の Expand が読む intent の
+// 最上位の field（go の Expand は自分で返す）。
 type ExpandStep struct {
 	Kind   string
 	Keys   []string
@@ -39,22 +39,22 @@ func (s ExpandStep) Module() (kind, name string) {
 	return k, n
 }
 
-// InputSpec は intent の inputs: の 1 つ（E-K3）。在りかはつなぎ方の設定の inputs。
+// InputSpec は intent の inputs: の 1 つ（E-K3）。在りかは接続設定の inputs。
 type InputSpec struct {
 	Name string
 	// ExpectedMin はこれより件数が少なければ「届いたが欠けている」（0 は見ない）。
 	ExpectedMin int
-	// MaxDrop は前の周の件数からこれ以上（百分率）減れば欠けているとみなす
-	// （-1 は見ない）。前の周の件数は Record の目印。
+	// MaxDrop は前の cycle の件数からこれ以上（百分率）減れば欠けているとみなす
+	// （-1 は見ない）。前の cycle の件数は Record の marks。
 	MaxDrop int
-	// Items は件数を数えるリストの項目（入力の最上位のマップの項目）。書かなければ
-	// 最上位の項目の数。
+	// Items は件数を数えるリストの field（入力の最上位のマップの field）。書かなければ
+	// 最上位の field の数。
 	Items  string
 	Origin core.Origin
 }
 
 // ScanExpand は全部の文書の expand: だけを先に読む（Expand のモジュールが読む
-// 項目を知ってから残りを読むため）。形の誤りは Decode が断る。
+// field を知ってから残りを読むため）。形の誤りは Decode が reject する。
 func ScanExpand(docs []Document) []ExpandStep {
 	var out []ExpandStep
 	for _, doc := range docs {
@@ -139,7 +139,7 @@ func (d *decoder) expand(n *yaml.Node) []ExpandStep {
 		}
 		if v := obj["keys"]; v != nil {
 			if kind != "exec" {
-				d.reject(v, path+".keys", "keys は exec の Expand だけに書く（go の Expand は自分で読む項目を言う）")
+				d.reject(v, path+".keys", "keys は exec の Expand だけに書く（go の Expand は読む field を自分で返す）")
 			}
 			for j, kn := range d.list(v, path+".keys") {
 				if k, ok := d.str(kn, fmt.Sprintf("%s.keys[%d]", path, j)); ok {
@@ -268,7 +268,7 @@ func (d *decoder) allocation(n *yaml.Node, path string) (core.Allocation, bool) 
 				continue
 			}
 			if _, dup := a.Values[k]; dup {
-				d.reject(item, at, "鍵 %q が 2 回ある", k)
+				d.reject(item, at, "key %q が 2 回ある", k)
 			}
 			a.Values[k] = num
 		}

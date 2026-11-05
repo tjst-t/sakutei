@@ -17,7 +17,7 @@
 package integration
 
 // s3_test.go — v3 の sakutei の CLI（plan・reconcile）を本物の S3 互換のサーバに
-// 向けて回す（v2 の tests/integration/s3/s3_integration_test.go の段を v3 に移した）。
+// 向けて回す（v2 の tests/integration/s3/s3_integration_test.go の step を v3 に移した）。
 
 import (
 	"context"
@@ -131,7 +131,7 @@ func TestS3(t *testing.T) {
 		for _, ep := range main {
 			c := changeOf(r, "s3/bucket/"+ep+"/sk-it-app")
 			if c.Op != plan.Update || len(c.Fields) != 2 {
-				t.Fatalf("%s: 手の変更のあと %s %+v", ep, c.Op, c.Fields)
+				t.Fatalf("%s: 手動の変更のあと %s %+v", ep, c.Op, c.Fields)
 			}
 		}
 		if r, code, errOut := w.run(t, "reconcile"); code != cli.ExitOK {
@@ -147,7 +147,7 @@ func TestS3(t *testing.T) {
 		}
 	})
 
-	t.Run("何周しても宣言どおり", func(t *testing.T) {
+	t.Run("何 cycle 回しても宣言どおり", func(t *testing.T) {
 		before := map[string]string{}
 		for _, ep := range main {
 			before[ep], _ = session(t, ep).GetPolicy(ctx, "sk-it-app")
@@ -155,12 +155,12 @@ func TestS3(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			r, code, errOut := w.run(t, "reconcile")
 			if code != cli.ExitOK || !converged(r) {
-				t.Fatalf("周 %d exit %d: %s\n%s", i, code, errOut, dump(r))
+				t.Fatalf("cycle %d exit %d: %s\n%s", i, code, errOut, dump(r))
 			}
 		}
 		for _, ep := range main {
 			if after, _ := session(t, ep).GetPolicy(ctx, "sk-it-app"); after != before[ep] {
-				t.Errorf("%s: 周を重ねてポリシーが書き換わった:\n%s\n%s", ep, before[ep], after)
+				t.Errorf("%s: cycle を重ねてポリシーが書き換わった:\n%s\n%s", ep, before[ep], after)
 			}
 		}
 	})
@@ -183,16 +183,16 @@ func TestS3(t *testing.T) {
 		for _, ep := range main {
 			for _, b := range []string{"sk-it-orphan-full", "sk-it-orphan-empty"} {
 				if c := changeOf(r, "s3/bucket/"+ep+"/"+b); c.Op != plan.Unmanaged || !hasBucket(t, ep, b) {
-					t.Errorf("%s/%s: %s %q（want 宣言外で消さない）", ep, b, c.Op, c.Note)
+					t.Errorf("%s/%s: %s %q（want 宣言に無いものを消さない）", ep, b, c.Op, c.Note)
 				}
 			}
 			if c := changeOf(r, "s3/bucket/"+ep+"/other-not-managed"); c.Op != "" || !hasBucket(t, ep, "other-not-managed") {
-				t.Errorf("%s: 範囲の外のバケットが %s", ep, c.Op)
+				t.Errorf("%s: Range の外のバケットが %s", ep, c.Op)
 			}
 		}
 	})
 
-	t.Run("ensure: absent で名指しして消す。中身のあるバケットは断る", func(t *testing.T) {
+	t.Run("ensure: absent で名指しして消す。中身のあるバケットは拒否する", func(t *testing.T) {
 		var more []resource
 		for _, ep := range main {
 			more = append(more, resource{Type: "s3/bucket", ID: ep + "/sk-it-orphan-empty", Ensure: "absent"},
@@ -253,7 +253,7 @@ func TestS3(t *testing.T) {
 		}
 		for _, rs := range r.Ranges {
 			if strings.Contains(rs.Range, "endpoint="+paused+",") && rs.Complete {
-				t.Errorf("止まった %s の範囲が完全: %+v", paused, rs)
+				t.Errorf("止まった %s の Range が完全: %+v", paused, rs)
 			}
 		}
 		if running != "" {
@@ -297,7 +297,7 @@ func TestS3(t *testing.T) {
 
 	t.Run("endpoint の fields に無い設定は読まない", func(t *testing.T) {
 		// seaweedfs-compat の fields は policy・tags だけ。versioning・lifecycle は読まず、
-		// 宣言しなければ宣言どおり、宣言すれば読み込みで「扱わない」と断る。
+		// 宣言しなければ宣言どおり、宣言すれば読み込み時に「扱わない」とエラーにする。
 		compat := bucketRes("seaweedfs-compat/sk-compat-app", map[string]any{"policy": policyFor("sk-compat-app"), "tags": map[string]any{"env": "integration"}})
 		w.intent(t, ranges(false), apps(compat)...)
 		if r, code, errOut := w.run(t, "reconcile"); code != cli.ExitOK || !converged(r) {
@@ -308,7 +308,7 @@ func TestS3(t *testing.T) {
 			t.Errorf("sk-compat-app: %s", c.Op)
 		}
 		if c := changeOf(r, "s3/bucket/seaweedfs/sk-compat-app"); c.Op != "" {
-			t.Errorf("接頭辞の違う範囲に sk-compat-app が出た: %s", c.Op)
+			t.Errorf("接頭辞の違う Range に sk-compat-app が出た: %s", c.Op)
 		}
 		if v, err := session(t, "seaweedfs").GetVersioning(ctx, "sk-compat-app"); err != nil || v == "Enabled" {
 			t.Errorf("sk-compat-app の versioning = %q, %v（触らない）", v, err)

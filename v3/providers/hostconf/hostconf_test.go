@@ -171,7 +171,7 @@ func TestUnreachable(t *testing.T) {
 	}
 }
 
-// 依って立つファイルが変われば 1 回だけ入れ替える（E-D5・N-D7・N-E6）。
+// 依存するファイルが変われば 1 回だけ restart する（E-D5・N-D7・N-E6）。
 func TestUnitRestartOn(t *testing.T) {
 	p, sd, dir := setup(t)
 	env := filepath.Join(dir, "app.env")
@@ -190,7 +190,7 @@ func TestUnitRestartOn(t *testing.T) {
 	if sd.count("restart") != 0 || sd.count("start") != 1 {
 		t.Fatalf("calls: %v", sd.calls)
 	}
-	// ファイルを変えると、印が古いので restart_on が空になり、1 回だけ入れ替える。
+	// ファイルを変えると、記録が古いので restart_on が空になり、1 回だけ restart する。
 	apply(t, p, fileID, core.Fields{"content": "A=2\n"})
 	if o := observe(t, p, unitID); len(o.Fields["restart_on"].([]any)) != 0 {
 		t.Fatalf("%+v", o)
@@ -198,14 +198,14 @@ func TestUnitRestartOn(t *testing.T) {
 	apply(t, p, unitID, want)
 	apply(t, p, unitID, want)
 	if sd.count("restart") != 1 {
-		t.Fatalf("入れ替え %d 回: %v", sd.count("restart"), sd.calls)
+		t.Fatalf("restart %d 回: %v", sd.count("restart"), sd.calls)
 	}
 	if o := observe(t, p, unitID); len(o.Fields["restart_on"].([]any)) != 1 {
 		t.Fatalf("%+v", o)
 	}
 }
 
-// 不変条件 25：範囲の外のホスト・形の違う ID は断る。
+// 不変条件 25：Range の外のホスト・形の違う ID はエラーにする（reject）。
 func TestValidate(t *testing.T) {
 	p, _, _ := setup(t)
 	ranges := []core.Range{{Provider: "host", Args: map[string]string{"host": "h1"}}}

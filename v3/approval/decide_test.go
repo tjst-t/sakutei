@@ -25,7 +25,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
-// 不変条件 21：申請者・要件に無い人の判断は書く前に断る。待っていない依頼も断る。
+// 不変条件 21：申請者・要件に無い人の判断は書く前に拒否する。待っていない依頼も拒否する。
 func TestDecide(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "record")
 	rec, err := record.Open(dir)
@@ -63,7 +63,7 @@ func TestDecide(t *testing.T) {
 		}
 	}
 	if files, _ := os.ReadDir(filepath.Join(dir, "approvals", "chg-1")); len(files) != 1 {
-		t.Fatalf("断った判断を書いた: %d ファイル", len(files))
+		t.Fatalf("拒否した判断を書いた: %d ファイル", len(files))
 	}
 	st, err := approval.Decide(dir, "chg-1", record.Decision{By: "alice", Decision: record.Approve, At: now})
 	if err != nil || st.State != approval.Approved || len(st.Approvers) != 1 || st.Approvers[0] != "alice" {

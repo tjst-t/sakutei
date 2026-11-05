@@ -14,18 +14,18 @@
 
 package plan
 
-// lane.go — 窓と別枠（§3.6 の windows・allow、E-J2・E-J3・E-A9・N-J2・E-R1）。
+// lane.go — window と allow（§3.6 の windows・allow、E-J2・E-J3・E-A9・N-J2・E-R1）。
 //
-//   - 別枠でない Policy の窓：窓の外は、その Policy に当たる変更を report にする
-//     （知らせるだけ。観測と知らせは続ける）。
-//   - 別枠（allow）の Policy：窓の中で、承認が揃い（approval）、cooling-off が
-//     過ぎたときだけ開く。開いた別枠は、select と kind に合う変更を max_count まで
-//     通常の予算の外で通す（予算に数えず、予算の超過でも止めない。宣言の外の
-//     暴発だけを止める、E-J2）。使った数は Record の目印（Lanes）に置き、発射の
-//     直前に数え、失敗しても戻さない。reimage は同じ種類・同じラベルの削除と
+//   - allow でない Policy の window：window の外は、その Policy に該当する変更を
+//     report にする（通知するだけ。観測と通知は続ける）。
+//   - allow の Policy：window の中で、承認が揃い（approval）、cooling-off が
+//     過ぎたときだけ開く。開いた allow は、select と kind に合う変更を max_count まで
+//     通常の budget の外で通す（budget に数えず、budget の超過でも止めない。宣言の外の
+//     暴発だけを止める、E-J2）。使った数は Record の marks（Lanes）に置き、発射の
+//     直前に数え、失敗しても戻さない。reimage は同じ type・同じラベルの削除と
 //     作成の対を 1 と数える（作成の側は 0）。
-//   - 別枠の承認は Policy ごとに 1 つの依頼（変更ごとでない）。承認は使っても
-//     消えない（窓の間ずっと効く）。
+//   - allow の承認は Policy ごとに 1 つの依頼（変更ごとでない）。承認は使っても
+//     消えない（window の間ずっと効く）。
 
 import (
 	"crypto/sha256"
@@ -40,26 +40,26 @@ import (
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
-// LaneStatus は別枠 1 つのこの周の状態。
+// LaneStatus は allow 1 つのこの cycle の状態。
 type LaneStatus struct {
 	Policy   string `json:"policy"`
 	Kind     string `json:"kind"`
 	MaxCount int    `json:"max_count"`
-	Used     int    `json:"used"`     // 前の周までに使った数
-	Admitted int    `json:"admitted"` // この周に通す数（reimage の対は 1）
+	Used     int    `json:"used"`     // 前の cycle までに使った数
+	Admitted int    `json:"admitted"` // この cycle に通す数（reimage の対は 1）
 	Open     bool   `json:"open"`
 	Note     string `json:"note,omitempty"` // 開かない理由・使い切った
 	Request  string `json:"request,omitempty"`
 
-	// Fingerprint・Seen は Record の目印に書く（JSON に出さない）。
+	// Fingerprint・Seen は Record の marks に書く（JSON に出さない）。
 	Fingerprint string    `json:"-"`
 	Seen        time.Time `json:"-"`
-	// NewRequest は周が Record に書く承認の依頼。
+	// NewRequest は cycle が Record に書く承認の依頼。
 	NewRequest *record.ApprovalRequest `json:"-"`
 	Fresh      bool                    `json:"-"`
 }
 
-// LaneFingerprint は別枠の宣言の同一性（select・kind・窓）。max_count を変えた
+// LaneFingerprint は allow の宣言の同一性（select・kind・window）。max_count を変えた
 // だけなら同じ宣言として使った数を保つ。
 func LaneFingerprint(p core.Policy) string {
 	var ws []string
@@ -74,14 +74,14 @@ func LaneFingerprint(p core.Policy) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// LaneRequestID は別枠の承認の依頼の ID。宣言（fingerprint と max_count）が
-// 変われば頼み直す（枠を広げたら承認し直す）。
+// LaneRequestID は allow の承認の依頼の ID。宣言（fingerprint と max_count）が
+// 変われば頼み直す（allow を広げたら承認し直す）。
 func LaneRequestID(p core.Policy) string {
 	sum := sha256.Sum256([]byte(p.Name + "\n" + LaneFingerprint(p) + "\n" + fmt.Sprint(p.Allow.MaxCount)))
 	return "lane-" + hex.EncodeToString(sum[:8])
 }
 
-// outsideWindows は別枠でない Policy のうち、今が窓の外のもの（E-J3）。
+// outsideWindows は allow でない Policy のうち、今が window の外のもの（E-J3）。
 func outsideWindows(ps []core.Policy, now time.Time) map[string]bool {
 	out := map[string]bool{}
 	for _, p := range ps {
@@ -92,7 +92,7 @@ func outsideWindows(ps []core.Policy, now time.Time) map[string]bool {
 	return out
 }
 
-// laneOpen は別枠が開いているかを決め、開かない理由と承認の依頼を出す。
+// laneOpen は allow が開いているかを決め、開かない理由と承認の依頼を出す。
 func laneOpen(p core.Policy, in Input) LaneStatus {
 	fp := LaneFingerprint(p)
 	mark, had := in.Marks.Lane(p.Name, fp)
@@ -109,9 +109,9 @@ func laneOpen(p core.Policy, in Input) LaneStatus {
 			ended = ended && w.Ended(in.Now)
 		}
 		if ended {
-			st.Note = "窓が過ぎた（通常の予算で数える）"
+			st.Note = "window が過ぎた（通常の budget で数える）"
 		} else {
-			st.Note = "窓の外（通常の予算で数える）"
+			st.Note = "window の外（通常の budget で数える）"
 		}
 		return st
 	}
@@ -133,10 +133,10 @@ func laneOpen(p core.Policy, in Input) LaneStatus {
 		switch as.State {
 		case approval.Approved:
 		case approval.Rejected:
-			st.Note = fmt.Sprintf("承認の依頼 %s を %s が拒否した（通常の予算で数える）", id, strings.Join(as.RejectedBy, "・"))
+			st.Note = fmt.Sprintf("承認の依頼 %s を %s が拒否した（通常の budget で数える）", id, strings.Join(as.RejectedBy, "・"))
 			return st
 		case approval.Pending:
-			st.Note = fmt.Sprintf("承認待ち：sakutei approve %s（%s）。開くまで通常の予算で数える", id, as.Summary())
+			st.Note = fmt.Sprintf("承認待ち：sakutei approve %s（%s）。開くまで通常の budget で数える", id, as.Summary())
 			return st
 		default:
 			req := record.ApprovalRequest{ID: id, Kind: "lane", Subject: fmt.Sprintf("allow %s %s max_count %d", p.Allow.Kind, p.Select, p.Allow.MaxCount),
@@ -146,18 +146,18 @@ func laneOpen(p core.Policy, in Input) LaneStatus {
 				req.Expires = &exp
 			}
 			st.NewRequest, st.Fresh = &req, ok
-			st.Note = fmt.Sprintf("承認待ち：sakutei approve %s（%s）。開くまで通常の予算で数える", id, approvalNeed(rules))
+			st.Note = fmt.Sprintf("承認待ち：sakutei approve %s（%s）。開くまで通常の budget で数える", id, approvalNeed(rules))
 			return st
 		}
 	}
 	st.Open = true
 	if st.Used >= st.MaxCount {
-		st.Note = fmt.Sprintf("max_count %d を使い切った（通常の予算で数える）", st.MaxCount)
+		st.Note = fmt.Sprintf("max_count %d を使い切った（通常の budget で数える）", st.MaxCount)
 	}
 	return st
 }
 
-// fits は変更が別枠の kind に合うか（reimage は対があるときだけ、呼び出し元）。
+// fits は変更が allow の kind に合うか（reimage は対があるときだけ、呼び出し元）。
 func fits(kind core.AllowKind, c *Change) bool {
 	switch kind {
 	case core.AllowDelete:
@@ -186,8 +186,8 @@ func labelKey(typ string, labels map[string]string) string {
 	return b.String()
 }
 
-// admitLanes は当てる変更を開いた別枠に入れる。入れた変更は Lane に Policy の
-// 名前を持ち、予算に数えない。
+// admitLanes は Apply する変更を開いた allow に入れる。入れた変更は Lane に
+// Policy の名前を持ち、budget に数えない。
 func admitLanes(out *Result, in Input) {
 	var allows []core.Policy
 	for _, p := range in.Policies {
@@ -232,7 +232,7 @@ func admitLanes(out *Result, in Input) {
 					}
 					k := labelKey(c.ID.Type, c.labels)
 					if len(creates[k]) == 0 {
-						continue // 対の無い削除は通常の予算
+						continue // 対の無い削除は通常の budget
 					}
 					partner = creates[k][0]
 				} else if !fits(p.Allow.Kind, c) {

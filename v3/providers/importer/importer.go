@@ -12,24 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package importer は今ある現実を intent の形に書き出す道具 sakutei-import
-// （設計 §7.2 の importer・syncmode → SDK の上の道具、§8 の段 9）。現実 → intent
-// の片方向で、Apply の経路につながない（観測と列挙の口 core.Reader だけを使う）。
+// Package importer は今ある現実を intent の形に書き出すツール sakutei-import
+// （設計 §7.2 の importer・syncmode → SDK の上のツール、§8 の Stage 9）。現実 → intent
+// の片方向で、Apply の経路につながない（観測と列挙の interface core.Reader だけを使う）。
 //
-//   - 何を読むかは intent の ranges（範囲は intent にだけ書く、不変条件 24）。
-//     範囲ごとに List し、列挙した ID を Observe して、Schema の項目だけを宣言の
+//   - 何を読むかは intent の ranges（Range は intent にだけ書く、不変条件 24）。
+//     Range ごとに List し、列挙した ID を Observe して、Schema の field だけを宣言の
 //     形に書く（E-I1・N-I5）。
-//   - 範囲の external_owners に当たる ID は書かない（ほかの持ち主のもの、E-D2）。
-//   - List が誤り・欠けている（Complete でない）・観測が Unknown・Converging なら、
+//   - Range の external_owners に当たる ID は書かない（external owner のもの、E-D2）。
+//   - List がエラー・欠けている（Complete でない）・観測が Unknown・Converging なら、
 //     その回は何も書かない（欠けた現実を「これが全部」として書き出さない、
 //     不変条件 3・8、E-K2）。
-//   - 中身の sha256 だけを観測する項目（FieldSpec.Digest）は書かない（平文を
+//   - 中身の sha256 だけを観測する field（FieldSpec.Digest）は書かない（平文を
 //     読み戻せない、E-E2）。
 //   - 同期（v2 の Sync Mode、E-I2・E-Q2・N-Q3）は同じ書き出しを --every の間隔で
 //     繰り返し、中身が変わったときだけファイルを書き換える。--commit を書けば
 //     書き換えるたびにそのファイルだけを 1 つの git の commit にする（trailer
-//     Sakutei-Import）。書き出したファイルの頭に本文の sha256 を書き、手で
-//     書き換えられていれば上書きせずに止める（取り込むのは人が intent へ写す）。
+//     Sakutei-Import）。書き出したファイルの先頭に本文の sha256 を書き、手で
+//     書き換えられていれば上書きせずに止める（取り込むときは人が intent へコピーする）。
 package importer
 
 import (
@@ -56,8 +56,8 @@ import (
 // 終了コード。
 const (
 	ExitOK         = 0
-	ExitError      = 1 // 実行の誤り
-	ExitRejected   = 2 // 読み込みで断った
+	ExitError      = 1 // 実行のエラー
+	ExitRejected   = 2 // 読み込み時にエラーにした（reject）
 	ExitIncomplete = 3 // 現実を全部は読めなかった（何も書かない）
 	ExitEdited     = 4 // 書き出す先が手で書き換えられている（上書きしない）
 )
@@ -85,18 +85,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opt Optio
 	fs := flag.NewFlagSet("sakutei-import", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	r := &runner{opt: opt, stdout: stdout, stderr: stderr}
-	fs.StringVar(&r.intentDir, "intent", "", "範囲（ranges）を書いた intent のディレクトリ")
-	fs.StringVar(&r.configFile, "config", "", "つなぎ方の設定")
+	fs.StringVar(&r.intentDir, "intent", "", "Range（ranges）を書いた intent のディレクトリ")
+	fs.StringVar(&r.configFile, "config", "", "接続設定（config ファイル）")
 	fs.StringVar(&r.out, "out", "", "書き出すファイル（.yaml）")
 	fs.BoolVar(&r.undeclared, "undeclared", false, "宣言に無いものだけを書く")
 	fs.BoolVar(&r.commit, "commit", false, "書き換えたら out のある git のリポジトリに commit する（1 回 1 commit）")
 	every := fs.Duration("every", 0, "同期：この間隔で読み直し、変わったときだけ書き換える（0 は 1 回だけ）")
-	fs.Var(&r.only, "provider", "この provider の範囲だけを読む（繰り返せる）")
+	fs.Var(&r.only, "provider", "この provider の Range だけを読む（繰り返し指定できる）")
 	if err := fs.Parse(args); err != nil {
 		return ExitError
 	}
 	if r.intentDir == "" || r.configFile == "" || r.out == "" || fs.NArg() > 0 {
-		fmt.Fprintln(stderr, "sakutei-import: --intent・--config・--out を書く")
+		fmt.Fprintln(stderr, "sakutei-import: --intent・--config・--out を指定する")
 		return ExitError
 	}
 	wait := opt.Wait
@@ -115,7 +115,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opt Optio
 		if *every <= 0 {
 			return code
 		}
-		// 読み込みで断った・手で書き換えられた・commit できないは、待っても直らない。
+		// 読み込み時のエラー（reject）・手での書き換え・commit の失敗は、待っても直らない。
 		if code == ExitRejected || code == ExitEdited || code == ExitError {
 			return code
 		}
@@ -164,7 +164,7 @@ func (r *runner) once(ctx context.Context) int {
 		return ExitOK
 	case err == nil && !Intact(old):
 		// 書き出したファイルを手で直した・別のものを置いた。上書きすると人の変更が
-		// 消えるので止める（取り込むなら intent へ写し、このファイルは消す、E-I2）。
+		// 消えるので止める（取り込むなら intent へコピーし、このファイルは消す、E-I2）。
 		return r.fail(ExitEdited, fmt.Errorf("%s は sakutei-import の書いたままでない（手で書き換えた・別のファイル）。上書きしない", r.out))
 	case err != nil && !os.IsNotExist(err):
 		return r.fail(ExitError, err)
@@ -181,8 +181,8 @@ func (r *runner) once(ctx context.Context) int {
 	return ExitOK
 }
 
-// commit は書き換えたファイルだけを 1 つの commit にする（trailer で道具の commit と
-// 見分ける）。
+// commit は書き換えたファイルだけを 1 つの commit にする（trailer でこのツールの
+// commit と見分ける）。
 func commit(ctx context.Context, path string, n int) error {
 	dir, base := filepath.Dir(path), filepath.Base(path)
 	msg := fmt.Sprintf("sakutei-import: %s を今の現実に合わせる（%d 件）\n\nSakutei-Import: %s\n", base, n, base)
@@ -195,9 +195,9 @@ func commit(ctx context.Context, path string, n int) error {
 	return nil
 }
 
-// Declarer は観測の形と宣言の形が違う provider が持つ口（任意。例：dnszone は
+// Declarer は観測の形と宣言の形が違う provider が持つ interface（任意。例：dnszone は
 // value と values の両方を観測で返すが、宣言はどちらか 1 つ）。無ければ Schema の
-// 項目をそのまま書く。
+// field をそのまま書く。
 type Declarer interface {
 	Declare(id core.ID, observed core.Fields) core.Fields
 }
@@ -209,7 +209,7 @@ func (e *IncompleteError) Error() string {
 	return "現実を全部は読めなかったので書かない:\n  - " + strings.Join(e.Reasons, "\n  - ")
 }
 
-// Import は範囲ごとに List と Observe をして、書き出す宣言を ID の順に返す。
+// Import は Range ごとに List と Observe をして、書き出す宣言を ID の順に返す。
 // 1 つでも読めなければ *IncompleteError（何も返さない）。
 func Import(ctx context.Context, l *load.Loaded, undeclared bool, only []string) ([]core.Resource, error) {
 	declared := map[core.ID]bool{}
@@ -225,16 +225,16 @@ func Import(ctx context.Context, l *load.Loaded, undeclared bool, only []string)
 		}
 		p := l.Providers[rg.Provider]
 		if p == nil {
-			reasons = append(reasons, fmt.Sprintf("範囲 %s の provider がつなぎ方の設定に無い", rg.Key()))
+			reasons = append(reasons, fmt.Sprintf("Range %s の provider が接続設定に無い", rg.Key()))
 			continue
 		}
 		listing, err := p.List(ctx, rg)
 		switch {
 		case err != nil:
-			reasons = append(reasons, fmt.Sprintf("範囲 %s の List: %v", rg.Key(), err))
+			reasons = append(reasons, fmt.Sprintf("Range %s の List: %v", rg.Key(), err))
 			continue
 		case !listing.Complete:
-			reasons = append(reasons, fmt.Sprintf("範囲 %s の List が欠けている", rg.Key()))
+			reasons = append(reasons, fmt.Sprintf("Range %s の List が欠けている", rg.Key()))
 			continue
 		}
 		for _, id := range listing.IDs {
@@ -312,7 +312,7 @@ func excluded(rg core.Range, id core.ID) bool {
 	return false
 }
 
-// Format は宣言を intent のファイルの形にする。頭のコメントに本文の sha256 を
+// Format は宣言を intent のファイルの形にする。先頭のコメントに本文の sha256 を
 // 書き、手で書き換えられたかを次の同期が見分ける（Intact、E-I2）。
 func Format(res []core.Resource) []byte {
 	items := []any{}
@@ -326,7 +326,7 @@ func Format(res []core.Resource) []byte {
 	body := yamlout.Emit(yamlout.New().Set("resources", items))
 	sum := sha256.Sum256([]byte(body))
 	return []byte(headerLine + "\n" +
-		"# 手で書き換えない（書き換えると次の同期が止まる）。取り込むなら intent へ写す。\n" +
+		"# 手で書き換えない（書き換えると次の同期が止まる）。取り込むなら intent へコピーする。\n" +
 		sumPrefix + hex.EncodeToString(sum[:]) + "\n" + body)
 }
 
@@ -335,7 +335,7 @@ const (
 	sumPrefix  = "# sha256: "
 )
 
-// Intact は data が sakutei-import の書いたままか（頭の sha256 が本文と合う）。
+// Intact は data が sakutei-import の書いたままか（先頭の sha256 が本文と合う）。
 func Intact(data []byte) bool {
 	s := string(data)
 	if !strings.HasPrefix(s, headerLine+"\n") {

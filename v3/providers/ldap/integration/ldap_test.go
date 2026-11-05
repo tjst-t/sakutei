@@ -55,7 +55,7 @@ const (
 	dmPW       = "dm-pw:with space\\x"
 	alicePW    = "alice-pw-gen1"
 	alice2PW   = "alice-pw-gen2"
-	// readerDN は読むだけの bind の DN（観測用の資格、E-G5）。base_dn の下に置く
+	// readerDN は読むだけの bind の DN（観測用の credential、E-G5）。base_dn の下に置く
 	// （List に出さないことを確かめるため）。
 	readerDN = "uid=sakutei-read," + suffix
 	readerPW = "reader-pw-1"
@@ -64,7 +64,7 @@ const (
 var lab struct {
 	dir, image string
 	// starttls・ldaps・bad（誤った bind のパスワード）・split（観測は readerDN、
-	// 書き込みは Directory Manager）はつなぎ方の設定のパス。
+	// 書き込みは Directory Manager）は接続設定のパス。
 	starttls, ldaps, bad, split string
 }
 
@@ -220,7 +220,7 @@ func setup() error {
 	return nil
 }
 
-// writeAlice は alice の userPassword の秘密を書く（中身が変われば世代が変わる）。
+// writeAlice は alice の userPassword の secret を書く（中身が変われば世代が変わる）。
 func writeAlice(pw string) error {
 	return os.WriteFile(filepath.Join(lab.dir, "secrets", "alice"), []byte(pw+"\n"), 0o600)
 }
@@ -278,7 +278,7 @@ func modify(t *testing.T, ldif string) {
 	}
 }
 
-// entry は dn の項目の属性（名前は小文字）。無ければ nil。
+// entry は dn の entry の属性（名前は小文字）。無ければ nil。
 func entry(t *testing.T, dn string, attrs ...string) map[string][]string {
 	t.Helper()
 	args := append([]string{"-LLL", "-o", "ldif-wrap=no", "-b", dn, "-s", "base", "(objectClass=*)"}, attrs...)
@@ -363,7 +363,7 @@ func declared() []map[string]any {
 	}
 }
 
-// writeIntent は intent を書く（範囲は suffix の下で ou=outside を除く）。
+// writeIntent は intent を書く（Range は suffix の下で ou=outside を除く）。
 func writeIntent(t *testing.T, prune bool, rs []map[string]any) {
 	t.Helper()
 	dir := filepath.Join(lab.dir, "intent")
@@ -387,7 +387,7 @@ func checkSecrets(t *testing.T, what, out string) {
 	t.Helper()
 	for _, s := range []string{dmPW, alicePW, alice2PW, readerPW, "{PBKDF2", "{SSHA"} {
 		if strings.Contains(out, s) {
-			t.Fatalf("sakutei %s が秘密（%q）を出した:\n%s", what, s, out)
+			t.Fatalf("sakutei %s が secret（%q）を出した:\n%s", what, s, out)
 		}
 	}
 }
@@ -412,7 +412,7 @@ func dump(r plan.Result) string {
 	return string(b)
 }
 
-// ops は宣言ごとの周の終わりの op（宣言外は除く）。
+// ops は宣言ごとの cycle の終わりの op（宣言に無いもの（unmanaged）は除く）。
 func ops(r plan.Result) map[string]plan.Op {
 	out := map[string]plan.Op{}
 	for _, c := range r.Changes {
@@ -524,7 +524,7 @@ func TestLDAP(t *testing.T) {
 		if p, _, stderr := run(t, "plan", lab.starttls); !all(p, plan.None, n) {
 			t.Fatalf("新しい世代: %v\n%s", ops(p), stderr)
 		}
-		// サーバの userPassword を消すと、次の周に今の値を書く。
+		// サーバの userPassword を消すと、次の cycle に今の値を書く。
 		modify(t, "dn: "+aliceDN+"\nchangetype: modify\ndelete: userPassword\n-\n\n")
 		p, _, _ := run(t, "plan", lab.starttls)
 		if got := ops(p); got[aliceDN] != plan.Update || got[peopleDN] != plan.None {
@@ -536,7 +536,7 @@ func TestLDAP(t *testing.T) {
 		}
 	})
 
-	t.Run("何周しても書かない", func(t *testing.T) {
+	t.Run("何 cycle 回しても書かない", func(t *testing.T) {
 		before := map[string]string{}
 		for _, dn := range []string{peopleDN, groupsDN, aliceDN, bobDN, adminsDN} {
 			before[dn] = strings.Join(entry(t, dn, "modifyTimestamp")["modifytimestamp"], "")
@@ -544,7 +544,7 @@ func TestLDAP(t *testing.T) {
 		for i := 0; i < 5; i++ {
 			res, code, stderr := run(t, "reconcile", lab.starttls)
 			if code != cli.ExitOK || !all(res, plan.None, n) {
-				t.Fatalf("%d 周目（exit %d）が変えた:\n%s\n%s", i, code, dump(res), stderr)
+				t.Fatalf("%d cycle 目（exit %d）が変えた:\n%s\n%s", i, code, dump(res), stderr)
 			}
 		}
 		time.Sleep(1100 * time.Millisecond) // modifyTimestamp は秒の単位
@@ -575,14 +575,14 @@ func TestLDAP(t *testing.T) {
 		}
 	})
 
-	t.Run("子のある項目は prune しない", func(t *testing.T) {
+	t.Run("子のある entry は prune しない", func(t *testing.T) {
 		modify(t, "dn: ou=handmade,"+suffix+"\nchangetype: add\nobjectClass: organizationalUnit\nou: handmade\n\n"+
 			"dn: ou=leaf,"+suffix+"\nchangetype: add\nobjectClass: organizationalUnit\nou: leaf\n\n"+
 			"dn: ou=outside,"+suffix+"\nchangetype: add\nobjectClass: organizationalUnit\nou: outside\n\n")
-		// ou=handmade は宣言しないが、その下の uid=kept は宣言する（子のある宣言外）。
+		// ou=handmade は宣言しないが、その下の uid=kept は宣言する（子のある、宣言に無いもの）。
 		rs := append(declared(), r(keptDN, map[string]any{"objectClass": "account", "uid": "kept"}))
 		writeIntent(t, true, rs)
-		// 後の段のために手で片付ける（sakutei は消さない）。落ちても片付ける。
+		// 後の subtest のために手で片付ける（sakutei は消さない）。落ちても片付ける。
 		defer func() {
 			writeIntent(t, false, declared())
 			_, _ = clientTool("ldapmodify", "dn: "+keptDN+"\nchangetype: delete\n\n")
@@ -595,7 +595,7 @@ func TestLDAP(t *testing.T) {
 				switch {
 				case c.Resource == ref("ou=handmade,"+suffix) && c.Outcome == plan.OutcomeRefused:
 					refused = true
-					t.Logf("断った削除: %s", c.Error)
+					t.Logf("拒否した削除: %s", c.Error)
 				case c.Resource == ref("ou=leaf,"+suffix) && c.Op == plan.Prune && c.Outcome == plan.OutcomeOK:
 					pruned = true
 				}
@@ -605,19 +605,19 @@ func TestLDAP(t *testing.T) {
 			}
 		}
 		if !refused || !pruned {
-			t.Errorf("断った %v・消した %v", refused, pruned)
+			t.Errorf("拒否した %v・消した %v", refused, pruned)
 		}
 		if entry(t, "ou=handmade,"+suffix) == nil || entry(t, keptDN) == nil {
-			t.Error("子のある項目（か子）を消した")
+			t.Error("子のある entry（か子）を消した")
 		}
 		if entry(t, "ou=leaf,"+suffix) != nil {
-			t.Error("宣言外の葉が残った")
+			t.Error("宣言に無い（unmanaged）葉が残った")
 		}
 		if entry(t, "ou=outside,"+suffix) == nil {
-			t.Error("filter の外の項目を消した")
+			t.Error("filter の外の entry を消した")
 		}
 		if entry(t, suffix) == nil {
-			t.Error("base_dn の項目を消した")
+			t.Error("base_dn の entry を消した")
 		}
 	})
 
@@ -636,10 +636,10 @@ func TestLDAP(t *testing.T) {
 		if code != cli.ExitOK || !all(p, plan.None, n) {
 			t.Fatalf("読むだけの DN の plan（exit %d）: %v\n%s", code, ops(p), stderr)
 		}
-		// 2 本の bind の DN は宣言外に出ない。
+		// 2 本の bind の DN は宣言に無いもの（unmanaged）に出ない。
 		for _, c := range p.Changes {
 			if c.Op == plan.Unmanaged {
-				t.Errorf("宣言外: %s", c.Resource)
+				t.Errorf("unmanaged: %s", c.Resource)
 			}
 		}
 		modify(t, "dn: "+aliceDN+"\nchangetype: modify\nreplace: mail\nmail: evil@example.com\n-\n\n"+
@@ -690,7 +690,7 @@ func TestLDAP(t *testing.T) {
 			t.Fatal(err)
 		}
 		if entry(t, "ou=orphan,"+suffix) == nil {
-			t.Error("止めている間に項目を消した")
+			t.Error("止めている間に entry を消した")
 		}
 		if p, _, stderr := run(t, "plan", lab.starttls); !all(p, plan.None, n) {
 			t.Errorf("起こしたあと: %v\n%s", ops(p), stderr)

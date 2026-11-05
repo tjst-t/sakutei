@@ -13,26 +13,26 @@
 // limitations under the License.
 
 // Package alertmanager は Event を Alertmanager の API v2（POST /api/v2/alerts）に
-// 送る送り先（module: alertmanager、設計 §3.9・§5.6、E-H2・E-T3）。v2 の
+// 送る sink（module: alertmanager、設計 §3.9・§5.6、E-H2・E-T3）。v2 の
 // --event-alertmanager（複数の宛先・送り直し）を移した。
 //
-// 写し方：
+// 変換の仕方：
 //
-//   - labels：alertname（＝ Event の種類）・resource か scope・stuck（stuck に
+//   - labels：alertname（＝ Event の kind）・resource か scope・stuck（stuck に
 //     上がったときだけ "true"）・宣言の labels（Prometheus の名前に直す）・設定の
 //     labels。同じキーの Event は同じ labels になる。
 //   - annotations：message・since・count。
-//   - 続いている状態（firing）は周ごとに今の一覧（core.StateSink）を
+//   - 続いている状態（firing）は cycle ごとに今の一覧（core.StateSink）を
 //     startsAt = since・endsAt = 送る時刻 + ttl で送り直す。Sakutei が止まれば
 //     送り直しも止まり、alert は endsAt で消える。
-//   - 送り出しの列の resolved は endsAt = その時刻で 1 回送る。stuck に上がった
-//     firing は、stuck の印の無い前の alert を resolved にする。
-//   - 出来事型は設定の incidents に書いた種類だけ、startsAt = 時刻・
+//   - outbox の resolved は endsAt = その時刻で 1 回送る。stuck に上がった
+//     firing は、stuck の label の無い前の alert を resolved にする。
+//   - edge Event は設定の incidents に書いた kind だけ、startsAt = 時刻・
 //     endsAt = 時刻 + incident_ttl で 1 回送る。
 //
-// 宛先（urls）は全部に同じものを送る（Alertmanager を複数台で動かす構成。台の
-// 間は gossip で揃う）。1 台でも受け取れば送れたとし、全部に届かないときだけ
-// 誤りを返して次の周に同じ位置から送り直す（不変条件 28）。
+// 宛先（urls）は全部に同じものを送る（Alertmanager を複数台で動かす構成。
+// インスタンス間は gossip で揃う）。1 台でも受け取れば送れたとし、全部に届かない
+// ときだけエラーを返して次の cycle に同じ位置から送り直す（不変条件 28）。
 package alertmanager
 
 import (
@@ -63,7 +63,7 @@ type Alert struct {
 	EndsAt      time.Time         `json:"endsAt,omitempty"`
 }
 
-// Sink は Alertmanager に送る送り先。
+// Sink は Alertmanager に送る sink。
 type Sink struct {
 	urls        []string
 	client      *settings.Client
@@ -80,7 +80,7 @@ var reserved = map[string]bool{"alertname": true, "resource": true, "scope": tru
 
 var labelName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// Module はつなぎ方の設定の module: alertmanager。
+// Module は接続設定の module: alertmanager。
 //
 //	settings:
 //	  urls: [https://am1.example.com:9093, https://am2.example.com:9093]  # base URL
@@ -88,9 +88,9 @@ var labelName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 //	  token_file: /etc/sakutei/am.token                               # 省略可（Bearer）
 //	  plaintext: true        # loopback でない宛先に http で送るとき（明示）
 //	  timeout: 10s
-//	  ttl: 10m               # firing の endsAt（周の間隔より長く）
-//	  incident_ttl: 1h       # 出来事型の alert の長さ
-//	  incidents: [Applied]   # alert にする出来事型（既定は無し）
+//	  ttl: 10m               # firing の endsAt（cycle の間隔より長く）
+//	  incident_ttl: 1h       # edge Event の alert の長さ
+//	  incidents: [Applied]   # alert にする edge Event（既定は無し）
 //	  labels: {instance: sakutei-tokyo}
 func Module(m map[string]any) (core.Sink, error) {
 	r := settings.New("alertmanager", m)
@@ -125,13 +125,13 @@ func Module(m map[string]any) (core.Sink, error) {
 	}
 	c, err := settings.NewClient(t, timeout, tokenFile)
 	if err != nil {
-		return nil, fmt.Errorf("alertmanager の送り先: %w", err)
+		return nil, fmt.Errorf("alertmanager の sink: %w", err)
 	}
 	s.client = c
 	return s, nil
 }
 
-// Deliver は送り出しの列の resolved と、設定した出来事型を 1 回送る。firing は
+// Deliver は outbox の resolved と、設定した edge Event を 1 回送る。firing は
 // DeliverState が今の一覧から送る。
 func (s *Sink) Deliver(ctx context.Context, batch []core.Event) error {
 	var alerts []Alert
@@ -142,8 +142,8 @@ func (s *Sink) Deliver(ctx context.Context, batch []core.Event) error {
 			al.StartsAt, al.EndsAt = since(e), e.At
 			alerts = append(alerts, al)
 		case e.Type == core.StateEvent && e.Stuck:
-			// stuck に上がった：印の無い前の alert を閉じる（新しい alert は
-			// 今の一覧から送る）。
+			// stuck に上がった：stuck の label の無い前の alert を閉じる（新しい
+			// alert は今の一覧から送る）。
 			prev := e
 			prev.Stuck = false
 			al := s.alertOf(prev)

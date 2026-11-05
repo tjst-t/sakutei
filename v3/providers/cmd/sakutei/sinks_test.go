@@ -84,10 +84,10 @@ func (r *syslogReceiver) all() string {
 	return strings.Join(r.msgs, "\n")
 }
 
-// 完了条件（#223）：送り先が落ちていても・戻らなくても 1 周の処理を止めない
-// （不変条件 28）。届く送り先には送り、落ちた送り先は位置を保って、戻ったら
-// 続きから送る。syslog は streams: [events, audit] で Events と監査の鎖の両方を
-// 送る（E-H2・E-H3・E-L1）。
+// 完了条件（#223）：sink が落ちていても・戻らなくても 1 cycle の処理を止めない
+// （不変条件 28）。届く sink には送る。落ちた sink は位置を保ち、戻ったら続きから
+// 送る。syslog は streams: [events, audit] で Events と audit のハッシュチェーンの
+// 両方を送る（E-H2・E-H3・E-L1）。
 func TestSinksDoNotStopCycle(t *testing.T) {
 	defer func(d time.Duration) { events.DeliverTimeout = d }(events.DeliverTimeout)
 	events.DeliverTimeout = 300 * time.Millisecond
@@ -152,15 +152,15 @@ resources:
 	start := time.Now()
 	code, out := run()
 	if code != cli.ExitOK || time.Since(start) > 10*time.Second {
-		t.Fatalf("1 周目: %d（%s）\n%s", code, time.Since(start), out)
+		t.Fatalf("1 cycle 目: %d（%s）\n%s", code, time.Since(start), out)
 	}
-	for _, want := range []string{"送り出し am: 送れない", "送り出し otel: 送れない"} {
+	for _, want := range []string{"sink am: 送れない", "sink otel: 送れない"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q が無い:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "送り出し log") || strings.Contains(out, "送り出し prom") {
-		t.Errorf("届く送り先の誤り:\n%s", out)
+	if strings.Contains(out, "sink log") || strings.Contains(out, "sink prom") {
+		t.Errorf("届く sink のエラー:\n%s", out)
 	}
 	got := logs.all()
 	for _, want := range []string{"resource.apply [meta", `"kind":"Applied"`, `"kind":"CycleDone"`} {
@@ -178,12 +178,12 @@ resources:
 		t.Errorf("/metrics:\n%s", body)
 	}
 
-	// Alertmanager が戻れば、1 周目の Event から送る。
+	// Alertmanager が戻れば、1 cycle 目の Event から送る。
 	var mu sync.Mutex
 	var alerts []string
 	amLn, err = net.Listen("tcp", amAddr)
 	if err != nil {
-		t.Skipf("同じ宛先で待ち受けられない: %v", err)
+		t.Skipf("同じアドレスで listen できない: %v", err)
 	}
 	am := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -193,8 +193,8 @@ resources:
 	})}
 	go am.Serve(amLn)
 	defer am.Close()
-	if code, out := run(); code != cli.ExitOK || strings.Contains(out, "送り出し am") {
-		t.Fatalf("2 周目: %d\n%s", code, out)
+	if code, out := run(); code != cli.ExitOK || strings.Contains(out, "sink am") {
+		t.Fatalf("2 cycle 目: %d\n%s", code, out)
 	}
 	mu.Lock()
 	all := strings.Join(alerts, "\n")

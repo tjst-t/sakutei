@@ -272,7 +272,7 @@ func (s *Server) sameEntry(x, e *elem) bool {
 	return false
 }
 
-// editLevel は edits を兄弟の列 tree に当てる。tag が "" でなければ rpc-error。
+// editLevel は edits を兄弟の列 tree に適用する。tag が "" でなければ rpc-error。
 func (s *Server) editLevel(tree []*elem, edits []*elem, inherited string) ([]*elem, string, string) {
 	for _, e := range edits {
 		op, last := operation(e, inherited)

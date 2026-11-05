@@ -1,18 +1,18 @@
 {
   "_comment": [
-    "v2 の試用の intent（docs/trial/）と、それぞれの最初の現実に対する v2 の plan の操作（段 9 の完了条件）。",
+    "v2 の試用の intent（docs/trial/）と、それぞれの最初の現実に対する v2 の plan の操作（Stage 9 の完了条件）。",
     "v2 の側は tests/acceptance/migrate_trial_test.go が v2 の plan で ops を確かめ、新しいコアの側は",
     "v3/providers/migrate/trial_test.go が sakutei-migrate で書き直して新しいコアの plan で同じ ops を確かめる。",
     "intent はリポジトリのルートからの intent のディレクトリ（無ければ空のディレクトリ）。append は intent のファイルに",
     "足す本文（run.sh が resources.yaml に planned_change を足すのと同じ。無いファイルなら作る）。files は作業ディレクトリに",
-    "写すもの、replace は写したファイルの書き換え、write は作業ディレクトリに書くもの。append と write の {{t <ずれ> <形> [tz]}} は",
-    "今からのずれの時刻（形は ymdhm・hm・dow）で、窓を今を挟むように・外すように書く。flags は v2 の plan と sakutei-migrate の",
+    "コピーするもの、replace はコピーしたファイルの書き換え、write は作業ディレクトリに書くもの。append と write の {{t <ずれ> <形> [tz]}} は",
+    "今からのずれの時刻（形は ymdhm・hm・dow）で、window を今を挟むように・外すように書く。flags は v2 の plan と sakutei-migrate の",
     "両方に渡す（値の先頭の @ は作業ディレクトリからのパス）。migrate は sakutei-migrate だけに渡す。",
-    "ops は v2 の plan の操作：<create|update|delete> <v2 の ID>。止めたものは末尾に ' (blocked)'、v2 の remediation の窓の外",
-    "（reconcile が知らせるだけ）は ' (report)'。Workflow・Task が持つもの（v2 の workflow・task）は procedures に、観測できない",
+    "ops は v2 の plan の操作：<create|update|delete> <v2 の ID>。halt したものは末尾に ' (blocked)'、v2 の remediation の window の外",
+    "（reconcile が通知するだけ）は ' (report)'。Workflow・Task が持つもの（v2 の workflow・task）は procedures に、観測できない",
     "ものは unknown に分ける。",
-    "v3_record は、新しいコアの側で先に reconcile を 1 回流して Record（前の周の件数・別枠の承認の依頼）を作り、現実を",
-    "写し直してから、v3_approve の人が別枠の依頼を sakutei approve で承認し、Record を読む plan で比べる（v2 は承認を intent に",
+    "v3_record は、新しいコアの側で先に reconcile を 1 回流して Record（前の cycle の件数・allow の承認の依頼）を作り、現実を",
+    "コピーし直してから、v3_approve の人が allow の依頼を sakutei approve で承認し、Record を読む plan で比べる（v2 は承認を intent に",
     "書いていた。新しいコアは承認を Record に残す）。",
     "v3_ops・v3_unknown は新しいコアの provider が現実を v2 と違って読む（直した）ために違うときだけ書き、理由を v3_reason に書く。"
   ],
@@ -321,7 +321,7 @@
         "guest/os/node1",
         "redfish-system//node1"
       ],
-      "v3_reason": "BMC と導入した OS には届かない（試験のために 127.0.0.1:1 に向けた）。v2 は node1 を Workflow が持つとして観測できないものに数えなかった。新しいコアは手順の対象も観測して Unknown と出す。guest/os/node1 は v2 では設定（guest_hosts・guest_markers）に書いていた目印の宣言"
+      "v3_reason": "BMC と導入した OS には届かない（試験のために 127.0.0.1:1 に向けた）。v2 は node1 を Workflow が持つとして観測できないものに数えなかった。新しいコアは Procedure の対象も観測して Unknown と出す。guest/os/node1 は v2 では設定（guest_hosts・guest_markers）に書いていた marker の宣言"
     },
     {
       "name": "planned-change-A3",

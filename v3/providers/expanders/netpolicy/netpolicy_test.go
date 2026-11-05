@@ -25,8 +25,8 @@ import (
 
 // TestGolden は network_policy: の展開と検査を golden で確かめる（N-P5・E-B5）。
 // basic は nftables の base chain への展開（v4・v6、例外、隠れた許可と通らない許可の
-// 知らせ）、reject は重なり・理由の無い例外・重複・宣言に無い網・domain をまたぐ
-// 許可の断り。
+// 通知）、reject は重なり・理由の無い例外・重複・宣言に無いネットワーク・domain を
+// またぐ許可のエラー。
 func TestGolden(t *testing.T) {
 	for _, dir := range expandtest.Cases(t, "testdata") {
 		t.Run(filepath.Base(dir), func(t *testing.T) {

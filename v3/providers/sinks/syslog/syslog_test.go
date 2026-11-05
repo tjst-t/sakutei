@@ -31,7 +31,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/sinks/syslog"
 )
 
-// receiver は偽の syslog の受け手（octet-counting の TCP か TLS）。
+// receiver は偽の syslog の受信側（octet-counting の TCP か TLS）。
 type receiver struct {
 	ln   net.Listener
 	mu   sync.Mutex
@@ -110,8 +110,8 @@ func open(t *testing.T, settings map[string]any) *syslog.Sink {
 }
 
 // E-L1・N-L1：監査の行を RFC 5424 で 1 件ずつ、行をそのまま MSG にして送る
-// （受け手で鎖をたどれる）。Events も送る。受け手が落ちていれば誤り（コアが
-// 位置を保って送り直す）。
+// （受信側でハッシュチェーンをたどれる）。Events も送る。受信側が落ちていれば
+// エラー（コアが位置を保って送り直す）。
 func TestSyslogTCP(t *testing.T) {
 	r := listen(t, nil)
 	s := open(t, map[string]any{"address": "tcp://" + r.ln.Addr().String(), "hostname": "sakutei-tokyo"})
@@ -144,12 +144,12 @@ func TestSyslogTCP(t *testing.T) {
 		t.Errorf("Event: %s", got[0])
 	}
 	if !strings.HasPrefix(got[1], "<14>1 ") {
-		t.Errorf("出来事型は info: %s", got[1])
+		t.Errorf("edge Event は info: %s", got[1])
 	}
 
 	r.ln.Close()
-	if err := s.DeliverAudit(ctx, lines); err == nil || !strings.Contains(err.Error(), "つなげない") {
-		t.Fatalf("受け手が落ちている: %v", err)
+	if err := s.DeliverAudit(ctx, lines); err == nil || !strings.Contains(err.Error(), "接続できない") {
+		t.Fatalf("受信側が落ちている: %v", err)
 	}
 }
 
@@ -168,11 +168,11 @@ func TestSyslogTLS(t *testing.T) {
 	if got := r.wait(t, 1); !strings.Contains(got[0], `approval.approve [meta sequenceId="1"]`) {
 		t.Errorf("%s", got[0])
 	}
-	// 知らない CA の受け手には送らない。
+	// 信頼していない CA の受信側には送らない。
 	other := testcert.Write(t, t.TempDir())
 	s = open(t, map[string]any{"address": "tls://localhost:" + port, "tls": map[string]any{"ca": other.CA}})
 	if err := s.DeliverAudit(context.Background(), []core.AuditLine{{Seq: 1, Line: []byte(`{}`)}}); err == nil {
-		t.Fatal("確かめられない証明書の受け手に送った")
+		t.Fatal("検証できない証明書の受信側に送った")
 	}
 }
 
@@ -186,7 +186,7 @@ func TestSyslogRejectsSettings(t *testing.T) {
 		{map[string]any{"address": "tcp://log"}, "tcp://host:port か tls://host:port"},
 		{map[string]any{"address": "tcp://log:514", "tls": map[string]any{"ca": "x"}}, "tls は address が tls://"},
 		{map[string]any{"address": "tls://log:6514", "tls": map[string]any{"cert": "x"}}, "cert と key を両方"},
-		{map[string]any{"address": "tcp://log:514", "facility": 3}, "知らない項目 facility"},
+		{map[string]any{"address": "tcp://log:514", "facility": 3}, "不明な field facility"},
 	} {
 		if _, err := syslog.Module(c.settings); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%v: %v（%q を含むはず）", c.settings, err, c.want)

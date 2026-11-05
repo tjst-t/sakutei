@@ -78,7 +78,7 @@ func docker(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// wrapperScript は psql をクライアントのコンテナの中で動かす。接続の設定は環境変数
+// wrapperScript は psql をクライアントのコンテナの中で動かす。接続設定は環境変数
 // から受け取り、passfile は docker cp でコンテナに渡して終われば消す。
 const wrapperScript = `#!/bin/bash
 set -u
@@ -151,7 +151,7 @@ func setup() error {
 	return nil
 }
 
-// writeSecret は秘密 f:app の値を書く（file の保管先の世代は変更時刻と大きさ）。
+// writeSecret は secret f:app の値を書く（file の secret backend の世代は変更時刻とサイズ）。
 func writeSecret(v string) error {
 	return os.WriteFile(filepath.Join(lab.secrets, "app"), []byte(v+"\n"), 0o600)
 }
@@ -185,7 +185,7 @@ func teardown() {
 	}
 }
 
-// psqlAs は user で db につないで sql を流す（sakutei の外の操作）。
+// psqlAs は user で db に接続して sql を流す（sakutei の外の操作）。
 func psqlAs(user, password, db, sql string) (string, error) {
 	pf := filepath.Join(lab.dir, fmt.Sprintf("pgpass-%d", time.Now().UnixNano()))
 	esc := strings.NewReplacer(`\`, `\\`, `:`, `\:`).Replace(password)
@@ -210,7 +210,7 @@ func admin(t *testing.T, db, sql string) string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// intent・つなぎ方の設定・CLI
+// intent・接続設定・CLI
 // ─────────────────────────────────────────────────────────────────────────────
 
 type resource struct {
@@ -235,7 +235,7 @@ func absent(kind, name string) resource {
 
 func key(x resource) string { return x.Type + "/" + x.ID }
 
-// declared は宣言（hstore の版は引数）。
+// declared は宣言（hstore のバージョンは引数）。
 func declared(hstore string) []resource {
 	return []resource{
 		r("role", "app", map[string]any{"login": true, "createdb": false, "connection_limit": 10,
@@ -254,7 +254,7 @@ func declared(hstore string) []resource {
 	}
 }
 
-// intent は intent のディレクトリを書く（JSON。範囲は main のサーバ）。
+// intent は intent のディレクトリを書く（JSON。Range は main のサーバ）。
 func intent(t *testing.T, name string, prune bool, rs []resource) string {
 	t.Helper()
 	d := filepath.Join(lab.dir, name)
@@ -275,7 +275,7 @@ func intent(t *testing.T, name string, prune bool, rs []resource) string {
 	return d
 }
 
-// config はつなぎ方の設定を書いてそのパスを返す。write が空なら observe だけ。
+// config は接続設定を書いてそのパスを返す。write が空なら observe だけ。
 func config(t *testing.T, name, observe, write string, verify bool) string {
 	t.Helper()
 	cred := func(user string) string {
@@ -297,7 +297,7 @@ func config(t *testing.T, name, observe, write string, verify bool) string {
 	return p
 }
 
-// run は v3 の CLI を回す。出力に秘密の値・検証値が出れば落とす（E-G2）。
+// run は v3 の CLI を実行する。出力に secret の値・検証値が出ればテストを失敗させる（E-G2）。
 func run(t *testing.T, verb, intentDir, cfg string) (plan.Result, int, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
@@ -307,7 +307,7 @@ func run(t *testing.T, verb, intentDir, cfg string) (plan.Result, int, string) {
 	all := stdout.String() + stderr.String()
 	for _, s := range []string{adminPW, appPW, appPW2, roPW, "SCRAM-SHA-256$"} {
 		if strings.Contains(all, s) {
-			t.Fatalf("sakutei %s が秘密（%q）を出した:\n%s", verb, s, all)
+			t.Fatalf("sakutei %s が secret（%q）を出した:\n%s", verb, s, all)
 		}
 	}
 	var res plan.Result
@@ -331,7 +331,7 @@ func changeOf(r plan.Result, resource string) plan.Change {
 	return plan.Change{}
 }
 
-// pending は宣言どおりでも宣言外の報告でもない変更（"<resource>=<op>"、名前の順）。
+// pending は宣言どおりでも unmanaged の報告でもない変更（"<resource>=<op>"、名前の順）。
 func pending(r plan.Result) []string {
 	var out []string
 	for _, c := range r.Changes {
@@ -343,7 +343,7 @@ func pending(r plan.Result) []string {
 	return out
 }
 
-// converge は reconcile を回し、続く plan が宣言どおり（宣言外の報告だけ）なことを確かめる。
+// converge は reconcile を実行し、続く plan が宣言どおり（unmanaged の報告だけ）なことを確かめる。
 func converge(t *testing.T, intentDir, cfg string) plan.Result {
 	t.Helper()
 	r, code, stderr := run(t, "reconcile", intentDir, cfg)
@@ -373,7 +373,7 @@ func databases(t *testing.T) string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1 本の資格で観測も書き込みも（管理用のロール、verify_passwords）
+// 1 つの credential で観測も書き込みもする（管理用のロール、verify_passwords）
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestPostgreSQL(t *testing.T) {
@@ -411,16 +411,16 @@ func TestPostgreSQL(t *testing.T) {
 		if got := publicPrivileges(t, weirdDB); got != "CONNECT,TEMPORARY" {
 			t.Errorf("宣言していない DB の PUBLIC = %q（want 既定のまま）", got)
 		}
-		// app は宣言のパスワードでつなげる（SCRAM の検証値が本物と合う）。平文は送らない。
+		// app は宣言のパスワードで接続できる（SCRAM の検証値が本物と合う）。平文は送らない。
 		if out, err := psqlAs("app", appPW, "appdb", "SELECT current_user;"); err != nil || strings.TrimSpace(out) != "app" {
-			t.Errorf("宣言のパスワードで app につなげない: %v: %s", err, out)
+			t.Errorf("宣言のパスワードで app に接続できない: %v: %s", err, out)
 		}
 		if got := admin(t, "postgres", `SELECT rolpassword LIKE 'SCRAM-SHA-256$%' FROM pg_authid WHERE rolname = 'app';`); got != "t" {
 			t.Errorf("pg_authid が SCRAM の検証値でない: %q", got)
 		}
 	})
 
-	t.Run("手で変えるとずれ、戻る", func(t *testing.T) {
+	t.Run("手で変えると drift になり、戻る", func(t *testing.T) {
 		admin(t, "postgres", `ALTER ROLE app CREATEDB CONNECTION LIMIT 3;
 ALTER ROLE app PASSWORD 'changed-by-hand';
 REVOKE app FROM reader;
@@ -432,7 +432,7 @@ ALTER DATABASE appdb CONNECTION LIMIT 5;`)
 			t.Errorf("plan = %v（want %v）", got, want)
 		}
 		if c := changeOf(p, "pg/role/main/app"); !strings.Contains(fmt.Sprint(c.Fields), "password") {
-			t.Errorf("手で変えたパスワードがずれにならない（verify_passwords）: %+v", c.Fields)
+			t.Errorf("手で変えたパスワードが drift にならない（verify_passwords）: %+v", c.Fields)
 		}
 		converge(t, in, cfg)
 		if out, err := psqlAs("app", appPW, "appdb", "SELECT 1;"); err != nil {
@@ -462,7 +462,7 @@ ALTER ROLE reader REPLICATION;`)
 		admin(t, "postgres", `ALTER ROLE reader NOREPLICATION;`)
 	})
 
-	t.Run("秘密の新しい世代と拡張の更新", func(t *testing.T) {
+	t.Run("secret の新しい世代と拡張の更新", func(t *testing.T) {
 		if err := writeSecret(appPW2); err != nil {
 			t.Fatal(err)
 		}
@@ -474,15 +474,15 @@ ALTER ROLE reader REPLICATION;`)
 		}
 		converge(t, in, cfg)
 		if _, err := psqlAs("app", appPW2, "appdb", "SELECT 1;"); err != nil {
-			t.Errorf("新しいパスワードでつなげない: %v", err)
+			t.Errorf("新しいパスワードで接続できない: %v", err)
 		}
 		if _, err := psqlAs("app", appPW, "appdb", "SELECT 1;"); err == nil {
-			t.Error("古いパスワードでまだつなげる")
+			t.Error("古いパスワードでまだ接続できる")
 		}
 		if got := admin(t, "appdb", `SELECT extversion FROM pg_extension WHERE extname = 'hstore';`); got != "1.8" {
 			t.Errorf("hstore = %q", got)
 		}
-		// 作った後の encoding の変更は Apply が断る（作り直さない）。
+		// 作った後の encoding の変更は Apply がエラーにする（作り直さない）。
 		bad := declared("1.8")
 		bad[3].Fields["encoding"] = "LATIN1"
 		badIn := intent(t, "intent-bad-encoding", false, bad)
@@ -495,20 +495,20 @@ ALTER ROLE reader REPLICATION;`)
 		}
 	})
 
-	t.Run("何周してもずれない", func(t *testing.T) {
+	t.Run("何 cycle 回しても drift しない", func(t *testing.T) {
 		before := admin(t, "postgres", `SELECT rolpassword FROM pg_authid WHERE rolname = 'app';`)
 		for i := 0; i < 5; i++ {
 			r, code, stderr := run(t, "reconcile", in, cfg)
 			if code != cli.ExitOK || len(pending(r)) != 0 {
-				t.Fatalf("%d 周目: exit=%d %v\n%s\n%s", i, code, pending(r), dump(r), stderr)
+				t.Fatalf("%d cycle 目: exit=%d %v\n%s\n%s", i, code, pending(r), dump(r), stderr)
 			}
 		}
 		if after := admin(t, "postgres", `SELECT rolpassword FROM pg_authid WHERE rolname = 'app';`); after != before {
-			t.Error("周のあいだにパスワードを設定し直した")
+			t.Error("cycle のあいだにパスワードを設定し直した")
 		}
 	})
 
-	t.Run("利用者の表がある DB は消さない・宣言外の DB は prune しない", func(t *testing.T) {
+	t.Run("利用者の表がある DB は消さない・宣言に無い DB は prune しない", func(t *testing.T) {
 		admin(t, "postgres", `CREATE ROLE sk_orphan_role;`)
 		for _, db := range []string{"sk_orphan_full", "sk_orphan_empty", "sk_orphan_kept"} {
 			admin(t, "postgres", "CREATE DATABASE "+db+";")
@@ -526,7 +526,7 @@ ALTER ROLE reader REPLICATION;`)
 					t.Errorf("表のある DB の削除: %+v", c)
 				}
 				if c := changeOf(r, "pg/database/main/sk_orphan_kept"); c.Op != plan.Unmanaged {
-					t.Errorf("宣言外の DB: %+v（want unmanaged）", c)
+					t.Errorf("宣言に無い DB: %+v（want unmanaged）", c)
 				}
 			}
 		}
@@ -538,12 +538,12 @@ ALTER ROLE reader REPLICATION;`)
 			t.Error("利用者の表の行が消えた")
 		}
 		if got := admin(t, "postgres", `SELECT count(*) FROM pg_roles WHERE rolname = 'sk_orphan_role';`); got != "0" {
-			t.Error("宣言外のロールが prune されない")
+			t.Error("宣言に無いロールが prune されない")
 		}
 		if got := admin(t, "postgres", `SELECT count(*) FROM pg_roles WHERE rolname IN ('pg_monitor', 'sakutei');`); got != "2" {
 			t.Error("PostgreSQL のロールか管理用のロールが消えた")
 		}
-		// 後の段のために手で片付ける（sakutei はデータを消さない）。
+		// 後の step のために手で片付ける（sakutei はデータを消さない）。
 		admin(t, "postgres", "DROP DATABASE sk_orphan_full; DROP DATABASE sk_orphan_kept;")
 	})
 
@@ -565,7 +565,7 @@ ALTER ROLE reader REPLICATION;`)
 		r, code, _ := run(t, "reconcile", pin, cfg)
 		for _, c := range r.Changes {
 			if c.Outcome != "" {
-				t.Errorf("止めたあとの reconcile が当てた: %+v", c)
+				t.Errorf("止めたあとの reconcile が Apply した: %+v", c)
 			}
 		}
 		if code != cli.ExitRemaining {
@@ -606,7 +606,7 @@ ALTER ROLE reader REPLICATION;`)
 // connect_roles（E-F3・N-F7）
 // ─────────────────────────────────────────────────────────────────────────────
 
-// statements はサーバのログ（log_statement = all）から、user でつないで流れた文の
+// statements はサーバのログ（log_statement = all）から、user で接続して流れた文の
 // 行を返す。
 func statements(t *testing.T, user string) []string {
 	t.Helper()
@@ -624,7 +624,7 @@ func statements(t *testing.T, user string) []string {
 }
 
 func TestPostgreSQLCredentialSplit(t *testing.T) {
-	// 読むだけのロール：LOGIN だけ（観測が読むカタログ pg_roles・pg_auth_members・
+	// 読み取り専用のロール：LOGIN だけ（観測が読むカタログ pg_roles・pg_auth_members・
 	// pg_database・pg_extension と shobj_description・aclexplode は PUBLIC が読める）。
 	admin(t, "postgres", `CREATE ROLE `+roUser+` LOGIN PASSWORD 'ro-pw:1';`)
 	admin(t, "postgres", `ALTER SYSTEM SET log_statement = 'all';`)
@@ -644,7 +644,7 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 	}
 	in := intent(t, "intent-split", false, rs)
 
-	t.Run("読むだけのロールは何も変えられない", func(t *testing.T) {
+	t.Run("読み取り専用のロールは何も変えられない", func(t *testing.T) {
 		for _, sql := range []string{"CREATE ROLE sk_by_ro;", "CREATE DATABASE sk_by_ro;"} {
 			if out, err := psqlAs(roUser, roPW, "postgres", sql); err == nil || !strings.Contains(out, "permission denied") {
 				t.Fatalf("%s を %s で: %v: %s（want permission denied）", sql, roUser, err, out)
@@ -668,7 +668,7 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 		}
 	})
 
-	t.Run("観測は読むだけのロール、書き込みは管理用のロール", func(t *testing.T) {
+	t.Run("観測は読み取り専用のロール、書き込みは管理用のロール", func(t *testing.T) {
 		r := converge(t, in, cfg)
 		t.Logf("reconcile:\n%s", dump(r))
 		if got := admin(t, "postgres", `SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'splitdb';`); got != "split_app" {
@@ -679,7 +679,7 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 			t.Fatalf("%s で流れた文が無い（観測）", roUser)
 		}
 		for _, l := range ro {
-			if !strings.Contains(l, "/* sakutei:") && !strings.Contains(l, "sk_by_ro") { // sk_by_ro は上の段の手の文
+			if !strings.Contains(l, "/* sakutei:") && !strings.Contains(l, "sk_by_ro") { // sk_by_ro は前の step で手で流した文
 				t.Errorf("%s が観測でない文を流した: %s", roUser, l)
 			}
 		}
@@ -692,7 +692,7 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 		}
 	})
 
-	t.Run("つなぐ 2 つのロールは List に出ず prune しない", func(t *testing.T) {
+	t.Run("接続に使う 2 つのロールは List に出ず prune しない", func(t *testing.T) {
 		pin := intent(t, "intent-split", true, rs)
 		for i := 0; i < 2; i++ {
 			run(t, "reconcile", pin, cfg)
@@ -700,11 +700,11 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 		p, code, _ := run(t, "plan", pin, cfg)
 		for _, c := range p.Changes {
 			if strings.HasSuffix(c.Resource, "/"+roUser) || c.Resource == "pg/role/main/"+adminUser {
-				t.Errorf("つなぐロールが出た: %s=%s", c.Resource, c.Op)
+				t.Errorf("接続に使うロールが出た: %s=%s", c.Resource, c.Op)
 			}
 		}
 		if got := admin(t, "postgres", `SELECT count(*) FROM pg_roles WHERE rolname IN ('`+roUser+`', '`+adminUser+`');`); got != "2" {
-			t.Errorf("つなぐロールが消えた: %s", got)
+			t.Errorf("接続に使うロールが消えた: %s", got)
 		}
 		if code != cli.ExitOK || len(pending(p)) != 0 {
 			t.Errorf("prune のあと: exit=%d %v", code, pending(p))
@@ -725,7 +725,7 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 				t.Errorf("%s: %+v %v（want none）", step, c, pending(p))
 			}
 		}
-		check("読むだけのロール", true)
+		check("読み取り専用のロール", true)
 		// 列の権限は DB ごと（pg_attribute）なので、管理用の DB（postgres）で与えないと効かない。
 		admin(t, "splitdb", `GRANT SELECT (rolname, rolpassword) ON pg_authid TO `+roUser+`;`)
 		check("別の DB で与えた pg_authid の列", true)
@@ -739,7 +739,7 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 		admin(t, "postgres", `REVOKE pg_read_all_data FROM `+roUser+`;`)
 	})
 
-	t.Run("connect_roles で観測用のロールが PUBLIC の繋げない DB に繋がる", func(t *testing.T) {
+	t.Run("connect_roles で観測用のロールが PUBLIC では接続できない DB に接続できる", func(t *testing.T) {
 		// 観測用のロールの CONNECT は connect_roles で宣言し、手では GRANT しない。
 		locked := append(append([]resource(nil), rs...),
 			r("grant", "lockeddb/PUBLIC", map[string]any{"privileges": []any{}}, "database/main/lockeddb"),
@@ -751,7 +751,7 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 		t.Logf("reconcile:\n%s", dump(res))
 		p, _, _ := run(t, "plan", lin, cfg)
 		if len(p.Ranges) != 1 || !p.Ranges[0].Complete {
-			t.Errorf("範囲の List が不完全（観測用のロールが繋げない？）: %+v", p.Ranges)
+			t.Errorf("Range の List が不完全（観測用のロールが接続できない？）: %+v", p.Ranges)
 		}
 		if got := publicPrivileges(t, "lockeddb"); got != "" {
 			t.Errorf("lockeddb の PUBLIC = %q", got)
@@ -766,7 +766,7 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 		if !read {
 			t.Error("観測用のロールが拡張を読んでいない")
 		}
-		// 手の REVOKE はずれとして見え（拡張は観測できず、List は不完全）、1 周で戻る。
+		// 手の REVOKE は drift として見え（拡張は観測できず、List は不完全）、1 cycle で戻る。
 		admin(t, "postgres", `REVOKE CONNECT ON DATABASE lockeddb FROM `+roUser+`;`)
 		p, _, _ = run(t, "plan", lin, cfg)
 		if c := changeOf(p, "pg/database/main/lockeddb"); c.Op != plan.Update {
@@ -778,7 +778,7 @@ func TestPostgreSQLCredentialSplit(t *testing.T) {
 		if p.Ranges[0].Complete {
 			t.Errorf("手の REVOKE のあと List が完全: %+v", p.Ranges)
 		}
-		// この周は周の初めの List が不完全なので prune を止め、残りとして 3 で終わる。
+		// この cycle は初めの List が不完全なので prune を halt し、残りがあるとして 3 で終わる。
 		r, code, _ := run(t, "reconcile", lin, cfg)
 		if c := changeOf(r, "pg/database/main/lockeddb"); c.Outcome != plan.OutcomeOK || c.After != plan.None || code != cli.ExitRemaining {
 			t.Errorf("手の REVOKE のあとの reconcile: exit=%d %+v\n%s", code, c, dump(r))

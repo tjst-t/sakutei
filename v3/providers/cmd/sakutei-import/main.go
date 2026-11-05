@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command sakutei-import は今ある現実を intent の形に書き出す道具（import と、
-// --every で繰り返す同期。設計 §7.2・§8 の段 9）。使い方は importer.Run。
+// Command sakutei-import は、今ある現実を intent の形に書き出すツール（import と、
+// --every で繰り返す同期。設計 §7.2・§8 の Stage 9）。使い方は importer.Run。
 package main
 
 import (

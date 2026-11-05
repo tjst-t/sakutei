@@ -29,7 +29,7 @@ var schema = core.Schema{Version: "fake/1", Kinds: map[string]core.KindSchema{
 
 func rec(name string) core.ID { return core.ID{Type: "p/rec", Name: name} }
 
-// 偽の provider で契約テストの全部の確かめが通る（E-P1・E-P2）。
+// 偽の provider で契約テストの全部のケースが通る（E-P1・E-P2）。
 func TestFake(t *testing.T) {
 	contract.Run(t, func(t *testing.T) contract.Target {
 		p := fake.New(schema)
@@ -42,7 +42,7 @@ func TestFake(t *testing.T) {
 			case notSent:
 				return core.ErrNotSent
 			case failed:
-				return errors.New("相手が断った")
+				return errors.New("相手が拒否した")
 			}
 			return nil
 		})

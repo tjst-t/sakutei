@@ -53,9 +53,9 @@ func scrape(t *testing.T, addr, token string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
-// E-H3：CycleDone から周の件数・時間・予算の残りを、今の一覧から firing の数を
-// 出す。数えていない値は出さない（不変条件 29）。読むだけのトークンを求める。
-// 設定を読み直しても同じ送り先（値と待ち受け）を返す。
+// E-H3：CycleDone から cycle の件数・時間・budget の残りを、今の一覧から firing の数を
+// 出す。数えていない値は出さない（不変条件 29）。読み取り専用のトークンを求める。
+// 設定を読み直しても同じ sink（値と listener）を返す。
 func TestMetrics(t *testing.T) {
 	addr := freeAddr(t)
 	tok := filepath.Join(t.TempDir(), "tokens")
@@ -67,7 +67,7 @@ func TestMetrics(t *testing.T) {
 	}
 	t.Cleanup(func() { s1.(*metrics.Sink).Close() })
 	if s1.(*metrics.Sink).Addr() != "" {
-		t.Fatal("送る前に待ち受けた（plan・status で待ち受けない）")
+		t.Fatal("送る前に listen した（plan・status では listen しない）")
 	}
 	ctx := context.Background()
 	at := time.Unix(1_800_000_000, 0)
@@ -76,7 +76,7 @@ func TestMetrics(t *testing.T) {
 	}
 	code, body := scrape(t, addr, "reader")
 	if code != 200 || strings.Contains(body, "sakutei_cycles_total") || strings.Contains(body, "sakutei_firing") {
-		t.Fatalf("周の無いうちに周の値を出した: %d\n%s", code, body)
+		t.Fatalf("cycle が無いうちに cycle の値を出した: %d\n%s", code, body)
 	}
 	if code, _ := scrape(t, addr, ""); code != http.StatusUnauthorized {
 		t.Fatalf("トークンなし: %d", code)
@@ -84,7 +84,7 @@ func TestMetrics(t *testing.T) {
 
 	s2, err := metrics.Module(settings)
 	if err != nil || s2 != s1 {
-		t.Fatalf("読み直しで別の送り先: %v", err)
+		t.Fatalf("読み直しで別の sink: %v", err)
 	}
 	cycle := core.Event{Seq: 2, Kind: "CycleDone", Type: core.IncidentEvent, At: at,
 		Values: map[string]int{"duration_ms": 1500, "drift": 2, "resources": 5, "halts": 0, "budget_remaining.platform": 3}}
@@ -114,20 +114,20 @@ func TestMetrics(t *testing.T) {
 		}
 	}
 	if strings.Contains(body, "budget_window_remaining") {
-		t.Errorf("載っていない予算の窓を出した:\n%s", body)
+		t.Errorf("載っていない budget window を出した:\n%s", body)
 	}
 
-	// 設定が変われば前の待ち受けを止めて作り直す。
+	// 設定が変われば前の listener を止めて作り直す。
 	s3, err := metrics.Module(map[string]any{"listen": addr})
 	if err != nil || s3 == s1 {
-		t.Fatalf("設定が変わっても同じ送り先: %v", err)
+		t.Fatalf("設定が変わっても同じ sink: %v", err)
 	}
 	t.Cleanup(func() { s3.(*metrics.Sink).Close() })
 	if err := s3.Deliver(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := scrape(t, addr, ""); code != 200 {
-		t.Fatalf("作り直した待ち受け: %d", code)
+		t.Fatalf("作り直した listener: %d", code)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestMetricsRejectsSettings(t *testing.T) {
 		{map[string]any{"listen": "0.0.0.0:9464"}, "plaintext: true"},
 		{map[string]any{"listen": "127.0.0.1:9464", "tls": map[string]any{"cert": "a"}}, "cert と key を両方"},
 		{map[string]any{"listen": "127.0.0.1:9464", "tls": map[string]any{"client_ca": "a"}}, "client_ca は cert と key"},
-		{map[string]any{"listen": "127.0.0.1:9464", "path": "/m"}, "知らない項目 path"},
+		{map[string]any{"listen": "127.0.0.1:9464", "path": "/m"}, "不明な field path"},
 	} {
 		if _, err := metrics.Module(c.settings); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%v: %v（%q を含むはず）", c.settings, err, c.want)
@@ -148,7 +148,7 @@ func TestMetricsRejectsSettings(t *testing.T) {
 	}
 }
 
-// 待ち受けられない（宛先が使われている）ときは誤りを返し、周を止めない。
+// listen できない（アドレスが使われている）ときはエラーを返し、cycle を止めない。
 func TestMetricsListenFails(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -160,7 +160,7 @@ func TestMetricsListenFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.(*metrics.Sink).Close() })
-	if err := s.Deliver(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "metrics の待ち受け") {
+	if err := s.Deliver(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "metrics の listen") {
 		t.Fatalf("%v", err)
 	}
 }

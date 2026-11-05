@@ -14,36 +14,36 @@
 
 package clidevice
 
-// definition.go — 機種の定義（使う側が持つファイルか settings に直に書くマップ）を
-// 読む（E-B11）。書式は intent と同じ YAML の部分集合か JSON。全体の例は
+// definition.go — 機種の定義（使う側が持つファイルか、settings に直接書くマップ）を
+// 読む（E-B11）。形式は intent と同じ YAML の部分集合か JSON。全体の例は
 // v3/providers/README.md と testdata/example-device.yaml:
 //
 //	name: example-device                 # 省略可（表示用）
 //	session:
 //	  mode: interactive                  # interactive（既定。pty を取ってプロンプトを待つ）| exec
-//	  prompt: '^sw[0-9]+(\(config\))?# $' # interactive で必須（最後の行に当てる）
-//	  pager: '^--More--$'                # 省略可（当たればページ送りのキーを打つ）
+//	  prompt: '^sw[0-9]+(\(config\))?# $' # interactive で必須（最後の行にマッチさせる）
+//	  pager: '^--More--$'                # 省略可（マッチすればページ送りのキーを打つ）
 //	  pager_key, newline, setup, logout, timeout   # 省略可
 //	errors:                              # 必須（出力のこの行が出たら失敗）
 //	  - '^% '
 //	config:                              # 省略可（interactive だけ）
-//	  enter: [configure]                 # 設定の入り方・出方
+//	  enter: [configure]                 # 設定モードへの入り方・出方
 //	  leave: [end]
 //	  commit: [commit]                   # 確定・取り消し（装置が持つなら）
 //	  rollback: [abort]
-//	  commit_confirmed: ['commit confirmed {minutes}']   # 省略可。時間切れで戻る確定（2 段の Apply）
+//	  commit_confirmed: ['commit confirmed {minutes}']   # 省略可。時間切れで戻る確定（two-phase Apply）
 //	  confirm: [commit]                  # commit_confirmed を確定する
 //	  cancel: ['rollback confirmed']     # 省略可。確定を待つ変更をすぐ戻す
 //	items:
-//	  syslog:                            # 項目の名前（種類。ID は <装置>）
-//	    fields:                          # 値の形（必須。合わない値は読み込みで断る）
+//	  syslog:                            # item の名前（type。ID は <装置>）
+//	    fields:                          # 値の形式（必須。合わない値は読み込み時にエラーにする）
 //	      host:
 //	        pattern: '[0-9]{1,3}(\.[0-9]{1,3}){3}'
 //	    observe:
 //	      command: show running-config
 //	      regex: '^logging host (?P<host>\S+)$'   # または key_value / table
-//	      absent: '^no logging host$'    # 省略可（当たれば「設定が無い」）
-//	    set:                             # 省略すると観測だけの項目
+//	      absent: '^no logging host$'    # 省略可（マッチすれば Absent）
+//	    set:                             # 省略すると観測だけの item
 //	      - logging host {host}
 //	    unset:                           # 省略可（ensure: absent。absent が要る）
 //	      - no logging host
@@ -59,17 +59,17 @@ package clidevice
 //
 // 決まり:
 //
-//   - 未知のキーは断る（書き間違いを黙って無視しない）。
-//   - 正規表現は複数行（(?m)）で当てる。fields の pattern は値の全体に当てる
-//     （^(?:…)$ で囲む）。値は改行・制御文字を含めない（どの pattern でも）。
-//   - コマンドの雛形の {名前} はその項目のフィールド（action なら引数、
-//     commit_confirmed なら seconds・minutes）の値に置き換える。知らない名前は断る。
-//     set を書くなら、どのフィールドもどれかの set に入っていなければならない
-//     （変えられないフィールドを宣言させない）。
-//   - 観測の読み方はちょうど 1 つ。読み方が出すフィールドと fields は一致しなければ
-//     ならない。
-//   - commit_confirmed は confirm と組で、時間切れで装置が戻すこと（2 段の Apply の
-//     契約、不変条件 17）。
+//   - 未知のキーはエラーにする（書き間違いを黙って無視しない）。
+//   - 正規表現は複数行モード（(?m)）でマッチさせる。fields の pattern は値の全体に
+//     マッチさせる（^(?:…)$ で囲む）。値は改行・制御文字を含めない（どの pattern でも）。
+//   - コマンドのテンプレートの {名前} はその item の field（action なら引数、
+//     commit_confirmed なら seconds・minutes）の値に置き換える。未知の名前はエラー。
+//     set を書くなら、どの field もどれかの set に入っていなければならない
+//     （変えられない field を宣言させない）。
+//   - 観測の parser（regex・key_value・table）はちょうど 1 つ。parser が出す field と
+//     fields は一致しなければならない。
+//   - commit_confirmed は confirm と組で書く。装置が時間切れで戻すこと（two-phase
+//     Apply の契約、不変条件 17）。
 
 import (
 	"errors"
@@ -112,7 +112,7 @@ type Definition struct {
 	Actions  map[string]*Action
 }
 
-// ConfigMode は設定の入り方・出方・確定・取り消しと、2 段の Apply の確定。
+// ConfigMode は設定モードへの入り方・出方・確定・取り消しと、two-phase Apply の確定。
 type ConfigMode struct {
 	Enter, Leave, Commit, Rollback []string
 	// CommitConfirmed は時間切れで戻る確定（{seconds}・{minutes}）。Confirm はそれを
@@ -121,14 +121,14 @@ type ConfigMode struct {
 	Confirm, Cancel []string
 }
 
-// Field は値の形。
+// Field は値の形式。
 type Field struct {
 	Name    string
 	Pattern *regexp.Regexp
 	Secret  bool
 }
 
-// Item は 1 つの項目（1 つのリソース）。
+// Item は 1 つの item（1 つのリソース）。
 type Item struct {
 	Name    string
 	Fields  map[string]*Field
@@ -322,7 +322,7 @@ func ParseDefinition(tree map[string]any) (*Definition, error) {
 		d.Actions[name] = a
 	}
 
-	// フィールドの名前は定義の中で秘密かどうかがそろっていなければならない
+	// field の名前ごとに、定義の中で secret かどうかがそろっていなければならない
 	// （provider の Schema は 1 つ）。
 	secret := map[string]bool{}
 	for _, name := range sortedKeys(d.Items) {
@@ -572,12 +572,12 @@ func parseAction(name string, m map[string]any, p string) (*Action, error) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 読み方
+// parser
 // ─────────────────────────────────────────────────────────────────────────────
 
-// parser は観測の出力からフィールドの値を読む。
+// parser は観測の出力から field の値を読む。
 type parser interface {
-	// read は出力（行は "\n" 区切り）から値を読む。found が false なら当たらない。
+	// read は出力（行は "\n" 区切り）から値を読む。found が false ならマッチしない。
 	read(out string) (values map[string]string, found bool, err error)
 	fields() map[string]bool
 }
@@ -700,7 +700,7 @@ func parseParser(om map[string]any, p string) (parser, error) {
 	}
 }
 
-// regexParser は名前付きの組で読む。当たりはちょうど 1 つでなければならない。
+// regexParser は名前付きグループで読む。マッチはちょうど 1 つでなければならない。
 type regexParser struct{ re *regexp.Regexp }
 
 func (r *regexParser) fields() map[string]bool {
@@ -786,8 +786,8 @@ func (k *kvParser) read(out string) (map[string]string, bool, error) {
 	return vals, true, nil
 }
 
-// tableParser は表で読む: header の行の後ろ、空の行までが行。row に当たる行は
-// ちょうど 1 つ。列は split（既定 空白）で分ける。
+// tableParser は表で読む。header の行の後ろから空の行までが行。row にマッチする行は
+// ちょうど 1 つ。列は split（既定は空白）で分ける。
 type tableParser struct {
 	header, row, split *regexp.Regexp
 	columns            map[string]int
@@ -843,10 +843,10 @@ func (t *tableParser) read(out string) (map[string]string, bool, error) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// コマンドの雛形
+// コマンドのテンプレート
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Template はコマンドの雛形（{名前} を値に置き換える）。
+// Template はコマンドのテンプレート（{名前} を値に置き換える）。
 type Template struct {
 	raw   string
 	parts []tmplPart
@@ -859,7 +859,7 @@ type tmplPart struct {
 
 var placeholder = regexp.MustCompile(`\{([a-z][a-z0-9_]*)\}`)
 
-// parseTemplate は s を雛形にする。fields に無い {名前} は error（fields が nil
+// parseTemplate は s をテンプレートにする。fields に無い {名前} は error（fields が nil
 // なら {名前} を 1 つも許さない）。
 func parseTemplate(s string, fields map[string]*Field) (Template, error) {
 	t := Template{raw: s}
@@ -894,7 +894,7 @@ func (t Template) fieldNames() []string {
 	return out
 }
 
-// render は値を埋めた行。mask の名前の値は "***" にする（知らせ・エラー用）。
+// render は値を埋めた行を返す。mask の名前の値は "***" にする（通知・エラー用）。
 func (t Template) render(values map[string]string, mask map[string]bool) string {
 	var b strings.Builder
 	for _, p := range t.parts {
@@ -910,7 +910,7 @@ func (t Template) render(values map[string]string, mask map[string]bool) string 
 	return b.String()
 }
 
-// String は雛形そのもの。
+// String はテンプレートそのもの。
 func (t Template) String() string { return t.raw }
 
 func templates(m map[string]any, key, prefix string, fields map[string]*Field) ([]Template, error) {
@@ -933,7 +933,7 @@ func templates(m map[string]any, key, prefix string, fields map[string]*Field) (
 // 値の検査
 // ─────────────────────────────────────────────────────────────────────────────
 
-// check は v がフィールドの形に合うか。値そのものは文言に出さない。
+// check は v が field の形式に合うかを確かめる。値そのものはメッセージに出さない。
 func (f *Field) check(v string) error {
 	for _, r := range v {
 		if r < 0x20 || r == 0x7f {
@@ -947,10 +947,10 @@ func (f *Field) check(v string) error {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 小物
+// ヘルパー
 // ─────────────────────────────────────────────────────────────────────────────
 
-// timeoutFields は commit_confirmed の雛形の名前（時間切れ）。
+// timeoutFields は commit_confirmed のテンプレートで使える名前（時間切れ）。
 var timeoutFields = map[string]*Field{"seconds": {Name: "seconds"}, "minutes": {Name: "minutes"}}
 
 // checkLine は 1 行のコマンド（空でなく、タブのほかの制御文字を含まない）か。

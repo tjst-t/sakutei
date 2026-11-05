@@ -29,9 +29,9 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/sinks/otlp"
 )
 
-// E-H3・N-H5：CycleDone を周の span に、その前の出来事型を子の span にして
-// OTLP/HTTP の JSON で送る。ID は Event の番号から決まり、送り直しても同じ。欄の
-// 値（Drift の message）は載せない。受け手が落ちれば誤り。
+// E-H3・N-H5：CycleDone を cycle の span に、その前の edge Event を子の span にして
+// OTLP/HTTP の JSON で送る。ID は Event の番号から決まり、送り直しても同じ。field の
+// 値（Drift の message）は載せない。受信側が落ちていればエラー。
 func TestOTLP(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []string
@@ -68,7 +68,7 @@ func TestOTLP(t *testing.T) {
 		t.Fatalf("送り直して違う ID:\n%v", bodies)
 	}
 	if strings.Contains(bodies[0], "192.0.2") {
-		t.Fatalf("欄の値を載せた: %s", bodies[0])
+		t.Fatalf("field の値を載せた: %s", bodies[0])
 	}
 	var req struct {
 		ResourceSpans []struct {
@@ -93,26 +93,26 @@ func TestOTLP(t *testing.T) {
 	}
 	spans := req.ResourceSpans[0].ScopeSpans[0].Spans
 	if len(spans) != 3 {
-		t.Fatalf("周・Applied・残った Deleted の 3 つ: %+v", spans)
+		t.Fatalf("cycle・Applied・残った Deleted の 3 つ: %+v", spans)
 	}
 	cyc, apply, del := spans[0], spans[1], spans[2]
 	if cyc.Name != "sakutei.cycle" || cyc.Start != "1799999998000000000" || cyc.End != "1800000000000000000" || cyc.Status.Code != 2 || len(cyc.TraceID) != 32 || len(cyc.SpanID) != 16 {
-		t.Errorf("周の span: %+v", cyc)
+		t.Errorf("cycle の span: %+v", cyc)
 	}
 	if apply.Name != "sakutei.apply" || apply.TraceID != cyc.TraceID || apply.ParentSpanID != cyc.SpanID || apply.Start != apply.End {
 		t.Errorf("子の span: %+v", apply)
 	}
 	if del.Name != "sakutei.delete" || del.ParentSpanID != "" || del.TraceID == cyc.TraceID {
-		t.Errorf("周の無い出来事は根の span: %+v", del)
+		t.Errorf("cycle の無い edge Event は root span: %+v", del)
 	}
 
 	srv.Close()
 	if err := s.Deliver(ctx, batch); err == nil {
-		t.Fatal("受け手が落ちても送れたとした")
+		t.Fatal("受信側が落ちても送れたとした")
 	}
 	// span の無い batch は送らない。
 	if err := s.Deliver(ctx, batch[:1]); err != nil {
-		t.Fatalf("状態型だけ: %v", err)
+		t.Fatalf("level Event だけ: %v", err)
 	}
 }
 
@@ -124,7 +124,7 @@ func TestOTLPRejectsSettings(t *testing.T) {
 		{map[string]any{}, "endpoint に"},
 		{map[string]any{"endpoint": "http://otel.example.com:4318"}, "plaintext: true"},
 		{map[string]any{"endpoint": "grpc://otel:4317"}, "http(s)://host:port"},
-		{map[string]any{"endpoint": "https://otel:4318", "headers": map[string]any{}}, "知らない項目 headers"},
+		{map[string]any{"endpoint": "https://otel:4318", "headers": map[string]any{}}, "不明な field headers"},
 	} {
 		if _, err := otlp.Module(c.settings); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%v: %v（%q を含むはず）", c.settings, err, c.want)

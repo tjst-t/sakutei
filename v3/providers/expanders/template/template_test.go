@@ -23,8 +23,8 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/expanders/template"
 )
 
-// TestGolden は雛形の展開を golden で確かめる（N-P5・E-A11・N-A14）。inline は
-// intent の items と vars（値の型を保つ差し込み・採番の要求・無い項目の断り）、
+// TestGolden はテンプレートの展開を golden で確かめる（N-P5・E-A11・N-A14）。inline は
+// intent の items と vars（値の型を保つ差し込み・採番の要求・無い field のエラー）、
 // inventory は外部入力からの展開、unreachable は届かない入力で宣言を作らず
 // Uncertain を出す（E-K3）。
 func TestGolden(t *testing.T) {

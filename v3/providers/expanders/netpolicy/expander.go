@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Package netpolicy は Expand のモジュール go:netpolicy（設計 §3.8・§7.2、E-B5）。
-// intent の network_policy: に、網の間の許可を機器に依らない抽象として理由つきで
-// 書き、実現先ごとに宣言（nftables の base chain など）へ展開する。v2 の
+// intent の network_policy: に、ネットワーク間の許可を機器に依らない抽象として
+// 理由つきで書き、実現先ごとに宣言（nftables の base chain など）へ展開する。v2 の
 // pkg/netpolicy を移した。
 //
 //	expand:
@@ -28,19 +28,21 @@
 //	    - {from: office, to: dmz, proto: tcp, ports: [23], reason: "古い装置は telnet だけ", tags: [exception]}
 //	  targets:
 //	    - name: fw1
-//	      kind: boundary                 # 網と網の間。host はそのホストに入る通信
+//	      kind: boundary                 # ネットワーク間。host はそのホストに入る通信
 //	      networks: [office, dmz]
-//	      provider: fw                   # 実現先の provider（つなぎ方の設定の名前）
+//	      provider: fw                   # 実現先の provider（接続設定での名前）
 //	      id: fw1/inet/filter/forward    # 実現先の宣言の id（realizer が決める形）
 //	      before: ["ct state established,related accept"]
 //	      apply: {transaction: {timeout: 30s}}   # 作る宣言にそのまま付ける
 //
-// 既定は拒否で、書いた許可だけが通る。網の重なり（同じ domain の中）・宣言に無い網・
-// 理由の無い例外・同じ許可の重複・domain をまたぐ許可は Reject の診断で読み込みで
-// 断り、前の許可に覆われて効かない許可・どの実現先も通らない許可は Warn で知らせる
-// （E-B5）。網の domain と実現先の interfaces（口ごとに見る domain）を書け、realizer
-// には口ごとに入りと出の向きつきで許可が渡る。本体の realizer は nftables。VM の FW
-// などほかの実現先は WithRealizer で足す。同じ入力に同じ出力（N-P5）。
+// 既定は拒否で、書いた許可だけが通る。次のものは Reject の診断で読み込み時に
+// エラーにする（reject）：ネットワークの重なり（同じ domain の中）・宣言に無い
+// ネットワーク・理由の無い例外・同じ許可の重複・domain をまたぐ許可。前の許可に
+// 覆われて効かない許可と、どの実現先も通らない許可は Warn で通知する（E-B5）。
+// ネットワークの domain と、実現先の interfaces（interface ごとに見る domain）を
+// 書ける。realizer には interface ごとに、入りと出の向きつきで許可が渡る。組み込みの
+// realizer は nftables。VM の FW などほかの実現先は WithRealizer で足す。同じ入力に
+// 同じ出力（N-P5）。
 package netpolicy
 
 import (
@@ -52,7 +54,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/expand"
 )
 
-// Key は intent の最上位の項目。
+// Key は intent の最上位の key。
 const Key = "network_policy"
 
 // Expander は go:netpolicy。
@@ -63,7 +65,7 @@ type Expander struct {
 // Option は Expander に足すもの。
 type Option func(*Expander)
 
-// WithRealizer は実現先の変換を名前で足す（target の realizer:）。本体の nftables は
+// WithRealizer は実現先の変換を名前で足す（target の realizer:）。組み込みの nftables は
 // 上書きできない。
 func WithRealizer(name string, r Realizer) Option {
 	return func(e *Expander) {
@@ -73,7 +75,7 @@ func WithRealizer(name string, r Realizer) Option {
 	}
 }
 
-// New は本体の realizer（nftables）を持つ Expander を作る。
+// New は組み込みの realizer（nftables）を持つ Expander を作る。
 func New(opts ...Option) *Expander {
 	e := &Expander{realizers: map[string]Realizer{DefaultRealizer: NFTables{}}}
 	for _, o := range opts {

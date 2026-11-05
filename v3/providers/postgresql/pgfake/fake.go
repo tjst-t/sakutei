@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package pgfake は偽の psql（v3 の postgresql provider の契約テスト・単体テスト用、
+// Package pgfake は fake の psql（v3 の postgresql provider の契約テスト・単体テスト用、
 // 設計 §6.2、E-P2。v2 の internal/postgresql/pgtest を移した）。provider が流す SQL
 // （決まった形の CREATE / ALTER / DROP / GRANT / REVOKE / COMMENT と、
-// /* sakutei:<名前> */ の付いた読む問い合わせ）だけを解釈し、ロール・データベース・
+// /* sakutei:<名前> */ の付いた読み取りのクエリ）だけを解釈し、ロール・データベース・
 // 権限・拡張をメモリに持つ。本物と同じく:
 //
-//   - 接続の設定は環境変数（PGHOST・PGUSER・PGDATABASE・PGPASSFILE）から読み、
+//   - 接続設定は環境変数（PGHOST・PGUSER・PGDATABASE・PGPASSFILE）から読み、
 //     passfile のパスワードが合わなければ終了コード 2。
-//   - 識別子と文字列は SQL の字句の決まりで読む（"" と ” と E'\\'）。quote が
-//     誤っていれば別の名前になるか構文のエラーになる。
-//   - エラーは "ERROR:  <SQLSTATE>: <文>" を標準エラーに出して終了コード 3。
-//     BEGIN の中のエラーはトランザクションを巻き戻す。
+//   - 識別子と文字列は SQL の字句のルールで読む（"" と ” と E'\\'）。quote が
+//     間違っていれば別の名前になるか構文のエラーになる。
+//   - エラーは "ERROR:  <SQLSTATE>: <メッセージ>" を標準エラーに出して終了コード 3。
+//     BEGIN の中のエラーはトランザクションをロールバックする。
 //   - CREATE DATABASE をトランザクションの中で流すとエラー（25001）。
 //
 // Server.Run は postgresql.RunnerFunc に渡す形の関数。
@@ -56,7 +56,7 @@ type Role struct {
 	MemberOf    []string `json:"member_of"`
 	Comment     *string  `json:"comment"`
 	Password    string   `json:"password"`     // pg_authid.rolpassword
-	OwnsObjects bool     `json:"owns_objects"` // 表などを持つ（DROP ROLE が断る）
+	OwnsObjects bool     `json:"owns_objects"` // 表などを持つ（DROP ROLE が拒否される）
 }
 
 // Database は 1 つのデータベース。
@@ -70,8 +70,8 @@ type Database struct {
 	// ACL は nil なら既定（所有者がすべて、PUBLIC に CONNECT・TEMPORARY）。nil で
 	// なければロール → 権限で、PUBLIC はキー ""（aclitem の grantee 0）。
 	ACL        map[string][]string `json:"acl"`
-	Extensions map[string]string   `json:"extensions"` // 名前 → 版
-	// Depended は、ほかのオブジェクトが頼っている拡張（DROP EXTENSION が断る）。
+	Extensions map[string]string   `json:"extensions"` // 名前 → バージョン
+	// Depended は、ほかのオブジェクトが依存している拡張（DROP EXTENSION が拒否される）。
 	Depended map[string]bool `json:"depended"`
 	Tables   int             `json:"tables"` // 利用者の表の数
 }
@@ -82,23 +82,23 @@ type State struct {
 	AdminPassword string               `json:"admin_password"`
 	Roles         map[string]*Role     `json:"roles"`
 	Databases     map[string]*Database `json:"databases"`
-	// Available は入れられる拡張と版（先頭が既定の版）。
+	// Available は入れられる拡張とバージョン（先頭が既定のバージョン）。
 	Available map[string][]string `json:"available"`
 	// Unreachable ならどの接続も終了コード 2。
 	Unreachable bool `json:"unreachable"`
 	// PlaintextPasswords は PASSWORD に平文が来た回数（provider は来させない）。
 	PlaintextPasswords int `json:"plaintext_passwords"`
-	// ReadOnly は読むだけのロール（名前 → パスワード、E-G5）。つなげて、
-	// /* sakutei:<名前> */ の読む問い合わせ（passwords を除く）は流せるが、
-	// 変える文は権限のエラー（42501）で断られる。ロールとして見せるなら Roles
+	// ReadOnly は読み取り専用のロール（名前 → パスワード、E-G5）。接続でき、
+	// /* sakutei:<名前> */ の読み取りのクエリ（passwords を除く）は流せるが、
+	// 書き込みの文は権限のエラー（42501）で拒否される。ロールとして見せるなら Roles
 	// にも足す。
 	ReadOnly map[string]string `json:"read_only,omitempty"`
 }
 
-// Counts は 1 つのロールでつないだ文の数（E-G5）。
+// Counts は 1 つのロールで接続して流した文の数（E-G5）。
 type Counts struct {
-	// Reads は流せた読む問い合わせ、Writes は流せた変える文（BEGIN・COMMIT を
-	// 除く）、Denied は権限で断られた文。
+	// Reads は流せた読み取りのクエリ、Writes は流せた書き込みの文（BEGIN・COMMIT を
+	// 除く）、Denied は権限で拒否された文。
 	Reads, Writes, Denied int
 }
 
@@ -109,7 +109,7 @@ type Call struct {
 	Stdin string
 }
 
-// Server は偽の psql とそのサーバ。
+// Server は fake の psql とそのサーバ。
 type Server struct {
 	mu    sync.Mutex
 	st    *State
@@ -118,11 +118,11 @@ type Server struct {
 	counts map[string]*Counts
 	// Missing なら起動できない（psql が無い）。
 	Missing bool
-	// Broken なら読む問い合わせの出力を壊す（JSON でない、E-K1）。
+	// Broken なら読み取りのクエリの出力を壊す（JSON でない、E-K1）。
 	Broken bool
 }
 
-// NewState は初めの状態：管理用のロール（超ユーザ）・pg_monitor・
+// NewState は初めの状態：管理用のロール（superuser）・pg_monitor・
 // pg_read_all_data、postgres・template0（接続できない）・template1、各 DB に
 // plpgsql。入れられる拡張は hstore（1.7・1.8）と citext（1.6）。
 func NewState(adminUser, adminPassword string) *State {
@@ -143,7 +143,7 @@ func NewState(adminUser, adminPassword string) *State {
 	return st
 }
 
-// New は st を相手にする偽の psql を返す。
+// New は st を相手にする fake の psql を返す。
 func New(st *State) *Server { return &Server{st: st} }
 
 // Do は状態をロックして f を呼ぶ（テストが現実を手で変える・見るため）。
@@ -191,7 +191,7 @@ func (s *Server) Run(_ context.Context, _ string, args, env []string, stdin stri
 	return out, errOut, code, err
 }
 
-// Writes は流せた変える文の数（どのロールでつないだものも、E-P2 の冪等の確かめ）。
+// Writes は流せた書き込みの文の数（どのロールで接続したものも数える。E-P2 の冪等の確認用）。
 func (s *Server) Writes() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -202,7 +202,7 @@ func (s *Server) Writes() int {
 	return n
 }
 
-// Users はこれまでにつないだロール（PGUSER）ごとの起動の数。
+// Users はこれまでに接続したロール（PGUSER）ごとの起動の数。
 func (s *Server) Users() map[string]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -213,7 +213,7 @@ func (s *Server) Users() map[string]int {
 	return out
 }
 
-// CountsOf は user（PGUSER）でつないだ文の数。
+// CountsOf は user（PGUSER）で接続して流した文の数。
 func (s *Server) CountsOf(user string) Counts {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -285,7 +285,7 @@ func runCounted(st *State, args []string, env map[string]string, stdin string, c
 			out.WriteString(res + "\n")
 		}
 	}
-	if x.saved != nil { // COMMIT の無いまま終わった：巻き戻す。
+	if x.saved != nil { // COMMIT の無いまま終わった：ロールバックする。
 		*st = *x.saved
 	}
 	return out.String(), "", 0, nil
@@ -564,8 +564,8 @@ type execCtx struct {
 	st    *State
 	user  string
 	db    string
-	saved *State // BEGIN の時点の写し（nil ならトランザクションの外）
-	// readOnly は読むだけのロールでつないだ（変える文を断る）。
+	saved *State // BEGIN の時点のコピー（nil ならトランザクションの外）
+	// readOnly は読み取り専用のロールで接続した（書き込みの文を拒否する）。
 	readOnly bool
 	counts   *Counts
 }
@@ -605,7 +605,7 @@ func (x *execCtx) exec(stmt string) (string, error) {
 	}
 	out, err := x.change(p)
 	if err == nil && !txn {
-		x.counts.Writes++ // 流せた変える文だけを数える（断られた DROP は書いていない）
+		x.counts.Writes++ // 流せた書き込みの文だけを数える（拒否された DROP は書いていない）
 	}
 	return out, err
 }
@@ -1174,7 +1174,7 @@ func (x *execCtx) dropExtension(p *parser) error {
 	return nil
 }
 
-// ---- 読む問い合わせ ----
+// ---- 読み取りのクエリ ----
 
 func (x *execCtx) query(name string) (string, error) {
 	var v any
@@ -1248,9 +1248,9 @@ func (x *execCtx) snapshot() map[string]any {
 	return map[string]any{"current_user": x.user, "roles": roles, "databases": dbs}
 }
 
-// canConnect は超ユーザでないロール user が db に接続できるか（所有者か、CONNECT を
+// canConnect は superuser でないロール user が db に接続できるか（所有者か、CONNECT を
 // 直に・PUBLIC から持つ。本物と同じく、PUBLIC の CONNECT を外したデータベースには
-// 読むだけのロールは繋げない、#203）。
+// 読み取り専用のロールは接続できない、#203）。
 func canConnect(db *Database, user string) bool {
 	acl := db.ACL
 	if acl == nil {

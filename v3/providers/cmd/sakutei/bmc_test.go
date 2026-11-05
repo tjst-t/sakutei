@@ -15,9 +15,9 @@
 package main
 
 // bmc_test.go — redfish と metrics-probe を CLI から（偽の BMC と偽の /metrics に
-// 向けて）回す。電源は上流のキューが空くまで待ち（depends_on の when）、FW の版の
-// ずれは手順（invoke stage → Task の完了を待つ → 版で閉じる）で直す（§3.7、E-A5・
-// E-H4・N-T4）。
+// 向けて）回す。電源は上流のキューが空くまで待つ（depends_on の when）。FW の
+// バージョンのずれは Procedure（invoke stage → Task の完了を待つ → バージョンで閉じる）
+// で直す（§3.7、E-A5・E-H4・N-T4）。
 
 import (
 	"bytes"
@@ -105,7 +105,7 @@ procedures:
 
 	// plan は比べるだけ。キューが溜まっている間は電源を入れない。
 	code, out := run("plan")
-	if code != cli.ExitOK || !strings.Contains(out, "bmc/system/node1") || !strings.Contains(out, "手順 bmc-fw bmc/firmware/node1/BMC: 起こす") {
+	if code != cli.ExitOK || !strings.Contains(out, "bmc/system/node1") || !strings.Contains(out, "Procedure bmc-fw bmc/firmware/node1/BMC: start する") {
 		t.Fatalf("exit=%d\n%s", code, out)
 	}
 	if code, out = run("reconcile"); code != cli.ExitRemaining || bmc.PowerState() != "Off" {
@@ -125,7 +125,7 @@ procedures:
 		t.Fatalf("exit=%d\n%s", code, out)
 	}
 	if v := bmc.FirmwareVersion("BMC"); v != "2.0.0" || bmc.UpdateRequests() != 1 {
-		t.Fatalf("版 %s・更新の要求 %d 回", v, bmc.UpdateRequests())
+		t.Fatalf("バージョン %s・更新の要求 %d 回", v, bmc.UpdateRequests())
 	}
 	if code, out = run("plan"); code != cli.ExitOK || strings.Contains(out, "~ bmc") {
 		t.Fatalf("exit=%d\n%s", code, out)

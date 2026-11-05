@@ -14,7 +14,7 @@
 
 package ldap
 
-// observe.go — Observe と List。どちらも観測用の資格だけで bind する（E-G5）。
+// observe.go — Observe と List。どちらも観測用の credential だけで bind する（E-G5）。
 
 import (
 	"context"
@@ -38,8 +38,8 @@ func unknown(note string) core.Observation {
 	return core.Observation{Availability: core.Unknown, Note: note}
 }
 
-// fatal は同じサーバのほかの項目も読めない失敗か（届かない・bind・コマンドが
-// 無い・資格を読めない）。そのサーバの残りを同じ理由で Unknown にする（E-K1）。
+// fatal は同じサーバのほかの entry も読めない失敗か（届かない・bind・コマンドが
+// 無い・credential を読めない）。そのサーバの残りを同じ理由で Unknown にする（E-K1）。
 func fatal(err error) bool {
 	switch KindOf(err) {
 	case KindNoCommand, KindUnreachable, KindAuth, KindCredential:
@@ -48,7 +48,7 @@ func fatal(err error) bool {
 	return false
 }
 
-// Observe は項目を観測する（項目ごとに base の検索 1 回、スキーマはサーバごとに
+// Observe は entry を観測する（entry ごとに base の検索 1 回、スキーマはサーバごとに
 // 要るときだけ 1 回、E-D8）。
 func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core.Observation, error) {
 	out := map[core.ID]core.Observation{}
@@ -92,7 +92,7 @@ type observer struct {
 	loaded bool
 }
 
-// entry は 1 つの項目を観測する。無ければ Absent、noSuchObject のほかの失敗は
+// entry は 1 つの entry を観測する。無ければ Absent、noSuchObject のほかの失敗は
 // Unknown（E-K1）。
 func (o *observer) entry(ctx context.Context, t target, d *decl) (core.Observation, error) {
 	es, err := o.p.cl.searchAs(ctx, o.srv, o.srv.observe, searchRequest{Base: t.dnStr, Scope: ScopeBase, Filter: "(objectClass=*)", Attrs: readAttrs})
@@ -111,7 +111,7 @@ func (o *observer) entry(ctx context.Context, t target, d *decl) (core.Observati
 	return core.Observation{Availability: core.Present, Fields: f}, nil
 }
 
-// fields は項目の観測の項目。d があれば宣言した属性だけを、宣言と意味が同じなら
+// fields は entry の観測の field。d があれば宣言した属性だけを、宣言と意味が同じなら
 // 宣言の書き方で返す（E-D7・E-I7）。
 func (o *observer) fields(ctx context.Context, e Entry, d *decl) (core.Fields, error) {
 	got := map[string][]string{}
@@ -228,8 +228,8 @@ func canonDNs(vals []string) []string {
 	return out
 }
 
-// schema はクラスの名前 → 上位のクラス。subschema は項目の subschemaSubentry
-// （無ければルート DSE の subschemaSubentry）。読めなければ誤り（観測は Unknown、
+// schema はクラスの名前 → 上位のクラス。subschema は entry の subschemaSubentry
+// （無ければルート DSE の subschemaSubentry）。読めなければエラー（観測は Unknown、
 // E-K1）。
 func (o *observer) schema(ctx context.Context, subschema string) (map[string][]string, error) {
 	if o.loaded {
@@ -264,7 +264,7 @@ func (o *observer) schema(ctx context.Context, subschema string) (map[string][]s
 	return o.sup, nil
 }
 
-// subentry は項目がサブエントリ・tombstone か（List に出さない、E-I6）。
+// subentry は entry がサブエントリ・tombstone か（List に出さない、E-I6）。
 func subentry(e Entry) bool {
 	for _, c := range e.Attrs[attrObjectClass] {
 		switch strings.ToLower(c) {
@@ -275,8 +275,8 @@ func subentry(e Entry) bool {
 	return false
 }
 
-// List は範囲の検索（ページに分ける）に出る項目。最後まで読めたときだけ Complete、
-// 失敗（件数の上限で切れたときも）は誤り（complete-or-error、E-K2・E-F3）。
+// List は Range の検索（ページに分ける）に出る entry。最後まで読めたときだけ Complete、
+// 失敗（件数の上限で切れたときも）はエラー（complete-or-error、E-K2・E-F3）。
 func (p *Provider) List(ctx context.Context, r core.Range) (core.Listing, error) {
 	rg, err := p.parseRange(r.Args)
 	if err != nil {
@@ -285,7 +285,7 @@ func (p *Provider) List(ctx context.Context, r core.Range) (core.Listing, error)
 	srv := p.servers[rg.server]
 	es, err := p.cl.searchAs(ctx, srv, srv.observe, searchRequest{Base: rg.base.String(), Scope: rg.scope, Filter: rg.filter, Attrs: []string{"objectClass"}, Paged: true})
 	if err != nil {
-		return core.Listing{}, fmt.Errorf("範囲 %s を列挙できない: %w", r.Key(), err)
+		return core.Listing{}, fmt.Errorf("Range %s を列挙できない: %w", r.Key(), err)
 	}
 	seen := map[string]bool{}
 	var dns []string

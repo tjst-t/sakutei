@@ -24,15 +24,15 @@ package s3
 //
 //   - アドレスは path-style（<endpoint>/<bucket>）が既定、virtual-host
 //     （<bucket>.<endpoint のホスト>）は設定で選ぶ。
-//   - 資格は Session を開くときに読む（Client にも Session の外にも持たない。
-//     誤りの文に出さない、E-G2）。観測用と書き込み用は別の Client にする（E-G5）。
-//   - 誤りは Error の Kind で分ける。届かない・時間切れ・5xx（501 を除く）・読めない
+//   - credential は Session を開くときに読む（Client にも Session の外にも持たない。
+//     エラーメッセージに出さない、E-G2）。観測用と書き込み用は別の Client にする（E-G5）。
+//   - エラーは Error の Kind で分ける。届かない・タイムアウト・5xx（501 を除く）・読めない
 //     応答は KindUnreachable、401・403 は KindAuth、証明書の検証の失敗は
-//     KindCertificate、資格を読めないのは KindCredentials、501 か Code が
+//     KindCertificate、credential を読めないのは KindCredentials、501 か Code が
 //     NotImplemented は KindNotImplemented（その API を持たない endpoint）、ほかの
 //     3xx・4xx は KindRequest（S3 の Code と Message つき）。
-//   - リダイレクトは辿らない（署名した要求を別の場所へ送らない。region・
-//     addressing の設定の誤りとして KindRequest にする）。
+//   - リダイレクトは辿らない（署名したリクエストを別の場所へ送らない。region・
+//     addressing の設定のエラーとして KindRequest にする）。
 
 import (
 	"bytes"
@@ -57,7 +57,7 @@ import (
 // DefaultRegion は region を書かないときの値。
 const DefaultRegion = "us-east-1"
 
-// DefaultTimeout は timeout を書かないときの 1 要求の時間切れ。
+// DefaultTimeout は timeout を書かないときの 1 リクエストのタイムアウト。
 const DefaultTimeout = 10 * time.Second
 
 // maxBody は読む応答の本文の上限。
@@ -70,18 +70,18 @@ const maxListPages = 10000
 // s3NS は S3 の XML の名前空間。
 const s3NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
-// ErrorKind は Client の誤りの分類。
+// ErrorKind は Client のエラーの分類。
 type ErrorKind int
 
 const (
-	// KindUnreachable は届かない・時間切れ・5xx（501 を除く）・読めない応答。
+	// KindUnreachable は届かない・タイムアウト・5xx（501 を除く）・読めない応答。
 	// 観測は Unknown（E-K1）。
 	KindUnreachable ErrorKind = iota + 1
 	// KindAuth は 401・403（AccessDenied・SignatureDoesNotMatch など）。
 	KindAuth
 	// KindCertificate はサーバの証明書を確かめられない。
 	KindCertificate
-	// KindCredentials は資格を読めない。
+	// KindCredentials は credential を読めない。
 	KindCredentials
 	// KindNotImplemented は endpoint がその API を持たない（501・NotImplemented）。
 	KindNotImplemented
@@ -98,16 +98,16 @@ func (k ErrorKind) String() string {
 	case KindCertificate:
 		return "証明書を確かめられない"
 	case KindCredentials:
-		return "資格を読めない"
+		return "credential を読めない"
 	case KindNotImplemented:
 		return "endpoint がその API を持たない"
 	case KindRequest:
-		return "要求を断られた"
+		return "リクエストを拒否された"
 	}
-	return "分からない"
+	return "不明"
 }
 
-// Error は Client の誤り。資格の値は持たない。
+// Error は Client のエラー。credential の値は持たない。
 type Error struct {
 	Kind ErrorKind
 	// Op は S3 の操作の名前（GetBucketPolicy など）。
@@ -116,7 +116,7 @@ type Error struct {
 	Bucket string
 	// StatusCode は HTTP の状態コード（応答が無ければ 0）。
 	StatusCode int
-	// Code・Message は S3 の誤りの本文の Code と Message。
+	// Code・Message は S3 のエラーの本文の Code と Message。
 	Code    string
 	Message string
 	// Err は下の原因（net/http・TLS・XML）。
@@ -164,31 +164,31 @@ func CodeOf(err error) string {
 	return ""
 }
 
-// ClientConfig は 1 つの endpoint へのつなぎ方。
+// ClientConfig は 1 つの endpoint への接続設定。
 type ClientConfig struct {
 	// Endpoint は "http://host:port" か "https://host:port"（scheme は要る。パス・
-	// 問い合わせは書けない）。
+	// query は書けない）。
 	Endpoint string
 	// APIBasePath は API のパスの前置き（"/s3" など。空か "/" は前置き無し）。
-	// 要求のパスは <前置き>/<bucket>（virtual-host では <前置き>/）。
+	// リクエストのパスは <前置き>/<bucket>（virtual-host では <前置き>/）。
 	APIBasePath string
 	// Region は署名の region（空なら DefaultRegion）。
 	Region string
 	// VirtualHost は virtual-host 形式（<bucket>.<host>）。false なら path-style。
 	VirtualHost bool
-	// Credentials は Session を開くたびに資格を読む（値を持たない、E-G2）。
+	// Credentials は Session を開くたびに credential を読む（値を持たない、E-G2）。
 	Credentials func(ctx context.Context) (Credentials, error)
 	// CAFile はサーバの証明書を確かめる CA（PEM）。
 	CAFile string
 	// InsecureSkipVerify は証明書を確かめない（明示したときだけ）。
 	InsecureSkipVerify bool
-	// Timeout は 1 要求の時間切れ（0 なら DefaultTimeout）。
+	// Timeout は 1 リクエストのタイムアウト（0 なら DefaultTimeout）。
 	Timeout time.Duration
 	// Now は署名の時刻（nil なら time.Now）。
 	Now func() time.Time
 }
 
-// Client は 1 つの endpoint への 1 組の資格でのバケットの操作。
+// Client は 1 つの endpoint への 1 組の credential でのバケットの操作。
 type Client struct {
 	base        *url.URL
 	basePath    string
@@ -206,7 +206,7 @@ func CleanBasePath(p string) (string, error) {
 		return "", fmt.Errorf("api_base_path %q は \"/\" で始まるパス（/s3 など。前置き無しは \"/\"）", p)
 	}
 	if strings.ContainsAny(p, "?#% \t\r\n\\") {
-		return "", fmt.Errorf("api_base_path %q に問い合わせ・断片・エスケープ・空白は書けない", p)
+		return "", fmt.Errorf("api_base_path %q に query・fragment・エスケープ・空白は書けない", p)
 	}
 	out := strings.TrimRight(p, "/")
 	if out == "" {
@@ -214,13 +214,13 @@ func CleanBasePath(p string) (string, error) {
 	}
 	for _, seg := range strings.Split(out[1:], "/") {
 		if seg == "" || seg == "." || seg == ".." {
-			return "", fmt.Errorf("api_base_path %q に空・\".\"・\"..\" の段は書けない", p)
+			return "", fmt.Errorf("api_base_path %q に空・\".\"・\"..\" のセグメントは書けない", p)
 		}
 	}
 	return out, nil
 }
 
-// NewClient は cfg の Client を作る（資格は読まない）。
+// NewClient は cfg の Client を作る（credential は読まない）。
 func NewClient(cfg ClientConfig) (*Client, error) {
 	ep := strings.TrimSpace(cfg.Endpoint)
 	u, err := url.Parse(ep)
@@ -238,7 +238,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		}
 	}
 	if cfg.Credentials == nil {
-		return nil, errors.New("資格が無い")
+		return nil, errors.New("credential が無い")
 	}
 	region := cfg.Region
 	if region == "" {
@@ -280,22 +280,22 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}, nil
 }
 
-// Session は資格を読んだ 1 回ぶんの操作（Observe・List・Apply・Delete の 1 回）。
-// 使い終われば捨てる（資格を持ち続けない）。
+// Session は credential を読んだ 1 回ぶんの操作（Observe・List・Apply・Delete の 1 回）。
+// 使い終われば捨てる（credential を持ち続けない）。
 type Session struct {
 	c     *Client
 	creds Credentials
 }
 
-// Open は資格を今読んで Session を返す。
+// Open は credential を今読んで Session を返す。
 func (c *Client) Open(ctx context.Context) (*Session, error) {
 	cr, err := c.creds(ctx)
 	if err != nil {
-		// 読めない誤りは在りかだけを言う（値を含まない）。
-		return nil, &Error{Kind: KindCredentials, Op: "資格", Err: err}
+		// 読めないエラーは在りかだけを言う（値を含まない）。
+		return nil, &Error{Kind: KindCredentials, Op: "credential", Err: err}
 	}
 	if cr.AccessKey == "" || cr.SecretKey == "" {
-		return nil, &Error{Kind: KindCredentials, Op: "資格", Message: "access key か secret key が空"}
+		return nil, &Error{Kind: KindCredentials, Op: "credential", Message: "access key か secret key が空"}
 	}
 	return &Session{c: c, creds: cr}, nil
 }
@@ -306,7 +306,7 @@ type response struct {
 	body   []byte
 }
 
-// do は 1 要求を署名して送る。query は "versioning" のような生の問い合わせ。
+// do は 1 リクエストを署名して送る。query は "versioning" のような生の query。
 func (s *Session) do(ctx context.Context, op, method, bucket, query string, body []byte, contentType string, header map[string]string) (response, error) {
 	u := *s.c.base
 	switch {
@@ -389,7 +389,7 @@ func isCertError(err error) bool {
 	return errors.As(err, &verr) || errors.As(err, &uerr) || errors.As(err, &herr) || errors.As(err, &ierr)
 }
 
-// errorBody は S3 の誤りの本文の Code と Message を読む。読めなければ本文の
+// errorBody は S3 のエラーの本文の Code と Message を読む。読めなければ本文の
 // 先頭を Message にする。
 func errorBody(body []byte) (code, message string) {
 	var doc struct {
@@ -409,7 +409,7 @@ func errorBody(body []byte) (code, message string) {
 	return "", m
 }
 
-// unreadable は読めない応答の誤り（壊れた出力は Unknown、E-K1）。
+// unreadable は読めない応答のエラー（壊れた出力は Unknown、E-K1）。
 func unreadable(op, bucket string, err error) error {
 	return &Error{Kind: KindUnreachable, Op: op, Bucket: bucket, Message: "応答を読めない", Err: err}
 }
@@ -422,9 +422,9 @@ type BucketInfo struct {
 	CreationDate string
 }
 
-// ListBuckets は資格から見えるバケットを全部返す。ContinuationToken を最後まで
-// 辿る。complete が false なら途中で切れた（それまでのバケットと誤りを返す、
-// E-K2）。最初のページから読めなければ誤りだけを返す。
+// ListBuckets は credential から見えるバケットを全部返す。ContinuationToken を最後まで
+// 辿る。complete が false なら途中で切れた（それまでのバケットとエラーを返す、
+// E-K2）。最初のページから読めなければエラーだけを返す。
 func (s *Session) ListBuckets(ctx context.Context) (out []BucketInfo, complete bool, err error) {
 	token := ""
 	seen := map[string]bool{}
@@ -450,7 +450,7 @@ func (s *Session) ListBuckets(ctx context.Context) (out []BucketInfo, complete b
 		}
 		if err := xml.Unmarshal(resp.body, &doc); err != nil || doc.XMLName.Local != "ListAllMyBucketsResult" {
 			if err == nil {
-				err = fmt.Errorf("根の要素が %q", doc.XMLName.Local)
+				err = fmt.Errorf("ルート要素が %q", doc.XMLName.Local)
 			}
 			return sortBuckets(out), false, unreadable("ListBuckets", "", err)
 		}
@@ -496,7 +496,7 @@ func (s *Session) CreateBucket(ctx context.Context, bucket string, objectLock bo
 }
 
 // DeleteBucket はバケットを消す。無ければ成功（冪等）。中身があれば endpoint が
-// BucketNotEmpty で断る（オブジェクトは消さない）。
+// BucketNotEmpty で拒否する（オブジェクトは消さない）。
 func (s *Session) DeleteBucket(ctx context.Context, bucket string) error {
 	_, err := s.do(ctx, "DeleteBucket", http.MethodDelete, bucket, "", nil, "", nil)
 	if CodeOf(err) == "NoSuchBucket" {
@@ -506,7 +506,7 @@ func (s *Session) DeleteBucket(ctx context.Context, bucket string) error {
 }
 
 // HasObjects はバケットにオブジェクトが 1 つでもあるかを返す（ListObjectsV2 を
-// max-keys=1 で 1 回）。古い版・削除の印だけのバケットは見えない（そのときは
+// max-keys=1 で 1 回）。古いバージョン・削除の印だけのバケットは見えない（そのときは
 // DeleteBucket の BucketNotEmpty で分かる）。
 func (s *Session) HasObjects(ctx context.Context, bucket string) (bool, error) {
 	resp, err := s.do(ctx, "ListObjectsV2", http.MethodGet, bucket, "list-type=2&max-keys=1", nil, "", nil)
@@ -520,7 +520,7 @@ func (s *Session) HasObjects(ctx context.Context, bucket string) (bool, error) {
 	}
 	if err := xml.Unmarshal(resp.body, &doc); err != nil || doc.XMLName.Local != "ListBucketResult" {
 		if err == nil {
-			err = fmt.Errorf("根の要素が %q", doc.XMLName.Local)
+			err = fmt.Errorf("ルート要素が %q", doc.XMLName.Local)
 		}
 		return false, unreadable("ListObjectsV2", bucket, err)
 	}
@@ -548,7 +548,7 @@ func (s *Session) GetVersioning(ctx context.Context, bucket string) (string, err
 	}
 	if err := xml.Unmarshal(resp.body, &doc); err != nil || doc.XMLName.Local != "VersioningConfiguration" {
 		if err == nil {
-			err = fmt.Errorf("根の要素が %q", doc.XMLName.Local)
+			err = fmt.Errorf("ルート要素が %q", doc.XMLName.Local)
 		}
 		return "", unreadable("GetBucketVersioning", bucket, err)
 	}
@@ -645,7 +645,7 @@ func (s *Session) GetTagging(ctx context.Context, bucket string) (map[string]str
 	}
 	if err := xml.Unmarshal(resp.body, &doc); err != nil || doc.XMLName.Local != "Tagging" {
 		if err == nil {
-			err = fmt.Errorf("根の要素が %q", doc.XMLName.Local)
+			err = fmt.Errorf("ルート要素が %q", doc.XMLName.Local)
 		}
 		return nil, unreadable("GetBucketTagging", bucket, err)
 	}
@@ -717,7 +717,7 @@ func (s *Session) GetObjectLock(ctx context.Context, bucket string) (ObjectLock,
 	}
 	if err := xml.Unmarshal(resp.body, &doc); err != nil || doc.XMLName.Local != "ObjectLockConfiguration" {
 		if err == nil {
-			err = fmt.Errorf("根の要素が %q", doc.XMLName.Local)
+			err = fmt.Errorf("ルート要素が %q", doc.XMLName.Local)
 		}
 		return ObjectLock{}, unreadable("GetObjectLockConfiguration", bucket, err)
 	}

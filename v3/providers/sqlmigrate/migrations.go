@@ -16,12 +16,12 @@ package sqlmigrate
 
 // migrations.go はマイグレーションのディレクトリ（v2 と同じ書式、E-F2・N-F2）。
 //
-// NNNN_<名前>.up.sql と（下げるなら）NNNN_<名前>.down.sql を置く。版は 1 から
-// 飛びなく並べ、同じ版を二重に置かない（読み込みで断る）。ファイルの中で
+// NNNN_<名前>.up.sql と（下げるなら）NNNN_<名前>.down.sql を置く。バージョンは 1 から
+// 飛びなく並べ、同じバージョンを二重に置かない（読み込み時にエラーにする（reject））。ファイルの中で
 // BEGIN・COMMIT を書かない（1 本を 1 つのトランザクションで包むのは provider の
-// 仕事。書けば流したあとの版の確かめで誤りになる）。sqlite3 のドットコマンド
+// 仕事。書けば流したあとのバージョンの確かめでエラーになる）。sqlite3 のドットコマンド
 // （行頭の "."。.shell・.system はシェルを起動する）と psql のメタコマンド
-// （文字列の外の "\"。\! はシェルを起動する）は流す前に断る。
+// （文字列の外の "\"。\! はシェルを起動する）は流す前に拒否する。
 
 import (
 	"fmt"
@@ -32,7 +32,7 @@ import (
 	"strings"
 )
 
-// migration は 1 つの版。up は必須、down は無ければ空（下げられない）。
+// migration は 1 つのバージョン。up は必須、down は無ければ空（下げられない）。
 type migration struct {
 	version int64
 	name    string
@@ -42,8 +42,8 @@ type migration struct {
 
 var migrationFile = regexp.MustCompile(`^([0-9]+)_(.+)\.(up|down)\.sql$`)
 
-// loadMigrations はディレクトリを読み、版 1 から順に並べて返す（i 番目が版 i+1）。
-// 名前の形が違う .sql・同じ版の二重・版の飛び・up の無い down は誤り。.sql 以外の
+// loadMigrations はディレクトリを読み、バージョン 1 から順に並べて返す（i 番目がバージョン i+1）。
+// 名前の形が違う .sql・同じバージョンの二重・バージョンの飛び・up の無い down はエラー。.sql 以外の
 // ファイル（README など）とサブディレクトリは見ない。
 func loadMigrations(dir string) ([]migration, error) {
 	entries, err := os.ReadDir(dir)
@@ -63,14 +63,14 @@ func loadMigrations(dir string) ([]migration, error) {
 		}
 		v, err := strconv.ParseInt(m[1], 10, 64)
 		if err != nil || v < 1 {
-			return nil, fmt.Errorf("マイグレーション %s: 版は 1 以上", name)
+			return nil, fmt.Errorf("マイグレーション %s: バージョンは 1 以上", name)
 		}
 		mig := byVersion[v]
 		if mig == nil {
 			mig = &migration{version: v, name: m[2]}
 			byVersion[v] = mig
 		} else if mig.name != m[2] {
-			return nil, fmt.Errorf("マイグレーション: 版 %d が二重にある（%q と %q）", v, mig.name, m[2])
+			return nil, fmt.Errorf("マイグレーション: バージョン %d が二重にある（%q と %q）", v, mig.name, m[2])
 		}
 		path := filepath.Join(dir, name)
 		slot := &mig.up
@@ -78,7 +78,7 @@ func loadMigrations(dir string) ([]migration, error) {
 			slot = &mig.down
 		}
 		if *slot != "" {
-			return nil, fmt.Errorf("マイグレーション: 版 %d の %s が二重にある（%s と %s）", v, m[3], filepath.Base(*slot), name)
+			return nil, fmt.Errorf("マイグレーション: バージョン %d の %s が二重にある（%s と %s）", v, m[3], filepath.Base(*slot), name)
 		}
 		*slot = path
 		if v > max {
@@ -89,10 +89,10 @@ func loadMigrations(dir string) ([]migration, error) {
 	for v := int64(1); v <= max; v++ {
 		mig := byVersion[v]
 		if mig == nil {
-			return nil, fmt.Errorf("マイグレーション: 版 %d が無い（版は 1..%d を飛ばさず並べる）", v, max)
+			return nil, fmt.Errorf("マイグレーション: バージョン %d が無い（バージョンは 1..%d を飛ばさず並べる）", v, max)
 		}
 		if mig.up == "" {
-			return nil, fmt.Errorf("マイグレーション: 版 %d に .up.sql が無い", v)
+			return nil, fmt.Errorf("マイグレーション: バージョン %d に .up.sql が無い", v)
 		}
 		out = append(out, *mig)
 	}
@@ -131,7 +131,7 @@ func readPostgres(path string) (string, error) {
 
 // psqlMetaCommand は、文字列（'…'・E'…'・"…"・$tag$…$tag$）の外にある "\"
 // （psql はメタコマンドと読む）の行を返す。コメントの中の "\" も、psql との
-// 読み違いを避けるため断る側に数える（v2 と同じ）。
+// 読み違いを避けるため拒否する側に数える（v2 と同じ）。
 func psqlMetaCommand(s string) (int, bool) {
 	line := 1
 	isIdent := func(c byte) bool {

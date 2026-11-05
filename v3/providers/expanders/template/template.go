@@ -13,9 +13,9 @@
 // limitations under the License.
 
 // Package template は Expand のモジュール go:template（設計 §3.8、E-A11・N-A14・
-// N-E7・N-B15）。intent の templates: に、台の一覧（外部入力か intent に書いた
-// items）の 1 件ごとに宣言を作る雛形を書く。全台に共通の値（版など）は vars に
-// 1 か所で書き、台ごとの差は一覧の値で埋める。
+// N-E7・N-B15）。intent の templates: に、ホストなどの一覧（外部入力か intent に
+// 書いた items）の 1 件ごとに宣言を作るテンプレートを書く。全ホストに共通の値
+// （バージョンなど）は vars に 1 か所で書き、ホストごとの差は一覧の値で埋める。
 //
 //	expand:
 //	  - kind: go:template
@@ -23,7 +23,7 @@
 //	  - {name: inventory, items: hosts, expected_min: 2}
 //	templates:
 //	  - name: chrony
-//	    for_each: inventory.hosts         # 外部入力の名前と、その中の台のリストの項目。または items: [...]
+//	    for_each: inventory.hosts         # 外部入力の名前と、その中のホストのリストの field。または items: [...]
 //	    vars: {ntp: 192.0.2.123, version: "4.5"}
 //	    resources:
 //	      - type: host/file
@@ -38,14 +38,14 @@
 //	          cores: "{item.cores}"          # 文字列全体が 1 つの差し込みなら値の型のまま
 //	          vmid: {from_pool: vmid}        # 採番の要求もそのまま書ける
 //
-// 差し込みは {item}（一覧の 1 件が文字列・数のとき）・{item.<項目>}（入れ子は
-// {item.a.b}）・{vars.<項目>}・{index}（0 から）。無い項目を指せば Reject。
-// 雛形は intent の resources: と同じ形で、差し込んだあと intent と同じ読み方で
-// 宣言にする。
+// 差し込みは {item}（一覧の 1 件が文字列・数のとき）・{item.<field>}（入れ子は
+// {item.a.b}）・{vars.<field>}・{index}（0 から）。無い field を指せば Reject。
+// テンプレートは intent の resources: と同じ形で、差し込んだあと intent と同じ
+// 読み方で宣言にする。
 //
 // 外部入力が届かない・欠けているとき（expand.ExternalInput.Reachable が false）は
-// 宣言を作らず、雛形の種類ごとに Uncertain の診断を出す（その provider の範囲を
-// 消さない。空の desired で消さない、E-K3・不変条件 26）。同じ入力に同じ出力（N-P5）。
+// 宣言を作らず、テンプレートの type ごとに Uncertain の診断を出す（その provider の
+// Range のリソースを消さない。空の desired で消さない、E-K3・不変条件 26）。同じ入力に同じ出力（N-P5）。
 package template
 
 import (
@@ -61,7 +61,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/expand"
 )
 
-// Key は intent の最上位の項目。
+// Key は intent の最上位の key。
 const Key = "templates"
 
 // Expander は go:template。
@@ -74,7 +74,7 @@ func (Expander) Keys() []string { return []string{Key} }
 
 var refRe = regexp.MustCompile(`\{(item|vars|index)((?:\.[A-Za-z0-9_-]+)*)\}`)
 
-// Expand は雛形ごとに一覧の 1 件ずつ宣言を作る。
+// Expand はテンプレートごとに、一覧の 1 件ずつ宣言を作る。
 func (Expander) Expand(_ context.Context, in expand.Input) (expand.Output, error) {
 	var out expand.Output
 	for _, s := range expand.Sections(in.Intent, Key) {
@@ -109,7 +109,7 @@ func expandOne(s expand.Section, i int, raw any, inputs map[string]expand.Extern
 		switch k {
 		case "name", "for_each", "items", "vars", "resources":
 		default:
-			out.Diagnostics = append(out.Diagnostics, diag(core.Reject, o, Key, "%s: 知らない項目 %q（書ける項目: name, for_each, items, vars, resources）", at, k))
+			out.Diagnostics = append(out.Diagnostics, diag(core.Reject, o, Key, "%s: 不明な field %q（書ける field: name, for_each, items, vars, resources）", at, k))
 		}
 	}
 	if name, _ := m["name"].(string); name != "" {
@@ -121,7 +121,7 @@ func expandOne(s expand.Section, i int, raw any, inputs map[string]expand.Extern
 	}
 	tmpl, _ := m["resources"].([]any)
 	if len(tmpl) == 0 {
-		out.Diagnostics = append(out.Diagnostics, diag(core.Reject, o, Key, "%s: resources（雛形）を書く", at))
+		out.Diagnostics = append(out.Diagnostics, diag(core.Reject, o, Key, "%s: resources（テンプレート）を書く", at))
 	}
 	var items []any
 	src, hasInput := m["for_each"].(string)
@@ -138,9 +138,9 @@ func expandOne(s expand.Section, i int, raw any, inputs map[string]expand.Extern
 		case !declared:
 			out.Diagnostics = append(out.Diagnostics, diag(core.Reject, o, Key, "%s: for_each の外部入力 %q が intent の inputs: に無い", at, name))
 		case !ext.Reachable:
-			// 宣言を作らず、作るはずだった種類の範囲を消させない（E-K3）。
+			// 宣言を作らず、作るはずだった type の Range のリソースを消させない（E-K3）。
 			for _, typ := range types(tmpl) {
-				out.Diagnostics = append(out.Diagnostics, diag(core.Uncertain, o, typ, "%s: 外部入力 %s: %s。この種類の宣言が欠けているかもしれない", at, src, ext.Note))
+				out.Diagnostics = append(out.Diagnostics, diag(core.Uncertain, o, typ, "%s: 外部入力 %s: %s。この type の宣言が欠けているかもしれない", at, src, ext.Note))
 			}
 			return out
 		default:
@@ -188,7 +188,7 @@ func expandOne(s expand.Section, i int, raw any, inputs map[string]expand.Extern
 	return out
 }
 
-// types は雛形の type（差し込みの無いもの）。
+// types はテンプレートの type（差し込みの無いもの）。
 func types(tmpl []any) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -202,7 +202,7 @@ func types(tmpl []any) []string {
 	}
 	sort.Strings(out)
 	if len(out) == 0 {
-		out = []string{Key} // 種類が分からなければ全部の範囲を消させない
+		out = []string{Key} // type が分からなければ全部の Range のリソースを消させない
 	}
 	return out
 }
@@ -285,7 +285,7 @@ func lookup(root, path string, env map[string]any) (any, error) {
 			return nil, fmt.Errorf("{%s.%s}: %s はマップでない", name, p, name)
 		}
 		if v, ok = m[p]; !ok {
-			return nil, fmt.Errorf("{%s%s}: 項目 %q が無い", root, path, p)
+			return nil, fmt.Errorf("{%s%s}: field %q が無い", root, path, p)
 		}
 		name += "." + p
 	}

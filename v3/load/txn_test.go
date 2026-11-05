@@ -53,8 +53,8 @@ resources:
 	}
 }
 
-// 不変条件 25：確かめの式の誤り・知らない phase・短い timeout・group の中の依存は
-// 読み込みで断る。
+// 不変条件 25：confirm の式の誤り・知らない phase・短い timeout・group の中の依存は
+// 読み込み時にエラーにする。
 func TestLoadRejectsTransaction(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -65,10 +65,10 @@ func TestLoadRejectsTransaction(t *testing.T) {
 			[]string{"before か after"}},
 		{"phase が無い", "resources:\n  - {type: dns/record, id: a, apply: {transaction: {confirm: [{when: 'present(dns/record/b)'}]}}}\n",
 			[]string{"phase を書く"}},
-		{"知らない項目", "resources:\n  - {type: dns/record, id: a, apply: {transaction: {confirm: [{phase: after, when: 'observe(dns/record/b).vale == 1'}]}}}\n",
-			[]string{"confirm（after）", `項目 "vale" が無い`}},
-		{"登録の無い確かめ", "resources:\n  - {type: dns/record, id: a, apply: {transaction: {confirm: [{phase: after, when: 'check(bgp-up)'}]}}}\n",
-			[]string{"登録した確かめに無い"}},
+		{"知らない field", "resources:\n  - {type: dns/record, id: a, apply: {transaction: {confirm: [{phase: after, when: 'observe(dns/record/b).vale == 1'}]}}}\n",
+			[]string{"confirm（after）", `"vale" が無い`}},
+		{"登録の無い check", "resources:\n  - {type: dns/record, id: a, apply: {transaction: {confirm: [{phase: after, when: 'check(bgp-up)'}]}}}\n",
+			[]string{"check(bgp-up)"}},
 		{"短い timeout", "resources:\n  - {type: dns/record, id: a, apply: {transaction: {timeout: 1s}}}\n",
 			[]string{"2s 以上"}},
 		{"transaction が無い", "resources:\n  - {type: dns/record, id: a, apply: {}}\n",

@@ -13,17 +13,17 @@
 // limitations under the License.
 
 // Package dnszone は DNS のゾーンファイルのレコードを宣言どおりに保つ provider
-// （設計 §7.1、E-B1・N-B11・E-I7）。コアの外のモジュールで、コアの口
-// core.Provider・core.Validator だけを持つ。
+// （設計 §7.1、E-B1・N-B11・E-I7）。コアの外のモジュールで、コアの interface
+// core.Provider・core.Validator だけを実装する。
 //
-//	providers:                       # つなぎ方の設定
+//	providers:                       # 接続設定
 //	  dns:
 //	    module: dnszone
 //	    settings:
 //	      zone_dir: /var/lib/named   # ゾーン <zone> のファイルは <zone_dir>/<zone>zone（example.com.zone）
 //	      reload_cmd: [rndc, reload, "{zone}"]   # 任意。書き換えたあとに走らせる
 //
-//	ranges:                          # intent（範囲は intent にだけ書く、不変条件 24）
+//	ranges:                          # intent（Range は intent にだけ書く、不変条件 24）
 //	  - provider: dns
 //	    args: {zone: example.com.}
 //	resources:
@@ -34,17 +34,17 @@
 // 決まり：
 //
 //   - ゾーンは Range の args.zone（E-B1）。宣言はどれかのゾーンに入る（入らなければ
-//     読み込みで断る、E-I6）。重なるゾーン（親と子）は断る（E-K8）。
+//     読み込み時にエラーにする、E-I6）。重なるゾーン（親と子）はエラーにする（E-K8）。
 //   - $ORIGIN・$TTL・@・相対名・省いた owner・括弧の複数行・コメントを読む。名前は
 //     小文字の FQDN にそろえ、名前を持つ型（NS・CNAME・PTR・MX・SRV）の値の中の
-//     名前も FQDN にする。宣言はこの正規形で書く（違えば正規形を示して断る、E-I7）。
-//   - 項目は value（1 つの値）・values（値の集合、ラウンドロビン）・ttl。value と
+//     名前も FQDN にする。宣言はこの正規形で書く（違えば正規形を示してエラーにする、E-I7）。
+//   - field は value（1 つの値）・values（値の集合、ラウンドロビン）・ttl。value と
 //     values は一緒に書けない。SOA は宣言できない（provider が持つ）。
 //   - 書き換えた Apply・Delete のときだけ SOA のシリアルを上げる（YYYYMMDDnn の形
 //     なら今日の日付の 00 か +1 の大きいほう、ほかは +1、E-B1）。
 //   - 書き込みは同じディレクトリの一時ファイルに書いて rename。触った RRset 以外の
 //     行は書いたまま残す。
-//   - ゾーンファイルが無い・読めない・形の誤りは Unknown（無いと読まない、不変条件 3）。
+//   - ゾーンファイルが無い・読めない・形の誤りは Unknown（Absent とは見なさない、不変条件 3）。
 //   - List はゾーンの SOA 以外の RRset 全部（Complete）。
 package dnszone
 
@@ -65,10 +65,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// Version は Schema の版。比べ方・正規形を変えたら上げる（E-J12）。
+// Version は Schema のバージョン。比べ方・正規形を変えたら上げる（E-J12）。
 const Version = "dnszone/1"
 
-// Kind はレコードの種類の名前。
+// Kind はレコードの kind の名前。
 const Kind = "record"
 
 // Provider はゾーンファイルの provider。
@@ -111,7 +111,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 				p.reloadCmd = append(p.reloadCmd, s)
 			}
 		default:
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: reload_cmd, zone_dir）", k)
+			return nil, fmt.Errorf("settings に知らない field %q（書ける field: reload_cmd, zone_dir）", k)
 		}
 	}
 	if p.zoneDir == "" {
@@ -120,7 +120,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 	return p, nil
 }
 
-// Schema は record の項目。
+// Schema は record の field。
 func (p *Provider) Schema() core.Schema {
 	return core.Schema{Version: Version, Kinds: map[string]core.KindSchema{
 		Kind: {Fields: map[string]core.FieldSpec{
@@ -160,7 +160,7 @@ func zoneOf(zones []string, name string) string {
 
 func inZone(name, zone string) bool { return name == zone || strings.HasSuffix(name, "."+zone) }
 
-// Validate は範囲と宣言を確かめ、範囲のゾーンを覚える（E-B1・E-I6・E-I7・E-K8）。
+// Validate は Range と宣言を確かめ、Range のゾーンを覚える（E-B1・E-I6・E-I7・E-K8）。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
 	rej := func(o core.Origin, target, format string, a ...any) {
@@ -171,12 +171,12 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		z, ok := rg.Args["zone"]
 		for k := range rg.Args {
 			if k != "zone" {
-				rej(rg.Origin, "ranges", "dnszone の範囲の引数は zone だけ（%q が書かれている）", k)
+				rej(rg.Origin, "ranges", "dnszone の Range の引数は zone だけ（%q が書かれている）", k)
 			}
 		}
 		switch {
 		case !ok:
-			rej(rg.Origin, "ranges", "dnszone の範囲に args.zone を書く")
+			rej(rg.Origin, "ranges", "dnszone の Range に args.zone を書く")
 			continue
 		case !fqdnOK(z):
 			rej(rg.Origin, "ranges", "zone %q は小文字の FQDN（末尾の . つき）で書く", z)
@@ -200,7 +200,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 			rej(r.Origin, target, "id は <FQDN>/<型>（例 www.example.com./A）")
 			continue
 		case !fqdnOK(name):
-			rej(r.Origin, target, "名前 %q は小文字の FQDN（末尾の . つき）で書く（相対名は読み方で二重に作る、E-I7）", name)
+			rej(r.Origin, target, "名前 %q は小文字の FQDN（末尾の . つき）で書く（相対名は解釈によって別の名前になる、E-I7）", name)
 			continue
 		case typ == "SOA":
 			rej(r.Origin, target, "SOA は宣言できない（シリアルは provider が上げる）")
@@ -211,7 +211,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		}
 		zone := zoneOf(zones, name)
 		if zone == "" {
-			rej(r.Origin, target, "どの範囲（ranges の zone）にも入らない")
+			rej(r.Origin, target, "どの Range（ranges の zone）にも入らない")
 			continue
 		}
 		_, hasValue := r.Fields["value"]
@@ -285,7 +285,7 @@ func (p *Provider) Observe(_ context.Context, ids []core.ID) (map[core.ID]core.O
 		}
 		zone := zoneOf(zones, name)
 		if zone == "" {
-			out[id] = core.Observation{Availability: core.Unknown, Note: "どの範囲のゾーンにも入らない"}
+			out[id] = core.Observation{Availability: core.Unknown, Note: "どの Range のゾーンにも入らない"}
 			continue
 		}
 		zf, done := files[zone]
@@ -302,7 +302,7 @@ func (p *Provider) Observe(_ context.Context, ids []core.ID) (map[core.ID]core.O
 	return out, nil
 }
 
-// Declare は観測の項目を宣言の形にする（sakutei-import の importer.Declarer、
+// Declare は観測の field を宣言の形にする（sakutei-import の importer.Declarer、
 // E-I1）。観測は value（1 つ目）と values（全部）の両方を返すが、宣言はどちらか
 // 1 つ：値が 1 つなら value、2 つ以上なら values。
 func (p *Provider) Declare(_ core.ID, observed core.Fields) core.Fields {
@@ -318,7 +318,7 @@ func (p *Provider) Declare(_ core.ID, observed core.Fields) core.Fields {
 	return out
 }
 
-// List はゾーンの SOA 以外の RRset（E-K2：読めなければ誤り）。
+// List はゾーンの SOA 以外の RRset（E-K2：読めなければエラー）。
 func (p *Provider) List(_ context.Context, r core.Range) (core.Listing, error) {
 	zone := r.Args["zone"]
 	zf, err := readZone(p.File(zone), zone)
@@ -406,7 +406,7 @@ func rrLine(name string, ttl int64, typ, v string) string {
 func (p *Provider) rewrite(ctx context.Context, name string, edit func(*zoneFile) error) error {
 	zone := zoneOf(p.zoneList(), name)
 	if zone == "" {
-		return fmt.Errorf("%s はどの範囲のゾーンにも入らない", name)
+		return fmt.Errorf("%s はどの Range のゾーンにも入らない", name)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

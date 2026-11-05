@@ -76,11 +76,11 @@ func expectReject(t *testing.T, err error, wants ...string) {
 	t.Helper()
 	var rej *core.RejectError
 	if !errors.As(err, &rej) {
-		t.Fatalf("読み込みで断らなかった（err=%v）", err)
+		t.Fatalf("読み込み時にエラーにならなかった（err=%v）", err)
 	}
 	for _, w := range wants {
 		if !strings.Contains(err.Error(), w) {
-			t.Fatalf("断る理由に %q が無い:\n%v", w, err)
+			t.Fatalf("reject の理由に %q が無い:\n%v", w, err)
 		}
 	}
 }
@@ -136,8 +136,8 @@ resources:
 	}
 }
 
-// 不変条件 25：同じ ID・未知の項目・循環・範囲の重なり・範囲の外の宣言・全部を
-// 外す除外は読み込みで断る（E-M3・N-M3・E-J7・E-K8・N-K7・E-I6・E-D2）。
+// 不変条件 25：同じ ID・未知の field・循環・Range の重なり・Range の外の宣言・全部を
+// 外す除外は読み込み時にエラーにする（E-M3・N-M3・E-J7・E-K8・N-K7・E-I6・E-D2）。
 func TestLoadRejectsIntent(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -148,36 +148,36 @@ func TestLoadRejectsIntent(t *testing.T) {
 			"a.yaml": "resources:\n  - {type: dns/record, id: www}\n",
 			"b.yaml": "resources:\n  - {type: dns/record, id: www}\n",
 		}, []string{"b.yaml:2", "同じ ID が 2 回", "a.yaml:2"}},
-		{"未知の項目（トップレベル）", map[string]string{
+		{"未知の field（トップレベル）", map[string]string{
 			"a.yaml": "resource:\n  - {type: dns/record, id: www}\n",
-		}, []string{"a.yaml:1", `知らない項目 "resource"`}},
-		{"未知の項目（Resource）", map[string]string{
+		}, []string{"a.yaml:1", `知らない field "resource"`}},
+		{"未知の field（Resource）", map[string]string{
 			"a.yaml": "resources:\n  - type: dns/record\n    id: www\n    feilds: {value: x}\n",
-		}, []string{"a.yaml:4", `知らない項目 "feilds"`}},
-		{"未知の項目（depends_on）", map[string]string{
+		}, []string{"a.yaml:4", `知らない field "feilds"`}},
+		{"未知の field（depends_on）", map[string]string{
 			"a.yaml": "resources:\n  - {type: dns/record, id: www, depends_on: [{id: dns/record/x, wehn: y}]}\n",
-		}, []string{`知らない項目 "wehn"`}},
-		{"未知の項目（Range）", map[string]string{
+		}, []string{`知らない field "wehn"`}},
+		{"未知の field（Range）", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, arg: {prefix: a}}\n",
-		}, []string{`知らない項目 "arg"`}},
-		{"未知の項目（除外）", map[string]string{
+		}, []string{`知らない field "arg"`}},
+		{"未知の field（除外）", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, external_owners: [{owner: x, id: record/a, reason: r, kind: y}]}\n",
-		}, []string{`知らない項目 "kind"`}},
+		}, []string{`知らない field "kind"`}},
 		{"知らない provider", map[string]string{
 			"a.yaml": "resources:\n  - {type: dnz/record, id: www}\n",
-		}, []string{`provider "dnz" がつなぎ方の設定に無い`}},
-		{"知らない種類", map[string]string{
+		}, []string{`provider "dnz" が接続設定に無い`}},
+		{"知らない type", map[string]string{
 			"a.yaml": "resources:\n  - {type: dns/recrd, id: www}\n",
-		}, []string{`種類 "recrd" が無い`}},
-		{"Schema に無い項目", map[string]string{
+		}, []string{`type "recrd" が無い`}},
+		{"Schema に無い field", map[string]string{
 			"a.yaml": "resources:\n  - {type: dns/record, id: www, fields: {valeu: x}}\n",
-		}, []string{`項目 "valeu" が無い`}},
+		}, []string{`field "valeu" が無い`}},
 		{"型の合わない値", map[string]string{
 			"a.yaml": "resources:\n  - {type: dns/record, id: www, fields: {ttl: \"300\"}}\n",
-		}, []string{`項目 "ttl"`, "int でない"}},
+		}, []string{`field "ttl"`, "int でない"}},
 		{"type の形", map[string]string{
 			"a.yaml": "resources:\n  - {type: record, id: www}\n",
-		}, []string{"<provider>/<種類>"}},
+		}, []string{`"record" は <provider>/`}},
 		{"id が無い", map[string]string{
 			"a.yaml": "resources:\n  - {type: dns/record}\n",
 		}, []string{"id を書く"}},
@@ -197,48 +197,48 @@ func TestLoadRejectsIntent(t *testing.T) {
 		{"依存先の provider が無い", map[string]string{
 			"a.yaml": "resources:\n  - {type: dns/record, id: a, depends_on: [{id: bmc/system/x}]}\n",
 		}, []string{"depends_on bmc/system/x", `provider "bmc"`}},
-		{"範囲の重なり（同じ引数）", map[string]string{
+		{"Range の重なり（同じ引数）", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, args: {prefix: www}}\n",
 			"b.yaml": "ranges:\n  - {provider: dns, args: {prefix: www}}\n",
 		}, []string{"b.yaml:2", "重なる"}},
-		{"範囲の重なり（provider が判定）", map[string]string{
+		{"Range の重なり（provider が判定）", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, args: {prefix: www}}\n  - {provider: dns, args: {prefix: www-a}}\n",
 		}, []string{"重なる"}},
-		{"範囲の外の宣言", map[string]string{
+		{"Range の外の宣言", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, args: {prefix: www}}\nresources:\n  - {type: dns/record, id: mail}\n",
-		}, []string{"a.yaml:4", "dns/record/mail", "どの範囲にも入らない"}},
-		{"範囲の provider が無い", map[string]string{
+		}, []string{"a.yaml:4", "dns/record/mail", "にも入らない"}},
+		{"Range の provider が無い", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dnz}\n",
-		}, []string{`provider "dnz" がつなぎ方の設定に無い`}},
+		}, []string{`provider "dnz" が接続設定に無い`}},
 		{"全部を外す除外", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, external_owners: [{owner: x, reason: r}]}\n",
-		}, []string{"空の除外は範囲の全部を外す"}},
+		}, []string{"空の除外は Range の全部を外す"}},
 		{"空の接頭辞の除外", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, external_owners: [{owner: x, id_prefix: \"\", reason: r}]}\n",
-		}, []string{"空の除外は範囲の全部を外す"}},
+		}, []string{"空の除外は Range の全部を外す"}},
 		{"除外の id と id_prefix の両方", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, external_owners: [{owner: x, id: record/a, id_prefix: record/, reason: r}]}\n",
 		}, []string{"どちらか 1 つ"}},
 		{"除外の owner と reason", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, external_owners: [{id: record/a}]}\n",
 		}, []string{"owner を書く", "reason を書く"}},
-		{"外の持ち主のものの宣言", map[string]string{
+		{"external owner のものの宣言", map[string]string{
 			"a.yaml": `ranges:
   - provider: dns
     external_owners: [{owner: dhcp, id_prefix: "record/dyn-", reason: r}]
 resources:
   - {type: dns/record, id: dyn-1, ensure: absent}
 `,
-		}, []string{"dns/record/dyn-1", `外の持ち主 "dhcp"`}},
+		}, []string{"dns/record/dyn-1", `external owner "dhcp"`}},
 		{"max_drop の形", map[string]string{
 			"a.yaml": "ranges:\n  - {provider: dns, max_drop: 150%}\n",
 		}, []string{"百分率"}},
 		{"absent に fields", map[string]string{
 			"a.yaml": "resources:\n  - {type: dns/record, id: a, ensure: absent, fields: {value: x}}\n",
 		}, []string{"ensure: absent に fields は書けない"}},
-		{"観測だけの種類を消す", map[string]string{
+		{"観測だけの type を消す", map[string]string{
 			"a.yaml": "resources:\n  - {type: dns/serial, id: a, ensure: absent}\n",
-		}, []string{"観測だけの種類に ensure: absent は書けない"}},
+		}, []string{"観測だけの type に ensure: absent は書けない"}},
 		{"YAML の形", map[string]string{
 			"a.yaml": "resources:\n  - {type: dns/record,\n     id: a}\n",
 		}, []string{"a.yaml", "2 行目"}},
@@ -248,7 +248,7 @@ resources:
 			_, err := run(t, baseConfig, c.intents)
 			if c.name == "YAML の形" {
 				if err == nil || !strings.Contains(err.Error(), c.wants[1]) {
-					t.Fatalf("断らなかった: %v", err)
+					t.Fatalf("reject しなかった: %v", err)
 				}
 				return
 			}
@@ -257,7 +257,7 @@ resources:
 	}
 }
 
-// 不変条件 24：範囲・除外・方針は intent にだけ置く。つなぎ方の設定には書けない
+// 不変条件 24：Range・除外・Policy は intent にだけ置く。接続設定には書けない
 // （E-I6・E-D2・E-S1・N-S2）。
 func TestLoadRejectsConfig(t *testing.T) {
 	cases := []struct {
@@ -266,23 +266,23 @@ func TestLoadRejectsConfig(t *testing.T) {
 		wants []string
 	}{
 		{"トップレベルの ranges", baseConfig + "ranges:\n  - {provider: dns}\n",
-			[]string{"config.yaml:16", `範囲（"ranges"）はつなぎ方の設定に書けない。intent に書く`}},
+			[]string{"config.yaml:16", `Range（"ranges"）は接続設定に書けない。intent に書く`}},
 		{"トップレベルの policies", baseConfig + "policies: []\n",
-			[]string{`方針（"policies"）`}},
+			[]string{`Policy（"policies"）`}},
 		{"provider の external_owners", "providers:\n  dns:\n    module: fake\n    external_owners: []\n",
 			[]string{"providers.dns", `除外（"external_owners"）`}},
 		{"provider の scope", "providers:\n  dns:\n    module: fake\n    scope: {zone: a}\n",
-			[]string{`範囲（"scope"）`}},
-		{"settings の中の範囲", "providers:\n  dns:\n    module: fake\n    settings: {prune: true, ranges: []}\n",
-			[]string{`範囲（"prune"）`, `範囲（"ranges"）`, "intent の ranges に書く"}},
-		{"知らない項目", "providers:\n  dns:\n    modul: fake\n",
-			[]string{`知らない項目 "modul"`, "module を書く"}},
+			[]string{`Range（"scope"）`}},
+		{"settings の中の Range", "providers:\n  dns:\n    module: fake\n    settings: {prune: true, ranges: []}\n",
+			[]string{`Range（"prune"）`, `Range（"ranges"）`, "intent の ranges に書く"}},
+		{"知らない field", "providers:\n  dns:\n    modul: fake\n",
+			[]string{`知らない field "modul"`, "module を書く"}},
 		{"知らないトップレベル", "provider: {}\n",
-			[]string{`知らない項目 "provider"`}},
+			[]string{`知らない field "provider"`}},
 		{"知らないモジュール", "providers:\n  dns:\n    module: dnszone\n",
 			[]string{`知らないモジュール "dnszone"`}},
-		{"モジュールが断る settings", "providers:\n  dns:\n    module: fake\n    settings: {stat: x}\n",
-			[]string{`知らない項目 "stat"`}},
+		{"モジュールが reject する settings", "providers:\n  dns:\n    module: fake\n    settings: {stat: x}\n",
+			[]string{`"stat"`}},
 		{"インスタンス名の /", "providers:\n  \"a/b\":\n    module: fake\n",
 			[]string{"/ は使えない"}},
 	}
@@ -294,7 +294,7 @@ func TestLoadRejectsConfig(t *testing.T) {
 	}
 }
 
-// 不変条件 24：設定の型に範囲・除外・方針を書く項目が無い。
+// 不変条件 24：設定の型に Range・除外・Policy を書く field が無い。
 func TestConfigHasNoRangeFields(t *testing.T) {
 	forbidden := []string{"range", "scope", "prune", "exclude", "externalowner", "policy", "polic", "args", "resource"}
 	seen := map[reflect.Type]bool{}
@@ -312,7 +312,7 @@ func TestConfigHasNoRangeFields(t *testing.T) {
 			name := strings.ToLower(f.Name)
 			for _, bad := range forbidden {
 				if strings.Contains(name, bad) {
-					t.Errorf("%s.%s は範囲・除外・方針の項目に見える", path, f.Name)
+					t.Errorf("%s.%s は Range・除外・Policy の field に見える", path, f.Name)
 				}
 			}
 			walk(f.Type, path+"."+f.Name)

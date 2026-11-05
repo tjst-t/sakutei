@@ -14,7 +14,7 @@
 
 package migrate
 
-// planned.go — v2 の planned_change と運用プロファイルを、新しいコアの別枠の
+// planned.go — v2 の planned_change と運用プロファイルを、新しいコアの allow の
 // Policy（allow・windows・approval・applicant、§3.6、E-J2・N-J2）にする。
 //
 //   - scope → select.labels、kind → allow.kind（recreate は reimage）、max_count →
@@ -93,7 +93,7 @@ func duration(n *yaml.Node) (time.Duration, bool) {
 	return d, err == nil && d >= 0
 }
 
-// plannedChange は planned_change 1 つを別枠の Policy にする。
+// plannedChange は planned_change 1 つを allow の Policy にする。
 func (c *conv) plannedChange(file string, i int, n *yaml.Node) *obj {
 	at := fmt.Sprintf("%s: planned_change[%d]", file, i)
 	if n.Kind != yaml.Map {
@@ -102,7 +102,7 @@ func (c *conv) plannedChange(file string, i int, n *yaml.Node) *obj {
 	}
 	scope, ok := strMap(n.Map["scope"])
 	if !ok || len(scope) == 0 {
-		c.refuse("%s: scope（ラベル）が要る（空の scope は全部に別枠を開く）", at)
+		c.refuse("%s: scope（ラベル）が要る（空の scope は全部に allow を開く）", at)
 		return nil
 	}
 	kind, _ := str(n.Map["kind"])
@@ -212,8 +212,8 @@ func (c *conv) plannedChange(file string, i int, n *yaml.Node) *obj {
 		}
 		cooling = &d
 	}
-	// 承認できる人：書いた承認者と --approver（役割を求めるなら、その役割を
-	// 名乗ったか --role の持ち主だけ）。
+	// 承認できる人：書いた承認者と --approver（ロールを求めるなら、そのロールを
+	// 名乗ったか --role でそのロールを持つ人だけ）。
 	for _, a := range c.in.Approvers {
 		if !contains(approvers, a) {
 			approvers = append(approvers, a)
@@ -233,7 +233,7 @@ func (c *conv) plannedChange(file string, i int, n *yaml.Node) *obj {
 	}
 	used := c.laneUsed(scope, kind, start, end)
 	if used >= max {
-		c.note("%s: v2 で max_count %d を使い切っている（監査ログ）。別枠を書かない", at, max)
+		c.note("%s: v2 で max_count %d を使い切っている（監査ログ）。allow を書かない", at, max)
 		return nil
 	}
 	p := newObj().
@@ -305,7 +305,7 @@ func contains(list []string, s string) bool {
 }
 
 // laneUsed は v2 の監査ログ（--audit-log）の planned_change.executed から、この
-// 宣言の別枠を使った数を数える（鍵は v2 の scope|kind|始め|終わり）。
+// 宣言の allow を使った数を数える（鍵は v2 の scope|kind|始め|終わり）。
 func (c *conv) laneUsed(scope map[string]string, kind string, start, end time.Time) int {
 	path := c.in.Flags["audit-log"]
 	if path == "" {

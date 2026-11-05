@@ -21,8 +21,8 @@ package ldap
 //
 //   - 属性の型は小文字（"OID." の接頭辞は外す）。
 //   - 値は小文字（Unicode の小文字）。DN に使う標準の属性（dc・ou・cn・uid・o など）は
-//     大文字小文字を区別しないので、サーバに "ou=People" と書かれた項目も
-//     "ou=people" で同じ項目を指す。ID の綴りが 1 つに決まるので、List の ID と
+//     大文字小文字を区別しないので、サーバに "ou=People" と書かれた entry も
+//     "ou=people" で同じ entry を指す。ID の綴りが 1 つに決まるので、List の ID と
 //     intent の ID が大文字小文字だけで食い違って二重に作る・prune で消すことがない。
 //   - 区切り（","・"+"・"="）の前後の空白は落とし、区切りは ","（";" は ","）。
 //   - 値のエスケープは RFC 4514 の最小（"\" "," "+" """ ";" "<" ">"、先頭の空白と
@@ -207,7 +207,7 @@ func (p *dnParser) escape() ([]byte, error) {
 	}
 	c := p.s[p.pos]
 	if strings.IndexByte(` "#+,;<=>\`, c) < 0 {
-		return nil, fmt.Errorf("誤ったエスケープ \"\\%c\"", c)
+		return nil, fmt.Errorf("不正なエスケープ \"\\%c\"", c)
 	}
 	p.pos++
 	return []byte{c}, nil

@@ -24,7 +24,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/graph"
 )
 
-// ConfirmRefs は r の phase の確かめが観測する対象（E-B3・N-B9）。
+// ConfirmRefs は r の phase の check が観測する対象（E-B3・N-B9）。
 func ConfirmRefs(r core.Resource, phase core.ConfirmPhase, g *graph.Graph) []core.ID {
 	t := r.Txn()
 	if t == nil {
@@ -39,7 +39,7 @@ func ConfirmRefs(r core.Resource, phase core.ConfirmPhase, g *graph.Graph) []cor
 	return out
 }
 
-// confirmChecks は r の phase の確かめが使う check(名前)。
+// confirmChecks は r の phase の confirm が使う check(名前)。
 func confirmChecks(r core.Resource, phase core.ConfirmPhase) []string {
 	t := r.Txn()
 	if t == nil {
@@ -54,9 +54,9 @@ func confirmChecks(r core.Resource, phase core.ConfirmPhase) []string {
 	return out
 }
 
-// Confirmed は r の phase の確かめを今の観測で評価する（E-B3・E-B9・N-B9）。
+// Confirmed は r の phase の confirm を今の観測で評価する（E-B3・E-B9・N-B9）。
 // 全部が真のときだけ真。不明は通らない（確かでなければ確定しない、不変条件 17）。
-// 通らなければ、通らない式と check の理由を返す。checks は登録した確かめで、
+// 通らなければ、通らない式と check の理由を返す。checks は登録した check の関数で、
 // この呼び出しで 1 回ずつ呼ぶ。
 func Confirmed(ctx context.Context, r core.Resource, phase core.ConfirmPhase, g *graph.Graph,
 	obs map[core.ID]core.Observation, checks map[string]core.CheckFunc) (bool, string) {
@@ -86,7 +86,7 @@ func confirmedIn(r core.Resource, phase core.ConfirmPhase, env *condEnv) (bool, 
 	return len(failed) == 0, strings.Join(failed, "・")
 }
 
-// callChecks は names の確かめを 1 回ずつ呼ぶ。登録の無い名前は不明。
+// callChecks は names の check を 1 回ずつ呼ぶ。登録の無い名前は不明。
 func callChecks(ctx context.Context, names []string, funcs map[string]core.CheckFunc, obs map[core.ID]core.Observation) map[string]checkResult {
 	out := map[string]checkResult{}
 	view := &condEnv{obs: obs}
@@ -96,7 +96,7 @@ func callChecks(ctx context.Context, names []string, funcs map[string]core.Check
 		}
 		f, ok := funcs[name]
 		if !ok {
-			out[name] = checkResult{core.TriUnknown, "登録した確かめに無い"}
+			out[name] = checkResult{core.TriUnknown, "登録した check に無い"}
 			continue
 		}
 		t, why := f(ctx, view)
@@ -105,9 +105,9 @@ func callChecks(ctx context.Context, names []string, funcs map[string]core.Check
 	return out
 }
 
-// holdGroups は 2 段の Apply の group のうち、1 つでも当てられない（待つ・承認
-// 待ち・report・止めた）変更があれば、group の残りも当てない（E-B9・N-B3：
-// 全部で確かめが通ったときだけ確定する group を、欠けたまま確定しない）。
+// holdGroups は two-phase Apply の group のうち、1 つでも Apply できない（待つ・
+// 承認待ち・report・halt した）変更があれば、group の残りも Apply しない（E-B9・
+// N-B3：全部で check が通ったときだけ確定する group を、欠けたまま確定しない）。
 func holdGroups(out *Result, byID map[core.ID]core.Resource) {
 	blocked := map[string]string{}
 	for _, c := range out.Changes {
@@ -130,13 +130,13 @@ func holdGroups(out *Result, byID map[core.ID]core.Resource) {
 			continue
 		}
 		if who, hit := blocked[r.Txn().Group]; hit {
-			c.Action, c.Blocked = ActWait, fmt.Sprintf("transaction.group %s の %s が当てられないので group ごと待つ", r.Txn().Group, who)
+			c.Action, c.Blocked = ActWait, fmt.Sprintf("transaction.group %s の %s が Apply できないので group ごと待つ", r.Txn().Group, who)
 		}
 	}
 }
 
-// TxnUnits は当てる変更（idx は Changes の番号）を 2 段の Apply の単位にまとめる。
-// 2 段で当てないものは plain に返す。単位は名前順。
+// TxnUnits は Apply する変更（idx は Changes の番号）を two-phase Apply の単位に
+// まとめる。two-phase Apply しないものは plain に返す。単位は名前順。
 func TxnUnits(r Result, idx []int, byID map[core.ID]*core.Resource) (plain []int, units [][]int) {
 	byKey := map[string][]int{}
 	for _, i := range idx {

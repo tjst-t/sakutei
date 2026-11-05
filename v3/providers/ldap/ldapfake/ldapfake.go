@@ -21,17 +21,17 @@
 //
 // 389 Directory Server に似せたふるまい：
 //
-//   - 項目を作る・変えると、objectClass に上位のクラス（Schema）を足す。
+//   - entry を作る・変えると、objectClass に上位のクラス（Schema）を足す。
 //   - 葉の RDN の値が属性に無ければ足す。
 //   - DN を値に持つ属性（member など）の値は空白を詰めて保存する。
 //   - userPassword はハッシュに似た形（{FAKE}...）で保存し、検索では base64 で返す。
 //   - 検索の出力は -LLL でも "# pagedresults" のコメントを出す（-E pr のとき）。
-//   - ldapSubEntry の項目は、base の検索のほかには出さない。
-//   - Readers の DN は検索だけができ、変更は 50 insufficientAccessRights で断る
-//     （olcAccess の by dn.exact=... read に当たる、E-G5）。
+//   - ldapSubEntry の entry は、base の検索のほかには出さない。
+//   - Readers の DN は検索だけができ、変更は 50 insufficientAccessRights で拒否する
+//     （olcAccess の by dn.exact=... read に相当する、E-G5）。
 //
 // 故障の注入（E-K1・E-K2）：Unreachable（届かない）・RequireTLS（TLS の無い起動を
-// 断る）・Broken（読めない出力）・SizeLimit（サーバの件数の上限で検索を切る）と、
+// 拒否する）・Broken（読めない出力）・SizeLimit（サーバの件数の上限で検索を切る）と、
 // Server.Missing（コマンドが無い）。
 //
 // Server.Run は ldap.RunnerFunc で包んで ldap.Options.Runner に差す。Main は
@@ -57,7 +57,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/ldap"
 )
 
-// Entry は 1 つの項目。Attrs のキーは最初に書かれた綴り（引くときは大文字小文字を
+// Entry は 1 つの entry。Attrs のキーは最初に書かれた綴り（引くときは大文字小文字を
 // 問わない）。
 type Entry struct {
 	DN    string              `json:"dn"`
@@ -75,9 +75,9 @@ type State struct {
 	Schema map[string]string `json:"schema"`
 	// Unreachable ならどの起動もサーバに届かない（終了コード 255）。
 	Unreachable bool `json:"unreachable"`
-	// RequireTLS なら -ZZ・ldaps:// の無い起動を断る（13 confidentialityRequired）。
+	// RequireTLS なら -ZZ・ldaps:// の無い起動を拒否する（13 confidentialityRequired）。
 	RequireTLS bool `json:"require_tls"`
-	// Fold なら検索の出力を 76 文字で折り返す（-o ldif-wrap=no を無視する古い版）。
+	// Fold なら検索の出力を 76 文字で折り返す（-o ldif-wrap=no を無視する古いバージョン）。
 	Fold bool `json:"fold"`
 	// Broken なら検索の出力を LDIF でないものにする（読めない出力）。
 	Broken bool `json:"broken"`
@@ -107,7 +107,7 @@ type Server struct {
 	Missing bool
 }
 
-// NewState は初めの状態：suffix（base）の項目と、よく使うクラスのスキーマ。
+// NewState は初めの状態：suffix（base）の entry と、よく使うクラスのスキーマ。
 func NewState(bindDN, bindPassword, suffix string) *State {
 	st := &State{
 		BindDN: bindDN, BindPassword: bindPassword,
@@ -236,7 +236,7 @@ func canon(dn string) string {
 	return c
 }
 
-// Find は dn の項目（無ければ nil）。
+// Find は dn の entry（無ければ nil）。
 func (st *State) Find(dn string) *Entry {
 	c := canon(dn)
 	for _, e := range st.Entries {
@@ -247,7 +247,7 @@ func (st *State) Find(dn string) *Entry {
 	return nil
 }
 
-// Put は項目を置く（在れば置き換える）。上位のクラスは足さない（テストが現実を
+// Put は entry を置く（在れば置き換える）。上位のクラスは足さない（テストが現実を
 // そのまま作るため）。
 func (st *State) Put(dn string, attrs map[string][]string) {
 	if e := st.Find(dn); e != nil {
@@ -257,7 +257,7 @@ func (st *State) Put(dn string, attrs map[string][]string) {
 	st.Entries = append(st.Entries, &Entry{DN: dn, Attrs: attrs})
 }
 
-// Remove は項目を消す。
+// Remove は entry を消す。
 func (st *State) Remove(dn string) {
 	c := canon(dn)
 	out := st.Entries[:0]
@@ -832,7 +832,7 @@ func (st *State) change(dn string, lines []ldap.Line) int {
 	return 0
 }
 
-// finish は 389 Directory Server のように項目を仕上げる（上位のクラスと RDN の値を
+// finish は 389 Directory Server のように entry を仕上げる（上位のクラスと RDN の値を
 // 足す、DN の値の空白を詰める、userPassword をハッシュにする）。
 func (st *State) finish(e *Entry, d ldap.DN) int {
 	classes := e.Get("objectClass")

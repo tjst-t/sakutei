@@ -74,7 +74,7 @@ country: NO
 	if got := n.Value(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %#v\nwant %#v", got, want)
 	}
-	// 値ごとに行番号を持つ（E-M3：断るときに場所を示す）。
+	// 値ごとに行番号を持つ（E-M3：エラーにするとき場所を示す）。
 	res := n.Map["resources"].Seq
 	if res[0].Line != 4 || res[1].Line != 9 || res[0].Map["fields"].Line != 6 {
 		t.Fatalf("行番号: %d %d %d", res[0].Line, res[1].Line, res[0].Map["fields"].Line)
@@ -84,7 +84,7 @@ country: NO
 	}
 }
 
-// 黙って読み違えないよう、部分集合の外は行番号つきで断る。
+// 黙って読み違えないよう、部分集合の外は行番号つきでエラーにする。
 func TestParseRejects(t *testing.T) {
 	cases := map[string]string{
 		"tab":        "a:\n\tb: 1\n",
@@ -110,7 +110,7 @@ func TestParseRejects(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(src))
 			if err == nil {
-				t.Fatalf("断らなかった: %q", src)
+				t.Fatalf("reject しなかった: %q", src)
 			}
 			if name != "toplist" && !strings.Contains(err.Error(), "行目") {
 				t.Fatalf("行番号が無い: %v", err)
@@ -132,6 +132,6 @@ func TestParseJSON(t *testing.T) {
 		t.Fatalf("キー: %v", n.Keys)
 	}
 	if _, err := ParseJSON([]byte(`[1]`)); err == nil {
-		t.Fatal("トップレベルのリストを断らなかった")
+		t.Fatal("トップレベルのリストをエラーにしなかった")
 	}
 }

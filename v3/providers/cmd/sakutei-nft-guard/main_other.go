@@ -14,7 +14,7 @@
 
 //go:build !unix
 
-// Command sakutei-nft-guard は unix でだけ動く。
+// Command sakutei-nft-guard は unix でしか動かない。
 package main
 
 import (
@@ -23,6 +23,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "sakutei-nft-guard: unix でだけ動く")
+	fmt.Fprintln(os.Stderr, "sakutei-nft-guard: unix でしか動かない")
 	os.Exit(4)
 }

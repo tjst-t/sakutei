@@ -110,11 +110,11 @@ func TestContract(t *testing.T) {
 			},
 			Observed: []core.ID{id("system", "node1"), id("virtual-media", "node1/cd"), id("bios", "node1/ProcVirtualization"), id("firmware", "node1/BMC")},
 			Faults: map[string]func(){
-				"接続を切る": unreachable,
-				"5xx":   func() { b.srv.SetFailStatus(http.StatusServiceUnavailable) },
-				"時間切れ":  func() { b.srv.SetDelay(time.Second) },
-				"認証の失敗": func() { b.srv.SetFailStatus(http.StatusUnauthorized) },
-				"壊れた出力": func() { b.srv.SetBroken(true) },
+				"接続を切る":  unreachable,
+				"5xx":    func() { b.srv.SetFailStatus(http.StatusServiceUnavailable) },
+				"タイムアウト": func() { b.srv.SetDelay(time.Second) },
+				"認証の失敗":  func() { b.srv.SetFailStatus(http.StatusUnauthorized) },
+				"壊れた出力":  func() { b.srv.SetBroken(true) },
 			},
 			Writes:               b.writes,
 			Secrets:              []string{roPassword, rwPassword},
@@ -132,7 +132,7 @@ func TestContract(t *testing.T) {
 	})
 }
 
-// 現実を見ずに決まる誤りは読み込みで断る（E-I7・E-M3）。
+// 現実を見ずに決まる誤りは読み込み時にエラーにする（E-I7・E-M3）。
 func TestValidate(t *testing.T) {
 	b := newBMC(t, redfishtest.Options{})
 	cases := []struct {
@@ -158,12 +158,12 @@ func TestValidate(t *testing.T) {
 		}
 	}
 	if d := b.p.Validate(nil, []core.Range{{Provider: "bmc"}}); len(d) != 1 {
-		t.Errorf("範囲を断らない: %v", d)
+		t.Errorf("Range を拒否しない: %v", d)
 	}
 }
 
 // Off へは GracefulShutdown だけを送り、応えない台に ForceOff を送らない。強制停止は
-// 壊す操作 force_off（E-A1・N-A1）。
+// 破壊的な操作 force_off（E-A1・N-A1）。
 func TestPowerOffIsGraceful(t *testing.T) {
 	b := newBMC(t, redfishtest.Options{GracefulTimeout: time.Hour})
 	b.srv.SetIgnoreGraceful(true)
@@ -180,7 +180,7 @@ func TestPowerOffIsGraceful(t *testing.T) {
 		}
 	}
 	if spec := b.p.Ops("system")[redfish.OpForceOff]; !spec.Destructive {
-		t.Fatal("force_off が壊す操作でない")
+		t.Fatal("force_off が破壊的な操作でない")
 	}
 	if err := b.p.Invoke(context.Background(), wctx(), sys, redfish.OpForceOff, nil); err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestPowerOffIsGraceful(t *testing.T) {
 	}
 }
 
-// 観測は観測用の資格だけを使い、書き込み用のパスワードのファイルが無くても観測
+// 観測は観測用の credential だけを使い、書き込み用のパスワードのファイルが無くても観測
 // できる。書き込みはそのファイルを読む（E-G5・N-G3）。
 func TestWriteCredentials(t *testing.T) {
 	b := newBMC(t, redfishtest.Options{PowerState: "Off"})
@@ -203,19 +203,19 @@ func TestWriteCredentials(t *testing.T) {
 		}
 	}
 	if c := b.srv.UserCalls("admin"); len(c) != 0 {
-		t.Fatalf("観測で書き込み用の利用者を使った: %v", c)
+		t.Fatalf("観測で書き込み用のユーザーを使った: %v", c)
 	}
 	err := b.p.Apply(context.Background(), wctx(), sys, core.Fields{"power": "On"}, o[sys])
 	if err == nil || !strings.Contains(err.Error(), "パスワードのファイル") {
-		t.Fatalf("書き込み用の資格が無いのに %v", err)
+		t.Fatalf("書き込み用の credential が無いのに %v", err)
 	}
 	if b.srv.PowerState() != "Off" {
-		t.Fatal("資格が無いのに書いた")
+		t.Fatal("credential が無いのに書いた")
 	}
 }
 
-// BIOS の属性は Settings に 1 度だけ PATCH し、保留中は Converging で重ねない。再起動
-// で効く。登録簿に合わない値は送らない（E-A4・N-A3）。
+// BIOS の属性は Settings に 1 度だけ PATCH し、保留中は Converging で重ねて送らない。再起動
+// で効く。registry に合わない値は送らない（E-A4・N-A3）。
 func TestBios(t *testing.T) {
 	b := newBMC(t, redfishtest.Options{})
 	ctx := context.Background()
@@ -231,7 +231,7 @@ func TestBios(t *testing.T) {
 	}
 	n := b.writes()
 	if err := b.p.Apply(ctx, wctx(), virt, core.Fields{"value": "Disabled"}, core.Observation{}); err != nil || b.writes() != n {
-		t.Fatalf("保留中に重ねた: %v %d", err, b.writes()-n)
+		t.Fatalf("保留中に重ねて送った: %v %d", err, b.writes()-n)
 	}
 	b.srv.Restart()
 	if o := b.observe(t, virt)[virt]; o.Availability != core.Present || o.Fields["value"] != "Disabled" {
@@ -239,13 +239,13 @@ func TestBios(t *testing.T) {
 	}
 	retry := id("bios", "node1/BootRetryCount")
 	if o := b.observe(t, retry)[retry]; o.Fields["value"] != "3" {
-		t.Fatalf("数の属性 %+v", o)
+		t.Fatalf("数値の属性 %+v", o)
 	}
 	if err := b.p.Apply(ctx, wctx(), retry, core.Fields{"value": "5"}, core.Observation{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := b.srv.BiosPending()["BootRetryCount"]; got != float64(5) {
-		t.Fatalf("数で送らない: %#v", got)
+		t.Fatalf("数値で送らない: %#v", got)
 	}
 	b.srv.Restart()
 	n = b.writes()
@@ -261,14 +261,14 @@ func TestBios(t *testing.T) {
 		}
 	}
 	if b.writes() != n {
-		t.Fatal("登録簿に合わない値を送った")
+		t.Fatal("registry に合わない値を送った")
 	}
 	if o := b.observe(t, id("bios", "node1/X"))[id("bios", "node1/X")]; o.Availability != core.Absent {
 		t.Fatalf("%+v", o)
 	}
 }
 
-// FW の版と最新の更新の Task を観測し、stage で更新を 1 回送る（E-A5・N-A4）。
+// FW のバージョンと最新の更新の Task を観測し、stage で更新を 1 回送る（E-A5・N-A4）。
 // Payload を返さない BMC でも TargetDetermined で Task を見分ける。
 func TestFirmwareStage(t *testing.T) {
 	for _, noPayload := range []bool{false, true} {
@@ -309,7 +309,7 @@ func TestFirmwareStage(t *testing.T) {
 	}
 }
 
-// verify はイメージを取りに行って sha256 を確かめる。BMC には送らない。秘密の
+// verify はイメージを取りに行って sha256 を確かめる。BMC には送らない。secret の
 // 参照のパスワードを WriteContext から取り出す（E-A5・E-G2）。
 func TestFirmwareVerify(t *testing.T) {
 	body := []byte("QBMC-FW BMC 2.0.0\n")
@@ -342,7 +342,7 @@ func TestFirmwareVerify(t *testing.T) {
 		t.Fatal("verify が BMC に書いた")
 	}
 	if err := b.p.Invoke(context.Background(), w, fw, redfish.OpVerify, core.Fields{"image_uri": img.URL, "sha256": args["sha256"], "image_username": "fw", "image_password": "img-secret"}); err == nil || strings.Contains(err.Error(), "img-secret") {
-		t.Fatalf("平文のパスワードを断らない: %v", err)
+		t.Fatalf("平文のパスワードを拒否しない: %v", err)
 	}
 }
 
@@ -353,7 +353,7 @@ func (s staticSecret) Resolve(context.Context, string, string) (string, error) {
 	return string(s), nil
 }
 
-// 知らない PowerState は Unknown（定義に合わない出力、E-B11）。電源の切り替えの
+// 未知の PowerState は Unknown（定義に合わない出力、E-B11）。電源の切り替えの
 // 途中は Converging（E-A1）。
 func TestPowerStates(t *testing.T) {
 	b := newBMC(t, redfishtest.Options{})
@@ -381,6 +381,6 @@ func TestBootOnce(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	if err := b.p.Invoke(context.Background(), wctx(), sys, redfish.OpReset, core.Fields{"type": "x"}); err == nil {
-		t.Fatal("知らない引数を断らない")
+		t.Fatal("未知の引数を拒否しない")
 	}
 }

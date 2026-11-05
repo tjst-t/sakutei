@@ -15,7 +15,7 @@ resources:
     fields:
       value: 192.0.2.20
       ttl: 300
-  # api-begin（run.sh の手順 5 がこの範囲を消して試す）
+  # api-begin（run.sh の step 5 がこの部分を消して試す）
   - type: dns/record
     id: api.example.com./A
     fields:

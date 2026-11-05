@@ -15,19 +15,20 @@
 package proxmox
 
 // realizer.go — network_policy（Expand のモジュール go:netpolicy）の実現先
-// proxmox-fw：許可を VM の FW の規則（種類 fw-rules の rules）へ展開する（v2 の
+// proxmox-fw：許可を VM の FW の規則（type fw-rules の rules）へ展開する（v2 の
 // pkg/netpolicy の proxmox-fw を移したもの、E-B6・E-B5）。netpolicy.WithRealizer で
 // 足す（cmd/sakutei が組み込む）。
 //
 //   - 実現先 1 つ = VM 1 台の FW の規則の並び（id は fw-rules の id
 //     "<クラスタ>/<VM 名>"）。規則は before・許可・after の順で、Sakutei の規則と
-//     して並びの先頭に置かれる（手の規則はその後ろに残る）。
-//   - 口（interfaces）を書いた実現先では、許可が通る口と向きごとに規則 1 つ：向き
-//     in は "in"、out は "out"、口は "iface=netN"。口を書かないホストは "in" の規則
-//     （口を付けない）。口を書かない境界はどの口で受けるか決まらないので断る。
+//     して並びの先頭に置かれる（手で置いた規則はその後ろに残る）。
+//   - interfaces を書いた実現先では、許可が通る interface と向きごとに規則 1 つ：向き
+//     in は "in"、out は "out"、interface は "iface=netN"。interfaces を書かないホストは
+//     "in" の規則（iface を付けない）。interfaces を書かない境界はどの interface で受けるか
+//     決まらないのでエラーにする。
 //   - 許可 1 つはアドレスの族（IPv4・IPv6）ごとに 1 規則（Proxmox は 1 規則に族を
 //     混ぜられない）。icmp は IPv4 だけ、icmpv6 は IPv6 だけ。
-//   - reason は comment に出す。provider が Proxmox に書くときに印を付ける。
+//   - reason は comment に出す。provider が Proxmox に書くときに marker を付ける。
 //   - 作る宣言は同じ id の vm に依る（VM ができてから規則を置く）。
 //   - settings は受けない（既定の拒否は vm の firewall の policy_in・policy_out）。
 
@@ -64,7 +65,7 @@ func (Realizer) Realize(t netpolicy.Target, allows []netpolicy.Passing) (netpoli
 	}
 	for _, itf := range t.Interfaces {
 		if !pveIfaceRe.MatchString(itf.Name) {
-			return netpolicy.Output{}, fmt.Errorf("口 %q は VM の NIC の名前（net0・net1…）", itf.Name)
+			return netpolicy.Output{}, fmt.Errorf("interface %q は VM の NIC の名前（net0・net1…）で書く", itf.Name)
 		}
 	}
 	if len(t.Interfaces) == 0 && t.Kind == netpolicy.KindBoundary {
@@ -121,7 +122,7 @@ func (Realizer) Realize(t netpolicy.Target, allows []netpolicy.Passing) (netpoli
 	return out, nil
 }
 
-// pveRule は許可 p の口と向き v、アドレスの族 af（4 か 6）の規則。from か to に
+// pveRule は許可 p の interface と向き v、アドレスの族 af（4 か 6）の規則。from か to に
 // その族の CIDR が無い・proto がその族に無いなら false。
 func pveRule(af int, v netpolicy.Via, p netpolicy.Passing) (fwrule.Rule, bool) {
 	from, to := ofFamily(p.From.CIDRs, af), ofFamily(p.To.CIDRs, af)

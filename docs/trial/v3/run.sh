@@ -40,9 +40,9 @@ $S plan --intent intent --config config.yaml || true
 $S reconcile $ONE
 grep 'api' example.com.zone
 
-step "4. freeze（知らせるだけで直さない）→ unfreeze で直る"
+step "4. freeze（通知するだけで直さない）→ unfreeze で直る"
 sed -i 's/192.0.2.20/203.0.113.1/' example.com.zone
-$S freeze --record record --reason "試用: 知らせるだけ" --until 1h --name trial --as trial-user
+$S freeze --record record --reason "試用: 通知するだけ" --until 1h --name trial --as trial-user
 $S reconcile $ONE || echo "→ 終了コード $?（ずれが残る）"
 grep 'www' example.com.zone
 $S unfreeze trial --record record --reason "試用おわり" --as trial-user
@@ -53,7 +53,7 @@ step "5. intent から消しても、既定（prune: false）では現実から�
 cp intent/main.yaml main.yaml.bak
 sed '/# api-begin/,/# api-end/d' main.yaml.bak > intent/main.yaml
 $S reconcile $ONE
-grep 'api' example.com.zone && echo "→ api は残っている（宣言外として知らせる）"
+grep 'api' example.com.zone && echo "→ api は残っている（unmanaged として通知する）"
 cp main.yaml.bak intent/main.yaml
 
 step "おわり（作業ディレクトリ: $W）"

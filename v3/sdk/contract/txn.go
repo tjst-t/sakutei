@@ -24,30 +24,30 @@ import (
 	"github.com/tjst-t/sakutei/v3/plan"
 )
 
-// TxnTarget は Transaction の戻りの確かめ 1 つに使う provider と相手（§6.2、
-// E-B3・E-B8・不変条件 17）。
+// TxnTarget は Transaction のロールバックのテストケース 1 つに使う provider と相手
+// （§6.2、E-B3・E-B8・不変条件 17）。
 type TxnTarget struct {
 	// Provider は core.Transactor を持つ provider。
 	Provider core.Provider
-	// Resources・Ranges は Validate に渡す宣言と範囲（Change は足して渡す）。
+	// Resources・Ranges は Validate に渡す宣言と Range（Change は足して渡す）。
 	Resources []core.Resource
 	Ranges    []core.Range
 	// Change は準備する宣言（今の現実と違う値にする）。
 	Change core.Resource
-	// Timeout は Prepare に渡す時間切れ。相手はこの後に元へ戻す。
+	// Timeout は Prepare に渡すタイムアウト。相手はこれを過ぎると元へ戻す。
 	Timeout time.Duration
-	// Expire は相手の時間切れを過ぎるまで待つ（模擬の時計を進めるなど）。nil なら
-	// Timeout の 2 倍だけ眠る。
+	// Expire は相手のタイムアウトを過ぎるまで待つ（エミュレータの時計を進めるなど）。
+	// nil なら Timeout の 2 倍だけ sleep する。
 	Expire func()
-	// Secret は WriteContext が秘密の参照から値を取り出す先（無ければ空）。
+	// Secret は WriteContext が secret の参照から値を取り出す先（無ければ空）。
 	Secret core.SecretResolver
 }
 
-// RunTxn は Transaction の戻りの契約を回す。newTarget は確かめごとに呼ぶ
-// （前の確かめの現実を持ち込まない）。
+// RunTxn は Transaction のロールバックの契約テストを実行する。newTarget はテスト
+// ケースごとに呼ぶ（前のケースの現実を持ち込まない）。
 //
-//   - 確定すれば宣言どおりで、時間切れを過ぎても戻らない。
-//   - Prepare して Commit も Rollback もしなければ、時間切れのあとに元に戻る（不変条件 17）。
+//   - 確定すれば宣言どおりで、タイムアウトを過ぎても戻らない。
+//   - Prepare して Commit も Rollback もしなければ、タイムアウトのあとに元に戻る（不変条件 17）。
 //   - Rollback すれば元に戻る。
 func RunTxn(t *testing.T, newTarget func(t *testing.T) TxnTarget) {
 	t.Helper()
@@ -61,7 +61,7 @@ func RunTxn(t *testing.T, newTarget func(t *testing.T) TxnTarget) {
 			if v, ok := tg.Provider.(core.Validator); ok {
 				for _, d := range v.Validate(append(append([]core.Resource(nil), tg.Resources...), tg.Change), tg.Ranges) {
 					if d.Severity == core.Reject {
-						t.Fatalf("書いた宣言を断った: %s", d)
+						t.Fatalf("書いた宣言を reject した: %s", d)
 					}
 				}
 			}
@@ -118,11 +118,11 @@ func RunTxn(t *testing.T, newTarget func(t *testing.T) TxnTarget) {
 		expire(tg)
 		ks := tg.Provider.Schema().Kinds[tg.Change.ID.Kind()]
 		if c := plan.Compare(tg.Change, ks, observe(t, tg)); c.Op != plan.None {
-			t.Fatalf("確定したのに時間切れのあと宣言どおりでない（%s）: %+v", c.Op, c.Fields)
+			t.Fatalf("確定したのにタイムアウトのあと宣言どおりでない（%s）: %+v", c.Op, c.Fields)
 		}
 	})
 
-	sub("確定しなければ時間切れで戻る", func(t *testing.T, tg TxnTarget, tr core.Transactor) {
+	sub("確定しなければタイムアウトで戻る", func(t *testing.T, tg TxnTarget, tr core.Transactor) {
 		_, before := prepare(t, tg, tr)
 		expire(tg)
 		same(t, "Commit も Rollback もしない", before, observe(t, tg))

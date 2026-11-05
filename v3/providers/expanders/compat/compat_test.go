@@ -23,8 +23,8 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/expanders/compat"
 )
 
-// TestGolden は互換の表の照合を golden で確かめる（N-P5・E-A7）。sequence は途中の
-// 組み合わせを止める依存を足し、reject は表に無い望む組み合わせを断る。
+// TestGolden は compatibility table の照合を golden で確かめる（N-P5・E-A7）。sequence は
+// 途中の組み合わせを待たせる依存を足し、reject は表に無い望む組み合わせをエラーにする。
 func TestGolden(t *testing.T) {
 	for _, dir := range expandtest.Cases(t, "testdata") {
 		t.Run(filepath.Base(dir), func(t *testing.T) {

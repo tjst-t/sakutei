@@ -39,13 +39,13 @@ const (
 	app2PW    = "app-secret-gen2"
 )
 
-// secrets は秘密の参照（世代を除く）→ 値。
+// secrets は secret の参照（世代を除く）→ 値。
 type secrets map[string]string
 
 func (s secrets) Resolve(_ context.Context, ref core.SecretRef) (string, error) {
 	v, ok := s[ref.Ref()]
 	if !ok {
-		return "", fmt.Errorf("秘密 %s が無い", ref.Ref())
+		return "", fmt.Errorf("secret %s が無い", ref.Ref())
 	}
 	return v, nil
 }
@@ -58,8 +58,8 @@ type env struct {
 	opts map[string]any // settings.servers.main
 }
 
-// newEnv は偽のサーバと provider を作る。観測は読むだけのロール（sakutei_ro）、
-// 書き込みは管理用のロール（sakutei、超ユーザ）。初めの現実：ロール old（olddb の
+// newEnv は fake のサーバと provider を作る。観測は読み取り専用のロール（sakutei_ro）、
+// 書き込みは管理用のロール（sakutei、superuser）。初めの現実：ロール old（olddb の
 // 所有者）・user1（olddb に CONNECT）・lonely（どこかの表を持つ）、olddb（拡張 citext）。
 func newEnv(t *testing.T, mod func(server map[string]any)) *env {
 	t.Helper()
@@ -123,7 +123,7 @@ func (e *env) compare(t *testing.T, r core.Resource) plan.Change {
 	return plan.Compare(r, e.p.Schema().Kinds[r.ID.Kind()], e.observe(t, r.ID))
 }
 
-// converge は宣言を Validate に渡し、ずれていれば当て、宣言どおりになったことを確かめる。
+// converge は宣言を Validate に渡し、drift があれば Apply し、宣言どおりになったことを確かめる。
 func (e *env) converge(t *testing.T, rs ...core.Resource) {
 	t.Helper()
 	for _, d := range e.p.Validate(rs, nil) {
@@ -180,7 +180,7 @@ func TestContract(t *testing.T) {
 			Refuses: []contract.Refuse{
 				{ID: id(KindDatabase, "main/olddb"), Prepare: func() { e.srv.Do(func(st *pgfake.State) { st.Databases["olddb"].Tables = 1 }) }},
 				{ID: id(KindRole, "main/old")},    // DB を持つ
-				{ID: id(KindRole, "main/lonely")}, // 表を持つ（PostgreSQL が 2BP01 で断る）
+				{ID: id(KindRole, "main/lonely")}, // 表を持つ（PostgreSQL が 2BP01 で拒否する）
 				{ID: id(KindExtension, "main/olddb/citext"), Prepare: func() {
 					e.srv.Do(func(st *pgfake.State) { st.Databases["olddb"].Depended = map[string]bool{"citext": true} })
 				}},
@@ -236,7 +236,7 @@ func TestPassword(t *testing.T) {
 		blob := strings.Join(c.Args, " ") + fmt.Sprint(c.Env) + c.Stdin
 		for _, s := range []string{appPW, adminPW, roPW} {
 			if strings.Contains(blob, s) {
-				t.Fatalf("psql の引数・環境変数・SQL に秘密 %q が出た", s)
+				t.Fatalf("psql の引数・環境変数・SQL に secret %q が出た", s)
 			}
 		}
 		if pf := c.Env["PGPASSFILE"]; pf == "" {
@@ -246,7 +246,7 @@ func TestPassword(t *testing.T) {
 		}
 	}
 	first := role.Password
-	// 同じ宣言なら何周しても書かない。
+	// 同じ宣言なら何 cycle 回しても書かない。
 	n := e.srv.Writes()
 	for i := 0; i < 3; i++ {
 		e.converge(t, r)
@@ -274,9 +274,9 @@ func TestPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	if o := v.observe(t, r.ID); o.Availability != core.Unknown || !strings.Contains(o.Note, "pg_authid") {
-		t.Fatalf("読むだけのロールで verify_passwords: %+v", o)
+		t.Fatalf("読み取り専用のロールで verify_passwords: %+v", o)
 	}
-	// 超ユーザで観測すれば、手で変えたパスワードがずれになり Apply が戻す。
+	// superuser で観測すれば、手で変えたパスワードが drift になり Apply が戻す。
 	s := newEnv(t, func(s map[string]any) {
 		s["verify_passwords"] = true
 		s["observe"] = s["write"]
@@ -361,7 +361,7 @@ func TestGrant(t *testing.T) {
 	}
 }
 
-// 拡張の版は宣言したときだけ合わせる（E-F1）。
+// 拡張のバージョンは宣言したときだけ合わせる（E-F1）。
 func TestExtensionVersion(t *testing.T) {
 	e := newEnv(t, nil)
 	e.converge(t, res(KindExtension, "main/olddb/hstore", core.Fields{FieldVersion: "1.7"}))
@@ -378,19 +378,19 @@ func TestConnectRoles(t *testing.T) {
 	db := res(KindDatabase, "main/locked", core.Fields{FieldOwner: "old", FieldConnectRoles: []any{roUser}})
 	pub := res(KindGrant, "main/locked/PUBLIC", core.Fields{FieldPrivileges: []any{}})
 	e.converge(t, db, pub)
-	// 観測用のロールは PUBLIC の CONNECT が無くても繋げ、List は完全。
+	// 観測用のロールは PUBLIC の CONNECT が無くても接続でき、List は完全。
 	if l, err := e.p.List(context.Background(), mainRange); err != nil || !l.Complete {
 		t.Fatalf("List: %v %+v", err, l)
 	}
 	// 宣言していない境界の外のロールの CONNECT は残す（観測は宣言の値のまま）。
 	e.srv.Do(func(st *pgfake.State) { st.Databases["locked"].ACL["pg_monitor"] = []string{"CONNECT"} })
 	if c := e.compare(t, db); c.Op != plan.None {
-		t.Fatalf("宣言外の境界の外のロール: %+v", c)
+		t.Fatalf("宣言に無い、境界の外のロール: %+v", c)
 	}
-	// 手で外せばずれになり、足す（pg_monitor は外さない）。
+	// 手で外せば drift になり、足す（pg_monitor は外さない）。
 	e.srv.Do(func(st *pgfake.State) { delete(st.Databases["locked"].ACL, roUser) })
 	if _, err := e.p.List(context.Background(), mainRange); err == nil {
-		t.Fatal("繋げない DB があるのに List が完全")
+		t.Fatal("接続できない DB があるのに List が完全")
 	}
 	if c := e.compare(t, db); c.Op != plan.Update {
 		t.Fatalf("手の REVOKE: %+v", c)
@@ -402,7 +402,7 @@ func TestConnectRoles(t *testing.T) {
 	}
 }
 
-// List は管理の境界の内のものだけ（E-F1・E-K2）。
+// List は管理の境界の内側のものだけ（E-F1・E-K2）。
 func TestListBoundary(t *testing.T) {
 	e := newEnv(t, nil)
 	l, err := e.p.List(context.Background(), mainRange)
@@ -427,7 +427,7 @@ func TestValidate(t *testing.T) {
 		"観測用のロール":         res(KindRole, "main/"+roUser, core.Fields{}),
 		"pg_":             res(KindRole, "main/pg_monitor", core.Fields{}),
 		"public":          res(KindRole, "main/Public", core.Fields{}),
-		"知らないサーバ":         res(KindRole, "other/app", core.Fields{}),
+		"未知のサーバ":          res(KindRole, "other/app", core.Fields{}),
 		"id の形":           res(KindGrant, "main/appdb", core.Fields{}),
 		"システムの DB":        res(KindDatabase, "main/template1", core.Fields{}),
 		"DB の =":          res(KindDatabase, "main/a=b", core.Fields{}),
@@ -436,23 +436,23 @@ func TestValidate(t *testing.T) {
 		"上限":              res(KindRole, "main/app", core.Fields{FieldConnectionLimit: int64(-2)}),
 		"権限が無い":           res(KindGrant, "main/appdb/app", core.Fields{}),
 		"権限が空":            res(KindGrant, "main/appdb/app", core.Fields{FieldPrivileges: []any{}}),
-		"知らない権限":          res(KindGrant, "main/appdb/app", core.Fields{FieldPrivileges: []any{"SELECT"}}),
+		"未知の権限":           res(KindGrant, "main/appdb/app", core.Fields{FieldPrivileges: []any{"SELECT"}}),
 		"connect_roles":   res(KindDatabase, "main/appdb", core.Fields{FieldConnectRoles: []any{"app"}}),
 		"encoding":        res(KindDatabase, "main/appdb", core.Fields{FieldEncoding: "x y"}),
 		"PUBLIC の absent": {ID: id(KindGrant, "main/appdb/PUBLIC"), Ensure: core.EnsureAbsent},
 	}
 	for name, r := range cases {
 		if d := e.p.Validate([]core.Resource{r}, nil); len(d) == 0 || d[0].Severity != core.Reject {
-			t.Errorf("%s: 断らない %v", name, d)
+			t.Errorf("%s: エラーにならない %v", name, d)
 		}
 	}
 	for name, rg := range map[string]core.Range{
 		"server が無い": {Provider: "pg"},
-		"知らないサーバ":    {Provider: "pg", Args: map[string]string{"server": "other"}},
-		"知らない引数":     {Provider: "pg", Args: map[string]string{"server": "main", "scope": "x"}},
+		"未知のサーバ":     {Provider: "pg", Args: map[string]string{"server": "other"}},
+		"未知の引数":      {Provider: "pg", Args: map[string]string{"server": "main", "scope": "x"}},
 	} {
 		if d := e.p.Validate(nil, []core.Range{rg}); len(d) == 0 {
-			t.Errorf("範囲 %s: 断らない", name)
+			t.Errorf("Range %s: エラーにならない", name)
 		}
 	}
 	ok := []core.Resource{
@@ -463,7 +463,7 @@ func TestValidate(t *testing.T) {
 		{ID: id(KindDatabase, "main/gone"), Ensure: core.EnsureAbsent},
 	}
 	if d := e.p.Validate(ok, []core.Range{mainRange}); len(d) != 0 {
-		t.Errorf("書ける宣言を断った: %v", d)
+		t.Errorf("書ける宣言をエラーにした: %v", d)
 	}
 }
 
@@ -471,7 +471,7 @@ func TestModuleSettings(t *testing.T) {
 	obs := map[string]any{"user": "u"}
 	for name, s := range map[string]map[string]any{
 		"servers が無い":     {},
-		"知らない項目":          {"servers": map[string]any{"main": map[string]any{"observe": obs}}, "x": 1},
+		"未知のキー":           {"servers": map[string]any{"main": map[string]any{"observe": obs}}, "x": 1},
 		"observe が無い":     {"servers": map[string]any{"main": map[string]any{"host": "h"}}},
 		"パスワードそのもの":       {"servers": map[string]any{"main": map[string]any{"observe": map[string]any{"user": "u", "password": "p"}}}},
 		"サーバの名前":          {"servers": map[string]any{"Main/x": map[string]any{"observe": obs}}},
@@ -480,7 +480,7 @@ func TestModuleSettings(t *testing.T) {
 		"connect_timeout": {"servers": map[string]any{"main": map[string]any{"observe": obs, "connect_timeout": "0s"}}},
 	} {
 		if _, err := Module(s); err == nil {
-			t.Errorf("%s: 断らない", name)
+			t.Errorf("%s: エラーにならない", name)
 		}
 	}
 	p, err := New(map[string]any{"servers": map[string]any{"main": map[string]any{"observe": obs}}}, nil)

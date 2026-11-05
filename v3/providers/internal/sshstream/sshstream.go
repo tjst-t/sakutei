@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package sshstream は、コアの SDK の sdk/hostexec のつなぎ方（ssh・local）の上で、
-// 1 本の流れを開く層（netconf の ssh サブシステム・装置の CLI の対話）と、装置の
-// CLI の 1 行をそのまま流す層（引用符で包まない）。E-E1・E-B7・E-B11。
+// Package sshstream は、コアの SDK の sdk/hostexec の接続方式（ssh・local）の上に
+// 載る 2 つの層：1 本の stream を開く層（netconf の ssh サブシステム・機器の CLI の
+// 対話）と、機器の CLI の 1 行をそのまま流す層（引用符で包まない）。E-E1・E-B7・E-B11。
 //
 // 決まり：
 //
-//   - ssh のつなぎ方（known_hosts でホスト鍵を確かめる・BatchMode・鍵）は
-//     hostexec.SSH と同じ。接続は使い回さない（ControlPath=none。装置は 1 本の接続に
-//     1 つのセッションしか受けないことが多い）。sudo は付けない（装置に sudo は無い）。
-//   - ssh が届かない（終了コード 255・走らせられない）は *hostexec.UnreachableError。
-//     流れの読みで相手が切れたとき、ssh が 255 で終わっていればその誤りを返す
-//     （provider は届かないとき Absent でなく Unknown を返す）。
+//   - ssh の接続設定（known_hosts でホスト鍵を確かめる・BatchMode・鍵）は
+//     hostexec.SSH と同じ。接続は使い回さない（ControlPath=none。機器は 1 本の接続に
+//     1 つのセッションしか受け付けないことが多い）。sudo は付けない（機器に sudo は無い）。
+//   - ssh で到達できない（終了コード 255・起動できない）ときは *hostexec.UnreachableError。
+//     stream の読み込み中に相手が切れたとき、ssh が 255 で終わっていればそのエラーを返す
+//     （provider は到達できないとき Absent でなく Unknown を返す）。
 package sshstream
 
 import (
@@ -66,13 +66,13 @@ func SubsystemCommand(s hostexec.SSH, name string) []string {
 	return append(sshArgs(s, "-T", "-s", "--", s.Address), name)
 }
 
-// ShellCommand は pty つきの殻を開く argv（装置の CLI の対話）。
+// ShellCommand は pty つきのシェルを開く argv（機器の CLI の対話）。
 func ShellCommand(s hostexec.SSH) []string {
 	return sshArgs(s, "-tt", "--", s.Address)
 }
 
-// LineCommand は装置の CLI の 1 行をそのまま流す argv（exec。引用符で包まない：
-// 装置の CLI はシェルでなく、行を自分で読む）。
+// LineCommand は機器の CLI の 1 行をそのまま流す argv（exec。引用符で包まない：
+// 機器の CLI はシェルでなく、行を自分で解釈する）。
 func LineCommand(s hostexec.SSH, line string) []string {
 	return append(sshArgs(s, "-T", "--", s.Address), line)
 }
@@ -81,22 +81,22 @@ func LineCommand(s hostexec.SSH, line string) []string {
 func Subsystem(ctx context.Context, r hostexec.Runner, name string) (io.ReadWriteCloser, error) {
 	s, ok := r.(hostexec.SSH)
 	if !ok {
-		return nil, fmt.Errorf("ホスト %s: サブシステム %s は ssh のつなぎ方でだけ開ける", r.Name(), name)
+		return nil, fmt.Errorf("ホスト %s: サブシステム %s は ssh 接続でだけ開ける", r.Name(), name)
 	}
 	return Start(ctx, s.HostName, SubsystemCommand(s, name), true)
 }
 
-// Shell は r のホストに pty つきの殻を開く（ssh だけ）。
+// Shell は r のホストに pty つきのシェルを開く（ssh だけ）。
 func Shell(ctx context.Context, r hostexec.Runner) (io.ReadWriteCloser, error) {
 	s, ok := r.(hostexec.SSH)
 	if !ok {
-		return nil, fmt.Errorf("ホスト %s: 対話は ssh のつなぎ方でだけ開ける", r.Name())
+		return nil, fmt.Errorf("ホスト %s: 対話のセッションは ssh 接続でだけ開ける", r.Name())
 	}
 	return Start(ctx, s.HostName, ShellCommand(s), true)
 }
 
-// RunLine は装置の CLI の 1 行を流す。ssh なら行をそのまま渡し、local なら
-// `sh -c` で走らせる（手元の模擬）。0 以外の終了は *hostexec.ExitError。
+// RunLine は機器の CLI の 1 行を流す。ssh なら行をそのまま渡し、local なら
+// `sh -c` で実行する（手元の模擬）。0 以外の終了は *hostexec.ExitError。
 func RunLine(ctx context.Context, r hostexec.Runner, line string) ([]byte, error) {
 	switch s := r.(type) {
 	case hostexec.SSH:
@@ -105,7 +105,7 @@ func RunLine(ctx context.Context, r hostexec.Runner, line string) ([]byte, error
 		argv := append(append([]string(nil), s.Prefix...), "sh", "-c", line)
 		return run(ctx, s.HostName, argv, false)
 	}
-	return nil, fmt.Errorf("ホスト %s: 知らないつなぎ方", r.Name())
+	return nil, fmt.Errorf("ホスト %s: 知らない接続方式", r.Name())
 }
 
 func run(ctx context.Context, host string, argv []string, viaSSH bool) ([]byte, error) {
@@ -134,9 +134,9 @@ func run(ctx context.Context, host string, argv []string, viaSSH bool) ([]byte, 
 	}
 }
 
-// Start は argv を走らせ、その標準入出力を 1 本の流れにする。viaSSH なら終了
-// コード 255 を届かないにする。ctx が終われば流れを閉じる（開いたあとは Close まで
-// 生きる。ctx は開くまでの期限）。
+// Start は argv を実行し、その標準入出力を 1 本の stream にする。viaSSH なら終了
+// コード 255 を到達できないエラーにする。開く前に ctx が終われば stream を閉じる
+// （ctx は開くまでの期限。開いたあとは Close まで使える）。
 func Start(ctx context.Context, host string, argv []string, viaSSH bool) (io.ReadWriteCloser, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	in, err := cmd.StdinPipe()
@@ -181,7 +181,7 @@ type stream struct {
 	once    sync.Once
 }
 
-// Read は相手の出力。相手が切れて ssh が 255 で終わっていれば届かない。
+// Read は相手の出力を読む。相手が切れて ssh が 255 で終わっていれば到達できないエラーを返す。
 func (s *stream) Read(b []byte) (int, error) {
 	n, err := s.out.Read(b)
 	if err != nil && n == 0 && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe)) {

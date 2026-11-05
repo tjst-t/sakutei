@@ -30,7 +30,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// MaxOutboxFile は送り出しの列のファイル 1 つの大きさの目安。超えれば新しい
+// MaxOutboxFile は outbox のファイル 1 つの大きさの目安。超えれば新しい
 // ファイルへ回す。全部の sink が送ったファイルは消す（§5.1）。
 var MaxOutboxFile int64 = 1 << 20
 
@@ -82,7 +82,7 @@ func (r *Record) WriteEventState(st EventState) error {
 	return writeFile(filepath.Join(r.dir, eventsDir, stateFile), append(data, '\n'))
 }
 
-// LastOutboxSeq は送り出しの列の最後の Event の番号（無ければ 0）。state.json を
+// LastOutboxSeq は outbox の最後の Event の番号（無ければ 0）。state.json を
 // 書く前に止まっても番号を二度使わないよう、次の番号はこれと state.json の大きい
 // ほうから数える。
 func (r *Record) LastOutboxSeq() (uint64, error) {
@@ -106,7 +106,7 @@ func (r *Record) LastOutboxSeq() (uint64, error) {
 	return 0, nil
 }
 
-// AppendOutbox は番号を付けた Event を送り出しの列に足す（§5.1、E-H2・N-H2）。
+// AppendOutbox は番号を付けた Event を outbox に足す（§5.1、E-H2・N-H2）。
 // 最後のファイルが大きいか、最後の行が切れていれば新しいファイルに書く。
 func (r *Record) AppendOutbox(evs []core.Event) error {
 	if len(evs) == 0 {
@@ -155,9 +155,9 @@ func (r *Record) AppendOutbox(evs []core.Event) error {
 	return f.Close()
 }
 
-// ReadOutbox は送り出しの列から番号が since より大きい Event を、max 件まで
+// ReadOutbox は outbox から番号が since より大きい Event を、max 件まで
 // 番号の順に読む（max が 0 以下なら全部）。ロックを取らず、Record を作らない
-// （読み取り HTTP の /events が使う。遅い読み手で周を止めない、E-H5）。
+// （read-only HTTP API の /events が使う。遅い読み手で cycle を止めない、E-H5）。
 func ReadOutbox(dir string, since uint64, max int) ([]core.Event, error) {
 	odir := filepath.Join(dir, eventsDir, outboxDir)
 	files, err := outboxFiles(odir)
@@ -241,7 +241,7 @@ func (r *Record) PruneOutbox(upTo uint64) error {
 
 func outboxName(first uint64) string { return fmt.Sprintf("%012d.jsonl", first) }
 
-// outboxFiles は送り出しの列のファイルの頭の番号を小さい順に返す。
+// outboxFiles は outbox のファイルの頭の番号を小さい順に返す。
 func outboxFiles(dir string) ([]uint64, error) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -255,7 +255,7 @@ func outboxFiles(dir string) ([]uint64, error) {
 		}
 		n, err := strconv.ParseUint(strings.TrimSuffix(name, ".jsonl"), 10, 64)
 		if err != nil || outboxName(n) != name {
-			return nil, fmt.Errorf("送り出しの列のディレクトリに知らないファイル %s", name)
+			return nil, fmt.Errorf("outbox のディレクトリに知らないファイル %s", name)
 		}
 		out = append(out, n)
 	}
@@ -307,8 +307,8 @@ func (r *Record) WriteAuditCursor(name string, seq uint64) error {
 	return r.WriteCursor(filepath.Join(auditDir, name), seq)
 }
 
-// Health は健全性（§3.9、health.json）：最後の周の時刻・続いた誤りの数・最後の
-// 誤り（E-K11・N-H4）。
+// Health は health（§3.9、health.json）：最後の cycle の時刻・続いたエラーの数・最後の
+// エラー（E-K11・N-H4）。
 type Health struct {
 	LastCycle         time.Time `json:"last_cycle"`
 	ConsecutiveErrors int       `json:"consecutive_errors"`
@@ -335,12 +335,12 @@ func ReadHealth(dir string) (Health, error) {
 	return h, nil
 }
 
-// RecordCycle は周の終わりに健全性を書く。cycleErr が空でなければ続いた誤りを
+// RecordCycle は cycle の終わりに health を書く。cycleErr が空でなければ続いたエラーを
 // 1 つ増やし、空なら 0 に戻す。ロックを持つ処理だけが呼ぶ。
 func (r *Record) RecordCycle(now time.Time, cycleErr string) (Health, error) {
 	h, err := r.Health()
 	if err != nil {
-		h = Health{} // 読めない健全性は作り直す（判定に使わない）
+		h = Health{} // 読めない health は作り直す（判定に使わない）
 	}
 	h.LastCycle = now
 	if cycleErr == "" {
@@ -356,8 +356,8 @@ func (r *Record) RecordCycle(now time.Time, cycleErr string) (Health, error) {
 	return h, writeFile(filepath.Join(r.dir, healthFile), append(data, '\n'))
 }
 
-// Wake は常駐に次の周を今すぐ始めるよう頼む（sakutei wake、E-N5）。Record の
-// wake のファイルに時刻を書くだけで、常駐はその変化を見て起きる。ロックは取らない。
+// Wake は daemon に次の cycle を今すぐ始めるよう頼む（sakutei wake、E-N5）。Record の
+// wake のファイルに時刻を書くだけで、daemon はその変化を見て wake する。ロックは取らない。
 func Wake(dir string, now time.Time) error {
 	if err := checkFormat(dir); err != nil {
 		return fmt.Errorf("Record %s: %w", dir, err)
@@ -365,7 +365,7 @@ func Wake(dir string, now time.Time) error {
 	return writeFile(filepath.Join(dir, wakeFile), []byte(now.Format(time.RFC3339Nano)+"\n"))
 }
 
-// WakeMark は wake のファイルの今の中身（無ければ空）。常駐が前と比べて起きる。
+// WakeMark は wake のファイルの今の中身（無ければ空）。daemon が前と比べて wake する。
 func WakeMark(dir string) string {
 	data, _ := os.ReadFile(filepath.Join(dir, wakeFile))
 	return string(data)

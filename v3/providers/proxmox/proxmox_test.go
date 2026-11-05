@@ -43,7 +43,7 @@ type env struct {
 	p   *proxmox.Provider
 }
 
-// newEnv は偽の Proxmox（テンプレート 9000 と走っている VM 101 app1）と、それに
+// newEnv は fake の Proxmox（テンプレート 9000 と走っている VM 101 app1）と、それに
 // 向けたクラスタ lab の provider を作る。観測は読むだけのトークン、書き込みは
 // root のトークン。
 func newEnv(t *testing.T, opts pvetest.Options) *env {
@@ -140,7 +140,7 @@ func web1(e *env) core.Resource {
 func TestContract(t *testing.T) {
 	contract.Run(t, func(t *testing.T) contract.Target {
 		e := newEnv(t, pvetest.Options{})
-		// keep の印のあるディスクを持つ VM（消すのを断る）。
+		// keep の marker のあるディスクを持つ VM（消すのを拒否する）。
 		e.srv.AddVM(pvetest.VM{VMID: 102, Node: "pve1", Name: "keeper", Status: "stopped", Config: map[string]string{
 			"scsi0": "local-lvm:vm-102-disk-0,size=4G", "scsi1": "local-lvm:vm-102-disk-1,size=1G", "tags": "sakutei-keep-scsi1",
 			"unused0": "local-lvm:vm-102-disk-2",
@@ -158,11 +158,11 @@ func TestContract(t *testing.T) {
 			Converge: []core.Resource{e.res(vmID("lab/app1"), core.Fields{"cores": 4, "power": "stopped"})},
 			Observed: []core.ID{vmID("lab/app1"), vmID("lab/keeper"), kind("volume", "lab/keeper/unused0"), kind("fw-rule", "lab/app1/0")},
 			Faults: map[string]func(){
-				"接続を切る": func() { e.srv.SetUnreachable(true) },
-				"5xx":   func() { e.srv.SetFailStatus(http.StatusInternalServerError) },
-				"時間切れ":  func() { e.srv.SetDelay(time.Second) },
-				"認証の失敗": func() { e.srv.SetFailStatus(http.StatusUnauthorized) },
-				"壊れた出力": func() { e.srv.SetBroken(true) },
+				"接続を切る":  func() { e.srv.SetUnreachable(true) },
+				"5xx":    func() { e.srv.SetFailStatus(http.StatusInternalServerError) },
+				"タイムアウト": func() { e.srv.SetDelay(time.Second) },
+				"認証の失敗":  func() { e.srv.SetFailStatus(http.StatusUnauthorized) },
+				"壊れた出力":  func() { e.srv.SetBroken(true) },
 			},
 			Writes:               e.writes,
 			WriteCredentialReads: e.writeTokenUse,
@@ -183,7 +183,7 @@ func TestContract(t *testing.T) {
 
 // TestCreateFromTemplate は採番の vmid でテンプレートから複製し、resize・NIC・
 // VM の FW の options・cloud-init・起動まで 1 回の Apply で済み、書き方の違い
-// （2G・DNS のカンマ）がずれにならない（E-D1・N-D1・E-I7）。
+// （2G・DNS のカンマ）が drift にならない（E-D1・N-D1・E-I7）。
 func TestCreateFromTemplate(t *testing.T) {
 	e := newEnv(t, pvetest.Options{TaskPolls: 2})
 	r := web1(e)
@@ -205,7 +205,7 @@ func TestCreateFromTemplate(t *testing.T) {
 	if err := e.p.Apply(context.Background(), wctx(), r.ID, r.Fields, e.observe(t, r.ID)); err != nil || e.writes() != n {
 		t.Fatalf("宣言どおりなのに書いた（%d 回）: %v", e.writes()-n, err)
 	}
-	// 宣言しないキー（MAC・型）は比べない。手でメモリを変えると戻る。
+	// 宣言しないキー（MAC・model）は比べない。手でメモリを変えると戻る。
 	e.srv.SetConfig(200, "memory", "4096")
 	if c := e.compare(t, r); c.Op != plan.Update || len(c.Fields) != 1 || c.Fields[0].Name != "memory" {
 		t.Fatalf("%+v", c)
@@ -221,7 +221,7 @@ func TestPendingIsNotDoubled(t *testing.T) {
 	e := newEnv(t, pvetest.Options{})
 	r := e.res(vmID("lab/app1"), core.Fields{"cores": 3})
 	if c := e.apply(t, r); c.Op != plan.None {
-		t.Fatalf("pending に宣言の値があればずれにしない: %+v", c)
+		t.Fatalf("pending に宣言の値があるのに drift にした: %+v", c)
 	}
 	o := e.observe(t, r.ID)
 	if p, _ := o.Fields["pending"].([]any); len(p) != 1 || p[0] != "cores" || o.Fields["apply_pending"] != "never" {
@@ -243,7 +243,7 @@ func TestPendingIsNotDoubled(t *testing.T) {
 	}
 }
 
-// TestRunningTaskIsConverging は Apply が待ち切れなかった仕事を、覚えておかずに
+// TestRunningTaskIsConverging は Apply が待ち切れなかった task を、覚えておかずに
 // 観測で見つけて Converging にする（E-D1）。
 func TestRunningTaskIsConverging(t *testing.T) {
 	e := newEnv(t, pvetest.Options{TaskPolls: 1 << 30})
@@ -258,7 +258,7 @@ func TestRunningTaskIsConverging(t *testing.T) {
 	if c := e.compare(t, r); c.Op != plan.None {
 		t.Fatalf("%+v", c)
 	}
-	// ノードが落ちると、そのノードの VM は Unknown（無いと読まない、E-K1）。
+	// ノードが落ちると、そのノードの VM は Unknown（Absent と読まない、E-K1）。
 	e.srv.SetNodeOffline("pve1", true)
 	if o := e.observe(t, r.ID); o.Availability != core.Unknown {
 		t.Fatalf("%+v", o)
@@ -268,8 +268,8 @@ func TestRunningTaskIsConverging(t *testing.T) {
 	}
 }
 
-// TestRecreateKeepsDisk は keep のディスクを持つ VM の削除を断り、新しい VM の
-// volume= が止まった前の VM から付け替え（承認の要る壊す変更）、付いたあとは
+// TestRecreateKeepsDisk は keep のディスクを持つ VM の削除を拒否し、新しい VM の
+// volume= が止まった前の VM から付け替え（承認の要る破壊的変更）、付いたあとは
 // volume の名前を比べない（E-C2・N-C12・N-D10）。
 func TestRecreateKeepsDisk(t *testing.T) {
 	e := newEnv(t, pvetest.Options{})
@@ -278,7 +278,7 @@ func TestRecreateKeepsDisk(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 	if vm, _ := e.srv.VM(101); vm.Config["tags"] != "sakutei-keep-scsi1" {
-		t.Fatalf("keep の印が無い: %+v", vm.Config)
+		t.Fatalf("keep の marker が無い: %+v", vm.Config)
 	}
 	var re *core.RefuseError
 	if err := e.p.Delete(context.Background(), wctx(), old.ID, core.Observation{}); !errors.As(err, &re) || !strings.Contains(re.Reason, "vm-101-disk-1") {
@@ -292,7 +292,7 @@ func TestRecreateKeepsDisk(t *testing.T) {
 		"disks": "scsi0 storage=local-lvm size=4G, scsi1 volume=local-lvm:vm-101-disk-1 keep"})
 	hints := e.p.Classify(nw.ID, e.observe(t, nw.ID), nw.Fields)
 	if len(hints) != 1 || !hints[0].NeedsApproval || !hints[0].Destructive {
-		t.Fatalf("付け替えが承認の要る壊す変更でない: %+v", hints)
+		t.Fatalf("付け替えが承認の要る破壊的変更でない: %+v", hints)
 	}
 	// 前の VM が走っている間は付け替えない（何も変えない）。
 	if err := e.p.Apply(context.Background(), wctx(), nw.ID, nw.Fields, core.Observation{}); err == nil || !strings.Contains(err.Error(), "止まった VM") {
@@ -321,8 +321,8 @@ func TestRecreateKeepsDisk(t *testing.T) {
 	}
 }
 
-// TestFWRules は印のある規則だけを宣言の順に先頭に保ち、手の規則は消さずに
-// fw-rule として List に出し、規則の変更は壊す変更と言う（E-B6）。
+// TestFWRules は marker のある規則だけを宣言の順に先頭に保ち、手で置いた規則は消さずに
+// fw-rule として List に出し、規則の変更を破壊的変更とする（E-B6）。
 func TestFWRules(t *testing.T) {
 	e := newEnv(t, pvetest.Options{})
 	e.srv.SetRules(101, []map[string]string{{"type": "in", "action": "ACCEPT", "proto": "tcp", "dport": "22", "enable": "1"}})
@@ -351,7 +351,7 @@ func TestFWRules(t *testing.T) {
 	if len(want) > 0 {
 		t.Fatalf("List に無い: %v（%v）", want, l.IDs)
 	}
-	// 手の規則が先頭に入るとずれになり、戻すときも手の規則は消さない。
+	// 手で置いた規則が先頭に入ると drift になり、戻すときも手で置いた規則は消さない。
 	rules := append([]map[string]string{{"type": "in", "action": "DROP", "enable": "1"}}, vm.Rules...)
 	e.srv.SetRules(101, rules)
 	if c := e.compare(t, r); c.Op != plan.Update {
@@ -367,58 +367,58 @@ func TestFWRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	if vm, _ := e.srv.VM(101); len(vm.Rules) != 2 {
-		t.Fatalf("印の規則だけを外さない: %+v", vm.Rules)
+		t.Fatalf("marker のある規則だけを外していない: %+v", vm.Rules)
 	}
 	if o := e.observe(t, r.ID); o.Availability != core.Absent {
 		t.Fatalf("%+v", o)
 	}
 }
 
-// TestValidate は現実に触れずに決まる誤りを読み込みで断る（E-I7・E-I6）。
+// TestValidate は現実に触れずに分かる誤りを読み込み時にエラーにする（E-I7・E-I6）。
 func TestValidate(t *testing.T) {
 	e := newEnv(t, pvetest.Options{})
 	bad := map[string]core.Resource{
-		"知らないクラスタ":   e.res(vmID("other/x"), core.Fields{}),
-		"VM の名前":     e.res(vmID("lab/bad_name"), core.Fields{}),
-		"観測だけの項目":    e.res(vmID("lab/x"), core.Fields{"lock": "x"}),
-		"小さい vmid":   e.res(vmID("lab/x"), core.Fields{"vmid": 5}),
-		"ディスクの書き方":   e.res(vmID("lab/x"), core.Fields{"disks": "scsi0 size=3.5G"}),
-		"ssh の鍵":     e.res(vmID("lab/x"), core.Fields{"ci_ssh_keys": "ssh-ed25519 notbase64!"}),
-		"再起動は宣言できない": e.res(vmID("lab/x"), core.Fields{"power": "reboot"}),
-		"空の規則":       e.res(fwID("lab/x"), core.Fields{"rules": []any{}}),
-		"規則の書き方":     e.res(fwID("lab/x"), core.Fields{"rules": []any{"sideways ACCEPT"}}),
-		"volume の宣言": e.res(kind("volume", "lab/x/unused0"), core.Fields{}),
+		"知らないクラスタ":    e.res(vmID("other/x"), core.Fields{}),
+		"VM の名前":      e.res(vmID("lab/bad_name"), core.Fields{}),
+		"観測だけの field": e.res(vmID("lab/x"), core.Fields{"lock": "x"}),
+		"小さい vmid":    e.res(vmID("lab/x"), core.Fields{"vmid": 5}),
+		"ディスクの書き方":    e.res(vmID("lab/x"), core.Fields{"disks": "scsi0 size=3.5G"}),
+		"ssh の鍵":      e.res(vmID("lab/x"), core.Fields{"ci_ssh_keys": "ssh-ed25519 notbase64!"}),
+		"再起動は宣言できない":  e.res(vmID("lab/x"), core.Fields{"power": "reboot"}),
+		"空の規則":        e.res(fwID("lab/x"), core.Fields{"rules": []any{}}),
+		"規則の書き方":      e.res(fwID("lab/x"), core.Fields{"rules": []any{"sideways ACCEPT"}}),
+		"volume の宣言":  e.res(kind("volume", "lab/x/unused0"), core.Fields{}),
 	}
 	for name, r := range bad {
 		if d := e.validate(t, r); len(d) == 0 {
-			t.Errorf("%s: 断らない", name)
+			t.Errorf("%s: エラーにならない", name)
 		}
 	}
 	if d := e.p.Validate([]core.Resource{web1(e)}, []core.Range{{Provider: "pve", Args: map[string]string{"cluster": "other"}}}); len(d) == 0 {
-		t.Error("知らないクラスタの範囲を断らない")
+		t.Error("知らないクラスタの Range をエラーにしない")
 	}
 	if d := e.validate(t, web1(e), e.res(vmID("lab/gone"), nil)); len(d) != 0 {
 		t.Errorf("%v", d)
 	}
 }
 
-// TestModuleSettings は資格の値そのものを設定に書かせない（E-G2）。
+// TestModuleSettings は credential の値そのものを設定に書かせない（E-G2）。
 func TestModuleSettings(t *testing.T) {
 	for name, s := range map[string]map[string]any{
 		"clusters が無い": {},
 		"secret を書く": {"clusters": map[string]any{"lab": map[string]any{"endpoint": "https://pve:8006",
 			"observe": map[string]any{"token_id": "a@pve!b", "token_secret": "x"}}}},
 		"observe が無い": {"clusters": map[string]any{"lab": map[string]any{"endpoint": "https://pve:8006"}}},
-		"前置きの ..": {"clusters": map[string]any{"lab": map[string]any{"endpoint": "https://pve:8006", "api_base_path": "/a/../b",
+		"prefix の ..": {"clusters": map[string]any{"lab": map[string]any{"endpoint": "https://pve:8006", "api_base_path": "/a/../b",
 			"observe": map[string]any{"token_id": "a@pve!b", "token_file": "/x"}}}},
 	} {
 		if _, err := proxmox.Module(s); err == nil {
-			t.Errorf("%s: 断らない", name)
+			t.Errorf("%s: エラーにならない", name)
 		}
 	}
 }
 
-// TestAPIBasePath は API のパスの前置きを変えた模擬に同じ宣言を当てる（E-D1）。
+// TestAPIBasePath は API のパスの prefix を変えた mock に同じ宣言を Apply する（E-D1）。
 func TestAPIBasePath(t *testing.T) {
 	srv := pvetest.New(pvetest.Options{BasePath: "/mock/pve/api2/json"})
 	defer srv.Close()
@@ -438,8 +438,8 @@ func TestAPIBasePath(t *testing.T) {
 	}
 }
 
-// TestStaleResources は /cluster/resources の名前が pvestatd の写しで遅れる（作った
-// 直後は空か "VM <vmid>"）ときも、作った VM を「無い」と見て作り直さない（E-D1）。
+// TestStaleResources は /cluster/resources の名前が pvestatd のキャッシュで遅れる（作った
+// 直後は空か "VM <vmid>"）ときも、作った VM を Absent と見て作り直さない（E-D1）。
 func TestStaleResources(t *testing.T) {
 	for _, vmid := range []int64{200, 201} {
 		e := newEnv(t, pvetest.Options{ResourceLag: 50})

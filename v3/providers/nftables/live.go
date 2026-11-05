@@ -15,8 +15,8 @@
 package nftables
 
 // live.go — カーネルの実際の ruleset（live の対象、E-B2）。ホストで root で走る
-// のは決まった道具 sakutei-nft-guard だけ（E-E1）。読むのは道具の list、当てるのは
-// check と apply、2 段の Apply は arm・disarm・rollback（E-B3）。
+// のは専用ツール sakutei-nft-guard だけ（E-E1）。観測は専用ツールの list、Apply は
+// check と apply、two-phase Apply は arm・disarm・rollback（E-B3）。
 
 import (
 	"context"
@@ -31,24 +31,24 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/hostexec"
 )
 
-// guard は 1 つのホストの決まった道具。
+// guard は 1 つのホストの専用ツール。
 type guard struct {
 	runner hostexec.Runner
-	argv   []string // 道具（とその前に要るもの）
+	argv   []string // 専用ツール（とその前に要るもの）
 }
 
 func (g guard) run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	return g.runner.Run(ctx, append(append([]string(nil), g.argv...), args...), stdin)
 }
 
-// noTable は道具（nft）が「table が無い」で終わったか。
+// noTable は専用ツール（nft）が「table が無い」で終わったか。
 func noTable(err error) bool {
 	var ee *hostexec.ExitError
 	return errors.As(err, &ee) && ee.Code == nftguard.ExitNFT && strings.Contains(ee.Stderr, "No such file or directory")
 }
 
-// readTable は table を道具の list で読む（JSON で並びと base chain を、handles の
-// 文でルール文を）。table が無ければ exists=false。
+// readTable は table を専用ツールの list で読む（JSON で並びと base chain を、handles の
+// 出力でルール文を読む）。table が無ければ exists=false。
 func (g guard) readTable(ctx context.Context, family, name string) (*tableState, error) {
 	out, err := g.run(ctx, nil, "list", family, name, "json")
 	if err != nil {
@@ -106,7 +106,7 @@ type nftRule struct {
 	Handle int    `json:"handle"`
 }
 
-// parseTableJSON は `nft -j list table` の chain（並び順）とルール（並び順）。
+// parseTableJSON は `nft -j list table` の出力から chain とルールを並び順に読む。
 func parseTableJSON(out []byte, family, name string) (*tableState, []nftRule, error) {
 	var doc struct {
 		Nftables []map[string]json.RawMessage `json:"nftables"`
@@ -174,7 +174,7 @@ type textRule struct {
 	text  string
 }
 
-// parseTableText は `nft -a -s list table` の文から handle ごとのルール文を読む。
+// parseTableText は `nft -a -s list table` の出力から handle ごとのルール文を読む。
 func parseTableText(out []byte) (map[int]textRule, error) {
 	rules := map[int]textRule{}
 	cur := -1
@@ -214,7 +214,7 @@ func parseTableText(out []byte) (map[int]textRule, error) {
 	return rules, nil
 }
 
-// script は chain の変更を道具が受ける形の nft のスクリプトにする。
+// script は chain の変更を、専用ツールが受け付ける形の nft のスクリプトにする。
 func script(ops []chainOp) []byte {
 	var b strings.Builder
 	tables := map[string]bool{}
@@ -249,26 +249,26 @@ func script(ops []chainOp) []byte {
 	return []byte(b.String())
 }
 
-// apply は道具の check で確かめてから apply で 1 つのトランザクションとして流す。
+// apply は専用ツールの check で確かめてから、apply で 1 つのトランザクションとして流す。
 func (g guard) apply(ctx context.Context, body []byte) error {
 	if _, err := g.run(ctx, body, "check"); err != nil {
-		return fmt.Errorf("nft -c に落ちた: %w", err)
+		return fmt.Errorf("nft -c が失敗した: %w", err)
 	}
 	if _, err := g.run(ctx, body, "apply"); err != nil {
-		return fmt.Errorf("nft -f に落ちた: %w", err)
+		return fmt.Errorf("nft -f が失敗した: %w", err)
 	}
 	return nil
 }
 
-// arm は tables の写しを道具に取らせ、secs 秒の後に戻す仕掛けを置く。
+// arm は tables のコピーを専用ツールに取らせ、secs 秒後に元に戻す rollback を予約する。
 func (g guard) arm(ctx context.Context, secs int, tables []string) (string, error) {
 	out, err := g.run(ctx, nil, append([]string{"arm", strconv.Itoa(secs)}, tables...)...)
 	if err != nil {
-		return "", fmt.Errorf("戻す仕掛けを置けない: %w", err)
+		return "", fmt.Errorf("rollback を予約できない: %w", err)
 	}
 	token := strings.TrimSpace(string(out))
 	if len(token) != 32 {
-		return "", fmt.Errorf("戻す仕掛けの token %q を読めない", token)
+		return "", fmt.Errorf("rollback の予約の token %q を読めない", token)
 	}
 	return token, nil
 }

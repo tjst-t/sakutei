@@ -55,7 +55,7 @@ procedures:
     done_when: 'observe(bmc/system/{target}).firmware == desired.firmware'
 `
 
-// 手順を intent から読む（§3.7）。
+// Procedure を intent から読む（§3.7）。
 func TestLoadProcedures(t *testing.T) {
 	l, err := run(t, procConfig, map[string]string{"p.yaml": bmcFW})
 	if err != nil {
@@ -80,36 +80,36 @@ func TestLoadRejectsProcedures(t *testing.T) {
 	}{
 		{"知らない操作", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{invoke: {op: flash}}]}\n",
 			[]string{`操作 "flash" が無い`, "apply_update, reset"}},
-		{"操作の無い種類", "  - {name: a, target: {type: dns/record, id: www}, trigger: manual, steps: [{invoke: {op: x}}]}\n",
-			[]string{`種類 "dns/record" に操作 "x" が無い`}},
-		{"drift_fields が無い項目", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: on_drift, drift_fields: [bios], steps: [{invoke: {op: reset}}]}\n",
+		{"操作の無い type", "  - {name: a, target: {type: dns/record, id: www}, trigger: manual, steps: [{invoke: {op: x}}]}\n",
+			[]string{`type "dns/record" に操作 "x" が無い`}},
+		{"drift_fields が無い field", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: on_drift, drift_fields: [bios], steps: [{invoke: {op: reset}}]}\n",
 			[]string{`drift_fields の "bios"`}},
 		{"on_drift に drift_fields が無い", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: on_drift, steps: [{invoke: {op: reset}}]}\n",
 			[]string{"drift_fields を書く"}},
 		{"manual に done_when が無い", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{manual: {instruction: x}}]}\n",
 			[]string{"done_when を書く"}},
-		{"段が 2 つの種類", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{invoke: {op: reset}, wait: {for: 1m}}]}\n",
+		{"step の kind が 2 つ", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{invoke: {op: reset}, wait: {for: 1m}}]}\n",
 			[]string{"どれか 1 つ"}},
 		{"wait に when と for", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{wait: {for: 1m, when: 'true'}}]}\n",
 			[]string{"when か for のどちらか"}},
 		{"式の誤り", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, done_when: 'observe(bmc/system/{target}).bios == 1', steps: [{wait: {for: 1m}}]}\n",
-			[]string{`項目 "bios" が無い`}},
+			[]string{`"bios" が無い`}},
 		{"critical の wait", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{critical: true, wait: {for: 1m}}]}\n",
 			[]string{"critical は apply・invoke"}},
 		{"separation の gate に申請者が無い", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: on_drift, drift_fields: [firmware], steps: [{gate: {approval: {quorum: {n: 1, of: [bob]}, separation: true}}}]}\n",
-			[]string{"trigger: manual の手順にだけ"}},
+			[]string{"trigger: manual の Procedure にだけ"}},
 		{"quorum が満たせない", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{gate: {approval: {quorum: {n: 2, of: [bob]}}}}]}\n",
 			[]string{"n 2 が of の 1 人より多い"}},
-		{"同じ項目を 2 つの手順", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: on_drift, drift_fields: [firmware], steps: [{invoke: {op: reset}}]}\n  - {name: b, target: {type: bmc/system, select: {labels: {rack: \"3\"}}}, trigger: on_drift, drift_fields: [firmware], steps: [{invoke: {op: reset}}]}\n",
-			[]string{`"firmware" を手順 a も受け持つ`}},
+		{"同じ field を 2 つの Procedure", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: on_drift, drift_fields: [firmware], steps: [{invoke: {op: reset}}]}\n  - {name: b, target: {type: bmc/system, select: {labels: {rack: \"3\"}}}, trigger: on_drift, drift_fields: [firmware], steps: [{invoke: {op: reset}}]}\n",
+			[]string{`"firmware" を Procedure a も受け持つ`}},
 		{"同じ名前", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{wait: {for: 1m}}]}\n  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{wait: {for: 1m}}]}\n",
-			[]string{"同じ名前の手順"}},
-		{"rollback は後の段", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, on_failure: rollback, steps: [{wait: {for: 1m}}]}\n",
+			[]string{"同じ名前の Procedure"}},
+		{"rollback は後の Stage", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, on_failure: rollback, steps: [{wait: {for: 1m}}]}\n",
 			[]string{"on_failure は halt だけ"}},
-		{"段の policy は report だけ", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{policy: {select: {all: true}, mode: apply}}]}\n",
+		{"step の policy は report だけ", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{policy: {select: {all: true}, mode: apply}}]}\n",
 			[]string{"mode: report だけ"}},
-		{"apply の知らない項目", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{apply: {type: bmc/system, id: '{target}', fields: {bios: x}}}]}\n",
-			[]string{`項目 "bios" が無い`}},
+		{"apply の知らない field", "  - {name: a, target: {type: bmc/system, id: n1}, trigger: manual, steps: [{apply: {type: bmc/system, id: '{target}', fields: {bios: x}}}]}\n",
+			[]string{`field "bios" が無い`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

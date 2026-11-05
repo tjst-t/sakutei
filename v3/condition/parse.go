@@ -25,7 +25,7 @@ import (
 type parser struct {
 	src   string
 	pos   int
-	quant int // 量化の中の深さ（it を書けるか）
+	quant int // quantifier の中の深さ（it を書けるか）
 }
 
 func (p *parser) errorf(format string, a ...any) error {
@@ -330,13 +330,13 @@ func (p *parser) path(what string) ([]string, error) {
 			i++
 		}
 		if i == p.pos {
-			return nil, p.errorf("%s. のあとに項目の名前を書く", what)
+			return nil, p.errorf("%s. のあとに field の名前を書く", what)
 		}
 		path = append(path, p.src[p.pos:i])
 		p.pos = i
 	}
 	if len(path) == 0 {
-		return nil, p.errorf("%s のあとに .項目 を書く", what)
+		return nil, p.errorf("%s のあとに .<field> を書く", what)
 	}
 	return path, nil
 }

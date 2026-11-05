@@ -37,7 +37,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
-// runDaemon は常駐（sakutei --intent … 、§2.2）。
+// runDaemon は daemon（sakutei --intent …、§2.2）。
 func runDaemon(ctx context.Context, args []string, stdout, stderr io.Writer, o *options) int {
 	c := newFlags("sakutei", stderr)
 	if !c.parse("sakutei", args, stderr, true) {
@@ -46,9 +46,9 @@ func runDaemon(ctx context.Context, args []string, stdout, stderr io.Writer, o *
 	return daemonMain(ctx, "sakutei", c, stdout, stderr, o)
 }
 
-// daemonMain は ctx が終わるまで周を回す。初めの読み込みで断れば終了コード 2
-// （待ち受けの宛先が分からない）。その後の周の読み込みの誤りは健全性に残して
-// 回り続ける（E-K11）。
+// daemonMain は ctx が終わるまで cycle を回す。最初の読み込みで reject すれば終了
+// コード 2（待ち受けるアドレスが分からない）。その後の cycle の読み込みエラーは
+// health に残して回り続ける（E-K11）。
 func daemonMain(ctx context.Context, name string, c common, stdout, stderr io.Writer, o *options) int {
 	loaded, code, _ := loadIntent(ctx, name, c, stderr, o)
 	if loaded == nil {
@@ -86,26 +86,26 @@ func daemonMain(ctx context.Context, name string, c common, stdout, stderr io.Wr
 	if rl := loaded.Config.Read; rl != nil {
 		hs, ln, err := readapi.Listen(rl, srv.Handler())
 		if err != nil {
-			fmt.Fprintf(stderr, "sakutei %s: 読み取り HTTP: %v\n", name, err)
+			fmt.Fprintf(stderr, "sakutei %s: read-only HTTP API: %v\n", name, err)
 			return ExitError
 		}
 		scheme := "http"
 		if rl.TLSCert != "" {
 			scheme = "https"
 		}
-		fmt.Fprintf(stderr, "読み取り HTTP: %s://%s\n", scheme, ln.Addr())
+		fmt.Fprintf(stderr, "read-only HTTP API: %s://%s\n", scheme, ln.Addr())
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				fmt.Fprintf(stderr, "sakutei %s: 読み取り HTTP: %v\n", name, err)
+				fmt.Fprintf(stderr, "sakutei %s: read-only HTTP API: %v\n", name, err)
 			}
 		}()
 		defer func() {
 			sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer scancel()
 			if hs.Shutdown(sctx) != nil {
-				hs.Close() // /events の読み手が残っても待ち続けない
+				hs.Close() // /events のクライアントが残っても待ち続けない
 			}
 			wg.Wait()
 		}()
@@ -150,8 +150,8 @@ func daemonMain(ctx context.Context, name string, c common, stdout, stderr io.Wr
 	return ExitOK
 }
 
-// logCycle は周ごとに 1 行を書く（--json なら結果の JSON を 1 行で）。stdout は
-// stdout の送り先が使うので、ログは stderr に書く。
+// logCycle は cycle ごとに 1 行を書く（--json なら結果の JSON を 1 行で）。stdout は
+// stdout の sink が使うので、ログは stderr に書く。
 func logCycle(w io.Writer, cy daemon.Cycle, asJSON bool) {
 	if asJSON {
 		v := struct {
@@ -168,24 +168,24 @@ func logCycle(w io.Writer, cy daemon.Cycle, asJSON bool) {
 		return
 	}
 	if cy.Err != nil {
-		fmt.Fprintf(w, "周 %d: 回せない: %s\n", cy.N, strings.ReplaceAll(cy.Err.Error(), "\n", " / "))
+		fmt.Fprintf(w, "cycle %d: 実行できない: %s\n", cy.N, strings.ReplaceAll(cy.Err.Error(), "\n", " / "))
 		return
 	}
 	var b bytes.Buffer
 	cy.Result.WriteText(&b)
 	head, _, _ := strings.Cut(b.String(), "\n")
-	fmt.Fprintf(w, "周 %d: %s（終了コード相当 %d）\n", cy.N, head, ExitCode(*cy.Result))
+	fmt.Fprintf(w, "cycle %d: %s（終了コード相当 %d）\n", cy.N, head, ExitCode(*cy.Result))
 	for _, e := range cy.Result.Errors {
-		fmt.Fprintf(w, "  誤り: %s\n", e)
+		fmt.Fprintf(w, "  エラー: %s\n", e)
 	}
 	for _, d := range cy.Result.Deliveries {
 		if d.Error != "" {
-			fmt.Fprintf(w, "  送り出し %s: %s\n", d.Label(), d.Error)
+			fmt.Fprintf(w, "  送信 %s: %s\n", d.Label(), d.Error)
 		}
 	}
 }
 
-// runWake は常駐に次の周を今すぐ始めるよう頼む（E-N5）。
+// runWake は daemon に次の cycle を今すぐ始めるよう依頼する（E-N5）。
 func runWake(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("wake", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -194,13 +194,13 @@ func runWake(args []string, stdout, stderr io.Writer) int {
 		return ExitError
 	}
 	if *recd == "" || fs.NArg() > 0 {
-		fmt.Fprintln(stderr, "sakutei wake: --record だけを書く")
+		fmt.Fprintln(stderr, "sakutei wake: --record だけを指定する")
 		return ExitError
 	}
 	if err := record.Wake(*recd, time.Now()); err != nil {
 		fmt.Fprintf(stderr, "sakutei wake: %v\n", err)
 		return ExitError
 	}
-	fmt.Fprintln(stdout, "起こした")
+	fmt.Fprintln(stdout, "wake した")
 	return ExitOK
 }

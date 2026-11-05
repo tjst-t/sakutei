@@ -62,7 +62,7 @@ policies:
 	}
 }
 
-// 窓と別枠を intent から読む（§3.6、E-J2・E-J3）。
+// window と allow を intent から読む（§3.6、E-J2・E-J3）。
 func TestLoadWindowsAndAllow(t *testing.T) {
 	l, err := run(t, baseConfig, map[string]string{"p.yaml": `
 policies:
@@ -107,24 +107,24 @@ func TestLoadRejectsPolicies(t *testing.T) {
 		{"name が無い", "policies:\n  - {select: {all: true}}\n", []string{"p.yaml:2", "name を書く"}},
 		{"同じ名前", "policies:\n  - {name: a, select: {all: true}}\n  - {name: a, select: {all: true}}\n", []string{"p.yaml:3", "同じ名前の Policy", "p.yaml:2"}},
 		{"select が無い", "policies:\n  - {name: a}\n", []string{"select を書く"}},
-		{"空の select", "policies:\n  - {name: a, select: {}}\n", []string{"当たり先を書く"}},
+		{"空の select", "policies:\n  - {name: a, select: {}}\n", []string{"対象を書く"}},
 		{"all: false", "policies:\n  - {name: a, select: {all: false}}\n", []string{"all は true だけ"}},
 		{"all と labels", "policies:\n  - {name: a, select: {all: true, labels: {a: b}}}\n", []string{"一緒に書けない"}},
-		{"知らない種類", "policies:\n  - {name: a, select: {type: dns/recrd}}\n", []string{`select の type dns/recrd`, `種類 "recrd" が無い`}},
+		{"知らない type", "policies:\n  - {name: a, select: {type: dns/recrd}}\n", []string{`select の type dns/recrd`, `type "recrd" が無い`}},
 		{"知らない mode", "policies:\n  - {name: a, select: {all: true}, mode: dry}\n", []string{"mode は apply か report"}},
-		{"負の予算", "policies:\n  - {name: a, select: {all: true}, budget: {per_cycle: -1}}\n", []string{"0 以上の整数"}},
-		{"窓だけ", "policies:\n  - {name: a, select: {all: true}, budget: {window: 1h}}\n", []string{"window は destructive_per_window と一緒に"}},
-		{"窓が無い", "policies:\n  - {name: a, select: {all: true}, budget: {destructive_per_window: 3}}\n", []string{"destructive_per_window には window を書く"}},
-		{"空の予算", "policies:\n  - {name: a, select: {all: true}, budget: {}}\n", []string{"上限を 1 つ以上"}},
-		{"段 9 に無い項目", "policies:\n  - {name: a, select: {all: true}, observe_every: 2}\n", []string{`知らない項目 "observe_every"`}},
-		{"読めない窓", "policies:\n  - {name: a, select: {all: true}, windows: [\"Satu 02:00-04:00\"]}\n", []string{`曜日 "Satu"`}},
-		{"空の窓", "policies:\n  - {name: a, select: {all: true}, windows: [\"02:00-02:00\"]}\n", []string{"空"}},
+		{"負の budget", "policies:\n  - {name: a, select: {all: true}, budget: {per_cycle: -1}}\n", []string{"0 以上の整数"}},
+		{"window だけ", "policies:\n  - {name: a, select: {all: true}, budget: {window: 1h}}\n", []string{"window は destructive_per_window と一緒に"}},
+		{"window が無い", "policies:\n  - {name: a, select: {all: true}, budget: {destructive_per_window: 3}}\n", []string{"destructive_per_window には window を書く"}},
+		{"空の budget", "policies:\n  - {name: a, select: {all: true}, budget: {}}\n", []string{"上限を 1 つ以上"}},
+		{"Stage 9 に無い field", "policies:\n  - {name: a, select: {all: true}, observe_every: 2}\n", []string{`知らない field "observe_every"`}},
+		{"読めない window", "policies:\n  - {name: a, select: {all: true}, windows: [\"Satu 02:00-04:00\"]}\n", []string{`曜日 "Satu"`}},
+		{"空の window", "policies:\n  - {name: a, select: {all: true}, windows: [\"02:00-02:00\"]}\n", []string{"空"}},
 		{"知らない tz", "policies:\n  - {name: a, select: {all: true}, windows: [\"02:00-04:00 Asia/Tokio\"]}\n", []string{`tz "Asia/Tokio"`}},
 		{"allow の kind", "policies:\n  - {name: a, select: {labels: {a: b}}, allow: {kind: purge, max_count: 1}}\n", []string{"kind は delete・update"}},
 		{"allow の max_count", "policies:\n  - {name: a, select: {labels: {a: b}}, allow: {kind: delete, max_count: 0}}\n", []string{"1 以上の整数"}},
-		{"allow と mode", "policies:\n  - {name: a, select: {labels: {a: b}}, mode: report, allow: {kind: delete, max_count: 1}}\n", []string{"allow（別枠）の Policy に mode は書けない"}},
+		{"allow と mode", "policies:\n  - {name: a, select: {labels: {a: b}}, mode: report, allow: {kind: delete, max_count: 1}}\n", []string{"allow の Policy に mode は書けない"}},
 		{"allow と all", "policies:\n  - {name: a, select: {all: true}, allow: {kind: delete, max_count: 1}}\n", []string{"select に all は書けない"}},
-		{"別枠でない cooling_off", "policies:\n  - {name: a, select: {all: true}, approval: {quorum: {n: 1, of: [x]}, cooling_off: 1h}}\n", []string{"cooling_off は allow"}},
+		{"allow でない cooling_off", "policies:\n  - {name: a, select: {all: true}, approval: {quorum: {n: 1, of: [x]}, cooling_off: 1h}}\n", []string{"cooling_off は allow"}},
 		{"quorum の無い承認", "policies:\n  - {name: a, select: {all: true}, approval: {timeout: 1h}}\n", []string{"quorum"}},
 	}
 	for _, tc := range cases {

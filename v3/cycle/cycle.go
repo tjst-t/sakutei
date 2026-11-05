@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package cycle は 1 周だけ回す処理（設計 §2 の RunCycle）。周をまたいで覚える
-// ものは全部 Record に置き、メモリには持たない（E-O3・N-O4）。だから一回実行
-// （reconcile --once）でも常駐でも、同じ Record から同じ結果になる。
+// Package cycle は 1 cycle だけ回す処理（設計 §2 の RunCycle）。cycle をまたいで
+// 覚えるものは全部 Record に置き、メモリには持たない（E-O3・N-O4）。だから
+// one-shot 実行（reconcile --once）でも daemon でも、同じ Record から同じ結果になる。
 //
-// 段 2 は §2.1 の段 0（ロック）・3〜6（観測・比べる・方針・当てる）・8（目印と
-// 監査）と、当てたものの読み直しを行う。判定は plan.Decide と同じ（不変条件 30）。
-// 段 3 で、段 8 の通知の状態・送り出しの列・sink への送り出し・健全性を足した。
-// 段 4 で、段 6 の波（上流が効いたら下流を同じ周に観測し直して当てる、E-J7）と
-// 段 7 の settle・効かない Apply の回数（不変条件 14）を足した。
+// Stage 2 で §2.1 の Step 0（ロック）・3〜6（観測・比較・Policy・Apply）・8（marks と
+// 監査）と、Apply したものの再観測を作った。判定は plan.Decide と同じ（不変条件 30）。
+// Stage 3 で、Step 8 の通知の状態・outbox・sink への送信・health を足した。
+// Stage 4 で、Step 6 の wave（上流が効いたら下流を同じ cycle に再観測して Apply する、
+// E-J7）と Step 7 の settle・ineffective Apply の回数（不変条件 14）を足した。
 package cycle
 
 import (
@@ -40,7 +40,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
-// Input は 1 周の入力（読み込みと検証を通ったもの）。
+// Input は 1 cycle の入力（読み込みと検証を通ったもの）。
 type Input struct {
 	Resources []core.Resource
 	Ranges    []core.Range
@@ -48,38 +48,38 @@ type Input struct {
 	Providers map[string]core.Provider
 	Record    *record.Record
 	Clock     core.Clock // nil なら計算機の時計（E-R4）
-	// Sinks は Event の送り先（つなぎ方の設定の sinks、E-H2）。
+	// Sinks は Event の sink（接続設定の sinks、E-H2）。
 	Sinks map[string]core.Sink
-	// AuditSinks は監査の鎖の送り先（streams: [audit]、E-L1・N-L1）。
+	// AuditSinks は audit のハッシュチェーンの sink（streams: [audit]、E-L1・N-L1）。
 	AuditSinks map[string]core.AuditSink
 	// StuckAfter は intent の cycle.stuck_after（E-H1）。
 	StuckAfter int
-	// Checks は Condition の check(名前) の確かめ（E-B9）。
+	// Checks は Condition の check(名前) の関数（E-B9）。
 	Checks map[string]core.CheckFunc
 	// Sleep は Apply のあとの settle を待つ（E-J6・E-R3）。nil なら時計で待つ。
 	// テストで差し替える（E-R4）。
 	Sleep func(ctx context.Context, d time.Duration)
-	// Procedures は一回きりの手順（§3.7）。
+	// Procedures は一度きりの Procedure（§3.7）。
 	Procedures []core.Procedure
-	// Daemon は常駐の周か。一回実行は critical の段を進めない（§2.2、不変条件 16）。
+	// Daemon は daemon の cycle か。one-shot 実行は critical の step を進めない（§2.2、不変条件 16）。
 	Daemon bool
-	// Unknown は読み込み（Expand・秘密の世代・採番）が「分からない」にした宣言 →
+	// Unknown は読み込み（Expand・secret の世代・採番）が Unknown にした宣言 →
 	// 理由。観測を試みず Unknown として扱う（E-G4・E-K3・不変条件 5）。
 	Unknown map[core.ID]string
-	// Incomplete は宣言が欠けているかもしれない provider → 理由。その範囲は
+	// Incomplete は宣言が欠けているかもしれない provider → 理由。その Range は
 	// 消さない（E-K3・不変条件 26）。
 	Incomplete map[string]string
-	// Secrets は書き込みの文脈で秘密の値を取り出す保管先（E-G2）。
+	// Secrets は書き込みの文脈で secret の値を取り出す secret backend（E-G2）。
 	Secrets core.SecretResolver
-	// IntentDir と Allocs は、ロックを持って当てる前に書く採番（N-B13）。
+	// IntentDir と Allocs は、ロックを持って Apply する前に書く採番（N-B13）。
 	IntentDir string
 	Allocs    map[string]alloc.Write
-	// InputCounts は届いた外部入力の件数（目印に書く、E-K3）。
+	// InputCounts は届いた外部入力の件数（marks に書く、E-K3）。
 	InputCounts map[string]int
 }
 
-// readersOf は provider の観測の口。Unknown の宣言は provider に問わずに Unknown を
-// 返す（依存が使えない間は観測を試みない、不変条件 5）。
+// readersOf は provider の観測のインターフェース。Unknown の宣言は provider に
+// 問い合わせずに Unknown を返す（依存が使えない間は観測を試みない、不変条件 5）。
 func readersOf(in Input) map[string]core.Reader {
 	readers := make(map[string]core.Reader, len(in.Providers))
 	for n, p := range in.Providers {
@@ -99,7 +99,7 @@ type unknownReader struct {
 	unknown map[core.ID]string
 }
 
-// Unwrap は包んだ provider（任意の口 core.Classifier を引くため）。
+// Unwrap は包んだ provider（任意のインターフェース core.Classifier を引くため）。
 func (u unknownReader) Unwrap() core.Reader { return u.Reader }
 
 func (u unknownReader) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core.Observation, error) {
@@ -125,15 +125,15 @@ func (u unknownReader) Observe(ctx context.Context, ids []core.ID) (map[core.ID]
 	return out, nil
 }
 
-// 同じ周の観測し直しの上限（§3.5、E-J7）。上流の Apply が効いたら、待っていた・
-// 観測できなかった下流をもう一度観測して当てる。
+// 同じ cycle の再観測の上限（§3.5、E-J7）。上流の Apply が効いたら、待っていた・
+// 観測できなかった下流を再観測して Apply する。
 const (
 	ReobserveRounds = 3
 	ReobserveTime   = 2 * time.Minute
 )
 
-// Run は 1 周回す。誤りを返すのはロックを試すこともできないときだけで、ほかの
-// 誤り（Record・監査に書けない）は Result.Errors に入れる。
+// Run は 1 cycle 回す。error を返すのはロックを試すこともできないときだけ。ほかの
+// エラー（Record・監査に書けない）は Result.Errors に入れる。
 func Run(ctx context.Context, in Input) (plan.Result, error) {
 	clock := in.Clock
 	if clock == nil {
@@ -144,8 +144,8 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	pin := plan.Input{Resources: in.Resources, Ranges: in.Ranges, Policies: in.Policies, Readers: readers, Now: now, Checks: in.Checks,
 		Incomplete: in.Incomplete}
 
-	// 段 0：ロック。取れなければ進めない周：観測して比べるだけで、何も書かない
-	// （E-M5・N-M7・N-S3）。
+	// Step 0：ロック。取れなければ進めない cycle にする。観測して比べるだけで、
+	// 何も書かない（E-M5・N-M7・N-S3）。
 	release, held, err := in.Record.Lock()
 	if err != nil {
 		return plan.Result{}, fmt.Errorf("Record のロック: %w", err)
@@ -158,14 +158,14 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		return r, nil
 	}
 
-	// 段 1：Record を読む。読めなければ全体を report に寄せ、目印を上書きしない
-	// （前の周の件数・予算の窓を失わない、不変条件 7・20）。
+	// Step 1：Record を読む。読めなければ全体を report に寄せ、marks を上書きしない
+	// （前の cycle の件数・budget の window を失わない、不変条件 7・20）。
 	var errs []string
 	marks, merr := in.Record.Marks()
 	var audit *record.Audit
 	if merr != nil {
-		errs = append(errs, "Record の目印が読めない: "+merr.Error())
-		pin.ReportOnly = "Record の目印が読めない"
+		errs = append(errs, "Record の marks が読めない: "+merr.Error())
+		pin.ReportOnly = "Record の marks が読めない"
 	} else if audit, err = in.Record.Audit(); err != nil {
 		errs = append(errs, "監査を開けない: "+err.Error())
 		pin.ReportOnly = "監査に書けない"
@@ -175,14 +175,14 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		r := Plan(ctx, in, in.Record.Dir(), marks, pin.ReportOnly)
 		r.Verb = "reconcile"
 		if _, err := in.Record.RecordCycle(now, strings.Join(errs, "; ")); err != nil {
-			errs = append(errs, "健全性を書けない: "+err.Error())
+			errs = append(errs, "health を書けない: "+err.Error())
 		}
 		r.Errors = append(r.Errors, errs...)
 		return r, nil
 	}
 
-	// 段 2 の続き：選んだ採番の値を、当てる前に intent のファイルと写しに書く。
-	// 書けなかった値に依る宣言はこの周 Unknown（二度払わない、不変条件 11）。
+	// Step 2 の続き：選んだ採番の値を、Apply する前に intent のファイルと写しに書く。
+	// 書けなかった値に依る宣言はこの cycle では Unknown（二度払わない、不変条件 11）。
 	if len(in.Allocs) > 0 {
 		failed := alloc.Persist(in.IntentDir, in.Record, func(pool, key string, v int64) error {
 			res, field := splitAllocKey(key)
@@ -197,7 +197,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 			for key, why := range failed {
 				res, field := splitAllocKey(key)
 				if id, err := core.ParseRef(res); err == nil {
-					unknown[id] = fmt.Sprintf("項目 %q の採番: %s", field, why)
+					unknown[id] = fmt.Sprintf("field %q の採番: %s", field, why)
 				}
 				errs = append(errs, fmt.Sprintf("採番 %s: %s", key, why))
 			}
@@ -207,8 +207,8 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		}
 	}
 
-	// 段 1：一時的な Policy・承認・手順の進みを読み、期限切れ・終えたもの・新しい
-	// 判断を監査に残す（不変条件 21・22）。
+	// Step 1：一時的な Policy・承認・Procedure の進みを読み、期限切れ・終えたもの・
+	// 新しい判断を監査に残す（不変条件 21・22）。
 	st := readState(in.Record.Dir(), now, in.Policies, &stateExec{rec: in.Record, audit: audit})
 	errs = append(errs, st.errs...)
 	handover, heldTargets := procedure.Prepare(in.Procedures, in.Resources, st.runs)
@@ -217,14 +217,15 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		pin.ReportOnly = st.reportOnly
 	}
 
-	// 段 3〜5。
+	// Step 3〜5。
 	r := plan.Decide(ctx, pin)
 	r.Verb = "reconcile"
 	r.Temporary = st.temporary
 
-	// 段 6・7：波ごとに当てて読み直す。上流が効いたら、待っていた・観測できなかった
-	// 下流を同じ周にもう一度観測して当てる（E-J7）。同じ Resource は 1 周に 1 回
-	// だけ当てる（不変条件 12）。上流が失敗・未確認なら下流は次の周（E-D6）。
+	// Step 6・7：wave ごとに Apply して再観測する。上流が効いたら、待っていた・
+	// 観測できなかった下流を同じ cycle に再観測して Apply する（E-J7）。同じ Resource
+	// は 1 cycle に 1 回だけ Apply する（不変条件 12）。上流が失敗・未確認なら下流は
+	// 次の cycle（E-D6）。
 	converged := plan.Strip(in.Resources, handover)
 	g := graph.New(converged)
 	byID := make(map[core.ID]*core.Resource, len(converged))
@@ -232,8 +233,8 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		byID[converged[i].ID] = &converged[i]
 	}
 	base := baseWindows(r)
-	firedDestructive := map[string]int{} // Policy → 当てた壊す変更（断られた削除を除く）
-	used := map[string]plan.BudgetUse{}  // Policy → この周に当てた数（次の波の予算）
+	firedDestructive := map[string]int{} // Policy → Apply した破壊的変更（reject された削除を除く）
+	used := map[string]plan.BudgetUse{}  // Policy → この cycle に Apply した数（次の wave の budget）
 	fired := map[core.ID]bool{}
 	var allWrites []int
 	for wave := 1; ; wave++ {
@@ -243,21 +244,21 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 				writes = append(writes, i)
 			}
 		}
-		// 発射の前に予算の窓の使用量を書く。書けなければ当てない（途中で止まっても
-		// 使った分を失わない、不変条件 20・21）。
+		// 送る前に budget の window の使用量を書く。書けなければ Apply しない（途中で
+		// 止まっても使った分を失わない、不変条件 20・21）。
 		if len(writes) > 0 {
 			pre := marks
 			pre.BudgetWindows = windowsWith(base, firedDestructive, r, writes)
-			// 別枠は発射の直前に使い、失敗しても戻さない（E-J2）。
+			// allow は送る直前に使い、失敗しても戻さない（E-J2）。
 			pre.Lanes = lanesWith(r, func(i int) bool { return fired[r.Changes[i].ID] || containsInt(writes, i) })
 			if err := in.Record.WriteMarks(pre); err != nil {
 				errs = append(errs, "Record に書けない: "+err.Error())
-				block(&r, writes, "Record に書けないので当てない")
+				block(&r, writes, "Record に書けないので Apply しない")
 				writes = nil
 			}
 		}
 		stop := false
-		// 承認を使った印を発射の前に書く。書けなければ承認を使わない（不変条件 21）。
+		// 承認を使った印を送る前に書く。書けなければ承認を使わない（不変条件 21）。
 		useApprovals := func(idx []int) []int {
 			var ok []int
 			for _, i := range idx {
@@ -265,7 +266,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 				if c.Request != "" {
 					if err := useApproval(in.Record, audit, st.approvals[c.Request], c, now); err != nil {
 						errs = append(errs, "承認を使った印を書けない: "+err.Error())
-						block(&r, []int{i}, "承認を使った印を Record に書けないので当てない")
+						block(&r, []int{i}, "承認を使った印を Record に書けないので Apply しない")
 						continue
 					}
 				}
@@ -273,7 +274,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 			}
 			return ok
 		}
-		// account は当てた 1 件を予算に数えて監査に残す。監査に書けなければ false。
+		// account は Apply した 1 件を budget に数えて監査に残す。監査に書けなければ false。
 		account := func(i int) bool {
 			c := &r.Changes[i]
 			c.Wave = wave
@@ -284,7 +285,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 				if c.Destructive {
 					u.Destructive++
 					if c.Outcome != plan.OutcomeRefused {
-						firedDestructive[p]++ // 断られた削除は窓に数えない（不変条件 10）
+						firedDestructive[p]++ // reject された削除は window に数えない（不変条件 10）
 					}
 				}
 				used[p] = u
@@ -304,16 +305,16 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 			fire(ctx, &r.Changes[i], in.Providers[r.Changes[i].ID.Provider()], byID[r.Changes[i].ID], in.Secrets)
 			done = append(done, i)
 			if !account(i) {
-				block(&r, plain[n+1:], "監査に書けないので当てない")
+				block(&r, plain[n+1:], "監査に書けないので Apply しない")
 				for _, u := range units {
-					block(&r, u, "監査に書けないので当てない")
+					block(&r, u, "監査に書けないので Apply しない")
 				}
 				units, stop = nil, true
 				break
 			}
 		}
-		// 2 段の Apply は単位（group か宣言）ごとに準備し、確かめが通ったときだけ
-		// 確定する（不変条件 17）。
+		// two-phase Apply は単位（group か宣言）ごとに Prepare し、check が通ったとき
+		// だけ Commit する（不変条件 17）。
 		for n, u := range units {
 			u = useApprovals(u)
 			if len(u) == 0 {
@@ -328,13 +329,13 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 			}
 			if stop {
 				for _, rest := range units[n+1:] {
-					block(&r, rest, "監査に書けないので当てない")
+					block(&r, rest, "監査に書けないので Apply しない")
 				}
 				break
 			}
 		}
 		writes = done
-		// settle を待って読み直す（観測しなかった値を「ずれ無し」と出さない、
+		// settle を待って再観測する（観測しなかった値を「ずれ無し」と出さない、
 		// 不変条件 29。効いたかを見る、不変条件 14）。
 		settle(ctx, in.Sleep, r, writes, readers)
 		reread(ctx, &r, writes, readers, byID)
@@ -369,7 +370,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		}
 	}
 
-	// 別枠の承認の依頼を書く（Policy ごとに 1 つ、E-J2・不変条件 21）。
+	// allow の承認の依頼を書く（Policy ごとに 1 つ、E-J2・不変条件 21）。
 	for _, l := range r.Lanes {
 		if l.NewRequest == nil {
 			continue
@@ -384,14 +385,14 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		}
 	}
 
-	// 段 6：手順を進める（§3.7）。書く段は予算を周の変更と合わせて数える
-	// （不変条件 20）。
+	// Step 6：Procedure を進める（§3.7）。書き込む step は budget を cycle の変更と
+	// 合わせて数える（不変条件 20）。
 	pin2 := procedure.Input{Procedures: in.Procedures, Resources: in.Resources, Readers: readers, Policies: st.policies,
 		Runs: st.runs, Approvals: st.approvals, Changes: r.Changes, Now: now, Cycle: marks.Cycle + 1, Checks: in.Checks, Daemon: in.Daemon}
 	if pin.ReportOnly == "" {
 		cmds, err := in.Record.Commands()
 		if err != nil {
-			errs = append(errs, "頼み（commands/）が読めない: "+err.Error())
+			errs = append(errs, "依頼（commands/）が読めない: "+err.Error())
 		}
 		pin2.Exec = &procedure.Exec{Record: in.Record, Audit: audit, Providers: in.Providers, Commands: cmds,
 			Reserve: func(names []string, destructive bool) string {
@@ -401,14 +402,14 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	pout := procedure.Run(ctx, pin2)
 	r.Runs, r.Halts = pout.Runs, append(r.Halts, pout.Halts...)
 	errs = append(errs, pout.Errors...)
-	// 手順の段 policy はこの周に足したものも出す。
+	// Procedure の step の policy は、この cycle に足したものも出す。
 	if runs, err := in.Record.Runs(); err == nil {
 		r.Temporary = append(r.Temporary, procedure.Temporary(runs)...)
 	} else {
-		errs = append(errs, "手順の進み（runs/）が読めない: "+err.Error())
+		errs = append(errs, "Procedure の進み（runs/）が読めない: "+err.Error())
 	}
 
-	// 段 8：目印を書く。
+	// Step 8：marks を書く。
 	gone := map[core.ID]bool{}
 	for _, i := range allWrites {
 		c := r.Changes[i]
@@ -425,7 +426,7 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 		errs = append(errs, "Record に書けない: "+err.Error())
 	}
 
-	// 通知の状態を進めて送り出しの列に積み、sink へ送る。送れなくても周を
+	// 通知の状態を進めて outbox に積み、sink へ送る。送れなくても cycle を
 	// 止めない（不変条件 28・29）。
 	if err := emit(&r, in, now, clock.Now().Sub(now)); err != nil {
 		errs = append(errs, "通知の状態を書けない: "+err.Error())
@@ -433,17 +434,17 @@ func Run(ctx context.Context, in Input) (plan.Result, error) {
 	r.Deliveries = events.Deliver(ctx, in.Record, in.Sinks)
 	r.Deliveries = append(r.Deliveries, events.DeliverAudit(ctx, in.Record, in.AuditSinks)...)
 
-	// 健全性（E-K11・N-H4）。
+	// health（E-K11・N-H4）。
 	if _, err := in.Record.RecordCycle(now, strings.Join(errs, "; ")); err != nil {
-		errs = append(errs, "健全性を書けない: "+err.Error())
+		errs = append(errs, "health を書けない: "+err.Error())
 	}
 	r.Errors = errs
 	return r, nil
 }
 
-// Plan は reconcile と同じ判定を何も書かずに出す（plan・ロックがほかにある周・
-// Record が読めない周、不変条件 30）。dir が空なら Record なし。reportOnly が
-// 空でなければ当てる操作を全部 report にする。
+// Plan は reconcile と同じ判定を何も書かずに出す（plan・ロックがほかにある cycle・
+// Record が読めない cycle、不変条件 30）。dir が空なら Record なし。reportOnly が
+// 空でなければ Apply する操作を全部 report にする。
 func Plan(ctx context.Context, in Input, dir string, marks record.Marks, reportOnly string) plan.Result {
 	clock := in.Clock
 	if clock == nil {
@@ -468,8 +469,8 @@ func Plan(ctx context.Context, in Input, dir string, marks record.Marks, reportO
 	return r
 }
 
-// emit は通知の状態を進める。番号は送り出しの列の最後と state.json の大きいほう
-// の次から（state.json を書く前に止まっても番号を二度使わない）。
+// emit は通知の状態を進める。番号は outbox の最後と state.json の大きいほうの
+// 次から（state.json を書く前に止まっても番号を二度使わない）。
 func emit(r *plan.Result, in Input, now time.Time, d time.Duration) error {
 	st, err := in.Record.EventState()
 	if err != nil {
@@ -490,8 +491,9 @@ func emit(r *plan.Result, in Input, now time.Time, d time.Duration) error {
 	return nil
 }
 
-// RecordLoadError は intent・設定を読めなかった周を健全性に残す（E-K11）。一回
-// 実行と常駐が同じものを書く（不変条件 30）。ロックが取れなければ何もしない。
+// RecordLoadError は intent・設定を読めなかった cycle を health に残す（E-K11）。
+// one-shot 実行と daemon が同じものを書く（不変条件 30）。ロックが取れなければ
+// 何もしない。
 func RecordLoadError(rec *record.Record, clock core.Clock, loadErr error) error {
 	if clock == nil {
 		clock = core.SystemClock{}
@@ -508,8 +510,8 @@ func RecordLoadError(rec *record.Record, clock core.Clock, loadErr error) error 
 	return err
 }
 
-// baseWindows は Policy ごとの予算の窓の、この周より前の使用量（最初の判定の
-// Budgets から）。
+// baseWindows は Policy ごとの budget の window の、この cycle より前の使用量
+// （最初の判定の Budgets から）。
 func baseWindows(r plan.Result) map[string]record.WindowUse {
 	out := map[string]record.WindowUse{}
 	for _, u := range r.Budgets {
@@ -520,8 +522,8 @@ func baseWindows(r plan.Result) map[string]record.WindowUse {
 	return out
 }
 
-// windowsWith は窓の使用量に、この周に当てた分と、これから当てる writes の壊す
-// 変更を足す。
+// windowsWith は window の使用量に、この cycle に Apply した分と、これから Apply
+// する writes の破壊的変更を足す。
 func windowsWith(base map[string]record.WindowUse, fired map[string]int, r plan.Result, writes []int) map[string]record.WindowUse {
 	out := make(map[string]record.WindowUse, len(base))
 	for p, w := range base {
@@ -536,8 +538,9 @@ func windowsWith(base map[string]record.WindowUse, fired map[string]int, r plan.
 	return out
 }
 
-// lanesWith は別枠の目印：前の周までに使った数に、この周に当てた（counted）
-// 別枠の変更の数を足す。宣言を初めて見た時刻（cooling-off の時計）を保つ。
+// lanesWith は allow の marks：前の cycle までに使った数に、この cycle に Apply
+// した（counted）allow の変更の数を足す。宣言を初めて見た時刻（cooling-off の
+// 時計）を保つ。
 func lanesWith(r plan.Result, counted func(i int) bool) map[string]record.LaneMark {
 	if len(r.Lanes) == 0 {
 		return nil
@@ -555,7 +558,7 @@ func lanesWith(r plan.Result, counted func(i int) bool) map[string]record.LaneMa
 	return out
 }
 
-// laneFired はこの周に別枠で当てた数（次の波の判定で枠を二重に使わない）。
+// laneFired はこの cycle に allow で Apply した数（次の wave の判定で allow を二重に使わない）。
 func laneFired(r plan.Result, fired map[core.ID]bool) map[string]int {
 	out := map[string]int{}
 	for _, c := range r.Changes {
@@ -575,9 +578,9 @@ func containsInt(list []int, x int) bool {
 	return false
 }
 
-// reobserve は、この波で効いた（当てて読み直すと宣言どおり）ものに依る・それが
-// 依る宣言のうち、待っていたか観測できなかったものを返す（E-J7）。この周に当てた
-// ものは入れない（不変条件 12）。
+// reobserve は、この wave で効いた（Apply して再観測すると宣言どおり）ものに依る・
+// それが依る宣言のうち、待っていたか観測できなかったものを返す（E-J7）。この cycle
+// に Apply したものは入れない（不変条件 12）。
 func reobserve(r plan.Result, g *graph.Graph, writes []int, fired map[core.ID]bool) map[core.ID]bool {
 	effective := map[core.ID]bool{}
 	for _, i := range writes {
@@ -603,8 +606,8 @@ func reobserve(r plan.Result, g *graph.Graph, writes []int, fired map[core.ID]bo
 	return only
 }
 
-// merge は観測し直した判定を周の結果に入れる。予算はその判定が前の波の分と
-// 合わせて数え直したもので置き換える。
+// merge は再観測した判定を cycle の結果に入れる。budget は、その判定が前の wave
+// の分と合わせて数え直したもので置き換える。
 func merge(r *plan.Result, sub plan.Result) {
 	index := make(map[string]int, len(r.Changes))
 	for i, c := range r.Changes {
@@ -625,13 +628,13 @@ func merge(r *plan.Result, sub plan.Result) {
 	}
 }
 
-// settle は当てて成功した種類の Settle の最も長いものを待つ（E-J6・E-R3）。
+// settle は Apply が成功した type の Settle の最も長いものを待つ（E-J6・E-R3）。
 func settle(ctx context.Context, sleep func(context.Context, time.Duration), r plan.Result, writes []int, readers map[string]core.Reader) {
 	var d time.Duration
 	for _, i := range writes {
 		c := r.Changes[i]
 		if c.Outcome != plan.OutcomeOK || c.Txn != "" {
-			continue // 2 段の Apply は確かめの前に待った
+			continue // two-phase Apply は check の前に待った
 		}
 		if ks := readers[c.ID.Provider()].Schema().Kinds[c.ID.Kind()]; ks.Settle > d {
 			d = ks.Settle
@@ -640,10 +643,10 @@ func settle(ctx context.Context, sleep func(context.Context, time.Duration), r p
 	wait(ctx, sleep, d)
 }
 
-// countIneffective は効かない Apply を数える（不変条件 14、E-J6・E-K10）。当てて
-// 成功したのに読み直すとずれたままなら 1 つ足し、宣言どおりなら消す。読み直しが
-// Unknown・作業中なら数えない（不変条件 4）。宣言が変われば数え直す。上限に
-// 達したら止める。
+// countIneffective は ineffective Apply を数える（不変条件 14、E-J6・E-K10）。Apply
+// が成功したのに再観測するとずれたままなら 1 つ足し、宣言どおりなら消す。再観測が
+// Unknown・Converging なら数えない（不変条件 4）。宣言が変われば数え直す。上限に
+// 達したら halt する。
 func countIneffective(r *plan.Result, marks record.Marks) map[string]record.IneffectiveMark {
 	out := map[string]record.IneffectiveMark{}
 	for i := range r.Changes {
@@ -654,8 +657,8 @@ func countIneffective(r *plan.Result, marks record.Marks) map[string]record.Inef
 		}
 		switch {
 		case c.RolledBack:
-			// 確かめられず戻した 2 段の Apply は、同じ宣言のまま当て直さない
-			// （不変条件 13・17。毎周締め出して戻すのを繰り返さない）。
+			// check が通らず戻した two-phase Apply は、同じ宣言のまま Apply し直さない
+			// （不変条件 13・17。cycle ごとに締め出して戻すのを繰り返さない）。
 			n := max(c.IneffectiveLimit, 1)
 			if had && prev.Count+1 > n {
 				n = prev.Count + 1
@@ -663,7 +666,7 @@ func countIneffective(r *plan.Result, marks record.Marks) map[string]record.Inef
 			out[c.Resource] = record.IneffectiveMark{Count: n, Desired: c.DesiredHash}
 			c.Ineffective = n
 			r.Halts = append(r.Halts, plan.Halt{Scope: "resource " + c.Resource,
-				Reason: "2 段の Apply を確かめられず確定しなかった（相手の側で元に戻る）。宣言を直すか現実を宣言どおりにするまで当て直さない"})
+				Reason: "two-phase Apply の check が通らず Commit しなかった（相手の側で元に戻る）。宣言を直すか現実を宣言どおりにするまで Apply し直さない"})
 		case c.Outcome == plan.OutcomeOK:
 			switch c.After {
 			case plan.None:
@@ -680,7 +683,7 @@ func countIneffective(r *plan.Result, marks record.Marks) map[string]record.Inef
 				c.Ineffective = n
 				if c.IneffectiveLimit > 0 && n >= c.IneffectiveLimit {
 					r.Halts = append(r.Halts, plan.Halt{Scope: "resource " + c.Resource,
-						Reason: fmt.Sprintf("効かない Apply が %d 回続いた（max_ineffective_applies %d）。次の周から当てない", n, c.IneffectiveLimit)})
+						Reason: fmt.Sprintf("ineffective Apply が %d 回続いた（max_ineffective_applies %d）。次の cycle から Apply しない", n, c.IneffectiveLimit)})
 				}
 			}
 		case c.Final() == plan.None:
@@ -693,9 +696,9 @@ func countIneffective(r *plan.Result, marks record.Marks) map[string]record.Inef
 	return out
 }
 
-// nextCounts は範囲ごとの件数の目印。List が完全な範囲は、List の件数から
-// 自分が消した分を差し引く（E-K2・N-K2）。不完全な範囲・急減で止めた範囲は前の
-// 値を保つ（止めた件数を新しい基準にしない）。
+// nextCounts は Range ごとの件数の marks。List が完全な Range は、List の件数から
+// 自分が消した分を差し引く（E-K2・N-K2）。不完全な Range・急減で halt した Range は
+// 前の値を保つ（halt した件数を新しい基準にしない）。
 func nextCounts(r plan.Result, marks record.Marks, gone map[core.ID]bool) map[string]int {
 	out := map[string]int{}
 	for k, v := range marks.RangeCounts {
@@ -723,7 +726,7 @@ func block(r *plan.Result, idx []int, why string) {
 	}
 }
 
-// fire は 1 件を当てる。書き込みの文脈は Apply・Delete のときだけ渡す（E-G5）。
+// fire は 1 件を Apply する。書き込みの文脈は Apply・Delete のときだけ渡す（E-G5）。
 func fire(ctx context.Context, c *plan.Change, p core.Provider, res *core.Resource, secrets core.SecretResolver) {
 	var err error
 	w := core.NewWriteContext(secrets)
@@ -744,7 +747,7 @@ func fire(ctx context.Context, c *plan.Change, p core.Provider, res *core.Resour
 	}
 }
 
-// entry は監査の 1 行。値は書かず、項目の名前だけ（E-L1・N-L1）。
+// entry は監査の 1 行。値は書かず、field の名前だけ（E-L1・N-L1）。
 func entry(c *plan.Change, now time.Time) record.Entry {
 	e := record.Entry{At: now, Resource: c.Resource, Result: string(c.Outcome), Error: c.Error, Policies: c.Policies, Reason: c.Reason}
 	switch c.Op {
@@ -761,7 +764,7 @@ func entry(c *plan.Change, now time.Time) record.Entry {
 	return e
 }
 
-// reread は当てて成功したものを provider ごとに 1 回で読み直し、After を置く。
+// reread は Apply が成功したものを provider ごとに 1 回で再観測し、After を置く。
 func reread(ctx context.Context, r *plan.Result, writes []int, readers map[string]core.Reader, byID map[core.ID]*core.Resource) {
 	var ids []core.ID
 	for _, i := range writes {
@@ -807,7 +810,7 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// splitAllocKey は採番の鍵（"<type>/<id>#<項目>"）を宣言と項目に分ける。
+// splitAllocKey は採番のキー（"<type>/<id>#<field>"）を宣言と field に分ける。
 func splitAllocKey(key string) (res, field string) {
 	i := strings.LastIndex(key, "#")
 	if i < 0 {
@@ -816,7 +819,7 @@ func splitAllocKey(key string) (res, field string) {
 	return key[:i], key[i+1:]
 }
 
-// inputCounts は外部入力の件数の目印。届いたものは今の件数、欠けた・届かない
+// inputCounts は外部入力の件数の marks。届いたものは今の件数、欠けた・届かない
 // ものは前の値を保つ（E-K3）。
 func inputCounts(marks record.Marks, now map[string]int) map[string]int {
 	if len(marks.InputCounts) == 0 && len(now) == 0 {
@@ -832,8 +835,8 @@ func inputCounts(marks record.Marks, now map[string]int) map[string]int {
 	return out
 }
 
-// FromLoaded は読み込んだ結果を 1 周の入力にする（一回実行・plan・常駐で同じ、
-// 不変条件 30）。
+// FromLoaded は読み込んだ結果を 1 cycle の入力にする（one-shot 実行・plan・daemon
+// で同じ、不変条件 30）。
 func FromLoaded(loaded *load.Loaded, rec *record.Record, clock core.Clock) Input {
 	var secrets core.SecretResolver
 	if len(loaded.Secrets) > 0 {

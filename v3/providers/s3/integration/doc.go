@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package integration は新しいコアの s3 provider の統合テスト（v3 段 8f、設計 §6.2 の
+// Package integration は新しいコアの s3 provider の統合テスト（v3 Stage 8f、設計 §6.2 の
 // 統合テスト・E-P3・N-P4）。v2 と同じ S3 互換のサーバ（必須の SeaweedFS と、任意の
 // MinIO・PUT の API を持たない古い SeaweedFS。イメージは tag と digest で固定し、
 // 任意のものは取れなければ飛ばす）を docker で立て（コンテナは sakutei-v3s3-*。v2 の
 // sakutei-s3it-* と重ならない。127.0.0.1 の空いたポートにだけ公開し、終われば
 // 落ちても消す）、v3 の CLI（cli.Run の plan・reconcile・approve）を向けて回す：
-// 空から作る・手の変更が戻る・何周しても宣言どおり・宣言の外は消さずに見せる・
-// ensure: absent の削除と中身のあるバケットの断り・止まったサーバは Unknown・
-// API を持たない endpoint・endpoint の fields・観測用と書き込み用の利用者（MinIO の
+// 空から作る・手動の変更が戻る・何 cycle 回しても宣言どおり・宣言の外は消さずに見せる・
+// ensure: absent の削除と中身のあるバケットの拒否・止まったサーバは Unknown・
+// API を持たない endpoint・endpoint の fields・観測用と書き込み用のユーザー（MinIO の
 // mc admin で作る）・Object Lock（作る・観測する・承認つきで保持の設定を変える）。
 //
 // テストは build tag integration_v3_s3 の付いたファイルにあり、make check・make test

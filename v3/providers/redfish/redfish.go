@@ -15,10 +15,10 @@
 // Package redfish は物理サーバの BMC を Redfish で宣言どおりに保つ provider
 // （設計 §7.1、E-A1〜E-A5・N-A1〜N-A4）。v2 の redfish-system・
 // redfish-virtual-media・redfish-bios・redfish-firmware を 1 つのモジュールの
-// 4 つの種類にした。コアの外のモジュールで、コアの口 core.Provider・
-// core.Validator・core.Invoker だけを持つ。
+// 4 つの type にした。コアの外のモジュールで、コアの interface core.Provider・
+// core.Validator・core.Invoker だけを実装する。
 //
-//	providers:                                # つなぎ方の設定
+//	providers:                                # 接続設定
 //	  bmc:
 //	    module: redfish
 //	    settings:
@@ -39,38 +39,38 @@
 //	  - {type: bmc/bios, id: node1/ProcVirtualization, fields: {value: Enabled}}
 //	  - {type: bmc/firmware, id: node1/BMC, fields: {version: "2.0.0"}}
 //
-// 種類（ID の <node> は settings.nodes の名前）：
+// type（ID の <node> は settings.nodes の名前）：
 //
 //   - system（ID <node>）：電源 power（On・Off）と起動先の上書き boot_enabled
 //     （Continuous・Disabled）・boot_target。Off へは GracefulShutdown だけを送る
-//     （止まらなければ Apply が効かず、効かない回数で止まる、E-J6）。強制停止は
-//     壊す操作 force_off（Invoker、Procedure から。E-A1・N-A1）。電源の切り替えの
+//     （止まらなければ ineffective Apply になり、その回数の上限で halt する、E-J6）。
+//     強制停止は破壊的な操作 force_off（Invoker、Procedure から。E-A1・N-A1）。電源の切り替えの
 //     途中は Converging（E-A1）。再起動と 1 回だけの起動先は宣言できない（観測に
 //     残らない一回きりの操作、Invoker の reset・boot_once、E-A2・N-A2）。
 //   - virtual-media（ID <node>/cd）：CD の image（"" は取り出した状態、E-A3）。
 //     Inserted が false なら image は "" として比べる（BMC が取得に失敗して
-//     戻したとき、次の周に入れ直す）。
+//     戻したとき、次の cycle で入れ直す）。
 //   - bios（ID <node>/<属性>）：BIOS の属性 1 つの value（文字列で書く。数・真偽の
 //     属性は "3"・"true"）。Apply は Bios/Settings に PATCH するだけで再起動しない。
 //     保留中（Settings の値が今の値と違う・既定値に戻す保留）のあいだは
-//     Converging（E-A4・N-A3）。属性の登録簿（読み取り専用・選べる値・範囲）は
-//     Apply の前に BMC から読んで確かめ、合わなければ書かずに断る。
+//     Converging（E-A4・N-A3）。属性の registry（読み取り専用・選べる値・範囲）は
+//     Apply の前に BMC から読んで確かめ、合わなければ書かずにエラーにする。
 //   - firmware（ID <node>/<部品の Id>）：観測だけ（E-A5・N-A4）。FirmwareInventory
 //     の version と、その部品の最新の更新の Task（update_state・update_image・
 //     update_percent・update_message）。更新は Procedure が Invoker の verify・
-//     stage・reset で進め、Task と版を観測で待つ（§3.7）。Payload を返さない BMC
-//     （qemu-bmc 0.11.0）の Task は、Update の登録簿のメッセージ TargetDetermined
+//     stage・reset で進め、Task とバージョンを観測で待つ（§3.7）。Payload を返さない BMC
+//     （qemu-bmc 0.11.0）の Task は、Update の message registry の TargetDetermined
 //     の MessageArgs で部品とイメージを見分ける。
 //
 // 決まり：
 //
-//   - BMC に届かない・5xx・時間切れ・認証の失敗・壊れた出力・知らない
-//     PowerState は Unknown（無いと読まない、不変条件 3、E-K1）。BMC が Bios・
+//   - BMC に届かない・5xx・タイムアウト・認証の失敗・壊れた出力・未知の
+//     PowerState は Unknown（Absent とは読まない、不変条件 3、E-K1）。BMC が Bios・
 //     UpdateService を持たない・部品が無いのは Absent。
-//   - 書き込み用の資格（settings.nodes.<node>.write）は Apply・Invoke の中で
-//     だけ読む（E-G5・N-G3）。観測は observe の資格だけを使う。
-//   - 装置は作りも消しもしない：List を持たず（範囲を書けば読み込みで断る）、
-//     Delete は断る（*core.RefuseError）。
+//   - 書き込み用の credential（settings.nodes.<node>.write）は Apply・Invoke の
+//     中でだけ読む（E-G5・N-G3）。観測は observe の credential だけを使う。
+//   - 装置は作りも消しもしない：List を持たず（Range を書けば読み込み時にエラーにする）、
+//     Delete は拒否する（*core.RefuseError）。
 package redfish
 
 import (
@@ -86,10 +86,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/redfish/client"
 )
 
-// Version は Schema の版。比べ方・正規形を変えたら上げる（E-J12）。
+// Version は Schema のバージョン。比べ方・正規形を変えたら上げる（E-J12）。
 const Version = "redfish/1"
 
-// 種類の名前。
+// type の名前。
 const (
 	KindSystem   = "system"
 	KindMedia    = "virtual-media"
@@ -97,7 +97,7 @@ const (
 	KindFirmware = "firmware"
 )
 
-// DefaultSystemSettle は電源・起動先の Apply のあと読み直すまでの待ちの既定
+// DefaultSystemSettle は電源・起動先の Apply のあと読み直すまでの待ち時間の既定値
 // （settings.settle で変える）。BMC は Reset に 204 を返してから PowerState を
 // 変える（E-J6・E-R3）。
 const DefaultSystemSettle = 15 * time.Second
@@ -115,16 +115,16 @@ var (
 	_ core.Invoker   = (*Provider)(nil)
 )
 
-// node は 1 台の BMC へのつなぎ方。
+// node は 1 台の BMC への接続設定。
 type node struct {
 	name   string
-	cfg    client.Config // 資格は除く
-	obs    client.Client // 観測用の資格の Client
-	write  credFile      // 書き込み用の資格（Apply・Invoke の中でだけ読む）
+	cfg    client.Config // credential は除く
+	obs    client.Client // 観測用の credential の Client
+	write  credFile      // 書き込み用の credential（Apply・Invoke の中でだけ読む）
 	cfgErr error
 }
 
-// credFile は利用者とパスワードのファイル。パスワードは要求のたびに読む（値を
+// credFile はユーザー名とパスワードのファイル。パスワードは要求のたびに読む（値を
 // 持たない、E-G2）。
 type credFile struct {
 	username, passwordFile string
@@ -140,7 +140,7 @@ func (c credFile) credential() client.Credential {
 	}}
 }
 
-// writer は書き込み用の資格の Client（WriteContext の中でだけ作る、E-G5）。
+// writer は書き込み用の credential の Client（WriteContext の中でだけ作る、E-G5）。
 func (n *node) writer(core.WriteContext) (client.Client, error) {
 	cfg := n.cfg
 	cfg.Credential = n.write.credential()
@@ -155,7 +155,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 		case "nodes":
 			m, ok := v.(map[string]any)
 			if !ok || len(m) == 0 {
-				return nil, errors.New("settings.nodes に BMC を 1 台以上書く（ノード名 → つなぎ方）")
+				return nil, errors.New("settings.nodes に BMC を 1 台以上書く（ノード名 → 接続設定）")
 			}
 			for name, nv := range m {
 				nm, ok := nv.(map[string]any)
@@ -182,7 +182,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 			}
 			p.settle = d
 		default:
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: nodes, settle, temp_dir）", k)
+			return nil, fmt.Errorf("settings に未知の field %q（書ける field: nodes, settle, temp_dir）", k)
 		}
 	}
 	if len(p.nodes) == 0 {
@@ -228,7 +228,7 @@ func parseNode(name string, m map[string]any) (*node, error) {
 			case "password_file":
 				c.passwordFile = s
 			default:
-				return credFile{}, false, fmt.Errorf("%s に知らない項目 %q（書ける項目: password_file, username。パスワードそのものは書けない）", k, ck)
+				return credFile{}, false, fmt.Errorf("%s に未知の field %q（書ける field: password_file, username。パスワードそのものは書けない）", k, ck)
 			}
 		}
 		if c.username == "" || c.passwordFile == "" {
@@ -241,7 +241,7 @@ func parseNode(name string, m map[string]any) (*node, error) {
 		switch k {
 		case "endpoint", "system", "manager", "ca_file", "insecure_skip_verify", "timeout", "observe", "write":
 		default:
-			return nil, fmt.Errorf("知らない項目 %q（書ける項目: ca_file, endpoint, insecure_skip_verify, manager, observe, system, timeout, write）", k)
+			return nil, fmt.Errorf("未知の field %q（書ける field: ca_file, endpoint, insecure_skip_verify, manager, observe, system, timeout, write）", k)
 		}
 	}
 	if n.cfg.Endpoint, err = str("endpoint"); err != nil {
@@ -283,7 +283,7 @@ func parseNode(name string, m map[string]any) (*node, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("observe（観測用の資格 {username, password_file}）を書く")
+		return nil, errors.New("observe（観測用の credential {username, password_file}）を書く")
 	}
 	n.write = obs
 	if w, ok, err := cred("write"); err != nil {
@@ -301,8 +301,8 @@ func parseNode(name string, m map[string]any) (*node, error) {
 	return n, nil
 }
 
-// Schema は 4 つの種類。観測だけの項目も Condition から読めるよう Schema に置く
-// （宣言は Validate が断る）。
+// Schema は 4 つの type。観測だけの field も Condition から読めるよう Schema に置く
+// （宣言は Validate がエラーにする）。
 func (p *Provider) Schema() core.Schema {
 	str := core.FieldSpec{Type: core.String}
 	list := core.FieldSpec{Type: core.List}
@@ -325,7 +325,7 @@ func (p *Provider) Schema() core.Schema {
 	}}
 }
 
-// declarable は宣言できる項目（ほかは観測だけ）。
+// declarable は宣言できる field（ほかは観測だけ）。
 var declarable = map[string][]string{
 	KindSystem:   {FieldPower, FieldBootEnabled, FieldBootTarget},
 	KindMedia:    {FieldImage},
@@ -339,14 +339,14 @@ func split(id core.ID) (nodeName, rest string) {
 	return nodeName, rest
 }
 
-// Validate は宣言を確かめる（E-I7・E-M3）。範囲は書けない（List を持たない）。
+// Validate は宣言を確かめる（E-I7・E-M3）。Range は書けない（List を持たない）。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
 	rej := func(o core.Origin, target, format string, a ...any) {
 		diags = append(diags, core.Diagnostic{Severity: core.Reject, Origin: o, Target: target, Message: fmt.Sprintf(format, a...)})
 	}
 	for _, rg := range ranges {
-		rej(rg.Origin, "ranges", "redfish は範囲を持たない（BMC の装置は作りも消しもしないので List と prune が無い）")
+		rej(rg.Origin, "ranges", "redfish は Range を持たない（BMC の装置は作りも消しもしないので List と prune が無い）")
 	}
 	for _, r := range res {
 		target := r.ID.String()
@@ -375,7 +375,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		}
 		for _, k := range sortedKeys(r.Fields) {
 			if !has(declarable[kind], k) {
-				rej(r.Origin, target, "項目 %q は観測だけで宣言できない（宣言できる項目: %s）", k, strings.Join(declarable[kind], ", "))
+				rej(r.Origin, target, "field %q は観測だけで宣言できない（宣言できる field: %s）", k, strings.Join(declarable[kind], ", "))
 			}
 		}
 		if r.Ensure == core.EnsureAbsent {
@@ -397,7 +397,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 
 func (p *Provider) nodeNames() []string { return sortedKeys(p.nodes) }
 
-// Observe は ID をノードと種類ごとにまとめて、BMC を種類ごとに 1 回読む（E-D8）。
+// Observe は ID をノードと type ごとにまとめて、BMC を type ごとに 1 回読む（E-D8）。
 func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core.Observation, error) {
 	out := map[core.ID]core.Observation{}
 	type key struct{ node, kind string }
@@ -426,7 +426,7 @@ func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core
 		default:
 			obs = map[core.ID]core.Observation{}
 			for _, id := range group {
-				obs[id] = core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("種類 %q を知らない", k.kind)}
+				obs[id] = core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("未知の type %q", k.kind)}
 			}
 		}
 		for id, o := range obs {
@@ -441,7 +441,7 @@ func (p *Provider) List(context.Context, core.Range) (core.Listing, error) {
 	return core.Listing{}, errors.New("redfish は List を持たない")
 }
 
-// Apply は種類ごとに BMC を読み直し、宣言とずれているものだけを変える（冪等）。
+// Apply は type ごとに BMC を読み直し、宣言とずれているものだけを変える（冪等）。
 func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, desired core.Fields, _ core.Observation) error {
 	nodeName, rest := split(id)
 	n, ok := p.nodes[nodeName]
@@ -460,15 +460,15 @@ func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, d
 	case KindBios:
 		return applyBios(ctx, c, rest, desired)
 	}
-	return fmt.Errorf("種類 %q には Apply が無い（観測だけ）", id.Kind())
+	return fmt.Errorf("type %q には Apply が無い（観測だけ）", id.Kind())
 }
 
-// Delete は断る（BMC の装置は消さない、E-F1）。
+// Delete は拒否する（BMC の装置は消さない、E-F1）。
 func (p *Provider) Delete(context.Context, core.WriteContext, core.ID, core.Observation) error {
 	return &core.RefuseError{Reason: "BMC の装置（電源・仮想メディア・BIOS の属性・FW）は消せない"}
 }
 
-// unknown は Client の誤りの観測（届かない・認証の失敗・壊れた出力、E-K1）。
+// unknown は Client のエラーを観測にする（届かない・認証の失敗・壊れた出力、E-K1）。
 func unknown(err error) core.Observation {
 	return core.Observation{Availability: core.Unknown, Note: err.Error()}
 }

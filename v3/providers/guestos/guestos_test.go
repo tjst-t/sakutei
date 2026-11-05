@@ -147,7 +147,7 @@ func TestContract(t *testing.T) {
 	})
 }
 
-// os-release・ホスト名・boot_id・目印を読む（E-E4）。markers は宣言どおりに返す。
+// os-release・ホスト名・boot_id・marker を読む（E-E4）。markers は宣言どおりに返す。
 func TestObserve(t *testing.T) {
 	p, g1, _ := setup(t)
 	validate(t, p, decl("node1", installedMarkers))
@@ -161,14 +161,14 @@ func TestObserve(t *testing.T) {
 	if marker["installed"] != "sakutei-2026-10-27" {
 		t.Fatalf("marker: %+v", marker)
 	}
-	// 目印のファイルが無いのは観測の事実（鍵が無い）。
+	// marker のファイルが無いのは観測の事実（キーが無い）。
 	if _, ok := marker["cloud-init"]; ok {
-		t.Fatalf("無い目印に値: %+v", marker)
+		t.Fatalf("無い marker に値: %+v", marker)
 	}
 	if paths := f["markers"].(map[string]any); paths["installed"] != "/etc/sakutei-installed" || len(paths) != 2 {
 		t.Fatalf("markers: %+v", paths)
 	}
-	// os-release が /etc に無ければ /usr/lib を読む。どちらも無ければ項目が無い。
+	// os-release が /etc に無ければ /usr/lib を読む。どちらも無ければ field が無い。
 	os.Remove(filepath.Join(g1.Root, "etc/os-release"))
 	g1.write(t, "/usr/lib/os-release", "ID='debian'\nVERSION_ID=\"13\"\n")
 	if f := observe(t, p, osID("node1")).Fields; f["os_id"] != "debian" || f["os_version_id"] != "13" {
@@ -179,13 +179,13 @@ func TestObserve(t *testing.T) {
 	if _, ok := o.Fields["os_id"]; o.Availability != core.Present || ok {
 		t.Fatalf("%+v", o)
 	}
-	// 宣言の無い ID（Condition だけが参照する）は目印なしで観測する。
+	// 宣言の無い ID（Condition だけが参照する）は marker なしで観測する。
 	if f := observe(t, p, osID("node2")).Fields; f["os_id"] != "alpine" || f["marker"] != nil || f["markers"] != nil {
 		t.Fatalf("%+v", f)
 	}
 }
 
-// 読めない目印（ディレクトリ・権限・大きすぎる）・知らないホストは Unknown
+// 読めない marker（ディレクトリ・権限・大きすぎる）・知らないホストは Unknown
 // （不変条件 3、E-K1）。
 func TestUnknown(t *testing.T) {
 	cases := []struct {
@@ -230,7 +230,7 @@ func TestUnknown(t *testing.T) {
 	}
 }
 
-// 4 KiB ちょうどの目印は読める（末尾の改行を落とす）。
+// 4 KiB ちょうどの marker は読める（末尾の改行を落とす）。
 func TestMarkerLimit(t *testing.T) {
 	p, g1, _ := setup(t)
 	validate(t, p, decl("node1", installedMarkers))
@@ -241,18 +241,18 @@ func TestMarkerLimit(t *testing.T) {
 	}
 }
 
-// 観測だけ：範囲・観測だけの項目・ensure: absent・形の誤った目印・知らない
-// ホストは断る（E-M3）。List は誤り、Apply は誤り、Delete は断る。
+// 観測だけ：Range・観測だけの field・ensure: absent・形の誤った marker・知らない
+// ホストはエラーにする（E-M3）。List はエラー、Apply はエラー、Delete は拒否する。
 func TestValidate(t *testing.T) {
 	p, _, _ := setup(t)
 	for _, c := range []struct {
 		r    core.Resource
 		want string
 	}{
-		{decl("node9", nil), "settings.hosts の鍵"},
+		{decl("node9", nil), "settings.hosts のキー"},
 		{decl("node1", core.Fields{"boot_id": bootID}), "観測だけで宣言できない"},
 		{decl("node1", core.Fields{"marker": map[string]any{"installed": "x"}}), "観測だけで宣言できない"},
-		{decl("node1", core.Fields{"markers": map[string]any{"Installed": "/etc/x"}}), "目印の名前"},
+		{decl("node1", core.Fields{"markers": map[string]any{"Installed": "/etc/x"}}), "marker の名前"},
 		{decl("node1", core.Fields{"markers": map[string]any{"installed": "etc/x"}}), "絶対パス"},
 		{decl("node1", core.Fields{"markers": map[string]any{"installed": "/etc/../x"}}), "絶対パス"},
 		{decl("node1", core.Fields{"markers": map[string]any{"installed": 1}}), "絶対パス"},
@@ -264,15 +264,15 @@ func TestValidate(t *testing.T) {
 			t.Errorf("%s %v: %v（want %q）", c.r.ID, c.r.Fields, d, c.want)
 		}
 	}
-	if d := p.Validate(nil, []core.Range{{Provider: "guest"}}); len(d) == 0 || !strings.Contains(d[0].Message, "範囲を持たない") {
-		t.Errorf("範囲: %v", d)
+	if d := p.Validate(nil, []core.Range{{Provider: "guest"}}); len(d) == 0 || !strings.Contains(d[0].Message, "Range を持たない") {
+		t.Errorf("Range: %v", d)
 	}
 	validate(t, p, decl("node1", core.Fields{"os_id": "alpine", "os_version_id": "3.24.3", "hostname": "sakutei-node", "markers": map[string]any{"installed": "/etc/sakutei-installed"}}))
 	if _, err := p.List(context.Background(), core.Range{Provider: "guest"}); err == nil {
-		t.Error("List が誤りを返さない")
+		t.Error("List がエラーを返さない")
 	}
 	if err := p.Apply(context.Background(), core.WriteContext{}, osID("node1"), nil, core.Observation{}); err == nil {
-		t.Error("Apply が誤りを返さない")
+		t.Error("Apply がエラーを返さない")
 	}
 	var re *core.RefuseError
 	if err := p.Delete(context.Background(), core.WriteContext{}, osID("node1"), core.Observation{}); !errors.As(err, &re) {
@@ -280,7 +280,7 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// 断った Validate は前に覚えた目印を変えない。
+// エラーにした Validate は前に覚えた marker を変えない。
 func TestValidateKeepsMarkersOnReject(t *testing.T) {
 	p, _, _ := setup(t)
 	validate(t, p, decl("node1", installedMarkers))
@@ -301,7 +301,7 @@ func TestModule(t *testing.T) {
 		{"hosts": map[string]any{"node1": map[string]any{"ssh": map[string]any{"address": "192.0.2.1"}}}},
 	} {
 		if _, err := guestos.Module(s); err == nil {
-			t.Errorf("%v: 断らなかった", s)
+			t.Errorf("%v: エラーにならなかった", s)
 		}
 	}
 }

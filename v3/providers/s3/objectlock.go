@@ -21,12 +21,12 @@ package s3
 //
 //   - 宣言すれば Object Lock を有効にする。{enabled: false} は「Object Lock が
 //     無い」（有効なバケットには宣言どおりにできない。外せないので Apply が
-//     何も書かずに断る）。
+//     何も書かずに拒否する）。
 //   - enable_on_create：作るときに x-amz-bucket-object-lock-enabled を送る
 //     （書いたときだけ。持たない実装でも宣言どおりにできるよう、既定は送らず
 //     PutObjectLockConfiguration で有効にする）。作る手順の引数で、比べない。
 //     既にある Object Lock の無いバケットに true を宣言すると、作り直さずに
-//     Apply が理由つきで断る。
+//     Apply が理由つきで拒否する。
 //   - mode（GOVERNANCE・COMPLIANCE）と days か years：バケットの既定の保持。
 //     書かなければ既定の保持は無い（有れば外す）。
 //
@@ -34,7 +34,7 @@ package s3
 // Days で返す実装があるため）：{enabled: false}・{enabled: true}（既定の保持が
 // 無い）・{enabled: true, mode: M, days: N}。
 //
-// 既にあるバケットの保持の設定を変える変更は、向きによらず承認の要る壊す変更
+// 既にあるバケットの保持の設定を変える変更は、向きによらず承認の要る破壊的変更
 // （Classify）。新しく作るバケットに初めて掛けるのはふつうの作成。
 
 import (
@@ -161,12 +161,12 @@ func ParseObjectLock(v any) (LockSpec, error) {
 				return LockSpec{}, err
 			}
 		default:
-			return LockSpec{}, fmt.Errorf("object_lock に知らない項目 %q（書ける項目: days, enable_on_create, enabled, mode, years）", k)
+			return LockSpec{}, fmt.Errorf("object_lock に知らない field %q（書ける field: days, enable_on_create, enabled, mode, years）", k)
 		}
 	}
 	switch {
 	case !out.Enabled && len(m) > 1:
-		return LockSpec{}, errors.New("object_lock の enabled: false にはほかの項目を書けない")
+		return LockSpec{}, errors.New("object_lock の enabled: false にはほかの field を書けない")
 	case out.Days > 0 && out.Years > 0:
 		return LockSpec{}, errors.New("object_lock には days か years のどちらか一方を書く")
 	case out.Mode != "" && out.Days == 0 && out.Years == 0:
@@ -253,30 +253,30 @@ func lockChange(from, to LockSpec) string {
 	switch {
 	case from.Mode == to.Mode && from.days() == to.days():
 	case to.Mode == "":
-		parts = append(parts, fmt.Sprintf("既定の保持（%s）を外す：これから書く版は既定では守られない", describe(from)))
+		parts = append(parts, fmt.Sprintf("既定の保持（%s）を外す：これから書くバージョンは既定では守られない", describe(from)))
 	case from.Mode == "":
-		parts = append(parts, fmt.Sprintf("既定の保持 %s を掛ける：これから書く版は保持が終わるまで消せない", describe(to)))
+		parts = append(parts, fmt.Sprintf("既定の保持 %s を掛ける：これから書くバージョンは保持が終わるまで消せない", describe(to)))
 	default:
 		if from.Mode != to.Mode {
 			p := fmt.Sprintf("既定の保持の mode を %s → %s に変える", from.Mode, to.Mode)
 			if to.Mode == ObjectLockCompliance {
 				p += "（COMPLIANCE の保持は誰も短くも外しもできない）"
 			} else {
-				p += "（これから書く版は bypass の権限で外せる）"
+				p += "（これから書くバージョンは bypass の権限で外せる）"
 			}
 			parts = append(parts, p)
 		}
 		switch d0, d1 := from.days(), to.days(); {
 		case d1 > d0:
-			parts = append(parts, fmt.Sprintf("既定の保持を %d → %d 日に延ばす（これから書く版は短くし直せない）", d0, d1))
+			parts = append(parts, fmt.Sprintf("既定の保持を %d → %d 日に延ばす（これから書くバージョンは短くし直せない）", d0, d1))
 		case d1 < d0:
-			parts = append(parts, fmt.Sprintf("既定の保持を %d → %d 日に縮める（これから書く版の守りが弱まる）", d0, d1))
+			parts = append(parts, fmt.Sprintf("既定の保持を %d → %d 日に縮める（これから書くバージョンの保護が弱まる）", d0, d1))
 		}
 	}
 	return strings.Join(parts, "。")
 }
 
-// lockPutErr は PutObjectLockConfiguration の誤りに理由を足す。
+// lockPutErr は PutObjectLockConfiguration のエラーに理由を足す。
 func lockPutErr(err error) error {
 	if err == nil {
 		return nil
@@ -287,9 +287,9 @@ func lockPutErr(err error) error {
 	if KindOf(err) != KindRequest {
 		return err
 	}
-	hint := "endpoint が Object Lock の設定を断った（受けない mode・期間・形）。endpoint の受ける形で宣言する"
+	hint := "endpoint が Object Lock の設定を拒否した（受けない mode・期間・形）。endpoint の受ける形で宣言する"
 	if CodeOf(err) == "InvalidBucketState" {
-		hint = "endpoint が既にあるバケットの Object Lock の有効化を断った（多くの endpoint は作るとき（enable_on_create）か、先に versioning を Enabled にしたときだけ許す）。Sakutei はバケットを作り直さない"
+		hint = "endpoint が既にあるバケットの Object Lock の有効化を拒否した（多くの endpoint は作るとき（enable_on_create）か、先に versioning を Enabled にしたときだけ許す）。Sakutei はバケットを作り直さない"
 	}
 	return fmt.Errorf("%s: %w", hint, err)
 }

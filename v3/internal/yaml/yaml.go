@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package yaml は intent とつなぎ方の設定を読む、標準ライブラリだけの YAML の
-// 部分集合のパーサ。値ごとに行番号を残し、読み込みで断るときに宣言の場所を
-// 示す（E-M3）。JSON も同じ Node にする（E-O4：設定は 1 つのファイルで、形は
+// Package yaml は intent と接続設定を読む、標準ライブラリだけの YAML の
+// 部分集合のパーサ。値ごとに行番号を残し、読み込み時にエラーにするとき宣言の
+// 場所を示す（E-M3）。JSON も同じ Node にする（E-O4：設定は 1 つのファイルで、形は
 // YAML か JSON）。
 //
 // 受けるもの：ブロックのマップとリスト、1 行に収まるフローの {…}・[…]、
 // 引用符の文字列、整数・true/false・null、"#" のコメント、先頭の "---" 1 つ。
 // 黙って読み違えないよう、それ以外（アンカー・エイリアス・タグ・ブロック
 // スカラー・複数行のフロー・複数ドキュメント・タブのインデント・マージキー）は
-// 行番号つきで断る。
+// 行番号つきでエラーにする。
 //
 // 型は保守的に読む：bool は true/false だけ（yes/no/on/off は文字列）、数は
 // 整数だけ（1.10 や 1e3、先頭が 0 の 007 は文字列）。
@@ -271,7 +271,7 @@ func (p *parser) mapping(indent int) (*Node, error) {
 			return nil, fmt.Errorf("%d 行目: 思わぬインデント", l.num)
 		}
 		if isSeqItem(l.body) {
-			return nil, fmt.Errorf("%d 行目: マップの途中にリストの項目がある", l.num)
+			return nil, fmt.Errorf("%d 行目: マップの途中にリストの要素がある", l.num)
 		}
 		key, rest, ok := splitKey(l.body)
 		if !ok {
@@ -500,7 +500,7 @@ func (f *flow) mapping() (*Node, error) {
 			key = strings.TrimSpace(f.s[start:f.i])
 		}
 		if key == "" || f.i >= len(f.s) || f.s[f.i] != ':' {
-			return nil, f.errorf("フローのマップの項目が 'キー: 値' の形でない")
+			return nil, f.errorf("フローのマップの要素が 'キー: 値' の形でない")
 		}
 		f.i++ // :
 		if _, dup := n.Map[key]; dup {

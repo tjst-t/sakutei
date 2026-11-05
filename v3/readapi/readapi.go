@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package readapi は常駐の読み取り HTTP（設計 §5.3、E-H5・E-L4・N-L4・N-L6）。
+// Package readapi は daemon の read-only HTTP API（設計 §5.3、E-H5・E-L4・N-L4・N-L6）。
 // GET /status・/plan・/events（SSE）・/graph・/health を返す。書き込みの
 // エンドポイントは持たない。
 //
-// 遅い読み手で周を止めない：/status は周の終わりに作った JSON の写しを返し、
+// 遅い読み手で cycle を止めない：/status は cycle の終わりに作った JSON の写しを返し、
 // /events・/health は Record のファイルをロックを取らずに読む。/plan は同時に
 // 1 つだけ計算する。
 package readapi
@@ -46,10 +46,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
-// PollInterval は /events が送り出しの列の新しい Event を見る間隔。
+// PollInterval は /events が outbox の新しい Event を見る間隔。
 var PollInterval = time.Second
 
-// Server は読み取り HTTP の中身。
+// Server は read-only HTTP API の中身。
 type Server struct {
 	// RecordDir は Record のディレクトリ（/events・/health が読む）。
 	RecordDir string
@@ -81,7 +81,7 @@ func GraphOf(res []core.Resource) Graph {
 	return g
 }
 
-// Publish は周の結果を /status に置く。結果の無い周（読み込みで断った）は前の
+// Publish は cycle の結果を /status に置く。結果の無い cycle（読み込み時にエラーにした）は前の
 // 結果を残す（誤りは /health に出る）。
 func (s *Server) Publish(c daemon.Cycle) {
 	if c.Result == nil {
@@ -119,7 +119,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	body := s.status
 	s.mu.RUnlock()
 	if body == nil {
-		writeError(w, http.StatusServiceUnavailable, "まだ周を回していない")
+		writeError(w, http.StatusServiceUnavailable, "まだ cycle を回していない")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -156,11 +156,11 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, g)
 }
 
-// handleHealth は健全性（E-K11・N-H4）。続いた誤りがあれば 503。
+// handleHealth は health（E-K11・N-H4）。続いた誤りがあれば 503。
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	h, err := record.ReadHealth(s.RecordDir)
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "健全性が読めない: "+err.Error())
+		writeError(w, http.StatusServiceUnavailable, "health が読めない: "+err.Error())
 		return
 	}
 	code := http.StatusOK
@@ -170,7 +170,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, code, h)
 }
 
-// handleEvents は送り出しの列を SSE で流す（?since=<seq>、Last-Event-ID）。
+// handleEvents は outbox を SSE で流す（?since=<seq>、Last-Event-ID）。
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	var since uint64
 	q := r.URL.Query().Get("since")

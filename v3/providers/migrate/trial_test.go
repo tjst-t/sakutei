@@ -14,16 +14,16 @@
 
 package migrate
 
-// trial_test.go — 段 9 の完了条件：v2 の試用の intent を全部書き直して、新しい
+// trial_test.go — Stage 9 の完了条件：v2 の試用の intent を全部書き直して、新しい
 // コアの plan が v2 の plan と同じ操作を出す。表（testdata/trial-cases.json）の ops は
 // v2 の plan の操作で、v2 の側の試験（tests/acceptance/migrate_trial_test.go）が v2 の
 // plan と突き合わせている。
 //
-// 比べるのは収束が現実に当てる操作（作る・変える・消す、止めたものは止めた印）。
-// v2 の Workflow・Task が持っていた宣言は、新しいコアでは手順に渡す（収束で当て
-// ない）。手順に渡したもの（runs と handover）が v2 の Workflow・Task の持っていた
-// ものに収まることも確かめる（v2 は宣言してある間ずっと、新しいコアはずれたとき
-// だけ手順を起こすので、等しくはならない）。
+// 比べるのは収束が現実に Apply する操作（作る・変える・消す。halt したものには印を付ける）。
+// v2 の Workflow・Task が持っていた宣言は、新しいコアでは Procedure に渡す（収束では
+// Apply しない）。Procedure に渡したもの（runs と handover）が、v2 の Workflow・Task の
+// 持っていたものに収まることも確かめる（v2 は宣言してある間ずっと、新しいコアはずれた
+// ときだけ Procedure を起こすので、等しくはならない）。
 
 import (
 	"bytes"
@@ -67,8 +67,8 @@ type trialCase struct {
 	// 観測できないものが v2 と違うときの期待（理由は V3Reason）。
 	Unknown   []string `json:"unknown"`
 	V3Unknown []string `json:"v3_unknown"`
-	// V3Record は、先に reconcile を 1 回流して Record（前の周の件数・別枠の承認の
-	// 依頼）を作り、現実を戻してから V3Approve の人が別枠の依頼を承認し、Record を
+	// V3Record は、先に reconcile を 1 回流して Record（前の cycle の件数・allow の承認の
+	// 依頼）を作り、現実を戻してから V3Approve の人が allow の依頼を承認し、Record を
 	// 読む plan で比べる。
 	V3Record  bool     `json:"v3_record"`
 	V3Approve []string `json:"v3_approve"`
@@ -102,7 +102,7 @@ func loadCases(t *testing.T) []trialCase {
 	return table.Cases
 }
 
-// setup は作業ディレクトリに intent と最初の現実を写す。
+// setup は作業ディレクトリに intent と最初の現実をコピーする。
 func setup(t *testing.T, tc trialCase) string {
 	w := t.TempDir()
 	os.MkdirAll(filepath.Join(w, "v2intent"), 0o755)
@@ -243,7 +243,7 @@ func TestTrialPlansMatchV2(t *testing.T) {
 						continue
 					}
 					for _, by := range tc.V3Approve {
-						// 申請者の承認は CLI が断る（v2 でも数えない）。
+						// 申請者の承認は CLI がエラーにする（v2 でも数えない）。
 						cli.Run(context.Background(), []string{"approve", id, "--record", rec, "--as", by}, &so, &se, modules()...)
 					}
 				}
@@ -295,7 +295,7 @@ func TestTrialPlansMatchV2(t *testing.T) {
 					switch c.Action {
 					case "apply":
 					case "report":
-						s += " (report)" // 知らせるだけ（窓の外・mode: report）
+						s += " (report)" // 通知するだけ（window の外・mode: report）
 					default:
 						s += " (blocked)"
 					}
@@ -336,14 +336,14 @@ func TestTrialPlansMatchV2(t *testing.T) {
 			}
 			for _, x := range procs {
 				if !held[x] {
-					t.Errorf("手順に渡した %s は v2 の Workflow・Task が持っていなかった（v2: %q）", x, tc.Procedures)
+					t.Errorf("Procedure に渡した %s は v2 の Workflow・Task が持っていなかった（v2: %q）", x, tc.Procedures)
 				}
 			}
 		})
 	}
 }
 
-// dump は書き直した intent と設定（失敗の文に添える）。
+// dump は書き直した intent と設定を返す（失敗のメッセージに添える）。
 func dump(dir string) string {
 	var b strings.Builder
 	filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {

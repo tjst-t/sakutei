@@ -21,7 +21,7 @@ import (
 	"syscall"
 )
 
-// killGroupOnCancel は ansible をプロセスグループの頭にして、時間切れのときは
+// killGroupOnCancel は ansible をプロセスグループのリーダーにして、時間切れのときは
 // グループごと（ansible が開いた ssh も）止める。
 func killGroupOnCancel(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

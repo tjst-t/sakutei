@@ -3,42 +3,42 @@
     {
       "severity": "reject",
       "target": "network_policy",
-      "message": "overlap: 網 a（10.0.0.0/16）と b（10.0.1.0/24）が domain default の中で重なる：アドレスは 1 つの網に属する（片方への許可がもう片方にも漏れる。別のアドレスの空間なら domain を分ける）"
+      "message": "overlap: ネットワーク a（10.0.0.0/16）と b（10.0.1.0/24）が domain default の中で重なる。アドレスは 1 つのネットワークに属する（片方への許可がもう片方にも漏れる。別のアドレス空間なら domain を分ける）"
     },
     {
       "severity": "reject",
       "target": "network_policy",
-      "message": "exception_without_reason: policy.yaml: network_policy.allows[0] (a → b tcp 22): 印 exception の許可には理由（reason）を書く：例外は理由と一緒に宣言する（理由: なし、印: exception）"
+      "message": "exception_without_reason: policy.yaml: network_policy.allows[0] (a → b tcp 22): tag exception の許可には reason を書く。例外は理由と一緒に宣言する（理由: なし、tags: exception）"
     },
     {
       "severity": "reject",
       "target": "network_policy",
-      "message": "exception_without_reason: policy.yaml: network_policy.allows[1] (a → b tcp 22): 印 exception の許可には理由（reason）を書く：例外は理由と一緒に宣言する（理由: なし、印: exception）"
+      "message": "exception_without_reason: policy.yaml: network_policy.allows[1] (a → b tcp 22): tag exception の許可には reason を書く。例外は理由と一緒に宣言する（理由: なし、tags: exception）"
     },
     {
       "severity": "reject",
       "target": "network_policy",
-      "message": "duplicate: policy.yaml: network_policy.allows[1] (a → b tcp 22): policy.yaml: network_policy.allows[0]（理由: なし、印: exception）と同じ許可。1 回だけ書く（理由: なし、印: exception）"
+      "message": "duplicate: policy.yaml: network_policy.allows[1] (a → b tcp 22): policy.yaml: network_policy.allows[0]（理由: なし、tags: exception）と同じ許可。1 回だけ書く（理由: なし、tags: exception）"
     },
     {
       "severity": "reject",
       "target": "network_policy",
-      "message": "undeclared_network: policy.yaml: network_policy.allows[2] (a → nowhere any): 網 nowhere が network_policy.networks に無い（理由: なし）"
+      "message": "undeclared_network: policy.yaml: network_policy.allows[2] (a → nowhere any): ネットワーク nowhere が network_policy.networks に無い（理由: なし）"
     },
     {
       "severity": "reject",
       "target": "network_policy",
-      "message": "cross_domain: policy.yaml: network_policy.allows[3] (a → c any): from a は domain default、to c は domain tenant：許可は 1 つの domain の中（関所のように 2 つが出会うところは片側ずつ許可を書く）（理由: \"domain をまたぐ\"）"
+      "message": "cross_domain: policy.yaml: network_policy.allows[3] (a → c any): from a は domain default、to c は domain tenant。許可は 1 つの domain の中で書く（2 つの domain が接するところでは片側ずつ許可を書く）（理由: \"domain をまたぐ\"）"
     },
     {
       "severity": "warn",
       "target": "network_policy",
-      "message": "unreached: policy.yaml: network_policy.allows[2] (a → nowhere any): この許可を通す実現先が無い（その網の間の境界も、宛先の網のホストも無い）（理由: なし）"
+      "message": "unreached: policy.yaml: network_policy.allows[2] (a → nowhere any): この許可を通す実現先が無い（そのネットワーク間の境界も、宛先のネットワークのホストも無い）（理由: なし）"
     },
     {
       "severity": "warn",
       "target": "network_policy",
-      "message": "unreached: policy.yaml: network_policy.allows[3] (a → c any): この許可を通す実現先が無い（その網の間の境界も、宛先の網のホストも無い）（理由: \"domain をまたぐ\"）"
+      "message": "unreached: policy.yaml: network_policy.allows[3] (a → c any): この許可を通す実現先が無い（そのネットワーク間の境界も、宛先のネットワークのホストも無い）（理由: \"domain をまたぐ\"）"
     }
   ]
 }

@@ -70,7 +70,7 @@ func (d planDoc) fields(resource string) []string {
 	return out
 }
 
-// head は intent の共通の頭（vmid の採番・クラスタの範囲・触らない VM）。
+// head は intent の共通の先頭部分（vmid の採番・クラスタの Range・触らない VM）。
 const head = `pools:
   - name: vmids
     range: "500-509"
@@ -224,7 +224,7 @@ qm list`); err != nil {
 		}
 	})
 
-	t.Run("何周しても適合のまま", func(t *testing.T) {
+	t.Run("何 cycle 回しても適合のまま", func(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			if out, code := l.cli(t, "", "reconcile"); code != 0 {
 				t.Fatalf("reconcile %d exit %d:\n%s", i, code, out)
@@ -279,7 +279,7 @@ qm list`); err != nil {
 
 	t.Run("触らない VM に触れない", func(t *testing.T) {
 		l.setIntent(t, head+"resources:\n  - {type: pve/vm, id: it/sakutei-ctl, fields: {memory: 4096}}\n")
-		if out, code := l.cli(t, "", "plan"); code != 2 || !strings.Contains(out, "外の持ち主") {
+		if out, code := l.cli(t, "", "plan"); code != 2 || !strings.Contains(out, "external owner") {
 			t.Errorf("plan exit %d:\n%s", code, out)
 		}
 		l.setIntent(t, base)
@@ -311,7 +311,7 @@ qm list`); err != nil {
 		l.converge(t, 3)
 	})
 
-	t.Run("宣言の外の VM は見せるが消さない", func(t *testing.T) {
+	t.Run("宣言に無い VM は見せるが消さない", func(t *testing.T) {
 		l.setIntent(t, head)
 		d := l.plan(t, "")
 		if d.op("pve/vm/it/it-vm1") != "unmanaged" {
@@ -326,7 +326,7 @@ qm list`); err != nil {
 			t.Errorf("reconcile exit %d:\n%s", code, out)
 		}
 		if s := l.status(t, 500); s != "running" {
-			t.Errorf("宣言の外の VM: %s", s)
+			t.Errorf("宣言に無い VM: %s", s)
 		}
 		l.setIntent(t, base)
 	})
@@ -378,7 +378,7 @@ pveum acl modify / --roles PVEAuditor --tokens 'sakutei-ro@pve!audit'`)
 		if f := strings.Join(d.fields("pve/vm/it/it-vm4"), ","); f != "firewall,nics" {
 			t.Errorf("観測用のトークンの plan: %s %+v", f, d)
 		}
-		// 観測用のトークンだけでは書けない（書き込みは断られ、VM は変わらない）。
+		// 観測用のトークンだけでは書けない（書き込みは拒否され、VM は変わらない）。
 		if out, code := l.cli(t, roOnly, "reconcile"); code == 0 {
 			t.Errorf("読むだけのトークンで書けた:\n%s", out)
 		}
@@ -444,9 +444,9 @@ network_policy:
 			}
 		}
 		if hand == "" {
-			t.Errorf("手の規則が宣言外に出ない: %+v", d)
+			t.Errorf("手で置いた規則が unmanaged に出ない: %+v", d)
 		}
-		// 置いた規則の port を手で変え、先頭に手の規則を置くとずれになり、戻すときも手の規則は残す。
+		// 置いた規則の port を手で変え、先頭に手で規則を置くと drift になり、戻すときも手で置いた規則は残す。
 		if out, err := l.ssh("pvesh set /nodes/" + pveNode + "/qemu/550/firewall/rules/0 --dport 99 && pvesh create /nodes/" + pveNode + "/qemu/550/firewall/rules --type in --action DROP --enable 1"); err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
@@ -456,7 +456,7 @@ network_policy:
 		l.converge(t, 3)
 		fw, _ = l.ssh("cat /etc/pve/firewall/550.fw")
 		if !strings.Contains(fw, "IN DROP") || !strings.Contains(fw, "-dport 22") || strings.Contains(fw, "-dport 99") {
-			t.Errorf("戻らない・手の規則を消した:\n%s", fw)
+			t.Errorf("戻らない・手で置いた規則を消した:\n%s", fw)
 		}
 	})
 
@@ -475,16 +475,16 @@ network_policy:
 		l.converge(t, 4)
 		oldCfg, _ := l.config(t, 560)
 		if !strings.Contains(oldCfg["tags"], "sakutei-keep-scsi1") {
-			t.Fatalf("keep の印が無い: %v", oldCfg)
+			t.Fatalf("keep の marker が無い: %v", oldCfg)
 		}
-		// keep のディスクの volume（複製の番号の振り方は Proxmox が決める）に印を書く。
+		// keep のディスクの volume（複製の番号の振り方は Proxmox が決める）に確認用のデータを書く。
 		keepVol := strings.SplitN(oldCfg["scsi1"], ",", 2)[0]
 		keepLV := strings.TrimPrefix(keepVol, "local-lvm:")
 		if out, err := l.ssh("lvchange -ay pve/" + keepLV + " >/dev/null 2>&1; printf sakutei-keep-data | dd of=/dev/pve/" + keepLV + " conv=notrunc status=none && sync"); err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
 		dropLV := strings.TrimPrefix(strings.SplitN(oldCfg["scsi2"], ",", 2)[0], "local-lvm:")
-		// keep のディスクが残る VM の削除は断る。
+		// keep のディスクが残る VM の削除は拒否する。
 		l.setIntent(t, base+"  - {type: pve/vm, id: it/it-old, ensure: absent}\n")
 		if out, code := l.cli(t, "", "reconcile"); code == 0 || !strings.Contains(out, "keep の volume") || strings.HasPrefix(l.status(t, 560), "absent") {
 			t.Fatalf("keep のディスクが残る VM を消した: exit %d\n%s", code, out)

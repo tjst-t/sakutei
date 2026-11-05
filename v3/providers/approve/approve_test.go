@@ -71,8 +71,8 @@ func post(t *testing.T, c *http.Client, url, user, body string) (int, map[string
 	return resp.StatusCode, out
 }
 
-// 不変条件 21・E-M4：申請者と承認者が同じなら断り、判断のファイルを書かない。
-// 要件に無い人・待っていない依頼・名乗りの無い要求も断る。数える人の判断は CLI と
+// 不変条件 21・E-M4：申請者と承認者が同じなら拒否し、判断のファイルを書かない。
+// 要件に無い人・待っていない依頼・名乗りの無い要求も拒否する。数える人の判断は CLI と
 // 同じ形のファイルに書き、数え方を返す。
 func TestApproveHeader(t *testing.T) {
 	dir := setup(t)
@@ -102,7 +102,7 @@ func TestApproveHeader(t *testing.T) {
 		}
 	}
 	if files, _ := os.ReadDir(filepath.Join(dir, "approvals", "chg-1")); len(files) != 1 {
-		t.Fatalf("断った判断を書いた: %d ファイル", len(files))
+		t.Fatalf("拒否した判断を書いた: %d ファイル", len(files))
 	}
 
 	code, out := post(t, c, u, "alice", `{"comment": "確認済み"}`)
@@ -135,7 +135,7 @@ func TestApproveHeader(t *testing.T) {
 	}
 }
 
-// クライアント証明書の CN を承認者にする（前段の認証）。証明書の無い接続は断る。
+// クライアント証明書の CN を承認者にする（前段の認証）。証明書の無い接続は拒否する。
 func TestApproveClientCert(t *testing.T) {
 	dir := setup(t)
 	work := t.TempDir()
@@ -185,7 +185,7 @@ func TestListenCheck(t *testing.T) {
 		want string
 	}{
 		{approve.Listen{}, "--listen"},
-		{approve.Listen{Address: "127.0.0.1:8444"}, "承認者を受け取る口が無い"},
+		{approve.Listen{Address: "127.0.0.1:8444"}, "承認者を受け取る経路が無い"},
 		{approve.Listen{Address: "0.0.0.0:8444", UserHeader: "X-Remote-User"}, "--plaintext"},
 		{approve.Listen{Address: "0.0.0.0:8444", UserHeader: "X-Remote-User", Plaintext: true}, "誰でもヘッダを名乗れる"},
 		{approve.Listen{Address: "0.0.0.0:8444", UserHeader: "X-Remote-User", TLSCert: "a", TLSKey: "b"}, "誰でもヘッダを名乗れる"},

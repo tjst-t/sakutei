@@ -26,7 +26,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/secret"
 )
 
-// TestFile は組み込みの保管先 file：世代は中身を読まずに変わり、周の間に世代が
+// TestFile は組み込みの secret backend の file：世代は中身を読まずに変わり、cycle の間に世代が
 // 変われば値を返さない（E-G2・E-G3）。
 func TestFile(t *testing.T) {
 	dir := t.TempDir()
@@ -51,17 +51,17 @@ func TestFile(t *testing.T) {
 		t.Fatal("中身が変わっても世代が変わらない")
 	}
 	if _, err := b.Resolve(ctx, "token", g1); err == nil || strings.Contains(err.Error(), "v2-secret") {
-		t.Fatalf("古い世代で値を返した・誤りに値を出した: %v", err)
+		t.Fatalf("古い世代で値を返した・エラーに値を出した: %v", err)
 	}
 	if _, err := b.Generation(ctx, "../etc/passwd"); err == nil {
 		t.Fatal("dir の外を読んだ")
 	}
 	if _, err := secret.FileModule(map[string]any{"path": "x"}); err == nil {
-		t.Fatal("知らない設定を断らない")
+		t.Fatal("知らない設定をエラーにしない")
 	}
 }
 
-// TestStamp は宣言の Secret の項目に世代を付け、読めなければ Uncertain、平文は
+// TestStamp は宣言の Secret の field に世代を付け、読めなければ Uncertain、平文は
 // Reject にする（E-G4・不変条件 27）。
 func TestStamp(t *testing.T) {
 	dir := t.TempDir()

@@ -22,22 +22,22 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// Module は CLI から使う偽の provider を settings から作る（E-P1：CLI の通しの
+// Module は CLI から使う偽の provider を settings から作る（E-P1：CLI の end-to-end
 // テストに使う）。
 //
 //	settings:
-//	  state: /path/to/state.json   # 観測の答え。{"<provider>/<種類>/<名前>": {"availability": "present", "fields": {...}, "labels": {...}}}
-//	  version: fake/1              # Schema の版（既定 fake/1）
+//	  state: /path/to/state.json   # 観測の答え。{"<provider>/<type>/<名前>": {"availability": "present", "fields": {...}, "labels": {...}}}
+//	  version: fake/1              # Schema のバージョン（既定 fake/1）
 //	  kinds:
 //	    record:
 //	      observe_only: false
-//	      destructive_delete: false  # 中身を失う種類（宣言外でも消さない）
-//	      settle: 0s                 # Apply のあと読み直すまでの待ち
+//	      destructive_delete: false  # 中身を失う type（宣言に無いもの（unmanaged）でも消さない）
+//	      settle: 0s                 # Apply のあと再観測するまでの待ち
 //	      fields:
 //	        value: string
 //	        zone: {type: string, identity: true}
 //	      ops:                       # 一回きりの操作（Invoker、E-A2）
-//	        upgrade: {destructive: false, set: {version: "2"}}   # 送ると対象に置く項目
+//	        upgrade: {destructive: false, set: {version: "2"}}   # 送ると対象に置く field
 //
 // state のファイルが無ければ全部 Absent、読めなければ Observe が失敗する（コアは
 // Unknown にする）。
@@ -74,7 +74,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 				pendingOps[kind] = kops
 			}
 		default:
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: state, version, kinds）", k)
+			return nil, fmt.Errorf("settings に不明な field %q（使える field: state, version, kinds）", k)
 		}
 	}
 	p := New(schema)
@@ -120,7 +120,7 @@ func ops(kind string, v any) (map[string]opDef, error) {
 				}
 				d.set = core.Fields(f)
 			default:
-				return nil, fmt.Errorf("settings.kinds.%s.ops.%s に知らない項目 %q（書ける項目: destructive, set）", kind, name, k)
+				return nil, fmt.Errorf("settings.kinds.%s.ops.%s に不明な field %q（使える field: destructive, set）", kind, name, k)
 			}
 		}
 		out[name] = d
@@ -173,7 +173,7 @@ func kindSchema(kind string, v any) (ks core.KindSchema, kops map[string]opDef, 
 				return ks, nil, err
 			}
 		default:
-			return ks, nil, fmt.Errorf("settings.kinds.%s に知らない項目 %q（書ける項目: observe_only, destructive_delete, settle, fields, ops）", kind, k)
+			return ks, nil, fmt.Errorf("settings.kinds.%s に不明な field %q（使える field: observe_only, destructive_delete, settle, fields, ops）", kind, k)
 		}
 	}
 	return ks, kops, nil
@@ -194,7 +194,7 @@ func fieldSpec(v any) (core.FieldSpec, error) {
 				}
 				spec.Identity = b
 			default:
-				return spec, fmt.Errorf("知らない項目 %q（書ける項目: type, identity）", k)
+				return spec, fmt.Errorf("不明な field %q（使える field: type, identity）", k)
 			}
 		}
 	}

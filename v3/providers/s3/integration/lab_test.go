@@ -26,9 +26,9 @@ package integration
 //	seaweedfs-old  SAKUTEI_IT_SEAWEEDFS_OLD_IMAGE  任意
 //
 // 必須のサーバはイメージが取れなければ失敗にする。任意のサーバはイメージが取れ
-// ない（docker pull が失敗する）か環境変数が空なら、そのサーバの段だけを飛ばし、
+// ない（docker pull が失敗する）か環境変数が空なら、そのサーバの step だけを飛ばし、
 // 理由をログに出す。seaweedfs-old（バージョニング・ポリシー・タグの PUT が
-// NotImplemented の版）は、片方にしか無い API の扱いを本物で見るため。
+// NotImplemented のバージョン）は、片方にしか無い API の扱いを本物で見るため。
 
 import (
 	"bytes"
@@ -116,7 +116,7 @@ func setup() error {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		return err
 	}
-	// SeaweedFS の資格（コンテナの利用者が読めるように 0644）。
+	// SeaweedFS の credential（コンテナのユーザーが読めるように 0644）。
 	weedIAM := fmt.Sprintf(`{"identities":[{"name":"sakutei","credentials":[{"accessKey":%q,"secretKey":%q}],"actions":["Admin","Read","List","Tagging","Write"]}]}`, accessKey, secretKey)
 	iam := filepath.Join(dir, "weed-s3.json")
 	if err := os.WriteFile(iam, []byte(weedIAM), 0o644); err != nil {
@@ -175,7 +175,7 @@ func setup() error {
 		}
 		s.url = "http://" + strings.Split(hp, "\n")[0]
 	}
-	// 手で現実を見る・変える Client（sakutei の外の操作。管理者の資格）。
+	// 手で現実を見る・変える Client（sakutei の外の操作。管理者の credential）。
 	lab.clients = map[string]*s3.Client{}
 	for name, s := range lab.servers {
 		c, err := s3.NewClient(s3.ClientConfig{Endpoint: s.url, Credentials: creds(accessKey, secretKey), Timeout: 5 * time.Second})
@@ -339,7 +339,7 @@ func deleteObject(t *testing.T, name, bucket, key string) {
 	}
 }
 
-// objectRequest はオブジェクトへの SigV4 の要求を 1 つ送り、状態コードを返す。
+// objectRequest はオブジェクトへの SigV4 のリクエストを 1 つ送り、状態コードを返す。
 func objectRequest(c *http.Client, method, url string, body []byte) (int, error) {
 	req, err := http.NewRequest(method, url, bytes.NewReader(body))
 	if err != nil {
@@ -357,7 +357,7 @@ func objectRequest(c *http.Client, method, url string, body []byte) (int, error)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// intent・つなぎ方の設定・CLI
+// intent・接続設定・CLI
 // ─────────────────────────────────────────────────────────────────────────────
 
 // endpointCfg は settings.endpoints の 1 つ。
@@ -369,7 +369,7 @@ type endpointCfg struct {
 	observe, write [2]string
 }
 
-// ws は 1 つの段の作業の場所（intent・設定・Record）。
+// ws は 1 つの step の作業の場所（intent・設定・Record）。
 type ws struct {
 	dir string
 }
@@ -493,7 +493,7 @@ func wantOps(t *testing.T, step string, r plan.Result, want map[string]plan.Op) 
 	}
 }
 
-// converged は全部の宣言が宣言どおり（none か、当てて読み直すと none）か。
+// converged は全部の宣言が宣言どおり（none か、Apply して読み直すと none）か。
 func converged(r plan.Result) bool {
 	for _, c := range r.Changes {
 		switch {

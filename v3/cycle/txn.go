@@ -25,18 +25,19 @@ import (
 	"github.com/tjst-t/sakutei/v3/plan"
 )
 
-// TxnPoll は 2 段の Apply の確かめを繰り返す間隔（E-B3）。
+// TxnPoll は two-phase Apply の check を繰り返す間隔（E-B3）。
 const TxnPoll = time.Second
 
-// runTxn は 2 段の Apply の単位（group か宣言 1 つ）を当てる（§3.3 の Transactor、
-// E-B3・E-B8・E-B9・N-B2・N-B3・N-D5）。
+// runTxn は two-phase Apply の単位（group か宣言 1 つ）を Apply する（§3.3 の
+// Transactor、E-B3・E-B8・E-B9・N-B2・N-B3・N-D5）。
 //
-//  1. provider ごとに Prepare する（相手の側に timeout の後に戻す仕掛けを置いて
-//     当てる）。1 つでも準備できなければ、準備したものを戻して確定しない。
-//  2. settle を待ち、timeout の半分まで、全部の宣言を読み直して宣言どおりで、
-//     全部の after の確かめが真になるのを待つ。
-//  3. 全部が通ったときだけ Commit する。通らなければ Commit を呼ばず（Rollback は
-//     急ぐためだけ）、相手の時間切れでも戻る（不変条件 17）。
+//  1. provider ごとに Prepare する（相手の側に timeout のあとで戻す仕掛けを置いて
+//     Apply する）。1 つでも Prepare できなければ、Prepare したものを戻して Commit
+//     しない。
+//  2. settle を待つ。timeout の半分まで、全部の宣言を再観測して宣言どおりで、
+//     全部の after の check が真になるのを待つ。
+//  3. 全部が通ったときだけ Commit する。通らなければ Commit を呼ばない。Rollback は
+//     早く戻すためだけで、相手の timeout でも戻る（不変条件 17）。
 func runTxn(ctx context.Context, in Input, clock core.Clock, r *plan.Result, unit []int, byID map[core.ID]*core.Resource, g *graph.Graph) {
 	key := byID[r.Changes[unit[0]].ID].TxnKey()
 	timeout := time.Duration(0)
@@ -77,7 +78,7 @@ func runTxn(ctx context.Context, in Input, clock core.Clock, r *plan.Result, uni
 		var notes []string
 		for _, t := range txns {
 			if err := t.txn.Rollback(ctx); err != nil {
-				notes = append(notes, t.name+" の Rollback: "+err.Error()+"（相手の時間切れで戻る）")
+				notes = append(notes, t.name+" の Rollback: "+err.Error()+"（相手の timeout で戻る）")
 			}
 		}
 		return notes
@@ -89,7 +90,7 @@ func runTxn(ctx context.Context, in Input, clock core.Clock, r *plan.Result, uni
 		}
 	}
 
-	// 1. 準備。
+	// 1. Prepare。
 	for _, name := range names {
 		tr, ok := in.Providers[name].(core.Transactor)
 		var t core.Txn
@@ -98,19 +99,19 @@ func runTxn(ctx context.Context, in Input, clock core.Clock, r *plan.Result, uni
 			t, err = tr.Prepare(ctx, core.NewWriteContext(in.Secrets), byProvider[name], core.TxnOptions{Timeout: timeout})
 		}
 		if !ok || err != nil {
-			why := "provider " + name + " は 2 段の Apply を持たない"
+			why := "provider " + name + " は two-phase Apply を持たない"
 			if err != nil {
-				why = "準備に失敗: " + err.Error()
+				why = "Prepare に失敗: " + err.Error()
 			}
 			notes := rollbackAll()
-			mark(unit, plan.OutcomeError, joinNotes(key+" を確定しない（"+name+" を準備できない）", notes), false)
+			mark(unit, plan.OutcomeError, joinNotes(key+" を Commit しない（"+name+" を Prepare できない）", notes), false)
 			mark(members[name], plan.OutcomeError, why, false)
 			return
 		}
 		txns = append(txns, prepared{name, t})
 	}
 
-	// 2. 確かめ。全部が宣言どおりで、全部の after の確かめが真のときだけ通る。
+	// 2. check。全部が宣言どおりで、全部の after の check が真のときだけ通る。
 	start := clock.Now()
 	half := timeout / 2
 	wait(ctx, in.Sleep, unitSettle(r, unit, in.Providers))
@@ -123,26 +124,26 @@ func runTxn(ctx context.Context, in Input, clock core.Clock, r *plan.Result, uni
 			break
 		}
 		if round >= rounds || ctx.Err() != nil || clock.Now().Sub(start) >= half {
-			// 3. 確かめられなかった：確定しない。
+			// 3. check が通らなかった：Commit しない。
 			notes := rollbackAll()
-			mark(unit, plan.OutcomeError, joinNotes(key+" を "+half.String()+" のうちに確かめられなかった: "+why, notes), true)
+			mark(unit, plan.OutcomeError, joinNotes(key+" の check が "+half.String()+" のうちに通らなかった: "+why, notes), true)
 			return
 		}
 		wait(ctx, in.Sleep, TxnPoll)
 	}
 
-	// 3. 確定。途中で切れた provider の分は分からない（相手の時間切れで戻るかも
-	// しれない）ので失敗にする。
+	// 3. Commit。途中で切れた provider の分は結果が分からない（相手の timeout で
+	// 戻るかもしれない）ので失敗にする。
 	for _, t := range txns {
 		if err := t.txn.Commit(ctx); err != nil {
-			mark(members[t.name], plan.OutcomeError, "確定に失敗（相手の時間切れで戻るかもしれない）: "+err.Error(), false)
+			mark(members[t.name], plan.OutcomeError, "Commit に失敗（相手の timeout で戻るかもしれない）: "+err.Error(), false)
 			continue
 		}
 		mark(members[t.name], plan.OutcomeOK, "", false)
 	}
 }
 
-// confirmUnit は単位の全部の宣言を読み直し、宣言どおりかと after の確かめを
+// confirmUnit は単位の全部の宣言を再観測し、宣言どおりかと after の check を
 // 見る（E-B3・E-B9・N-B9）。
 func confirmUnit(ctx context.Context, in Input, r *plan.Result, unit []int, byID map[core.ID]*core.Resource, g *graph.Graph) (bool, string) {
 	var ids []core.ID
@@ -176,7 +177,7 @@ func confirmUnit(ctx context.Context, in Input, r *plan.Result, unit []int, byID
 	return len(failed) == 0, strings.Join(failed, "・")
 }
 
-// unitSettle は単位の種類の Settle の最も長いもの（E-J6・E-R3）。
+// unitSettle は単位の type の Settle の最も長いもの（E-J6・E-R3）。
 func unitSettle(r *plan.Result, unit []int, providers map[string]core.Provider) time.Duration {
 	var d time.Duration
 	for _, i := range unit {

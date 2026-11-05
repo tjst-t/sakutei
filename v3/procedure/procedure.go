@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package procedure は一回きりの手順を周をまたいで 1 段ずつ進める（設計 §3.7）。
+// Package procedure は Procedure を cycle をまたいで 1 step ずつ進める（設計 §3.7）。
 // 進みは Record の runs/ に置き、メモリには持たない（E-O3）。「済んだ」は観測
 // （done_when）で決め、Record を失っても二度走らない（不変条件 18）。一回きりの
-// 操作は送る前に送信中の記録を書き、再開のときに記録があれば二度送らず止める
+// 操作は送る前に送信中の記録を書き、再開のときに記録があれば二度送らず halt する
 // （不変条件 16）。
 //
 // Run は plan（Exec が nil：何も書かず、次に何をするかを出す）と reconcile
@@ -40,7 +40,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
-// 周の結果の手順の状態（plan.RunStatus.State）。
+// cycle の結果の Procedure の状態（plan.RunStatus.State）。
 const (
 	StateStart     = "start"
 	StateRunning   = "running"
@@ -49,50 +49,50 @@ const (
 	StateCancelled = "cancelled"
 )
 
-// Input は手順の段の入力。
+// Input は Procedure の step の入力。
 type Input struct {
 	Procedures []core.Procedure
-	// Resources は宣言（手順が受け持つ項目を外す前のもの。desired.項目 を引く）。
+	// Resources は宣言（Procedure が受け持つ field を外す前のもの。desired.field を引く）。
 	Resources []core.Resource
 	Readers   map[string]core.Reader
-	// Policies は今の周に効く Policy（intent・一時的な Policy・手順の段の policy）。
+	// Policies は今の cycle に効く Policy（intent・一時的な Policy・Procedure の step の policy）。
 	Policies  []core.Policy
 	Runs      []record.Run
 	Approvals map[string]record.Approval
-	// Changes はこの周の収束の判定（手順を起こすきっかけ：Handover）。
+	// Changes はこの cycle の収束の判定（Procedure を起こすきっかけ：Handover）。
 	Changes []plan.Change
 	Now     time.Time
-	// Cycle は周の番号（Record の目印）。run の ID に入れて、同じ時刻に同じ対象の
-	// 手順を起こし直しても ID を重ねない。
+	// Cycle は cycle の番号（Record の marks）。run の ID に入れて、同じ時刻に同じ対象の
+	// Procedure を起こし直しても ID を重ねない。
 	Cycle  uint64
 	Checks map[string]core.CheckFunc
-	// Daemon は常駐の周か。一回実行は critical の段を進めない（§2.2）。
+	// Daemon は daemon の cycle か。one-shot 実行は critical の step を進めない（§2.2）。
 	Daemon bool
-	// Exec が nil なら何も書かない（plan・進めない周）。
+	// Exec が nil なら何も書かない（plan・進めない cycle）。
 	Exec *Exec
 }
 
-// Exec は手順を進めるときに要るもの（ロックを持つ周だけ）。
+// Exec は Procedure を進めるときに要るもの（ロックを持つ cycle だけ）。
 type Exec struct {
 	Record    *record.Record
 	Audit     *record.Audit
 	Providers map[string]core.Provider
 	Commands  []record.Command
-	// Reserve は書く段の前に、当たる Policy の予算を確かめて使う（不変条件 20）。
-	// 通らなければ理由を返し、その段を進めない。
+	// Reserve は書く step の前に、該当する Policy の budget を確かめて使う（不変条件 20）。
+	// 通らなければ理由を返し、その step を進めない。
 	Reserve func(policies []string, destructive bool) string
-	// Write は書き込みの文脈（秘密の取り出し先を持つ、E-G2・E-G5）。
+	// Write は書き込みの文脈（secret backend を持つ、E-G2・E-G5）。
 	Write core.WriteContext
 }
 
-// Output は手順の段の結果。
+// Output は Procedure の step の結果。
 type Output struct {
 	Runs   []plan.RunStatus
 	Halts  []plan.Halt
 	Errors []string
 }
 
-// Targets は手順の対象の ID を名前順で返す。ID で名指しなら宣言に無くてもよい。
+// Targets は Procedure の対象の ID を名前順で返す。ID で名指しなら宣言に無くてもよい。
 // select なら宣言した Resource から選ぶ。
 func Targets(p core.Procedure, g *graph.Graph) []core.ID {
 	if p.Target.ID != "" {
@@ -101,8 +101,8 @@ func Targets(p core.Procedure, g *graph.Graph) []core.ID {
 	return g.Select(core.Selection{Type: p.Target.Type, Labels: p.Target.Labels})
 }
 
-// Prepare は手順が受け持つ項目（on_drift の drift_fields、E-F2・E-A5・N-A4）と、
-// 止まった手順の対象（収束でも宣言どおりに戻さない、不変条件 18・E-A9）を返す。
+// Prepare は Procedure が受け持つ field（on_drift の drift_fields、E-F2・E-A5・N-A4）と、
+// halt した Procedure の対象（収束でも宣言どおりに戻さない、不変条件 18・E-A9）を返す。
 func Prepare(procs []core.Procedure, res []core.Resource, runs []record.Run) (map[core.ID][]string, map[core.ID]string) {
 	g := graph.New(res)
 	handover := map[core.ID][]string{}
@@ -122,13 +122,13 @@ func Prepare(procs []core.Procedure, res []core.Resource, runs []record.Run) (ma
 			continue
 		}
 		if id, err := core.ParseRef(r.Target); err == nil {
-			held[id] = fmt.Sprintf("手順 %s（%s）が止まっている: %s", r.Procedure, r.RunID, r.Reason)
+			held[id] = fmt.Sprintf("Procedure %s（%s）が halt している: %s", r.Procedure, r.RunID, r.Reason)
 		}
 	}
 	return handover, held
 }
 
-// Policies は手順の段 policy が足した、手順の間だけ効く Policy（E-Q3・N-D4）。
+// Policies は Procedure の step policy が足した、Procedure の間だけ効く Policy（E-Q3・N-D4）。
 func Policies(runs []record.Run) []core.Policy {
 	var out []core.Policy
 	for _, r := range runs {
@@ -141,7 +141,7 @@ func Policies(runs []record.Run) []core.Policy {
 	return out
 }
 
-// Temporary は手順の段 policy を一時的な Policy の一覧の形にする。
+// Temporary は Procedure の step policy を一時的な Policy の一覧の形にする。
 func Temporary(runs []record.Run) []plan.Temporary {
 	var out []plan.Temporary
 	for _, r := range runs {
@@ -157,12 +157,12 @@ type engine struct {
 	in      Input
 	g       *graph.Graph
 	out     Output
-	running map[string]int // 手順 → 済んでいない対象の数（concurrency）
+	running map[string]int // Procedure → 済んでいない対象の数（concurrency）
 	starts  map[string][]record.Command
 	cancels map[string][]record.Command
 }
 
-// Run は手順ごと・対象ごとに、起こすか・進めるか・止めるか・済んだかを決める。
+// Run は Procedure ごと・対象ごとに、起こすか・進めるか・halt するか・済んだかを決める。
 // Exec があれば進めて書く。
 func Run(ctx context.Context, in Input) Output {
 	e := &engine{in: in, g: graph.New(in.Resources), running: map[string]int{},
@@ -189,7 +189,7 @@ func Run(ctx context.Context, in Input) Output {
 			}
 			e.one(ctx, p, id, rp)
 		}
-		// 対象から外れた（宣言・ラベルが変わった）未完了の手順も進め続ける。
+		// 対象から外れた（宣言・ラベルが変わった）未完了の Procedure も進め続ける。
 		for _, r := range in.Runs {
 			if r.Procedure == p.Name && !seen[r.Target] {
 				if id, err := core.ParseRef(r.Target); err == nil {
@@ -199,7 +199,7 @@ func Run(ctx context.Context, in Input) Output {
 			}
 		}
 	}
-	// intent から消えた手順の進みは触らない（止まったまま見せる）。
+	// intent から消えた Procedure の進みは触らない（halt したまま見せる）。
 	for _, r := range in.Runs {
 		if procs[r.Procedure] {
 			continue
@@ -212,15 +212,15 @@ func Run(ctx context.Context, in Input) Output {
 			continue
 		}
 		e.out.Runs = append(e.out.Runs, plan.RunStatus{Procedure: r.Procedure, Target: r.Target, RunID: r.RunID,
-			State: StateHalted, Step: r.Step + 1, StepName: r.StepName, Reason: "手順が intent に無い（sakutei cancel で片づける）"})
-		e.out.Halts = append(e.out.Halts, plan.Halt{Scope: scope(r.Procedure, r.Target), Reason: "手順が intent に無い"})
+			State: StateHalted, Step: r.Step + 1, StepName: r.StepName, Reason: "Procedure が intent に無い（sakutei cancel で片づける）"})
+		e.out.Halts = append(e.out.Halts, plan.Halt{Scope: scope(r.Procedure, r.Target), Reason: "Procedure が intent に無い"})
 	}
-	// 片づけなかった start（対象・手順が無い）を断る。
+	// 片づけなかった start（対象・Procedure が無い）をエラーにする。
 	if in.Exec != nil {
 		for _, list := range e.starts {
 			for _, c := range list {
 				e.audit(record.Entry{Kind: "procedure.start", Procedure: c.Procedure, By: c.By, Result: "error",
-					Error: fmt.Sprintf("起こせない：手順 %q が無いか trigger: manual でない、対象 %q が無い、または同じ対象に未完了の手順がある", c.Procedure, c.Target)})
+					Error: fmt.Sprintf("起こせない：Procedure %q が無いか trigger: manual でない、対象 %q が無い、または同じ対象に未完了の Procedure がある", c.Procedure, c.Target)})
 				e.removeCommand(c)
 			}
 		}
@@ -232,7 +232,7 @@ func key(proc, target string) string { return proc + "\x00" + target }
 
 func scope(proc, target string) string { return "procedure " + proc + " " + target }
 
-// commands は CLI の頼み（start・cancel）を分ける。
+// commands は CLI の command（start・cancel）を分ける。
 func (e *engine) commands(runs map[string]record.Run) {
 	for _, c := range e.in.Exec.Commands {
 		switch c.Kind {
@@ -241,11 +241,11 @@ func (e *engine) commands(runs map[string]record.Run) {
 		case "cancel":
 			e.cancels[c.RunID] = append(e.cancels[c.RunID], c)
 		default:
-			e.audit(record.Entry{Kind: "procedure.command", By: c.By, Result: "error", Error: fmt.Sprintf("知らない頼み %q", c.Kind)})
+			e.audit(record.Entry{Kind: "procedure.command", By: c.By, Result: "error", Error: fmt.Sprintf("知らない command %q", c.Kind)})
 			e.removeCommand(c)
 		}
 	}
-	// 取り消す run が無い頼みは断って片づける。
+	// 取り消す run が無い command はエラーにして片づける。
 	ids := map[string]bool{}
 	for _, r := range runs {
 		ids[r.RunID] = true
@@ -264,7 +264,7 @@ func (e *engine) commands(runs map[string]record.Run) {
 
 func (e *engine) removeCommand(c record.Command) {
 	if err := e.in.Exec.Record.RemoveCommand(c.File); err != nil {
-		e.out.Errors = append(e.out.Errors, "頼みを片づけられない: "+err.Error())
+		e.out.Errors = append(e.out.Errors, "command を片づけられない: "+err.Error())
 	}
 }
 
@@ -274,13 +274,13 @@ func (e *engine) audit(en record.Entry) bool {
 	}
 	en.At = e.in.Now
 	if _, err := e.in.Exec.Audit.Append(en); err != nil {
-		e.out.Errors = append(e.out.Errors, "監査に書けない: "+err.Error())
+		e.out.Errors = append(e.out.Errors, "audit に書けない: "+err.Error())
 		return false
 	}
 	return true
 }
 
-// run は 1 つの手順・対象の判定の文脈。
+// run は 1 つの Procedure・対象の判定の文脈。
 type run struct {
 	e       *engine
 	p       core.Procedure
@@ -303,7 +303,7 @@ func (e *engine) one(ctx context.Context, p core.Procedure, id core.ID, r *recor
 	e.out.Runs = append(e.out.Runs, x.st)
 }
 
-// decide は 1 つの手順・対象を進める。出すものが無ければ false。
+// decide は 1 つの Procedure・対象を進める。出すものが無ければ false。
 func (x *run) decide(ctx context.Context) bool {
 	e := x.e
 	if x.r != nil {
@@ -317,10 +317,10 @@ func (x *run) decide(ctx context.Context) bool {
 				return true
 			}
 		} else if x.r.Sending != nil {
-			// 前の周が送る途中で止まった。送れたか分からないので二度送らない
+			// 前の cycle が送る途中で止まった。送れたか分からないので二度送らない
 			// （不変条件 16、E-A2・N-A2・E-K5）。
 			s := x.p.Steps[min(x.r.Sending.Step, len(x.p.Steps)-1)]
-			x.halt(fmt.Sprintf("段 %s（%s）を送る途中で止まった。送れたか分からないので送り直さない", s.Name, x.r.Sending.Op), true)
+			x.halt(fmt.Sprintf("step %s（%s）を送る途中で止まった。送れたか分からないので送り直さない", s.Name, x.r.Sending.Op), true)
 			x.e.audit(record.Entry{Kind: "procedure.interrupted", Procedure: x.p.Name, Run: x.r.RunID, Resource: x.r.Target,
 				Step: s.Name, Op: x.r.Sending.Op, Result: "halted"})
 			return true
@@ -386,13 +386,13 @@ func (x *run) maybeStart(ctx context.Context) bool {
 		}
 	}
 	if e.running[x.p.Name] >= x.p.Concurrency {
-		x.st.Waiting = fmt.Sprintf("concurrency %d：ほかの対象の手順が済むのを待つ", x.p.Concurrency)
+		x.st.Waiting = fmt.Sprintf("concurrency %d：ほかの対象の Procedure が済むのを待つ", x.p.Concurrency)
 		return true
 	}
 	e.running[x.p.Name]++
 	if e.in.Exec == nil {
 		x.st.Step, x.st.StepName = 1, x.p.Steps[0].Name
-		x.st.Waiting = "起こす（段 " + x.p.Steps[0].Name + " から）"
+		x.st.Waiting = "起こす（step " + x.p.Steps[0].Name + " から）"
 		return true
 	}
 	x.r = &record.Run{Procedure: x.p.Name, Target: x.target.String(), RunID: runID(x.p.Name, x.target, e.in.Now, e.in.Cycle),
@@ -414,8 +414,8 @@ func runID(proc string, target core.ID, now time.Time, cycle uint64) string {
 	return fmt.Sprintf("%s-%s-%s-c%d", proc, hex.EncodeToString(sum[:3]), now.UTC().Format("20060102T150405Z"), cycle)
 }
 
-// blocked は対象に当たる Policy が手順を止める理由（report・Record が読めない）。
-// 窓の外・freeze は手順の起動と書く段にも効く（E-J3・E-J4）。
+// blocked は対象に該当する Policy が Procedure を進めない理由（report・Record が読めない）。
+// window の外・freeze は Procedure の起動と書く step にも効く（E-J3・E-J4）。
 func (x *run) blocked() string {
 	var report []string
 	for _, p := range x.e.in.Policies {
@@ -439,28 +439,28 @@ func (x *run) policies() []string {
 	return out
 }
 
-// save は進みを書く。書けなければ周の誤りにして進めない。
+// save は進みを書く。書けなければ cycle のエラーにして進めない。
 func (x *run) save() bool {
 	if x.e.in.Exec == nil {
 		return true
 	}
 	if err := x.e.in.Exec.Record.WriteRun(*x.r); err != nil {
-		x.e.out.Errors = append(x.e.out.Errors, fmt.Sprintf("手順 %s の進みを書けない: %v", x.r.RunID, err))
+		x.e.out.Errors = append(x.e.out.Errors, fmt.Sprintf("Procedure %s の進みを書けない: %v", x.r.RunID, err))
 		x.st.Error = "進みを Record に書けない: " + err.Error()
 		return false
 	}
 	return true
 }
 
-// advance は段を進められるだけ進める。待つ段・承認・書く段の失敗で止まる。
+// advance は step を進められるだけ進める。待つ step・承認・書く step の失敗で止まる。
 func (x *run) advance(ctx context.Context) {
 	e := x.e
 	for i := 0; ; i++ {
 		if i > len(x.p.Steps)+1 {
-			return // 段の数より多く回らない（念のため）
+			return // step の数より多く回らない（念のため）
 		}
 		if x.p.Timeout > 0 && !e.in.Now.Before(x.r.StartedAt.Add(x.p.Timeout)) {
-			x.halt(fmt.Sprintf("手順の timeout %s を過ぎた", x.p.Timeout), false)
+			x.halt(fmt.Sprintf("Procedure の timeout %s を過ぎた", x.p.Timeout), false)
 			return
 		}
 		// 済んだかは観測で決める。不明は済んでいない（不変条件 18）。
@@ -472,7 +472,7 @@ func (x *run) advance(ctx context.Context) {
 		}
 		if x.r.Step >= len(x.p.Steps) {
 			if x.p.DoneWhen == "" {
-				x.done("段が全部済んだ")
+				x.done("step が全部済んだ")
 				return
 			}
 			x.st.Step, x.st.StepName = len(x.p.Steps), x.p.Steps[len(x.p.Steps)-1].Name
@@ -501,12 +501,12 @@ func (x *run) advance(ctx context.Context) {
 	}
 }
 
-// next は今の段を済ませて次の段へ進め、書く。
+// next は今の step を済ませて次の step へ進め、書く。
 func (x *run) next(result string) bool {
 	s := x.p.Steps[x.r.Step]
 	x.st.Passed = append(x.st.Passed, s.Name)
 	if x.e.in.Exec == nil {
-		return false // plan は 1 段先までしか見ない
+		return false // plan は 1 step 先までしか見ない
 	}
 	x.r.Step++
 	x.r.StepStartedAt = x.e.in.Now
@@ -521,7 +521,7 @@ func (x *run) next(result string) bool {
 	return true
 }
 
-// step は段 1 つを判定し、進めたら true。
+// step は step 1 つを判定し、進めたら true。
 func (x *run) step(ctx context.Context, s core.Step) bool {
 	e := x.e
 	since := x.r.StepStartedAt
@@ -558,7 +558,7 @@ func (x *run) step(ctx context.Context, s core.Step) bool {
 			t := record.TempPolicy{Name: x.p.Name + "/" + s.Name, Select: s.Policy.Select, Mode: "report",
 				Reason: s.Policy.Reason, By: "procedure " + x.r.RunID, At: e.in.Now}
 			if t.Reason == "" {
-				t.Reason = "手順 " + x.p.Name + " の段 " + s.Name
+				t.Reason = "Procedure " + x.p.Name + " の step " + s.Name
 			}
 			x.r.Policies = append(x.r.Policies, t)
 		}
@@ -571,13 +571,13 @@ func (x *run) step(ctx context.Context, s core.Step) bool {
 
 func (x *run) timedOut(s core.Step, since time.Time) bool {
 	if s.Timeout > 0 && !x.e.in.Now.Before(since.Add(s.Timeout)) {
-		x.halt(fmt.Sprintf("段 %s の timeout %s を過ぎた", s.Name, s.Timeout), false)
+		x.halt(fmt.Sprintf("step %s の timeout %s を過ぎた", s.Name, s.Timeout), false)
 		return true
 	}
 	return false
 }
 
-// gate は承認を待つ段（E-A5・E-L2・E-J8）。
+// gate は承認を待つ step（E-A5・E-L2・E-J8）。
 func (x *run) gate(s core.Step) bool {
 	e := x.e
 	id := x.r.RunID + "-" + s.Name
@@ -599,16 +599,16 @@ func (x *run) gate(s core.Step) bool {
 		}
 		return x.next("approved")
 	case approval.Rejected:
-		x.halt(fmt.Sprintf("段 %s の承認 %s を %s が拒否した", s.Name, id, strings.Join(st.RejectedBy, "・")), false)
+		x.halt(fmt.Sprintf("step %s の承認 %s を %s が拒否した", s.Name, id, strings.Join(st.RejectedBy, "・")), false)
 		return false
 	case approval.Expired:
-		x.halt(fmt.Sprintf("段 %s の承認 %s の期限が切れた", s.Name, id), false)
+		x.halt(fmt.Sprintf("step %s の承認 %s の期限が切れた", s.Name, id), false)
 		return false
 	case approval.Pending:
 		x.st.Waiting = fmt.Sprintf("sakutei approve %s（%s）", id, st.Summary())
 		return false
 	}
-	// 無い・使った（同じ段にもう一度来た）：頼む。
+	// 無い・使った（同じ step にもう一度来た）：頼む。
 	x.request(id, "gate", s.Name, []record.Rule{approval.Rules("gate "+s.Name, s.Gate)}, s.Gate.Timeout, ok)
 	return false
 }
@@ -621,7 +621,7 @@ func (x *run) request(id, kind, step string, rules []record.Rule, timeout time.D
 	if e.in.Exec == nil {
 		return
 	}
-	req := record.ApprovalRequest{ID: id, Kind: kind, Subject: fmt.Sprintf("手順 %s %s 段 %s", x.p.Name, x.r.Target, step),
+	req := record.ApprovalRequest{ID: id, Kind: kind, Subject: fmt.Sprintf("Procedure %s %s step %s", x.p.Name, x.r.Target, step),
 		Applicant: x.r.StartedBy, Rules: rules, CreatedAt: e.in.Now, State: record.RequestPending}
 	if timeout > 0 {
 		exp := e.in.Now.Add(timeout)
@@ -634,13 +634,13 @@ func (x *run) request(id, kind, step string, rules []record.Rule, timeout time.D
 	e.audit(record.Entry{Kind: "approval.request", Request: id, Procedure: x.p.Name, Run: x.r.RunID, Step: step, By: x.r.StartedBy, Result: "ok"})
 }
 
-// write は書く段（apply・invoke）。
+// write は書く step（apply・invoke）。
 func (x *run) write(ctx context.Context, s core.Step) bool {
 	e := x.e
 	if s.Critical && !e.in.Daemon {
-		// 止まったときに見張る者がいる常駐だけが進める（§2.2、不変条件 16）。
+		// 止まったときに見張る者がいる daemon だけが進める（§2.2、不変条件 16）。
 		x.st.NeedsDaemon = true
-		x.st.Waiting = fmt.Sprintf("段 %s は critical。常駐だけが進める", s.Name)
+		x.st.Waiting = fmt.Sprintf("step %s は critical。daemon だけが進める", s.Name)
 		return false
 	}
 	if why := x.blocked(); why != "" {
@@ -655,23 +655,23 @@ func (x *run) write(ctx context.Context, s core.Step) bool {
 		r.ID.Name = core.Substitute(r.ID.Name, x.target.Name, x.desired)
 		f, err := x.fields(r)
 		if err != nil {
-			x.halt(fmt.Sprintf("段 %s の宣言: %v", s.Name, err), false)
+			x.halt(fmt.Sprintf("step %s の宣言: %v", s.Name, err), false)
 			return false
 		}
 		r.Fields = f
 		res, target = &r, r.ID
-		// 現実を見て、宣言どおりなら当てずに進む。分からなければ書かない（不変条件 3）。
+		// 現実を見て、宣言どおりなら Apply せずに進む。分からなければ書かない（不変条件 3）。
 		ks := e.in.Readers[target.Provider()].Schema().Kinds[target.Kind()]
 		c := plan.Compare(r, ks, plan.Observe(ctx, []core.ID{target}, e.in.Readers)[target])
 		switch c.Op {
 		case plan.None:
 			return x.next("already")
 		case plan.Unknown, plan.Converging:
-			x.st.Waiting = fmt.Sprintf("段 %s の %s が %s（%s）", s.Name, target, c.Op, c.Note)
+			x.st.Waiting = fmt.Sprintf("step %s の %s が %s（%s）", s.Name, target, c.Op, c.Note)
 			return false
 		}
 		destructive = c.Op == plan.Delete || c.Replace
-		x.st.Waiting = fmt.Sprintf("当てる: %s %s", c.Op, target)
+		x.st.Waiting = fmt.Sprintf("Apply する: %s %s", c.Op, target)
 		if e.in.Exec == nil {
 			return false
 		}
@@ -687,7 +687,7 @@ func (x *run) write(ctx context.Context, s core.Step) bool {
 	}
 	spec, ok := inv.Ops(target.Kind())[s.Op]
 	if !ok {
-		x.halt(fmt.Sprintf("provider %q の種類 %q に操作 %q が無い", target.Provider(), target.Kind(), s.Op), false)
+		x.halt(fmt.Sprintf("provider %q の type %q に操作 %q が無い", target.Provider(), target.Kind(), s.Op), false)
 		return false
 	}
 	destructive = spec.Destructive
@@ -740,25 +740,25 @@ func (x *run) send(ctx context.Context, s core.Step, op string, destructive bool
 		x.st.Waiting = ""
 		return x.next("ok")
 	case errors.Is(err, core.ErrNotSent):
-		// 送れていない：記録を消して次の周に送り直す（E-A2）。
+		// 送れていない：記録を消して次の cycle に送り直す（E-A2）。
 		x.r.Sending = nil
 		x.save()
 		en.Result, en.Error = "not_sent", err.Error()
 		e.audit(en)
-		x.st.Waiting = "送れていない（次の周に送り直す）: " + err.Error()
+		x.st.Waiting = "送れていない（次の cycle に送り直す）: " + err.Error()
 		return false
 	default:
-		// 送れたか分からない：二度送らず止める（不変条件 16）。
+		// 送れたか分からない：二度送らず halt する（不変条件 16）。
 		x.r.Sending = nil
 		en.Result, en.Error = "error", err.Error()
 		e.audit(en)
 		x.st.Error = err.Error()
-		x.halt(fmt.Sprintf("段 %s が失敗した（送れたか分からない）: %v", s.Name, err), true)
+		x.halt(fmt.Sprintf("step %s が失敗した（送れたか分からない）: %v", s.Name, err), true)
 		return false
 	}
 }
 
-// fields は apply の段の項目を置き換えて正規形にする。
+// fields は apply step の field を置き換えて正規形にする。
 func (x *run) fields(r core.Resource) (core.Fields, error) {
 	ks := x.e.in.Readers[r.ID.Provider()].Schema().Kinds[r.ID.Kind()]
 	out := core.Fields{}
@@ -768,15 +768,15 @@ func (x *run) fields(r core.Resource) (core.Fields, error) {
 		}
 		n, err := core.Normalize(ks.Fields[k].Type, v)
 		if err != nil {
-			return nil, fmt.Errorf("項目 %q: %w", k, err)
+			return nil, fmt.Errorf("field %q: %w", k, err)
 		}
 		out[k] = n
 	}
 	return out, nil
 }
 
-// halt は手順を止める。resumable なら続けるための承認を頼む（送れたか分からない・
-// critical の段で止まった、E-A5・E-K5）。止まった対象は収束でも戻さない（E-A9）。
+// halt は Procedure を halt する。resumable なら続けるための承認を頼む（送れたか分からない・
+// critical の step で止まった、E-A5・E-K5）。halt した対象は収束でも戻さない（E-A9）。
 func (x *run) halt(reason string, resumable bool) {
 	e := x.e
 	x.st.State, x.st.Reason, x.st.Waiting = StateHalted, reason, ""
@@ -795,11 +795,11 @@ func (x *run) halt(reason string, resumable bool) {
 	if resumable {
 		_, ok := e.in.Approvals[x.r.Resume]
 		x.request(x.r.Resume, "resume", x.r.StepName, x.resumeRules(), 0, ok)
-		x.st.Waiting = fmt.Sprintf("続けるなら sakutei approve %s（段 %s をもう一度送る）・やめるなら sakutei cancel %s", x.r.Resume, x.r.StepName, x.r.RunID)
+		x.st.Waiting = fmt.Sprintf("続けるなら sakutei approve %s（step %s をもう一度送る）・やめるなら sakutei cancel %s", x.r.Resume, x.r.StepName, x.r.RunID)
 	}
 }
 
-// resumeRules は止まった手順を続ける承認の要件：手順の最初の gate と同じ。gate が
+// resumeRules は halt した Procedure を続ける承認の要件：Procedure の最初の gate と同じ。gate が
 // 無ければ申請者でない 1 人。
 func (x *run) resumeRules() []record.Rule {
 	for _, s := range x.p.Steps {
@@ -810,7 +810,7 @@ func (x *run) resumeRules() []record.Rule {
 	return []record.Rule{{From: "resume", N: 1}}
 }
 
-// resume は止まった手順を続けるか。続けるなら true。
+// resume は halt した Procedure を続けるか。続けるなら true。
 func (x *run) resume() bool {
 	e := x.e
 	x.st.State, x.st.Reason = StateHalted, x.r.Reason
@@ -860,7 +860,7 @@ func (x *run) done(why string) {
 		return
 	}
 	if err := e.in.Exec.Record.RemoveRun(x.r.Procedure, x.r.Target); err != nil {
-		e.out.Errors = append(e.out.Errors, "済んだ手順の進みを消せない: "+err.Error())
+		e.out.Errors = append(e.out.Errors, "済んだ Procedure の進みを消せない: "+err.Error())
 		return
 	}
 	e.running[x.p.Name]--
@@ -870,7 +870,7 @@ func (x *run) done(why string) {
 func (x *run) cancel(cs []record.Command) bool {
 	e := x.e
 	if err := e.in.Exec.Record.RemoveRun(x.r.Procedure, x.r.Target); err != nil {
-		e.out.Errors = append(e.out.Errors, "取り消した手順の進みを消せない: "+err.Error())
+		e.out.Errors = append(e.out.Errors, "取り消した Procedure の進みを消せない: "+err.Error())
 		return true
 	}
 	e.running[x.p.Name]--
@@ -884,7 +884,7 @@ func (x *run) cancel(cs []record.Command) bool {
 }
 
 // eval は式を対象に合わせて読み、今の観測で評価する（plan と reconcile で同じ、
-// E-J9）。参照する対象をこのとき観測する（周をまたいで持ち越さない、不変条件 1）。
+// E-J9）。参照する対象をこのとき観測する（cycle をまたいで持ち越さない、不変条件 1）。
 func (x *run) eval(ctx context.Context, src string) (core.Tri, string) {
 	c, err := condition.Parse(core.Substitute(src, x.target.Name, x.desired))
 	if err != nil {

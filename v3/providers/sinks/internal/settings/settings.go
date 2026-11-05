@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package settings は送り先のモジュールが共通に使う settings の読み方・TLS・
-// トークン・HTTP の送りの下回り（設計 §5.6 の sinks、E-H2・E-H3・E-L1）。
+// Package settings は sink のモジュールが共通に使う処理（settings の読み方・TLS・
+// トークン・HTTP の送信、設計 §5.6 の sinks、E-H2・E-H3・E-L1）。
 package settings
 
 import (
@@ -33,11 +33,11 @@ import (
 	"time"
 )
 
-// DefaultTimeout は送り 1 回の時間の上限の既定。
+// DefaultTimeout は 1 回の送信の timeout の既定値。
 const DefaultTimeout = 10 * time.Second
 
-// Reader は settings を読む。誤りは貯めて Err でまとめて返す。読まなかった項目は
-// 知らない項目として断る。
+// Reader は settings を読む。エラーは貯めて Err でまとめて返す。読まなかった field は
+// 不明な field としてエラーにする。
 type Reader struct {
 	kind string
 	m    map[string]any
@@ -45,7 +45,7 @@ type Reader struct {
 	errs []string
 }
 
-// New は kind（誤りの文の頭）の settings を読む Reader。
+// New は kind（エラーメッセージの頭に付ける）の settings を読む Reader。
 func New(kind string, m map[string]any) *Reader {
 	return &Reader{kind: kind, m: m, used: map[string]bool{}}
 }
@@ -58,7 +58,7 @@ func (r *Reader) get(key string) (any, bool) {
 	return v, ok && v != nil
 }
 
-// Str は文字列の項目（無ければ ""）。
+// Str は文字列の field（無ければ ""）。
 func (r *Reader) Str(key string) string {
 	v, ok := r.get(key)
 	if !ok {
@@ -71,7 +71,7 @@ func (r *Reader) Str(key string) string {
 	return s
 }
 
-// Strs は文字列の並び（無ければ nil）。
+// Strs は文字列のリスト（無ければ nil）。
 func (r *Reader) Strs(key string) []string {
 	v, ok := r.get(key)
 	if !ok {
@@ -79,14 +79,14 @@ func (r *Reader) Strs(key string) []string {
 	}
 	list, isList := v.([]any)
 	if !isList {
-		r.fail("%s に文字列の並びを書く", key)
+		r.fail("%s に文字列のリストを書く", key)
 		return nil
 	}
 	out := make([]string, 0, len(list))
 	for _, it := range list {
 		s, isStr := it.(string)
 		if !isStr || s == "" {
-			r.fail("%s に文字列の並びを書く", key)
+			r.fail("%s に文字列のリストを書く", key)
 			return nil
 		}
 		out = append(out, s)
@@ -94,7 +94,7 @@ func (r *Reader) Strs(key string) []string {
 	return out
 }
 
-// Bool は真偽の項目（無ければ false）。
+// Bool は真偽値の field（無ければ false）。
 func (r *Reader) Bool(key string) bool {
 	v, ok := r.get(key)
 	if !ok {
@@ -107,7 +107,7 @@ func (r *Reader) Bool(key string) bool {
 	return b
 }
 
-// Int は整数の項目（無ければ def）。
+// Int は整数の field（無ければ def）。
 func (r *Reader) Int(key string, def int) int {
 	v, ok := r.get(key)
 	if !ok {
@@ -121,7 +121,7 @@ func (r *Reader) Int(key string, def int) int {
 	return n
 }
 
-// Duration は長さの項目（10s のような Go の長さ。無ければ def）。
+// Duration は時間の field（10s のような Go の duration。無ければ def）。
 func (r *Reader) Duration(key string, def time.Duration) time.Duration {
 	s := r.Str(key)
 	if s == "" {
@@ -129,7 +129,7 @@ func (r *Reader) Duration(key string, def time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil || d <= 0 {
-		r.fail("%s %q: 10s のような正の長さを書く", key, s)
+		r.fail("%s %q: 10s のような正の時間を書く", key, s)
 		return def
 	}
 	return d
@@ -158,7 +158,7 @@ func (r *Reader) StrMap(key string) map[string]string {
 	return out
 }
 
-// Sub は入れ子のマップの項目を読む Reader（無ければ nil）。Err は親に貯める。
+// Sub は入れ子のマップの field を読む Reader（無ければ nil）。Err は親に貯める。
 func (r *Reader) Sub(key string) *Reader {
 	v, ok := r.get(key)
 	if !ok {
@@ -172,10 +172,10 @@ func (r *Reader) Sub(key string) *Reader {
 	return &Reader{kind: key, m: m, used: map[string]bool{}}
 }
 
-// Fail は呼び手の検査の誤りを足す。
+// Fail は呼び出し側の検査のエラーを足す。
 func (r *Reader) Fail(format string, a ...any) { r.fail(format, a...) }
 
-// Err は貯めた誤りと知らない項目。subs は Sub で読んだ入れ子（nil は飛ばす）。
+// Err は貯めたエラーと不明な field を返す。subs は Sub で読んだ入れ子（nil は飛ばす）。
 func (r *Reader) Err(subs ...*Reader) error {
 	errs := append([]string(nil), r.errs...)
 	all := append([]*Reader{r}, subs...)
@@ -204,21 +204,21 @@ func (r *Reader) Err(subs ...*Reader) error {
 			if x != r {
 				prefix = x.kind + "."
 			}
-			errs = append(errs, fmt.Sprintf("知らない項目 %s%s（書ける項目: %s）", prefix, strings.Join(bad, ", "), strings.Join(known, ", ")))
+			errs = append(errs, fmt.Sprintf("不明な field %s%s（書ける field: %s）", prefix, strings.Join(bad, ", "), strings.Join(known, ", ")))
 		}
 	}
 	if len(errs) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%s の送り先: %s", r.kind, strings.Join(errs, "。"))
+	return fmt.Errorf("%s の sink: %s", r.kind, strings.Join(errs, "。"))
 }
 
-// TLS は送り先に出る TLS（tls: {ca, cert, key, server_name}）。
+// TLS は sink が外へ接続するときの TLS（tls: {ca, cert, key, server_name}）。
 type TLS struct {
 	CA, Cert, Key, ServerName string
 }
 
-// ReadTLS は tls の項目を読む（無ければ nil）。
+// ReadTLS は tls の field を読む（無ければ nil）。
 func (r *Reader) ReadTLS() (*TLS, *Reader) {
 	sub := r.Sub("tls")
 	if sub == nil {
@@ -231,7 +231,7 @@ func (r *Reader) ReadTLS() (*TLS, *Reader) {
 	return t, sub
 }
 
-// Config は TLS を tls.Config にする。t が nil なら既定（計算機の CA）。
+// Config は TLS を tls.Config にする。t が nil なら既定（システムの CA）。
 func (t *TLS) Config() (*tls.Config, error) {
 	c := &tls.Config{MinVersion: tls.VersionTLS12}
 	if t == nil {
@@ -259,8 +259,8 @@ func (t *TLS) Config() (*tls.Config, error) {
 	return c, nil
 }
 
-// ReadToken はトークンのファイルの最初の行を読む。値は誤りの文に出さない
-// （不変条件 27）。送るたびに読む（置き換えに追いつく、E-G3）。
+// ReadToken はトークンのファイルの最初の行を読む。値はエラーメッセージに出さない
+// （不変条件 27）。送るたびに読む（ファイルの差し替えに追従する、E-G3）。
 func ReadToken(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -273,7 +273,7 @@ func ReadToken(path string) (string, error) {
 	return tok, nil
 }
 
-// CheckURL は送り先の URL を確かめる。http は loopback の宛先か plaintext のとき
+// CheckURL は sink の URL を確かめる。http は loopback の宛先か plaintext のとき
 // だけ（外向きの平文は明示したときだけ、E-H5・N-L4）。
 func CheckURL(key, raw string, plaintext bool) (*url.URL, error) {
 	u, err := url.Parse(raw)
@@ -281,7 +281,7 @@ func CheckURL(key, raw string, plaintext bool) (*url.URL, error) {
 		return nil, fmt.Errorf("%s %q: http(s)://host:port の形で書く", key, Redact(raw))
 	}
 	if u.User != nil {
-		return nil, fmt.Errorf("%s %q: URL に資格を書かない（token_file に書く）", key, Redact(raw))
+		return nil, fmt.Errorf("%s %q: URL に credential を書かない（token_file に書く）", key, Redact(raw))
 	}
 	if u.Scheme == "http" && !plaintext && !LoopbackHost(u.Hostname()) {
 		return nil, fmt.Errorf("%s %q: loopback でない宛先に平文の http で送るには plaintext: true を書く", key, Redact(raw))
@@ -298,23 +298,23 @@ func LoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// Redact は URL の資格と問い合わせを隠す。
+// Redact は URL の credential とクエリを隠す。
 func Redact(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "（読めない URL）"
+		return "（解析できない URL）"
 	}
 	u.User, u.RawQuery = nil, ""
 	return u.String()
 }
 
-// Client は送りに使う HTTP の下回り。
+// Client は送信に使う HTTP client。
 type Client struct {
 	HTTP      *http.Client
 	TokenFile string // 書けば Authorization: Bearer <token> を付ける
 }
 
-// NewClient は TLS と時間の上限から Client を作る。
+// NewClient は TLS と timeout から Client を作る。
 func NewClient(t *TLS, timeout time.Duration, tokenFile string) (*Client, error) {
 	tc, err := t.Config()
 	if err != nil {
@@ -325,8 +325,8 @@ func NewClient(t *TLS, timeout time.Duration, tokenFile string) (*Client, error)
 	return &Client{HTTP: &http.Client{Transport: tr, Timeout: timeout}, TokenFile: tokenFile}, nil
 }
 
-// PostJSON は body を POST し、2xx でなければ誤りを返す。誤りの文に応答の本文を
-// 短く引く（秘密は送っていない）。
+// PostJSON は body を POST し、2xx でなければエラーを返す。エラーメッセージに応答の
+// 本文を短く含める（secret は送っていない）。
 func (c *Client) PostJSON(ctx context.Context, u string, body []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
@@ -342,7 +342,7 @@ func (c *Client) PostJSON(ctx context.Context, u string, body []byte) error {
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		// url.Error は URL を含む。問い合わせを隠して返す。
+		// url.Error は URL を含む。クエリを隠して返す。
 		var ue *url.Error
 		if errors.As(err, &ue) {
 			return fmt.Errorf("%s: %v", Redact(u), ue.Err)
@@ -357,7 +357,7 @@ func (c *Client) PostJSON(ctx context.Context, u string, body []byte) error {
 	return nil
 }
 
-// Clip は誤りの文に引く外の文を 1 行の上限つきにする。
+// Clip はエラーメッセージに含める外部の文を、1 行・長さの上限つきにする。
 func Clip(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 200 {

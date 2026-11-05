@@ -24,24 +24,24 @@ import (
 )
 
 // targetPlaceholder は読み込みのときに {target} の代わりに置く名前（式の形と
-// 参照の種類・項目を確かめる）。
+// 参照の type・field を確かめる）。
 const targetPlaceholder = "_target_"
 
-// checkProcedures は手順を断る（不変条件 15・25、E-M3）：同じ名前・知らない種類・
-// 項目・操作・式の誤り、同じ項目を 2 つの手順が受け持つ、申請者が分からない
-// separation の gate。
+// checkProcedures は Procedure を検証し、次のものを reject する（不変条件 15・25、
+// E-M3）：同じ名前・知らない type・field・操作・式の誤り、同じ field を 2 つの
+// Procedure が受け持つ、申請者が分からない separation の gate。
 func checkProcedures(procs []core.Procedure, res []core.Resource, providers map[string]core.Provider, checks map[string]core.CheckFunc) []core.Diagnostic {
 	var diags []core.Diagnostic
 	seen := map[string]core.Origin{}
 	g := graph.New(res)
-	owner := map[string]string{} // 対象の ID と項目 → 受け持つ手順
+	owner := map[string]string{} // 対象の ID と field → 受け持つ Procedure
 	lookup := func(typ string) (core.KindSchema, string) { return kindOf(core.ID{Type: typ}, providers) }
 	hasCheck := func(name string) bool { _, ok := checks[name]; return ok }
 	for _, p := range procs {
 		target := "procedure " + p.Name
 		rej := func(format string, a ...any) { diags = append(diags, reject(p.Origin, target, format, a...)) }
 		if first, dup := seen[p.Name]; dup {
-			rej("同じ名前の手順が 2 つある（先は %s）", first)
+			rej("同じ名前の Procedure が 2 つある（先は %s）", first)
 		}
 		seen[p.Name] = p.Origin
 		ks, why := kindOf(core.ID{Type: p.Target.Type}, providers)
@@ -49,11 +49,11 @@ func checkProcedures(procs []core.Procedure, res []core.Resource, providers map[
 			rej("target の type %s: %s", p.Target.Type, why)
 			continue
 		}
-		// 手順が受け持つ項目（E-F2・E-A5）。同じ対象の同じ項目を 2 つの手順が受け
-		// 持てば、どちらが当てるかが決まらない。
+		// Procedure が受け持つ field（E-F2・E-A5）。同じ対象の同じ field を 2 つの
+		// Procedure が受け持てば、どちらが Apply するかが決まらない。
 		for _, f := range p.Trigger.Fields {
 			if _, ok := ks.Fields[f]; !ok {
-				rej("drift_fields の %q は種類 %q の項目に無い（ある項目: %s）", f, p.Target.Type, strings.Join(sortedKeys(ks.Fields), ", "))
+				rej("drift_fields の %q は type %q の field に無い（ある field: %s）", f, p.Target.Type, strings.Join(sortedKeys(ks.Fields), ", "))
 			}
 		}
 		var targets []core.ID
@@ -67,7 +67,7 @@ func checkProcedures(procs []core.Procedure, res []core.Resource, providers map[
 				for _, f := range p.Trigger.Fields {
 					k := id.String() + "." + f
 					if other, ok := owner[k]; ok && other != p.Name {
-						rej("%s の項目 %q を手順 %s も受け持つ", id, f, other)
+						rej("%s の field %q を Procedure %s も受け持つ", id, f, other)
 					}
 					owner[k] = p.Name
 				}
@@ -76,7 +76,7 @@ func checkProcedures(procs []core.Procedure, res []core.Resource, providers map[
 		// separation の gate は申請者（sakutei start --as）が要る（E-L2・N-L2）。
 		for _, s := range p.Steps {
 			if s.Kind == core.StepGate && s.Gate != nil && s.Gate.Separation && p.Trigger.Kind != core.TriggerManual {
-				rej("段 %s: separation: true の gate は trigger: manual の手順にだけ書ける（申請者が分からない）", s.Name)
+				rej("step %s: separation: true の gate は trigger: manual の Procedure にだけ書ける（申請者が分からない）", s.Name)
 			}
 		}
 		lint := func(what, src string) {
@@ -96,15 +96,15 @@ func checkProcedures(procs []core.Procedure, res []core.Resource, providers map[
 		lint("done_when", p.DoneWhen)
 		lint("invariant", p.Invariant)
 		for _, s := range p.Steps {
-			lint("段 "+s.Name+" の skip_if", s.SkipIf)
-			lint("段 "+s.Name+" の wait の when", s.When)
+			lint("step "+s.Name+" の skip_if", s.SkipIf)
+			lint("step "+s.Name+" の wait の when", s.When)
 			switch s.Kind {
 			case core.StepInvoke:
-				// 一回きりの操作は Invoker を持つ provider の、種類の操作だけ（不変条件 15）。
+				// 一回きりの操作は Invoker を持つ provider の、その type の操作だけ（不変条件 15）。
 				tid := core.ID{Type: p.Target.Type}
 				inv, ok := providers[tid.Provider()].(core.Invoker)
 				if !ok {
-					rej("段 %s: provider %q は一回きりの操作（invoke）を持たない", s.Name, tid.Provider())
+					rej("step %s: provider %q は一回きりの操作（invoke）を持たない", s.Name, tid.Provider())
 					continue
 				}
 				ops := inv.Ops(tid.Kind())
@@ -114,7 +114,7 @@ func checkProcedures(procs []core.Procedure, res []core.Resource, providers map[
 						names = append(names, n)
 					}
 					sort.Strings(names)
-					rej("段 %s: 種類 %q に操作 %q が無い（ある操作: %s）", s.Name, p.Target.Type, s.Op, strings.Join(names, ", "))
+					rej("step %s: type %q に操作 %q が無い（ある操作: %s）", s.Name, p.Target.Type, s.Op, strings.Join(names, ", "))
 				}
 			case core.StepApply:
 				r := *s.Apply
@@ -122,19 +122,19 @@ func checkProcedures(procs []core.Procedure, res []core.Resource, providers map[
 				f := core.Fields{}
 				for k, v := range r.Fields {
 					if str, ok := v.(string); ok && strings.Contains(str, "{") {
-						continue // 対象ごとに置き換える値は当てるときに確かめる
+						continue // 対象ごとに置き換える値は Apply するときに確かめる
 					}
 					f[k] = v
 				}
 				r.Fields = f
 				_, ds := checkResource(r, providers, checks)
 				for _, d := range ds {
-					rej("段 %s の apply: %s", s.Name, d.Message)
+					rej("step %s の apply: %s", s.Name, d.Message)
 				}
 			case core.StepPolicy:
 				for _, t := range s.Policy.Select.Types {
 					if _, why := kindOf(core.ID{Type: t}, providers); why != "" {
-						rej("段 %s の policy の type %s: %s", s.Name, t, why)
+						rej("step %s の policy の type %s: %s", s.Name, t, why)
 					}
 				}
 			}

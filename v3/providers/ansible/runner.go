@@ -33,13 +33,13 @@ import (
 // Call は 1 つのホストに対する 1 つのモジュールの呼び出し（ad-hoc の ansible の
 // 1 回、E-E3）。
 type Call struct {
-	// Host は inventory のホスト名（パターンではない。1 台だけに当たる）。
+	// Host は inventory のホスト名（パターンではない。1 ホストだけにマッチする）。
 	Host string
 	// Module はモジュールの FQCN（例 ansible.builtin.lineinfile）。
 	Module string
 	// Args はモジュールの引数（コマンドラインにもログにも出さない）。
 	Args map[string]any
-	// Check なら --check --diff で流す（観測）。false なら通常の実行（適用）。
+	// Check なら --check --diff で流す（観測）。false なら通常の実行（Apply）。
 	Check bool
 }
 
@@ -51,28 +51,28 @@ const (
 	StatusSkipped     = "skipped"
 )
 
-// Result はホスト 1 台の結果。
+// Result は 1 ホストの結果。
 type Result struct {
 	Host    string `json:"host"`
 	Status  string `json:"status"`
 	Changed bool   `json:"changed"`
-	// Msg はモジュールか ansible の知らせ（失敗の理由など）。
+	// Msg はモジュールか ansible のメッセージ（失敗の理由など）。
 	Msg string `json:"msg"`
 	// Diff は --diff の差分（ansible の形の文字列）。無ければ空。
 	Diff string `json:"diff"`
 }
 
-// Runner は ansible を走らせる口。Provider は ansible をこの口越しにだけ呼ぶので、
-// ふだんのテストは偽の ansible（ansiblefake）で回り、本物の ansible-core は
+// Runner は ansible を実行する interface。Provider は ansible をこの interface 越しに
+// だけ呼ぶので、ふだんのテストは偽の ansible（ansiblefake）で回り、本物の ansible-core は
 // 統合テスト（build tag integration_v3_ansible）だけが使う（E-P2）。
 //
-// Run は call を 1 回流し、call.Host の結果を返す。ansible を走らせられない・
+// Run は call を 1 回流し、call.Host の結果を返す。ansible を実行できない・
 // 結果が無い（ホストが inventory に無い）・ほかのホストの結果が混じるときは
-// 誤りを返す。モジュールの失敗・届かない・check mode を持たないは誤りではなく
+// エラーを返す。モジュールの失敗・到達できない・check mode を持たない、はエラーではなく
 // Result.Status で返す（E-K1）。
 //
-// Hosts は pattern に当たる inventory のホスト名を返す（ansible --list-hosts）。
-// 適用の前に、Host が 1 台だけを指すことを確かめるのに使う。
+// Hosts は pattern にマッチする inventory のホスト名を返す（ansible --list-hosts）。
+// Apply の前に、Host が 1 ホストだけを指すことを確かめるのに使う。
 type Runner interface {
 	Run(ctx context.Context, call Call) (Result, error)
 	Hosts(ctx context.Context, pattern string) ([]string, error)
@@ -84,7 +84,7 @@ var callbackPlugin []byte
 const (
 	// callbackName は自前の stdout callback の名前（callback/sakutei_json.py）。
 	callbackName = "sakutei_json"
-	// resultPrefix は callback が結果の行の頭に付ける印。
+	// resultPrefix は callback が結果の行の先頭に付ける接頭辞。
 	resultPrefix = "SAKUTEI-RESULT "
 	// argsVar は引数を渡す extra var の名前。
 	argsVar = "__sakutei_args"
@@ -96,7 +96,7 @@ var forcedEnv = []string{
 	"ANSIBLE_STDOUT_CALLBACK", "ANSIBLE_LOAD_CALLBACK_PLUGINS", "ANSIBLE_CALLBACK_PLUGINS", "ANSIBLE_NOCOLOR",
 }
 
-// ExecRunner は本物の ansible（ad-hoc）を os/exec で走らせる Runner。シェルは
+// ExecRunner は本物の ansible（ad-hoc）を os/exec で実行する Runner。シェルは
 // 通さない。引数はコマンドラインに載せず、0600 の一時ファイルの extra vars
 // （-e @file、文字列の値はすべて !unsafe＝テンプレートとして評価しない）で渡し、
 // -a はその変数を指すだけにする。結果は自前の stdout callback が出す 1 行の
@@ -106,7 +106,7 @@ type ExecRunner struct {
 	Path string
 	// Inventory は inventory のファイル（-i）。
 	Inventory string
-	// Env は足す・上書きする環境変数（forcedEnv は除く）。
+	// Env は追加・上書きする環境変数（forcedEnv は除く）。
 	Env map[string]string
 	// Timeout は 1 回の上限（0 なら DefaultTimeout）。
 	Timeout time.Duration
@@ -151,9 +151,9 @@ func (r ExecRunner) Run(ctx context.Context, call Call) (Result, error) {
 	case len(results) == 0:
 		return Result{}, fmt.Errorf("ansible: ホスト %q の結果が無い（inventory に無い）%s", call.Host, stderrTail(stderr))
 	case len(results) > 1:
-		return Result{}, fmt.Errorf("ansible: ホスト %q が %d 台に当たった（%s）。1 つの宣言は 1 台", call.Host, len(results), resultHosts(results))
+		return Result{}, fmt.Errorf("ansible: ホスト %q が %d ホストにマッチした（%s）。1 つの宣言は 1 ホスト", call.Host, len(results), resultHosts(results))
 	case results[0].Host != call.Host:
-		return Result{}, fmt.Errorf("ansible: ホスト %q がほかのホスト %q に当たった。1 つの宣言は inventory の 1 台", call.Host, results[0].Host)
+		return Result{}, fmt.Errorf("ansible: ホスト %q がほかのホスト %q にマッチした。1 つの宣言は inventory の 1 ホスト", call.Host, results[0].Host)
 	}
 	return results[0], nil
 }
@@ -167,9 +167,9 @@ func (r ExecRunner) Hosts(ctx context.Context, pattern string) ([]string, error)
 	return parseListHosts(stdout)
 }
 
-// exec は ansible を argv で走らせる（シェルを通さない）。callbackDir が空で
-// なければ、そこの自前の stdout callback を使わせる。時間切れはプロセスグループ
-// ごと（ansible が開いた ssh も）止める。
+// exec は ansible を argv で実行する（シェルを通さない）。callbackDir が空で
+// なければ、そこにある自前の stdout callback を使わせる。時間切れのときはプロセス
+// グループごと（ansible が開いた ssh も）止める。
 func (r ExecRunner) exec(ctx context.Context, argv []string, callbackDir string) (stdout, stderr []byte, err error) {
 	path := r.Path
 	if path == "" {
@@ -197,12 +197,12 @@ func (r ExecRunner) exec(ctx context.Context, argv []string, callbackDir string)
 		return out.Bytes(), errb.Bytes(), fmt.Errorf("%s が終了コード %d で終わった", path, ee.ExitCode())
 	}
 	if err != nil {
-		return out.Bytes(), errb.Bytes(), fmt.Errorf("%s を走らせられない: %w", path, err)
+		return out.Bytes(), errb.Bytes(), fmt.Errorf("%s を実行できない: %w", path, err)
 	}
 	return out.Bytes(), errb.Bytes(), nil
 }
 
-// environ は子の環境：自分の環境に Env を重ね、callback の設定を最後に置く。
+// environ は子プロセスの環境変数。自分の環境に Env を重ね、callback の設定を最後に置く。
 func (r ExecRunner) environ(callbackDir string) []string {
 	env := os.Environ()
 	keys := make([]string, 0, len(r.Env))
@@ -223,7 +223,7 @@ func (r ExecRunner) environ(callbackDir string) []string {
 	return env
 }
 
-// argsTemplate は -a の値：引数の各キーを extra var の同じキーで置いた JSON の
+// argsTemplate は -a の値を作る。引数の各キーを extra var の同じキーで置いた JSON の
 // オブジェクト。ansible はキーごとに 1 つの式として評価し、値の型（真偽・数・
 // 入れ子）をそのまま渡す。キーは validArgKey に合うものだけ（Validate）。
 func argsTemplate(args map[string]any) (string, error) {
@@ -297,7 +297,7 @@ func parseResults(stdout []byte) ([]Result, error) {
 		switch r.Status {
 		case StatusOK, StatusFailed, StatusUnreachable, StatusSkipped:
 		default:
-			return nil, fmt.Errorf("callback の結果の行の status %q を知らない", r.Status)
+			return nil, fmt.Errorf("callback の結果の行の status %q が未知", r.Status)
 		}
 		out = append(out, r)
 	}
@@ -307,7 +307,7 @@ func parseResults(stdout []byte) ([]Result, error) {
 	return out, nil
 }
 
-// parseListHosts は `ansible <pattern> --list-hosts` の出力を読む:
+// parseListHosts は `ansible <pattern> --list-hosts` の出力を読む。
 //
 //	hosts (2):
 //	  web1
@@ -342,7 +342,7 @@ func resultHosts(rs []Result) string {
 	return strings.Join(hs, ", ")
 }
 
-// stderrTail は stderr の最後の数行（知らせに添える）。
+// stderrTail は stderr の最後の数行（エラーメッセージに添える）。
 func stderrTail(stderr []byte) string {
 	lines := strings.Split(strings.TrimSpace(string(stderr)), "\n")
 	if len(lines) == 1 && lines[0] == "" {

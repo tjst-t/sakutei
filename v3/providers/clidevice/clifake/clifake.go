@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package clifake は cli-device（Backlog #159）の偽の装置: プロンプトと
-// ページ送りを持つ小さな CLI を、ssh の exec（RunLine）と pty の殻（OpenShell）の
-// 両方で答える。機種は架空（どの製品の CLI でもない）。
+// Package clifake は cli-device（Backlog #159）の偽の装置。プロンプトと
+// ページ送りを持つ小さな CLI として、ssh の exec（RunLine）と pty の shell（OpenShell）の
+// 両方で応答する。機種は架空（どの製品の CLI でもない）。
 //
 //	sw1# show running-config        設定の全体（行が多い。ページ送りがかかる）
 //	sw1# show system                "キー: 値" の行（Hostname・Version・Uptime）
@@ -28,14 +28,15 @@
 //	sw1(config)# commit | abort | end | exit
 //	sw1(config)# commit confirmed <分>   確定するが、<分> のうちに commit が無ければ戻す
 //	sw1(config)# rollback confirmed     確定を待つ変更をすぐ戻す
-//	sw1# upgrade image <名前>.bin   版を上げる（一度きりの操作）
-//	sw1# exit                       切る
+//	sw1# upgrade image <名前>.bin   バージョンを上げる（一度きりの操作）
+//	sw1# exit                       切断する
 //
-// CommitModel なら設定は候補に積まれ、commit で入り、abort で捨てる（end・
-// 切断でも捨てる）。commit confirmed は候補を入れ、時間切れ（分 × ConfirmUnit）までに
-// commit が無ければ前の設定に戻す（2 段の Apply の模擬、不変条件 17）。そうでなければ
-// 打ったそばから入る。exec（RunLine）では configure なしで設定のコマンドを受け、すぐ
-// 入れる。誤りは "% Invalid input" か "% Error: …" の行で答える（exec では終了コード 1）。
+// CommitModel なら設定は候補に積まれ、commit で反映し、abort で捨てる（end・
+// 切断でも捨てる）。commit confirmed は候補を反映し、時間切れ（分 × ConfirmUnit）までに
+// commit が無ければ前の設定に戻す（two-phase Apply の模擬、不変条件 17）。CommitModel で
+// なければ打ったそばから反映する。exec（RunLine）では configure なしで設定のコマンドを
+// 受け、すぐ反映する。エラーは "% Invalid input" か "% Error: …" の行で返す（exec では
+// 終了コード 1）。
 package clifake
 
 import (
@@ -58,7 +59,7 @@ import (
 // Device は偽の装置。
 type Device struct {
 	Name string
-	// CommitModel なら設定は commit で入る（abort で捨てる）。
+	// CommitModel なら設定は commit で反映する（abort で捨てる）。
 	CommitModel bool
 	// PageLines は 1 ページの行数（0 ならページ送りしない）。
 	PageLines int
@@ -98,7 +99,7 @@ func (d *Device) Get(key string) string {
 	return d.settings[key]
 }
 
-// SetDown は装置を届かなくする（true）・戻す（false）。
+// SetDown は装置を到達できなくする（true）・戻す（false）。
 func (d *Device) SetDown(down bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -136,7 +137,7 @@ func (d *Device) restoreLocked(p *pending, why string) {
 	d.rolled = append(d.rolled, why)
 }
 
-// FailOn は prefix で始まる設定のコマンド（と upgrade）を "% Error" で断らせる（"" で戻す）。
+// FailOn は prefix で始まる設定のコマンド（と upgrade）を "% Error" で失敗させる（"" で戻す）。
 func (d *Device) FailOn(prefix string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -181,7 +182,7 @@ func (d *Device) connect() error {
 	return nil
 }
 
-// RunLine implements clidevice.Conn: 1 行を exec で。
+// RunLine implements clidevice.Conn: 1 行を exec で実行する。
 func (d *Device) RunLine(_ context.Context, line string) ([]byte, error) {
 	for _, r := range line {
 		if r != '\t' && unicode.IsControl(r) {
@@ -203,7 +204,7 @@ func (d *Device) RunLine(_ context.Context, line string) ([]byte, error) {
 	return []byte(text), nil
 }
 
-// OpenShell implements clidevice.Conn: pty の殻。
+// OpenShell implements clidevice.Conn: pty の shell を開く。
 func (d *Device) OpenShell(_ context.Context) (io.ReadWriteCloser, error) {
 	if err := d.connect(); err != nil {
 		return nil, err
@@ -315,7 +316,7 @@ var (
 	imageRe = regexp.MustCompile(`^([0-9]+\.[0-9]+\.[0-9]+)\.bin$`)
 )
 
-// eval は 1 行に答える（出力の行と、切るかどうか）。
+// eval は 1 行に応答する（出力の行と、切断するかどうかを返す）。
 func (s *state) eval(line string) ([]string, bool) {
 	s.d.mu.Lock()
 	s.d.log = append(s.d.log, line)
@@ -450,7 +451,7 @@ func isConfigCommand(f []string) bool {
 	return false
 }
 
-// configure は設定のコマンドを読む（key と value、誤りなら出力）。
+// configure は設定のコマンドを読む（key と value、エラーならその出力を返す）。
 func configure(f []string) (string, string, []string) {
 	cmd := strings.Join(f, " ")
 	bad := []string{"% Invalid input: " + cmd}

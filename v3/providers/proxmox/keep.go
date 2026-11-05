@@ -17,20 +17,20 @@ package proxmox
 // keep.go — 作り直すときにデータのディスクを引き継ぐ（v2 の #204 を移したもの、
 // E-C2・N-C12・N-D10）。
 //
-//   - keep の印は現実（Proxmox の VM の tags、KeepTag(slot) = "sakutei-keep-<slot>"）
-//     に置く。ensure: absent は項目を持たないので、消す VM のどのディスクを残すかは
-//     宣言でなく VM の側の印で分かる必要がある（Sakutei の中に持たない）。宣言した
-//     slot の印だけを合わせ、ほかの tags は残す。
+//   - keep の marker は現実（Proxmox の VM の tags、KeepTag(slot) = "sakutei-keep-<slot>"）
+//     に置く。ensure: absent は field を持たないので、消す VM のどのディスクを残すかは
+//     宣言でなく VM の側の marker で分かる必要がある（Sakutei の中に持たない）。宣言した
+//     slot の marker だけを合わせ、ほかの tags は残す。
 //   - 付け替えは Proxmox の reassign（move_disk の target-vmid）で行う。volume を
 //     消さずに付け先の VM の名前に変える。Proxmox は持ち主の VM の設定から外した
-//     volume を unusedN にし、VM を消すと unused も消すので、keep の印のある VM は、
+//     volume を unusedN にし、VM を消すと unused も消す。そのため keep の marker のある VM は、
 //     keep の slot にディスクがある間と unused がある間は消さない（確信が持てない
-//     ときは消さない）。Delete は何も書かずに断る（*core.RefuseError）。
-//   - 走っている VM からは slot のディスクを付け替えない（Proxmox も断る）。止める
+//     ときは消さない）。Delete は何も書かずに拒否する（*core.RefuseError）。
+//   - 走っている VM からは slot のディスクを付け替えない（Proxmox も拒否する）。止める
 //     のは持ち主の VM の宣言 power: stopped。
-//   - 既にある volume を付ける変更は承認の要る壊す変更（Provider.Classify）。
-//   - 付け先の無い volume（VM の unusedN）は List が種類 volume の
-//     "<クラスタ>/<VM 名>/unusedN" で返し、status の宣言外に出る。
+//   - 既にある volume を付ける変更は承認の要る破壊的変更（Provider.Classify）。
+//   - 付け先の無い volume（VM の unusedN）は List が type volume の
+//     "<クラスタ>/<VM 名>/unusedN" で返し、status の unmanaged に出る。
 
 import (
 	"context"
@@ -43,7 +43,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// unusedKeyRe は VM の設定の unused の キー。
+// unusedKeyRe は VM の設定の unused のキー。
 var unusedKeyRe = regexp.MustCompile(`^unused[0-9]+$`)
 
 // volumeOf はドライブの値（"local-lvm:vm-100-disk-1,size=32G"）の volume。
@@ -63,7 +63,7 @@ func splitTags(v string) []string {
 	return out
 }
 
-// keepSlots は設定の tags の keep の印のある slot。
+// keepSlots は設定の tags に keep の marker のある slot。
 func keepSlots(cfg map[string]string) map[string]bool {
 	out := map[string]bool{}
 	for _, t := range splitTags(cfg["tags"]) {
@@ -75,7 +75,7 @@ func keepSlots(cfg map[string]string) map[string]bool {
 }
 
 // keepTagsFor は今の tags cur を、宣言した ws の keep に合わせた tags を返す
-// （宣言した slot の印だけを足し・外し、ほかの tags は残す）。changed は違うか。
+// （宣言した slot の marker だけを足し・外し、ほかの tags は残す）。changed は違うか。
 func keepTagsFor(cur string, ws []Disk) (string, bool) {
 	tags := splitTags(cur)
 	has := map[string]bool{}
@@ -129,7 +129,7 @@ func sortedSlots(m map[string]string) []string {
 }
 
 // keepHeld は VM の設定のうち、消すと失う keep の volume を返す（slot か
-// unusedN → volume）：keep の印のある slot のディスクと、keep の印が 1 つでも
+// unusedN → volume）。keep の marker のある slot のディスクと、keep の marker が 1 つでも
 // あれば unused の全部（どの slot から外れたかは分からないので消さない側）。
 func keepHeld(cfg map[string]string) map[string]string {
 	keep := keepSlots(cfg)
@@ -228,20 +228,20 @@ func (p *Provider) attachVolume(ctx context.Context, c *Cluster, cl *Client, tar
 	case from == "":
 		return fail("volume は VM %d（%s）のものだが、その設定に無い（`qm disk rescan --vmid %d` で unusedN に戻せる）。何も変えていない", holder.VMID, holder.Name, holder.VMID)
 	case diskSlotRe.MatchString(from) && holder.Status != PowerStopped:
-		return fail("volume は VM %d（%s）の slot %s にあり、その VM は %s。ディスクは止まった VM からだけ動かす（その VM に power: stopped を宣言する）。何も変えていない。止まれば次の周に動かす", holder.VMID, holder.Name, from, holder.Status)
+		return fail("volume は VM %d（%s）の slot %s にあり、その VM は %s。ディスクは止まった VM からだけ動かす（その VM に power: stopped を宣言する）。何も変えていない。止まれば次の cycle で動かす", holder.VMID, holder.Name, from, holder.Status)
 	}
 	upid, err := cl.MoveDiskToVM(ctx, holder.Node, holder.VMID, from, target.VMID, slot)
 	if err != nil {
 		return fail("VM %d（%s）の %s から外す: %w（volume は消していない：VM %d に残る）", holder.VMID, holder.Name, from, err, holder.VMID)
 	}
 	if err := p.waitTask(ctx, c, cl, upid); err != nil {
-		return fmt.Errorf("%w（volume %s は消していない：VM %d に残るか、もうこの VM にある。次の周に見直す）", err, vol, holder.VMID)
+		return fmt.Errorf("%w（volume %s は消していない：VM %d に残るか、もうこの VM にある。次の cycle で見直す）", err, vol, holder.VMID)
 	}
 	return nil
 }
 
 // keepGuard は VM vm を消してよいかを確かめる（E-C2）。keep の volume が残れば、
-// 何も書かずに *core.RefuseError で断る。VM が無い・読めないときは誤りにせず
+// 何も書かずに *core.RefuseError で拒否する。VM が無い・読めないときはエラーにせず
 // 消す処理に任せる（消す処理が読み直す）。
 func (p *Provider) keepGuard(ctx context.Context, c *Cluster, cl *Client, vm string) error {
 	res, err := c.resources(ctx, cl)

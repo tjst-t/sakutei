@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package ansiblefake は ansible provider（v3/providers/ansible）をふだんのテストで
-// 回すための偽の ansible（ansible.Runner、E-P2・E-E3。v2 の internal/ansible/
+// 動かすための偽の ansible（ansible.Runner、E-P2・E-E3。v2 の internal/ansible/
 // ansiblefake を移した）。ホストごとにメモリのファイルを持ち、本物のモジュールの
 // うち次の 2 つを真似る（check mode では何も変えずに changed と差分だけを返す）:
 //
@@ -23,8 +23,8 @@
 //   - ansible.builtin.copy: dest・content。中身が違えば置き換える。
 //
 // ansible.builtin.command は check mode を持たない（本物と同じく skipped）。
-// それ以外のモジュールは "Cannot resolve" で失敗する。Unreachable のホストは
-// 届かない、Groups はグループ名（Hosts がその全員を返す）。
+// それ以外のモジュールは "Cannot resolve" で失敗する。Unreachable のホストには
+// 到達できない。Groups はグループ名（Hosts がそのメンバー全員を返す）。
 package ansiblefake
 
 import (
@@ -42,20 +42,20 @@ type Ansible struct {
 	mu    sync.Mutex
 	files map[string]map[string]string // host → path → 中身
 
-	// Unreachable のホストにはどの呼び出しも届かない。
+	// Unreachable のホストにはどの呼び出しも到達できない。
 	Unreachable map[string]bool
 	// Groups はグループ名 → ホスト名。
 	Groups map[string][]string
-	// Down が nil でなければ、どの呼び出しもこの error で失敗する（ansible が走らない）。
+	// Down が nil でなければ、どの呼び出しもこの error で失敗する（ansible が動かない）。
 	Down error
 
-	// Checks・Applies は Run の回数（check の数と適用の数）。Writes は適用で
-	// ファイルを書き換えた回数（冪等の確かめ）。
+	// Checks・Applies は Run の回数（check の数と Apply の数）。Writes は Apply で
+	// ファイルを書き換えた回数（冪等性の確認用）。
 	Checks, Applies, Writes int
 	// LastArgs は最後の Run の引数（解決済み）。
 	LastArgs            map[string]any
 	running, maxRunning int
-	// Block が nil でなければ、Run はそれが閉じられるまで待つ（同時に走る数を見る）。
+	// Block が nil でなければ、Run はそれが閉じられるまで待つ（同時に実行される数を見る）。
 	Block chan struct{}
 }
 
@@ -85,7 +85,7 @@ func (a *Ansible) SetFile(host, path, content string) {
 	a.files[host][path] = content
 }
 
-// MaxRunning は同時に走った Run の最大の数。
+// MaxRunning は同時に実行された Run の最大数。
 func (a *Ansible) MaxRunning() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -142,7 +142,7 @@ func (a *Ansible) Run(ctx context.Context, call ansible.Call) (ansible.Result, e
 	}
 	a.LastArgs = call.Args
 	if g, ok := a.Groups[call.Host]; ok {
-		return ansible.Result{}, fmt.Errorf("ansible: ホスト %q が %d 台に当たった（%s）。1 つの宣言は 1 台", call.Host, len(g), strings.Join(g, ", "))
+		return ansible.Result{}, fmt.Errorf("ansible: ホスト %q が %d ホストにマッチした（%s）。1 つの宣言は 1 ホスト", call.Host, len(g), strings.Join(g, ", "))
 	}
 	files, ok := a.files[call.Host]
 	if !ok {
@@ -174,7 +174,7 @@ func (a *Ansible) Run(ctx context.Context, call ansible.Call) (ansible.Result, e
 	}
 }
 
-// wrote は適用で書き換えたら Writes を数える（a.mu の下で呼ぶ）。
+// wrote は Apply で書き換えたら Writes を数える（a.mu を取った状態で呼ぶ）。
 func (a *Ansible) wrote(call ansible.Call, res ansible.Result) ansible.Result {
 	if !call.Check && res.Changed {
 		a.Writes++

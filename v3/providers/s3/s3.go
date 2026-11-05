@@ -15,21 +15,21 @@
 // Package s3 は S3 互換の API のバケットを宣言どおりに保つ provider（設計 §7.1 の
 // s3-bucket、module 名 s3、E-C1・N-C7）。v2 の s3-bucket を移した。S3 互換の API
 // だけを使い（SigV4 は stdlib、sigv4.go）、特定の製品に依らない。アカウント・
-// 利用者・鍵の管理は持たない。コアの外のモジュールで、コアの口 core.Provider・
+// ユーザー・鍵の管理は持たない。コアの外のモジュールで、コアの interface core.Provider・
 // core.Validator・core.Classifier だけを持つ。
 //
-//	providers:                                   # つなぎ方の設定
+//	providers:                                   # 接続設定
 //	  s3:
 //	    module: s3
 //	    settings:
 //	      endpoints:
 //	        minio:                               # endpoint の名前（ID の前半）
 //	          endpoint: https://s3.example.net:9000   # scheme は要る（http・https）
-//	          api_base_path: /s3                 # 省けば前置き無し
+//	          api_base_path: /s3                 # 省けば前置き（prefix）無し
 //	          region: us-east-1                  # 省けば us-east-1
 //	          addressing: path                   # path（既定）か virtual
 //	          ca_file: /etc/sakutei/s3-ca.pem    # か insecure_skip_verify: true（明示したときだけ）
-//	          timeout: 10s                       # 1 つの要求の時間切れ（既定 10s）
+//	          timeout: 10s                       # 1 リクエストのタイムアウト（既定 10s）
 //	          fields: [versioning, policy, lifecycle, tags, object_lock]   # 扱う設定（省けば object_lock の外の 4 つ）
 //	          storage_class_aliases: {VENDOR_COLD: GLACIER}              # endpoint の StorageClass の名前 → 標準の名前
 //	          observe: {access_key: sakutei-ro, secret_key_file: /etc/sakutei/s3-ro.secret}
@@ -47,7 +47,7 @@
 //	      tags: {env: prod}
 //	      object_lock: {enable_on_create: true, mode: COMPLIANCE, years: 7}
 //
-// 種類は bucket（ID <endpoint>/<バケット>）だけ。項目（宣言したものだけを比べ、
+// type は bucket（ID <endpoint>/<バケット>）だけ。field（宣言したものだけを比べ、
 // 書かないものは触らない、E-D7）：
 //
 //   - versioning：Enabled か Suspended。
@@ -65,23 +65,24 @@
 // 決まり：
 //
 //   - endpoint の fields に無い設定は読みに行かず（Get を呼ばない。API を持たない
-//     ことを 501 でなく 400・403 で知らせる endpoint でもバケットを観測できる
-//     ように）、宣言すれば読み込みで断る（E-C1・E-I7）。lifecycle の StorageClass
+//     ことを 501 でなく 400・403 で返す endpoint でもバケットを観測できる
+//     ように）、宣言すると読み込み時にエラーにする（E-C1・E-I7）。lifecycle の StorageClass
 //     を実装独自の名前で持つ endpoint は storage_class_aliases で読み替えてから
 //     比べる。
 //   - 既にあるバケットの Object Lock の保持の設定を変える変更は、向きによらず
-//     承認の要る壊す変更（Classify。延ばす・COMPLIANCE へ変える向きは戻せず、
-//     短くする・外す向きはこれから書く版の守りが弱まる、E-C1）。作るときに掛ける
-//     のはふつうの作成。外す・作り直しの要る宣言は Apply が何も書かずに断る。
+//     承認の要る破壊的変更（Classify。延ばす・COMPLIANCE へ変える向きは戻せず、
+//     短くする・外す向きはこれから書くバージョンの保護が弱まる、E-C1）。作るときに
+//     掛けるのはふつうの作成。外す・作り直しの要る宣言は Apply が何も書かずに拒否する。
 //   - バケットは宣言の外で消さない（DestructiveDelete、E-C3・N-C2）。消すのは
-//     ensure: absent の名指しだけで、中身のあるバケットは断る（*core.RefuseError。
+//     ensure: absent の名指しだけで、中身のあるバケットは拒否する（*core.RefuseError。
 //     オブジェクトを消す操作は持たない、E-F1）。
-//   - 届かない・5xx・時間切れ・認証の失敗・壊れた出力は Unknown（無いと読まない、
+//   - 届かない・5xx・タイムアウト・認証の失敗・壊れた出力は Unknown（Absent と読まない、
 //     不変条件 3、E-K1）。List は ListBuckets を最後まで辿れたときだけ完全（E-K2）。
-//   - 書き込み用の資格（settings.endpoints.<名前>.write）は Apply・Delete の中で
-//     だけ読む（E-G5）。観測・List・Delete の前の中身の確かめは observe の資格だけ。
+//   - 書き込み用の credential（settings.endpoints.<名前>.write）は Apply・Delete の
+//     中でだけ読む（E-G5）。観測・List・Delete の前の中身の確認は observe の
+//     credential だけで行う。
 //   - Range は args {endpoint: <名前>, prefix: <接頭辞>}（prefix は省ける）。どの
-//     Range にも入らない宣言と、同じ endpoint で接頭辞の重なる Range は断る（E-I6）。
+//     Range にも入らない宣言と、同じ endpoint で接頭辞の重なる Range は読み込み時にエラーにする（E-I6）。
 package s3
 
 import (
@@ -99,13 +100,13 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// Version は Schema の版。比べ方・正規形を変えたら上げる（E-J12）。
+// Version は Schema のバージョン。比べ方・正規形を変えたら上げる（E-J12）。
 const Version = "s3/1"
 
-// KindBucket は種類の名前。
+// KindBucket は type の名前。
 const KindBucket = "bucket"
 
-// 項目の名前。
+// field の名前。
 const (
 	FieldVersioning   = "versioning"
 	FieldPolicy       = "policy"
@@ -129,11 +130,11 @@ var SettingFields = []string{FieldVersioning, FieldPolicy, FieldLifecycle, Field
 
 // DefaultFields は fields を書かない endpoint で扱う設定。object_lock は入れない
 // （書いたときだけ扱う。GetObjectLockConfiguration を持たないことを 501 の外で
-// 知らせる実装や、その許可の無い観測用の資格で、バケット全体が観測できなく
+// 返す実装や、その許可の無い観測用の credential で、バケット全体が観測できなく
 // ならないように）。
 var DefaultFields = []string{FieldVersioning, FieldPolicy, FieldLifecycle, FieldTags}
 
-// apiOf は設定を観測する S3 の API の名前（文言用）。
+// apiOf は設定を観測する S3 の API の名前（メッセージ用）。
 var apiOf = map[string]string{
 	FieldVersioning: "GetBucketVersioning",
 	FieldPolicy:     "GetBucketPolicy",
@@ -157,10 +158,10 @@ func ValidBucketName(name string) bool {
 	return bucketName.MatchString(name) && !strings.Contains(name, "..") && net.ParseIP(name) == nil
 }
 
-// Endpoint は 1 つの endpoint へのつなぎ方。
+// Endpoint は 1 つの endpoint への接続設定。
 type Endpoint struct {
 	Name string
-	// obs は観測用の資格の Client、write は書き込み用の資格の Client（Apply・
+	// obs は観測用の credential の Client、write は書き込み用の credential の Client（Apply・
 	// Delete の中でだけ Open する、E-G5）。
 	obs, write *Client
 	// fields は扱う設定（nil なら DefaultFields）。
@@ -192,8 +193,8 @@ var (
 	_ core.Classifier = (*Provider)(nil)
 )
 
-// keys は資格の在りか。access key は書くかファイル、secret key はファイルだけ
-// （値は要求のたびに読み、持たない、E-G2）。
+// keys は credential の場所。access key は書くかファイル、secret key はファイルだけ
+// （値はリクエストのたびに読み、持たない、E-G2）。
 type keys struct {
 	accessKey, accessKeyFile, secretKeyFile string
 }
@@ -228,7 +229,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 		case "endpoints":
 			m, ok := v.(map[string]any)
 			if !ok || len(m) == 0 {
-				return nil, errors.New("settings.endpoints に endpoint を 1 つ以上書く（名前 → つなぎ方）")
+				return nil, errors.New("settings.endpoints に endpoint を 1 つ以上書く（名前 → 接続設定）")
 			}
 			for name, ev := range m {
 				em, ok := ev.(map[string]any)
@@ -249,7 +250,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 			}
 			p.settle = d
 		default:
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: endpoints, settle）", k)
+			return nil, fmt.Errorf("settings に知らない field %q（書ける field: endpoints, settle）", k)
 		}
 	}
 	if len(p.endpoints) == 0 {
@@ -267,7 +268,7 @@ func parseEndpoint(name string, m map[string]any) (*Endpoint, error) {
 		case "endpoint", "api_base_path", "region", "addressing", "ca_file", "insecure_skip_verify", "timeout",
 			"fields", "storage_class_aliases", "observe", "write":
 		default:
-			return nil, fmt.Errorf("知らない項目 %q（書ける項目: addressing, api_base_path, ca_file, endpoint, fields, insecure_skip_verify, observe, region, storage_class_aliases, timeout, write）", k)
+			return nil, fmt.Errorf("知らない field %q（書ける field: addressing, api_base_path, ca_file, endpoint, fields, insecure_skip_verify, observe, region, storage_class_aliases, timeout, write）", k)
 		}
 	}
 	str := func(k string) (string, error) {
@@ -364,7 +365,7 @@ func parseEndpoint(name string, m map[string]any) (*Endpoint, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("observe（観測用の資格 {access_key か access_key_file, secret_key_file}）を書く")
+		return nil, errors.New("observe（観測用の credential {access_key か access_key_file, secret_key_file}）を書く")
 	}
 	write := obs
 	if w, ok, err := parseKeys("write", m); err != nil {
@@ -376,7 +377,7 @@ func parseEndpoint(name string, m map[string]any) (*Endpoint, error) {
 	if e.obs, err = NewClient(cfg); err != nil {
 		return nil, err
 	}
-	// 書き込み用の Client も今作る（資格のファイルは読まない）。
+	// 書き込み用の Client も今作る（credential のファイルは読まない）。
 	cfg.Credentials = write.credentials
 	if e.write, err = NewClient(cfg); err != nil {
 		return nil, fmt.Errorf("write: %w", err)
@@ -407,7 +408,7 @@ func parseKeys(k string, m map[string]any) (keys, bool, error) {
 		case "secret_key_file":
 			out.secretKeyFile = s
 		default:
-			return keys{}, false, fmt.Errorf("%s に知らない項目 %q（書ける項目: access_key, access_key_file, secret_key_file。secret key そのものは書けない）", k, ck)
+			return keys{}, false, fmt.Errorf("%s に知らない field %q（書ける field: access_key, access_key_file, secret_key_file。secret key そのものは書けない）", k, ck)
 		}
 	}
 	if (out.accessKey == "") == (out.accessKeyFile == "") {
@@ -444,8 +445,8 @@ func (p *Provider) endpointNames() []string {
 	return names
 }
 
-// Schema は種類 bucket。観測だけの項目も Condition から読めるよう Schema に置く
-// （宣言は Validate が断る）。
+// Schema は type bucket。観測だけの field も Condition から読めるよう Schema に置く
+// （宣言は Validate がエラーにする）。
 func (p *Provider) Schema() core.Schema {
 	return core.Schema{Version: Version, Kinds: map[string]core.KindSchema{
 		KindBucket: {Settle: p.settle, DestructiveDelete: true, Fields: map[string]core.FieldSpec{
@@ -486,12 +487,12 @@ func matchLifecycle(desired, observed any) bool {
 	return ok && canonJSON(canonRules(a)) == canonJSON(canonRules(b))
 }
 
-// prefixRange は 1 つの範囲（endpoint と接頭辞）。
+// prefixRange は 1 つの Range（endpoint と接頭辞）。
 type prefixRange struct {
 	endpoint, prefix string
 }
 
-// Validate は宣言を確かめる（現実に触れない、E-I7・E-M3・E-I6）。範囲は
+// Validate は宣言を確かめる（現実に触れない、E-I7・E-M3・E-I6）。Range は
 // args {endpoint: <名前>, prefix: <接頭辞>}。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
@@ -503,7 +504,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		bad := false
 		for k := range rg.Args {
 			if k != "endpoint" && k != "prefix" {
-				rej(rg.Origin, "ranges", "s3 の範囲の引数は endpoint と prefix だけ（%q が書かれている）", k)
+				rej(rg.Origin, "ranges", "s3 の Range の args は endpoint と prefix だけ（%q が書かれている）", k)
 				bad = true
 			}
 		}
@@ -513,7 +514,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		case bad:
 			continue
 		case !ok:
-			rej(rg.Origin, "ranges", "s3 の範囲に args.endpoint を書く")
+			rej(rg.Origin, "ranges", "s3 の Range に args.endpoint を書く")
 			continue
 		case p.endpoints[name] == nil:
 			rej(rg.Origin, "ranges", "endpoint %q が settings.endpoints に無い（ある: %s）", name, strings.Join(p.endpointNames(), ", "))
@@ -525,7 +526,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		overlap := false
 		for _, o := range rs {
 			if o.endpoint == name && (strings.HasPrefix(prefix, o.prefix) || strings.HasPrefix(o.prefix, prefix)) {
-				rej(rg.Origin, "ranges", "endpoint %s の prefix %q が prefix %q と重なる（1 つのバケットは 1 つの範囲に入れる）", name, prefix, o.prefix)
+				rej(rg.Origin, "ranges", "endpoint %s の prefix %q が prefix %q と重なる（1 つのバケットは 1 つの Range に入れる）", name, prefix, o.prefix)
 				overlap = true
 			}
 		}
@@ -537,7 +538,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	for _, r := range res {
 		target := r.ID.String()
 		if r.ID.Kind() != KindBucket {
-			rej(r.Origin, target, "種類 %q は無い（あるのは %s だけ）", r.ID.Kind(), KindBucket)
+			rej(r.Origin, target, "type %q は無い（あるのは %s だけ）", r.ID.Kind(), KindBucket)
 			continue
 		}
 		e, bucket, err := p.coords(r.ID)
@@ -550,7 +551,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 			in = in || (o.endpoint == e.Name && strings.HasPrefix(bucket, o.prefix))
 		}
 		if !in {
-			rej(r.Origin, target, "どの範囲（ranges の args.endpoint・args.prefix）にも入らない")
+			rej(r.Origin, target, "どの Range（ranges の args.endpoint・args.prefix）にも入らない")
 		}
 		if r.Ensure == core.EnsureAbsent {
 			continue
@@ -562,14 +563,14 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	return diags
 }
 
-// validateFields は宣言の項目を確かめる。
+// validateFields は宣言の field を確かめる。
 func validateFields(e *Endpoint, f core.Fields, schema core.KindSchema) []string {
 	var msgs []string
 	var excluded []string
 	for _, k := range sortedKeys(f) {
 		v := f[k]
 		if _, ok := schema.Fields[k]; !ok {
-			msgs = append(msgs, fmt.Sprintf("知らない項目 %q（書ける項目: %s）", k, strings.Join(SettingFields, ", ")))
+			msgs = append(msgs, fmt.Sprintf("知らない field %q（書ける field: %s）", k, strings.Join(SettingFields, ", ")))
 			continue
 		}
 		if k == FieldCreationDate || k == FieldUnsupported {
@@ -631,7 +632,7 @@ func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core
 	groups := map[string][]core.ID{}
 	for _, id := range ids {
 		if id.Kind() != KindBucket {
-			out[id] = core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("種類 %q を知らない", id.Kind())}
+			out[id] = core.Observation{Availability: core.Unknown, Note: fmt.Sprintf("type %q を知らない", id.Kind())}
 			continue
 		}
 		e, _, err := p.coords(id)
@@ -649,7 +650,7 @@ func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core
 			buckets, _, err = sess.ListBuckets(ctx)
 		}
 		if err != nil {
-			// 一覧が途中までしか読めなければ、無いとは言えない（E-K1・E-K2）。
+			// 一覧が途中までしか読めなければ、Absent とは言えない（E-K1・E-K2）。
 			for _, id := range group {
 				out[id] = unknown(err)
 			}
@@ -680,7 +681,7 @@ func observeBucket(ctx context.Context, sess *Session, e *Endpoint, b BucketInfo
 			unsupported = append(unsupported, k)
 		}
 	}
-	// skip は NotImplemented を unsupported にする。ほかの誤りは観測を Unknown にする。
+	// skip は NotImplemented を unsupported にする。ほかのエラーは観測を Unknown にする。
 	skip := func(field string, err error) (bool, error) {
 		switch {
 		case err == nil:
@@ -751,8 +752,8 @@ func readLifecycle(ctx context.Context, sess *Session, e *Endpoint, bucket strin
 	return canonRules(rules), nil
 }
 
-// List は範囲の endpoint の、接頭辞に合うバケットを返す。ListBuckets を最後まで
-// 辿れたときだけ完全（E-K2）。途中で切れたら、それまでのバケットと誤りを返す。
+// List は Range の endpoint の、接頭辞に合うバケットを返す。ListBuckets を最後まで
+// 辿れたときだけ完全（E-K2）。途中で切れたら、それまでのバケットとエラーを返す。
 func (p *Provider) List(ctx context.Context, rg core.Range) (core.Listing, error) {
 	name, prefix := rg.Args["endpoint"], rg.Args["prefix"]
 	e, ok := p.endpoints[name]
@@ -780,8 +781,8 @@ func (p *Provider) List(ctx context.Context, rg core.Range) (core.Listing, error
 }
 
 // Classify は既にあるバケットの Object Lock の保持の設定を変える変更を、向きに
-// よらず承認の要る壊す変更とする（E-C1）。作るとき・変わらないとき・宣言どおりに
-// できない（Apply が断る）ときは何も言わない。現実に触れない。
+// よらず承認の要る破壊的変更とする（E-C1）。作るとき・変わらないとき・宣言どおりに
+// できない（Apply が拒否する）ときは何も返さない。現実に触れない。
 func (p *Provider) Classify(id core.ID, current core.Observation, desired core.Fields) []core.Hint {
 	if current.Availability != core.Present {
 		return nil
@@ -809,7 +810,7 @@ func (p *Provider) Classify(id core.ID, current core.Observation, desired core.F
 }
 
 // Apply は宣言の設定をそろえる。無ければ作り、設定ごとに今の値を（書き込み用の
-// 資格で）読み直し、ずれているものだけを置き、読み戻して確かめる（冪等）。
+// credential で）読み直し、ずれているものだけを置き、読み戻して確かめる（冪等）。
 func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, desired core.Fields, current core.Observation) error {
 	e, bucket, err := p.coords(id)
 	if err != nil {
@@ -966,12 +967,12 @@ func applyField(ctx context.Context, sess *Session, e *Endpoint, bucket, field s
 	case FieldObjectLock:
 		return applyObjectLock(ctx, sess, bucket, v)
 	}
-	return fmt.Errorf("知らない項目 %q", field)
+	return fmt.Errorf("知らない field %q", field)
 }
 
 // applyObjectLock は object_lock を宣言 v にする。今の設定を読み、正規形が同じなら
 // 何も送らない（作るときの有効化で済んだときなど）。外す・作り直しの要る宣言は
-// 何も書かずに断る。違えば PutObjectLockConfiguration だけで掛け（versioning は
+// 何も書かずに拒否する。違えば PutObjectLockConfiguration だけで掛け（versioning は
 // 触らない）、読み戻して確かめる。
 func applyObjectLock(ctx context.Context, sess *Session, bucket string, v any) error {
 	want, err := ParseObjectLock(v)
@@ -999,7 +1000,7 @@ func applyObjectLock(ctx context.Context, sess *Session, bucket string, v any) e
 	return readBack(FieldObjectLock, sameLock(lockFromObserved(got), want), canonJSON(lockFromObserved(got).value()))
 }
 
-// readBack は置いたあと読み戻した値が宣言どおりでなければ誤りにする（永久の
+// readBack は置いたあと読み戻した値が宣言どおりでなければエラーにする（永久の
 // ずれで Apply を繰り返さないよう、endpoint の持つ形を添える）。
 func readBack(field string, ok bool, got string) error {
 	if ok {
@@ -1011,14 +1012,14 @@ func readBack(field string, ok bool, got string) error {
 // putErr は endpoint がその API を持たないことを分かる文にする。
 func putErr(err error) error {
 	if KindOf(err) == KindNotImplemented {
-		return fmt.Errorf("endpoint がこの API を持たない（NotImplemented）ので、この項目はここでは扱えない（宣言から外す）: %w", err)
+		return fmt.Errorf("endpoint がこの API を持たない（NotImplemented）ので、この field はここでは扱えない（宣言から外す）: %w", err)
 	}
 	return err
 }
 
 // Delete は ensure: absent のバケットを消す。オブジェクトがあれば何も書かずに
-// 断る（観測用の資格で先に確かめる。古い版だけが残るバケットは endpoint の
-// BucketNotEmpty で断る、E-F1・E-C3）。
+// 拒否する（観測用の credential で先に確かめる。古いバージョンだけが残るバケットは
+// endpoint の BucketNotEmpty で拒否する、E-F1・E-C3）。
 func (p *Provider) Delete(ctx context.Context, w core.WriteContext, id core.ID, _ core.Observation) error {
 	e, bucket, err := p.coords(id)
 	if err != nil {
@@ -1051,7 +1052,7 @@ func (p *Provider) Delete(ctx context.Context, w core.WriteContext, id core.ID, 
 	return nil
 }
 
-// unknown は誤りの観測（届かない・認証の失敗・壊れた出力、E-K1）。
+// unknown はエラーの観測（届かない・認証の失敗・壊れた出力、E-K1）。
 func unknown(err error) core.Observation {
 	return core.Observation{Availability: core.Unknown, Note: err.Error()}
 }

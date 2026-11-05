@@ -20,7 +20,7 @@ package netconffake
 //   - Scope（subtree filter の形の XML）があれば、そのユーザーが読み書き
 //     できるのは Scope が選ぶ所だけ。get-config は Scope の外を黙って省き
 //     （RFC 8341 §3.4.5）、Scope の外を変える edit-config は access-denied で
-//     断る（candidate は変えない）。
+//     拒否する（candidate は変えない）。
 //   - ScopeOps があれば、その操作の名前（"commit-confirmed" を含む）だけを
 //     許し、ほかは access-denied（close-session はいつも許す、RFC 8341 §3.4.4）。
 //   - 外を読もうとした・書こうとした・許されない操作を送った、は Denials に残る
@@ -33,7 +33,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/netconf"
 )
 
-// Denials は Scope・ScopeOps で断った（読みは省いた）ことの列。
+// Denials は Scope・ScopeOps で拒否した（読み取りは省いた）ことの列。
 func (s *Server) Denials() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -104,7 +104,7 @@ func serialize(nodes []*elem) string {
 }
 
 // without は data から filter が選ぶ所を除いた残り。中身が無くなった入れ物
-// （エントリを指す葉だけが残ったものも）は落とす。
+// （エントリを指す leaf だけが残ったものも）は落とす。
 func without(data, filter []*elem) []*elem {
 	var out []*elem
 	for _, d := range data {

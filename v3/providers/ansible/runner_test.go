@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-// TestMain は、SAKUTEI_FAKE_ANSIBLE が立っていれば偽の ansible として振る舞う
+// TestMain は、SAKUTEI_FAKE_ANSIBLE が設定されていれば偽の ansible として振る舞う
 // （ExecRunner.Path にこのテストのバイナリを渡す）。
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("SAKUTEI_FAKE_ANSIBLE"); mode != "" {
@@ -145,7 +145,7 @@ func TestExecRunnerArgv(t *testing.T) {
 		t.Fatalf("-a = %q (%v)", got.Argv[i], err)
 	}
 
-	// 適用は --check を付けない。引数が無ければ -e も -a も付けない。
+	// Apply では --check を付けない。引数が無ければ -e も -a も付けない。
 	res, err = fakeRunner(t, "ok").Run(context.Background(), Call{Host: "web1", Module: "ansible.builtin.ping"})
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestExecRunnerOutcomes(t *testing.T) {
 	}
 	for mode, want := range map[string]string{
 		"none":    "inventory に無い",
-		"two":     "2 台に当たった",
+		"two":     "2 ホストにマッチした",
 		"other":   `ほかのホスト "web2"`,
 		"crash":   "終了コード 250 で終わった: ERROR! Unexpected Exception",
 		"garbage": "JSON でない",
@@ -187,7 +187,7 @@ func TestExecRunnerOutcomes(t *testing.T) {
 		t.Fatalf("hosts = %v %v", hosts, err)
 	}
 	if _, err := (ExecRunner{Path: filepath.Join(t.TempDir(), "no-ansible"), Inventory: "x"}).Run(context.Background(), c); err == nil {
-		t.Fatal("無い ansible で誤りにならない")
+		t.Fatal("存在しない ansible でエラーにならない")
 	}
 }
 
@@ -197,6 +197,6 @@ func TestParseListHosts(t *testing.T) {
 		t.Fatalf("%v %v", h, err)
 	}
 	if _, err := parseListHosts([]byte("garbage")); err == nil {
-		t.Fatal("誤りにならない")
+		t.Fatal("エラーにならない")
 	}
 }

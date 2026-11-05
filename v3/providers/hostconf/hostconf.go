@@ -15,9 +15,9 @@
 // Package hostconf はホストのファイルと systemd のユニットを宣言どおりに保つ
 // provider（設計 §7.1 の hostconf、E-D5・E-E2・N-D7・N-E1・N-E6・E-H7）。v2 の
 // host-file と systemd-unit を 1 つのモジュールにした。コアの外のモジュールで、
-// コアの口 core.Provider・core.Validator を持つ。
+// コアの interface core.Provider・core.Validator を実装する。
 //
-//	providers:                                   # つなぎ方の設定
+//	providers:                                   # 接続設定
 //	  host:
 //	    module: hostconf
 //	    settings:
@@ -46,13 +46,13 @@
 //     見ない）。親のディレクトリは無ければ作る。ふつうのファイルでないもの
 //     （シンボリックリンク・ディレクトリ）は Unknown。
 //   - ユニットは enabled・active・content（/etc/systemd/system/<名前> の中身）と
-//     restart_on。restart_on は依って立つファイルの一覧で、そのファイルの中身が
-//     変われば 1 回だけ入れ替える（restart）。入れ替えた時のファイルの digest を
-//     ホストの側の印（<state_dir>/restart/<名前>.json）に置き、観測は今の digest と
-//     印が合えば restart_on を返す（level で判定、E-D5・N-E6）。
-//   - 届かない・sudo が通らない・読めないは Unknown（無いと読まない、不変条件 3）。
-//   - List はファイル・ユニットの集合を数えられないので「不完全」（宣言外を
-//     見ない・消さない）。
+//     restart_on。restart_on は依存するファイルの一覧で、そのファイルの中身が
+//     変われば 1 回だけ restart する。restart した時のファイルの digest を
+//     ホスト側の記録（<state_dir>/restart/<名前>.json）に置く。観測は今の digest と
+//     記録が合えば restart_on を返す（level で判定、E-D5・N-E6）。
+//   - 届かない・sudo が通らない・読めないは Unknown（Absent とは見なさない、不変条件 3）。
+//   - List はファイル・ユニットの集合を数えられないので「不完全」（宣言に無いもの
+//     （unmanaged）を見ない・消さない）。
 package hostconf
 
 import (
@@ -70,16 +70,16 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/hostexec"
 )
 
-// Version は Schema の版。
+// Version は Schema のバージョン。
 const Version = "hostconf/1"
 
-// 種類の名前。
+// type の名前。
 const (
 	KindFile = "file"
 	KindUnit = "unit"
 )
 
-// 既定の置き場。
+// 既定のディレクトリ。
 const (
 	DefaultUnitDir  = "/etc/systemd/system"
 	DefaultStateDir = "/var/lib/sakutei/hostconf"
@@ -134,7 +134,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 				stateDir = s
 			}
 		default:
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: hosts, state_dir, unit_dir）", k)
+			return nil, fmt.Errorf("settings に知らない field %q（書ける field: hosts, state_dir, unit_dir）", k)
 		}
 	}
 	if hosts == nil {
@@ -143,7 +143,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 	return New(hosts, unitDir, stateDir), nil
 }
 
-// Schema は file と unit の項目。
+// Schema は file と unit の field。
 func (p *Provider) Schema() core.Schema {
 	return core.Schema{Version: Version, Kinds: map[string]core.KindSchema{
 		KindFile: {Fields: map[string]core.FieldSpec{
@@ -175,7 +175,7 @@ func split(name string) (string, string, bool) {
 
 func cleanAbs(p string) bool { return path.IsAbs(p) && path.Clean(p) == p && p != "/" }
 
-// Validate は範囲と宣言を確かめる（E-I6・E-M3）。
+// Validate は Range と宣言を確かめる（E-I6・E-M3）。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
 	rej := func(o core.Origin, target, format string, a ...any) {
@@ -185,12 +185,12 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	for _, rg := range ranges {
 		for k := range rg.Args {
 			if k != "host" {
-				rej(rg.Origin, "ranges", "hostconf の範囲の引数は host だけ（%q が書かれている）", k)
+				rej(rg.Origin, "ranges", "hostconf の Range の引数は host だけ（%q が書かれている）", k)
 			}
 		}
 		h := rg.Args["host"]
 		if p.hosts[h] == nil {
-			rej(rg.Origin, "ranges", "host %q がつなぎ方の設定の hosts に無い", h)
+			rej(rg.Origin, "ranges", "host %q が接続設定の hosts に無い", h)
 		}
 		ranged[h] = true
 	}
@@ -202,10 +202,10 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 			rej(r.Origin, target, "id は <host>:<絶対パス> か <host>:<ユニット名>")
 			continue
 		case p.hosts[h] == nil:
-			rej(r.Origin, target, "host %q がつなぎ方の設定の hosts に無い", h)
+			rej(r.Origin, target, "host %q が接続設定の hosts に無い", h)
 			continue
 		case len(ranges) > 0 && !ranged[h]:
-			rej(r.Origin, target, "host %s はどの範囲（ranges の host）にも入らない", h)
+			rej(r.Origin, target, "host %s はどの Range（ranges の host）にも入らない", h)
 			continue
 		}
 		switch r.ID.Kind() {
@@ -270,7 +270,7 @@ func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core
 		case KindUnit:
 			out[id] = p.observeUnit(ctx, r, obj)
 		default:
-			out[id] = unknown(fmt.Errorf("種類 %q を知らない", id.Kind()))
+			out[id] = unknown(fmt.Errorf("type %q を知らない", id.Kind()))
 		}
 	}
 	return out, nil
@@ -350,7 +350,7 @@ func (p *Provider) Apply(ctx context.Context, _ core.WriteContext, id core.ID, d
 	case KindUnit:
 		return p.applyUnit(ctx, r, obj, desired, current)
 	}
-	return fmt.Errorf("種類 %q を知らない", id.Kind())
+	return fmt.Errorf("type %q を知らない", id.Kind())
 }
 
 // Delete は消す。
@@ -366,7 +366,7 @@ func (p *Provider) Delete(ctx context.Context, _ core.WriteContext, id core.ID, 
 	case KindUnit:
 		return p.deleteUnit(ctx, r, obj)
 	}
-	return fmt.Errorf("種類 %q を知らない", id.Kind())
+	return fmt.Errorf("type %q を知らない", id.Kind())
 }
 
 // writeFile は中身・mode・owner・group を合わせる。中身を変えるときは一時ファイルに
@@ -446,14 +446,14 @@ func chownSpec(owner, group string) string {
 	return ""
 }
 
-// List はファイル・ユニットの集合を数えられないので不完全（宣言外を見ない・消さない）。
+// List はファイル・ユニットの集合を数えられないので不完全（宣言に無いもの（unmanaged）を見ない・消さない）。
 func (p *Provider) List(context.Context, core.Range) (core.Listing, error) {
 	return core.Listing{Complete: false}, nil
 }
 
 // ─── ユニット ───
 
-// mark は restart_on のホストの側の印。
+// mark は restart_on のホスト側の記録。
 type mark struct {
 	Paths  []string `json:"paths"`
 	Digest string   `json:"digest"`
@@ -515,7 +515,7 @@ func (p *Provider) observeUnit(ctx context.Context, r hostexec.Runner, unit stri
 				on = append(on, r.Name()+":"+s)
 			}
 		}
-		f["restart_on"] = on // 印が古ければ空：入れ替えが要る
+		f["restart_on"] = on // 記録が古ければ空：restart が要る
 	}
 	return core.Observation{Availability: core.Present, Fields: f}
 }
@@ -527,16 +527,16 @@ func (p *Provider) readMark(ctx context.Context, r hostexec.Runner, unit string)
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("入れ替えの印: %w", err)
+		return nil, fmt.Errorf("restart の記録: %w", err)
 	}
 	var m mark
 	if err := json.Unmarshal(out, &m); err != nil {
-		return nil, fmt.Errorf("入れ替えの印を読めない: %v", err)
+		return nil, fmt.Errorf("restart の記録を読めない: %v", err)
 	}
 	return &m, nil
 }
 
-// markDigest は依って立つファイルの digest をまとめたもの。無いファイルは "absent"。
+// markDigest は依存するファイルの digest をまとめたもの。無いファイルは "absent"。
 func markDigest(ctx context.Context, r hostexec.Runner, paths []string) (string, error) {
 	var parts []string
 	for _, p := range paths {
@@ -620,7 +620,7 @@ func (p *Provider) applyUnit(ctx context.Context, r hostexec.Runner, unit string
 		mp := p.markPath(unit)
 		cur := observeFile(ctx, r, mp)
 		if err := writeFile(ctx, r, mp, core.Fields{"content": string(data), "mode": "0600"}, cur); err != nil {
-			return fmt.Errorf("入れ替えの印: %w", err)
+			return fmt.Errorf("restart の記録: %w", err)
 		}
 	}
 	return nil

@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package integration は新しいコアの postgresql provider の統合テスト（v3 段 8e、
+// Package integration は新しいコアの postgresql provider の統合テスト（v3 Stage 8e、
 // 設計 §6.2 の統合テスト・E-F1・E-F3・N-F1・N-F7・E-G5・E-K1）。v2 と同じ公式の
 // postgres イメージ（tag と digest で固定）でサーバを立て、v3 の CLI（cli.Run の
-// plan・reconcile）をそこへ向ける：空から作る・手の変更を戻す・PUBLIC と
-// BYPASSRLS・秘密の世代と拡張の版・何周してもずれない・利用者の表がある DB の
-// 削除を断る・止めると Unknown・観測用と書き込み用のロール・verify_passwords と
+// plan・reconcile）をそこへ向ける。確かめること：空から作る・手の変更を戻す・PUBLIC と
+// BYPASSRLS・secret の世代と拡張のバージョン・何 cycle 回しても drift しない・利用者の表が
+// ある DB の削除を拒否する・止めると Unknown・観測用と書き込み用のロール・verify_passwords と
 // pg_authid・connect_roles。ホストに psql が無くてもよいように、psql は同じイメージの
 // クライアントのコンテナの中で動かす（ラッパーのスクリプト。passfile は docker cp で
-// 渡し、引数に秘密を出さない）。コンテナとネットワーク（sakutei-v3pg-*。v2 の
+// 渡し、引数に secret を出さない）。コンテナとネットワーク（sakutei-v3pg-*。v2 の
 // sakutei-pgit-*・sqlmigrate の sakutei-v3sm-* と重ならない）は終われば（落ちても）消す。
 //
 // テストは build tag integration_v3_postgresql の付いたファイルにあり、make check・

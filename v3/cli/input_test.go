@@ -31,7 +31,7 @@ import (
 )
 
 // hostsExpander は外部入力 inventory の名前ごとに dns/record を作る（テスト用）。
-// 届かなければ作らず、種類に Uncertain を出す（E-K3）。
+// 届かなければ作らず、type に Uncertain を出す（E-K3）。
 type hostsExpander struct{}
 
 func (hostsExpander) Keys() []string { return nil }
@@ -49,8 +49,9 @@ func (hostsExpander) Expand(_ context.Context, in expand.Input) (expand.Output, 
 }
 
 // TestInputUnreachable は外部入力が届かない・欠けているとき、空の desired で消さない
-// ことを確かめる（E-K3・不変条件 26）：作るはずの宣言が無くなっても、その provider の
-// 範囲の宣言外を消さない。expected_min と max_drop（前の周の件数は Record の目印）も
+// ことを確認する（E-K3・不変条件 26）：作るはずの宣言が無くなっても、その provider の
+// Range の宣言に無いもの（unmanaged）を消さない。expected_min と max_drop（前の cycle の
+// 件数は Record の marks）も
 // 「届いたが欠けている」にする。
 func TestInputUnreachable(t *testing.T) {
 	root := t.TempDir()
@@ -84,10 +85,10 @@ ranges:
 			cli.WithModule("fake", fake.Module), cli.WithExpander("hosts", hostsExpander{}))
 		return code, stdout.String() + stderr.String()
 	}
-	// 1 周目は前の周の件数が無いので消さない。2 周目に宣言外を消す。
+	// 1 cycle 目は前の cycle の件数が無いので消さない。2 cycle 目に unmanaged を消す。
 	run()
 	if code, out := run(); code != 0 {
-		t.Fatalf("2 周目: %d\n%s", code, out)
+		t.Fatalf("2 cycle 目: %d\n%s", code, out)
 	}
 	present := func(name string) bool {
 		data, _ := os.ReadFile(state)
@@ -99,7 +100,7 @@ ranges:
 		data, _ := os.ReadFile(state)
 		t.Fatalf("宣言どおりでない:\n%s", data)
 	}
-	// 宣言外をもう一度置いてから、入力を壊す・減らす。
+	// unmanaged をもう一度置いてから、入力を壊す・減らす。
 	addStray := func() {
 		data, _ := os.ReadFile(state)
 		var st map[string]any
@@ -115,13 +116,13 @@ ranges:
 		t.Fatalf("届かない: 終了コード %d\n%s", code, out)
 	}
 	if !present("stray") {
-		t.Fatalf("届かない入力で宣言外を消した")
+		t.Fatalf("届かない入力で unmanaged を消した")
 	}
 	write(t, inv, "hosts:\n  - n1\n")
 	if code, out := run(); code != 3 || !strings.Contains(out, "expected_min 2") {
 		t.Fatalf("expected_min: 終了コード %d\n%s", code, out)
 	}
-	// 前の周の件数（4）から 2 件に減った：max_drop 50% は超えない（ちょうど半分）。
+	// 前の cycle の件数（4）から 2 件に減った：max_drop 50% は超えない（ちょうど半分）。
 	write(t, inv, "hosts:\n  - n1\n  - n2\n")
 	if code, out := run(); code != 0 {
 		t.Fatalf("半分まで: 終了コード %d\n%s", code, out)
@@ -144,6 +145,6 @@ ranges:
 		t.Fatalf("max_drop: 終了コード %d\n%s", code, out)
 	}
 	if !present("stray") {
-		t.Fatalf("欠けた入力で宣言外を消した")
+		t.Fatalf("欠けた入力で unmanaged を消した")
 	}
 }

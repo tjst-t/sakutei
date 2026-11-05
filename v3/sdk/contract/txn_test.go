@@ -23,8 +23,8 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/fake"
 )
 
-// 偽の provider で Transaction の戻りの確かめが通る（E-P1・E-B3・不変条件 17）。
-// 時間切れは Expire で起こす。
+// 偽の provider で Transaction のロールバックの契約テストが通る（E-P1・E-B3・
+// 不変条件 17）。タイムアウトは Expire で起こす。
 func TestFakeTxn(t *testing.T) {
 	contract.RunTxn(t, func(t *testing.T) contract.TxnTarget {
 		p := fake.New(schema)

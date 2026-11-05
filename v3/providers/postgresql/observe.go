@@ -15,7 +15,7 @@
 package postgresql
 
 // observe.go — Observe と List。サーバごとに snapshot を 1 回、データベースごとに
-// 拡張を 1 回だけ読む（E-D8）。観測と List は観測用の資格だけでつなぐ（E-G5）。
+// 拡張を 1 回だけ読む（E-D8）。観測と List は観測用の credential だけで接続する（E-G5）。
 
 import (
 	"context"
@@ -50,7 +50,7 @@ func newObserver(ctx context.Context, c conn) (*observer, error) {
 	return &observer{conn: c, snap: snap, exts: map[string][]ExtensionInfo{}, extErr: map[string]error{}}, nil
 }
 
-// extensions は db の拡張。接続を許さない DB・つなげない DB は誤り（Unknown、E-K1・E-F3）。
+// extensions は db の拡張。接続を許さない DB・接続できない DB はエラー（Unknown、E-K1・E-F3）。
 func (o *observer) extensions(ctx context.Context, db string) ([]ExtensionInfo, error) {
 	if e, ok := o.extErr[db]; ok {
 		return nil, e
@@ -73,7 +73,7 @@ func (o *observer) extensions(ctx context.Context, db string) ([]ExtensionInfo, 
 	return x, nil
 }
 
-// passwordComment はロールのコメントから、設定した秘密の参照と検証値の sha256 を
+// passwordComment はロールのコメントから、設定した secret の参照と検証値の sha256 を
 // 読む（無い・読めなければ ok が false）。
 func passwordComment(r *RoleInfo) (ref, digest string, ok bool) {
 	if r.Comment == nil || !strings.HasPrefix(*r.Comment, PasswordMarker) {
@@ -84,7 +84,7 @@ func passwordComment(r *RoleInfo) (ref, digest string, ok bool) {
 		rest, digest = rest[:i], rest[i+len(verifierMarker):]
 	}
 	if _, err := core.ParseSecretRef(rest); err != nil {
-		return "", "", false // 読めない印は「設定していない」と同じ（宣言すれば設定し直す）
+		return "", "", false // 読めない marker は「設定していない」と同じ（宣言すれば設定し直す）
 	}
 	return rest, digest, true
 }
@@ -97,7 +97,7 @@ func verifierDigest(verifier string) string {
 
 // password は role の password の観測値。設定していなければ ok が false。
 // verify_passwords なら、pg_authid の検証値がコメントの sha256 と合わなければ
-// ok が false（手で変えた、E-F1・N-F1）。pg_authid を読めなければ誤り（Unknown、E-E6）。
+// ok が false（手で変えた、E-F1・N-F1）。pg_authid を読めなければエラー（Unknown、E-E6）。
 func (o *observer) password(ctx context.Context, r *RoleInfo) (string, bool, error) {
 	ref, digest, ok := passwordComment(r)
 	if !ok {
@@ -111,7 +111,7 @@ func (o *observer) password(ctx context.Context, r *RoleInfo) (string, bool, err
 		o.loaded = true
 	}
 	if o.storedErr != nil {
-		return "", false, fmt.Errorf("verify_passwords: %w（pg_authid を読むには観測用のロールに超ユーザか pg_authid の列の SELECT が要る）", o.storedErr)
+		return "", false, fmt.Errorf("verify_passwords: %w（pg_authid を読むには観測用のロールに superuser か pg_authid の列の SELECT が要る）", o.storedErr)
 	}
 	if v, has := o.stored[r.Name]; !has || verifierDigest(v) != digest {
 		return "", false, nil
@@ -119,7 +119,7 @@ func (o *observer) password(ctx context.Context, r *RoleInfo) (string, bool, err
 	return ref, true, nil
 }
 
-// fields は t の観測。無ければ nil（Absent）。decl は宣言の項目（無ければ nil）。
+// fields は t の観測。無ければ nil（Absent）。decl は宣言の field（無ければ nil）。
 func (o *observer) fields(ctx context.Context, t target, decl core.Fields) (core.Fields, error) {
 	srv := o.conn.srv
 	switch t.kind {
@@ -173,7 +173,7 @@ func (o *observer) fields(ctx context.Context, t target, decl core.Fields) (core
 		case d == nil:
 			return nil, nil
 		case t.public():
-			privs = d.publicPrivileges() // PUBLIC は DB が在れば在る（権限が空でも、E-F1）
+			privs = d.publicPrivileges() // PUBLIC は DB が Present なら Present（権限が空でも、E-F1）
 		case o.snap.role(t.role) == nil:
 			return nil, nil
 		default:
@@ -203,7 +203,7 @@ func (o *observer) fields(ctx context.Context, t target, decl core.Fields) (core
 		}
 		return nil, nil
 	}
-	return nil, fmt.Errorf("種類 %q を知らない", t.kind)
+	return nil, fmt.Errorf("未知の type %q", t.kind)
 }
 
 // sameAs は宣言と意味が同じなら宣言の書き方、違えばサーバの値を返す（E-I7）。
@@ -235,7 +235,7 @@ func (s *Server) outsideConnectors(d *DatabaseInfo) []string {
 }
 
 // Observe は ID をサーバごとにまとめ、サーバごとに snapshot を 1 回読む（E-D8）。
-// 届かない・認証の失敗・壊れた出力は Unknown（E-K1）。
+// 接続できない・認証の失敗・壊れた出力は Unknown（E-K1）。
 func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core.Observation, error) {
 	out := map[core.ID]core.Observation{}
 	groups := map[string][]target{}
@@ -269,13 +269,13 @@ func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core
 	return out, nil
 }
 
-// List は範囲のサーバのロール・データベース・権限・拡張（管理の境界の内のもの）を
+// List は Range のサーバのロール・データベース・権限・拡張（管理の境界の内側のもの）を
 // 返す。snapshot と全部の DB の拡張が読めたときだけ完全で、1 つでも読めなければ
-// 誤り（complete-or-error、E-K2・E-F3）。PUBLIC の権限は返さない（E-F1）。
+// エラー（complete-or-error、E-K2・E-F3）。PUBLIC の権限は返さない（E-F1）。
 func (p *Provider) List(ctx context.Context, rg core.Range) (core.Listing, error) {
 	srv, ok := p.servers[rg.Args["server"]]
 	if !ok {
-		return core.Listing{}, fmt.Errorf("範囲の server %q が settings.servers に無い", rg.Args["server"])
+		return core.Listing{}, fmt.Errorf("Range の server %q が settings.servers に無い", rg.Args["server"])
 	}
 	o, err := newObserver(ctx, conn{c: p.client, srv: srv, cred: srv.Observe})
 	if err != nil {
@@ -284,7 +284,7 @@ func (p *Provider) List(ctx context.Context, rg core.Range) (core.Listing, error
 	id := func(kind string, parts ...string) core.ID {
 		return core.ID{Type: rg.Provider + "/" + kind, Name: strings.Join(append([]string{srv.Name}, parts...), "/")}
 	}
-	// 管理の境界の内のロールか（つなぐロール・pg_*・名前に使えないものを除く）。
+	// 管理の境界の内側のロールか（接続に使うロール・pg_*・名前に使えないものを除く）。
 	inside := func(role string) bool {
 		return srv.outsideRole(role) == "" && role != o.snap.CurrentUser && validName("role", role) == ""
 	}

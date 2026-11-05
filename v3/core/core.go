@@ -15,8 +15,8 @@
 // Package core は新しいコアの正準型（Resource・Range・Schema・Observation と
 // Provider のインターフェース）を持つ（設計 docs/core/README.md §3.1〜§3.3）。
 //
-// 項目に付けた E-…・N-… は docs/review/core-usecase-review.md のユースケース ID。
-// ID を付けられない項目は入れない。
+// 型・field に付けた E-…・N-… は docs/review/core-usecase-review.md のユースケース ID。
+// ID を付けられないものは入れない。
 package core
 
 import (
@@ -28,8 +28,8 @@ import (
 	"time"
 )
 
-// ID は Resource の識別子。Type は "<provider のインスタンス名>/<種類>"、Name は
-// その種類の中の名前。intent 全体で一意（E-M3・N-M3）。
+// ID は Resource の識別子。Type は "<provider のインスタンス名>/<kind>"、Name は
+// その kind の中の名前。intent 全体で一意（E-M3・N-M3）。
 type ID struct {
 	Type string
 	Name string
@@ -44,7 +44,7 @@ func (id ID) Provider() string {
 	return p
 }
 
-// Kind は Type の種類を返す。
+// Kind は Type の kind の部分を返す。
 func (id ID) Kind() string {
 	_, k, _ := strings.Cut(id.Type, "/")
 	return k
@@ -53,11 +53,11 @@ func (id ID) Kind() string {
 // Local は provider の中での ID（"<kind>/<name>"）。Range の除外が突き合わせる（E-D2）。
 func (id ID) Local() string { return id.Kind() + "/" + id.Name }
 
-// ParseType は "<provider>/<kind>" を確かめる。種類に "/" は含めない。
+// ParseType は "<provider>/<kind>" の形かを検証する。kind に "/" は含めない。
 func ParseType(s string) error {
 	p, k, ok := strings.Cut(s, "/")
 	if !ok || p == "" || k == "" || strings.Contains(k, "/") {
-		return fmt.Errorf("type %q は <provider>/<種類> の形でない", s)
+		return fmt.Errorf("type %q は <provider>/<kind> の形でない", s)
 	}
 	return nil
 }
@@ -66,19 +66,19 @@ func ParseType(s string) error {
 func ParseRef(s string) (ID, error) {
 	parts := strings.SplitN(s, "/", 3)
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return ID{}, fmt.Errorf("参照 %q は <provider>/<種類>/<名前> の形でない", s)
+		return ID{}, fmt.Errorf("参照 %q は <provider>/<kind>/<name> の形でない", s)
 	}
 	return ID{Type: parts[0] + "/" + parts[1], Name: parts[2]}, nil
 }
 
-// Fields は宣言した項目だけを持つ（E-D7・E-B7）。観測の Fields は正規形。
+// Fields は宣言した field だけを持つ（E-D7・E-B7）。観測の Fields は正規形。
 type Fields map[string]any
 
-// Ensure は在るべきか無いべきか。
+// Ensure は Present であるべきか Absent であるべきか。
 type Ensure int
 
 const (
-	// EnsurePresent は在るべき（既定）。
+	// EnsurePresent は Present であるべき（既定）。
 	EnsurePresent Ensure = iota
 	// EnsureAbsent は名指しで消す（E-D3・N-A9）。
 	EnsureAbsent
@@ -91,7 +91,7 @@ func (e Ensure) String() string {
 	return "present"
 }
 
-// Origin は宣言のファイルと行（E-M3：断るときにどこかを示す）。
+// Origin は宣言のファイルと行（E-M3：reject するときに場所を示す）。
 type Origin struct {
 	File string `json:"file,omitempty"`
 	Line int    `json:"line,omitempty"`
@@ -133,7 +133,7 @@ type Resource struct {
 }
 
 // Range は「この provider のこの集合はこちらが管理する」境界（§3.2）。
-// 範囲は intent にだけ書く（E-I6・不変条件 24）。
+// Range は intent にだけ書く（E-I6・不変条件 24）。
 type Range struct {
 	Provider       string            // E-B2・E-I6・E-G1・E-B4
 	Args           map[string]string // List の引数（E-B2・E-I6・E-G1・E-B4）
@@ -144,8 +144,8 @@ type Range struct {
 	Origin         Origin
 }
 
-// Key は範囲の名前（"<provider>:<引数=値,…>"）。Record の目印の範囲ごとの件数の
-// 鍵にする（E-K2）。
+// Key は Range の名前（"<provider>:<引数=値,…>"）。Record の marks にある Range ごとの
+// 件数の key にする（E-K2）。
 func (r Range) Key() string {
 	keys := make([]string, 0, len(r.Args))
 	for k := range r.Args {
@@ -162,7 +162,7 @@ func (r Range) Key() string {
 // DefaultMaxDrop は max_drop を書かないときの値（E-K2）。
 const DefaultMaxDrop = 50
 
-// Exclusion は外の持ち主のもの（触らない）。ID か IDPrefix のどちらか 1 つで、
+// Exclusion は external owner のもの（触らない）。ID か IDPrefix のどちらか 1 つで、
 // provider の中での ID（"<kind>/<name>"）と突き合わせる（E-D2・E-T2）。
 type Exclusion struct {
 	Owner    string
@@ -179,7 +179,7 @@ func (e Exclusion) Matches(id ID) bool {
 	return e.IDPrefix != "" && strings.HasPrefix(id.Local(), e.IDPrefix)
 }
 
-// FieldType は項目の型（E-B12：順序のある List は全置換、Set は順不同で比べる）。
+// FieldType は field の型（E-B12：順序のある List は全置換、Set は順不同で比べる）。
 type FieldType int
 
 const (
@@ -190,7 +190,7 @@ const (
 	List
 	Set
 	Map
-	// Secret は秘密の参照（{secret: "<backend>:<path>"}）。値を持たず比べず、
+	// Secret は secret の参照（{secret: "<backend>:<path>"}）。値を持たず比べず、
 	// 世代だけを比べる（E-G2・N-L5）。
 	Secret
 	// Float は小数の値（/metrics の値・メモリの量）。Condition の大小で比べる
@@ -215,34 +215,34 @@ func ParseFieldType(s string) (FieldType, bool) {
 	return 0, false
 }
 
-// FieldSpec は項目の型と、変われば作り直しになるか（E-A10・N-A8）。
+// FieldSpec は field の型と、変われば作り直しになるか（E-A10・N-A8）。
 type FieldSpec struct {
 	Type     FieldType
 	Identity bool
-	// Digest は観測が中身の sha256（"sha256:<hex>"）だけを返す項目。比べるときは
+	// Digest は観測が中身の sha256（"sha256:<hex>"）だけを返す field。比べるときは
 	// 宣言の値も Digest にする。中身の平文を観測・plan・Record に出さない
 	// （E-E2・E-D5）。Type は String だけ。
 	Digest bool
-	// Match は宣言の値と観測の値の比べ方を provider が決める項目（provider の
+	// Match は宣言の値と観測の値の比べ方を provider が決める field（provider の
 	// 正規形で吸収する、E-I7・E-D1・E-C2）。宣言した slot・キーだけを比べる・
 	// 作るときだけ使う（template）・付け替えで名前の変わる volume を比べない、の
-	// ように等しさで比べられないもの。observed は観測に項目が無ければ nil。
+	// ように等しさで比べられないもの。observed は観測に field が無ければ nil。
 	// nil なら Type の比べ方（Equal）。
 	Match func(desired, observed any) bool
 }
 
-// KindSchema は種類ごとの項目。
+// KindSchema は kind ごとの field。
 type KindSchema struct {
 	Fields map[string]FieldSpec
-	// Settle は Apply のあと読み直すまでの待ち（E-J6・E-R3）。
+	// Settle は Apply のあと再観測するまでの待ち時間（E-J6・E-R3）。
 	Settle      time.Duration
 	ObserveOnly bool // 観測だけ。Apply・Delete を呼ばない（E-B7・E-E4・N-B5・N-B6・N-A7）
-	// DestructiveDelete は中身を失う種類（volume・DB・バケット）。宣言の外でも
-	// prune で消さない（不変条件 9、E-C3・N-C2）。
+	// DestructiveDelete は中身を失う kind（volume・DB・バケット）。宣言に無いもの
+	// （unmanaged）でも prune で消さない（不変条件 9、E-C3・N-C2）。
 	DestructiveDelete bool
 }
 
-// Schema は provider の種類と項目。Version は比べ方・正規形が変われば上げる
+// Schema は provider の kind と field。Version は比べ方・正規形が変われば上げる
 // （E-J12・N-S1・N-P3）。
 type Schema struct {
 	Version string
@@ -253,13 +253,13 @@ type Schema struct {
 type Availability int
 
 const (
-	// Unknown は分からない。届かない・読めない・覗けない・定義に合わない出力
+	// Unknown は状態が分からない。届かない・読めない・覗けない・定義に合わない出力
 	// （E-K1・N-K1・E-A12・E-E6・E-B11）。Absent ではない。ゼロ値を Unknown に
 	// して、埋め忘れた観測を「無い」と読まない。
 	Unknown Availability = iota
-	// Present は在る。
+	// Present は存在する。
 	Present
-	// Absent は確かに無い。
+	// Absent は確かに存在しない。
 	Absent
 	// Converging は相手が作業中（E-A4・E-D1・E-B14・E-A1）。
 	Converging
@@ -306,14 +306,14 @@ type Observation struct {
 	Note         string       `json:"note,omitempty"`
 }
 
-// Listing は List の結果。Complete でなければその範囲を消さない（E-K2・E-F3）。
+// Listing は List の結果。Complete でなければその Range では prune しない（E-K2・E-F3）。
 type Listing struct {
 	IDs      []ID
 	Complete bool
 }
 
 // WriteContext は Apply・Delete のときだけコアが渡す。provider は書き込み用の
-// 資格と秘密の値をこの中でだけ取り出す（E-G5・N-G3・E-G2）。
+// credential と secret の値をこの中でだけ取り出す（E-G5・N-G3・E-G2）。
 type WriteContext struct {
 	_       writeToken
 	secrets SecretResolver
@@ -321,29 +321,29 @@ type WriteContext struct {
 
 type writeToken struct{}
 
-// NewWriteContext は秘密の取り出し先を持つ書き込みの文脈を作る。コアの周が
+// NewWriteContext は secret の取り出し先を持つ書き込みの文脈を作る。コアの cycle が
 // Apply・Delete・Prepare・Invoke の直前にだけ作る。
 func NewWriteContext(s SecretResolver) WriteContext { return WriteContext{secrets: s} }
 
-// Secret は Secret の項目の値（宣言の参照と世代）から秘密の値を取り出す
-// （§3.8、E-G2・E-G3・N-G2）。値は使い終えたら捨て、誤りの文・Note・Fields に
+// Secret は Secret の field の値（宣言の参照と世代）から secret の値を取り出す
+// （§3.8、E-G2・E-G3・N-G2）。値は使い終えたら捨て、エラーの文・Note・Fields に
 // 出さない（不変条件 27）。
 func (w WriteContext) Secret(ctx context.Context, value any) (string, error) {
 	s, ok := value.(string)
 	if !ok {
-		return "", fmt.Errorf("秘密の参照でない値")
+		return "", fmt.Errorf("secret の参照でない値")
 	}
 	ref, err := ParseSecretRef(s)
 	if err != nil {
 		return "", err
 	}
 	if w.secrets == nil {
-		return "", fmt.Errorf("秘密 %s の取り出し先が無い", ref.Ref())
+		return "", fmt.Errorf("secret %s の取り出し先が無い", ref.Ref())
 	}
 	return w.secrets.Resolve(ctx, ref)
 }
 
-// Observer は観測だけの口。比べる処理（plan）はこれだけを受け取り、現実を
+// Observer は観測だけのインターフェース。比べる処理（plan）はこれだけを受け取り、現実を
 // 変える関数を型として持たない（不変条件 2・30、E-J9）。
 type Observer interface {
 	Schema() Schema
@@ -352,34 +352,34 @@ type Observer interface {
 	Observe(ctx context.Context, ids []ID) (map[ID]Observation, error)
 }
 
-// Lister は範囲の中の ID を列挙する口。prune の根拠は List の ID だけ
+// Lister は Range の中の ID を列挙するインターフェース。prune の根拠は List の ID だけ
 // （不変条件 8、E-K2・E-F3）。
 type Lister interface {
 	List(ctx context.Context, r Range) (Listing, error)
 }
 
-// Reader は観測と列挙だけの口。plan と 1 周の判定はこれだけを受け取り、現実を
+// Reader は観測と列挙だけのインターフェース。plan と 1 cycle の判定はこれだけを受け取り、現実を
 // 変える関数を型として持たない（不変条件 2・30）。
 type Reader interface {
 	Observer
 	Lister
 }
 
-// Provider は 1 つの種類の装置とのやりとり（§3.3）。
+// Provider は 1 種類の装置とのやりとり（§3.3）。
 type Provider interface {
 	Reader
 	Apply(ctx context.Context, w WriteContext, id ID, desired Fields, current Observation) error // E-B12・E-D1
-	// Delete は断るとき *RefuseError を返す（E-F1・E-G1・E-C2）。
+	// Delete は削除を拒否するとき *RefuseError を返す（E-F1・E-G1・E-C2）。
 	Delete(ctx context.Context, w WriteContext, id ID, current Observation) error
 }
 
-// RefuseError は provider が Delete を断った理由（中身がある・子がある・keep の
-// 印がある）。コアは消さずに報告を続け、予算に数えない（不変条件 10、E-F1・E-C2）。
+// RefuseError は provider が Delete を拒否した理由（中身がある・子がある・keep の
+// tag がある）。コアは消さずに報告を続け、budget に数えない（不変条件 10、E-F1・E-C2）。
 type RefuseError struct {
 	Reason string
 }
 
-func (e *RefuseError) Error() string { return "削除を断った: " + e.Reason }
+func (e *RefuseError) Error() string { return "削除を拒否した: " + e.Reason }
 
 // Clock は今の時刻。テストで差し替える（E-R4）。
 type Clock interface {
@@ -396,13 +396,13 @@ func (SystemClock) Now() time.Time { return time.Now() }
 type Severity int
 
 const (
-	// Reject は読み込みで断る（E-B5・E-A7・N-B7・E-M3）。
+	// Reject は読み込み時にエラーにする（E-B5・E-A7・N-B7・E-M3）。
 	Reject Severity = iota
-	// Warn は知らせるだけ（E-B5）。
+	// Warn は通知するだけ（E-B5）。
 	Warn
-	// Uncertain は Target の Resource を「分からない」扱いにする（観測も Apply も
-	// しない、下流は待つ、E-G4・E-K3）。Target が "<provider>/<種類>" か provider の
-	// 名前なら、宣言が欠けているかもしれないので、その provider の範囲を消さない
+	// Uncertain は Target の Resource を Unknown 扱いにする（観測も Apply も
+	// しない、下流は待つ、E-G4・E-K3）。Target が "<provider>/<kind>" か provider の
+	// 名前なら、宣言が欠けているかもしれないので、その provider の Range では prune しない
 	// （外部入力が届かないとき空の desired で消さない、E-K3・不変条件 26）。
 	Uncertain
 )
@@ -439,8 +439,8 @@ func (d Diagnostic) String() string {
 	return b.String()
 }
 
-// Validator は読み込みのときに provider 固有の誤り（範囲の外の宣言・範囲の
-// 重なりなど）を断る任意の口（E-I7・E-A4・E-B3・E-I6・E-K8）。
+// Validator は読み込み時に provider 固有のエラー（Range の外の宣言・Range の
+// 重なりなど）を reject する任意のインターフェース（E-I7・E-A4・E-B3・E-I6・E-K8）。
 type Validator interface {
 	Validate(res []Resource, ranges []Range) []Diagnostic
 }
@@ -448,23 +448,23 @@ type Validator interface {
 // Hint は状況で決まる変更の性質（§3.3 の Classifier、E-C2・E-B6・E-C1）。
 type Hint struct {
 	Field string
-	// Destructive は壊す変更（予算の壊す変更に数える、不変条件 9）。
+	// Destructive は壊す変更（budget の壊す変更に数える、不変条件 9）。
 	Destructive bool
-	// NeedsApproval は承認が揃うまで当てない変更（E-C2）。当たる Policy に
+	// NeedsApproval は承認が揃うまで Apply しない変更（E-C2）。当たる Policy に
 	// approval が無ければ、申請者でない 1 人の承認を求める。
 	NeedsApproval bool
 	Reason        string
 }
 
 // Classifier は状況で壊す・承認が要る変更（volume の付け替え・規則の変更・
-// 保持の設定の変更）を計画のときに言う任意の口（E-C2・E-B6・E-C1）。Schema の
+// 保持の設定の変更）を plan のときに返す任意のインターフェース（E-C2・E-B6・E-C1）。Schema の
 // 静的な印で言えないものだけに使う。現実に触れない（観測 current と宣言から
 // 決める）。
 type Classifier interface {
 	Classify(id ID, current Observation, desired Fields) []Hint
 }
 
-// RejectError は読み込みで断った診断の一覧（終了コード 2）。
+// RejectError は読み込み時にエラーにした診断の一覧（終了コード 2）。
 type RejectError struct {
 	Diagnostics []Diagnostic
 }

@@ -14,10 +14,10 @@
 
 package nftables_test
 
-// kernel_test.go — 本物のカーネルで 2 段の Apply が確定しなければ戻ることを
+// kernel_test.go — 本物のカーネルで、two-phase Apply が確定しなければ元に戻ることを
 // 確かめる（不変条件 17、E-B3・E-B8）。使い捨ての network namespace の中で、root で
-// 走るのは決まった道具 sakutei-nft-guard だけ。管理の経路の代わりに namespace の
-// 中の TCP の待ち受けを置き、確かめ check(reach) は新しい接続を張る。
+// 走るのは専用ツール sakutei-nft-guard だけ。管理経路の代わりに namespace の
+// 中に TCP の listen を置き、check(reach) は新しい接続を張る。
 //
 // sudo（パスワードなし）・ip・nft・python3 が要るので、SAKUTEI_IT_NFT=1 のときだけ
 // 回す（make integration-v3-nftables）。ホストの FW には触れない。
@@ -45,7 +45,7 @@ import (
 type lab struct {
 	t      *testing.T
 	ns     string
-	dir    string // root の持ち物（道具と設定）
+	dir    string // root が所有する（専用ツールと設定）
 	work   string
 	record string
 }
@@ -87,7 +87,7 @@ func newLab(t *testing.T) *lab {
 	conf := filepath.Join(l.work, "guard.json")
 	os.WriteFile(conf, []byte(fmt.Sprintf(`{"tables": ["inet/sk"], "state_dir": %q, "max_rollback_seconds": 60}`, l.dir+"/state")), 0o644)
 	sudo(t, "install", "-o", "root", "-g", "root", "-m", "0644", conf, l.dir+"/guard.json")
-	// 管理の経路の代わり：namespace の中の TCP の待ち受け。
+	// 管理経路の代わり：namespace の中の TCP の listen。
 	srv := exec.Command("sudo", "-n", "ip", "netns", "exec", l.ns, "python3", "-c",
 		"import socket\ns=socket.socket()\ns.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\ns.bind(('127.0.0.1',2222))\ns.listen(16)\nwhile True:\n c,_=s.accept()\n c.close()\n")
 	if err := srv.Start(); err != nil {
@@ -98,7 +98,7 @@ func newLab(t *testing.T) *lab {
 			break
 		}
 		if i > 50 {
-			t.Fatal("待ち受けが立たない")
+			t.Fatal("listen が立ち上がらない")
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -121,7 +121,7 @@ func (l *lab) ns_(args ...string) string {
 	return sudo(l.t, append([]string{"ip", "netns", "exec", l.ns}, args...)...)
 }
 
-// reach は管理の経路に新しい接続で届くか（2 秒まで）。
+// reach は管理経路に新しい接続で届くか（2 秒まで）。
 func (l *lab) reach() bool {
 	err := exec.Command("sudo", "-n", "ip", "netns", "exec", l.ns, "python3", "-c",
 		"import socket\nsocket.create_connection(('127.0.0.1',2222),timeout=1).close()\n").Run()
@@ -178,54 +178,54 @@ func change(r plan.Result) plan.Change {
 	return plan.Change{}
 }
 
-// 不変条件 17：確かめが通れば確定し、通らなければ確定せずホストの側で戻る。
+// 不変条件 17：check が通れば確定し、通らなければ確定せずホスト側で元に戻る。
 func TestKernelTransaction(t *testing.T) {
 	l := newLab(t)
 
-	// 1. 経路を通す規則で既定の拒否を作る：確かめが通り確定する。
+	// 1. 管理経路を通すルールつきで既定の拒否を作る：check が通り確定する。
 	l.intent([]string{"ct state established,related accept", `iif "lo" tcp dport 2222 accept`}, "6s")
 	r, code, stderr := l.reconcile()
 	if c := change(r); code != cli.ExitOK || c.Outcome != plan.OutcomeOK || c.After != plan.None {
-		t.Fatalf("作る周: exit=%d %+v\n%s", code, c, stderr)
+		t.Fatalf("作成の cycle: exit=%d %+v\n%s", code, c, stderr)
 	}
 	good := l.ruleset()
 	if !strings.Contains(good, "policy drop") || !strings.Contains(good, `iif "lo" tcp dport 2222 accept`) || !l.reach() {
 		t.Fatalf("確定した ruleset:\n%s", good)
 	}
 	if st := l.ns_(l.dir+"/sakutei-nft-guard", "--config", l.dir+"/guard.json", "status"); !strings.Contains(st, `"rollbacks":[]`) {
-		t.Fatalf("確定したのに仕掛けが残る: %s", st)
+		t.Fatalf("確定したのに rollback の予約が残る: %s", st)
 	}
-	time.Sleep(7 * time.Second) // 時間切れを過ぎても確定したものは戻らない
+	time.Sleep(7 * time.Second) // 時間切れを過ぎても確定したものは元に戻らない
 	if got := l.ruleset(); got != good {
-		t.Fatalf("確定したものが戻った:\n%s", got)
+		t.Fatalf("確定したものが元に戻った:\n%s", got)
 	}
 
-	// 2. 経路を塞ぐ変更：確かめが通らず確定しない。元の規則に戻り、止まる。
+	// 2. 管理経路を塞ぐ変更：check が通らず確定しない。元のルールに戻り、halt する。
 	l.intent([]string{"ct state established,related accept", "tcp dport 22 accept"}, "6s")
 	start := time.Now()
 	r, code, stderr = l.reconcile()
 	c := change(r)
 	if code != cli.ExitHalted || !c.RolledBack || c.Outcome != plan.OutcomeError {
-		t.Fatalf("塞ぐ周: exit=%d %+v\n%s", code, c, stderr)
+		t.Fatalf("塞ぐ cycle: exit=%d %+v\n%s", code, c, stderr)
 	}
 	if d := time.Since(start); d < 3*time.Second {
-		t.Fatalf("確かめを %s で諦めた（timeout の半分まで待つ）", d)
+		t.Fatalf("check を %s で諦めた（timeout の半分まで待つ）", d)
 	}
 	if got := l.ruleset(); got != good || !l.reach() {
-		t.Fatalf("戻っていない:\n%s", got)
+		t.Fatalf("元に戻っていない:\n%s", got)
 	}
-	// 同じ宣言のまま当て直さない（毎周締め出して戻すのを繰り返さない）。
+	// 同じ宣言のまま Apply し直さない（cycle ごとに締め出して戻すのを繰り返さない）。
 	r, code, _ = l.reconcile()
 	if c := change(r); code != cli.ExitHalted || c.Action != plan.ActHalt {
-		t.Fatalf("次の周: exit=%d %+v", code, c)
+		t.Fatalf("次の cycle: exit=%d %+v", code, c)
 	}
 	if got := l.ruleset(); got != good {
-		t.Fatalf("当て直した:\n%s", got)
+		t.Fatalf("Apply し直した:\n%s", got)
 	}
 }
 
 // 不変条件 17（契約）：Prepare のあと Commit も Rollback もしなければ、Sakutei が
-// 居なくてもホストの側の時間切れで戻る。
+// いなくてもホスト側の時間切れで元に戻る。
 func TestKernelPrepareExpires(t *testing.T) {
 	l := newLab(t)
 	l.intent([]string{"ct state established,related accept", `iif "lo" tcp dport 2222 accept`}, "6s")
@@ -234,7 +234,7 @@ func TestKernelPrepareExpires(t *testing.T) {
 	}
 	good := l.ruleset()
 
-	// 読み込みと同じに provider を組む（Validate が範囲を受け取る）。
+	// 読み込み時と同じように provider を組む（Validate が Range を受け取る）。
 	p, err := nftables.Module(map[string]any{"hosts": map[string]any{"lab": map[string]any{
 		"local": true, "sudo": true, "prefix": []any{"ip", "netns", "exec", l.ns},
 		"guard": []any{l.dir + "/sakutei-nft-guard", "--config", l.dir + "/guard.json"}}}})
@@ -255,6 +255,6 @@ func TestKernelPrepareExpires(t *testing.T) {
 	}
 	time.Sleep(5 * time.Second)
 	if got := l.ruleset(); got != good || !l.reach() {
-		t.Fatalf("時間切れで戻っていない:\n%s", got)
+		t.Fatalf("時間切れで元に戻っていない:\n%s", got)
 	}
 }

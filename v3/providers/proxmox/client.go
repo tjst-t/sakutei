@@ -14,11 +14,11 @@
 
 package proxmox
 
-// client.go — Proxmox VE の REST API（既定の前置きは /api2/json）を net/http で叩く
+// client.go — Proxmox VE の REST API（既定の prefix は /api2/json）を net/http で呼ぶ
 // （v2 の proxmox-vm の client を移したもの、E-D1）。認証は API トークン
-// （Authorization: PVEAPIToken=<user>!<id>=<secret>）。secret は要求の直前に関数から
-// 受け取り、Client にも持たず、誤りの文にも出さない（E-G2）。1 つの Client は 1 本の
-// トークンだけを持つ：観測用と書き込み用は別の Client にする（E-G5）。
+// （Authorization: PVEAPIToken=<user>!<id>=<secret>）。secret はリクエストの直前に関数から
+// 受け取る。Client には持たず、エラーメッセージにも出さない（E-G2）。1 つの Client は 1 本の
+// トークンだけを持つ。観測用と書き込み用は別の Client にする（E-G5）。
 
 import (
 	"bytes"
@@ -38,24 +38,24 @@ import (
 	"time"
 )
 
-// DefaultTimeout は 1 つの要求の時間切れの既定。
+// DefaultTimeout は 1 つのリクエストのタイムアウトの既定値。
 const DefaultTimeout = 15 * time.Second
 
-// ErrorKind は誤りの分け方。
+// ErrorKind はエラーの分類。
 type ErrorKind int
 
-// 誤りの種類。
+// エラーの種類。
 const (
-	// KindUnreachable: 届かない・時間切れ・5xx（ノードが落ちている 595 を含む）。
+	// KindUnreachable: 届かない・タイムアウト・5xx（ノードが落ちている 595 を含む）。
 	// 観測なら Unknown（E-K1）。
 	KindUnreachable ErrorKind = iota + 1
 	// KindAuth: 認証の失敗（401）・権限が無い（403）。
 	KindAuth
-	// KindRejected: 要求が拒まれた（400 などの 4xx）。
+	// KindRejected: リクエストが拒否された（400 などの 4xx）。
 	KindRejected
 )
 
-// Error は Client の誤り。資格は含まない（E-G2）。
+// Error は Client のエラー。credential は含まない（E-G2）。
 type Error struct {
 	Kind    ErrorKind
 	Status  int
@@ -92,23 +92,23 @@ func KindOf(err error) ErrorKind {
 	return 0
 }
 
-// DefaultAPIBasePath は Proxmox VE の API のパスの前置きの既定。
+// DefaultAPIBasePath は Proxmox VE の API のパスの prefix の既定値。
 const DefaultAPIBasePath = "/api2/json"
 
 // ClientConfig は Client の設定。
 type ClientConfig struct {
-	// Endpoint は https://host:8006 の形（API のパスの前置きは足す）。
+	// Endpoint は https://host:8006 の形（API のパスの prefix は Client が足す）。
 	Endpoint string
-	// APIBasePath は API のパスの前置き（空なら DefaultAPIBasePath、"/" は
-	// 前置き無し）。実機と模擬で違うときに変える（§6.1 の HTTP の下回り、E-D1）。
+	// APIBasePath は API のパスの prefix（空なら DefaultAPIBasePath、"/" は
+	// prefix 無し）。実機と mock で違うときに変える（§6.1 の HTTP の下回り、E-D1）。
 	APIBasePath string
 	// Token は API トークン。
 	Token Token
 	// CAFile が空でなければ、それだけを信頼する。
 	CAFile string
-	// InsecureSkipVerify は証明書を確かめない（明示したときだけ）。
+	// InsecureSkipVerify は証明書を検証しない（明示したときだけ）。
 	InsecureSkipVerify bool
-	// Timeout は 1 つの要求の時間切れ（0 なら DefaultTimeout）。
+	// Timeout は 1 つのリクエストのタイムアウト（0 なら DefaultTimeout）。
 	Timeout time.Duration
 }
 
@@ -116,25 +116,25 @@ type ClientConfig struct {
 type Token struct {
 	// ID は "<user>@<realm>!<tokenname>"。
 	ID string
-	// Secret はトークンの secret を要求の直前に返す。
+	// Secret はトークンの secret をリクエストの直前に返す。
 	Secret func(ctx context.Context) (string, error)
 }
 
-// Client は 1 つのクラスタ（の 1 つの endpoint）の API の口。
+// Client は 1 つのクラスタ（の 1 つの endpoint）の API client。
 type Client struct {
 	base  string
 	token Token
 	http  *http.Client
 }
 
-// CleanBasePath は API のパスの前置きを確かめてそろえる（"/" で始まる素のパス。
-// 末尾の "/" は落とし、"/" は前置き無し）。
+// CleanBasePath は API のパスの prefix を検証して正規化する（"/" で始まる素のパス。
+// 末尾の "/" は落とし、"/" は prefix 無し）。
 func CleanBasePath(p string) (string, error) {
 	if !strings.HasPrefix(p, "/") {
-		return "", fmt.Errorf("api_base_path %q は \"/\" で始まるパス（/api2/json など。前置き無しは \"/\"）", p)
+		return "", fmt.Errorf("api_base_path %q は \"/\" で始まるパスで書く（/api2/json など。prefix 無しは \"/\"）", p)
 	}
 	if strings.ContainsAny(p, "?#% \t\r\n\\") {
-		return "", fmt.Errorf("api_base_path %q に問い合わせ・断片・エスケープ・空白は書けない", p)
+		return "", fmt.Errorf("api_base_path %q に query・fragment・エスケープ・空白は書けない", p)
 	}
 	out := strings.TrimRight(p, "/")
 	if out == "" {
@@ -142,7 +142,7 @@ func CleanBasePath(p string) (string, error) {
 	}
 	for _, seg := range strings.Split(out[1:], "/") {
 		if seg == "" || seg == "." || seg == ".." {
-			return "", fmt.Errorf("api_base_path %q に空・\".\"・\"..\" の段は書けない", p)
+			return "", fmt.Errorf("api_base_path %q に空・\".\"・\"..\" の segment は書けない", p)
 		}
 	}
 	return out, nil
@@ -198,8 +198,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}, nil
 }
 
-// call は 1 つの要求を送り、応答の data を out に読む（out が nil なら読まない）。
-// GET・DELETE の params はクエリ、POST・PUT は form の本文に入れる。
+// call は 1 つのリクエストを送り、レスポンスの data を out に読む（out が nil なら読まない）。
+// GET・DELETE の params はクエリ、POST・PUT は form の body に入れる。
 func (c *Client) call(ctx context.Context, method, path string, params url.Values, out any) error {
 	op := method + " " + path
 	token := c.token
@@ -255,17 +255,17 @@ func (c *Client) call(ctx context.Context, method, path string, params url.Value
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	if err := dec.Decode(&env); err != nil {
-		return &Error{Kind: KindUnreachable, Op: op, Message: "読めない応答", Err: err}
+		return &Error{Kind: KindUnreachable, Op: op, Message: "レスポンスを読めない", Err: err}
 	}
 	dec = json.NewDecoder(bytes.NewReader(env.Data))
 	dec.UseNumber()
 	if err := dec.Decode(out); err != nil && !(len(env.Data) == 0 || string(env.Data) == "null") {
-		return &Error{Kind: KindUnreachable, Op: op, Message: "読めない応答", Err: err}
+		return &Error{Kind: KindUnreachable, Op: op, Message: "レスポンスを読めない", Err: err}
 	}
 	return nil
 }
 
-// failureMessage は失敗の応答の文言（HTTP の理由句と、あれば errors の中身）。
+// failureMessage は失敗したレスポンスのメッセージ（HTTP の reason phrase と、あれば errors の中身）。
 func failureMessage(resp *http.Response, data []byte) string {
 	msg := strings.TrimSpace(strings.TrimPrefix(resp.Status, strconv.Itoa(resp.StatusCode)))
 	var env struct {
@@ -288,7 +288,7 @@ func failureMessage(resp *http.Response, data []byte) string {
 	return msg
 }
 
-// scrub は err の文言から secret を消す（URL に入れることは無いが念のため）。
+// scrub は err のメッセージから secret を消す（URL に入れることは無いが念のため）。
 func scrub(err error, secret string) error {
 	if secret != "" && strings.Contains(err.Error(), secret) {
 		return errors.New(strings.ReplaceAll(err.Error(), secret, "***"))
@@ -298,10 +298,10 @@ func scrub(err error, secret string) error {
 
 // ---- API ----
 
-// Resource は /cluster/resources?type=vm の 1 件。vmid・ノード・種類は
-// クラスタの設定（pmxcfs）から来るが、名前・status・template・lock は pvestatd
-// が周期（約 10 秒）で更新する写しで、作った直後の VM は名前が空、status が
-// 古いことがある。名前が空の項目は Provider が設定で確かめ、電源と lock は
+// Resource は /cluster/resources?type=vm の 1 件。vmid・ノード・type は
+// クラスタの設定（pmxcfs）から来る。名前・status・template・lock は pvestatd
+// が約 10 秒ごとに更新するキャッシュなので、作った直後の VM は名前が空で、status が
+// 古いことがある。名前が空の field は Provider が設定で確かめ、電源と lock は
 // CurrentStatus で読む。Pool は pool の設定（user.cfg）から来る今の値で、
 // トークンにその pool の Pool.Audit が無ければ載らない（空）。
 type Resource struct {
@@ -394,7 +394,7 @@ type VMStatus struct {
 }
 
 // CurrentStatus は VM の今の状態を返す。/cluster/resources の status は
-// pvestatd が周期で更新する写しで古いことがあるので、電源はこちらで読む。
+// pvestatd が定期的に更新するキャッシュで古いことがあるので、電源はこちらで読む。
 func (c *Client) CurrentStatus(ctx context.Context, node string, vmid int) (VMStatus, error) {
 	var raw map[string]any
 	if err := c.call(ctx, http.MethodGet, vmPath(node, vmid)+"/status/current", nil, &raw); err != nil {
@@ -423,14 +423,14 @@ func (c *Client) SetFirewallOptions(ctx context.Context, node string, vmid int, 
 	return c.call(ctx, http.MethodPut, vmPath(node, vmid)+"/firewall/options", params, nil)
 }
 
-// FirewallRule は VM の FW の規則の 1 つ（GET /firewall/rules の項目）。
+// FirewallRule は VM の FW の規則の 1 つ（GET /firewall/rules の要素）。
 type FirewallRule struct {
 	// Pos は並びの位置（0 が先頭）。
 	Pos int
-	// Digest は並び全体の digest（書き換えに渡すと、間に変わっていれば断られる）。
+	// Digest は並び全体の digest（書き換えに渡すと、間に変わっていれば拒否される）。
 	Digest string
-	// Fields は欄（type・action・iface・source・dest・proto・dport・sport・
-	// icmp-type・macro・log・enable・comment。書かれていない欄は無い）。
+	// Fields は field（type・action・iface・source・dest・proto・dport・sport・
+	// icmp-type・macro・log・enable・comment。書かれていない field は無い）。
 	Fields map[string]string
 }
 
@@ -499,7 +499,7 @@ func (c *Client) Clone(ctx context.Context, node string, vmid int, params url.Va
 	return c.task(ctx, http.MethodPost, vmPath(node, vmid)+"/clone", params)
 }
 
-// Resize はディスクを size（"32G" など、絶対値）にする。版によって UPID を返す
+// Resize はディスクを size（"32G" など、絶対値）にする。バージョンによって UPID を返す
 // （返さなければ ""）。
 func (c *Client) Resize(ctx context.Context, node string, vmid int, disk, size string) (string, error) {
 	return c.task(ctx, http.MethodPut, vmPath(node, vmid)+"/resize", url.Values{"disk": {disk}, "size": {size}})
@@ -545,9 +545,9 @@ func (c *Client) SetPool(ctx context.Context, pool string, vmid int, remove bool
 	return c.call(ctx, http.MethodPut, "/pools", params, nil)
 }
 
-// ActiveTasks は node の vmid の走っている仕事（UPID の種類）を返す（GET
-// /nodes/<node>/tasks?source=active&vmid=<vmid>）。Apply が待ち切れなかった仕事を、
-// 覚えておかずに観測で見つける（E-D1）。他人の始めた仕事を読むには /nodes/<node> の
+// ActiveTasks は node の vmid の実行中の task（UPID の type）を返す（GET
+// /nodes/<node>/tasks?source=active&vmid=<vmid>）。Apply が待ち切れなかった task を、
+// 覚えておかずに観測で見つける（E-D1）。他人の始めた task を読むには /nodes/<node> の
 // Sys.Audit が要る（PVEAuditor にある）。
 func (c *Client) ActiveTasks(ctx context.Context, node string, vmid int) ([]string, error) {
 	var raw []map[string]any
@@ -561,23 +561,23 @@ func (c *Client) ActiveTasks(ctx context.Context, node string, vmid int) ([]stri
 			continue
 		}
 		if st := scalar(m["status"]); st != "" && st != "running" {
-			continue // 終わった仕事（active でも終わりの直後に載ることがある）
+			continue // 終わった task（active でも終わった直後に載ることがある）
 		}
 		out = append(out, scalar(m["type"]))
 	}
 	return out, nil
 }
 
-// TaskStatus は非同期の仕事の状態。
+// TaskStatus は非同期の task の状態。
 type TaskStatus struct {
 	Running    bool
 	ExitStatus string
 }
 
-// OK は仕事が成功で終わったかを返す。
+// OK は task が成功で終わったかを返す。
 func (t TaskStatus) OK() bool { return !t.Running && t.ExitStatus == "OK" }
 
-// Task は upid の仕事の状態を返す。
+// Task は upid の task の状態を返す。
 func (c *Client) Task(ctx context.Context, upid string) (TaskStatus, error) {
 	node, err := UPIDNode(upid)
 	if err != nil {

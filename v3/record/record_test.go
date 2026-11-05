@@ -54,7 +54,7 @@ func TestLock(t *testing.T) {
 	release2()
 }
 
-// 知らない形の版の Record は読まない（§5.1）。
+// 知らない format のバージョンの Record は読まない（§5.1）。
 func TestFormat(t *testing.T) {
 	r := open(t)
 	if data, _ := os.ReadFile(filepath.Join(r.Dir(), "format")); string(data) != "1\n" {
@@ -67,7 +67,7 @@ func TestFormat(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	if _, err := record.ReadMarks(r.Dir()); err == nil {
-		t.Fatal("知らない版の目印を読んだ")
+		t.Fatal("知らないバージョンの marks を読んだ")
 	}
 }
 
@@ -75,7 +75,7 @@ func TestMarks(t *testing.T) {
 	r := open(t)
 	m, err := r.Marks()
 	if err != nil || m.Cycle != 0 || m.RangeCounts != nil {
-		t.Fatalf("初めての周: %+v %v", m, err)
+		t.Fatalf("初めての cycle: %+v %v", m, err)
 	}
 	at := time.Date(2026, 11, 5, 22, 0, 0, 0, time.UTC)
 	want := record.Marks{Cycle: 3, At: at, RangeCounts: map[string]int{"dns:zone=example.com.": 412},
@@ -94,7 +94,7 @@ func TestMarks(t *testing.T) {
 			t.Errorf("一時ファイルが残った: %s", e.Name())
 		}
 	}
-	// 無いディレクトリは作らず空の目印。
+	// 無いディレクトリは作らず空の marks。
 	missing := filepath.Join(t.TempDir(), "none")
 	if m, err := record.ReadMarks(missing); err != nil || m.Cycle != 0 {
 		t.Fatalf("%+v %v", m, err)
@@ -104,27 +104,27 @@ func TestMarks(t *testing.T) {
 	}
 }
 
-// 予算の窓は長さ分続き、過ぎれば 0 から数え直す（E-J1）。
+// budget の window は長さ分続き、過ぎれば 0 から数え直す（E-J1）。
 func TestWindow(t *testing.T) {
 	start := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
 	m := record.Marks{BudgetWindows: map[string]record.WindowUse{"p": {Start: start, Destructive: 4}}}
 	if w := m.Window("p", 24*time.Hour, start.Add(23*time.Hour)); w.Destructive != 4 || !w.Start.Equal(start) {
-		t.Fatalf("窓の中: %+v", w)
+		t.Fatalf("window の中: %+v", w)
 	}
 	now := start.Add(24 * time.Hour)
 	if w := m.Window("p", 24*time.Hour, now); w.Destructive != 0 || !w.Start.Equal(now) {
-		t.Fatalf("窓のあと: %+v", w)
+		t.Fatalf("window のあと: %+v", w)
 	}
-	// 時計が窓の始まりより前に戻っても数え直さない（予算を緩めない）。
+	// 時計が window の始まりより前に戻っても数え直さない（budget を緩めない）。
 	if w := m.Window("p", 24*time.Hour, start.Add(-time.Hour)); w.Destructive != 4 {
 		t.Fatalf("時計が戻った: %+v", w)
 	}
 	if w := m.Window("q", time.Hour, now); w.Destructive != 0 || !w.Start.Equal(now) {
-		t.Fatalf("無い窓: %+v", w)
+		t.Fatalf("無い window: %+v", w)
 	}
 }
 
-// 監査の鎖：前の行のハッシュで鎖にし、書き換え・欠け・切れを audit verify が
+// audit のハッシュチェーン：前の行のハッシュでつなぎ、書き換え・欠け・切れを audit verify が
 // 見つける（E-L1・N-L1・不変条件 28）。
 func TestAuditChain(t *testing.T) {
 	r := open(t)
@@ -137,7 +137,7 @@ func TestAuditChain(t *testing.T) {
 			t.Fatalf("seq=%d err=%v", seq, err)
 		}
 	}
-	// 開き直しても鎖が続く。
+	// 開き直してもチェーンが続く。
 	a, err = r.Audit()
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func TestAuditChain(t *testing.T) {
 	if _, err := record.Verify(r.Dir()); err == nil || !strings.Contains(err.Error(), "seq 3（2 のはず）") {
 		t.Fatalf("欠けを見つけない: %v", err)
 	}
-	// 切れた最後の行：verify も、続きを書くことも断る。
+	// 切れた最後の行：verify も、続きを書くこともエラーにする。
 	if err := os.WriteFile(path, orig[:len(orig)-5], 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -174,11 +174,11 @@ func TestAuditChain(t *testing.T) {
 		t.Fatal("切れを見つけない")
 	}
 	if _, err := r.Audit(); err == nil {
-		t.Fatal("切れた鎖に続きを書こうとした")
+		t.Fatal("切れたチェーンに続きを書こうとした")
 	}
 }
 
-// 大きくなれば新しいファイルへ回し、鎖はファイルをまたいで続く。
+// 大きくなれば新しいファイルへ回し、チェーンはファイルをまたいで続く。
 func TestAuditRotate(t *testing.T) {
 	old := record.MaxAuditFile
 	record.MaxAuditFile = 300

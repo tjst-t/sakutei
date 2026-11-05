@@ -14,28 +14,28 @@
 
 package proxmox
 
-// fw.go — 種類 fw-rules と fw-rule：VM の FW の規則（/nodes/<n>/qemu/<id>/firewall/
+// fw.go — type fw-rules と fw-rule：VM の FW の規則（/nodes/<n>/qemu/<id>/firewall/
 // rules、v2 の proxmox-fw を移したもの、E-B6）。
 //
 //   - fw-rules の 1 件 = 1 台の VM の、Sakutei が置いた規則の並び（rules、順のある
-//     規則の文のリスト。書き方は fwrule）。Sakutei が置いた規則は comment の頭の印
-//     （fwrule.Marker）で見分け、印のある規則だけを書き換える。印の無い規則（手で
-//     置いたもの・ほかの道具のもの）は消さず書き換えず、List が種類 fw-rule の
-//     "<クラスタ>/<VM 名>/<位置>" で返す（status の宣言外に出る）。
-//   - 規則の順は宣言どおり：Sakutei の規則は並びの先頭に宣言の順で置き、印の無い
-//     規則はその後ろに元の順で残す。観測の rules は先頭から最後の印のある規則まで
-//     （間の印の無い規則は "(unmanaged) <文>"）なので、順の違い・間に入った手の
-//     規則はずれになる。
-//   - 印のある規則が 1 つも無い（か VM が無い）ときの観測は Absent。規則を全部外す
+//     規則の文のリスト。書き方は fwrule）。Sakutei が置いた規則は comment の先頭の marker
+//     （fwrule.Marker）で見分け、marker のある規則だけを書き換える。marker の無い規則（手で
+//     置いたもの・ほかのツールのもの）は消さず書き換えず、List が type fw-rule の
+//     "<クラスタ>/<VM 名>/<位置>" で返す（status の unmanaged に出る）。
+//   - 規則の順は宣言どおり。Sakutei の規則は並びの先頭に宣言の順で置き、marker の無い
+//     規則はその後ろに元の順で残す。観測の rules は先頭から最後の marker のある規則まで
+//     （間の marker の無い規則は "(unmanaged) <文>"）なので、順の違い・間に手で入れた
+//     規則は drift になる。
+//   - marker のある規則が 1 つも無い（か VM が無い）ときの観測は Absent。規則を全部外す
 //     のは ensure: absent。
-//   - Apply は 1 手ずつ（読み直して digest を付けて）進める：先頭から見て違う位置に、
-//     後ろにある同じ規則を動かす・要らない印の規則を書き換える・作る（Proxmox は
-//     先頭に作るので、作った規則をその位置へ動かす）。最後に余った印の規則を外す。
+//   - Apply は 1 step ずつ（読み直して digest を付けて）進める。先頭から見て違う位置に、
+//     後ろにある同じ規則を動かす・要らない marker の規則を書き換える・作る（Proxmox は
+//     先頭に作るので、作った規則をその位置へ動かす）。最後に余った marker の規則を外す。
 //     消して作り直さないので、変える間に許可が抜ける時間を短くする。
-//   - 規則を置く・変える・外すのは壊す変更（Classify、予算の壊す変更に数える）。
-//   - VM がまだ無いときの Apply は誤り（vm の宣言が作るのを待つ。depends_on で順を
+//   - 規則を置く・変える・外すのは破壊的変更（Classify。budget の破壊的変更に数える）。
+//   - VM がまだ無いときの Apply はエラー（vm の宣言が作るのを待つ。depends_on で順を
 //     書ける）。VM の FW を有効にする（options の enable・NIC の firewall=1）のは
-//     種類 vm の項目。
+//     type vm の field。
 
 import (
 	"context"
@@ -48,18 +48,18 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/proxmox/fwrule"
 )
 
-// fw-rules・fw-rule の項目。
+// fw-rules・fw-rule の field。
 const (
 	// FieldRules は Sakutei が置く規則の並び（fwrule の文のリスト）。
 	FieldRules = "rules"
-	// FieldUnmanaged は印の無い規則の数（観測だけ）。
+	// FieldUnmanaged は marker の無い規則の数（観測だけ）。
 	FieldUnmanaged = "unmanaged"
-	// FieldRule・FieldPos は印の無い規則 1 つの文と位置（種類 fw-rule）。
+	// FieldRule・FieldPos は marker の無い規則 1 つの文と位置（type fw-rule）。
 	FieldRule = "rule"
 	FieldPos  = "pos"
 )
 
-// unmanagedPrefix は観測の rules の中の印の無い規則の頭。
+// unmanagedPrefix は観測の rules の中の marker の無い規則に付ける prefix。
 const unmanagedPrefix = "(unmanaged) "
 
 func fwFields() map[string]core.FieldSpec {
@@ -106,7 +106,7 @@ func parseRules(v any) ([]fwrule.Rule, error) {
 }
 
 // canonRules は宣言の rules を観測と同じ正規形の文にする（書き方の違いを
-// ずれにしない、E-I7）。
+// drift にしない、E-I7）。
 func canonRules(v any) ([]any, error) {
 	rules, err := parseRules(v)
 	if err != nil {
@@ -119,12 +119,12 @@ func canonRules(v any) ([]any, error) {
 	return out, nil
 }
 
-// validateFW は宣言を確かめる（E-I7）。
+// validateFW は宣言を検証する（E-I7）。
 func validateFW(f core.Fields) []string {
 	var msgs []string
 	for _, k := range sortedKeys(f) {
 		if k != FieldRules {
-			msgs = append(msgs, fmt.Sprintf("項目 %q は宣言できない（宣言できるのは rules だけ）", k))
+			msgs = append(msgs, fmt.Sprintf("field %q は宣言できない（宣言できるのは rules だけ）", k))
 		}
 	}
 	v, ok := f[FieldRules]
@@ -162,7 +162,7 @@ func readRules(ctx context.Context, cl *Client, r *Resource) ([]fwRuleObs, error
 	return out, nil
 }
 
-// observedBlock は観測の rules：先頭から最後の印のある規則まで（印の無い規則は
+// observedBlock は観測の rules。先頭から最後の marker のある規則まで（marker の無い規則は
 // unmanagedPrefix を付けて）。
 func observedBlock(rules []fwRuleObs) []any {
 	last := -1
@@ -182,7 +182,7 @@ func observedBlock(rules []fwRuleObs) []any {
 	return out
 }
 
-// observeFW は VM の規則の並び（fw-rules）か、印の無い規則 1 つ（fw-rule、rest が
+// observeFW は VM の規則の並び（fw-rules）か、marker の無い規則 1 つ（fw-rule、rest が
 // 位置）を観測する。
 func observeFW(ctx context.Context, c *Cluster, cl *Client, r *Resource, kind, rest string) core.Observation {
 	rules, err := readRules(ctx, cl, r)
@@ -216,7 +216,7 @@ func observeFW(ctx context.Context, c *Cluster, cl *Client, r *Resource, kind, r
 	return core.Observation{Availability: core.Present, Fields: f}
 }
 
-// applyFW は VM の規則を宣言の並びに合わせる（desired が nil なら印のある規則を
+// applyFW は VM の規則を宣言の並びに合わせる（desired が nil なら marker のある規則を
 // 全部外す）。
 func applyFW(ctx context.Context, c *Cluster, cl *Client, vm string, desired core.Fields) error {
 	var want []fwrule.Rule
@@ -235,7 +235,7 @@ func applyFW(ctx context.Context, c *Cluster, cl *Client, vm string, desired cor
 	case len(found) == 0 && desired == nil:
 		return nil
 	case len(found) == 0:
-		return fmt.Errorf("VM %s がまだ無い：規則は VM ができてから置く", vm)
+		return fmt.Errorf("VM %s がまだ無い。規則は VM ができてから置く", vm)
 	case len(found) > 1:
 		return fmt.Errorf("名前 %s の VM が %d 台ある", vm, len(found))
 	case found[0].Template:
@@ -248,8 +248,8 @@ func applyFW(ctx context.Context, c *Cluster, cl *Client, vm string, desired cor
 	return nil
 }
 
-// converge は VM r の規則を 1 手ずつ want に寄せる（毎手読み直し、digest を付けて
-// 書く。間に誰かが変えれば Proxmox が断り、Apply は失敗する）。
+// converge は VM r の規則を 1 step ずつ want に寄せる（step ごとに読み直し、digest を付けて
+// 書く。間に誰かが変えれば Proxmox が拒否し、Apply は失敗する）。
 func converge(ctx context.Context, cl *Client, r *Resource, want []fwrule.Rule) error {
 	wantText := make([]string, len(want))
 	for i, w := range want {
@@ -264,7 +264,7 @@ func converge(ctx context.Context, cl *Client, r *Resource, want []fwrule.Rule) 
 		if step == 0 {
 			limit = 4*(len(cur)+len(want)) + 8
 		} else if step > limit {
-			return fmt.Errorf("%d 手で規則がそろわなかった", limit)
+			return fmt.Errorf("%d step で規則がそろわなかった", limit)
 		}
 		digest := ""
 		if len(cur) > 0 {
@@ -277,7 +277,7 @@ func converge(ctx context.Context, cl *Client, r *Resource, want []fwrule.Rule) 
 	}
 }
 
-// fwStep は 1 手を打つ。合っていれば done。
+// fwStep は 1 step を実行する。合っていれば done。
 func fwStep(ctx context.Context, cl *Client, r *Resource, cur []fwRuleObs, digest string, want []fwrule.Rule, wantText []string) (bool, error) {
 	text := make([]string, len(cur))
 	for i, x := range cur {
@@ -300,7 +300,7 @@ func fwStep(ctx context.Context, cl *Client, r *Resource, cur []fwRuleObs, diges
 				return false, put(j, url.Values{"moveto": {strconv.Itoa(i)}})
 			}
 		}
-		// i の印の規則が後ろで要らなければ、書き換える。
+		// i の marker の規則が後ろで要らなければ、書き換える。
 		if i < len(cur) && cur[i].marked && !contains(wantText[i+1:], text[i]) {
 			params := want[i].Params()
 			if del := want[i].Unset(cur[i].rule); len(del) > 0 {
@@ -320,12 +320,12 @@ func fwStep(ctx context.Context, cl *Client, r *Resource, cur []fwRuleObs, diges
 			return false, err
 		}
 		if len(after) == 0 || !after[0].marked || after[0].rule.String() != wantText[i] {
-			return false, nil // 間に変わった。次の手で読み直す。
+			return false, nil // 間に変わった。次の step で読み直す。
 		}
 		digest = after[0].digest
 		return false, put(0, url.Values{"moveto": {strconv.Itoa(i + 1)}})
 	}
-	// 余った印の規則を後ろから外す。
+	// 余った marker の規則を後ろから外す。
 	for j := len(cur) - 1; j >= len(want); j-- {
 		if cur[j].marked {
 			return false, cl.DeleteFirewallRule(ctx, r.Node, r.VMID, j, digest)

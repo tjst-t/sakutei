@@ -15,10 +15,10 @@
 // Package approve は承認ツール sakutei-approve の中身（設計 §5.4・§7.2、E-M4・
 // N-M4・E-L3）。ネットワーク越しの承認と拒否を、CLI の approve・reject と同じ形の
 // 判断のファイル（approvals/<id>/by-<承認者>.json）として Record に書くだけ。
-// 認証はしない：承認者は前段の認証の結果（確かめたクライアント証明書の CN か、
-// 認証をする前段の proxy が付けるヘッダ）から受け取る。数えて効かせ、監査に
-// 残すのは周（不変条件 21）。申請者と要件に無い人の判断・待っていない依頼への
-// 判断は書く前に断る（approval.Decide）。
+// 認証はしない。承認者は前段の認証の結果（検証済みのクライアント証明書の CN か、
+// 認証をする前段の proxy が付けるヘッダ）から受け取る。判断を数えて反映し、監査に
+// 残すのは cycle の側（不変条件 21）。申請者と要件に無い人の判断、待っていない依頼への
+// 判断は、書く前に拒否する（approval.Decide）。
 //
 //	GET  /approvals                 待っている依頼の一覧
 //	GET  /approvals/{id}            依頼 1 つと数え方
@@ -46,14 +46,14 @@ import (
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
-// Server は承認の HTTP。
+// Server は承認の HTTP サーバ。
 type Server struct {
 	// RecordDir は Record のディレクトリ（判断を書く・依頼を読む。ロックは取らない）。
 	RecordDir string
 	// UserHeader を書けば承認者をこのヘッダから受け取る（認証をする前段の proxy が
 	// 付ける）。空ならクライアント証明書の CN。
 	UserHeader string
-	// Now は判断の時刻（nil なら計算機の時計）。
+	// Now は判断の時刻（nil ならシステムの時計）。
 	Now func() time.Time
 }
 
@@ -61,7 +61,7 @@ type Server struct {
 type Listen struct {
 	Address string
 	// TLSCert・TLSKey はサーバの証明書と鍵。ClientCA を書けばクライアント証明書を
-	// 求めて確かめる。
+	// 求めて検証する。
 	TLSCert, TLSKey, ClientCA string
 	// UserHeader は Server.UserHeader と同じ。
 	UserHeader string
@@ -69,9 +69,9 @@ type Listen struct {
 	Plaintext bool
 }
 
-// Check は待ち受けの設定を確かめる。承認者を名乗れる経路を前段の認証だけに
-// 絞る：ヘッダから受け取るなら、loopback（同じ計算機の proxy）かクライアント
-// 証明書（proxy の証明書）を求める待ち受けだけ。ヘッダを使わないならクライアント
+// Check は待ち受けの設定を検証する。承認者を名乗れる経路を前段の認証だけに
+// 絞る。ヘッダから受け取るなら、loopback（同じホストの proxy）か、クライアント
+// 証明書（proxy の証明書）を求める待ち受けに限る。ヘッダを使わないならクライアント
 // 証明書が要る。
 func (l Listen) Check() error {
 	tlsOn := l.TLSCert != "" || l.TLSKey != ""
@@ -87,7 +87,7 @@ func (l Listen) Check() error {
 	case !tlsOn && !l.Plaintext && !config.Loopback(l.Address):
 		return fmt.Errorf("loopback でない宛先 %q を TLS なしで待ち受けるには --plaintext を書く", l.Address)
 	case l.UserHeader == "" && l.ClientCA == "":
-		return errors.New("承認者を受け取る口が無い：--tls-client-ca（クライアント証明書の CN）か --user-header（前段の proxy のヘッダ）を書く")
+		return errors.New("承認者を受け取る経路が無い：--tls-client-ca（クライアント証明書の CN）か --user-header（前段の proxy のヘッダ）を書く")
 	case l.UserHeader != "" && l.ClientCA == "" && !config.Loopback(l.Address):
 		return fmt.Errorf("--user-header は loopback の待ち受けか --tls-client-ca と一緒に使う（%q では誰でもヘッダを名乗れる）", l.Address)
 	}
@@ -130,7 +130,7 @@ func (l Listen) Open(h http.Handler) (*http.Server, net.Listener, error) {
 	return srv, tls.NewListener(ln, tc), nil
 }
 
-// Handler は承認の HTTP の口。
+// Handler は承認の HTTP API。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /approvals", s.list)
@@ -257,7 +257,7 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request, decision string)
 		By       string `json:"by"`
 		Item
 		Note string `json:"note"`
-	}{decision, who, item(id, a, st), "数えて効かせるのは次の周"})
+	}{decision, who, item(id, a, st), "判断を数えて反映するのは次の cycle"})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

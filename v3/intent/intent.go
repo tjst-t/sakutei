@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Package intent は intent のディレクトリを読み、resources: と ranges: を
-// Resource・Range にする（設計 §3.1・§3.2）。知らない項目は読み込みで断る
-// （不変条件 25、E-M3・N-M3）。
+// Resource・Range にする（設計 §3.1・§3.2）。知らない field は読み込み時に
+// エラーにする（不変条件 25、E-M3・N-M3）。
 package intent
 
 import (
@@ -118,12 +118,12 @@ type Decoded struct {
 	Inputs []InputSpec
 }
 
-// TopKeys は intent の最上位に書ける項目（Expand のモジュールが読む項目を除く）。
+// TopKeys は intent の最上位に書ける field（Expand のモジュールが読む field を除く）。
 var TopKeys = []string{"resources", "ranges", "policies", "procedures", "cycle", "pools", "allocations", "expand", "inputs"}
 
-// Decode は 1 つの Document の最上位の項目を読む。形の誤り・知らない項目は
-// 診断（Reject）にして返す。claimed は Expand のモジュールが読む最上位の項目
-// （network_policy: など）で、ここでは読まずに断りもしない。
+// Decode は 1 つの Document の最上位の field を読む。形の誤り・知らない field は
+// 診断（Reject）にして返す。claimed は Expand のモジュールが読む最上位の field
+// （network_policy: など）で、ここでは読まず、reject もしない。
 func Decode(doc Document, claimed ...string) (Decoded, []core.Diagnostic) {
 	d := &decoder{file: doc.Path}
 	var out Decoded
@@ -167,7 +167,7 @@ func Decode(doc Document, claimed ...string) (Decoded, []core.Diagnostic) {
 	return out, d.diags
 }
 
-// cycle は常駐の周の設定を読む（E-J11・E-H1）。
+// cycle は daemon の cycle の設定を読む（E-J11・E-H1）。
 func (d *decoder) cycle(n *yaml.Node, path string) *core.CycleSettings {
 	obj := d.object(n, path, "interval", "stuck_after")
 	if obj == nil {
@@ -213,8 +213,8 @@ func (d *decoder) reject(n *yaml.Node, target, format string, a ...any) {
 	})
 }
 
-// object はマップを読み、allowed に無いキーを断る（不変条件 25 の「未知の項目」、
-// E-M3）。マップでなければ nil。
+// object はマップを読み、allowed に無いキーを reject する（不変条件 25 の「未知の
+// field」、E-M3）。マップでなければ nil。
 func (d *decoder) object(n *yaml.Node, path string, allowed ...string) map[string]*yaml.Node {
 	if n.Kind != yaml.Map {
 		d.reject(n, path, "マップを書く（%s が書かれている）", n.KindName())
@@ -228,7 +228,7 @@ func (d *decoder) object(n *yaml.Node, path string, allowed ...string) map[strin
 	for _, k := range n.Keys {
 		v := n.Map[k]
 		if !ok[k] {
-			d.reject(&yaml.Node{Line: n.LineOf(k)}, path, "知らない項目 %q（書ける項目: %s）", k, strings.Join(allowed, ", "))
+			d.reject(&yaml.Node{Line: n.LineOf(k)}, path, "知らない field %q（書ける field: %s）", k, strings.Join(allowed, ", "))
 			continue
 		}
 		out[k] = v
@@ -377,10 +377,10 @@ func (d *decoder) applyOptions(n *yaml.Node, path string) *core.ApplyOptions {
 		}
 	}
 	if x := tobj["timeout"]; x != nil {
-		// 確かめは半分まで。相手の時間切れは秒で仕掛けるので 2 秒以上（E-B3）。
+		// check は timeout の半分まで。相手の時間切れは秒で仕掛けるので 2 秒以上（E-B3）。
 		if v := d.positiveDuration(x, tp+".timeout"); v > 0 {
 			if v < 2*time.Second {
-				d.reject(x, tp+".timeout", "2s 以上を書く（確かめは半分まで）")
+				d.reject(x, tp+".timeout", "2s 以上を書く（check は半分まで）")
 			}
 			t.Timeout = v
 		}
@@ -524,10 +524,10 @@ func (d *decoder) rangeOf(n *yaml.Node, path string) (core.Range, bool) {
 			if e.Reason == "" {
 				d.reject(en, ep, "reason を書く")
 			}
-			// 全部を外す除外は断る（不変条件 25、E-D2）。
+			// 全部を外す除外は reject する（不変条件 25、E-D2）。
 			switch {
 			case e.ID == "" && e.IDPrefix == "":
-				d.reject(en, ep, "id か id_prefix を書く（空の除外は範囲の全部を外す）")
+				d.reject(en, ep, "id か id_prefix を書く（空の除外は Range の全部を外す）")
 			case e.ID != "" && e.IDPrefix != "":
 				d.reject(en, ep, "id と id_prefix はどちらか 1 つ")
 			}
@@ -555,7 +555,7 @@ func (d *decoder) policy(n *yaml.Node, path string) (core.Policy, bool) {
 		path = "policy " + s
 	}
 	if v := obj["select"]; v == nil {
-		d.reject(n, path, "select を書く（全部に当てるなら {all: true}）")
+		d.reject(n, path, "select を書く（全部を対象にするなら {all: true}）")
 	} else {
 		p.Select = d.selector(v, path+".select")
 	}
@@ -599,20 +599,20 @@ func (d *decoder) policy(n *yaml.Node, path string) (core.Policy, bool) {
 	}
 	if v := obj["allow"]; v != nil {
 		p.Allow = d.allow(v, path+".allow")
-		// 別枠は予算の外の別の枠。方針（mode・budget）を持たない（E-J2）。
+		// allow は budget の外の別の枠。方針（mode・budget）を持たない（E-J2）。
 		for _, k := range []string{"mode", "budget"} {
 			if obj[k] != nil {
-				d.reject(obj[k], path+"."+k, "allow（別枠）の Policy に %s は書けない（当たる変更の方針はほかの Policy に書く）", k)
+				d.reject(obj[k], path+"."+k, "allow の Policy に %s は書けない（対象の変更の方針はほかの Policy に書く）", k)
 			}
 		}
-		// 全部に別枠を開かない（宣言の外の暴発を止める、E-J2）。
+		// 全部に allow を開かない（宣言の外の暴発を止める、E-J2）。
 		if p.Select.All {
-			d.reject(obj["select"], path+".select", "allow（別枠）の Policy の select に all は書けない（種類かラベルで絞る）")
+			d.reject(obj["select"], path+".select", "allow の Policy の select に all は書けない（type かラベルで絞る）")
 		}
 	}
 	if a := p.Approval; a != nil && p.Allow == nil {
 		if a.CoolingOff > 0 {
-			d.reject(obj["approval"], path+".approval.cooling_off", "cooling_off は allow（別枠）の Policy にだけ書ける")
+			d.reject(obj["approval"], path+".approval.cooling_off", "cooling_off は allow の Policy にだけ書ける")
 		} else if a.N == 0 {
 			d.reject(obj["approval"], path+".approval", "quorum（{n: 承認者の数, of: [承認者]}）を書く")
 		}
@@ -624,7 +624,7 @@ func (d *decoder) policy(n *yaml.Node, path string) (core.Policy, bool) {
 	return p, len(d.diags) == before
 }
 
-// allow は別枠を読む（§3.6、E-J2・E-A9・N-J2）。
+// allow は Policy の allow を読む（§3.6、E-J2・E-A9・N-J2）。
 //
 //	allow: {kind: reimage, max_count: 48}
 func (d *decoder) allow(n *yaml.Node, path string) *core.Allow {
@@ -646,7 +646,7 @@ func (d *decoder) allow(n *yaml.Node, path string) *core.Allow {
 		}
 	}
 	if v := obj["max_count"]; v == nil {
-		d.reject(n, path, "max_count（窓の全体で通す数）を書く")
+		d.reject(n, path, "max_count（window の全体で通す数）を書く")
 	} else if i, ok := v.Scalar.(int); v.Kind != yaml.Scalar || !ok || i < 1 {
 		d.reject(v, path+".max_count", "1 以上の整数を書く")
 	} else {
@@ -668,8 +668,8 @@ func (d *decoder) approval(n *yaml.Node, path string) *core.Approval {
 		a.CoolingOff = d.positiveDuration(v, path+".cooling_off")
 	}
 	if q := obj["quorum"]; q == nil {
-		// cooling_off だけの承認（承認者を置かない別枠、E-J2）。別枠でない Policy と
-		// 手順の gate では断る（呼び出し元）。
+		// cooling_off だけの承認（承認者を置かない allow、E-J2）。allow でない Policy と
+		// Procedure の gate では呼び出し元が reject する。
 		if obj["cooling_off"] == nil {
 			d.reject(n, path, "quorum（{n: 承認者の数, of: [承認者]}）を書く")
 		}
@@ -724,7 +724,7 @@ func (d *decoder) positiveDuration(n *yaml.Node, path string) time.Duration {
 	return v
 }
 
-// procedure は手順を読む（§3.7）。
+// procedure は Procedure を読む（§3.7）。
 func (d *decoder) procedure(n *yaml.Node, path string) (core.Procedure, bool) {
 	obj := d.object(n, path, "name", "target", "trigger", "drift_fields", "precondition", "done_when", "invariant",
 		"steps", "concurrency", "on_failure", "timeout")
@@ -743,7 +743,7 @@ func (d *decoder) procedure(n *yaml.Node, path string) (core.Procedure, bool) {
 		path = "procedure " + s
 	}
 	if v := obj["target"]; v == nil {
-		d.reject(n, path, "target を書く（{type: <provider>/<種類>, id: 名前} か {type: …, select: {labels: …}}）")
+		d.reject(n, path, "target を書く（{type: <provider>/<type>, id: 名前} か {type: …, select: {labels: …}}）")
 	} else if to := d.object(v, path+".target", "type", "id", "select"); to != nil {
 		if x := to["type"]; x == nil {
 			d.reject(v, path+".target", "type を書く")
@@ -806,7 +806,7 @@ func (d *decoder) procedure(n *yaml.Node, path string) (core.Procedure, bool) {
 		}
 	}
 	if v := obj["on_failure"]; v != nil {
-		// 戻しの段（rollback）は後の段。いまは止めるだけ（E-F2）。
+		// 戻す step（rollback）は後の Stage。いまは halt するだけ（E-F2）。
 		if s, _ := d.str(v, path+".on_failure"); s != "halt" {
 			d.reject(v, path+".on_failure", "on_failure は halt だけ（%q が書かれている）", s)
 		}
@@ -824,19 +824,19 @@ func (d *decoder) procedure(n *yaml.Node, path string) (core.Procedure, bool) {
 				continue
 			}
 			if names[st.Name] {
-				d.reject(sn, path+".steps", "段の名前 %q が 2 回ある", st.Name)
+				d.reject(sn, path+".steps", "step の名前 %q が 2 回ある", st.Name)
 			}
 			names[st.Name] = true
 			p.Steps = append(p.Steps, st)
 		}
 		if len(p.Steps) == 0 && v.Kind == yaml.Seq {
-			d.reject(v, path+".steps", "段を 1 つ以上書く")
+			d.reject(v, path+".steps", "step を 1 つ以上書く")
 		}
 	}
 	// 人の作業は観測で閉じる。人の「やった」は閉じる根拠にしない（E-A6・E-Q3）。
 	for _, st := range p.Steps {
 		if st.Kind == core.StepManual && p.DoneWhen == "" {
-			d.reject(n, path, "manual の段には done_when を書く（人の作業は観測で閉じる）")
+			d.reject(n, path, "manual の step には done_when を書く（人の作業は観測で閉じる）")
 			break
 		}
 	}
@@ -859,7 +859,7 @@ func (d *decoder) expr(n *yaml.Node, path string) string {
 
 var stepKinds = []string{"apply", "invoke", "wait", "manual", "gate", "policy"}
 
-// step は手順の段を読む。apply・invoke・wait・manual・gate・policy のどれか 1 つ。
+// step は Procedure の step を読む。apply・invoke・wait・manual・gate・policy のどれか 1 つ。
 func (d *decoder) step(n *yaml.Node, path string, i int) (core.Step, bool) {
 	obj := d.object(n, path, append([]string{"name", "skip_if", "critical"}, stepKinds...)...)
 	if obj == nil {
@@ -886,7 +886,7 @@ func (d *decoder) step(n *yaml.Node, path string, i int) (core.Step, bool) {
 		}
 	}
 	if len(kinds) != 1 {
-		d.reject(n, path, "段は %s のどれか 1 つを書く", strings.Join(stepKinds, "・"))
+		d.reject(n, path, "step は %s のどれか 1 つを書く", strings.Join(stepKinds, "・"))
 		return st, false
 	}
 	v := obj[kinds[0]]
@@ -896,7 +896,7 @@ func (d *decoder) step(n *yaml.Node, path string, i int) (core.Step, bool) {
 		st.Kind = core.StepApply
 		if r, ok := d.resource(v, p); ok {
 			if len(r.DependsOn) > 0 {
-				d.reject(v, p, "手順の apply に depends_on は書けない（順序は段の並び）")
+				d.reject(v, p, "Procedure の apply に depends_on は書けない（順序は step の並び）")
 			}
 			st.Apply = &r
 		}
@@ -953,7 +953,7 @@ func (d *decoder) step(n *yaml.Node, path string, i int) (core.Step, bool) {
 			} else {
 				st.Gate = d.approval(o["approval"], p+".approval")
 				if st.Gate != nil && (st.Gate.CoolingOff > 0 || st.Gate.N == 0) {
-					d.reject(o["approval"], p+".approval", "手順の gate には quorum を書く（cooling_off は allow の Policy だけ）")
+					d.reject(o["approval"], p+".approval", "Procedure の gate には quorum を書く（cooling_off は allow の Policy だけ）")
 				}
 			}
 			if x := o["timeout"]; x != nil {
@@ -975,11 +975,11 @@ func (d *decoder) step(n *yaml.Node, path string, i int) (core.Step, bool) {
 			} else {
 				pol.Select = d.selector(o["select"], p+".select")
 			}
-			// 手順の間だけ締める。緩める向きには効かない（不変条件 19）。
+			// Procedure の間だけ締める。緩める向きには効かない（不変条件 19）。
 			if x := o["mode"]; x == nil {
 				d.reject(v, p, "mode: report を書く")
 			} else if s, _ := d.str(x, p+".mode"); s != "report" {
-				d.reject(x, p+".mode", "手順の段の policy は mode: report だけ（%q が書かれている）", s)
+				d.reject(x, p+".mode", "Procedure の step の policy は mode: report だけ（%q が書かれている）", s)
 			}
 			if x := o["reason"]; x != nil {
 				pol.Reason, _ = d.str(x, p+".reason")
@@ -988,14 +988,14 @@ func (d *decoder) step(n *yaml.Node, path string, i int) (core.Step, bool) {
 		}
 	}
 	if st.Critical && (st.Kind != core.StepApply && st.Kind != core.StepInvoke) {
-		d.reject(obj["critical"], path+".critical", "critical は apply・invoke の段にだけ書ける")
+		d.reject(obj["critical"], path+".critical", "critical は apply・invoke の step にだけ書ける")
 	}
 	return st, len(d.diags) == before
 }
 
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
 
-// validName は Record のファイル名にする名前（手順・段・承認者）に使える文字か。
+// validName は Record のファイル名にする名前（Procedure・step・承認者）に使える文字か。
 func validName(s string) bool { return nameRe.MatchString(s) && len(s) <= 100 }
 
 func contains(list []string, s string) bool {
@@ -1007,7 +1007,7 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// selector は select を読む。何にも当たらない select は断る（E-M2）。
+// selector は select を読む。何も対象にしない select は reject する（E-M2）。
 func (d *decoder) selector(n *yaml.Node, path string) core.Selector {
 	var s core.Selector
 	obj := d.object(n, path, "all", "type", "types", "labels")
@@ -1048,12 +1048,12 @@ func (d *decoder) selector(n *yaml.Node, path string) core.Selector {
 	case s.All && (len(s.Types) > 0 || len(s.Labels) > 0):
 		d.reject(n, path, "all: true と type・labels は一緒に書けない")
 	case !s.All && len(s.Types) == 0 && len(s.Labels) == 0 && obj["all"] == nil:
-		d.reject(n, path, "当たり先を書く（all・type・types・labels）")
+		d.reject(n, path, "対象を書く（all・type・types・labels）")
 	}
 	return s
 }
 
-// budget は予算を読む（E-J1）。書かない上限は core.Unlimited。
+// budget は budget を読む（E-J1）。書かない上限は core.Unlimited。
 func (d *decoder) budget(n *yaml.Node, path string) *core.Budget {
 	obj := d.object(n, path, "per_cycle", "destructive_per_cycle", "destructive_per_window", "window", "max_ineffective_applies")
 	if obj == nil {
@@ -1076,7 +1076,7 @@ func (d *decoder) budget(n *yaml.Node, path string) *core.Budget {
 	count("per_cycle", &b.PerCycle)
 	count("destructive_per_cycle", &b.DestructivePerCycle)
 	count("destructive_per_window", &b.DestructivePerWindow)
-	// 効かない Apply の上限（E-J6）。0 は 1 回目で止まるので書けない。
+	// ineffective Apply の上限（E-J6）。0 は 1 回目で止まるので書けない。
 	if v := obj["max_ineffective_applies"]; v != nil {
 		i, ok := v.Scalar.(int)
 		if v.Kind != yaml.Scalar || !ok || i < 1 {
@@ -1094,7 +1094,7 @@ func (d *decoder) budget(n *yaml.Node, path string) *core.Budget {
 			b.Window = w
 		}
 	}
-	// 窓と累積の上限は対で書く（片方だけでは数えられない）。
+	// window と累積の上限は対で書く（片方だけでは数えられない）。
 	switch {
 	case obj["destructive_per_window"] != nil && obj["window"] == nil:
 		d.reject(n, path, "destructive_per_window には window を書く")

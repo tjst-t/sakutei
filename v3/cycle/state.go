@@ -27,9 +27,9 @@ import (
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
-// state は周の初めに Record から読む、周をまたいだ人の判断と手順の進み（§5.1）。
+// state は cycle の初めに Record から読む、cycle をまたいだ人の判断と Procedure の進み（§5.1）。
 type state struct {
-	policies  []core.Policy // intent・一時的な Policy・手順の段の policy
+	policies  []core.Policy // intent・一時的な Policy・Procedure の step の policy
 	temporary []plan.Temporary
 	approvals map[string]record.Approval
 	runs      []record.Run
@@ -38,15 +38,15 @@ type state struct {
 	errs       []string
 }
 
-// stateExec はロックを持つ周が読むときに要るもの。期限切れ・終えた一時的な
+// stateExec はロックを持つ cycle が読むときに要るもの。期限切れ・終えた一時的な
 // Policy を消し、新しい判断・期限切れ・拒否を監査に残す。
 type stateExec struct {
 	rec   *record.Record
 	audit *record.Audit
 }
 
-// readState は一時的な Policy・承認・手順の進みを読む。exec が nil なら読むだけ
-// （plan）。読めなければ止める側に寄せる（不変条件 22）。
+// readState は一時的な Policy・承認・Procedure の進みを読む。exec が nil なら
+// 読むだけ（plan）。読めなければ止める側に寄せる（不変条件 22）。
 func readState(dir string, now time.Time, intentPolicies []core.Policy, exec *stateExec) state {
 	st := state{policies: append([]core.Policy(nil), intentPolicies...), approvals: map[string]record.Approval{}}
 	if dir == "" {
@@ -98,10 +98,10 @@ func readState(dir string, now time.Time, intentPolicies []core.Policy, exec *st
 			By: t.By, Until: t.Until, Source: "freeze"})
 	}
 
-	// 手順の進み。
+	// Procedure の進み。
 	runs, err := record.ReadRuns(dir)
 	if err != nil {
-		fail("手順の進み（runs/）", err)
+		fail("Procedure の進み（runs/）", err)
 	}
 	st.runs = runs
 	st.policies = append(st.policies, procedure.Policies(runs)...)
@@ -174,7 +174,7 @@ func settleApproval(a record.Approval, now time.Time, auditE func(record.Entry),
 	return a
 }
 
-// useApproval は承認を使った印を発射の前に書き、監査に残す（不変条件 21）。
+// useApproval は承認を使った印を送る前に書き、監査に残す（不変条件 21）。
 func useApproval(rec *record.Record, audit *record.Audit, a record.Approval, c *plan.Change, now time.Time) error {
 	req := a.Request
 	req.State = record.RequestUsed
@@ -186,13 +186,14 @@ func useApproval(rec *record.Record, audit *record.Audit, a record.Approval, c *
 	return err
 }
 
-// reserve は手順の書く段 1 つを、当たる Policy の予算に周の変更と合わせて数える。
-// 超えれば周全体を止める（不変条件 20）。壊す操作は窓の使用量を先に書く。
+// reserve は Procedure の書き込む step 1 つを、該当する Policy の budget に cycle の
+// 変更と合わせて数える。超えれば cycle 全体を halt する（不変条件 20）。破壊的な
+// 操作は window の使用量を先に書く。
 func reserve(r *plan.Result, policies []core.Policy, names []string, destructive bool, used map[string]plan.BudgetUse,
 	fired map[string]int, marks record.Marks, base map[string]record.WindowUse, now time.Time, rec *record.Record) string {
 	for _, h := range r.Halts {
 		if strings.HasPrefix(h.Scope, "policy ") {
-			return "予算を超えたので周全体を止めた"
+			return "budget を超えたので cycle 全体を halt した"
 		}
 	}
 	var over []string
@@ -216,12 +217,12 @@ func reserve(r *plan.Result, policies []core.Policy, names []string, destructive
 			}
 		}
 		if len(mine) > 0 {
-			r.Halts = append(r.Halts, plan.Halt{Scope: "policy " + p.Name, Reason: "予算: 手順の書く段で " + strings.Join(mine, "・") + " を超える"})
+			r.Halts = append(r.Halts, plan.Halt{Scope: "policy " + p.Name, Reason: "budget: Procedure の書き込む step で " + strings.Join(mine, "・") + " を超える"})
 			over = append(over, "policy "+p.Name+" の "+strings.Join(mine, "・"))
 		}
 	}
 	if len(over) > 0 {
-		return "予算: " + strings.Join(over, "・") + " を超える"
+		return "budget: " + strings.Join(over, "・") + " を超える"
 	}
 	for _, p := range policies {
 		if p.Budget == nil || !contains(names, p.Name) {

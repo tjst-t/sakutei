@@ -16,9 +16,9 @@
 // 拡張を宣言どおりに保つ provider（設計 §7.1、E-F1・E-F3・N-F1・N-F7）。v2 の
 // postgresql provider（#125・#133・#137・#186・#203）を移した。Go の依存を
 // 増やさないため、psql の CLI を exec で呼ぶ（psql.go）。コアの外のモジュールで、
-// コアの口 core.Provider・core.Validator だけを持つ。
+// コアの interface のうち core.Provider・core.Validator だけを実装する。
 //
-//	providers:                                  # つなぎ方の設定
+//	providers:                                  # 接続設定
 //	  pg:
 //	    module: postgresql
 //	    settings:
@@ -27,15 +27,15 @@
 //	        main:                               # サーバの名前（ID の先頭）
 //	          host: db.example.net              # 省略可（/ で始まれば Unix ソケットのディレクトリ）
 //	          port: 5432                        # 省略可
-//	          dbname: postgres                  # 管理用につなぐ DB（既定 postgres）
+//	          dbname: postgres                  # 管理用に接続する DB（既定 postgres）
 //	          sslmode: verify-full              # 省略可
 //	          sslrootcert: /etc/sakutei/pg-ca.pem
 //	          connect_timeout: 10s              # 省略可（既定 10s）
-//	          verify_passwords: false           # 省略可。true でロールのパスワードが手で変わったかを確かめる
-//	          observe: {user: sakutei_ro, password_file: /etc/sakutei/pg-ro}     # 観測用の資格
-//	          write: {user: sakutei, password_file: /etc/sakutei/pg-admin}       # 省略可。書き込み用の資格
+//	          verify_passwords: false           # 省略可。true でロールのパスワードが手で変えられたかを確かめる
+//	          observe: {user: sakutei_ro, password_file: /etc/sakutei/pg-ro}     # 観測用の credential
+//	          write: {user: sakutei, password_file: /etc/sakutei/pg-admin}       # 省略可。書き込み用の credential
 //
-//	ranges:                                     # intent（管理の範囲はサーバ）
+//	ranges:                                     # intent（Range はサーバ単位）
 //	  - {provider: pg, args: {server: main}, prune: true}
 //	resources:
 //	  - {type: pg/role, id: main/app, fields: {login: true, password: {secret: "vault:db/app#password"}, member_of: [pg_read_all_data]}}
@@ -44,22 +44,22 @@
 //	  - {type: pg/grant, id: main/appdb/PUBLIC, fields: {privileges: []}}
 //	  - {type: pg/extension, id: main/appdb/hstore, fields: {version: "1.8"}}
 //
-// 種類と ID（<server> は settings.servers の名前）：
+// type と ID（<server> は settings.servers の名前）：
 //
 //   - role（ID <server>/<ロール>）：login・superuser・createdb・createrole・
-//     inherit・bypassrls・replication（真偽）、connection_limit（-1 は上限なし）、
-//     member_of（所属するロールの集合。宣言すれば集合ちょうどにする）、password
-//     （秘密の参照）。
+//     inherit・bypassrls・replication（bool）、connection_limit（-1 は上限なし）、
+//     member_of（所属するロールの集合。宣言すればその集合ちょうどにする）、password
+//     （secret の参照）。
 //   - database（ID <server>/<DB>）：owner・connection_limit、encoding・lc_collate・
 //     lc_ctype・template（作るときだけ。encoding・lc_collate・lc_ctype を作った後に
-//     変える宣言は Apply が断る。template は観測できないので作った後は宣言の値を
-//     返す）、connect_roles（管理の境界の外のロールに与える CONNECT、足すだけ）。
-//     中身を失う種類（DestructiveDelete）：宣言の外でも prune で消さない。
+//     変える宣言は Apply がエラーにする。template は観測できないので、作った後は
+//     宣言の値を返す）、connect_roles（管理の境界の外のロールに与える CONNECT。足すだけ）。
+//     中身を失う type（DestructiveDelete）なので、宣言に無くても prune で消さない。
 //   - grant（ID <server>/<DB>/<ロール>、PUBLIC は <server>/<DB>/PUBLIC）：
 //     privileges（CONNECT・CREATE・TEMPORARY の集合）。ロールの権限は空にできない
-//     （全部外すなら ensure: absent か prune）。PUBLIC はデータベースが在れば在り、
-//     空の集合（全部外す）を宣言できる。PUBLIC は List に出さず（宣言していない
-//     PUBLIC の権限を prune で外さない）、ensure: absent は書けない。
+//     （全部外すなら ensure: absent か prune）。PUBLIC はデータベースが Present なら
+//     Present で、空の集合（全部外す）を宣言できる。PUBLIC は List に出さない（宣言して
+//     いない PUBLIC の権限を prune で外さない）。PUBLIC に ensure: absent は書けない。
 //   - extension（ID <server>/<DB>/<拡張>）：version（宣言したときだけ
 //     ALTER EXTENSION … UPDATE TO）。
 //
@@ -77,19 +77,19 @@
 //   - パスワード：PostgreSQL からは読めない。Apply は値を SCRAM-SHA-256 の検証値に
 //     して設定し（平文を送らない、scram.go）、同じトランザクションでロールの
 //     コメントに参照（世代つき、値ではない）と検証値の sha256 を書く。観測は
-//     コメントの参照を password として返すので、秘密の世代が変わったときだけ
-//     差が出る。verify_passwords のサーバでは、pg_authid の検証値の sha256 が
-//     コメントと合わなければ password を返さない（手で変えたパスワードがずれに
+//     コメントの参照を password として返すので、secret の世代が変わったときだけ
+//     差分が出る。verify_passwords のサーバでは、pg_authid の検証値の sha256 が
+//     コメントと合わなければ password を返さない（手で変えたパスワードが drift に
 //     なり、Apply が戻す）。pg_authid を読めなければそのロールは Unknown（E-G2・
 //     E-E6）。
-//   - 管理の境界：List は pg_ で始まるロール・つなぐロール（observe・write）・
+//   - 管理の境界：List は pg_ で始まるロール・接続に使うロール（observe・write）・
 //     template0・template1・postgres・管理用の DB・所有者の権限・plpgsql を
-//     返さない。これらに向けた宣言は読み込みで断る（plpgsql の宣言はできる）。
-//   - 届かない・認証の失敗・psql が無い・パスワードのファイルを読めない・壊れた
+//     返さない。これらに向けた宣言は読み込み時にエラーにする（plpgsql は宣言できる）。
+//   - 接続できない・認証の失敗・psql が無い・パスワードのファイルを読めない・壊れた
 //     出力は Unknown（Absent にしない、E-K1）。List は全部の DB の拡張まで読めた
-//     ときだけ完全で、1 つでも読めなければ誤り（E-K2・E-F3）。
-//   - 書き込み用の資格（settings.servers.<名前>.write）は Apply・Delete の中で
-//     だけ読む（E-G5）。観測と List は observe のロールだけでつなぐ。
+//     ときだけ完全で、1 つでも読めなければエラー（E-K2・E-F3）。
+//   - 書き込み用の credential（settings.servers.<名前>.write）は Apply・Delete の中で
+//     だけ読む（E-G5）。観測と List は observe のロールだけで接続する。
 //   - Delete：利用者の表がある DB・接続を許さない DB は消さない（*core.RefuseError、
 //     E-F1）。オブジェクトや権限を持つロール・ほかのオブジェクトが頼る拡張は
 //     PostgreSQL が消させず、それも RefuseError（CASCADE・DROP OWNED は使わない）。
@@ -107,10 +107,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// Version は Schema の版。比べ方・正規形を変えたら上げる（E-J12）。
+// Version は Schema のバージョン。比べ方・正規形を変えたら上げる（E-J12）。
 const Version = "postgresql/1"
 
-// 種類の名前（E-F1・N-F1）。
+// type の名前（E-F1・N-F1）。
 const (
 	KindRole      = "role"
 	KindDatabase  = "database"
@@ -118,7 +118,7 @@ const (
 	KindExtension = "extension"
 )
 
-// 項目の名前。
+// field の名前。
 const (
 	FieldLogin           = "login"
 	FieldSuperuser       = "superuser"
@@ -143,11 +143,11 @@ const (
 	FieldVersion    = "version"
 )
 
-// PasswordMarker はパスワードを設定したロールのコメントの先頭。後ろに秘密の
+// PasswordMarker はパスワードを設定したロールのコメントの先頭。後ろに secret の
 // 参照（値ではない）と verifierMarker が続く（E-G2）。
 const PasswordMarker = "sakutei:password="
 
-// verifierMarker はコメントの中の、設定した検証値の sha256 の印（verify_passwords、E-F1）。
+// verifierMarker はコメントの中で、設定した検証値の sha256 を示す marker（verify_passwords、E-F1）。
 const verifierMarker = " verifier="
 
 // PublicGrantee は grant の ID で PUBLIC を指す名前（予約、E-F1）。
@@ -162,7 +162,7 @@ var privilegeOrder = []string{"CONNECT", "CREATE", "TEMPORARY"}
 // systemDatabases は管理の境界の外のデータベース（List に出さない・宣言できない）。
 var systemDatabases = map[string]bool{"template0": true, "template1": true, "postgres": true}
 
-// roleAttrs はロールの属性（真偽）と SQL のキーワード（E-F1：bypassrls・replication）。
+// roleAttrs はロールの属性（bool）と SQL のキーワード（E-F1：bypassrls・replication）。
 var roleAttrs = []struct{ field, on, off string }{
 	{FieldLogin, "LOGIN", "NOLOGIN"},
 	{FieldSuperuser, "SUPERUSER", "NOSUPERUSER"},
@@ -179,7 +179,7 @@ type Provider struct {
 	client  *Client
 
 	mu sync.Mutex
-	// decl は宣言の項目（Validate で受け取る。観測が宣言の書き方を返すため、E-I7）。
+	// decl は宣言の field（Validate で受け取る。観測が宣言の書き方を返すため、E-I7）。
 	decl map[core.ID]core.Fields
 }
 
@@ -193,7 +193,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 	return New(settings, nil)
 }
 
-// New は settings と psql を起動する口（nil なら ExecRunner）から provider を
+// New は settings と、psql を起動する Runner（nil なら ExecRunner）から provider を
 // 作る（テスト・自前のバイナリ用）。
 func New(settings map[string]any, runner Runner) (*Provider, error) {
 	p := &Provider{servers: map[string]*Server{}, decl: map[core.ID]core.Fields{}}
@@ -209,7 +209,7 @@ func New(settings map[string]any, runner Runner) (*Provider, error) {
 		case "servers":
 			m, ok := v.(map[string]any)
 			if !ok || len(m) == 0 {
-				return nil, errors.New("settings.servers にサーバを 1 つ以上書く（名前 → つなぎ方）")
+				return nil, errors.New("settings.servers にサーバを 1 つ以上書く（名前 → 接続設定）")
 			}
 			for name, sv := range m {
 				sm, ok := sv.(map[string]any)
@@ -223,7 +223,7 @@ func New(settings map[string]any, runner Runner) (*Provider, error) {
 				p.servers[name] = s
 			}
 		default:
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: psql, servers）", k)
+			return nil, fmt.Errorf("settings に未知のキー %q（書けるキー: psql, servers）", k)
 		}
 	}
 	if len(p.servers) == 0 {
@@ -257,7 +257,7 @@ func parseServer(name string, m map[string]any) (*Server, error) {
 	known := []string{"connect_timeout", "dbname", "host", "observe", "port", "sslmode", "sslrootcert", "verify_passwords", "write"}
 	for k := range m {
 		if !has(known, k) {
-			return nil, fmt.Errorf("知らない項目 %q（書ける項目: %s。パスワードそのものは書けない）", k, strings.Join(known, ", "))
+			return nil, fmt.Errorf("未知のキー %q（書けるキー: %s。パスワードそのものは書けない）", k, strings.Join(known, ", "))
 		}
 	}
 	var err error
@@ -290,7 +290,7 @@ func parseServer(name string, m map[string]any) (*Server, error) {
 	} else if v != "" {
 		d, perr := time.ParseDuration(v)
 		if perr != nil || d <= 0 {
-			return nil, fmt.Errorf("connect_timeout %q は正の長さ（10s など）", v)
+			return nil, fmt.Errorf("connect_timeout %q は正の時間（10s など）", v)
 		}
 		s.ConnectTimeout = d
 	}
@@ -306,7 +306,7 @@ func parseServer(name string, m map[string]any) (*Server, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("observe（観測用の資格 {user, password_file}）を書く")
+		return nil, errors.New("observe（観測用の credential {user, password_file}）を書く")
 	}
 	s.Observe, s.Write = obs, obs
 	if w, ok, err := parseCred("write", m); err != nil {
@@ -317,8 +317,8 @@ func parseServer(name string, m map[string]any) (*Server, error) {
 	return s, nil
 }
 
-// parseCred は資格 {user, password_file}（password_file は省略可：trust・peer の
-// 認証）を読む。パスワードそのものは書けない（E-G2）。
+// parseCred は credential {user, password_file} を読む（password_file は省略可：trust・peer の
+// 認証）。パスワードそのものは書けない（E-G2）。
 func parseCred(key string, m map[string]any) (Credential, bool, error) {
 	v, ok := m[key]
 	if !ok {
@@ -340,16 +340,16 @@ func parseCred(key string, m map[string]any) (Credential, bool, error) {
 		case "password_file":
 			c.PasswordFile = s
 		default:
-			return Credential{}, false, fmt.Errorf("%s に知らない項目 %q（書ける項目: password_file, user。パスワードそのものは書けない）", key, k)
+			return Credential{}, false, fmt.Errorf("%s に未知のキー %q（書けるキー: password_file, user。パスワードそのものは書けない）", key, k)
 		}
 	}
 	if c.User == "" {
-		return Credential{}, false, fmt.Errorf("%s.user（つなぐロール）を書く", key)
+		return Credential{}, false, fmt.Errorf("%s.user（接続に使うロール）を書く", key)
 	}
 	return c, true, nil
 }
 
-// Schema は 4 つの種類（E-F1・E-F3・N-F1・N-F7）。
+// Schema は 4 つの type を返す（E-F1・E-F3・N-F1・N-F7）。
 func (p *Provider) Schema() core.Schema {
 	b := core.FieldSpec{Type: core.Bool}
 	str := core.FieldSpec{Type: core.String}
@@ -361,7 +361,7 @@ func (p *Provider) Schema() core.Schema {
 			FieldBypassRLS: b, FieldReplication: b, FieldConnectionLimit: num, FieldMemberOf: set,
 			FieldPassword: {Type: core.Secret},
 		}},
-		// DB は中身を失う：宣言の外でも prune で消さない（E-C3・E-F1）。
+		// DB は消すと中身を失うので、宣言に無くても prune で消さない（E-C3・E-F1）。
 		KindDatabase: {DestructiveDelete: true, Fields: map[string]core.FieldSpec{
 			FieldOwner: str, FieldConnectionLimit: num, FieldEncoding: str, FieldLcCollate: str,
 			FieldLcCtype: str, FieldTemplate: str, FieldConnectRoles: set,
@@ -384,7 +384,7 @@ type target struct {
 // public は t が PUBLIC の権限か。
 func (t target) public() bool { return t.kind == KindGrant && t.role == PublicGrantee }
 
-// parse は ID を分け、扱えるもの（管理の境界の内）かを確かめる（E-F1・E-M3）。
+// parse は ID を分け、扱えるもの（管理の境界の内側）かを確かめる（E-F1・E-M3）。
 func (p *Provider) parse(id core.ID) (target, error) {
 	parts := strings.Split(id.Name, "/")
 	t := target{id: id, kind: id.Kind()}
@@ -407,7 +407,7 @@ func (p *Provider) parse(id core.ID) (target, error) {
 	case t.kind == KindExtension && len(parts) == 3:
 		t.database, t.extension = parts[1], parts[2]
 	case form == "":
-		return t, fmt.Errorf("種類 %q を知らない", t.kind)
+		return t, fmt.Errorf("未知の type %q", t.kind)
 	default:
 		return t, fmt.Errorf("%s の id は %s", t.kind, form)
 	}
@@ -454,8 +454,8 @@ func validName(what, name string) string {
 	return ""
 }
 
-// Validate は宣言と範囲を確かめ、宣言の項目を覚える（E-I6・E-I7・E-M3）。値（秘密の
-// 参照を含む）は文に出さず、識別子だけを出す。
+// Validate は宣言と Range を確かめ、宣言の field を覚える（E-I6・E-I7・E-M3）。値（secret の
+// 参照を含む）はメッセージに出さず、識別子だけを出す。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
 	rej := func(o core.Origin, target, format string, a ...any) {
@@ -464,11 +464,11 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	for _, rg := range ranges {
 		for _, k := range sortedKeys(rg.Args) {
 			if k != "server" {
-				rej(rg.Origin, "ranges", "postgresql の範囲の引数 %q を知らない（書ける引数: server）", k)
+				rej(rg.Origin, "ranges", "postgresql の Range に未知の引数 %q（書ける引数: server）", k)
 			}
 		}
 		if s := rg.Args["server"]; s == "" {
-			rej(rg.Origin, "ranges", "postgresql の範囲に args.server（settings.servers の名前）を書く")
+			rej(rg.Origin, "ranges", "postgresql の Range に args.server（settings.servers の名前）を書く")
 		} else if _, ok := p.servers[s]; !ok {
 			rej(rg.Origin, "ranges", "サーバ %q が settings.servers に無い（ある: %s）", s, strings.Join(sortedKeys(p.servers), ", "))
 		}
@@ -498,7 +498,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	return diags
 }
 
-// validateFields は種類ごとの値を確かめる（E-F1・E-F3・E-M3）。
+// validateFields は type ごとの値を確かめる（E-F1・E-F3・E-M3）。
 func validateFields(t target, f core.Fields) []string {
 	var msgs []string
 	bad := func(format string, a ...any) { msgs = append(msgs, fmt.Sprintf(format, a...)) }
@@ -526,7 +526,7 @@ func validateFields(t target, f core.Fields) []string {
 			if why := validName("role", m); why != "" {
 				bad("connect_roles: %s", why)
 			} else if !t.srv.outsideGrantee(m) {
-				bad("connect_roles: %q は管理の境界の外のロール（つなぐロールか pg_*）でない（宣言するロールは grant %s/%s/%s、PUBLIC は %s/%s/%s に書く）",
+				bad("connect_roles: %q は管理の境界の外のロール（接続に使うロールか pg_*）でない（宣言するロールは grant %s/%s/%s、PUBLIC は %s/%s/%s に書く）",
 					m, t.srv.Name, t.database, m, t.srv.Name, t.database, PublicGrantee)
 			}
 		}
@@ -538,7 +538,7 @@ func validateFields(t target, f core.Fields) []string {
 	}
 	if v, ok := f[FieldEncoding]; ok {
 		if s := str(v); canonEncoding(s) == "" || strings.ContainsAny(s, "'\"\\ ") {
-			bad("encoding は符号化の名前（UTF8 など）")
+			bad("encoding は文字コードの名前（UTF8 など）")
 		}
 	}
 	for _, k := range []string{FieldLcCollate, FieldLcCtype, FieldVersion} {
@@ -573,7 +573,7 @@ func (p *Provider) declared(id core.ID) core.Fields {
 }
 
 // canonPrivileges は権限の一覧を正規形（大文字・TEMP は TEMPORARY・重複なし・正規の
-// 順）にする。知らない権限は誤り（E-F1）。
+// 順）にする。未知の権限はエラー（E-F1）。
 func canonPrivileges(v []string) ([]string, error) {
 	have := map[string]bool{}
 	for _, s := range v {
@@ -591,7 +591,7 @@ func canonPrivileges(v []string) ([]string, error) {
 	return inPrivilegeOrder(have), nil
 }
 
-// canonEncoding は符号化の名前の正規形（英数字だけを小文字で）。
+// canonEncoding は文字コードの名前の正規形（英数字だけを小文字で）。
 func canonEncoding(v string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(v) {

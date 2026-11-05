@@ -50,7 +50,7 @@ func runWithSinks(t *testing.T, cfg string, intents map[string]string) (*load.Lo
 	})
 }
 
-// 段 3 の設定：送り先（E-H2）・読み取り HTTP の待ち受け（E-H5・N-L4）・周の間隔と
+// Stage 3 の設定：sink（E-H2）・read-only HTTP API の待ち受け（E-H5・N-L4）・cycle の間隔と
 // stuck_after（E-J11・E-H1）。
 func TestLoadDaemonSettings(t *testing.T) {
 	l, err := runWithSinks(t, baseConfig+`sinks:
@@ -89,20 +89,20 @@ func TestLoadRejectsDaemonSettings(t *testing.T) {
 		intents map[string]string
 		wants   []string
 	}{
-		{"知らない送り先", baseConfig + "sinks:\n  am:\n    module: alertmanager\n", nil,
-			[]string{"sinks.am", `知らない送り先のモジュール "alertmanager"`}},
-		{"送り先の settings", baseConfig + "sinks:\n  out:\n    module: stdout\n    settings: {to: x}\n", nil,
-			[]string{"sinks.out", `知らない項目 "to"`}},
-		{"送り先の範囲", baseConfig + "sinks:\n  out:\n    module: stdout\n    settings: {prune: true}\n", nil,
-			[]string{`範囲（"prune"）`}},
-		{"監査を送れない送り先", baseConfig + "sinks:\n  out:\n    module: stdout\n    streams: [audit]\n", nil,
-			[]string{"sinks.out", `"stdout" は監査（streams: [audit]）を送れない`}},
+		{"知らない sink", baseConfig + "sinks:\n  am:\n    module: alertmanager\n", nil,
+			[]string{"sinks.am", `知らない sink のモジュール "alertmanager"`}},
+		{"sink の settings", baseConfig + "sinks:\n  out:\n    module: stdout\n    settings: {to: x}\n", nil,
+			[]string{"sinks.out", "settings", `"to"`}},
+		{"sink の Range", baseConfig + "sinks:\n  out:\n    module: stdout\n    settings: {prune: true}\n", nil,
+			[]string{`Range（"prune"）`}},
+		{"audit を送れない sink", baseConfig + "sinks:\n  out:\n    module: stdout\n    streams: [audit]\n", nil,
+			[]string{"sinks.out", `"stdout" は audit（streams: [audit]）を送れない`}},
 		{"知らない streams", baseConfig + "sinks:\n  out:\n    module: stdout\n    streams: [logs]\n", nil,
-			[]string{"sinks.out.streams", "知らない送るもの logs"}},
+			[]string{"sinks.out.streams", "知らない stream logs"}},
 		{"streams の重なり", baseConfig + "sinks:\n  out:\n    module: stdout\n    streams: [events, events]\n", nil,
 			[]string{"events が 2 回ある"}},
-		{"秘密の保管先の streams", baseConfig + "secret_backends:\n  f:\n    module: file\n    streams: [events]\n", nil,
-			[]string{`知らない項目 "streams"`}},
+		{"secret backend の streams", baseConfig + "secret_backends:\n  f:\n    module: file\n    streams: [events]\n", nil,
+			[]string{`知らない field "streams"`}},
 		{"外向きの平文", baseConfig + "listen:\n  read: {address: \"0.0.0.0:8443\"}\n", nil,
 			[]string{`loopback でない宛先 "0.0.0.0:8443"`, "plaintext: true"}},
 		{"鍵の無い証明書", baseConfig + "listen:\n  read: {address: \"0.0.0.0:8443\", tls: {cert: a.crt}}\n", nil,
@@ -112,7 +112,7 @@ func TestLoadRejectsDaemonSettings(t *testing.T) {
 		{"TLS と平文", baseConfig + "listen:\n  read: {address: \"127.0.0.1:8443\", plaintext: true, tls: {cert: a, key: b}}\n", nil,
 			[]string{"一緒に書けない"}},
 		{"知らない待ち受け", baseConfig + "listen:\n  approve: {address: \"127.0.0.1:1\"}\n", nil,
-			[]string{`知らない項目 "approve"`}},
+			[]string{`知らない field "approve"`}},
 		{"宛先なし", baseConfig + "listen:\n  read: {plaintext: true}\n", nil,
 			[]string{"address を書く"}},
 		{"cycle が 2 か所", baseConfig, map[string]string{"a.yaml": "cycle: {interval: 1m}\n", "b.yaml": "cycle: {interval: 2m}\n"},
@@ -121,8 +121,8 @@ func TestLoadRejectsDaemonSettings(t *testing.T) {
 			[]string{"1s 以上の長さを書く"}},
 		{"stuck_after 0", baseConfig, map[string]string{"a.yaml": "cycle: {stuck_after: 0}\n"},
 			[]string{"1 以上の整数を書く"}},
-		{"cycle の知らない項目", baseConfig, map[string]string{"a.yaml": "cycle: {every: 1m}\n"},
-			[]string{`知らない項目 "every"`}},
+		{"cycle の知らない field", baseConfig, map[string]string{"a.yaml": "cycle: {every: 1m}\n"},
+			[]string{`知らない field "every"`}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

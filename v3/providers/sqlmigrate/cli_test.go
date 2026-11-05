@@ -14,7 +14,7 @@
 
 package sqlmigrate_test
 
-// v3 の CLI（cli.Run の plan・reconcile）で、v2 の strategy: task を書き直した手順
+// v3 の CLI（cli.Run の plan・reconcile）で、v2 の strategy: task を書き直した Procedure
 // （trigger: on_drift・invoke: migrate・done_when）を本物の sqlite3 に向けて回す
 // （§3.7・§7.1、E-F2・N-F2・不変条件 15・16・18）。
 
@@ -80,7 +80,7 @@ func (l *cliLab) write(path, body string) {
 	}
 }
 
-// declare は版 version を宣言し、手順 migrate-app で合わせる intent を書く。
+// declare はバージョン version を宣言し、Procedure migrate-app で合わせる intent を書く。
 func (l *cliLab) declare(version string, rollback bool) {
 	l.t.Helper()
 	rb := "false"
@@ -137,8 +137,8 @@ func runOf(r plan.Result) plan.RunStatus {
 	return plan.RunStatus{}
 }
 
-// converge は手順が済む（done）まで reconcile を回す（一回実行。migrate の段は
-// critical でないので一回実行でも進む）。
+// converge は Procedure が済む（done）まで reconcile を回す（one-shot 実行。migrate の step は
+// critical でないので one-shot 実行でも進む）。
 func (l *cliLab) converge(want string) {
 	l.t.Helper()
 	var out string
@@ -149,20 +149,20 @@ func (l *cliLab) converge(want string) {
 			return
 		}
 	}
-	l.t.Fatalf("版 %s に収束しない（今 %s）\n%s", want, l.version(), out)
+	l.t.Fatalf("バージョン %s に収束しない（今 %s）\n%s", want, l.version(), out)
 }
 
 func TestProcedureThroughCLI(t *testing.T) {
 	l := newCLILab(t)
 
-	// plan は何も流さず、手順を起こすと言う（不変条件 30）。
+	// plan は何も流さず、Procedure を起こすと言う（不変条件 30）。
 	l.declare("2", false)
 	r, code, out := l.run("plan")
 	if code == cli.ExitError || code == cli.ExitRejected || l.version() != "0" {
-		t.Fatalf("plan: exit=%d 版 %s\n%s", code, l.version(), out)
+		t.Fatalf("plan: exit=%d バージョン %s\n%s", code, l.version(), out)
 	}
 	if s := runOf(r); s.Procedure == "" {
-		t.Fatalf("plan が手順を起こすと言わない\n%s", out)
+		t.Fatalf("plan が Procedure を起こすと言わない\n%s", out)
 	}
 	if _, err := os.Stat(l.db); !os.IsNotExist(err) {
 		t.Fatal("plan が DB のファイルを作った")
@@ -178,8 +178,8 @@ func TestProcedureThroughCLI(t *testing.T) {
 	l.declare("1", false)
 	l.converge("1")
 
-	// 失敗する 0003：手順は止まり、版は 2 のまま（0002 は残り 0003 は巻き戻る）。
-	// 止まった手順は次の周も送り直さない（不変条件 16・E-A9）。
+	// 失敗する 0003：Procedure は halt し、バージョンは 2 のまま（0002 は残り 0003 は巻き戻る）。
+	// halt した Procedure は次の cycle も送り直さない（不変条件 16・E-A9）。
 	l.declare("3", false)
 	var halted plan.RunStatus
 	for i := 0; i < 3 && halted.State != "halted"; i++ {
@@ -187,16 +187,16 @@ func TestProcedureThroughCLI(t *testing.T) {
 		halted = runOf(r)
 	}
 	if halted.State != "halted" || !strings.Contains(halted.Reason, "0003_bad.up.sql") || l.version() != "2" {
-		t.Fatalf("失敗で止まらない: %+v 版 %s", halted, l.version())
+		t.Fatalf("失敗で止まらない: %+v バージョン %s", halted, l.version())
 	}
 	before := l.version()
 	r, code, out = l.run("reconcile")
 	if code == cli.ExitOK || runOf(r).State != "halted" || l.version() != before {
-		t.Fatalf("止まった手順を送り直した: exit=%d %+v\n%s", code, runOf(r), out)
+		t.Fatalf("halt した Procedure を送り直した: exit=%d %+v\n%s", code, runOf(r), out)
 	}
 }
 
-// rollback_on_fail：失敗したら呼んだときの版に戻して止まる（E-F2・N-F2）。
+// rollback_on_fail：失敗したら呼んだときのバージョンに戻して止まる（E-F2・N-F2）。
 func TestProcedureRollbackOnFailThroughCLI(t *testing.T) {
 	l := newCLILab(t)
 	l.declare("1", false)
@@ -207,7 +207,7 @@ func TestProcedureRollbackOnFailThroughCLI(t *testing.T) {
 		r, _, _ := l.run("reconcile")
 		s = runOf(r)
 	}
-	if s.State != "halted" || !strings.Contains(s.Reason, "版 1 に戻した") || l.version() != "1" {
-		t.Fatalf("戻して止まらない: %+v 版 %s", s, l.version())
+	if s.State != "halted" || !strings.Contains(s.Reason, "バージョン 1 に戻した") || l.version() != "1" {
+		t.Fatalf("戻して止まらない: %+v バージョン %s", s, l.version())
 	}
 }

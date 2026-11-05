@@ -101,8 +101,8 @@ const reusePools = `pools:
     range: "10-20"
 `
 
-// TestAllocRewind は採番を巻き戻しても二度払わないことを確かめる（不変条件 11、
-// N-B13）：intent の採番のファイルを古い版に戻すと、Record の写しと食い違うので、
+// TestAllocRewind は採番を巻き戻しても二度払い出さないことを確認する（不変条件 11、
+// N-B13）：intent の採番のファイルを古いバージョンに戻すと、Record の写しと食い違うので、
 // そのプールから新しい値を出さず（宣言は Unknown、終了コード 3）、すでに払った値を
 // 別の宣言に払わない。
 func TestAllocRewind(t *testing.T) {
@@ -132,7 +132,7 @@ func TestAllocRewind(t *testing.T) {
 		t.Fatalf("app02 の vmid = %v", got)
 	}
 
-	// git で採番のファイルを 1 回目の版に戻し、新しい VM を足す。
+	// git で採番のファイルを 1 回目のバージョンに戻し、新しい VM を足す。
 	write(t, file, string(v1))
 	e.vms(t, "app01", "app02", "app03")
 	code, out := e.reconcile(t)
@@ -140,7 +140,7 @@ func TestAllocRewind(t *testing.T) {
 		t.Fatalf("巻き戻したあと: 終了コード %d（want 3）\n%s", code, out)
 	}
 	if !strings.Contains(out, "写しより戻っている") {
-		t.Errorf("食い違いを知らせていない:\n%s", out)
+		t.Errorf("食い違いを通知していない:\n%s", out)
 	}
 	obs := e.observed(t)
 	if _, ok := obs["pve/vm/app03"]; ok {
@@ -165,7 +165,7 @@ func TestAllocRewind(t *testing.T) {
 }
 
 // TestAllocNoReuse は reuse: false のプールが、返した値も Record を失っても二度と
-// 払わないことを確かめる（不変条件 11、N-B13）。
+// 払い出さないことを確認する（不変条件 11、N-B13）。
 func TestAllocNoReuse(t *testing.T) {
 	e := newAllocEnv(t, reusePools)
 	file := filepath.Join(e.intent, "allocations", "vmid.yaml")
@@ -213,6 +213,6 @@ func TestAllocNoReuse(t *testing.T) {
 	// ip の template（reuse: true のプール）。
 	data, _ := os.ReadFile(e.state)
 	if !strings.Contains(string(data), `"192.0.2.12"`) {
-		t.Errorf("template の値を当てていない:\n%s", data)
+		t.Errorf("template の値を Apply していない:\n%s", data)
 	}
 }

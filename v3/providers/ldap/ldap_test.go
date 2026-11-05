@@ -52,13 +52,13 @@ const (
 	adminsDN = "cn=admins,ou=people," + suffix
 )
 
-// secrets は秘密の参照の在りか → 値（WriteContext の取り出し先）。
+// secrets は secret の参照先 → 値（WriteContext の取り出し先）。
 type secrets map[string]string
 
 func (s secrets) Resolve(_ context.Context, ref core.SecretRef) (string, error) {
 	v, ok := s[ref.Path]
 	if !ok {
-		return "", fmt.Errorf("秘密 %s が無い", ref.Ref())
+		return "", fmt.Errorf("secret %s が無い", ref.Ref())
 	}
 	return v, nil
 }
@@ -110,7 +110,7 @@ func l(s ...string) []any {
 	return out
 }
 
-// rng は suffix の下の範囲（E-I6）。
+// rng は suffix の下の Range（E-I6）。
 func rng(extra ...string) core.Range {
 	args := map[string]string{"server": "dir1", "base_dn": suffix}
 	for i := 0; i+1 < len(extra); i += 2 {
@@ -189,8 +189,8 @@ func (e *env) compare(t *testing.T, r core.Resource) (plan.Change, core.Observat
 	return plan.Compare(r, e.p.Schema().Kinds[ldap.KindEntry], o), o
 }
 
-// converge は宣言を（無ければ作り、ずれていれば）当て、読み直して宣言どおりかを
-// 確かめる。当てたときの op を返す。
+// converge は宣言を（無ければ作り、ずれていれば）Apply し、読み直して宣言どおりかを
+// 確かめる。Apply したときの op を返す。
 func (e *env) converge(t *testing.T, all []core.Resource, r core.Resource) plan.Op {
 	t.Helper()
 	e.validate(t, all)
@@ -201,7 +201,7 @@ func (e *env) converge(t *testing.T, all []core.Resource, r core.Resource) plan.
 		}
 	}
 	if again, _ := e.compare(t, r); again.Op != plan.None {
-		t.Fatalf("%s: 当てたあとも宣言どおりでない: %s %+v %s", r.ID, again.Op, again.Fields, again.Note)
+		t.Fatalf("%s: Apply したあとも宣言どおりでない: %s %+v %s", r.ID, again.Op, again.Fields, again.Note)
 	}
 	return c.Op
 }
@@ -219,12 +219,12 @@ func TestContract(t *testing.T) {
 			Create:   []core.Resource{alice("test:ldap/alice@gen=1")},
 			Observed: []core.ID{id(peopleDN)},
 			Faults: map[string]func(){
-				"届かない":       func() { e.srv.Do(func(st *ldapfake.State) { st.Unreachable = true }) },
-				"bind の失敗":   func() { e.srv.Do(func(st *ldapfake.State) { st.Readers[readerDN] = "changed" }) },
-				"TLS を求められる": func() { e.srv.Do(func(st *ldapfake.State) { st.RequireTLS = true }) },
-				"読めない出力":     func() { e.srv.Do(func(st *ldapfake.State) { st.Broken = true }) },
-				"コマンドが無い":    func() { e.srv.Missing = true },
-				"資格のファイルが無い": func() { os.Remove(filepath.Join(e.dir, "reader")) },
+				"届かない":                func() { e.srv.Do(func(st *ldapfake.State) { st.Unreachable = true }) },
+				"bind の失敗":            func() { e.srv.Do(func(st *ldapfake.State) { st.Readers[readerDN] = "changed" }) },
+				"TLS を求められる":          func() { e.srv.Do(func(st *ldapfake.State) { st.RequireTLS = true }) },
+				"読めない出力":              func() { e.srv.Do(func(st *ldapfake.State) { st.Broken = true }) },
+				"コマンドが無い":             func() { e.srv.Missing = true },
+				"credential のファイルが無い": func() { os.Remove(filepath.Join(e.dir, "reader")) },
 			},
 			Truncate:             func() { e.srv.Do(func(st *ldapfake.State) { st.SizeLimit = 1 }) },
 			Writes:               e.writes,
@@ -240,7 +240,7 @@ func TestContract(t *testing.T) {
 	})
 }
 
-// 空から作り、何周しても書かない（E-G1・E-B12）。
+// 空から作り、何 cycle 回しても書かない（E-G1・E-B12）。
 func TestCreateFromEmptyAndNoDrift(t *testing.T) {
 	e := newEnv(t, nil)
 	all := []core.Resource{people(), alice("test:ldap/alice@gen=1"), admins()}
@@ -268,19 +268,19 @@ func TestCreateFromEmptyAndNoDrift(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		for _, r := range all {
 			if op := e.converge(t, all, r); op != plan.None {
-				t.Fatalf("%d 周目 %s: %s", i, r.ID, op)
+				t.Fatalf("%d cycle 目 %s: %s", i, r.ID, op)
 			}
 		}
 	}
 	if e.writes() != n {
 		t.Errorf("宣言どおりなのに %d 回書いた", e.writes()-n)
 	}
-	// 秘密の値は ldapmodify の標準入力（base64）にだけ渡り、引数・環境変数に出ない。
+	// secret の値は ldapmodify の標準入力（base64）にだけ渡り、引数・環境変数に出ない。
 	for _, c := range e.srv.Calls() {
 		joined := strings.Join(c.Args, " ") + fmt.Sprint(c.Env)
 		for _, s := range []string{dmPW, readerPW, alicePW} {
 			if strings.Contains(joined, s) || strings.Contains(c.Stdin, s) {
-				t.Fatalf("秘密が引数・環境変数・平文の LDIF に出た: %v", c.Args)
+				t.Fatalf("secret が引数・環境変数・平文の LDIF に出た: %v", c.Args)
 			}
 		}
 	}
@@ -375,17 +375,17 @@ func TestUserPasswordWriteOnly(t *testing.T) {
 			t.Errorf("userPassword = %q", pw)
 		}
 	})
-	// 取り出せない秘密は誤りで、値を出さない。
+	// 取り出せない secret はエラーで、値を出さない。
 	e.srv.Do(func(st *ldapfake.State) { st.Find(aliceDN).Set("userPassword", nil) })
 	missing := alice("test:ldap/none@gen=1")
 	e.validate(t, []core.Resource{people(), missing})
 	_, o = e.compare(t, missing)
 	if err := e.p.Apply(context.Background(), core.NewWriteContext(e.sec), missing.ID, missing.Fields, o); err == nil || !strings.Contains(err.Error(), "user_password") {
-		t.Errorf("取り出せない秘密: %v", err)
+		t.Errorf("取り出せない secret: %v", err)
 	}
 }
 
-// 属性の名前は大文字小文字を問わず、既に在る項目を作る Apply は宣言にそろえる。
+// 属性の名前は大文字小文字を問わず、既に在る entry を作る Apply は宣言にそろえる。
 func TestCaseInsensitiveNamesAndCreateExisting(t *testing.T) {
 	e := newEnv(t, nil)
 	e.srv.Do(func(st *ldapfake.State) {
@@ -414,7 +414,7 @@ func TestCaseInsensitiveNamesAndCreateExisting(t *testing.T) {
 	})
 }
 
-// List は範囲の中だけ：base_dn そのもの・bind の DN・サブエントリ・filter の外・
+// List は Range の中だけ：base_dn そのもの・bind の DN・サブエントリ・filter の外・
 // scope の外を出さない（E-I6・E-G1・E-K2）。
 func TestList(t *testing.T) {
 	e := newEnv(t, nil)
@@ -467,7 +467,7 @@ func TestList(t *testing.T) {
 	}
 }
 
-// 子のある項目は消さず、葉は消す（E-G1・E-F1）。
+// 子のある entry は消さず、葉は消す（E-G1・E-F1）。
 func TestDelete(t *testing.T) {
 	e := newEnv(t, nil)
 	e.srv.Do(func(st *ldapfake.State) {
@@ -477,12 +477,12 @@ func TestDelete(t *testing.T) {
 	w := core.NewWriteContext(nil)
 	var re *core.RefuseError
 	if err := e.p.Delete(context.Background(), w, id(peopleDN), core.Observation{}); !errors.As(err, &re) {
-		t.Fatalf("子のある項目: %v", err)
+		t.Fatalf("子のある entry: %v", err)
 	}
-	// 宣言した項目の上は、子がまだ無くても消さない（同じ周の prune と作成の順に依らない）。
+	// 宣言した entry の上は、子がまだ無くても消さない（同じ cycle の prune と作成の順に依らない）。
 	e.validate(t, []core.Resource{alice("")})
 	if err := e.p.Delete(context.Background(), w, id(peopleDN), core.Observation{}); !errors.As(err, &re) || !strings.Contains(re.Reason, "uid=alice") {
-		t.Fatalf("宣言した項目の上: %v", err)
+		t.Fatalf("宣言した entry の上: %v", err)
 	}
 	e.validate(t, nil)
 	if err := e.p.Delete(context.Background(), w, id("uid=bob,"+peopleDN), core.Observation{}); err != nil {
@@ -492,12 +492,12 @@ func TestDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := e.p.Delete(context.Background(), w, id(peopleDN), core.Observation{}); err != nil {
-		t.Errorf("無い項目: %v", err)
+		t.Errorf("無い entry: %v", err)
 	}
 	if o := e.observe(t, id(peopleDN)); o.Availability != core.Absent {
 		t.Errorf("消したあと %s", o.Availability)
 	}
-	// 削除は書き込み用の資格だけで行う（E-G5）。
+	// 削除は書き込み用の credential だけで行う（E-G5）。
 	for _, c := range e.srv.Calls() {
 		if c.Command == "ldapmodify" && c.BindDN != dmDN {
 			t.Errorf("書き込みを %s で bind した", c.BindDN)
@@ -505,7 +505,7 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-// 観測と List は観測用の資格だけ、Apply・Delete は書き込み用の資格だけ（E-G5・N-G3）。
+// 観測と List は観測用の credential だけ、Apply・Delete は書き込み用の credential だけ（E-G5・N-G3）。
 func TestCredentialSplit(t *testing.T) {
 	e := newEnv(t, nil)
 	all := []core.Resource{people()}
@@ -515,7 +515,7 @@ func TestCredentialSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n := e.boundAs(dmDN); n != 0 {
-		t.Fatalf("観測で書き込み用の資格を %d 回使った", n)
+		t.Fatalf("観測で書き込み用の credential を %d 回使った", n)
 	}
 	e.converge(t, all, all[0])
 	for _, c := range e.srv.Calls() {
@@ -531,7 +531,7 @@ func TestCredentialSplit(t *testing.T) {
 	if o := e.observe(t, id(peopleDN)); o.Availability != core.Present {
 		t.Errorf("書き込み用のファイルが無いときの観測: %s %s", o.Availability, o.Note)
 	}
-	// write を省けば observe を使う（読むだけの DN ならサーバが断る）。
+	// write を省けば observe を使う（読むだけの DN ならサーバが拒否する）。
 	e2 := newEnv(t, func(s map[string]any) { delete(s, "write") })
 	e2.validate(t, all)
 	err := e2.p.Apply(context.Background(), core.NewWriteContext(nil), all[0].ID, all[0].Fields, core.Observation{Availability: core.Absent})
@@ -543,7 +543,7 @@ func TestCredentialSplit(t *testing.T) {
 	}
 }
 
-// 届かない・壊れた出力は Unknown で、何も書かない（E-K1）。List は誤り（E-K2）。
+// 届かない・壊れた出力は Unknown で、何も書かない（E-K1）。List はエラー（E-K2）。
 func TestUnknownNotAbsent(t *testing.T) {
 	for name, fault := range map[string]func(e *env){
 		"届かない":     func(e *env) { e.srv.Do(func(st *ldapfake.State) { st.Unreachable = true }) },
@@ -558,7 +558,7 @@ func TestUnknownNotAbsent(t *testing.T) {
 			})
 			fault(e)
 			if _, err := e.p.List(context.Background(), rng()); err == nil {
-				t.Error("List が誤りにならない")
+				t.Error("List がエラーにならない")
 			}
 			if name == "件数の上限" {
 				return
@@ -585,12 +585,12 @@ func TestValidate(t *testing.T) {
 		want   string
 	}{
 		"正規形でない":         {res("UID=Alice, ou=people,dc=example,dc=com", good.Fields[ldap.FieldAttributes].(map[string]any), ""), nil, "正規形"},
-		"範囲の外":           {res("uid=x,dc=other,dc=com", map[string]any{"objectClass": "account", "uid": "x"}, ""), nil, "範囲"},
-		"scope one の外":   {good, []core.Range{rng("scope", "one")}, "範囲"},
-		"base そのもの":      {res(suffix, map[string]any{"objectClass": "domain"}, ""), nil, "範囲"},
+		"Range の外":       {res("uid=x,dc=other,dc=com", map[string]any{"objectClass": "account", "uid": "x"}, ""), nil, "Range"},
+		"scope one の外":   {good, []core.Range{rng("scope", "one")}, "Range"},
+		"base そのもの":      {res(suffix, map[string]any{"objectClass": "domain"}, ""), nil, "Range"},
 		"bind の DN":      {res(readerDN, map[string]any{"objectClass": "account", "uid": "sakutei-read"}, ""), nil, "bind"},
 		"知らないサーバ":        {core.Resource{ID: core.ID{Type: "dir/entry", Name: "dir9/" + aliceDN}}, nil, "dir9"},
-		"知らない種類":         {core.Resource{ID: core.ID{Type: "dir/group", Name: "dir1/" + aliceDN}}, nil, "entry"},
+		"知らない type":      {core.Resource{ID: core.ID{Type: "dir/group", Name: "dir1/" + aliceDN}}, nil, "entry"},
 		"objectClass 無し": {res(aliceDN, map[string]any{"uid": "alice"}, ""), nil, "objectClass"},
 		"同じ属性":           {res(aliceDN, map[string]any{"objectClass": "account", "uid": "alice", "UID": "alice"}, ""), nil, "同じ属性"},
 		"操作属性":           {res(aliceDN, map[string]any{"objectClass": "account", "modifyTimestamp": "x"}, ""), nil, "操作属性"},
@@ -600,10 +600,10 @@ func TestValidate(t *testing.T) {
 		"RDN の値":         {res(aliceDN, map[string]any{"objectClass": "account", "uid": "bob"}, ""), nil, "RDN"},
 		"名前でない":          {res(aliceDN, map[string]any{"objectClass": "account", "cn;lang-ja": "x"}, ""), nil, "属性の名前"},
 		"観測だけ":           {core.Resource{ID: id(aliceDN), Fields: core.Fields{ldap.FieldAttributes: map[string]any{"objectClass": "account"}, ldap.FieldUserPasswordSet: true}}, nil, "観測だけ"},
-		"範囲の引数":          {good, []core.Range{rng("base", "x")}, "引数"},
-		"範囲の重なり":         {good, []core.Range{rng(), {Provider: "dir", Args: map[string]string{"server": "dir1", "base_dn": "OU=People," + suffix}}}, "重なる"},
-		"範囲の filter":     {good, []core.Range{rng("filter", "objectClass=*")}, "filter"},
-		"範囲の scope":      {good, []core.Range{rng("scope", "base")}, "scope"},
+		"Range の引数":      {good, []core.Range{rng("base", "x")}, "引数"},
+		"Range の重なり":     {good, []core.Range{rng(), {Provider: "dir", Args: map[string]string{"server": "dir1", "base_dn": "OU=People," + suffix}}}, "重なる"},
+		"Range の filter": {good, []core.Range{rng("filter", "objectClass=*")}, "filter"},
+		"Range の scope":  {good, []core.Range{rng("scope", "base")}, "scope"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -626,7 +626,7 @@ func TestValidate(t *testing.T) {
 		})
 	}
 	if d := e.p.Validate([]core.Resource{good, {ID: id("uid=gone,ou=people," + suffix), Ensure: core.EnsureAbsent}}, []core.Range{rng()}); len(d) != 0 {
-		t.Errorf("正しい宣言を断った: %v", d)
+		t.Errorf("正しい宣言をエラーにした: %v", d)
 	}
 }
 
@@ -650,7 +650,7 @@ func TestSettings(t *testing.T) {
 		"base_dn":    {func(_, s map[string]any) { s["base_dn"] = suffix }, "intent"},
 		"top base":   {func(m, _ map[string]any) { m["base_dn"] = suffix }, "intent"},
 		"timeout":    {func(_, s map[string]any) { s["timeout"] = "0s" }, "timeout"},
-		"unknown":    {func(_, s map[string]any) { s["tiemout"] = "3s" }, "知らない項目"},
+		"unknown":    {func(_, s map[string]any) { s["tiemout"] = "3s" }, "知らない field"},
 		"name":       {func(m, s map[string]any) { m["servers"] = map[string]any{"Dir/1": s} }, "名前"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -662,7 +662,7 @@ func TestSettings(t *testing.T) {
 				t.Errorf("err = %v（want %q を含む）", err, c.want)
 			}
 			if err != nil && strings.Contains(err.Error(), "hunter2") {
-				t.Error("誤りの文に値を出した")
+				t.Error("エラーの文に値を出した")
 			}
 		})
 	}

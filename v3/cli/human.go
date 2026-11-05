@@ -32,7 +32,7 @@ import (
 
 // 人の判断を Record に書くサブコマンド（§5.4）：approve・reject・approvals・
 // freeze・unfreeze・start・cancel。どれもロックを取らず、1 件 1 ファイルを書く
-// だけ。数える・効かせる・監査に残すのは周（常駐は書き込みで起きる、§2.2）。
+// だけ。集計・反映・監査への記録は cycle がする（daemon は書き込みで wake する、§2.2）。
 
 type humanFlags struct {
 	fs      *flag.FlagSet
@@ -46,12 +46,11 @@ func newHumanFlags(name string, stderr io.Writer) humanFlags {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	return humanFlags{fs: fs, recd: fs.String("record", "", "Record のディレクトリ"),
-		as: fs.String("as", "", "した人（承認者・freeze した人・起こした人）"), comment: fs.String("comment", "", "ひとこと"),
-		asJSON: fs.Bool("json", false, "JSON で出す")}
+		as: fs.String("as", "", "実行者（承認者・freeze した人・start した人）"), comment: fs.String("comment", "", "コメント"),
+		asJSON: fs.Bool("json", false, "JSON で出力する")}
 }
 
-// parse はフラグと位置の引数（want 個）を読む。位置の引数はフラグの前でも後でも
-// よい。
+// parse はフラグと位置引数（want 個）を読む。位置引数はフラグの前でも後でもよい。
 func (h humanFlags) parse(name string, args []string, want int, stderr io.Writer) ([]string, bool) {
 	var pos []string
 	for len(args) > 0 {
@@ -65,31 +64,31 @@ func (h humanFlags) parse(name string, args []string, want int, stderr io.Writer
 		args = h.fs.Args()[1:]
 	}
 	if len(pos) != want {
-		fmt.Fprintf(stderr, "sakutei %s: 引数は %d つ（%q が書かれている）\n", name, want, pos)
+		fmt.Fprintf(stderr, "sakutei %s: 引数は %d 個（指定されたもの: %q）\n", name, want, pos)
 		return nil, false
 	}
 	if *h.recd == "" {
-		fmt.Fprintf(stderr, "sakutei %s: --record を書く\n", name)
+		fmt.Fprintf(stderr, "sakutei %s: --record を指定する\n", name)
 		return nil, false
 	}
 	return pos, true
 }
 
-// who は --as か、無ければログインの名前（freeze・start・cancel）。
+// who は --as か、無ければログイン名（freeze・start・cancel）。
 func (h humanFlags) who(name string, stderr io.Writer) (string, bool) {
 	who := *h.as
 	if who == "" {
 		who = os.Getenv("USER")
 	}
 	if who == "" || !record.ValidName(who) {
-		fmt.Fprintf(stderr, "sakutei %s: --as に誰がするかを書く（英数字と . _ @ -）\n", name)
+		fmt.Fprintf(stderr, "sakutei %s: --as に実行者の名前を指定する（英数字と . _ @ -）\n", name)
 		return "", false
 	}
 	return who, true
 }
 
 // runDecide は承認か拒否を書く（E-L2・N-L2・不変条件 21）。申請者は承認者に
-// なれない。数えるのは周。
+// なれない。集計するのは cycle。
 func runDecide(args []string, decision string, stdout, stderr io.Writer, o *options) int {
 	name := decision
 	h := newHumanFlags(name, stderr)
@@ -99,32 +98,32 @@ func runDecide(args []string, decision string, stdout, stderr io.Writer, o *opti
 	}
 	id := pos[0]
 	if *h.as == "" || !record.ValidName(*h.as) {
-		fmt.Fprintf(stderr, "sakutei %s: --as に承認者の名前を書く（英数字と . _ @ -）\n", name)
+		fmt.Fprintf(stderr, "sakutei %s: --as に承認者の名前を指定する（英数字と . _ @ -）\n", name)
 		return ExitError
 	}
 	if decision == record.Reject && strings.TrimSpace(*h.comment) == "" {
-		fmt.Fprintf(stderr, "sakutei %s: --comment に拒否の理由を書く\n", name)
+		fmt.Fprintf(stderr, "sakutei %s: --comment に拒否の理由を指定する\n", name)
 		return ExitError
 	}
 	st, err := approval.Decide(*h.recd, id, record.Decision{By: *h.as, Decision: decision, Comment: *h.comment, At: o.clock.Now()})
 	if err != nil {
 		var de *approval.DecideError
 		if errors.As(err, &de) && de.Code == approval.DecideNotFound {
-			fmt.Fprintf(stderr, "sakutei %s: %v（sakutei approvals で一覧）\n", name, err)
+			fmt.Fprintf(stderr, "sakutei %s: %v（一覧は sakutei approvals）\n", name, err)
 		} else {
 			fmt.Fprintf(stderr, "sakutei %s: %v\n", name, err)
 		}
 		return ExitError
 	}
 	verb := map[string]string{record.Approve: "承認", record.Reject: "拒否"}[decision]
-	fmt.Fprintf(stdout, "%s を %s した（%s）。数えて効かせるのは次の周\n", id, verb, st.Summary())
+	fmt.Fprintf(stdout, "%s を%sした（%s）。集計して反映するのは次の cycle\n", id, verb, st.Summary())
 	return ExitOK
 }
 
 // runApprovals は承認の依頼の一覧（待っているもの）を出す。
 func runApprovals(args []string, stdout, stderr io.Writer, o *options) int {
 	h := newHumanFlags("approvals", stderr)
-	all := h.fs.Bool("all", false, "使った・拒否・期限切れの依頼も出す")
+	all := h.fs.Bool("all", false, "使用済み・拒否・期限切れの依頼も出力する")
 	if _, ok := h.parse("approvals", args, 0, stderr); !ok {
 		return ExitError
 	}
@@ -192,10 +191,10 @@ func runFreeze(args []string, stdout, stderr io.Writer, o *options) int {
 	h := newHumanFlags("freeze", stderr)
 	reason := h.fs.String("reason", "", "理由（必須）")
 	until := h.fs.String("until", "", "期限（必須）。時刻（2026-11-01T09:00+09:00）か今からの長さ（4h）")
-	mode := h.fs.String("mode", "report", "report だけ（締める向きにしか効かない）")
+	mode := h.fs.String("mode", "report", "report だけ（制限を強める向きにだけ効く）")
 	name := h.fs.String("name", "", "名前（unfreeze で使う。既定は時刻から作る）")
 	var sel selectFlag
-	h.fs.Var(&sel, "select", "当てる先（labels.<名前>=<値>・type=<provider>/<種類>。何度でも。書かなければ全部）")
+	h.fs.Var(&sel, "select", "対象（labels.<名前>=<値>・type=<provider>/<type>。複数指定できる。指定しなければ全部）")
 	if _, ok := h.parse("freeze", args, 0, stderr); !ok {
 		return ExitError
 	}
@@ -220,7 +219,7 @@ func runFreeze(args []string, stdout, stderr io.Writer, o *options) int {
 	}
 	if _, exists, err := record.ReadTempPolicy(*h.recd, t.Name); err != nil || exists {
 		if err == nil {
-			err = fmt.Errorf("同じ名前の一時的な Policy %s がある", t.Name)
+			err = fmt.Errorf("同じ名前の一時的な Policy %s がすでにある", t.Name)
 		}
 		fmt.Fprintf(stderr, "sakutei freeze: %v\n", err)
 		return ExitError
@@ -229,19 +228,19 @@ func runFreeze(args []string, stdout, stderr io.Writer, o *options) int {
 		fmt.Fprintf(stderr, "sakutei freeze: %v\n", err)
 		return ExitError
 	}
-	fmt.Fprintf(stdout, "freeze %s: %s を report（%s まで）。終えるなら sakutei unfreeze %s --reason …\n",
+	fmt.Fprintf(stdout, "freeze %s: %s を report（%s まで）。終えるには sakutei unfreeze %s --reason …\n",
 		t.Name, t.Select.String(), t.Until.Format(time.RFC3339), t.Name)
 	return ExitOK
 }
 
-// parseUntil は時刻か今からの長さを読む。過去は断る。
+// parseUntil は時刻か今からの長さを読む。過去の時刻はエラーにする。
 func parseUntil(s string, now time.Time) (time.Time, error) {
 	if s == "" {
-		return time.Time{}, fmt.Errorf("期限を書く（時刻か今からの長さ）")
+		return time.Time{}, fmt.Errorf("期限を指定する（時刻か今からの長さ）")
 	}
 	if d, err := time.ParseDuration(s); err == nil {
 		if d <= 0 {
-			return time.Time{}, fmt.Errorf("正の長さを書く")
+			return time.Time{}, fmt.Errorf("正の長さを指定する")
 		}
 		return now.Add(d), nil
 	}
@@ -267,13 +266,13 @@ func (s *selectFlag) check(v string) error {
 	case v == "all":
 		return nil
 	case !ok || val == "":
-		return fmt.Errorf("labels.<名前>=<値> か type=<provider>/<種類> を書く")
+		return fmt.Errorf("labels.<名前>=<値> か type=<provider>/<type> を指定する")
 	case k == "type":
 		return core.ParseType(val)
 	case strings.HasPrefix(k, "labels.") && len(k) > len("labels."):
 		return nil
 	}
-	return fmt.Errorf("%q は labels.<名前>=<値> でも type=<provider>/<種類> でもない", v)
+	return fmt.Errorf("%q は labels.<名前>=<値> でも type=<provider>/<type> でもない", v)
 }
 
 func (s selectFlag) selector() core.Selector {
@@ -298,7 +297,8 @@ func (s selectFlag) selector() core.Selector {
 	return out
 }
 
-// runUnfreeze は一時的な Policy を終える印を書く。周が監査に残して消す。
+// runUnfreeze は一時的な Policy を終える指示を Record に書く。cycle が監査に残して
+// 消す。
 func runUnfreeze(args []string, stdout, stderr io.Writer, o *options) int {
 	h := newHumanFlags("unfreeze", stderr)
 	reason := h.fs.String("reason", "", "理由（必須）")
@@ -321,15 +321,15 @@ func runUnfreeze(args []string, stdout, stderr io.Writer, o *options) int {
 		fmt.Fprintf(stderr, "sakutei unfreeze: %v\n", err)
 		return ExitError
 	}
-	fmt.Fprintf(stdout, "unfreeze %s: 次の周に終える\n", pos[0])
+	fmt.Fprintf(stdout, "unfreeze %s: 次の cycle で終える\n", pos[0])
 	return ExitOK
 }
 
-// runStart は trigger: manual の手順を起こす頼みを書く（N-F4・N-K8・N-D4）。
+// runStart は trigger: manual の Procedure を start する依頼を書く（N-F4・N-K8・N-D4）。
 // --as は申請者（gate の承認者に数えない）。
 func runStart(args []string, stdout, stderr io.Writer, o *options) int {
 	h := newHumanFlags("start", stderr)
-	target := h.fs.String("target", "", "対象の名前（手順の target が select のとき）")
+	target := h.fs.String("target", "", "対象の名前（Procedure の target が select のとき）")
 	reason := h.fs.String("reason", "", "理由")
 	pos, ok := h.parse("start", args, 1, stderr)
 	if !ok {
@@ -344,11 +344,11 @@ func runStart(args []string, stdout, stderr io.Writer, o *options) int {
 		fmt.Fprintf(stderr, "sakutei start: %v\n", err)
 		return ExitError
 	}
-	fmt.Fprintf(stdout, "手順 %s を起こす頼みを書いた。起こすのは次の周\n", pos[0])
+	fmt.Fprintf(stdout, "Procedure %s の start を依頼した。start するのは次の cycle\n", pos[0])
 	return ExitOK
 }
 
-// runCancel は手順を取り消す頼みを書く（止まった手順を片づける、E-A9）。
+// runCancel は Procedure を取り消す依頼を書く（halt した Procedure を片づける、E-A9）。
 func runCancel(args []string, stdout, stderr io.Writer, o *options) int {
 	h := newHumanFlags("cancel", stderr)
 	reason := h.fs.String("reason", "", "理由（必須）")
@@ -361,7 +361,7 @@ func runCancel(args []string, stdout, stderr io.Writer, o *options) int {
 		return ExitError
 	}
 	if strings.TrimSpace(*reason) == "" {
-		fmt.Fprintln(stderr, "sakutei cancel: --reason を書く")
+		fmt.Fprintln(stderr, "sakutei cancel: --reason を指定する")
 		return ExitError
 	}
 	if _, err := record.WriteCommand(*h.recd, record.Command{Kind: "cancel", RunID: pos[0], By: who, Reason: *reason,
@@ -369,6 +369,6 @@ func runCancel(args []string, stdout, stderr io.Writer, o *options) int {
 		fmt.Fprintf(stderr, "sakutei cancel: %v\n", err)
 		return ExitError
 	}
-	fmt.Fprintf(stdout, "%s を取り消す頼みを書いた。取り消すのは次の周\n", pos[0])
+	fmt.Fprintf(stdout, "%s の取り消しを依頼した。取り消すのは次の cycle\n", pos[0])
 	return ExitOK
 }

@@ -39,7 +39,7 @@ func labeled(name, value string, labels map[string]string) core.Resource {
 	return r
 }
 
-// E-J3：別枠でない Policy の窓の外は report（知らせるだけ）。窓に入れば当てる。
+// E-J3：allow でない Policy の window の外は report（通知するだけ）。window に入れば Apply する。
 func TestWindowsReportOutside(t *testing.T) {
 	h := newHarness(t) // 2026-11-05（木）22:00 UTC
 	h.in.Ranges = nil
@@ -48,17 +48,17 @@ func TestWindowsReportOutside(t *testing.T) {
 	h.in.Policies = []core.Policy{{Name: "maint", Select: core.Selector{All: true}, Windows: []core.Window{window(t, "Fri 01:00-02:00 Asia/Tokyo")}}}
 	r := h.run()
 	if c := find(r, rid("rec", "www")); c.Action != plan.ActReport || len(h.p.Writes()) != 0 || cli.ExitCode(r) != cli.ExitRemaining {
-		t.Fatalf("窓の外で当てた: %+v", c)
+		t.Fatalf("window の外で Apply した: %+v", c)
 	}
 	h.clock.t = time.Date(2026, 11, 5, 16, 30, 0, 0, time.UTC) // 金 01:30 Asia/Tokyo
 	if r := h.run(); cli.ExitCode(r) != cli.ExitOK || len(h.p.Writes()) != 1 {
-		t.Fatalf("窓の中で当てない: %+v", r.Changes)
+		t.Fatalf("window の中で Apply しない: %+v", r.Changes)
 	}
 }
 
-// E-J2：別枠は窓の中で承認が揃えば、合う変更を max_count まで通常の予算の外で
-// 通す（予算の超過でも止めない）。宣言の外は通常の予算で止まる。使い切れば
-// 通常の予算に戻る。承認は使っても消えない。
+// E-J2：allow は window の中で承認が揃えば、合う変更を max_count まで通常の budget の外で
+// 通す（budget の超過でも止めない）。宣言の外は通常の budget で止まる。使い切れば
+// 通常の budget に戻る。承認は使っても消えない。
 func TestLaneAdmitsDeclaredWork(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -83,10 +83,10 @@ func TestLaneAdmitsDeclaredWork(t *testing.T) {
 		{Name: "default", Select: core.Selector{All: true}, Budget: &core.Budget{PerCycle: 1, DestructivePerCycle: core.Unlimited, DestructivePerWindow: core.Unlimited}},
 		lane,
 	}
-	// 承認が無い間は開かない（通常の予算で 5 > 1 で止まる）。依頼を書く。
+	// 承認が無い間は開かない（通常の budget で 5 > 1 で止まる）。依頼を書く。
 	r := h.run()
 	if len(h.p.Writes()) != 0 || len(r.Lanes) != 1 || r.Lanes[0].Open || r.Lanes[0].Request == "" {
-		t.Fatalf("承認の無い別枠が開いた: %+v %+v", r.Lanes, h.p.Writes())
+		t.Fatalf("承認の無い allow が開いた: %+v %+v", r.Lanes, h.p.Writes())
 	}
 	req := r.Lanes[0].Request
 	if a, ok, _ := record.ReadApproval(h.rec.Dir(), req); !ok || a.Request.Kind != "lane" || a.Request.Applicant != "carol" {
@@ -100,7 +100,7 @@ func TestLaneAdmitsDeclaredWork(t *testing.T) {
 	r = h.run()
 	for _, n := range []string{"a1", "a2", "a3"} {
 		if c := find(r, rid("rec", n)); c.Lane != "renumber" || c.Outcome != plan.OutcomeOK {
-			t.Fatalf("別枠で通らない: %+v", c)
+			t.Fatalf("allow で通らない: %+v", c)
 		}
 	}
 	for _, n := range []string{"f1", "f2"} {
@@ -114,11 +114,11 @@ func TestLaneAdmitsDeclaredWork(t *testing.T) {
 	if m, _ := h.rec.Marks(); m.Lanes["renumber"].Used != 3 {
 		t.Fatalf("使った数: %+v", m.Lanes)
 	}
-	// 使い切った：同じ宣言のまままたずれても通常の予算（止まる）。
+	// 使い切った：同じ宣言のまままたずれても通常の budget（止まる）。
 	drift()
 	r = h.run()
 	if len(h.p.Writes()) != 3 || r.Lanes[0].Note == "" {
-		t.Fatalf("使い切った別枠で通した: %+v %+v", r.Lanes, h.p.Writes())
+		t.Fatalf("使い切った allow で通した: %+v %+v", r.Lanes, h.p.Writes())
 	}
 	// max_count を広げれば（承認し直して）残りを使う。使った数は保つ。
 	h.in.Policies[1].Allow = &core.Allow{Kind: core.AllowUpdate, MaxCount: 4}
@@ -133,16 +133,16 @@ func TestLaneAdmitsDeclaredWork(t *testing.T) {
 	if r.Lanes[0].Used != 3 || r.Lanes[0].Admitted != 1 || len(h.p.Writes()) != 4 {
 		t.Fatalf("広げた枠: %+v %v", r.Lanes, h.p.Writes())
 	}
-	// 窓が過ぎれば閉じる。
+	// window が過ぎれば閉じる。
 	drift()
 	h.clock.t = h.clock.t.Add(2 * time.Hour)
 	if r := h.run(); r.Lanes[0].Open || len(h.p.Writes()) != 4 {
-		t.Fatalf("窓のあとに開いた: %+v", r.Lanes)
+		t.Fatalf("window のあとに開いた: %+v", r.Lanes)
 	}
 }
 
-// E-A9：reimage は同じ種類・同じラベルの削除と作成の対を 1 と数え、壊す予算に
-// 数えない。対の無い削除は通常の予算。
+// E-A9：reimage は同じ type・同じラベルの削除と作成の対を 1 と数え、壊す budget に
+// 数えない。対の無い削除は通常の budget。
 func TestLaneReimagePairs(t *testing.T) {
 	h := newHarness(t)
 	slot := func(n string) map[string]string { return map[string]string{"pool": "hpc", "slot": n} }
@@ -169,7 +169,7 @@ func TestLaneReimagePairs(t *testing.T) {
 	}
 	for _, n := range []string{"n1-v1", "n1-v2", "n2-v1", "n2-v2"} {
 		if c := find(r, rid("rec", n)); c.Lane != "reimage" {
-			t.Fatalf("対が別枠に入らない: %+v", c)
+			t.Fatalf("対が allow に入らない: %+v", c)
 		}
 	}
 	if c := find(r, rid("rec", "n4-v1")); c.Lane != "" || c.Outcome != plan.OutcomeOK {
@@ -180,7 +180,7 @@ func TestLaneReimagePairs(t *testing.T) {
 	}
 }
 
-// E-J2・N-J2：承認者を置かない別枠は cooling-off（宣言を初めて見てから）が過ぎて
+// E-J2・N-J2：承認者を置かない allow は cooling-off（宣言を初めて見てから）が過ぎて
 // から開く。時計は Record にあり、plan は進めない。
 func TestLaneCoolingOff(t *testing.T) {
 	h := newHarness(t)

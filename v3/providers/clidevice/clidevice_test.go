@@ -14,9 +14,9 @@
 
 package clidevice_test
 
-// clidevice_test.go — 偽の装置（clifake）を相手に、機種の定義の読み込み、対話
-// （プロンプト・ページ送り）と exec、観測・適用・部分的な失敗・秘密・一度きりの
-// 操作・2 段の Apply（不変条件 17）と契約テスト（§6.2）を確かめる（E-B11）。
+// clidevice_test.go — 偽の装置（clifake）を相手に、機種の定義の読み込み、interactive
+// （プロンプト・ページ送り）と exec、観測・Apply・部分的な失敗・secret・一度きりの
+// 操作・two-phase Apply（不変条件 17）と契約テスト（§6.2）を確かめる（E-B11）。
 
 import (
 	"context"
@@ -168,8 +168,8 @@ func TestDefinitionRefused(t *testing.T) {
 	}
 }
 
-// 対話でページ送りの印を踏みながら読む。1 回の Observe の中で同じコマンドの出力は
-// 使い回す。設定が無い（absent の印）は Absent。
+// interactive でページ送りのプロンプトをこなしながら読む。1 回の Observe の中で同じ
+// コマンドの出力は使い回す。設定が無い（absent にマッチする）ときは Absent。
 func TestObserveInteractiveWithPager(t *testing.T) {
 	dev := newDevice()
 	dev.PageLines = 4
@@ -227,7 +227,7 @@ func TestExec(t *testing.T) {
 	}
 }
 
-// 定義に合わない出力・届かないは Unknown（Absent にしない）。Apply は何も流さない。
+// 定義に合わない出力・到達できないときは Unknown（Absent にしない）。Apply は何も流さない。
 func TestUnexpectedOutputIsUnknown(t *testing.T) {
 	dev := newDevice()
 	p := newProvider(t, dev, loadDef(t))
@@ -254,7 +254,7 @@ func TestUnexpectedOutputIsUnknown(t *testing.T) {
 	}
 }
 
-// 途中で落ちたら取り消して確定しない。どこまで流れたかを言う。流した後は観測し直す。
+// 途中で失敗したら取り消して commit しない。どこまで流れたかをエラーに書く。流した後は再観測する。
 func TestApplyPartialFailure(t *testing.T) {
 	dev := newDevice()
 	def, err := defFrom(t, func(tr map[string]any) {
@@ -283,7 +283,7 @@ func TestApplyPartialFailure(t *testing.T) {
 	if err := p.Apply(context.Background(), wctx, id("syslog"), core.Fields{"host": "192.0.2.20", "port": "514"}, core.Observation{}); err != nil {
 		t.Fatal(err)
 	}
-	// 効かない set（別の項目を書く）は、流れても宣言どおりでないと言う。
+	// 効かない set（別の item を書く）は、流れても宣言どおりでないとエラーにする。
 	def, _ = defFrom(t, func(tr map[string]any) { item(tr, "hostname")["set"] = []any{"snmp community x{name}x"} })
 	p = newProvider(t, dev, def)
 	err = p.Apply(context.Background(), wctx, id("hostname"), core.Fields{"name": "core1"}, core.Observation{})
@@ -292,8 +292,8 @@ func TestApplyPartialFailure(t *testing.T) {
 	}
 }
 
-// 秘密：参照でしか書けず、値は誤りの文・観測に出ない。観測は自分が書いた値と同じ
-// ときだけ参照を返す。起こし直した後は、同じ値なら書かずに覚えるだけ。
+// secret は参照でしか書けず、値はエラーメッセージ・観測に出ない。観測は自分が書いた値と
+// 同じときだけ参照を返す。再起動した後は、同じ値なら書かずに覚えるだけ。
 func TestSecret(t *testing.T) {
 	dev := newDevice()
 	def := loadDef(t)
@@ -342,7 +342,7 @@ func TestSecret(t *testing.T) {
 	}
 }
 
-// 読み込みの検査（差し込みになりうる値を断る。値は文言に出さない）。
+// 読み込み時の検査（コマンドの差し込みになりうる値をエラーにする。値はメッセージに出さない）。
 func TestValidate(t *testing.T) {
 	p := newProvider(t, newDevice(), loadDef(t))
 	rg := []core.Range{{Provider: "sw", Args: map[string]string{"host": "sw1", "items": "syslog,community,ntp"}}}
@@ -353,15 +353,15 @@ func TestValidate(t *testing.T) {
 	}{
 		{core.Resource{ID: id("syslog"), Fields: core.Fields{"host": "192.0.2.10\nreload", "port": "514"}}, rg, "control character"},
 		{core.Resource{ID: id("syslog"), Fields: core.Fields{"host": "192.0.2.10 port 1; reload", "port": "514"}}, rg, "does not match the pattern"},
-		{core.Resource{ID: id("syslog"), Fields: core.Fields{"host": "192.0.2.10"}}, rg, `"port" が要る`},
-		{core.Resource{ID: id("syslog"), Fields: core.Fields{"host": "192.0.2.10", "port": "514", "vrf": "x"}}, rg, `知らないフィールド "vrf"`},
-		{core.Resource{ID: id("hostname"), Fields: core.Fields{"name": "x"}}, rg, "範囲"},
+		{core.Resource{ID: id("syslog"), Fields: core.Fields{"host": "192.0.2.10"}}, rg, `field "port" が要る`},
+		{core.Resource{ID: id("syslog"), Fields: core.Fields{"host": "192.0.2.10", "port": "514", "vrf": "x"}}, rg, `未知の field "vrf"`},
+		{core.Resource{ID: id("hostname"), Fields: core.Fields{"name": "x"}}, rg, "Range"},
 		{core.Resource{ID: id("ntp"), Ensure: core.EnsureAbsent}, rg, "unset が無い"},
-		{core.Resource{ID: core.ID{Type: "sw/nope", Name: "sw1"}}, rg, `項目 "nope"`},
+		{core.Resource{ID: core.ID{Type: "sw/nope", Name: "sw1"}}, rg, `item "nope"`},
 		{core.Resource{ID: core.ID{Type: "sw/syslog", Name: "sw9"}}, rg, `装置 "sw9"`},
-		{core.Resource{}, []core.Range{{Provider: "sw", Args: map[string]string{"host": "sw1", "items": "nope"}}}, `項目 "nope"`},
-		{core.Resource{}, []core.Range{{Provider: "sw", Args: map[string]string{"host": "sw1"}}, {Provider: "sw", Args: map[string]string{"host": "sw1", "items": "ntp"}}}, "2 つの範囲"},
-		{core.Resource{}, []core.Range{{Provider: "sw", Args: map[string]string{"host": "sw1", "cmd": "x"}}}, "範囲の引数"},
+		{core.Resource{}, []core.Range{{Provider: "sw", Args: map[string]string{"host": "sw1", "items": "nope"}}}, `item "nope"`},
+		{core.Resource{}, []core.Range{{Provider: "sw", Args: map[string]string{"host": "sw1"}}, {Provider: "sw", Args: map[string]string{"host": "sw1", "items": "ntp"}}}, "2 つの Range"},
+		{core.Resource{}, []core.Range{{Provider: "sw", Args: map[string]string{"host": "sw1", "cmd": "x"}}}, "Range の引数"},
 	} {
 		var res []core.Resource
 		if c.res.ID.Type != "" {
@@ -373,7 +373,7 @@ func TestValidate(t *testing.T) {
 		}
 		all := strings.Join(msgs, "\n")
 		if !strings.Contains(all, c.want) {
-			t.Errorf("%v: %q を含む断りが無い: %v", c.res.ID, c.want, msgs)
+			t.Errorf("%v: %q を含むエラーが無い: %v", c.res.ID, c.want, msgs)
 		}
 		if strings.Contains(all, "reload") {
 			t.Errorf("値を出した: %v", msgs)
@@ -381,7 +381,7 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// 一度きりの操作（core.Invoker）：届かない・1 つも打てていないときだけ ErrNotSent。
+// 一度きりの操作（core.Invoker）。到達できない・1 つも打てていないときだけ ErrNotSent。
 func TestInvoke(t *testing.T) {
 	dev := newDevice()
 	p := newProvider(t, dev, loadDef(t))
@@ -400,16 +400,16 @@ func TestInvoke(t *testing.T) {
 	dev.FailOn("upgrade")
 	err := p.Invoke(context.Background(), wctx, id("version"), "upgrade", core.Fields{"image": "1.3.0.bin"})
 	if err == nil || errors.Is(err, core.ErrNotSent) {
-		t.Fatalf("断られた: %v", err)
+		t.Fatalf("装置が拒否した: %v", err)
 	}
 	dev.FailOn("")
 	dev.SetDown(true)
 	if err := p.Invoke(context.Background(), wctx, id("version"), "upgrade", core.Fields{"image": "1.2.0.bin"}); !errors.Is(err, core.ErrNotSent) {
-		t.Fatalf("届かない: %v", err)
+		t.Fatalf("到達できない: %v", err)
 	}
 	dev.SetDown(false)
 	if err := p.Apply(context.Background(), wctx, id("version"), core.Fields{"version": "1.3.0"}, core.Observation{}); err == nil {
-		t.Fatal("観測だけの項目に Apply できた")
+		t.Fatal("観測だけの item に Apply できた")
 	}
 }
 
@@ -455,7 +455,7 @@ func TestContract(t *testing.T) {
 	})
 }
 
-// Transaction の戻り（不変条件 17）：commit_confirmed の装置は、確定すれば戻らず、
+// Transaction の巻き戻し（不変条件 17）。commit_confirmed の装置は、確定すれば戻らず、
 // 確定しなければ装置の時間切れで戻り、cancel で戻る。
 func TestTxnContract(t *testing.T) {
 	contract.RunTxn(t, func(t *testing.T) contract.TxnTarget {
@@ -473,7 +473,7 @@ func TestTxnContract(t *testing.T) {
 	})
 }
 
-// commit_confirmed の無い機種は 2 段の Apply を持たない。
+// commit_confirmed の無い機種は two-phase Apply に対応しない。
 func TestPrepareNeedsCommitConfirmed(t *testing.T) {
 	def, err := defFrom(t, func(tr map[string]any) {
 		cfg := tr["config"].(map[string]any)
@@ -492,7 +492,7 @@ func TestPrepareNeedsCommitConfirmed(t *testing.T) {
 	}
 }
 
-// つなぎ方の設定（§5.6）：機種の定義はファイルかマップ。interactive は ssh だけ。
+// 接続設定（§5.6）。機種の定義はファイルかマップ。interactive は ssh だけ。
 func TestModule(t *testing.T) {
 	ssh := map[string]any{"address": "192.0.2.11", "user": "ro", "key": "/k", "known_hosts": "/kh"}
 	if _, err := clidevice.Module(map[string]any{"definition": exampleDef, "hosts": map[string]any{
@@ -515,12 +515,12 @@ func TestModule(t *testing.T) {
 		{"definition": exampleDef, "hosts": map[string]any{"sw1": map[string]any{"ssh": ssh}}, "defs": 1},
 	} {
 		if _, err := clidevice.Module(s); err == nil {
-			t.Errorf("断らない: %v", s)
+			t.Errorf("エラーにならない: %v", s)
 		}
 	}
 }
 
-// countingConn は書き込み用のつなぎ方を数える（WriteContext の外で使わない、E-G5）。
+// countingConn は書き込み用の接続を使った回数を数える（WriteContext の外で使わない、E-G5）。
 type countingConn struct {
 	*clifake.Device
 	n *atomic.Int64

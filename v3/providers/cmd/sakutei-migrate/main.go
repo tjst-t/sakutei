@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command sakutei-migrate は v2 の intent と provider の設定を、新しいコアの intent と
-// つなぎ方の設定に書き直す道具（設計 §7.2・§8 の段 9）。使い方は migrate.Run。
+// Command sakutei-migrate は、v2 の intent と provider の設定を、新しいコアの intent と
+// 接続設定に書き直すツール（設計 §7.2・§8 の Stage 9）。使い方は migrate.Run。
 package main
 
 import (

@@ -53,7 +53,7 @@ func (c *clock) set(t time.Time) {
 
 var base = time.Date(2026, 11, 5, 22, 0, 0, 0, time.UTC)
 
-// capture は送り出しを書き留める送り先。
+// capture は送信を書き留める sink。
 type capture struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -136,7 +136,7 @@ func (e *env) opts(clk *clock) []cli.Option {
 	}
 }
 
-// world は i 周目の前に現実と intent を変える。一回実行の列と常駐で同じものを使う。
+// world は i cycle 目の前に現実と intent を変える。one-shot 実行の列と daemon で同じものを使う。
 func world(t *testing.T, e *env, i int) {
 	t.Helper()
 	switch i {
@@ -147,7 +147,7 @@ func world(t *testing.T, e *env, i int) {
 		write(t, e.state, `{"dns/record/www": {"availability": "unknown", "note": "届かない"},
  "dns/record/api": {"availability": "present", "fields": {"value": "192.0.2.1"}}}`)
 	case 4: // 届かないまま（続けば stuck）
-	case 5: // intent の書き誤り（その周は何もしない）
+	case 5: // intent の書き誤り（その cycle は何もしない）
 		write(t, filepath.Join(e.intent, "dup.yaml"), "resources:\n  - {type: dns/record, id: www, fields: {value: x}}\n")
 	case 6: // 直した。届くようになった
 		os.Remove(filepath.Join(e.intent, "dup.yaml"))
@@ -159,11 +159,11 @@ func world(t *testing.T, e *env, i int) {
 
 const cycles = 8
 
-// 不変条件 30（§8 の段 3）：一回実行を並べた結果と常駐の結果が同じ。同じ現実の
-// 並びに対して、周ごとの結果・Record の全ファイル（目印・監査・通知の状態・送り
-// 出しの列・sink の位置・健全性）・送り先に届いた Event が一致する（E-O3・N-O4）。
+// 不変条件 30（§8 の Stage 3）：one-shot 実行を並べた結果と daemon の結果が同じ。同じ現実の
+// 並びに対して、cycle ごとの結果・Record の全ファイル（marks・監査・通知の状態・outbox・
+// sink の位置・health）・sink に届いた Event が一致する（E-O3・N-O4）。
 func TestOnceSequenceEqualsDaemon(t *testing.T) {
-	// 一回実行の列。
+	// one-shot 実行の列。
 	a := setup(t)
 	clkA := &clock{t: base}
 	var onceResults []string
@@ -178,12 +178,12 @@ func TestOnceSequenceEqualsDaemon(t *testing.T) {
 			continue
 		}
 		if code == cli.ExitError {
-			t.Fatalf("一回実行 %d: %s", i, errOut.String())
+			t.Fatalf("one-shot 実行 %d: %s", i, errOut.String())
 		}
 		onceResults = append(onceResults, out.String())
 	}
 
-	// 常駐。
+	// daemon。
 	b := setup(t)
 	clkB := &clock{t: base}
 	world(t, b, 0)
@@ -204,7 +204,7 @@ func TestOnceSequenceEqualsDaemon(t *testing.T) {
 	onCycle := func(c daemon.Cycle) {
 		if c.Result == nil {
 			if !c.Rejected {
-				t.Errorf("常駐 %d: %v", c.N, c.Err)
+				t.Errorf("daemon %d: %v", c.N, c.Err)
 			}
 			daemonResults = append(daemonResults, "rejected")
 			return
@@ -216,34 +216,34 @@ func TestOnceSequenceEqualsDaemon(t *testing.T) {
 	var errOut bytes.Buffer
 	opts := append(b.opts(clkB), cli.WithDaemonWait(wait), cli.WithDaemonCycle(onCycle))
 	if code := cli.Run(context.Background(), []string{"--intent", b.intent, "--config", b.config, "--record", b.record}, &bytes.Buffer{}, &errOut, opts...); code != cli.ExitOK {
-		t.Fatalf("常駐 exit=%d %s", code, errOut.String())
+		t.Fatalf("daemon exit=%d %s", code, errOut.String())
 	}
 
 	if len(onceResults) != cycles || len(daemonResults) != cycles {
-		t.Fatalf("周の数: 一回実行 %d・常駐 %d", len(onceResults), len(daemonResults))
+		t.Fatalf("cycle の数: one-shot 実行 %d・daemon %d", len(onceResults), len(daemonResults))
 	}
 	for i := range onceResults {
 		if onceResults[i] != daemonResults[i] {
-			t.Errorf("%d 周目の結果が違う:\n一回実行:\n%s\n常駐:\n%s", i, onceResults[i], daemonResults[i])
+			t.Errorf("%d cycle 目の結果が違う:\none-shot 実行:\n%s\ndaemon:\n%s", i, onceResults[i], daemonResults[i])
 		}
 	}
 	ra, rb := files(t, a.record), files(t, b.record)
 	for name, data := range ra {
 		if rb[name] != data {
-			t.Errorf("Record の %s が違う:\n一回実行:\n%s\n常駐:\n%s", name, data, rb[name])
+			t.Errorf("Record の %s が違う:\none-shot 実行:\n%s\ndaemon:\n%s", name, data, rb[name])
 		}
 	}
 	for name := range rb {
 		if _, ok := ra[name]; !ok {
-			t.Errorf("常駐だけに %s がある", name)
+			t.Errorf("daemon だけに %s がある", name)
 		}
 	}
 	if a.sink.String() != b.sink.String() {
-		t.Errorf("送り先に届いた Event が違う:\n一回実行:\n%s\n常駐:\n%s", a.sink.String(), b.sink.String())
+		t.Errorf("sink に届いた Event が違う:\none-shot 実行:\n%s\ndaemon:\n%s", a.sink.String(), b.sink.String())
 	}
 
-	// 筋書きのとおりに知らせたか（E-H1）：ずれは始まりと終わりで 1 回ずつ、
-	// Unknown の周に resolved にしない、続けば stuck。
+	// 筋書きのとおりに通知したか（E-H1）：ずれは始まりと終わりで 1 回ずつ、
+	// Unknown の cycle に resolved にしない、続けば stuck。
 	got := a.sink.String()
 	for _, want := range []string{
 		`"kind":"Applied","type":"incident","resource":"dns/record/www","at":"2026-11-05T22:02:00Z"`,
@@ -256,15 +256,15 @@ func TestOnceSequenceEqualsDaemon(t *testing.T) {
 		`"kind":"Unmanaged","type":"state","state":"resolved","resource":"dns/record/stray"`,
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("送り先に %s が無い:\n%s", want, got)
+			t.Errorf("sink に %s が無い:\n%s", want, got)
 		}
 	}
 	h, err := record.ReadHealth(a.record)
 	if err != nil || h.ConsecutiveErrors != 0 || !strings.Contains(h.LastError, "同じ ID") {
-		t.Errorf("健全性: %+v %v", h, err)
+		t.Errorf("health: %+v %v", h, err)
 	}
 	if _, err := record.Verify(a.record); err != nil {
-		t.Errorf("監査の鎖: %v", err)
+		t.Errorf("audit のハッシュチェーン: %v", err)
 	}
 }
 
@@ -289,8 +289,8 @@ func files(t *testing.T, root string) map[string]string {
 	return out
 }
 
-// 起床（E-N5）：sakutei wake・intent のディレクトリの変更・外からの起床（SIGHUP）で
-// 間隔を待たずに次の周を始める。何度起こしても次の周は 1 回。
+// wake（E-N5）：sakutei wake・intent のディレクトリの変更・外からの wake（SIGHUP）で
+// 間隔を待たずに次の cycle を始める。何度起こしても次の cycle は 1 回。
 func TestWake(t *testing.T) {
 	defer func(d time.Duration) { daemon.PollInterval = d }(daemon.PollInterval)
 	daemon.PollInterval = 10 * time.Millisecond
@@ -315,7 +315,7 @@ func TestWake(t *testing.T) {
 			Record: rec, IntentDir: intentDir, Wake: hup,
 			OnCycle: func(c daemon.Cycle) {
 				if c.Err != nil {
-					t.Errorf("周 %d: %v", c.N, c.Err)
+					t.Errorf("cycle %d: %v", c.N, c.Err)
 				}
 				cycled <- c.N
 			},
@@ -342,7 +342,7 @@ func TestWake(t *testing.T) {
 	next("SIGHUP")
 	select {
 	case n := <-cycled:
-		t.Fatalf("起こしていないのに周 %d を回した", n)
+		t.Fatalf("起こしていないのに cycle %d を回した", n)
 	case <-time.After(100 * time.Millisecond):
 	}
 	cancel()

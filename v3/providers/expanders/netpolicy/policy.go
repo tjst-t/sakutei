@@ -23,13 +23,13 @@ import (
 	"strings"
 )
 
-// TagException は「弱い方式をその機器だけ例外として許す」行の印。この印の
-// 付いた許可は reason が要る（読み込みで断る）。
+// TagException は「弱い方式をその機器だけ例外として許す」行に付ける tag。この tag の
+// 付いた許可は reason が要る（無ければ読み込み時にエラーにする）。
 const TagException = "exception"
 
-// 実現先の種類。
+// 実現先の kind。
 const (
-	// KindBoundary は網と網の間の境界（境界の FW）。from も to もその実現先の
+	// KindBoundary はネットワーク間の境界（境界の FW）。from も to もその実現先の
 	// networks にあり、from と to が違う許可が通る。
 	KindBoundary = "boundary"
 	// KindHost はそのホストに入る通信（各ホストの FW）。to がその実現先の
@@ -49,24 +49,24 @@ const (
 // DefaultRealizer は target の realizer を書かないときの実現先の変換。
 const DefaultRealizer = "nftables"
 
-// DefaultDomain は domain を書かない網の domain（アドレスの空間、#195）。
+// DefaultDomain は domain を書かないネットワークの domain（アドレス空間、#195）。
 const DefaultDomain = "default"
 
-// 口を通る向き（Via.Direction）。
+// interface を通る向き（Via.Direction）。
 const (
-	// DirectionIn はその口から実現先に入る通信（境界なら from の網の口、ホスト
-	// なら to の網の口）。
+	// DirectionIn はその interface から実現先に入る通信（境界なら from のネットワークの
+	// interface、ホストなら to のネットワークの interface）。
 	DirectionIn = "in"
-	// DirectionOut はその口から実現先を出る通信（境界なら to の網の口、ホスト
-	// なら from の網の口）。
+	// DirectionOut はその interface から実現先を出る通信（境界なら to のネットワークの
+	// interface、ホストなら from のネットワークの interface）。
 	DirectionOut = "out"
 )
 
-// Network は名前の付いた網（CIDR の一覧）。
+// Network は名前の付いたネットワーク（CIDR の一覧）。
 type Network struct {
 	Name string
-	// Domain はアドレスの空間（書かなければ DefaultDomain）。重なりは同じ
-	// domain の中でだけ断る。
+	// Domain はアドレス空間（書かなければ DefaultDomain）。重なりは同じ
+	// domain の中でだけエラーにする。
 	Domain string
 	CIDRs  []netip.Prefix
 	// Ref は宣言の場所（"<file>: networks[0]"）。
@@ -83,7 +83,7 @@ func (r PortRange) String() string {
 	return fmt.Sprintf("%d-%d", r.Lo, r.Hi)
 }
 
-// Allow は網から網への 1 つの許可。
+// Allow はネットワークからネットワークへの 1 つの許可。
 type Allow struct {
 	// Index は宣言の順（intent のファイルの名前の順、ファイルの中の順）での位置。
 	Index int
@@ -100,7 +100,7 @@ type Allow struct {
 	Ref string
 }
 
-// HasTag は許可に印 tag があるか。
+// HasTag は許可に tag があるか。
 func (a Allow) HasTag(tag string) bool {
 	for _, t := range a.Tags {
 		if t == tag {
@@ -131,11 +131,11 @@ type Target struct {
 	// Kind は KindBoundary か KindHost。
 	Kind     string
 	Networks []string
-	// Provider は実現先の provider のインスタンス名（つなぎ方の設定の providers の
+	// Provider は実現先の provider のインスタンス名（接続設定の providers での
 	// 名前）。ID は実現先の宣言の id（形は realizer が決める）。
 	Provider string
 	ID       string
-	// Labels と Apply は作る宣言にそのまま付ける（Policy の当たり先・2 段の Apply、
+	// Labels と Apply は作る宣言にそのまま付ける（Policy の適用先・two-phase Apply、
 	// E-B3）。
 	Labels map[string]any
 	Apply  map[string]any
@@ -146,24 +146,25 @@ type Target struct {
 	// Settings は realizer に固有の値（nftables なら hook・priority・policy・
 	// confirm）。
 	Settings map[string]string
-	// Interfaces は口ごとにどの domain の網を見るか（#195）。空なら既定の
-	// domain の網だけを見る（口を区別しない実現先）。Compile は各口の Networks を
-	// 埋めてから realizer に渡す。
+	// Interfaces は interface ごとにどの domain のネットワークを見るか（#195）。空なら
+	// 既定の domain のネットワークだけを見る（interface を区別しない実現先）。Compile は
+	// 各 interface の Networks を埋めてから realizer に渡す。
 	Interfaces []Interface
 	Ref        string
 }
 
-// Interface は実現先の 1 つの口と、そこで見る domain の網。
+// Interface は実現先の 1 つの interface と、そこで見る domain のネットワーク。
 type Interface struct {
-	// Name は口の名前（realizer の言葉。proxmox の net0・nftables の eth0 など）。
+	// Name は interface の名前（realizer での呼び方。proxmox の net0・nftables の eth0 など）。
 	Name   string
 	Domain string
-	// Networks はその口の向こうにある実現先の網（境界）・その口にある実現先の
-	// 網（ホスト）。書かなければ実現先の networks のうちその domain のもの全部。
+	// Networks はその interface の先にある実現先のネットワーク（境界）・その interface に
+	// つながる実現先のネットワーク（ホスト）。書かなければ実現先の networks のうち
+	// その domain のもの全部。
 	Networks []string
 }
 
-// Interface は名前の口を返す。
+// Interface は名前で interface を返す。
 func (t Target) Interface(name string) (Interface, bool) {
 	for _, i := range t.Interfaces {
 		if i.Name == name {
@@ -185,7 +186,7 @@ func (p Policy) Empty() bool {
 	return len(p.Networks) == 0 && len(p.Allows) == 0 && len(p.Targets) == 0
 }
 
-// Network は名前の網を返す。
+// Network は名前でネットワークを返す。
 func (p Policy) Network(name string) (Network, bool) {
 	for _, n := range p.Networks {
 		if n.Name == name {
@@ -213,7 +214,7 @@ var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 // Parse は 1 つの intent のファイルの network_policy: の値（JSON Schema で
 // 形を確かめた木）を読む。file は場所の表示に使う。宣言の中だけで分かる誤り
-// （値の形・proto と ports の組・同じ印の二度書き）はここで断り、ファイルを
+// （値の形・proto と ports の組・同じ tag の二度書き）はここでエラーにし、ファイルを
 // またぐ検査は Check が行う。
 func Parse(v any, file string) (Policy, error) {
 	if v == nil {
@@ -286,30 +287,30 @@ func parseNetwork(raw any, ref string) (Network, error) {
 	if n.Domain == "" {
 		n.Domain = DefaultDomain
 	} else if !nameRe.MatchString(n.Domain) {
-		return Network{}, fmt.Errorf("網 %s: domain %q: 英数字と _ . - で書く", n.Name, n.Domain)
+		return Network{}, fmt.Errorf("ネットワーク %s: domain %q: 英数字と _ . - で書く", n.Name, n.Domain)
 	}
 	cidrs, err := strList(m["cidrs"], "cidrs")
 	if err != nil {
 		return Network{}, err
 	}
 	if len(cidrs) == 0 {
-		return Network{}, fmt.Errorf("網 %s: cidrs を書く（CIDR を 1 つ以上）", n.Name)
+		return Network{}, fmt.Errorf("ネットワーク %s: cidrs を書く（CIDR を 1 つ以上）", n.Name)
 	}
 	for _, c := range cidrs {
 		pfx, err := netip.ParsePrefix(c)
 		if err != nil {
-			// アドレスだけなら 1 つのアドレスの網（/32・/128）として受ける。
+			// アドレスだけなら 1 つのアドレスのネットワーク（/32・/128）として受ける。
 			addr, aerr := netip.ParseAddr(c)
 			if aerr != nil || addr.Zone() != "" {
-				return Network{}, fmt.Errorf("網 %s: cidr %q: 10.0.0.0/24 のような CIDR かアドレスを書く", n.Name, c)
+				return Network{}, fmt.Errorf("ネットワーク %s: cidr %q: 10.0.0.0/24 のような CIDR かアドレスを書く", n.Name, c)
 			}
 			pfx = netip.PrefixFrom(addr, addr.BitLen())
 		}
 		if pfx.Addr().Is4In6() {
-			return Network{}, fmt.Errorf("網 %s: cidr %q: IPv4 を写した IPv6 のアドレスは受けない（IPv4 の形で書く）", n.Name, c)
+			return Network{}, fmt.Errorf("ネットワーク %s: cidr %q: IPv4-mapped IPv6 アドレスは受けない（IPv4 の形で書く）", n.Name, c)
 		}
 		if pfx.Masked() != pfx {
-			return Network{}, fmt.Errorf("網 %s: cidr %q のホストの部分が 0 でない（%s のこと？）", n.Name, c, pfx.Masked())
+			return Network{}, fmt.Errorf("ネットワーク %s: cidr %q のホスト部が 0 でない（%s のこと？）", n.Name, c, pfx.Masked())
 		}
 		n.CIDRs = append(n.CIDRs, pfx)
 	}
@@ -323,7 +324,7 @@ func parseAllow(raw any, ref string) (Allow, error) {
 	}
 	a := Allow{From: str(m, "from"), To: str(m, "to"), Proto: str(m, "proto"), Ref: ref}
 	if a.From == "" || a.To == "" {
-		return Allow{}, fmt.Errorf("from と to（網の名前）を書く")
+		return Allow{}, fmt.Errorf("from と to（ネットワークの名前）を書く")
 	}
 	if a.Proto == "" {
 		a.Proto = ProtoAny
@@ -430,7 +431,7 @@ func parseTarget(raw any, ref string) (Target, error) {
 	}
 	for k := range m {
 		if !targetKeys[k] {
-			return Target{}, fmt.Errorf("知らない項目 %q", k)
+			return Target{}, fmt.Errorf("不明な field %q", k)
 		}
 	}
 	t := Target{Name: str(m, "name"), Realizer: str(m, "realizer"), Kind: str(m, "kind"), Provider: str(m, "provider"), ID: str(m, "id"), Ref: ref}
@@ -466,19 +467,19 @@ func parseTarget(raw any, ref string) (Target, error) {
 		}
 		for k := range im {
 			if !interfaceKeys[k] {
-				return Target{}, fmt.Errorf("実現先 %s: interfaces[%d]: 知らない項目 %q", t.Name, i, k)
+				return Target{}, fmt.Errorf("実現先 %s: interfaces[%d]: 不明な field %q", t.Name, i, k)
 			}
 		}
 		itf := Interface{Name: str(im, "name"), Domain: str(im, "domain")}
 		if !nameRe.MatchString(itf.Name) {
 			return Target{}, fmt.Errorf("実現先 %s: interfaces[%d]: name %q: 英数字と _ . - で書く", t.Name, i, itf.Name)
 		}
-		// 口の domain は省かない（既定の domain の口も domain: default と書く）。
+		// interface の domain は省かない（既定の domain の interface も domain: default と書く）。
 		if !nameRe.MatchString(itf.Domain) {
-			return Target{}, fmt.Errorf("実現先 %s: 口 %s: domain %q: 英数字と _ . - で書く", t.Name, itf.Name, itf.Domain)
+			return Target{}, fmt.Errorf("実現先 %s: interface %s: domain %q: 英数字と _ . - で書く", t.Name, itf.Name, itf.Domain)
 		}
 		if itf.Networks, err = strList(im["networks"], "networks"); err != nil {
-			return Target{}, fmt.Errorf("実現先 %s: 口 %s: %w", t.Name, itf.Name, err)
+			return Target{}, fmt.Errorf("実現先 %s: interface %s: %w", t.Name, itf.Name, err)
 		}
 		t.Interfaces = append(t.Interfaces, itf)
 	}
@@ -510,19 +511,19 @@ func scalarMap(v any) map[string]string {
 
 // 検査の結果の重さ。
 const (
-	SeverityError   = "error"   // 読み込みで断る
-	SeverityWarning = "warning" // 知らせる（plan・reconcile）
+	SeverityError   = "error"   // 読み込み時にエラーにする（reject）
+	SeverityWarning = "warning" // 通知する（plan・reconcile）
 )
 
-// 検査の結果の種類。
+// 検査の結果の kind。
 const (
-	FindingOverlap                = "overlap"                  // 網の CIDR の重なり
-	FindingUndeclaredNetwork      = "undeclared_network"       // 宣言に無い網を指す
+	FindingOverlap                = "overlap"                  // ネットワークの CIDR の重なり
+	FindingUndeclaredNetwork      = "undeclared_network"       // 宣言に無いネットワークを指す
 	FindingExceptionWithoutReason = "exception_without_reason" // 理由の無い例外
 	FindingDuplicate              = "duplicate"                // 同じ許可の重複
 	FindingShadowed               = "shadowed"                 // 前の許可に覆われて効かない
 	FindingUnreached              = "unreached"                // どの実現先も通らない
-	FindingDuplicateName          = "duplicate_name"           // 網・実現先の名前の二度書き
+	FindingDuplicateName          = "duplicate_name"           // ネットワーク・実現先の名前の二度書き
 	FindingTarget                 = "target"                   // 実現先の宣言の誤り
 	FindingCrossDomain            = "cross_domain"             // domain をまたぐ許可
 )
@@ -539,8 +540,8 @@ type Finding struct {
 	Message string
 }
 
-// String は検査の結果の 1 行（"error: duplicate: <ref> (office → dmz tcp 443):
-// ...（理由: "..."; tags: exception"）。
+// String は検査の結果の 1 行（"duplicate: <ref> (office → dmz tcp 443):
+// ...（理由: "..."、tags: exception）"）。
 func (f Finding) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: ", f.Kind)
@@ -556,7 +557,7 @@ func (f Finding) String() string {
 
 func allowNote(a Allow) string { return "（" + note(a) + "）" }
 
-// note は許可の理由と印（"理由: \"…\"、印: exception"）。
+// note は許可の理由と tag（"理由: \"…\"、tags: exception"）。
 func note(a Allow) string {
 	reason := a.Reason
 	if reason == "" {
@@ -566,27 +567,27 @@ func note(a Allow) string {
 	}
 	s := "理由: " + reason
 	if len(a.Tags) > 0 {
-		s += "、印: " + strings.Join(a.Tags, ",")
+		s += "、tags: " + strings.Join(a.Tags, ",")
 	}
 	return s
 }
 
-// Check は宣言を確かめる。error の結果があれば読み込みで断る（Compile）。
+// Check は宣言を確かめる。error の結果があれば読み込み時にエラーにする（Compile）。
 func Check(p Policy) []Finding {
 	var out []Finding
 	errorf := func(kind string, a *Allow, format string, args ...any) {
 		out = append(out, Finding{Severity: SeverityError, Kind: kind, Allow: a, Message: fmt.Sprintf(format, args...)})
 	}
 
-	// 網: 名前の二度書きと CIDR の重なり（網の中も、同じ domain の網の間も）。
-	// 重なりは「そのアドレスはどちらの網か」が決まらず、片方の網への許可が
-	// もう片方にも漏れるので断る。違う domain は別のアドレスの空間なので、
-	// 重なってよい。網の名前は domain をまたいで一意（許可は名前で指す）。
+	// ネットワーク: 名前の二度書きと CIDR の重なり（ネットワークの中も、同じ domain の
+	// ネットワーク間も）。重なると「そのアドレスはどちらのネットワークか」が決まらず、
+	// 片方への許可がもう片方にも漏れるのでエラーにする。違う domain は別のアドレス空間
+	// なので、重なってよい。ネットワークの名前は domain をまたいで一意（許可は名前で指す）。
 	names := map[string]string{}
-	domains := map[string]string{} // 網の名前 → domain
+	domains := map[string]string{} // ネットワークの名前 → domain
 	for _, n := range p.Networks {
 		if prev, dup := names[n.Name]; dup {
-			errorf(FindingDuplicateName, nil, "網 %s が %s と %s の 2 か所にある", n.Name, prev, n.Ref)
+			errorf(FindingDuplicateName, nil, "ネットワーク %s が %s と %s の 2 か所にある", n.Name, prev, n.Ref)
 			continue
 		}
 		names[n.Name] = n.Ref
@@ -603,9 +604,9 @@ func Check(p Policy) []Finding {
 			for _, o := range all {
 				if o.domain == n.Domain && o.pfx.Overlaps(c) {
 					if o.net == n.Name {
-						errorf(FindingOverlap, nil, "網 %s: cidrs %s と %s が重なる", n.Name, o.pfx, c)
+						errorf(FindingOverlap, nil, "ネットワーク %s: cidrs %s と %s が重なる", n.Name, o.pfx, c)
 					} else {
-						errorf(FindingOverlap, nil, "網 %s（%s）と %s（%s）が domain %s の中で重なる：アドレスは 1 つの網に属する（片方への許可がもう片方にも漏れる。別のアドレスの空間なら domain を分ける）", o.net, o.pfx, n.Name, c, n.Domain)
+						errorf(FindingOverlap, nil, "ネットワーク %s（%s）と %s（%s）が domain %s の中で重なる。アドレスは 1 つのネットワークに属する（片方への許可がもう片方にも漏れる。別のアドレス空間なら domain を分ける）", o.net, o.pfx, n.Name, c, n.Domain)
 					}
 				}
 			}
@@ -613,21 +614,21 @@ func Check(p Policy) []Finding {
 		}
 	}
 
-	// 許可: 宣言に無い網・理由の無い例外・重複・隠れた許可。
+	// 許可: 宣言に無いネットワーク・理由の無い例外・重複・隠れた許可。
 	for i := range p.Allows {
 		a := &p.Allows[i]
 		for _, side := range []string{a.From, a.To} {
 			if _, ok := names[side]; !ok {
-				errorf(FindingUndeclaredNetwork, a, "網 %s が network_policy.networks に無い", side)
+				errorf(FindingUndeclaredNetwork, a, "ネットワーク %s が network_policy.networks に無い", side)
 			}
 		}
 		if df, okf := domains[a.From]; okf {
 			if dt, okt := domains[a.To]; okt && df != dt {
-				errorf(FindingCrossDomain, a, "from %s は domain %s、to %s は domain %s：許可は 1 つの domain の中（関所のように 2 つが出会うところは片側ずつ許可を書く）", a.From, df, a.To, dt)
+				errorf(FindingCrossDomain, a, "from %s は domain %s、to %s は domain %s。許可は 1 つの domain の中で書く（2 つの domain が接するところでは片側ずつ許可を書く）", a.From, df, a.To, dt)
 			}
 		}
 		if a.HasTag(TagException) && a.Reason == "" {
-			errorf(FindingExceptionWithoutReason, a, "印 %s の許可には理由（reason）を書く：例外は理由と一緒に宣言する", TagException)
+			errorf(FindingExceptionWithoutReason, a, "tag %s の許可には reason を書く。例外は理由と一緒に宣言する", TagException)
 		}
 		for j := 0; j < i; j++ {
 			b := &p.Allows[j]
@@ -639,13 +640,13 @@ func Check(p Policy) []Finding {
 					Message: fmt.Sprintf("%s（%s）と同じ許可。1 回だけ書く", b.Ref, note(*b))})
 			} else {
 				out = append(out, Finding{Severity: SeverityWarning, Kind: FindingShadowed, Allow: a, Other: b,
-					Message: fmt.Sprintf("効かない：%s（%s）がすでに全部を許している（%s）", b.Ref, b.Summary(), note(*b))})
+					Message: fmt.Sprintf("効かない。%s（%s）がすでに全部を許している（%s）", b.Ref, b.Summary(), note(*b))})
 			}
 			break
 		}
 	}
 
-	// 実現先: 名前の二度書き・宣言に無い網・網の数。
+	// 実現先: 名前の二度書き・宣言に無いネットワーク・ネットワークの数。
 	tnames := map[string]string{}
 	for _, t := range p.Targets {
 		if prev, dup := tnames[t.Name]; dup {
@@ -656,19 +657,19 @@ func Check(p Policy) []Finding {
 		seen := map[string]bool{}
 		for _, n := range t.Networks {
 			if _, ok := names[n]; !ok {
-				errorf(FindingUndeclaredNetwork, nil, "%s: 実現先 %s の網 %s が network_policy.networks に無い", t.Ref, t.Name, n)
+				errorf(FindingUndeclaredNetwork, nil, "%s: 実現先 %s のネットワーク %s が network_policy.networks に無い", t.Ref, t.Name, n)
 			}
 			if seen[n] {
-				errorf(FindingTarget, nil, "%s: 実現先 %s に網 %s が 2 回ある", t.Ref, t.Name, n)
+				errorf(FindingTarget, nil, "%s: 実現先 %s にネットワーク %s が 2 回ある", t.Ref, t.Name, n)
 			}
 			seen[n] = true
 		}
 		checkInterfaces(t, domains, errorf)
 		switch {
 		case t.Kind == KindBoundary && len(t.Networks) < 2:
-			errorf(FindingTarget, nil, "%s: 実現先 %s は %d つの網の境界：境界は 2 つ以上の網の間", t.Ref, t.Name, len(t.Networks))
+			errorf(FindingTarget, nil, "%s: 実現先 %s の networks が %d 個。境界は 2 つ以上のネットワークの間に置く", t.Ref, t.Name, len(t.Networks))
 		case t.Kind == KindHost && len(t.Networks) == 0:
-			errorf(FindingTarget, nil, "%s: 実現先 %s はどの網にも居ないホスト（networks を書く）", t.Ref, t.Name)
+			errorf(FindingTarget, nil, "%s: 実現先 %s はどのネットワークにも属さないホスト（networks を書く）", t.Ref, t.Name)
 		}
 	}
 
@@ -685,21 +686,22 @@ func Check(p Policy) []Finding {
 			}
 			if !reached {
 				out = append(out, Finding{Severity: SeverityWarning, Kind: FindingUnreached, Allow: a,
-					Message: "この許可を通す実現先が無い（その網の間の境界も、宛先の網のホストも無い）"})
+					Message: "この許可を通す実現先が無い（そのネットワーク間の境界も、宛先のネットワークのホストも無い）"})
 			}
 		}
 	}
 	return out
 }
 
-// checkInterfaces は実現先の口を確かめる: 口の名前の二度書き・宣言に無い
-// domain・実現先に無い網・口の domain に無い網・2 つの口に載る網・どの口にも
-// 載らない網・何も見ない口。口を書かない実現先は既定の domain の網だけを見る。
+// checkInterfaces は実現先の interface を確かめる: interface の名前の二度書き・宣言に
+// 無い domain・実現先に無いネットワーク・interface の domain に無いネットワーク・
+// 2 つの interface に載るネットワーク・どの interface にも載らないネットワーク・何も
+// 見ない interface。interfaces を書かない実現先は既定の domain のネットワークだけを見る。
 func checkInterfaces(t Target, domains map[string]string, errorf func(string, *Allow, string, ...any)) {
 	if len(t.Interfaces) == 0 {
 		for _, n := range t.Networks {
 			if d, ok := domains[n]; ok && d != DefaultDomain {
-				errorf(FindingTarget, nil, "%s: 実現先 %s は domain %s の網 %s を書いたが interfaces が無い。口を書かない実現先は domain %s だけを見る（どの口がどの domain を見るかを interfaces に書く）", t.Ref, t.Name, n, d, DefaultDomain)
+				errorf(FindingTarget, nil, "%s: 実現先 %s は domain %s のネットワーク %s を書いたが interfaces が無い。interfaces を書かない実現先は domain %s だけを見る（どの interface がどの domain を見るかを interfaces に書く）", t.Ref, t.Name, n, d, DefaultDomain)
 			}
 		}
 		return
@@ -713,26 +715,26 @@ func checkInterfaces(t Target, domains map[string]string, errorf func(string, *A
 		inTarget[n] = true
 	}
 	inames := map[string]bool{}
-	on := map[string]string{} // 網 → 載る口
+	on := map[string]string{} // ネットワーク → 載る interface
 	for _, itf := range t.Interfaces {
 		if inames[itf.Name] {
-			errorf(FindingTarget, nil, "%s: 実現先 %s に口 %s が 2 回ある", t.Ref, t.Name, itf.Name)
+			errorf(FindingTarget, nil, "%s: 実現先 %s に interface %s が 2 回ある", t.Ref, t.Name, itf.Name)
 			continue
 		}
 		inames[itf.Name] = true
 		if !known[itf.Domain] {
-			errorf(FindingTarget, nil, "%s: 実現先 %s: 口 %s の domain %s に網が無い", t.Ref, t.Name, itf.Name, itf.Domain)
+			errorf(FindingTarget, nil, "%s: 実現先 %s: interface %s の domain %s にネットワークが無い", t.Ref, t.Name, itf.Name, itf.Domain)
 			continue
 		}
 		for _, n := range resolveInterface(t, itf, domains).Networks {
 			d, declared := domains[n]
 			switch {
 			case !inTarget[n]:
-				errorf(FindingTarget, nil, "%s: 実現先 %s: 口 %s の網 %s が実現先の networks に無い", t.Ref, t.Name, itf.Name, n)
+				errorf(FindingTarget, nil, "%s: 実現先 %s: interface %s のネットワーク %s が実現先の networks に無い", t.Ref, t.Name, itf.Name, n)
 			case declared && d != itf.Domain:
-				errorf(FindingTarget, nil, "%s: 実現先 %s: 口 %s は domain %s を見るが、domain %s の網 %s を書いた", t.Ref, t.Name, itf.Name, itf.Domain, n, d)
+				errorf(FindingTarget, nil, "%s: 実現先 %s: interface %s は domain %s を見るが、domain %s のネットワーク %s を書いた", t.Ref, t.Name, itf.Name, itf.Domain, n, d)
 			case on[n] != "":
-				errorf(FindingTarget, nil, "%s: 実現先 %s: 網 %s が口 %s と %s の両方にある（網は 1 つの口の向こう）", t.Ref, t.Name, n, on[n], itf.Name)
+				errorf(FindingTarget, nil, "%s: 実現先 %s: ネットワーク %s が interface %s と %s の両方にある（ネットワークは 1 つの interface の先にだけ置く）", t.Ref, t.Name, n, on[n], itf.Name)
 			default:
 				on[n] = itf.Name
 			}
@@ -740,13 +742,13 @@ func checkInterfaces(t Target, domains map[string]string, errorf func(string, *A
 	}
 	for _, n := range t.Networks {
 		if _, declared := domains[n]; declared && on[n] == "" {
-			errorf(FindingTarget, nil, "%s: 実現先 %s: 網 %s（domain %s）がどの口にも無い", t.Ref, t.Name, n, domains[n])
+			errorf(FindingTarget, nil, "%s: 実現先 %s: ネットワーク %s（domain %s）がどの interface にも無い", t.Ref, t.Name, n, domains[n])
 		}
 	}
 }
 
-// resolveInterface は口の networks を書かないとき、実現先の networks のうち
-// 口の domain のもので埋める。
+// resolveInterface は interface の networks を書かないとき、実現先の networks のうち
+// interface の domain のもので埋める。
 func resolveInterface(t Target, itf Interface, domains map[string]string) Interface {
 	if len(itf.Networks) > 0 {
 		return itf
@@ -759,8 +761,8 @@ func resolveInterface(t Target, itf Interface, domains map[string]string) Interf
 	return itf
 }
 
-// covers は許可 b が許可 a のすべてを許すか（網の名前は domain をまたいで
-// 一意で、同じ domain の網の重なりは断るので、網は名前で比べてよい）。
+// covers は許可 b が許可 a のすべてを許すか（ネットワークの名前は domain をまたいで
+// 一意で、同じ domain のネットワークの重なりはエラーにするので、名前で比べてよい）。
 func covers(b, a Allow) bool {
 	if b.From != a.From || b.To != a.To {
 		return false
@@ -792,10 +794,11 @@ func covers(b, a Allow) bool {
 	return true
 }
 
-// Passes は実現先 t を許可 a が通るか: 境界なら from と to の両方がその網で
-// 違う網、ホストなら to がその網（口を書いたホストは from がその網でもよい。
-// 出る向きの許可）。domain をまたぐ許可・口を書かない実現先の既定の domain の
-// 外の網は Check が断るので、ここでは名前だけで見る。
+// Passes は実現先 t を許可 a が通るか: 境界なら from と to の両方がその実現先の
+// ネットワークで、互いに違うネットワーク。ホストなら to がその実現先のネットワーク
+// （interfaces を書いたホストは from がそのネットワークでもよい。出る向きの許可）。
+// domain をまたぐ許可と、interfaces を書かない実現先での既定の domain の外の
+// ネットワークは Check がエラーにするので、ここでは名前だけで見る。
 func Passes(t Target, a Allow) bool {
 	has := func(n string) bool {
 		for _, x := range t.Networks {
@@ -814,8 +817,8 @@ func Passes(t Target, a Allow) bool {
 	return false
 }
 
-// via は許可 a が実現先 t のどの口をどの向きに通るか（口を書かない実現先は空）。
-// 口の Networks は埋めてあること（resolveInterface）。
+// via は許可 a が実現先 t のどの interface をどの向きに通るか（interfaces を書かない
+// 実現先は空）。interface の Networks は埋めてあること（resolveInterface）。
 func via(t Target, a Allow) []Via {
 	var out []Via
 	for _, itf := range t.Interfaces {
@@ -848,20 +851,20 @@ func via(t Target, a Allow) []Via {
 // 展開
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Passing は実現先を通る 1 つの許可と、その from・to の網。
+// Passing は実現先を通る 1 つの許可と、その from・to のネットワーク。
 type Passing struct {
 	Allow Allow
 	From  Network
 	To    Network
-	// Domain は許可の domain（from と to の網の domain、#195）。
+	// Domain は許可の domain（from と to のネットワークの domain、#195）。
 	Domain string
-	// Via はその許可が通る口と向き（実現先が口を書いたときだけ）。境界は
-	// from の網の口で in・to の網の口で out、ホストは to が自分の網なら in・
-	// from が自分の網なら out。
+	// Via はその許可が通る interface と向き（実現先が interfaces を書いたときだけ）。
+	// 境界は from のネットワークの interface で in・to のネットワークの interface で
+	// out。ホストは to が自分のネットワークなら in・from が自分のネットワークなら out。
 	Via []Via
 }
 
-// Via は許可が通る 1 つの口と向き。
+// Via は許可が通る 1 つの interface と向き。
 type Via struct {
 	Interface string
 	Domain    string
@@ -869,15 +872,15 @@ type Via struct {
 	Direction string
 }
 
-// InterfaceAllows は 1 つの口を通る許可を向きごとに分けたもの。
+// InterfaceAllows は 1 つの interface を通る許可を向きごとに分けたもの。
 type InterfaceAllows struct {
 	Interface Interface
 	In        []Passing
 	Out       []Passing
 }
 
-// ByInterface は実現先の口ごとに、そこを通る許可を入りと出に分ける（口の
-// 宣言の順、許可は宣言の順）。口を書かない実現先は空。
+// ByInterface は実現先の interface ごとに、そこを通る許可を入りと出に分ける
+// （interface は宣言の順、許可も宣言の順）。interfaces を書かない実現先は空。
 func ByInterface(t Target, allows []Passing) []InterfaceAllows {
 	out := make([]InterfaceAllows, len(t.Interfaces))
 	pos := map[string]int{}
@@ -921,8 +924,9 @@ type Output struct {
 }
 
 // Realizer は許可を 1 つの実現先の宣言に変換する。allows はその実現先を通る
-// 許可だけで、宣言の順。t が口を書いたときは、各許可の Via に通る口と向きが
-// あり、t.Interfaces の Networks は埋めてある（口ごとの組は ByInterface）。
+// 許可だけで、宣言の順。t が interfaces を書いたときは、各許可の Via に通る
+// interface と向きがあり、t.Interfaces の Networks は埋めてある（interface ごとの
+// 組は ByInterface）。
 // 同じ入力には同じ出力を返す（決定的、§9.1 フェーズ 2）。
 type Realizer interface {
 	Realize(t Target, allows []Passing) (Output, error)
@@ -944,7 +948,7 @@ type Realization struct {
 // Result は検査と展開の結果。
 type Result struct {
 	Policy Policy
-	// Findings は warning の結果（error があれば Compile は断る）。
+	// Findings は warning の結果（error があれば Compile はエラーを返す）。
 	Findings     []Finding
 	Realizations []Realization
 }
@@ -961,7 +965,7 @@ func (r *Result) Resources() []Resource {
 	return out
 }
 
-// Compile は宣言を確かめ（error があれば全部を並べて断る）、実現先ごとに
+// Compile は宣言を確かめ（error があれば全部を並べてエラーを返す）、実現先ごとに
 // そこを通る許可を realizer に渡して展開する。
 func Compile(p Policy, realizers map[string]Realizer) (*Result, error) {
 	findings := Check(p)
@@ -978,7 +982,7 @@ func Compile(p Policy, realizers map[string]Realizer) (*Result, error) {
 		for i, f := range errs {
 			lines[i] = f.String()
 		}
-		return nil, fmt.Errorf("network_policy: %d 件の誤り:\n  - %s", len(errs), strings.Join(lines, "\n  - "))
+		return nil, fmt.Errorf("network_policy: %d 件のエラー:\n  - %s", len(errs), strings.Join(lines, "\n  - "))
 	}
 	res := &Result{Policy: p, Findings: warns}
 	domains := map[string]string{}
@@ -995,7 +999,7 @@ func Compile(p Policy, realizers map[string]Realizer) (*Result, error) {
 		}
 		r, ok := realizers[t.Realizer]
 		if !ok {
-			return nil, fmt.Errorf("%s: 実現先 %s: 知らない realizer %q（本体は %s。ほかは WithRealizer で足す）", t.Ref, t.Name, t.Realizer, DefaultRealizer)
+			return nil, fmt.Errorf("%s: 実現先 %s: 不明な realizer %q（組み込みは %s。ほかは WithRealizer で足す）", t.Ref, t.Name, t.Realizer, DefaultRealizer)
 		}
 		var passing []Passing
 		for _, a := range p.Allows {

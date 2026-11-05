@@ -77,7 +77,7 @@ func TestObserve(t *testing.T) {
 		t.Fatalf("%+v", o)
 	}
 	if o := observe(t, p, rec("www.other.org./A")); o.Availability != core.Unknown {
-		t.Fatalf("範囲の外: %+v", o)
+		t.Fatalf("Range の外: %+v", o)
 	}
 	l, err := p.List(context.Background(), zoneRange[0])
 	if err != nil || !l.Complete || len(l.IDs) != 2 {
@@ -147,7 +147,7 @@ www IN A 192.0.2.10
 	}
 }
 
-// ゾーンファイルが無い・壊れていれば Unknown（無いと読まない、不変条件 3）。
+// ゾーンファイルが無い・壊れていれば Unknown（Absent とは見なさない、不変条件 3）。
 func TestUnknown(t *testing.T) {
 	p, path := provider(t, "www IN A (\n")
 	if o := observe(t, p, rec("www.example.com./A")); o.Availability != core.Unknown {
@@ -158,11 +158,11 @@ func TestUnknown(t *testing.T) {
 		t.Fatalf("%+v", o)
 	}
 	if _, err := p.List(context.Background(), zoneRange[0]); err == nil {
-		t.Fatal("List が誤りを返さない")
+		t.Fatal("List がエラーを返さない")
 	}
 }
 
-// 不変条件 25・E-I7：相対名・SOA・正規形でない値・範囲の外・重なるゾーンは断る。
+// 不変条件 25・E-I7：相対名・SOA・正規形でない値・Range の外・重なるゾーンはエラーにする（reject）。
 func TestValidateRejects(t *testing.T) {
 	p, _ := provider(t, trialZone)
 	cases := []struct {
@@ -173,7 +173,7 @@ func TestValidateRejects(t *testing.T) {
 		{core.Resource{ID: rec("Www.example.com./A")}, "FQDN"},
 		{core.Resource{ID: rec("example.com./SOA")}, "SOA"},
 		{core.Resource{ID: rec("www.example.com./HINFO")}, "扱わない"},
-		{core.Resource{ID: rec("x.other.org./A")}, "範囲"},
+		{core.Resource{ID: rec("x.other.org./A")}, "Range"},
 		{core.Resource{ID: rec("c.example.com./CNAME"), Fields: core.Fields{"value": "www"}}, `正規形 "www.example.com."`},
 		{core.Resource{ID: rec("c.example.com./A"), Fields: core.Fields{"value": "1.1.1.1", "values": []any{"1.1.1.1"}}}, "一緒に"},
 	}

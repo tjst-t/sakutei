@@ -14,25 +14,25 @@
 
 package nftguard
 
-// protocol.go — 道具と provider の取り決め（build tag なし。provider の側も使う）。
+// protocol.go — 専用ツールと provider の取り決め（build tag なし。provider の側も使う）。
 
-// Name は道具の名前。
+// Name は専用ツールの名前。
 const Name = "sakutei-nft-guard"
 
-// Protocol は取り決めの版（status の protocol）。引数・出力の形を変えたら上げる。
+// Protocol は取り決めのバージョン（status の protocol）。引数・出力の形を変えたら上げる。
 const Protocol = 2
 
-// DefaultConfigPath は道具の設定ファイルの決まった場所。
+// DefaultConfigPath は専用ツールの設定ファイルの既定の場所。
 const DefaultConfigPath = "/etc/sakutei/nft-guard.json"
 
-// DefaultPath は道具を置く決まった場所（provider の hosts.<名前>.guard の既定）。
+// DefaultPath は専用ツールを置く既定の場所（provider の hosts.<名前>.guard の既定値）。
 const DefaultPath = "/usr/local/libexec/sakutei-nft-guard"
 
 // 終了コード。
 const (
 	ExitOK       = 0
-	ExitRefused  = 2  // 引数・入力を断った（何もしていない）
-	ExitConfig   = 3  // 設定・状態のディレクトリが使えない
+	ExitRefused  = 2  // 引数・入力を拒否した（何もしていない）
+	ExitConfig   = 3  // 設定ファイル・state ディレクトリが使えない
 	ExitInternal = 4  // それ以外
 	ExitNFT      = 10 // nft が 0 以外で終わった（標準エラーは nft のもの）
 )
@@ -46,7 +46,7 @@ type Status struct {
 	Rollbacks []Rollback `json:"rollbacks"`
 }
 
-// Rollback は 1 つの予約の様子。
+// Rollback は 1 つの予約の状態。
 type Rollback struct {
 	Token  string   `json:"token"`
 	State  string   `json:"state"` // armed・fired

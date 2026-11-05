@@ -76,19 +76,19 @@ func get(t *testing.T, url string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// E-H5・E-L4：/status は最後の周の結果（reconcile --json と同じ構造）、/plan は
-// plan --json と同じ構造、/graph は依存、/health は続いた誤りで 503。書き込みは断る。
+// E-H5・E-L4：/status は最後の cycle の結果（reconcile --json と同じ構造）、/plan は
+// plan --json と同じ構造、/graph は依存、/health は続いた誤りで 503。書き込みは拒否する。
 func TestEndpoints(t *testing.T) {
 	s, rec := newServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
 	if code, _ := get(t, ts.URL+"/status"); code != http.StatusServiceUnavailable {
-		t.Fatalf("周の前の /status: %d", code)
+		t.Fatalf("cycle の前の /status: %d", code)
 	}
 	r := plan.Result{Summary: map[plan.Op]int{plan.None: 1}, Changes: []plan.Change{{Resource: "p/rec/a", Op: plan.None}}}
 	s.Publish(daemon.Cycle{N: 1, Result: &r})
-	s.Publish(daemon.Cycle{N: 2, Err: io.EOF}) // 結果の無い周は前の結果を残す
+	s.Publish(daemon.Cycle{N: 2, Err: io.EOF}) // 結果の無い cycle は前の結果を残す
 	var want strings.Builder
 	r.WriteJSON(&want)
 	if code, body := get(t, ts.URL+"/status"); code != 200 || body != want.String() {
@@ -102,7 +102,7 @@ func TestEndpoints(t *testing.T) {
 	}
 
 	if code, _ := get(t, ts.URL+"/health"); code != http.StatusServiceUnavailable {
-		t.Fatalf("周の前の /health: %d", code)
+		t.Fatalf("cycle の前の /health: %d", code)
 	}
 	now := time.Date(2026, 11, 5, 22, 0, 0, 0, time.UTC)
 	rec.RecordCycle(now, "Record に書けない")
@@ -124,7 +124,7 @@ func TestEndpoints(t *testing.T) {
 	}
 }
 
-// /events は送り出しの列を SSE で流す。?since の続きから、後から積んだものも流す。
+// /events は outbox を SSE で流す。?since の続きから、後から積んだものも流す。
 func TestEventsSSE(t *testing.T) {
 	defer func(d time.Duration) { readapi.PollInterval = d }(readapi.PollInterval)
 	readapi.PollInterval = 10 * time.Millisecond
@@ -168,7 +168,7 @@ func TestEventsSSE(t *testing.T) {
 	}
 }
 
-// 遅い読み手で周を止めない：/plan を計算している間の 2 つ目の /plan は待たずに 503。
+// 遅い読み手で cycle を止めない：/plan を計算している間の 2 つ目の /plan は待たずに 503。
 // /status は /plan の計算を待たない。
 func TestSlowPlanDoesNotBlock(t *testing.T) {
 	s, _ := newServer(t)
@@ -238,7 +238,7 @@ func TestTokenAuth(t *testing.T) {
 	}
 }
 
-// N-L4：TLS とクライアント証明書。証明書の無いクライアントは断る。
+// N-L4：TLS とクライアント証明書。証明書の無いクライアントは拒否する。
 func TestClientCertificate(t *testing.T) {
 	dir := t.TempDir()
 	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

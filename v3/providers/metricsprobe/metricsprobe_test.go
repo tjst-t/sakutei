@@ -113,12 +113,12 @@ func TestContract(t *testing.T) {
 			Resources: []core.Resource{{ID: series(`mq/rabbitmq_queue_messages{queue="orders"}`)}},
 			Observed:  []core.ID{series(`mq/rabbitmq_queue_messages{queue="orders"}`), series("mq/rabbitmq_queue_messages"), series("mq/up")},
 			Faults: map[string]func(){
-				"接続を切る": func() { e.set("down") },
-				"5xx":   func() { e.set("5xx") },
-				"時間切れ":  func() { e.set("slow") },
-				"転送":    func() { e.set("redirect") },
-				"壊れた出力": func() { e.set("broken") },
-				"認証の失敗": func() { e.set("forbidden") },
+				"接続を切る":  func() { e.set("down") },
+				"5xx":    func() { e.set("5xx") },
+				"時間切れ":   func() { e.set("slow") },
+				"リダイレクト": func() { e.set("redirect") },
+				"壊れた出力":  func() { e.set("broken") },
+				"認証の失敗":  func() { e.set("forbidden") },
 			},
 			Secrets: []string{token},
 		}
@@ -186,7 +186,7 @@ func TestValidate(t *testing.T) {
 		{"probes": map[string]any{}},
 	} {
 		if _, err := metricsprobe.Module(s); err == nil {
-			t.Errorf("%v: 断らなかった", s)
+			t.Errorf("%v: エラーにならなかった", s)
 		}
 	}
 }

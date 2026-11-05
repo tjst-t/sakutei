@@ -26,8 +26,8 @@ import (
 )
 
 // Normalize は値を型 t の正規形にする。宣言と観測に同じ関数を使い、書き直しの
-// 無い Apply が差分を作らないようにする（E-I7・E-B7）。型に合わない値は誤り
-// （E-M3：Schema に合わない宣言は読み込みで断る）。
+// 無い Apply が差分を作らないようにする（E-I7・E-B7）。型に合わない値はエラー
+// （E-M3：Schema に合わない宣言は読み込み時にエラーにする）。
 func Normalize(t FieldType, v any) (any, error) {
 	switch t {
 	case String:
@@ -63,18 +63,18 @@ func Normalize(t FieldType, v any) (any, error) {
 			return out, nil
 		}
 	case Secret:
-		// 平文を宣言に書かせない：参照の形でなければ断り、値を誤りの文に出さない
+		// 平文を宣言に書かせない：参照の形でなければエラーにし、値をエラーの文に出さない
 		// （E-G2・不変条件 27）。
 		ref, ok := v.(string)
 		if m, isMap := v.(map[string]any); isMap && len(m) == 1 {
 			ref, ok = m["secret"].(string)
 		}
 		if !ok {
-			return nil, fmt.Errorf("秘密は {secret: \"<backend>:<在りか>\"} で書く")
+			return nil, fmt.Errorf("secret は {secret: \"<backend>:<path>\"} で書く")
 		}
 		r, err := ParseSecretRef(ref)
 		if err != nil {
-			return nil, fmt.Errorf("秘密は {secret: \"<backend>:<在りか>\"} で書く")
+			return nil, fmt.Errorf("secret は {secret: \"<backend>:<path>\"} で書く")
 		}
 		return r.String(), nil
 	case Map:

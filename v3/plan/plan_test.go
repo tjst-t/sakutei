@@ -99,19 +99,19 @@ func TestCompute(t *testing.T) {
 		got[strings.TrimPrefix(c.Resource, "dns/")] = c
 	}
 	wantOps := map[string]plan.Op{
-		"record/same":          plan.None,       // 宣言に無い項目（extra）は比べない（E-D7）。数は int と float を同じに、Set は順不同（E-B12）
+		"record/same":          plan.None,       // 宣言に無い field（extra）は比べない（E-D7）。数は int と float を同じに、Set は順不同（E-B12）
 		"record/changed":       plan.Update,     // List は順序ごと比べる
 		"record/moved":         plan.Update,     // identity の変更は作り直し（E-A10）
-		"record/missing-field": plan.Update,     // 観測に項目が無い
+		"record/missing-field": plan.Update,     // 観測に field が無い
 		"record/new":           plan.Create,     // 置いていない ID は Absent
-		"record/gone":          plan.Delete,     // ensure: absent で在る（E-D3）
-		"record/already-gone":  plan.None,       // ensure: absent で無い
-		"record/busy":          plan.Converging, // 作業中は消すも重ねもしない（E-A4）
+		"record/gone":          plan.Delete,     // ensure: absent だが Present（E-D3）
+		"record/already-gone":  plan.None,       // ensure: absent で Absent
+		"record/busy":          plan.Converging, // Converging は消すも重ねもしない（E-A4）
 		"record/dark":          plan.Unknown,    // 届かない（E-K1）
 		"record/silent":        plan.Unknown,    // 答えなかった ID は Absent と読まない（不変条件 3）
 		"record/badtype":       plan.Unknown,    // 定義に合わない出力（E-B11）
 		"record/dur":           plan.None,       // duration は正規形で比べる
-		"serial/s":             plan.Drift,      // 観測だけの種類は知らせるだけ（E-B7）
+		"serial/s":             plan.Drift,      // 観測だけの type は通知するだけ（E-B7）
 		"serial/t":             plan.Drift,
 	}
 	for name, want := range wantOps {
@@ -128,14 +128,14 @@ func TestCompute(t *testing.T) {
 	if f := got["record/missing-field"].Fields; len(f) != 1 || !f[0].Missing || f[0].Observed != nil {
 		t.Errorf("missing-field: %+v", f)
 	}
-	// 分からないものに項目の値を作らない（不変条件 29）。
+	// Unknown のものに field の値を作らない（不変条件 29）。
 	if c := got["record/dark"]; c.Fields != nil || c.Note != "届かない" {
 		t.Errorf("dark: %+v", c)
 	}
 	if r.Summary[plan.Update] != 3 || r.Summary[plan.Unknown] != 3 {
 		t.Errorf("summary: %v", r.Summary)
 	}
-	// provider ごとに 1 回だけ Observe を呼び（E-D8）、書き込みの口は呼ばない（不変条件 30）。
+	// provider ごとに 1 回だけ Observe を呼び（E-D8）、書き込みの API は呼ばない（不変条件 30）。
 	if c := p.Calls(); c != (fake.Calls{Observe: 1}) {
 		t.Errorf("calls: %+v", c)
 	}
@@ -151,7 +151,7 @@ func TestComputeObserveError(t *testing.T) {
 	}
 }
 
-// 観測を周をまたいで持ち越さない：plan を 2 回すれば 2 回観測し、その間の現実の
+// 観測を cycle をまたいで持ち越さない：plan を 2 回すれば 2 回観測し、その間の現実の
 // 変化を拾う（不変条件 1）。
 func TestComputeObservesEveryTime(t *testing.T) {
 	p := fake.New(schema)
@@ -211,7 +211,7 @@ func TestWrite(t *testing.T) {
 	}
 }
 
-// E-E2：Digest の項目は宣言を sha256 にして比べ、平文を出さない。
+// E-E2：Digest の field は宣言を sha256 にして比べ、平文を出さない。
 func TestCompareDigest(t *testing.T) {
 	ks := core.KindSchema{Fields: map[string]core.FieldSpec{"content": {Type: core.String, Digest: true}}}
 	r := core.Resource{ID: core.ID{Type: "h/file", Name: "a"}, Fields: core.Fields{"content": "secret=1\n"}}

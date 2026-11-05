@@ -29,13 +29,13 @@ const (
 	TxnPrepared   TxnState = "prepared"
 	TxnCommitted  TxnState = "committed"
 	TxnRolledBack TxnState = "rolled_back"
-	// TxnExpired は Commit も Rollback も無いまま相手の時間切れで戻った
+	// TxnExpired は Commit も Rollback も無いまま相手のタイムアウトで戻った
 	// （Expire で起こす、不変条件 17）。
 	TxnExpired TxnState = "expired"
 )
 
-// Txn は偽の 2 段の Apply（E-B3・E-P1）。Prepare は変更を当て、そのときの全部の
-// 観測の写しを持つ。Rollback と時間切れは写しに戻す。
+// Txn は偽の two-phase Apply（E-B3・E-P1）。Prepare は変更を Apply し、そのときの
+// 全部の観測の写しを持つ。Rollback とタイムアウトは写しに戻す。
 type Txn struct {
 	p       *Provider
 	Changes []core.Change
@@ -55,7 +55,7 @@ func (p *Provider) FailPrepare(id core.ID, err error) {
 	p.prepareErr[id] = err
 }
 
-// OnPrepare は Prepare で変更を当てたあとに（ロックの外で）f を呼ぶ。変更が別の
+// OnPrepare は Prepare で変更を Apply したあとに（ロックの外で）f を呼ぶ。変更が別の
 // ものを壊す（管理の経路を締め出す）注入に使う。f の変えたものも Rollback で戻る。
 func (p *Provider) OnPrepare(f func(changes []core.Change)) {
 	p.mu.Lock()
@@ -70,7 +70,7 @@ func (p *Provider) Txns() []*Txn {
 	return append([]*Txn(nil), p.txns...)
 }
 
-// Prepare は変更を当て、戻すための写しを持つ Txn を返す。
+// Prepare は変更を Apply し、戻すための写しを持つ Txn を返す。
 func (p *Provider) Prepare(_ context.Context, _ core.WriteContext, changes []core.Change, opt core.TxnOptions) (core.Txn, error) {
 	p.mu.Lock()
 	for _, ch := range changes {
@@ -126,7 +126,7 @@ func (t *Txn) Commit(context.Context) error {
 	t.p.mu.Lock()
 	defer t.p.mu.Unlock()
 	if t.State != TxnPrepared {
-		return errors.New("準備した Txn でない（" + string(t.State) + "）")
+		return errors.New("Prepare 済みの Txn でない（" + string(t.State) + "）")
 	}
 	t.State = TxnCommitted
 	return nil
@@ -137,7 +137,7 @@ func (t *Txn) Rollback(context.Context) error {
 	return t.restore(TxnRolledBack)
 }
 
-// Expire は Commit の無いまま相手の時間切れが来たことにして写しに戻す
+// Expire は Commit の無いまま相手のタイムアウトが来たことにして写しに戻す
 // （不変条件 17：Commit を呼ばない限り相手の側で戻る）。確定・戻したあとなら何もしない。
 func (t *Txn) Expire() error { return t.restore(TxnExpired) }
 

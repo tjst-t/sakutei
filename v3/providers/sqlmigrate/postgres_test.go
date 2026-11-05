@@ -40,10 +40,10 @@ const (
 
 var ordersID = core.ID{Type: "db/database", Name: "orders"}
 
-// fakePG は偽の psql：sqlmigrate が流す台本（版の問い合わせと 1 本ごとの
-// BEGIN … COMMIT）だけを解釈し、schema_migrations の版をメモリに持つ。本文に
-// FAIL_HERE があれば SQL の誤り、CONCURRENTLY があれば 25001 で失敗する
-// （トランザクションは巻き戻る＝版は変わらない）。
+// fakePG は偽の psql：sqlmigrate が流すスクリプト（バージョンの問い合わせと 1 本ごとの
+// BEGIN … COMMIT）だけを解釈し、schema_migrations のバージョンをメモリに持つ。本文に
+// FAIL_HERE があれば SQL のエラー、CONCURRENTLY があれば 25001 で失敗する
+// （トランザクションは巻き戻る＝バージョンは変わらない）。
 type fakePG struct {
 	mu          sync.Mutex
 	version     int64
@@ -58,7 +58,7 @@ type fakePG struct {
 	calls       []invocation
 	users       []string      // 呼び出しごとの PGUSER
 	passwords   []string      // passfile に書かれていたパスワード
-	beforeStep  func(*fakePG) // 1 本の台本を解釈する前に呼ぶ（ほかの処理の真似）
+	beforeStep  func(*fakePG) // 1 本のスクリプトを解釈する前に呼ぶ（ほかの処理の真似）
 }
 
 var (
@@ -143,7 +143,7 @@ func (f *fakePG) run(_ context.Context, inv invocation) (result, error) {
 	return sqlErr("42601", "unexpected script")
 }
 
-// staticBackend は秘密の保管先の偽物。取り出した回数を数える（E-G5）。
+// staticBackend は secret backend の偽物。取り出した回数を数える（E-G5）。
 type staticBackend struct {
 	mu       sync.Mutex
 	values   map[string]string
@@ -253,22 +253,22 @@ func TestPGContract(t *testing.T) {
 	})
 }
 
-// 観測は observe の資格（ファイル）、invoke は write の資格（秘密の参照、書き込みの
+// 観測は observe の credential（ファイル）、invoke は write の credential（secret の参照、書き込みの
 // 文脈でだけ取り出す）。接続の設定は環境変数で、パスワードは passfile だけで渡る
 // （E-G2・E-G5・N-G3）。
 func TestPGUpAndDownWithCredentials(t *testing.T) {
 	f := newPG(t, pgMigrations)
 	if v := f.version(t); v != 0 {
-		t.Fatalf("初めの版 %d", v)
+		t.Fatalf("初めのバージョン %d", v)
 	}
 	if f.secrets.resolved != 0 {
-		t.Fatal("観測で書き込み用の秘密を取り出した")
+		t.Fatal("観測で書き込み用の secret を取り出した")
 	}
 	if err := f.invoke(OpMigrate, core.Fields{"version": "3"}); err != nil {
 		t.Fatal(err)
 	}
 	if v := f.version(t); v != 3 || len(f.fake.committed) != 3 {
-		t.Fatalf("版 %d・確定 %d（want 3・3）", v, len(f.fake.committed))
+		t.Fatalf("バージョン %d・確定 %d（want 3・3）", v, len(f.fake.committed))
 	}
 	if err := f.invoke(OpMigrate, core.Fields{"version": "1"}); err != nil {
 		t.Fatal(err)
@@ -303,11 +303,11 @@ func TestPGUpAndDownWithCredentials(t *testing.T) {
 			t.Errorf("%d 回目（%s）の passfile のパスワードが違う", i, f.fake.users[i])
 		}
 		if c.Stdin != pgVersionQuery && f.fake.users[i] != "sakutei_migrate" {
-			t.Errorf("書く台本を %s で流した", f.fake.users[i])
+			t.Errorf("書くスクリプトを %s で流した", f.fake.users[i])
 		}
 	}
 	if f.secrets.resolved == 0 {
-		t.Fatal("invoke で書き込み用の秘密を取り出していない")
+		t.Fatal("invoke で書き込み用の secret を取り出していない")
 	}
 	ents, _ := os.ReadDir(os.TempDir())
 	for _, e := range ents {
@@ -317,8 +317,8 @@ func TestPGUpAndDownWithCredentials(t *testing.T) {
 	}
 }
 
-// 書き込み用の資格を取り出せない（秘密が無い）なら、何も送らず ErrNotSent（E-G5）。
-// 観測は書き込み用の資格が無くても読める。
+// 書き込み用の credential を取り出せない（secret が無い）なら、何も送らず ErrNotSent（E-G5）。
+// 観測は書き込み用の credential が無くても読める。
 func TestPGWriteCredentialMissing(t *testing.T) {
 	f := newPG(t, pgMigrations)
 	f.secrets.values = map[string]string{}
@@ -329,7 +329,7 @@ func TestPGWriteCredentialMissing(t *testing.T) {
 		t.Fatalf("%v（want ErrNotSent）", err)
 	}
 	if err := f.p.Invoke(context.Background(), core.NewWriteContext(nil), ordersID, OpMigrate, core.Fields{"version": "3"}); !errors.Is(err, core.ErrNotSent) {
-		t.Fatalf("秘密の取り出し先が無いのに %v", err)
+		t.Fatalf("secret の取り出し先が無いのに %v", err)
 	}
 	if len(f.fake.committed) != 0 {
 		t.Fatal("流した")
@@ -342,7 +342,7 @@ func TestPGScript(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS schema_migrations", "<> 1 THEN",
 		"ALTER TABLE users ADD COLUMN email text\n;\nINSERT INTO schema_migrations (version) VALUES (2);\n" + versionMark + "COMMIT;\n"} {
 		if !strings.Contains(s, want) {
-			t.Errorf("up の台本に %q が無い:\n%s", want, s)
+			t.Errorf("up のスクリプトに %q が無い:\n%s", want, s)
 		}
 	}
 	if strings.Count(strings.SplitN(s, "ALTER", 2)[0], "\n") != 0 {
@@ -350,25 +350,25 @@ func TestPGScript(t *testing.T) {
 	}
 	d := pgDownScript(2, "ALTER TABLE users DROP COLUMN email;", 0)
 	if !strings.Contains(d, "lock_timeout = '1ms'") || !strings.Contains(d, "<> 2 THEN") || !strings.Contains(d, "DELETE FROM schema_migrations WHERE version = 2;\n"+versionMark+"COMMIT;\n") || strings.Contains(d, "CREATE TABLE") {
-		t.Errorf("down の台本:\n%s", d)
+		t.Errorf("down のスクリプト:\n%s", d)
 	}
 }
 
 func TestPGFailedMigration(t *testing.T) {
 	for _, c := range []struct{ body, state string }{
 		{"CREATE TABLE half (x int);\nINSERT INTO nope VALUES (1); -- FAIL_HERE\n", "42P01"},
-		// トランザクションに入れられない文は特別扱いせず、失敗として知らせる。
+		// トランザクションに入れられない文は特別扱いせず、失敗として報告する。
 		{"CREATE INDEX CONCURRENTLY users_name ON users (name);\n", "25001"},
 	} {
 		files := copyFiles(pgMigrations)
 		files["0002_email.up.sql"] = c.body
 		f := newPG(t, files)
 		err := f.invoke(OpMigrate, core.Fields{"version": "3"})
-		if err == nil || errors.Is(err, core.ErrNotSent) || !strings.Contains(err.Error(), "0002_email.up.sql") || !strings.Contains(err.Error(), "版 1") || !strings.Contains(err.Error(), c.state) {
-			t.Errorf("%s: %v（ファイル・残った版・SQLSTATE が要る）", c.state, err)
+		if err == nil || errors.Is(err, core.ErrNotSent) || !strings.Contains(err.Error(), "0002_email.up.sql") || !strings.Contains(err.Error(), "バージョン 1") || !strings.Contains(err.Error(), c.state) {
+			t.Errorf("%s: %v（ファイル・残ったバージョン・SQLSTATE が要る）", c.state, err)
 		}
 		if v := f.version(t); v != 1 {
-			t.Errorf("%s: 版 %d（want 1）", c.state, v)
+			t.Errorf("%s: バージョン %d（want 1）", c.state, v)
 		}
 	}
 }
@@ -381,19 +381,19 @@ func TestPGRollbackOnFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := f.invoke(OpMigrate, core.Fields{"version": "3", "rollback_on_fail": "true"})
-	if err == nil || errors.Is(err, core.ErrNotSent) || !strings.Contains(err.Error(), "版 1 に戻した") || !strings.Contains(err.Error(), "42P01") {
+	if err == nil || errors.Is(err, core.ErrNotSent) || !strings.Contains(err.Error(), "バージョン 1 に戻した") || !strings.Contains(err.Error(), "42P01") {
 		t.Fatalf("%v", err)
 	}
 	if v := f.version(t); v != 1 {
-		t.Fatalf("版 %d（want 1）", v)
+		t.Fatalf("バージョン %d（want 1）", v)
 	}
 	if got := f.fake.committed; len(got) != 3 || !strings.Contains(got[2], "DROP COLUMN email") {
 		t.Fatalf("確定 %q（want 0001・0002・0002 の down）", got)
 	}
 }
 
-// ほかの処理が先に版を動かしていたら、鍵のあとの確かめで分かり何も流さない。
-// 読み直して残りを流す（同じ版を二度流さない、E-F2）。
+// ほかの処理が先にバージョンを動かしていたら、ロックのあとの確かめで分かり何も流さない。
+// 読み直して残りを流す（同じバージョンを二度流さない、E-F2）。
 func TestPGAnotherRunnerMovedTheVersion(t *testing.T) {
 	f := newPG(t, pgMigrations)
 	f.fake.beforeStep = func(fk *fakePG) { fk.version, fk.hasTable, fk.beforeStep = 1, true, nil }
@@ -403,7 +403,7 @@ func TestPGAnotherRunnerMovedTheVersion(t *testing.T) {
 	if got := f.fake.committed; len(got) != 2 || !strings.Contains(got[0], "ADD COLUMN email") {
 		t.Fatalf("確定 %q（want 0002 と 0003 だけ）", got)
 	}
-	// ほかの処理が宣言の版まで済ませていたら、何も流さずに済む。
+	// ほかの処理が宣言のバージョンまで済ませていたら、何も流さずに済む。
 	f = newPG(t, pgMigrations)
 	f.fake.beforeStep = func(fk *fakePG) { fk.version, fk.hasTable, fk.beforeStep = 3, true, nil }
 	if err := f.invoke(OpMigrate, core.Fields{"version": "3"}); err != nil || len(f.fake.committed) != 0 {
@@ -417,14 +417,14 @@ func TestPGAnotherRunnerMovedTheVersion(t *testing.T) {
 	}
 }
 
-// 鍵を待ちきれない・つながらないのは、まだ 1 本も確定していなければ ErrNotSent。
-// 1 本でも確定したあと・接続が途中で切れた（確定したか分からない）は止める誤り
+// ロックを待ちきれない・つながらないのは、まだ 1 本も確定していなければ ErrNotSent。
+// 1 本でも確定したあと・接続が途中で切れた（確定したか分からない）は止めるエラー
 // （不変条件 16、E-A2）。
 func TestPGNotSent(t *testing.T) {
 	f := newPG(t, pgMigrations)
 	f.fake.locked = true
 	if err := f.invoke(OpMigrate, core.Fields{"version": "3"}); !errors.Is(err, core.ErrNotSent) || !strings.Contains(err.Error(), "55P03") {
-		t.Fatalf("鍵: %v", err)
+		t.Fatalf("ロック: %v", err)
 	}
 	f.fake.locked = false
 	n := 0
@@ -434,8 +434,8 @@ func TestPGNotSent(t *testing.T) {
 			fk.locked = true
 		}
 	}
-	if err := f.invoke(OpMigrate, core.Fields{"version": "3"}); err == nil || errors.Is(err, core.ErrNotSent) || !strings.Contains(err.Error(), "版 1 まで流した") {
-		t.Fatalf("1 本確定したあとの鍵: %v", err)
+	if err := f.invoke(OpMigrate, core.Fields{"version": "3"}); err == nil || errors.Is(err, core.ErrNotSent) || !strings.Contains(err.Error(), "バージョン 1 まで流した") {
+		t.Fatalf("1 本確定したあとのロック: %v", err)
 	}
 	f = newPG(t, pgMigrations)
 	f.fake.lostAfter = true
@@ -458,7 +458,7 @@ func TestPGMetaCommandRefused(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	if len(f.fake.committed) != 0 {
-		t.Fatalf("断る前に流した %q（流す前に全部の SQL を読む）", f.fake.committed)
+		t.Fatalf("拒否する前に流した %q（流す前に全部の SQL を読む）", f.fake.committed)
 	}
 }
 
@@ -476,8 +476,8 @@ func TestPsqlMetaCommand(t *testing.T) {
 		{"SELECT $1, a$b FROM t;\n\\q", 2}, // $1 は引数、a$b は識別子
 		{"SELECT 1;\n\\i other.sql", 2},
 		{"SELECT 1; \\gexec", 1},
-		{"SELECT 1; -- \\! rm\n", 1},     // コメントの中も断る
-		{"/* x\n\\! rm */ SELECT 1;", 2}, // 入れ子のコメントの中も断る
+		{"SELECT 1; -- \\! rm\n", 1},     // コメントの中も拒否する
+		{"/* x\n\\! rm */ SELECT 1;", 2}, // 入れ子のコメントの中も拒否する
 		{"SELECT 'never closed \\", 0},
 		{"SELECT xE'\\';\n\\q", 2}, // xE は識別子なので E'' ではない：'\' で閉じ、次の行の \q はメタコマンド
 	} {

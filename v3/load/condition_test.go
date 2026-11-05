@@ -47,7 +47,7 @@ resources:
 }
 
 // 不変条件 25：式の形の誤り・知らない参照・when の無い on_unknown・when が作る
-// 循環は読み込みで断る（E-M3・E-J7）。
+// 循環は読み込み時にエラーにする（E-M3・E-J7）。
 func TestLoadRejectsConditions(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -58,16 +58,16 @@ func TestLoadRejectsConditions(t *testing.T) {
 			[]string{"a.yaml:2", "when", "項が要る"}},
 		{"it の外", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'it.value == 1'}]}\n",
 			[]string{"it は all・any・count の中"}},
-		{"知らない種類", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'observe(dns/zone/x).v == 1'}]}\n",
-			[]string{"dns/record/a", `種類 "zone" が無い`}},
-		{"知らない項目", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'observe(dns/record/x).vale == 1'}]}\n",
-			[]string{`項目 "vale" が無い`}},
-		{"量化の知らない項目", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'all(dns/record, it.vale == 1)'}]}\n",
-			[]string{`項目 "vale" が無い`}},
-		{"desired の知らない項目", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'desired.vale == 1'}]}\n",
-			[]string{`desired に項目 "vale" が無い`}},
-		{"登録の無い確かめ", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'check(bgp-up)'}]}\n",
-			[]string{"check(bgp-up)", "登録した確かめに無い"}},
+		{"知らない type", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'observe(dns/zone/x).v == 1'}]}\n",
+			[]string{"dns/record/a", `"zone" が無い`}},
+		{"知らない field", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'observe(dns/record/x).vale == 1'}]}\n",
+			[]string{`"vale" が無い`}},
+		{"quantifier の知らない field", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'all(dns/record, it.vale == 1)'}]}\n",
+			[]string{`"vale" が無い`}},
+		{"desired の知らない field", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'desired.vale == 1'}]}\n",
+			[]string{"desired に", `"vale" が無い`}},
+		{"登録の無い check", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'check(bgp-up)'}]}\n",
+			[]string{"check(bgp-up)"}},
 		{"on_unknown だけ", "resources:\n  - {type: dns/record, id: a, depends_on: [{id: dns/record/b, on_unknown: block}]}\n",
 			[]string{"on_unknown は when と一緒に書く"}},
 		{"on_unknown の値", "resources:\n  - {type: dns/record, id: a, depends_on: [{when: 'present(dns/record/b)', on_unknown: skip}]}\n",
@@ -87,7 +87,7 @@ func TestLoadRejectsConditions(t *testing.T) {
 	}
 }
 
-// 量化が自分を選んでも循環にしない（集合の条件は辺にしない）。
+// quantifier が自分を選んでも循環にしない（集合の条件は辺にしない）。
 func TestLoadQuantifierIsNotEdge(t *testing.T) {
 	_, err := run(t, baseConfig, map[string]string{"a.yaml": `
 resources:

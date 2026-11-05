@@ -17,10 +17,10 @@ package netconf
 // framing.go — NETCONF のメッセージの区切り（RFC 6242 §4）。
 //
 //   - 1.0（end-of-message）: メッセージのあとに "]]>]]>"。hello は常にこれ。
-//   - 1.1（chunked）: "\n#<大きさ>\n<中身>" をいくつか並べ、"\n##\n" で終わる。
+//   - 1.1（chunked）: "\n#<サイズ>\n<中身>" をいくつか並べ、"\n##\n" で終わる。
 //     両方が hello で base:1.1 を出したときだけ、hello の後から使う。
 //
-// 読むメッセージの大きさは MaxMessageBytes まで（越えれば error。機器が
+// 読むメッセージのサイズは MaxMessageBytes まで（越えれば error。機器が
 // 際限なく返しても手元のメモリを使い切らない）。
 
 import (
@@ -32,7 +32,7 @@ import (
 	"strconv"
 )
 
-// MaxMessageBytes は 1 つのメッセージの大きさの上限。
+// MaxMessageBytes は 1 つのメッセージのサイズの上限。
 const MaxMessageBytes = 32 << 20
 
 // endOfMessage は 1.0 の区切り。
@@ -59,7 +59,7 @@ func (f Framing) String() string {
 // 切れた）ことを表す。
 var ErrFraming = errors.New("netconf: malformed message framing")
 
-// Framer は 1 本の流れの上でメッセージを読み書きする。
+// Framer は 1 本のストリームの上でメッセージを読み書きする。
 type Framer struct {
 	r       *bufio.Reader
 	w       io.Writer

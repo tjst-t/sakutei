@@ -22,14 +22,14 @@ package postgresql
 //     引用符を含む名前も、書いたとおりの 1 つの識別子になる）。
 //   - 文字列は E'...' で囲み、中の ' は ''、\ は \\ にする。standard_conforming_strings
 //     の設定に関わらず同じ意味になる。
-//   - NUL（0 バイト）は PostgreSQL の名前・文字列に入らないので、誤りにする。
+//   - NUL（0 バイト）は PostgreSQL の名前・文字列に入らないので、エラーにする。
 
 import (
 	"errors"
 	"strings"
 )
 
-// errNUL は名前・値に NUL が含まれるときの誤り（値は文に出さない）。
+// errNUL は名前・値に NUL が含まれるときのエラー（値はメッセージに出さない）。
 var errNUL = errors.New("名前・値に NUL がある")
 
 // QuoteIdent は s を SQL の識別子として quote する。
@@ -49,7 +49,7 @@ func QuoteLiteral(s string) (string, error) {
 	return `E'` + r.Replace(s) + `'`, nil
 }
 
-// sqlBuilder は文を組み立てる。quote の誤りは最初の 1 つだけを持つ（呼ぶ側が
+// sqlBuilder は SQL 文を組み立てる。quote のエラーは最初の 1 つだけを持つ（呼ぶ側が
 // 毎回確かめなくてよいように）。
 type sqlBuilder struct {
 	b   strings.Builder

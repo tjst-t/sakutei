@@ -31,13 +31,13 @@ import (
 // CommandName はモジュールの名前。
 const CommandName = "command"
 
-// Command は外のコマンド（パスワード管理の CLI・現場のスクリプト）に問う保管先：
+// Command は外部コマンド（パスワード管理の CLI・現場のスクリプト）に問い合わせる secret backend。
 //
-//	<command> generation <在りか>         → 世代を正の整数で出す（値を世代と取り違えて出さないよう、数だけ）
-//	<command> value <在りか> <世代>       → 値を出す（末尾の改行 1 つは落とす）
+//	<command> generation <パス>         → 世代を正の整数で出す（値を世代と取り違えて出さないよう、数だけ）
+//	<command> value <パス> <世代>       → 値を出す（末尾の改行 1 つは落とす）
 //
-// 終了コードが 0 でなければ誤り。stdout は誤りの文に引かない。stderr は generation
-// のときだけ 1 行に縮めて引く（value の出力はどの文にも出さない）。
+// 終了コードが 0 でなければエラー。stdout はエラーメッセージに引用しない。stderr は
+// generation のときだけ 1 行に縮めて引用する（value の出力はどのメッセージにも出さない）。
 type Command struct {
 	path    string
 	timeout time.Duration
@@ -46,7 +46,7 @@ type Command struct {
 // CommandModule は secret_backends の module: command。settings：
 //
 //	command   実行ファイルのパス（必須）
-//	timeout   呼び出しごとの上限（既定 10s）
+//	timeout   呼び出しごとのタイムアウト（既定 10s）
 func CommandModule(settings map[string]any) (core.SecretBackend, error) {
 	const kind = CommandName
 	if err := checkKeys(kind, settings, "command", "timeout"); err != nil {
@@ -69,7 +69,7 @@ func CommandModule(settings map[string]any) (core.SecretBackend, error) {
 	return c, nil
 }
 
-// Generation は "<command> generation <在りか>" を動かす。
+// Generation は "<command> generation <パス>" を実行する。
 func (c *Command) Generation(ctx context.Context, path string) (string, error) {
 	out, stderr, err := c.run(ctx, "generation", path)
 	if err != nil {
@@ -85,7 +85,7 @@ func (c *Command) Generation(ctx context.Context, path string) (string, error) {
 	return strconv.FormatInt(n, 10), nil
 }
 
-// Resolve は "<command> value <在りか> <世代>" を動かす。
+// Resolve は "<command> value <パス> <世代>" を実行する。
 func (c *Command) Resolve(ctx context.Context, path, gen string) (string, error) {
 	out, _, err := c.run(ctx, "value", path, gen)
 	if err != nil {
@@ -102,11 +102,11 @@ func (c *Command) run(ctx context.Context, args ...string) (string, string, erro
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limited{w: &stdout, n: 1 << 20}
 	cmd.Stderr = &limited{w: &stderr, n: 4 << 10}
-	// stdout を持ったまま残る子が時間切れのあとまで生きないように。
+	// stdout を握ったままの子プロセスがタイムアウトのあとまで残らないようにする。
 	cmd.WaitDelay = time.Second
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return "", "", fmt.Errorf("%s で時間切れ", c.timeout)
+		return "", "", fmt.Errorf("%s でタイムアウト", c.timeout)
 	}
 	if err != nil {
 		var ee *exec.ExitError

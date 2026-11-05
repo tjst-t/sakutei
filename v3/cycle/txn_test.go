@@ -29,7 +29,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/fake"
 )
 
-// txnHarness は 2 段の Apply の筋書き：chain を変えると管理の経路（probe）が
+// txnHarness は two-phase Apply の筋書き：chain を変えると管理の経路（probe）が
 // 塞がるかもしれない。sleep は時計を進める（E-R4）。
 func txnHarness(t *testing.T) *harness {
 	h := newHarness(t)
@@ -55,7 +55,7 @@ func before(expr string) core.Confirm {
 
 const probeUp = `observe(p/rec/probe).value == "up"`
 
-// lockout は Prepare で当てた chain が管理の経路を塞ぐ（probe を down にする）注入。
+// lockout は Prepare で Apply した chain が管理の経路を塞ぐ（probe を down にする）注入。
 func lockout(h *harness, only core.ID) {
 	h.p.OnPrepare(func(changes []core.Change) {
 		for _, ch := range changes {
@@ -71,7 +71,7 @@ func value(h *harness, id core.ID) any {
 	return obs[id].Fields["value"]
 }
 
-// 確かめが通れば確定する（E-B3）。
+// check が通れば Commit する（E-B3）。
 func TestTxnCommitsWhenConfirmed(t *testing.T) {
 	h := txnHarness(t)
 	h.p.Set(rid("rec", "chain"), present(core.Fields{"value": "old"}))
@@ -86,11 +86,11 @@ func TestTxnCommitsWhenConfirmed(t *testing.T) {
 		t.Fatalf("%+v exit=%d", c, cli.ExitCode(r))
 	}
 	if h.p.Calls().Apply != 0 {
-		t.Fatal("2 段の宣言に Apply を呼んだ")
+		t.Fatal("two-phase の宣言に Apply を呼んだ")
 	}
 }
 
-// 不変条件 17：確かめが通らなければ確定せず戻し、同じ宣言のまま当て直さない。
+// 不変条件 17：check が通らなければ Commit せずに戻し、同じ宣言のまま Apply し直さない。
 func TestTxnRollsBackWhenNotConfirmed(t *testing.T) {
 	h := txnHarness(t)
 	h.p.Set(rid("rec", "chain"), present(core.Fields{"value": "old"}))
@@ -108,28 +108,28 @@ func TestTxnRollsBackWhenNotConfirmed(t *testing.T) {
 	if v := value(h, rid("rec", "probe")); v != "up" {
 		t.Fatalf("probe が戻っていない: %v", v)
 	}
-	// 確かめは timeout の半分まで。
+	// check は timeout の半分まで。
 	if d := h.clock.t.Sub(start); d < 5*time.Second || d > 7*time.Second {
-		t.Fatalf("確かめた長さ %s", d)
+		t.Fatalf("check した長さ %s", d)
 	}
 	c := find(r, rid("rec", "chain"))
 	if !c.RolledBack || c.Outcome != plan.OutcomeError || cli.ExitCode(r) != cli.ExitHalted {
 		t.Fatalf("%+v exit=%d", c, cli.ExitCode(r))
 	}
-	// 次の周は当て直さない。
+	// 次の cycle は Apply し直さない。
 	r = h.run()
 	if len(h.p.Txns()) != 1 {
-		t.Fatalf("同じ宣言で当て直した: %+v", h.p.Txns())
+		t.Fatalf("同じ宣言で Apply し直した: %+v", h.p.Txns())
 	}
 	if c := find(r, rid("rec", "chain")); c.Action != plan.ActHalt {
-		t.Fatalf("2 周目: %+v", c)
+		t.Fatalf("2 cycle 目: %+v", c)
 	}
-	// 宣言を直せば当てる。
+	// 宣言を直せば Apply する。
 	h.p.OnPrepare(nil)
 	h.in.Resources = []core.Resource{txnDecl("chain", "new2", "", after(probeUp))}
 	r = h.run()
 	if got := h.p.Txns(); len(got) != 2 || got[1].State != fake.TxnCommitted || cli.ExitCode(r) != cli.ExitOK {
-		t.Fatalf("直した周: %+v exit=%d", got, cli.ExitCode(r))
+		t.Fatalf("直した cycle: %+v exit=%d", got, cli.ExitCode(r))
 	}
 }
 
@@ -151,7 +151,7 @@ func TestTxnExpiresWithoutCommit(t *testing.T) {
 	}
 }
 
-// group は全部で確かめが通ったときだけ確定し、1 つでも落ちればどれも確定しない
+// group は全部で check が通ったときだけ Commit し、1 つでも落ちればどれも Commit しない
 // （E-B9・N-B3）。
 func TestTxnGroupAllOrNothing(t *testing.T) {
 	h := txnHarness(t)
@@ -160,7 +160,7 @@ func TestTxnGroupAllOrNothing(t *testing.T) {
 	a := txnDecl("a", "new", "wave1")
 	b := txnDecl("b", "new", "wave1", after(probeUp))
 	h.in.Resources = []core.Resource{a, b}
-	lockout(h, a.ID) // a が塞ぎ、確かめるのは b
+	lockout(h, a.ID) // a が塞ぎ、check するのは b
 	r := h.run()
 	if got := h.p.Txns(); len(got) != 1 || got[0].State != fake.TxnRolledBack || len(got[0].Changes) != 2 {
 		t.Fatalf("txns: %+v", got)
@@ -174,7 +174,7 @@ func TestTxnGroupAllOrNothing(t *testing.T) {
 		}
 	}
 
-	// 1 つが準備できなければ、ほかも確定しない。
+	// 1 つが Prepare できなければ、ほかも Commit しない。
 	h2 := txnHarness(t)
 	h2.in.Resources = []core.Resource{txnDecl("a", "new", "w"), txnDecl("b", "new", "w")}
 	h2.p.FailPrepare(rid("rec", "a"), errors.New("nft -c に落ちた"))
@@ -188,7 +188,7 @@ func TestTxnGroupAllOrNothing(t *testing.T) {
 		}
 	}
 
-	// group の 1 つが待つなら、残りも当てない。
+	// group の 1 つが待つなら、残りも Apply しない。
 	h3 := txnHarness(t)
 	w := txnDecl("w", "new", "g")
 	w.DependsOn = []core.Dependency{{When: condition.MustParse(`observe(p/rec/probe).value == "never"`)}}
@@ -199,7 +199,7 @@ func TestTxnGroupAllOrNothing(t *testing.T) {
 	}
 }
 
-// before の確かめが通らなければ変えない（E-B3・N-B9）。
+// before の check が通らなければ変えない（E-B3・N-B9）。
 func TestTxnBeforeMustHold(t *testing.T) {
 	h := txnHarness(t)
 	h.p.Set(rid("rec", "probe"), present(core.Fields{"value": "down"}))
@@ -215,8 +215,8 @@ func TestTxnBeforeMustHold(t *testing.T) {
 	}
 }
 
-// 不変条件 17（性質）：準備の失敗・締め出し・効かない変更をランダムに注入しても、
-// 確かめが通らない単位は確定せず、どの単位も「全部宣言どおり」か「全部元のまま」
+// 不変条件 17（性質）：Prepare の失敗・締め出し・効かない変更をランダムに注入しても、
+// check が通らない単位は Commit せず、どの単位も「全部宣言どおり」か「全部元のまま」
 // で終わる。
 func TestPropertyTxnNeverCommitsUnconfirmed(t *testing.T) {
 	rng := rand.New(rand.NewSource(17))
@@ -258,11 +258,11 @@ func TestPropertyTxnNeverCommitsUnconfirmed(t *testing.T) {
 			}
 			for _, ch := range txn.Changes {
 				if v := value(h, ch.ID); v != "new" {
-					t.Fatalf("iter %d: 確定したのに %s が %v", it, ch.ID, v)
+					t.Fatalf("iter %d: Commit したのに %s が %v", it, ch.ID, v)
 				}
 			}
 			if v := value(h, rid("rec", "probe")); v != "up" {
-				t.Fatalf("iter %d: 確かめが通らないのに確定した", it)
+				t.Fatalf("iter %d: check が通らないのに Commit した", it)
 			}
 		}
 		if group != "" {

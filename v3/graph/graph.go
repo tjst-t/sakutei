@@ -15,7 +15,7 @@
 // Package graph は depends_on と Condition から宣言の順序を作る（設計 §3.5）。
 //
 // 辺は「下流 → 上流」で、上流は depends_on の id と、when が名指しで参照する対象
-// （observe・present・absent）。量化（all・any・count）が選んだものは観測するが
+// （observe・present・absent）。quantifier（all・any・count）が選んだものは観測するが
 // 辺にしない（集合の条件で自分を含んでも循環にしない）。
 package graph
 
@@ -86,7 +86,7 @@ func (g *Graph) Resource(id core.ID) *core.Resource {
 	return &g.res[i]
 }
 
-// Select は量化の選び方に当たる宣言の ID を名前順で返す。
+// Select は quantifier の選び方に合う宣言の ID を名前順で返す。
 func (g *Graph) Select(s core.Selection) []core.ID {
 	var out []core.ID
 	for _, r := range g.res {
@@ -167,7 +167,7 @@ func (g *Graph) Edges() []Edge {
 	return out
 }
 
-// Cycles は宣言どうしの循環を 1 つずつ返す（E-J7・E-M3：読み込みで断る）。
+// Cycles は宣言どうしの循環を 1 つずつ返す（E-J7・E-M3：読み込み時にエラーにする（reject））。
 // 宣言に無い上流は辺にしない。
 func (g *Graph) Cycles() [][]core.ID {
 	const (

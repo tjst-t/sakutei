@@ -36,7 +36,7 @@ import (
 // crash は送信の途中で止まったプロセス（panic で Invoke から戻らない）。
 type crash struct{}
 
-// runCrash は 1 周回し、送信の途中で止まったら true（Record のロックは defer で
+// runCrash は 1 cycle 回し、送信の途中で止まったら true（Record のロックは defer で
 // 放す。プロセスが死ねば flock はカーネルが放すのと同じ）。
 func (h *harness) runCrash() (r plan.Result, crashed bool) {
 	h.t.Helper()
@@ -51,7 +51,7 @@ func (h *harness) runCrash() (r plan.Result, crashed bool) {
 	return h.run(), false
 }
 
-// upgrade は on_drift の手順：value がずれたら upgrade を送り、観測で閉じる。
+// upgrade は on_drift の Procedure：value がずれたら upgrade を送り、観測で閉じる。
 func upgrade(steps ...core.Step) core.Procedure {
 	if len(steps) == 0 {
 		steps = []core.Step{{Name: "upgrade", Kind: core.StepInvoke, Op: "upgrade"}}
@@ -111,8 +111,8 @@ func runOf(r plan.Result, proc string) plan.RunStatus {
 	return plan.RunStatus{}
 }
 
-// 不変条件 16：送信の途中で止まっても二度送らない。止まった手順は止め、続けるには
-// 承認が要る。止まった対象は収束でも戻さない（不変条件 18、E-A9）。
+// 不変条件 16：送信の途中で止まっても二度送らない。止まった Procedure は halt し、続けるには
+// 承認が要る。halt した対象は収束でも戻さない（不変条件 18、E-A9）。
 func TestInterruptedSendIsNotResent(t *testing.T) {
 	h := newHarness(t)
 	sw := rid("rec", "sw1")
@@ -123,15 +123,15 @@ func TestInterruptedSendIsNotResent(t *testing.T) {
 	h.p.OnInvoke(func(core.ID, string, core.Fields) error { panic(crash{}) })
 
 	if _, crashed := h.runCrash(); !crashed {
-		t.Fatal("1 周目は送信の途中で止まるはず")
+		t.Fatal("1 cycle 目は送信の途中で止まるはず")
 	}
 	runs, _ := record.ReadRuns(h.rec.Dir())
 	if len(runs) != 1 || runs[0].Sending == nil || runs[0].Sending.Op != "upgrade" {
 		t.Fatalf("送る前に送信中の記録を書く: %+v", runs)
 	}
 
-	// 2 周目：記録があるので送らずに止める。宣言の value は手順が受け持つので
-	// 収束でも当てない。
+	// 2 cycle 目：記録があるので送らずに halt する。宣言の value は Procedure が受け持つので
+	// 収束でも Apply しない。
 	h.p.OnInvoke(nil)
 	r := h.run()
 	if n := len(h.p.Invocations()); n != 1 {
@@ -139,27 +139,27 @@ func TestInterruptedSendIsNotResent(t *testing.T) {
 	}
 	s := runOf(r, "up")
 	if s.State != "halted" || s.Request == "" || cli.ExitCode(r) != cli.ExitHalted {
-		t.Fatalf("止まって続ける承認を頼むはず: %+v exit=%d", s, cli.ExitCode(r))
+		t.Fatalf("halt して続ける承認を頼むはず: %+v exit=%d", s, cli.ExitCode(r))
 	}
 	if len(h.p.Writes()) != 0 {
-		t.Fatalf("止まった対象に書いた: %v", h.p.Writes())
+		t.Fatalf("halt した対象に書いた: %v", h.p.Writes())
 	}
-	// 止まった対象のほかの項目のずれも戻さない（E-A9）。
+	// halt した対象のほかの field のずれも戻さない（E-A9）。
 	h.in.Resources[0].Fields["zone"] = "z1"
 	r = h.run()
 	if c := find(r, sw); c.Action != plan.ActKeep || len(h.p.Writes()) != 0 {
-		t.Fatalf("止まった手順の対象を収束で触った: %+v %v", c, h.p.Writes())
+		t.Fatalf("halt した Procedure の対象を収束で触った: %+v %v", c, h.p.Writes())
 	}
 	h.in.Resources[0].Fields = core.Fields{"value": "v2"}
 	if n := len(h.p.Invocations()); n != 1 {
-		t.Fatalf("周を重ねて送った: %d 回", n)
+		t.Fatalf("cycle を重ねて送った: %d 回", n)
 	}
 	kinds := auditKinds(t, h)
 	if !hasKind(kinds, "procedure.interrupted:halted") || !hasKind(kinds, "approval.request") {
 		t.Fatalf("監査: %v", kinds)
 	}
 
-	// 人が確かめて続けると承認すれば、その段をもう一度送り、観測で閉じる。
+	// 人が確かめて続けると承認すれば、その step をもう一度送り、観測で閉じる。
 	if err := record.WriteDecision(h.rec.Dir(), s.Request, record.Decision{By: "bob", Decision: record.Approve, At: h.clock.t}); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestInterruptedSendIsNotResent(t *testing.T) {
 		t.Fatalf("done_when で閉じるはず: %+v", s)
 	}
 	if runs, _ := record.ReadRuns(h.rec.Dir()); len(runs) != 0 {
-		t.Fatalf("済んだ手順の進みが残る: %+v", runs)
+		t.Fatalf("済んだ Procedure の進みが残る: %+v", runs)
 	}
 	if r := h.run(); len(r.Runs) != 0 || len(h.p.Invocations()) != 2 || cli.ExitCode(r) != 0 {
 		t.Fatalf("済んだあとに起こした: %+v", r.Runs)
@@ -181,8 +181,8 @@ func TestInterruptedSendIsNotResent(t *testing.T) {
 	}
 }
 
-// 送れていない（ErrNotSent）なら記録を消して次の周に送り直す。送れたか分から
-// ない誤りは二度送らず止める（不変条件 16、E-A2）。
+// 送れていない（ErrNotSent）なら記録を消して次の cycle に送り直す。送れたか分から
+// ないエラーは二度送らず halt する（不変条件 16、E-A2）。
 func TestInvokeNotSentRetriesOtherErrorsHalt(t *testing.T) {
 	h := newHarness(t)
 	sw := rid("rec", "sw1")
@@ -202,16 +202,16 @@ func TestInvokeNotSentRetriesOtherErrorsHalt(t *testing.T) {
 	h.p.OnInvoke(func(core.ID, string, core.Fields) error { return errors.New("時間切れ") })
 	r = h.run()
 	if s := runOf(r, "up"); s.State != "halted" || len(h.p.Invocations()) != 2 {
-		t.Fatalf("送れたか分からないなら止める: %+v", s)
+		t.Fatalf("送れたか分からないなら halt する: %+v", s)
 	}
 	h.p.OnInvoke(nil)
 	h.run()
 	if n := len(h.p.Invocations()); n != 2 {
-		t.Fatalf("止めたあとに送った: %d", n)
+		t.Fatalf("halt したあとに送った: %d", n)
 	}
 }
 
-// critical の段は一回実行では進めず、常駐だけが進める（§2.2、不変条件 16）。
+// critical の step は one-shot 実行では進めず、daemon だけが進める（§2.2、不変条件 16）。
 func TestCriticalStepNeedsDaemon(t *testing.T) {
 	h := newHarness(t)
 	sw := rid("rec", "sw1")
@@ -222,7 +222,7 @@ func TestCriticalStepNeedsDaemon(t *testing.T) {
 	r := h.run()
 	s := runOf(r, "up")
 	if !s.NeedsDaemon || len(h.p.Invocations()) != 0 || cli.ExitCode(r) != cli.ExitRemaining {
-		t.Fatalf("一回実行が critical の段を進めた: %+v", s)
+		t.Fatalf("one-shot 実行が critical の step を進めた: %+v", s)
 	}
 	found := false
 	for _, e := range r.Events {
@@ -234,7 +234,7 @@ func TestCriticalStepNeedsDaemon(t *testing.T) {
 	h.in.Daemon = true
 	r = h.run()
 	if s := runOf(r, "up"); s.State != "done" || len(h.p.Invocations()) != 1 {
-		t.Fatalf("常駐は進める: %+v", s)
+		t.Fatalf("daemon は進める: %+v", s)
 	}
 }
 
@@ -249,7 +249,7 @@ func TestDoneWhenClosesOnlyOnObservation(t *testing.T) {
 	h.p.SetOp("rec", "upgrade", core.OpSpec{}, nil) // 送っても観測は変わらない
 	r := h.run()
 	if s := runOf(r, "up"); s.State != "running" || !strings.Contains(s.Waiting, "done_when") {
-		t.Fatalf("段が済んでも done_when が偽なら閉じない: %+v", s)
+		t.Fatalf("step が済んでも done_when が偽なら閉じない: %+v", s)
 	}
 	h.p.Set(sw, core.Observation{Availability: core.Unknown, Note: "届かない"})
 	if s := runOf(h.run(), "up"); s.State != "running" {
@@ -281,7 +281,7 @@ func TestDoneWhenClosesOnlyOnObservation(t *testing.T) {
 	}
 }
 
-// manual の段は人の作業を頼み、done_when でだけ閉じる（E-A6・E-Q3）。
+// manual の step は人の作業を頼み、done_when でだけ閉じる（E-A6・E-Q3）。
 func TestManualStepClosesByObservation(t *testing.T) {
 	h := newHarness(t)
 	sw := rid("rec", "sw1")
@@ -291,7 +291,7 @@ func TestManualStepClosesByObservation(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		s := runOf(h.run(), "up")
 		if s.State != "running" || s.Instruction != "GUI で sw1 を v2 に上げる" {
-			t.Fatalf("%d 周目: %+v", i, s)
+			t.Fatalf("%d cycle 目: %+v", i, s)
 		}
 	}
 	h.p.Set(sw, present(core.Fields{"value": "v2"}))
@@ -300,7 +300,7 @@ func TestManualStepClosesByObservation(t *testing.T) {
 	}
 }
 
-// 手順の段：apply・wait（when・for）・policy・gate。gate は申請者を数えない
+// Procedure の step：apply・wait（when・for）・policy・gate。gate は申請者を数えない
 // （不変条件 21）。
 func TestProcedureSteps(t *testing.T) {
 	h := newHarness(t)
@@ -342,23 +342,23 @@ func TestProcedureSteps(t *testing.T) {
 		t.Fatalf("gate のあと upgrade まで進む: %+v", s)
 	}
 	if len(r.Temporary) != 1 || !strings.Contains(r.Temporary[0].Source, "procedure") {
-		t.Fatalf("手順の段の policy: %+v", r.Temporary)
+		t.Fatalf("Procedure の step の policy: %+v", r.Temporary)
 	}
-	// 手順の段の policy は次の周から効く（その周の収束は段より先）。
+	// Procedure の step の policy は次の cycle から効く（その cycle の収束は step より先）。
 	h.in.Resources[1].Fields = core.Fields{"value": "b"}
 	r = h.run()
 	if c := find(r, rid("rec", "app")); c.Action != plan.ActReport {
-		t.Fatalf("手順の間は report: %+v", c)
+		t.Fatalf("Procedure の間は report: %+v", c)
 	}
 	h.clock.t = h.clock.t.Add(11 * time.Minute)
 	r = h.run()
 	if s := runOf(r, "gw-up"); s.State != "done" {
 		t.Fatalf("for を待って済む: %+v", s)
 	}
-	// 手順が済めば policy も消え、収束する。
+	// Procedure が済めば policy も消え、収束する。
 	r = h.run()
 	if c := find(r, rid("rec", "app")); c.Outcome != plan.OutcomeOK || len(r.Temporary) != 0 {
-		t.Fatalf("手順のあとは当てる: %+v %+v", c, r.Temporary)
+		t.Fatalf("Procedure のあとは Apply する: %+v %+v", c, r.Temporary)
 	}
 	kinds := auditKinds(t, h)
 	for _, k := range []string{"procedure.start", "procedure.apply", "approval.approve:ignored", "approval.approve", "approval.used", "procedure.invoke", "procedure.done"} {
@@ -402,7 +402,7 @@ func TestPolicyApproval(t *testing.T) {
 	decide("bob", record.Approve)
 	r = h.run()
 	if c := find(r, id); c.Outcome != plan.OutcomeOK || strings.Join(c.ApprovedBy, ",") != "alice,bob" {
-		t.Fatalf("2 人で当てる: %+v", c)
+		t.Fatalf("2 人で Apply する: %+v", c)
 	}
 	a, _, _ := record.ReadApproval(h.rec.Dir(), reqID)
 	if a.Request.State != record.RequestUsed {
@@ -411,14 +411,14 @@ func TestPolicyApproval(t *testing.T) {
 	// 同じずれがまた出たら頼み直す（使った承認を使い回さない）。
 	h.p.Set(id, present(core.Fields{"value": "a"}))
 	if c := find(h.run(), id); c.Action != plan.ActPending || len(h.p.Writes()) != 1 {
-		t.Fatalf("使った承認で当てた: %+v", c)
+		t.Fatalf("使った承認で Apply した: %+v", c)
 	}
-	// 拒否は止める。
+	// 拒否なら halt する。
 	decide("alice", record.Approve)
 	decide("bob", record.Reject)
 	r = h.run()
 	if c := find(r, id); c.Action != plan.ActHalt || cli.ExitCode(r) != cli.ExitHalted || len(h.p.Writes()) != 1 {
-		t.Fatalf("拒否で止める: %+v", c)
+		t.Fatalf("拒否なら halt する: %+v", c)
 	}
 	// 宣言を直せば新しい依頼。期限が切れれば頼み直す。
 	h.in.Resources[0].Fields = core.Fields{"value": "c"}
@@ -431,7 +431,7 @@ func TestPolicyApproval(t *testing.T) {
 	h.clock.t = h.clock.t.Add(2 * time.Hour)
 	decide("bob", record.Approve) // 期限の後
 	if c := find(h.run(), id); c.Action != plan.ActPending || len(h.p.Writes()) != 1 {
-		t.Fatalf("期限の後の承認で当てた: %+v", c)
+		t.Fatalf("期限の後の承認で Apply した: %+v", c)
 	}
 	kinds := auditKinds(t, h)
 	for _, k := range []string{"approval.request", "approval.approve", "approval.approve:ignored", "approval.used", "approval.reject", "approval.rejected:rejected", "approval.expired:expired"} {
@@ -458,14 +458,14 @@ func TestApprovalNotUsedWhenRecordUnwritable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(dir, 0o755)
-	// 承認が揃っていても、依頼に印を書けなければ当てない。
+	// 承認が揃っていても、依頼に印を書けなければ Apply しない。
 	r := h.run()
 	if c := find(r, id); c.Outcome != "" || len(h.p.Writes()) != 0 || len(r.Errors) == 0 {
-		t.Fatalf("使った印を書けないのに当てた: %+v %v", c, r.Errors)
+		t.Fatalf("使った印を書けないのに Apply した: %+v %v", c, r.Errors)
 	}
 	os.Chmod(dir, 0o755)
 	if c := find(h.run(), id); c.Outcome != plan.OutcomeOK {
-		t.Fatalf("書ければ当てる: %+v", c)
+		t.Fatalf("書ければ Apply する: %+v", c)
 	}
 }
 
@@ -495,7 +495,7 @@ func TestFreezeExpires(t *testing.T) {
 	h.clock.t = h.clock.t.Add(time.Hour)
 	r = h.run()
 	if c := find(r, id); c.Outcome != plan.OutcomeOK || len(r.Temporary) != 0 {
-		t.Fatalf("期限が過ぎたら当てる: %+v", c)
+		t.Fatalf("期限が過ぎたら Apply する: %+v", c)
 	}
 	if _, ok, _ := record.ReadTempPolicy(h.rec.Dir(), "incident"); ok {
 		t.Fatal("期限が過ぎた一時的な Policy が残る")
@@ -514,7 +514,7 @@ func TestFreezeExpires(t *testing.T) {
 	}
 	record.EndTempPolicy(h.rec.Dir(), "f2", record.Ended{By: "bob", Reason: "終わり", At: h.clock.t})
 	if c := find(h.run(), id); c.Outcome != plan.OutcomeOK {
-		t.Fatalf("unfreeze のあと当てる: %+v", c)
+		t.Fatalf("unfreeze のあと Apply する: %+v", c)
 	}
 	if !hasKind(auditKinds(t, h), "freeze.end") {
 		t.Fatal("freeze.end が無い")
@@ -525,11 +525,11 @@ func TestFreezeExpires(t *testing.T) {
 	os.WriteFile(filepath.Join(h.rec.Dir(), "temp-policies", "broken.json"), []byte("{"), 0o644)
 	r = h.run()
 	if c := find(r, id); c.Action != plan.ActReport || r.ReportOnly == "" || len(h.p.Writes()) != 2 {
-		t.Fatalf("読めない一時的な Policy で当てた: %+v", c)
+		t.Fatalf("読めない一時的な Policy で Apply した: %+v", c)
 	}
 }
 
-// plan は手順を進めず、Record にも書かない（不変条件 30）。
+// plan は Procedure を進めず、Record にも書かない（不変条件 30）。
 func TestPlanDoesNotAdvanceProcedures(t *testing.T) {
 	h := newHarness(t)
 	sw := rid("rec", "sw1")
@@ -548,12 +548,12 @@ func TestPlanDoesNotAdvanceProcedures(t *testing.T) {
 		t.Fatal("plan が進みを書いた")
 	}
 	if c := find(r, sw); c.Op != plan.None || strings.Join(c.Handover, ",") != "value" {
-		t.Fatalf("手順が受け持つ項目は収束では当てない: %+v", c)
+		t.Fatalf("Procedure が受け持つ field は収束では Apply しない: %+v", c)
 	}
 }
 
-// 手順の書く段も予算に数える。超えれば送らず周を止める（不変条件 20）。freeze
-// （report）に当たる対象の手順は起こさない（E-J4）。
+// Procedure の書き込む step も budget に数える。超えれば送らず cycle を halt する（不変条件 20）。freeze
+// （report）に該当する対象の Procedure は起こさない（E-J4）。
 func TestProcedureRespectsBudgetAndFreeze(t *testing.T) {
 	h := newHarness(t)
 	sw := rid("rec", "sw1")
@@ -565,7 +565,7 @@ func TestProcedureRespectsBudgetAndFreeze(t *testing.T) {
 		DestructivePerCycle: 0, DestructivePerWindow: core.Unlimited, MaxIneffectiveApplies: core.Unlimited}}}
 	r := h.run()
 	if len(h.p.Invocations()) != 0 || cli.ExitCode(r) != cli.ExitHalted {
-		t.Fatalf("予算 0 で送った: %+v", r.Runs)
+		t.Fatalf("budget 0 で送った: %+v", r.Runs)
 	}
 	h.in.Policies = nil
 	record.WriteTempPolicy(h.rec.Dir(), record.TempPolicy{Name: "f", Select: core.Selector{All: true}, Mode: "report",

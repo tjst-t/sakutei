@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Package approval は承認を数える（設計 §3.6・§3.7・§5.4、不変条件 21）。承認者が
-// 条件（quorum・申請者≠承認者）を満たすかは周の中で数え、CLI と承認ツールは
-// 判断のファイルを書くだけ。Policy の承認と手順の gate は同じ数え方をする
+// 条件（quorum・申請者≠承認者）を満たすかは cycle の中で数え、CLI と承認ツールは
+// 判断のファイルを書くだけ。Policy の承認と Procedure の gate は同じ数え方をする
 // （E-L2・N-L2・E-A5・E-J8）。
 package approval
 
@@ -174,7 +174,7 @@ func appendOnce(list []string, s string) []string {
 	return append(list, s)
 }
 
-// DecideError は判断を書く前に断った理由（CLI と承認ツール、§5.4）。
+// DecideError は判断を書く前に拒否した理由（CLI と承認ツール、§5.4）。
 type DecideError struct {
 	Code    string // DecideNotFound・DecideClosed・DecideForbidden・DecideInvalid
 	Message string
@@ -184,16 +184,16 @@ func (e *DecideError) Error() string { return e.Message }
 
 // DecideError の Code。承認ツールは HTTP の状態に写す。
 const (
-	DecideInvalid   = "invalid"   // 名前・理由の書き方の誤り
+	DecideInvalid   = "invalid"   // 名前・理由の書き方のエラー
 	DecideNotFound  = "not_found" // 依頼が無い
 	DecideClosed    = "closed"    // 依頼が待っていない（使った・拒否・期限切れ）
 	DecideForbidden = "forbidden" // 申請者・要件に無い人（不変条件 21）
 )
 
-// Decide は依頼 id への判断 d を確かめてから Record に書く（CLI の approve・reject と
+// Decide は依頼 id への判断 d を検証してから Record に書く（CLI の approve・reject と
 // 承認ツール sakutei-approve で同じ、§5.4・不変条件 21、E-M4・N-M4）。申請者と
-// 要件に無い人の判断・待っていない依頼への判断は書く前に断る。数えて効かせる
-// のは周。書いたあとの数え方を返す。
+// 要件に無い人の判断・待っていない依頼への判断は書く前に拒否する。数えて効かせる
+// のは cycle。書いたあとの数え方を返す。
 func Decide(dir, id string, d record.Decision) (Status, error) {
 	refuse := func(code, format string, a ...any) (Status, error) {
 		return Status{}, &DecideError{Code: code, Message: fmt.Sprintf(format, a...)}

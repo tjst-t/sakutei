@@ -17,12 +17,12 @@ package postgresql
 // scram.go — ロールのパスワードを平文で送らないための SCRAM-SHA-256 の検証値
 // （RFC 5802・RFC 7677。PostgreSQL の pg_authid.rolpassword の形）。provider は
 // パスワードをこの形にしてから CREATE ROLE / ALTER ROLE ... PASSWORD に渡すので、
-// サーバのログ（log_statement）や psql の誤りの文に平文が出ない（E-F1・E-G2）。
+// サーバのログ（log_statement）や psql のエラーメッセージに平文が出ない（E-F1・E-G2）。
 // psql の \password と同じやり方。
 //
 // PostgreSQL はパスワードに SASLprep をかけるが、ASCII だけの文字列はそのまま
 // 使う。この provider は ASCII だけのパスワードを受け付ける（ASCII でない文字を
-// 含むものは Apply の誤り。SASLprep を自前で持たないため）。
+// 含むものは Apply のエラー。SASLprep を自前で実装しないため）。
 
 import (
 	"crypto/hmac"
@@ -38,7 +38,7 @@ import (
 const scramIterations = 4096
 
 // errNonASCIIPassword はパスワードに ASCII でない文字があるときのエラー。
-var errNonASCIIPassword = errors.New("パスワードは ASCII の文字だけにする（ほかの文字には PostgreSQL が SASLprep をかけるが、この provider は持たない）")
+var errNonASCIIPassword = errors.New("パスワードは ASCII の文字だけにする（ほかの文字には PostgreSQL が SASLprep をかけるが、この provider は SASLprep を実装していない）")
 
 func asciiOnly(s string) bool {
 	for i := 0; i < len(s); i++ {

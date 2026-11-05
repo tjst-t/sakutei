@@ -116,7 +116,7 @@ func TestEval(t *testing.T) {
 		{`observe(bmc/system/fw2).power == "On"`, U},
 		{`observe(bmc/system/fw4).power == "On"`, U},
 		{`observe(bmc/system/nowhere).power == "On"`, U},
-		// Absent の対象と観測に無い項目は「無い」：== は偽、!= は真、大小は偽。
+		// Absent の対象と観測に無い field は「無い」：== は偽、!= は真、大小は偽。
 		{`observe(bmc/system/fw3).power == "On"`, F},
 		{`observe(bmc/system/fw3).power != "On"`, T},
 		{`observe(bmc/system/fw1).missing < 3`, F},
@@ -142,7 +142,7 @@ func TestEval(t *testing.T) {
 		{`check(slow) or false`, U},
 		// 容量の門（E-C4）。
 		{`observe(metrics/pool/ceph).usage < 80`, T},
-		// 量化（N-B16・N-F4・N-B18・N-J3）。
+		// quantifier（N-B16・N-F4・N-B18・N-J3）。
 		{`all(bmc/system[role=gpu], it.mtu == 9000)`, U}, // 1 台は不明、偽は無い
 		{`all(bmc/system[role=gpu], it.power == "On")`, F},
 		{`any(bmc/system[role=gpu], it.power == "On")`, T},
@@ -172,8 +172,8 @@ func TestEval(t *testing.T) {
 func TestParseErrors(t *testing.T) {
 	cases := map[string]string{
 		``:                                     "空",
-		`observe(bmc/system/fw1)`:              ".項目",
-		`observe(bmc/fw1).x == 1`:              "<provider>/<種類>/<名前>",
+		`observe(bmc/system/fw1)`:              ".<field>",
+		`observe(bmc/fw1).x == 1`:              "bmc/fw1",
 		`it.power == "On"`:                     "it は",
 		`count(bmc/system, it.x == 1)`:         "比較の中",
 		`count(a/b, true) == count(a/b, true)`: "どうし",
@@ -217,11 +217,11 @@ func TestLint(t *testing.T) {
 		if typ == "bmc/system" {
 			return core.KindSchema{Fields: map[string]core.FieldSpec{"power": {Type: core.String}}}, ""
 		}
-		return core.KindSchema{}, "知らない種類"
+		return core.KindSchema{}, "知らない type"
 	}
 	x := condition.MustParse(`observe(bmc/system/a).volt > 1 and present(x/y/z) and all(bmc/system, it.pwr == "On") and check(nope) and desired.power == "On"`)
 	got := strings.Join(condition.Lint(x, kinds, nil, func(string) bool { return false }), "\n")
-	for _, want := range []string{`項目 "volt"`, "present(x/y/z): 知らない種類", `項目 "pwr"`, "check(nope)", "desired は"} {
+	for _, want := range []string{`field "volt"`, "present(x/y/z): 知らない type", `field "pwr"`, "check(nope)", "desired は"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Lint に %q が無い:\n%s", want, got)
 		}

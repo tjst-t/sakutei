@@ -16,8 +16,8 @@
 
 package nftguard_test
 
-// nftguard_test.go — 決まった道具（v2 の Backlog #191 から移した）を、nft の代わりに呼ばれ方と
-// 標準入力を書き出すだけのスクリプトで確かめる。巻き戻しの起動し直しは、この
+// nftguard_test.go — 専用ツール（v2 の Backlog #191 から移した）を、nft の代わりに呼ばれ方と
+// 標準入力を書き出すだけのスクリプトで確かめる。rollback のために起動し直すのは、この
 // テストのバイナリ自身（TestMain が _fire を受ける）。
 
 import (
@@ -35,7 +35,7 @@ import (
 const configEnv = "NFTGUARD_TEST_CONFIG"
 
 func TestMain(m *testing.M) {
-	// 巻き戻しの起動し直しは「<self> --config <path> _fire <token>」。
+	// rollback のための起動し直しは「<self> --config <path> _fire <token>」。
 	if len(os.Args) == 5 && os.Args[1] == "--config" && os.Args[3] == "_fire" {
 		os.Exit(nftguard.Main(os.Args[3:], nftguard.Options{ConfigPath: os.Args[2]}))
 	}
@@ -60,8 +60,8 @@ type lab struct {
 func newLab(t *testing.T, cfg map[string]any) *lab {
 	t.Helper()
 	l := &lab{dir: t.TempDir()}
-	// 道具は設定の置き場が group・other から書けないことを求める。t.TempDir の
-	// 権限は umask で変わる（umask 002 だと 0775）ので、ここで締めておく。
+	// ツールは設定ファイルのディレクトリが group・other から書けないことを求める。
+	// t.TempDir の権限は umask で変わる（umask 002 だと 0775）ので、ここで締めておく。
 	if err := os.Chmod(l.dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -334,8 +334,8 @@ func TestConfigRefused(t *testing.T) {
 	}
 }
 
-// rollback は予約をすぐ使って写しに戻し、眠っている自分を止める（Transactor の
-// Rollback、不変条件 17）。2 回目は「もう戻った」。
+// rollback は予約をすぐ実行してコピーに戻し、眠っているプロセスを止める（Transactor の
+// Rollback、不変条件 17）。2 回目は予約がもう無いので拒否される。
 func TestRollbackNow(t *testing.T) {
 	l := newLab(t, nil)
 	code, out, errs := l.run(t, "", "arm", "30", "inet/sk")
@@ -347,10 +347,10 @@ func TestRollbackNow(t *testing.T) {
 		t.Fatalf("rollback: %d %q %s", code, out, errs)
 	}
 	if b, err := os.ReadFile(filepath.Join(l.dir, "applied")); err != nil || !strings.HasPrefix(string(b), "add table inet sk\ndelete table inet sk\ntable inet sk {") {
-		t.Fatalf("写しを流していない: %v %s", err, b)
+		t.Fatalf("コピーを流していない: %v %s", err, b)
 	}
 	if ents, _ := os.ReadDir(filepath.Join(l.dir, "state")); len(ents) != 0 {
-		t.Errorf("予約が残る: %v", ents)
+		t.Errorf("予約が残っている: %v", ents)
 	}
 	if code, _, _ := l.run(t, "", "rollback", token); code != nftguard.ExitRefused {
 		t.Errorf("消えた予約の rollback: exit %d", code)

@@ -14,10 +14,10 @@
 
 // Package metricsprobe は /metrics（Prometheus の text 形式）の値を観測するだけの
 // provider（設計 §7.1、E-H4・N-T4）。比べ方は provider の設定でなく Condition に
-// 書き、provider は値を返すだけ。全体を止める作業の前に上流の積もりを待つ
-// （§3.7 の wait、depends_on の when）。
+// 書き、provider は値を返すだけ。全体を止める作業の前に、上流のキューの滞留が
+// 減るのを待つのに使う（§3.7 の wait、depends_on の when）。
 //
-//	providers:                          # つなぎ方の設定
+//	providers:                          # 接続設定
 //	  metrics:
 //	    module: metrics-probe
 //	    settings:
@@ -33,23 +33,23 @@
 //	    steps:
 //	      - wait: {when: 'observe(metrics/series/mq/rabbitmq_queue_messages{queue="orders"}).sum < 100', timeout: 2h}
 //
-// 種類 series（観測だけ）。ID は "<endpoint>/<メトリクス名>" か、ラベルで絞る
-// "<endpoint>/<メトリクス名>{<ラベル>="<値>",…}"（値 "" はラベルが無い系列）。項目：
+// type は series（観測だけ）。ID は "<endpoint>/<メトリクス名>" か、ラベルで絞る
+// "<endpoint>/<メトリクス名>{<ラベル>="<値>",…}"（値 "" はラベルが無い系列）。field：
 //
 //   - series：一致した系列の数（Int）
-//   - value：系列が 1 本だけのときの値（Float。2 本以上なら項目が無い＝null）
+//   - value：系列が 1 本だけのときの値（Float。2 本以上なら field が無い＝null）
 //   - sum・max・min：一致した系列の和・最大・最小（Float）
 //
 // 決まり：
 //
-//   - 届かない・認証の失敗・2xx 以外・転送（3xx は追わない）・形が壊れている・
-//     一致する系列が無い・値が NaN か ±Inf は Unknown（無いと読まない、
+//   - 届かない・認証の失敗・2xx 以外・リダイレクト（3xx は追わない）・形式が壊れている・
+//     一致する系列が無い・値が NaN か ±Inf は Unknown（Absent と読まない、
 //     不変条件 3、E-K1）。「キューが空」は 0 の値として観測される。
-//   - 1 回の Observe は endpoint ごとに 1 回の GET。値を周をまたいで持たない（P1）。
-//   - 資格（bearer_token_file・password_file）は取得の直前にファイルから読み、
-//     持たない（E-G2）。観測用の資格だけで、書き込みは無い。
-//   - List と Apply を持たない（範囲を書けば読み込みで断る。宣言に fields は
-//     書けない）。
+//   - 1 回の Observe は endpoint ごとに 1 回の GET。値を cycle をまたいで持たない（P1）。
+//   - credential（bearer_token_file・password_file）は取得の直前にファイルから読み、
+//     保持しない（E-G2）。観測用の credential だけで、書き込みは無い。
+//   - List と Apply を持たない（Range を書けば読み込み時にエラーにする（reject）。
+//     宣言に fields は書けない）。
 package metricsprobe
 
 import (
@@ -70,10 +70,10 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// Version は Schema の版。読み方・項目を変えたら上げる（E-J12）。
+// Version は Schema のバージョン。読み方・field を変えたら上げる（E-J12）。
 const Version = "metrics-probe/1"
 
-// Kind は系列の種類の名前。
+// Kind は系列の type の名前。
 const Kind = "series"
 
 // DefaultTimeout は endpoint の timeout を省いたときの 1 回の取得の上限。
@@ -82,7 +82,7 @@ const DefaultTimeout = 10 * time.Second
 // MaxBodyBytes は /metrics の応答の大きさの上限。超えれば Unknown。
 const MaxBodyBytes = 16 << 20
 
-// 項目。
+// field。
 const (
 	FieldSeries = "series"
 	FieldValue  = "value"
@@ -113,7 +113,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 	p := &Provider{endpoints: map[string]*endpoint{}}
 	for k, v := range settings {
 		if k != "endpoints" {
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: endpoints）", k)
+			return nil, fmt.Errorf("settings に不明な field %q（書ける field: endpoints）", k)
 		}
 		m, ok := v.(map[string]any)
 		if !ok || len(m) == 0 {
@@ -157,7 +157,7 @@ func parseEndpoint(m map[string]any) (*endpoint, error) {
 		}
 		dst, ok := str[k]
 		if !ok {
-			return nil, fmt.Errorf("知らない項目 %q（書ける項目: bearer_token_file, ca_file, insecure_skip_verify, password_file, timeout, url, username。資格そのものは書けない）", k)
+			return nil, fmt.Errorf("不明な field %q（書ける field: bearer_token_file, ca_file, insecure_skip_verify, password_file, timeout, url, username。credential そのものは書けない）", k)
 		}
 		s, isStr := v.(string)
 		if !isStr || s == "" {
@@ -170,7 +170,7 @@ func parseEndpoint(m map[string]any) (*endpoint, error) {
 	case e.url == "" || err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
 		return nil, errors.New("url に http(s) の URL（https://host:9100/metrics など）を書く")
 	case u.User != nil:
-		return nil, errors.New("url に資格を書かない（username・password_file か bearer_token_file）")
+		return nil, errors.New("url に credential を書かない（username・password_file か bearer_token_file を使う）")
 	case (e.username == "") != (e.passwordFile == ""):
 		return nil, errors.New("username と password_file は組で書く（Basic 認証）")
 	case e.username != "" && e.bearerFile != "":
@@ -195,7 +195,7 @@ func parseEndpoint(m map[string]any) (*endpoint, error) {
 	d := DefaultTimeout
 	if timeout != "" {
 		if d, err = time.ParseDuration(timeout); err != nil || d <= 0 {
-			return nil, fmt.Errorf("timeout %q は正の長さ（10s など）", timeout)
+			return nil, fmt.Errorf("timeout %q は正の時間（10s など）", timeout)
 		}
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
@@ -204,13 +204,13 @@ func parseEndpoint(m map[string]any) (*endpoint, error) {
 	e.client = &http.Client{
 		Transport: tr,
 		Timeout:   d,
-		// 資格を別のホストへ運ばない：転送は追わない（3xx は Unknown）。
+		// credential を別のホストへ送らない：リダイレクトは追わない（3xx は Unknown）。
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	return e, nil
 }
 
-// Schema は種類 series（観測だけ、E-H4）。
+// Schema は type series（観測だけ、E-H4）。
 func (p *Provider) Schema() core.Schema {
 	f := core.FieldSpec{Type: core.Float}
 	return core.Schema{Version: Version, Kinds: map[string]core.KindSchema{
@@ -252,14 +252,14 @@ func (s selector) matches(p Parsed) bool {
 	return true
 }
 
-// Validate は宣言を確かめる（E-M3）。範囲と fields は書けない。
+// Validate は宣言を確かめる（E-M3）。Range と fields は書けない。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
 	rej := func(o core.Origin, target, format string, a ...any) {
 		diags = append(diags, core.Diagnostic{Severity: core.Reject, Origin: o, Target: target, Message: fmt.Sprintf(format, a...)})
 	}
 	for _, rg := range ranges {
-		rej(rg.Origin, "ranges", "metrics-probe は範囲を持たない（観測だけで List と prune が無い）")
+		rej(rg.Origin, "ranges", "metrics-probe は Range を持たない（観測だけで List と prune が無い）")
 	}
 	for _, r := range res {
 		target := r.ID.String()
@@ -336,7 +336,7 @@ func evaluate(sel selector, samples []Parsed) core.Observation {
 	return core.Observation{Availability: core.Present, Fields: f}
 }
 
-// scrape は /metrics を 1 回取って読む。資格はここで読む（持たない）。
+// scrape は /metrics を 1 回取って読む。credential はここで読む（保持しない）。
 func (e *endpoint) scrape(ctx context.Context) ([]Parsed, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.url, nil)
 	if err != nil {
@@ -346,7 +346,7 @@ func (e *endpoint) scrape(ctx context.Context) ([]Parsed, error) {
 	read := func(path string) (string, error) {
 		b, err := os.ReadFile(path)
 		if err != nil {
-			return "", fmt.Errorf("資格のファイル %s を読めない", path)
+			return "", fmt.Errorf("credential のファイル %s を読めない", path)
 		}
 		return strings.TrimRight(string(b), "\r\n"), nil
 	}
@@ -396,12 +396,12 @@ func (p *Provider) List(context.Context, core.Range) (core.Listing, error) {
 	return core.Listing{}, errors.New("metrics-probe は List を持たない")
 }
 
-// Apply は持たない（観測だけ。コアは ObserveOnly の種類に呼ばない）。
+// Apply は持たない（観測だけ。コアは ObserveOnly の type には呼ばない）。
 func (p *Provider) Apply(context.Context, core.WriteContext, core.ID, core.Fields, core.Observation) error {
 	return errors.New("metrics-probe は観測だけで Apply を持たない")
 }
 
-// Delete は断る（観測だけ）。
+// Delete は拒否する（観測だけ）。
 func (p *Provider) Delete(context.Context, core.WriteContext, core.ID, core.Observation) error {
 	return &core.RefuseError{Reason: "metrics-probe は観測だけで消せない"}
 }

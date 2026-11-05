@@ -27,16 +27,16 @@ import (
 // NFTCommentMax は nft の comment の長さの上限（バイト、nftables v1.0.9）。
 const NFTCommentMax = 128
 
-// NFTablesKind は NFTables が作る宣言の種類（providers/nftables の chain）。
+// NFTablesKind は NFTables が作る宣言の type（providers/nftables の chain）。
 const NFTablesKind = "chain"
 
-// NFTables は本体の realizer（DefaultRealizer）：実現先 1 つを nftables の base
+// NFTables は組み込みの realizer（DefaultRealizer）：実現先 1 つを nftables の base
 // chain の宣言 1 つ（"<provider>/chain"、id は <host>/<family>/<table>/<chain>）に
 // する。base chain は type filter、hook は boundary が forward・host が input、
 // priority 0、policy drop が既定（settings の hook・priority・policy で変える）。
-// ルールは before・許可・after の順。許可 1 つはアドレスの族（IPv4・IPv6）ごとに
+// ルールは before・許可・after の順。許可 1 つはアドレスファミリ（IPv4・IPv6）ごとに
 // 1 ルールで、reason を comment に出す（E-B5）。live のホストの base chain は
-// 2 段の Apply が要るので、実現先の apply: に transaction を書く（E-B3）。
+// two-phase Apply（Transaction）が要るので、実現先の apply: に transaction を書く（E-B3）。
 type NFTables struct{}
 
 var nftSettings = map[string]bool{"hook": true, "priority": true, "policy": true}
@@ -44,7 +44,7 @@ var nftSettings = map[string]bool{"hook": true, "priority": true, "policy": true
 // Realize は実現先を nftables の base chain の宣言 1 つにする。
 func (NFTables) Realize(t Target, allows []Passing) (Output, error) {
 	if len(t.Interfaces) > 0 {
-		return Output{}, fmt.Errorf("interfaces: nftables の realizer は domain %s だけを見て、口を受けない（口ごとに分ける realizer を WithRealizer で足す）", DefaultDomain)
+		return Output{}, fmt.Errorf("interfaces: nftables の realizer は domain %s だけを見て、interfaces を受けない（interface ごとに分ける realizer を WithRealizer で足す）", DefaultDomain)
 	}
 	parts := strings.Split(t.ID, "/")
 	if len(parts) != 4 {
@@ -52,7 +52,7 @@ func (NFTables) Realize(t Target, allows []Passing) (Output, error) {
 	}
 	for _, s := range parts {
 		if s == "" {
-			return Output{}, fmt.Errorf("id %q に空の段がある", t.ID)
+			return Output{}, fmt.Errorf("id %q に空のセグメントがある", t.ID)
 		}
 	}
 	family := parts[1]
@@ -74,7 +74,7 @@ func (NFTables) Realize(t Target, allows []Passing) (Output, error) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		if !nftSettings[k] {
-			return Output{}, fmt.Errorf("settings: 知らない項目 %q（nftables の realizer は hook・priority・policy）", k)
+			return Output{}, fmt.Errorf("settings: 不明な field %q（nftables の realizer が受けるのは hook・priority・policy）", k)
 		}
 	}
 	setting := func(k, def string) string {
@@ -152,8 +152,8 @@ func checkRule(r string) error {
 	return nil
 }
 
-// NFTRule は許可 p のアドレスの族 af（4 か 6）の nftables のルール文。from か
-// to にその族の CIDR が無い・proto がその族に無い（icmp と IPv6 など）なら false。
+// NFTRule は許可 p のアドレスファミリ af（4 か 6）の nftables のルール文。from か
+// to にそのファミリの CIDR が無い・proto がそのファミリに無い（icmp と IPv6 など）なら false。
 func NFTRule(af int, p Passing) (string, bool) {
 	from, to := ofFamily(p.From.CIDRs, af), ofFamily(p.To.CIDRs, af)
 	if len(from) == 0 || len(to) == 0 {

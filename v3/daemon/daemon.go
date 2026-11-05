@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package daemon は常駐（設計 §2.2）。1 周の処理（cycle.Run）を繰り返す薄い外側で、
-// 周をまたいで覚えるものは持たない（全部 Record）。だから一回実行の列と同じ
+// Package daemon は daemon として回す部分（設計 §2.2）。1 cycle の処理（cycle.Run）を繰り返す薄い外側で、
+// cycle をまたいで覚えるものは持たない（全部 Record）。だから one-shot 実行の列と同じ
 // Record から同じ結果を出す（不変条件 30、E-O3・N-O4）。
 //
-// 足すのは、間隔を待つことと、待ちを切り上げる起床（sakutei wake・SIGHUP・intent の
-// ディレクトリの変更、E-N5）だけ。読み取り HTTP は package readapi。
+// 足すのは、間隔を待つことと、待ちを切り上げる wake（sakutei wake・SIGHUP・intent の
+// ディレクトリの変更、E-N5）だけ。read-only HTTP API は package readapi。
 package daemon
 
 import (
@@ -40,34 +40,34 @@ import (
 // PollInterval は wake のファイルと intent のディレクトリの変化を見る間隔。
 var PollInterval = time.Second
 
-// Options は常駐の入力。
+// Options は daemon の入力。
 type Options struct {
-	// Load は周ごとに intent とつなぎ方の設定を読み直す（毎周 desired を出し直す、P1）。
+	// Load は cycle ごとに intent と接続設定を読み直す（cycle ごとに desired を出し直す、P1）。
 	Load   func(ctx context.Context) (*load.Loaded, error)
 	Record *record.Record
 	Clock  core.Clock // nil なら計算機の時計
 	// IntentDir は変更を見て起きる intent のディレクトリ（空なら見ない、E-N5）。
 	IntentDir string
-	// Wake は外からの起床（SIGHUP など、E-N5）。
+	// Wake は外からの wake（SIGHUP など、E-N5）。
 	Wake <-chan struct{}
-	// OnCycle は周ごとに結果を受け取る（読み取り HTTP・ログ）。
+	// OnCycle は cycle ごとに結果を受け取る（read-only HTTP API・ログ）。
 	OnCycle func(Cycle)
-	// Wait は次の周まで待つ。false を返せば常駐を終える。nil なら間隔か起床か
+	// Wait は次の cycle まで待つ。false を返せば daemon を終える。nil なら間隔か wake か
 	// ctx の終わりまで待つ（テストで差し替える）。
 	Wait func(ctx context.Context, interval time.Duration, wake <-chan struct{}) bool
 }
 
-// Cycle は常駐の 1 周の結果。
+// Cycle は daemon の 1 cycle の結果。
 type Cycle struct {
-	N        int           // この常駐で何周目か
-	At       time.Time     // 周を始めた時刻
-	Interval time.Duration // 次の周までの間隔
-	Result   *plan.Result  // 読み込みで断った・回せなかった周は nil
+	N        int           // この daemon で何 cycle 目か
+	At       time.Time     // cycle を始めた時刻
+	Interval time.Duration // 次の cycle までの間隔
+	Result   *plan.Result  // 読み込み時にエラーにした（reject）・回せなかった cycle は nil
 	Err      error         // 読み込みの誤り・ロックを試せなかった誤り
-	Rejected bool          // Err が読み込みで断ったもの
+	Rejected bool          // Err が読み込み時のエラー（reject）
 }
 
-// Run は ctx が終わるか Wait が false を返すまで周を回す。
+// Run は ctx が終わるか Wait が false を返すまで cycle を回す。
 func Run(ctx context.Context, opt Options) error {
 	clock := opt.Clock
 	if clock == nil {
@@ -84,7 +84,7 @@ func Run(ctx context.Context, opt Options) error {
 		defer close(watched)
 		watch(wctx, opt, wake)
 	}()
-	// 見張りは常駐と一緒に終える。
+	// 見張りは daemon と一緒に終える。
 	defer func() {
 		stop()
 		<-watched
@@ -95,10 +95,10 @@ func Run(ctx context.Context, opt Options) error {
 		c := Cycle{N: n, At: clock.Now()}
 		loaded, err := opt.Load(ctx)
 		if err != nil {
-			// 読めない周は何もしない。健全性にだけ残す（E-K11）。前の周の間隔を使う。
+			// 読めない cycle は何もしない。health にだけ残す（E-K11）。前の cycle の間隔を使う。
 			c.Err, c.Rejected = err, load.IsReject(err)
 			if rerr := cycle.RecordLoadError(opt.Record, clock, err); rerr != nil {
-				c.Err = fmt.Errorf("%w（健全性も書けない: %v）", err, rerr)
+				c.Err = fmt.Errorf("%w（health も書けない: %v）", err, rerr)
 			}
 		} else {
 			interval = loaded.Cycle.Interval
@@ -121,7 +121,7 @@ func Run(ctx context.Context, opt Options) error {
 	}
 }
 
-// Sleep は間隔か起床か ctx の終わりまで待つ。ctx が終わったら false。
+// Sleep は間隔か wake か ctx の終わりまで待つ。ctx が終わったら false。
 func Sleep(ctx context.Context, interval time.Duration, wake <-chan struct{}) bool {
 	t := time.NewTimer(interval)
 	defer t.Stop()
@@ -135,8 +135,8 @@ func Sleep(ctx context.Context, interval time.Duration, wake <-chan struct{}) bo
 	}
 }
 
-// watch は外からの起床・wake のファイル・intent のディレクトリの変化を wake に
-// まとめる。起床は 1 つに畳む（何度起こしても次の周は 1 回）。
+// watch は外からの wake・wake のファイル・intent のディレクトリの変化を wake に
+// まとめる。wake は 1 つに畳む（何度起こしても次の cycle は 1 回）。
 func watch(ctx context.Context, opt Options, wake chan<- struct{}) {
 	poke := func() {
 		select {
@@ -146,7 +146,7 @@ func watch(ctx context.Context, opt Options, wake chan<- struct{}) {
 	}
 	mark := record.WakeMark(opt.Record.Dir())
 	sum := fingerprint(opt.IntentDir)
-	// 承認・一時的な Policy・頼みの置き場に書き込みがあれば起きる（§2.2 の承認の
+	// 承認・一時的な Policy・request の置き場に書き込みがあれば起きる（§2.2 の承認の
 	// 待ち受け、E-L2・E-J4）。
 	reqs := record.Requests(opt.Record.Dir())
 	rsum := fingerprints(reqs)

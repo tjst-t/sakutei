@@ -28,7 +28,7 @@ const (
 	// 応答（3xx、202、読めない本文など）。provider は Unknown にし、何も操作
 	// しない（unknown ≠ absent）。
 	KindUnreachable ErrorKind = iota + 1
-	// KindAuth — 401 / 403。設定（資格）を直さない限り治らない。
+	// KindAuth — 401 / 403。設定（credential）を直さない限り治らない。
 	KindAuth
 	// KindCertificate — サーバ証明書を検証できない（自己署名を明示していない、
 	// CA ファイルが違う、ホスト名が合わない）。KindAuth と同じく設定を直さない

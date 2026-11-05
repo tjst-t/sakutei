@@ -12,68 +12,69 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package netconf は NETCONF の機器の設定の部分木を観測し、設定で許したときは
-// commit confirmed の 2 段で当てる provider（設計 §7.1、E-B7・E-B8・E-B9・E-B10・
-// N-B1・N-B4）。コアの外のモジュールで、コアの口 core.Provider・core.Validator・
-// core.Transactor を持つ。v2 の netconf provider（#141・#175・#176・#199・#200・
-// #208）を移した。
+// Package netconf は NETCONF の機器の設定の部分木を観測する provider（設計 §7.1、
+// E-B7・E-B8・E-B9・E-B10・N-B1・N-B4）。設定で許したときは commit confirmed の
+// two-phase Apply で Apply する。コアの外のモジュールで、コアの interface
+// core.Provider・core.Validator・core.Transactor を実装する。v2 の netconf provider
+// （#141・#175・#176・#199・#200・#208）を移した。
 //
-//	providers:                                  # つなぎ方の設定
+//	providers:                                  # 接続設定
 //	  nc:
 //	    module: netconf
 //	    settings:
-//	      apply: true                           # 2 段の Apply を許す（既定は観測だけ）
+//	      apply: true                           # two-phase Apply を許す（既定は観測だけ）
 //	      commit_flow: "1.0"                    # "1.1" なら :confirmed-commit:1.1 の persist
 //	      hosts:
 //	        sw1:
 //	          ssh: {address: 192.0.2.1, port: 830, user: sakutei-ro, key: /etc/sakutei/id_ro, known_hosts: /etc/sakutei/known_hosts}
-//	          write:                            # 省略可。書き込み用の資格（Prepare・Commit だけで使う）
+//	          write:                            # 省略可。書き込み用の credential（Prepare・Commit だけで使う）
 //	            ssh: {address: 192.0.2.1, port: 830, user: sakutei, key: /etc/sakutei/id_rw, known_hosts: /etc/sakutei/known_hosts}
 //
-//	ranges:                                     # intent（機器と部分木は範囲）
+//	ranges:                                     # intent（機器と部分木は Range）
 //	  - provider: nc
 //	    args:
 //	      host: sw1
 //	      filter.acl: '<nacm xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-acm"><rule-list><name>edge</name></rule-list></nacm>'
-//	      ordered.acl: nacm/rule-list/rule      # 省略可。順に意味のある列の道
+//	      ordered.acl: nacm/rule-list/rule      # 省略可。順に意味のある列のパス
 //	resources:
 //	  - type: nc/subtree
 //	    id: sw1/acl                             # <host>/<部分木>
 //	    fields: {config: '<nacm xmlns="…"><rule-list><name>edge</name>…</rule-list></nacm>'}
 //	    apply:
 //	      transaction:
-//	        group: core                         # 省略可。同じ名前の台を 1 回にまとめる（commit_group）
+//	        group: core                         # 省略可。同じ group 名の台を 1 回の Apply にまとめる（commit_group）
 //	        timeout: 60s                        # confirm-timeout
 //	        confirm:
 //	          - {phase: after, when: 'check(mgmt-path)'}
 //
 // 決まり：
 //
-//   - リソースは設定の部分木（種類 subtree、ID <host>/<部分木>）。どこ（subtree filter）は
-//     Range の filter.<部分木>、中身（宣言する XML）は項目 config。観測は
-//     <get-config source="running"> を filter で絞って取る（部分木の外を読まない、
+//   - リソースは設定の部分木（type subtree、ID <host>/<部分木>）。どこを選ぶか（subtree
+//     filter）は Range の filter.<部分木>、中身（宣言する XML）は field config。観測は
+//     <get-config source="running"> を filter で絞って取る（部分木の外を読まない。
 //     NACM で部分木だけに絞ったユーザーでも動く、E-B10）。
-//   - 比べ方は名前空間・空白・属性の順をそろえた正規形（canon.go）。兄弟の順は問わず、
-//     Range の ordered.<部分木> で名指しした道だけ順を比べる。属性は宣言に書いたもの
+//   - 比べ方は、名前空間・空白・属性の順をそろえた正規形（canon.go）。兄弟の順は問わず、
+//     Range の ordered.<部分木> で名指ししたパスだけ順を比べる。属性は宣言に書いたもの
 //     だけを比べる（機器が付ける commit の時刻などで drift にしない）。観測の config は、
 //     宣言と意味が同じなら宣言の書き方のまま、違えば機器の正規形を返す（E-I7・E-B7）。
-//   - 届かない・認証・hello が合わない・区切りが壊れた・rpc-error・access-denied は
-//     Unknown（Absent にしない、E-K1）。中身の無い要素だけの <data> は Absent。
-//   - 既定は観測だけ（KindSchema.ObserveOnly）。settings の apply: true のときだけ当て、
-//     いつも commit confirmed の 2 段で当てる（E-B8）。Prepare は新しいセッションで
-//     candidate を lock し、部分木の置き換えを edit-config・validate し、同じセッションで
-//     commit confirmed（confirm-timeout は transaction.timeout）を送る。Commit は同じ
-//     セッションで確定の commit、Rollback は discard と cancel-commit（1.1）かセッションを
-//     閉じる（1.0 はセッションの終わりで戻る）。どちらも呼ばれなければ機器が
-//     confirm-timeout で戻す（不変条件 17）。準備のあと確定までの観測は新しい接続で
-//     張る（変えたあとも届くことを確かめる、E-B8）。apply.transaction を書かない宣言の
-//     Apply も同じ 2 段で、新しい接続で読み直して宣言どおりなら確定する（settings の
-//     timeout、既定 30s）。
+//   - 届かない・認証の失敗・hello が合わない・framing が壊れた・rpc-error・access-denied
+//     は Unknown（Absent にしない、E-K1）。中身の無い要素だけの <data> は Absent。
+//   - 既定は観測だけ（KindSchema.ObserveOnly）。settings の apply: true のときだけ Apply
+//     し、いつも commit confirmed の two-phase Apply にする（E-B8）。Prepare は新しい
+//     セッションで candidate を lock し、部分木の置き換えを edit-config・validate し、同じ
+//     セッションで commit confirmed（confirm-timeout は transaction.timeout）を送る。
+//     Commit は同じセッションで確定の commit を送る。Rollback は discard と cancel-commit
+//     （1.1）を送るか、セッションを閉じる（1.0 はセッションの終わりで戻る）。どちらも
+//     呼ばれなければ機器が confirm-timeout で戻す（不変条件 17）。Prepare のあと確定まで
+//     の観測は新しい接続で張る（変えたあとも届くことを確かめる、E-B8）。
+//     apply.transaction を書かない宣言の Apply も同じ two-phase Apply で、新しい接続で
+//     読み直して宣言どおりなら確定する（settings の timeout、既定 30s）。
 //   - transaction.group（commit_group）の台は、コアが 1 回の Prepare にまとめて渡す。
-//     全部の台で commit confirmed を送ってから確かめ、全部が通ったときだけ確定する
+//     全部の台で commit confirmed を送ってから check し、全部が通ったときだけ確定する
 //     （E-B9）。confirm の observe(…)・check(…) はコアの Condition。
-//   - List は範囲の部分木のうち機器に在るもの（宣言外の報告）。部分木は消さない
-//     （prune: true の範囲・ensure: absent は読み込みで断り、Delete は RefuseError）。
+//   - List は Range の部分木のうち機器に在るもの（宣言に無いもの（unmanaged）の報告）。
+//     部分木は消さない（prune: true の Range・ensure: absent は読み込み時にエラーにし、
+//     Delete は RefuseError）。
 package netconf
 
 import (
@@ -92,16 +93,16 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/hostexec"
 )
 
-// Version は Schema の版（正規形・項目を変えたら上げる）。
+// Version は Schema のバージョン（正規形・field を変えたら上げる）。
 const Version = "netconf/1"
 
-// Kind は部分木の種類の名前。
+// Kind は部分木の type の名前。
 const Kind = "subtree"
 
 // Subsystem は ssh のサブシステムの名前（RFC 6242 §3）。
 const Subsystem = "netconf"
 
-// 項目。
+// field。
 const (
 	// FieldConfig は部分木の中身の XML（宣言、必須）。
 	FieldConfig = "config"
@@ -112,23 +113,23 @@ const (
 // DefaultTimeout は ctx に期限が無いときの 1 回の観測の上限。
 const DefaultTimeout = 60 * time.Second
 
-// Dialer はホストへの流れ（netconf サブシステム）を開く。
+// Dialer はホストへのストリーム（netconf サブシステム）を開く。
 type Dialer func(ctx context.Context) (io.ReadWriteCloser, error)
 
-// Host は 1 台の機器へのつなぎ方。Write が nil なら Observe と同じものを使う。
+// Host は 1 台の機器への接続。Write が nil なら Observe と同じものを使う。
 type Host struct {
 	Observe Dialer
 	Write   Dialer
 }
 
-// Options は 2 段の Apply の設定。
+// Options は two-phase Apply の設定。
 type Options struct {
-	// Apply は 2 段の Apply を許す（既定は観測だけ）。
+	// Apply は two-phase Apply を許す（既定は観測だけ）。
 	Apply bool
 	// Persist は :confirmed-commit:1.1 を持つ機器で persist の流れを使う。
 	Persist bool
 	// Timeout は apply.transaction を書かない宣言の confirm-timeout（0 なら
-	// core.DefaultTxnTimeout）。確かめはその半分まで。
+	// core.DefaultTxnTimeout）。確かめるのはその半分まで。
 	Timeout time.Duration
 }
 
@@ -138,7 +139,7 @@ type Provider struct {
 	opt   Options
 
 	mu sync.Mutex
-	// subtrees はホスト → 部分木の名前 → 部分木（Validate で範囲から受け取る）。
+	// subtrees はホスト → 部分木の名前 → 部分木（Validate で Range から受け取る）。
 	subtrees map[string]map[string]*subtree
 	// decl は宣言の比べ方（Validate で受け取る）。
 	decl map[core.ID]*decl
@@ -150,8 +151,8 @@ var (
 	_ core.Transactor = (*Provider)(nil)
 )
 
-// host は 1 台の機器へのつなぎ方。観測はいつも新しいセッションを開いて閉じる
-// （使い回さない：確定の前の確かめが新しい接続で届くことを見る、E-B8。コアは
+// host は 1 台の機器への接続。観測はいつも新しいセッションを開いて閉じる
+// （使い回さない。確定の前に、新しい接続で届くことを確かめるため、E-B8。コアは
 // provider を閉じないので、開いたままのセッションを残さない）。
 type host struct {
 	name    string
@@ -159,7 +160,7 @@ type host struct {
 	write   Dialer
 }
 
-// subtree は範囲の部分木 1 つ。
+// subtree は Range の部分木 1 つ。
 type subtree struct {
 	name    string
 	filter  string
@@ -178,7 +179,7 @@ type decl struct {
 	canon string
 }
 
-// New は機器のつなぎ方から provider を作る（テスト・自前のバイナリ用）。
+// New は機器への接続から provider を作る（テスト・自前のバイナリ用）。
 func New(hosts map[string]Host, opt Options) (*Provider, error) {
 	if len(hosts) == 0 {
 		return nil, errors.New("netconf: hosts に機器が無い")
@@ -186,7 +187,7 @@ func New(hosts map[string]Host, opt Options) (*Provider, error) {
 	p := &Provider{hosts: map[string]*host{}, opt: opt, subtrees: map[string]map[string]*subtree{}, decl: map[core.ID]*decl{}}
 	for name, h := range hosts {
 		if h.Observe == nil {
-			return nil, fmt.Errorf("netconf: host %s のつなぎ方が無い", name)
+			return nil, fmt.Errorf("netconf: host %s の接続が無い", name)
 		}
 		w := h.Write
 		if w == nil {
@@ -225,7 +226,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 				return nil, errors.New(`settings.commit_flow は "1.0" か "1.1"`)
 			}
 		default:
-			return nil, fmt.Errorf("settings に知らない項目 %q（書ける項目: apply, commit_flow, hosts, timeout）", k)
+			return nil, fmt.Errorf("settings に知らない field %q（書ける field: apply, commit_flow, hosts, timeout）", k)
 		}
 	}
 	hs, err := hostexec.ParseHosts(settings["hosts"], "write")
@@ -238,7 +239,7 @@ func Module(settings map[string]any) (core.Provider, error) {
 			return nil, fmt.Errorf("settings.hosts.%s に ssh を書く", name)
 		}
 		if _, ok := h.Runner.(hostexec.SSH); !ok {
-			return nil, fmt.Errorf("settings.hosts.%s: netconf は ssh のつなぎ方だけ（local は使えない）", name)
+			return nil, fmt.Errorf("settings.hosts.%s: netconf は ssh の接続だけ（local は使えない）", name)
 		}
 		hd := Host{Observe: sshDialer(h.Runner)}
 		if w, ok := h.Extra["write"]; ok {
@@ -263,7 +264,7 @@ func sshDialer(r hostexec.Runner) Dialer {
 	}
 }
 
-// Schema は部分木の項目。
+// Schema は部分木の field。
 func (p *Provider) Schema() core.Schema {
 	return core.Schema{Version: Version, Kinds: map[string]core.KindSchema{
 		Kind: {
@@ -293,7 +294,7 @@ func newSubtree(name, filter string) (*subtree, error) {
 	st := &subtree{name: name, filter: strings.TrimSpace(filter), fnodes: top, ordered: orderedSet{}}
 	for _, n := range top {
 		if n.name.Space == "" {
-			// 名前空間の無い subtree filter はすべての名前空間に当たる（RFC 6241 §6.2.1）。
+			// 名前空間の無い subtree filter はすべての名前空間にマッチする（RFC 6241 §6.2.1）。
 			return nil, fmt.Errorf("部分木 %s の filter の <%s> に名前空間（xmlns）を書く", name, n.name.Local)
 		}
 		st.top = append(st.top, nameKey{n.name.Space, n.name.Local})
@@ -310,7 +311,7 @@ func coords(id core.ID) (string, string, error) {
 	return h, s, nil
 }
 
-// Validate は範囲（機器・部分木の filter・ordered）と宣言を確かめ、覚える
+// Validate は Range（機器・部分木の filter・ordered）と宣言を確かめ、覚える
 // （E-B7・E-B8・E-B10・E-I6・E-I7・E-K8）。
 func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Diagnostic {
 	var diags []core.Diagnostic
@@ -321,7 +322,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	for _, rg := range ranges {
 		h := rg.Args["host"]
 		if p.hosts[h] == nil {
-			rej(rg.Origin, "ranges", "host %q がつなぎ方の設定の hosts に無い", h)
+			rej(rg.Origin, "ranges", "host %q が接続設定の hosts に無い", h)
 			continue
 		}
 		if rg.Prune {
@@ -344,14 +345,14 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 					continue
 				}
 				if subtrees[h][name] != nil {
-					rej(rg.Origin, "ranges", "host %s の部分木 %s が 2 つの範囲に入る", h, name)
+					rej(rg.Origin, "ranges", "host %s の部分木 %s が 2 つの Range に入る", h, name)
 				}
 				subtrees[h][name] = st
 				n++
 			case strings.HasPrefix(k, "ordered."):
 				ordered[strings.TrimPrefix(k, "ordered.")] = v
 			default:
-				rej(rg.Origin, "ranges", "netconf の範囲の引数は host・filter.<部分木>・ordered.<部分木>（%q が書かれている）", k)
+				rej(rg.Origin, "ranges", "netconf の Range の引数は host・filter.<部分木>・ordered.<部分木>（%q が書かれている）", k)
 			}
 		}
 		if n == 0 {
@@ -360,7 +361,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		for name, v := range ordered {
 			st := subtrees[h][name]
 			if st == nil {
-				rej(rg.Origin, "ranges", "ordered.%s: 同じ範囲に filter.%s が無い", name, name)
+				rej(rg.Origin, "ranges", "ordered.%s: 同じ Range に filter.%s が無い", name, name)
 				continue
 			}
 			o, err := ParseOrdered(v)
@@ -375,7 +376,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 	for _, r := range res {
 		target := r.ID.String()
 		if r.ID.Kind() != Kind {
-			rej(r.Origin, target, "netconf の種類は %s だけ", Kind)
+			rej(r.Origin, target, "netconf の type は %s だけ", Kind)
 			continue
 		}
 		h, name, err := coords(r.ID)
@@ -385,7 +386,7 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 		}
 		st := subtrees[h][name]
 		if st == nil {
-			rej(r.Origin, target, "部分木 %s は host %s の範囲（ranges の filter.%s）に無い", name, h, name)
+			rej(r.Origin, target, "部分木 %s は host %s の Range（ranges の filter.%s）に無い", name, h, name)
 			continue
 		}
 		if r.Ensure == core.EnsureAbsent {
@@ -396,9 +397,9 @@ func (p *Provider) Validate(res []core.Resource, ranges []core.Range) []core.Dia
 			switch k {
 			case FieldConfig:
 			case FieldCapabilities:
-				rej(r.Origin, target, "capabilities は観測だけの項目で宣言できない")
+				rej(r.Origin, target, "capabilities は観測だけの field で宣言できない")
 			default:
-				rej(r.Origin, target, "知らない項目 %q（宣言できるのは config だけ）", k)
+				rej(r.Origin, target, "知らない field %q（宣言できるのは config だけ）", k)
 			}
 		}
 		d, err := declOf(st, r.Fields[FieldConfig])
@@ -452,12 +453,12 @@ func declOf(st *subtree, v any) (*decl, error) {
 }
 
 // noEditAttrs は宣言に edit-config の属性（nc:operation・yang:insert など）が無い
-// ことを確かめる：どう当てるかは provider が決める。
+// ことを確かめる。どう Apply するかは provider が決める。
 func noEditAttrs(nodes []*node) error {
 	for _, n := range nodes {
 		for _, a := range n.attrs {
 			if a.Name.Space == BaseNS || a.Name.Space == YANGNS {
-				return fmt.Errorf("<%s> に属性 %s がある（当て方は provider が決める。中身だけを書く）", n.name.Local, a.Name.Local)
+				return fmt.Errorf("<%s> に属性 %s がある（Apply の仕方は provider が決める。中身だけを書く）", n.name.Local, a.Name.Local)
 			}
 		}
 		if err := noEditAttrs(n.children); err != nil {
@@ -477,7 +478,7 @@ func (p *Provider) lookup(id core.ID) (*host, *subtree, *decl, error) {
 	ho := p.hosts[h]
 	st := p.subtrees[h][name]
 	if ho == nil || st == nil {
-		return nil, nil, nil, fmt.Errorf("%s は範囲（ranges の host・filter）の外", id)
+		return nil, nil, nil, fmt.Errorf("%s は Range（ranges の host・filter）の外", id)
 	}
 	return ho, st, p.decl[id], nil
 }
@@ -486,8 +487,8 @@ func unknown(note string) core.Observation {
 	return core.Observation{Availability: core.Unknown, Note: note}
 }
 
-// readDeniedHint は get-config が access-denied で断られたときの説明。
-const readDeniedHint = "機器が get-config を断った（access-denied）。利用者に get-config の実行と部分木の読みを許す（NACM、RFC 8341）"
+// readDeniedHint は get-config が access-denied で拒否されたときの説明。
+const readDeniedHint = "機器が get-config を拒否した（access-denied）。ユーザーに get-config の実行と部分木の読み取りを許可する（NACM、RFC 8341）"
 
 // Observe は部分木を観測する（ホストごとに 1 本の新しいセッション、E-D8）。
 func (p *Provider) Observe(ctx context.Context, ids []core.ID) (map[core.ID]core.Observation, error) {
@@ -577,7 +578,7 @@ func closeQuietly(s *Session) {
 	_ = s.Close(ctx)
 }
 
-// List は範囲の部分木のうち機器に在るもの（宣言外の報告。消さない）。
+// List は Range の部分木のうち機器に在るもの（宣言に無いもの（unmanaged）の報告。消さない）。
 func (p *Provider) List(ctx context.Context, r core.Range) (core.Listing, error) {
 	name := r.Args["host"]
 	p.mu.Lock()
@@ -613,12 +614,12 @@ func (p *Provider) List(ctx context.Context, r core.Range) (core.Listing, error)
 	return core.Listing{IDs: ids, Complete: true}, nil
 }
 
-// Apply は apply.transaction を書かない宣言を 2 段で当てる：commit confirmed を送り、
-// 新しい接続で読み直して宣言どおりなら確定し、timeout の半分までに確かめられなければ
-// 戻す（v2 の既定の流れ、E-B8）。
+// Apply は apply.transaction を書かない宣言を two-phase Apply で Apply する。
+// commit confirmed を送り、新しい接続で読み直して宣言どおりなら確定する。timeout の
+// 半分までに確かめられなければ戻す（v2 の既定の流れ、E-B8）。
 func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, desired core.Fields, current core.Observation) error {
 	if !p.opt.Apply {
-		return fmt.Errorf("%s: netconf は観測だけ（settings の apply が無い）。何も当てていない", id)
+		return fmt.Errorf("%s: netconf は観測だけ（settings の apply が無い）。何も Apply していない", id)
 	}
 	ho, st, d, err := p.lookup(id)
 	if err != nil {
@@ -669,7 +670,8 @@ func (p *Provider) Apply(ctx context.Context, w core.WriteContext, id core.ID, d
 	}
 }
 
-// applyPoll は Apply の確かめの間隔。
+// applyPoll は Apply のあと確かめる間隔。
+
 const applyPoll = 500 * time.Millisecond
 
 // Delete は部分木を消さない（E-C3）。

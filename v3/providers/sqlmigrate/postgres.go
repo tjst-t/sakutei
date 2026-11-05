@@ -21,23 +21,23 @@ package sqlmigrate
 //   - 接続の設定（host・port・dbname・user・sslmode・sslrootcert・connect_timeout）は
 //     子プロセスの環境変数（PGHOST など）で渡す。親の PG* の環境変数は引き継が
 //     ない（PGSERVICE・PGOPTIONS などで黙って別の所へつながないように）。
-//   - 観測は observe の資格、invoke は write の資格（E-G5・N-G3）。パスワードは
-//     呼ぶたびにファイルか秘密の参照（write だけ、WriteContext.Secret）から読み、
+//   - 観測は observe の credential、invoke は write の credential（E-G5・N-G3）。パスワードは
+//     呼ぶたびにファイルか secret の参照（write だけ、WriteContext.Secret）から読み、
 //     0600 の一時的な passfile に書いて PGPASSFILE で渡し、終われば消す。引数・
-//     環境変数の値・誤りの文には出さない（E-G2）。
+//     環境変数の値・エラーメッセージには出さない（E-G2）。
 //   - -X（psqlrc を読まない）-w（パスワードを聞かない）-q -A -t で、結果は飾りの
-//     無い値だけ。ON_ERROR_STOP で最初の誤りで止まり（終了コード 3）、VERBOSITY
-//     verbose で誤りに SQLSTATE を付けさせる。接続の失敗は終了コード 2。
+//     無い値だけ。ON_ERROR_STOP で最初のエラーで止まり（終了コード 3）、VERBOSITY
+//     verbose でエラーに SQLSTATE を付けさせる。接続の失敗は終了コード 2。
 //
 // 観測は schema_migrations（version bigint PRIMARY KEY, applied_at timestamptz）の
-// 最大の版（表が無ければ 0）。up は 1 本を 1 回の psql の呼び出しで BEGIN … その
+// 最大のバージョン（表が無ければ 0）。up は 1 本を 1 回の psql の呼び出しで BEGIN … その
 // SQL … INSERT INTO schema_migrations … COMMIT として流す（失敗した 1 本は残らない）。
 // down は同じ形で DELETE。データベースは sqlmigrate が作らない（無ければ Unknown）。
 //
-// 同じデータベースを複数の常駐が動かさないよう、1 本ごとのトランザクションの頭で
-// pg_advisory_xact_lock（固定の鍵。advisory lock はデータベースごと）を
-// lock_timeout まで待って取り、取れたら schema_migrations が流す前の版のままかを
-// 確かめる（違えば 55000 の誤りで、何も流さない、E-F2）。鍵を待ちきれない（55P03）
+// 同じデータベースを複数の daemon が動かさないよう、1 本ごとのトランザクションの頭で
+// pg_advisory_xact_lock（固定のキー。advisory lock はデータベースごと）を
+// lock_timeout まで待って取り、取れたら schema_migrations が流す前のバージョンのままかを
+// 確かめる（違えば 55000 のエラーで、何も流さない、E-F2）。ロックを待ちきれない（55P03）
 // ときは何も流していない。トランザクションに入れられない文（CREATE INDEX
 // CONCURRENTLY・VACUUM など）は PostgreSQL が 25001 にし、その 1 本は失敗として
 // 知らせる（特別扱いしない）。
@@ -104,8 +104,8 @@ func execRunner(ctx context.Context, inv invocation) (result, error) {
 // psqlArgs は psql に渡す引数（いつも同じ）。
 var psqlArgs = []string{"-X", "-w", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=verbose", "-f", "-"}
 
-// pgLockKey は pg_advisory_xact_lock の鍵（"sakutei:sqlmigrate" の FNV-1a。v2 と
-// 同じ値なので、v2 と v3 の常駐が同じデータベースに向いても二重に流さない）。
+// pgLockKey は pg_advisory_xact_lock のキー（"sakutei:sqlmigrate" の FNV-1a。v2 と
+// 同じ値なので、v2 と v3 の daemon が同じデータベースに向いても二重に流さない）。
 var pgLockKey = func() int64 {
 	h := fnv.New64a()
 	h.Write([]byte("sakutei:sqlmigrate"))
@@ -113,15 +113,15 @@ var pgLockKey = func() int64 {
 }()
 
 var (
-	// sqlErrorLine は VERBOSITY verbose の誤りの行（"ERROR:  42710: role ..."）。
+	// sqlErrorLine は VERBOSITY verbose のエラーの行（"ERROR:  42710: role ..."）。
 	sqlErrorLine = regexp.MustCompile(`(?m)(?:ERROR|FATAL|PANIC):\s+([0-9A-Z]{5}):\s*(.*)$`)
 	// connectionLost は接続が途中で切れたことを示す文（送れたか分からない）。
 	connectionLost = regexp.MustCompile(`server closed the connection unexpectedly|connection to server was lost|terminating connection|no connection to the server|SSL SYSCALL error|could not receive data from server|could not send data to server`)
-	// redactions は誤りの文から消すもの（SCRAM・md5 の検証値）。
+	// redactions はエラーメッセージから消すもの（SCRAM・md5 の検証値）。
 	redactions = regexp.MustCompile(`SCRAM-SHA-256\$[^'\s]*|md5[0-9a-f]{32}`)
 )
 
-// redact は誤りの文から検証値を消し、1 行にそろえて短くする。
+// redact はエラーメッセージから検証値を消し、1 行にそろえて短くする。
 func redact(s string) string {
 	s = redactions.ReplaceAllString(s, "***")
 	s = strings.Join(strings.Fields(strings.ReplaceAll(s, "\n", " ")), " ")
@@ -132,7 +132,7 @@ func redact(s string) string {
 }
 
 // psqlRun は db につなぐ psql を 1 回起動して script を流し、標準出力を返す。w が
-// nil なら観測用の資格、nil でなければ書き込み用の資格でつなぐ（E-G5）。失敗は
+// nil なら観測用の credential、nil でなければ書き込み用の credential でつなぐ（E-G5）。失敗は
 // *execError。
 func (p *Provider) psqlRun(ctx context.Context, db *database, w *core.WriteContext, script string) (string, error) {
 	c := db.pg
@@ -198,7 +198,7 @@ func (p *Provider) psqlRun(ctx context.Context, db *database, w *core.WriteConte
 		if m == nil {
 			return "", &execError{kind: kindSQL, msg: where + ": " + stderr}
 		}
-		e := &execError{kind: kindSQL, state: m[1], msg: fmt.Sprintf("%s: SQL の誤り %s: %s", where, m[1], redact(m[2]))}
+		e := &execError{kind: kindSQL, state: m[1], msg: fmt.Sprintf("%s: SQL のエラー %s: %s", where, m[1], redact(m[2]))}
 		switch {
 		case m[1] == "55P03":
 			e.kind = kindLocked
@@ -211,7 +211,7 @@ func (p *Provider) psqlRun(ctx context.Context, db *database, w *core.WriteConte
 }
 
 // password はパスワード（無ければ hasPW が false）。password_secret は書き込みの
-// 文脈でだけ取り出せる（E-G2・E-G5）。誤りの文に値を入れない。
+// 文脈でだけ取り出せる（E-G2・E-G5）。エラーメッセージに値を入れない。
 func (p *Provider) password(ctx context.Context, c credential, w *core.WriteContext) (pw string, hasPW bool, err error) {
 	switch {
 	case c.passwordSecret != "":
@@ -275,7 +275,7 @@ func writePassfile(password string) (string, error) {
 	return name, nil
 }
 
-// pgVersionQuery は schema_migrations の最大の版（表が無ければ 0）を返す。無い表は
+// pgVersionQuery は schema_migrations の最大のバージョン（表が無ければ 0）を返す。無い表は
 // 文の中で参照できないので、psql の \gset と \if で分ける。
 const pgVersionQuery = `SELECT to_regclass('schema_migrations') IS NOT NULL AS sakutei_has_table \gset
 \if :sakutei_has_table
@@ -299,9 +299,9 @@ func (p *Provider) pgCurrentVersion(ctx context.Context, db *database, w *core.W
 
 const pgCreateTable = "CREATE TABLE IF NOT EXISTS schema_migrations (version bigint PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());"
 
-// pgPrologue はトランザクションを始め、鍵を lock 待って取り、版が want のままかを
-// 確かめる（E-F2）。鍵を取ったあとは lock_timeout を戻す（マイグレーションの文の
-// 表の鍵の待ちには効かせない）。
+// pgPrologue はトランザクションを始め、ロックを lock（待つ長さ）まで待って取り、バージョンが want のままかを
+// 確かめる（E-F2）。ロックを取ったあとは lock_timeout を戻す（マイグレーションの文の
+// 表のロックの待ちには効かせない）。
 func pgPrologue(want int64, create bool, lock time.Duration) string {
 	ms := max(lock.Milliseconds(), 1)
 	s := "BEGIN; SET LOCAL lock_timeout = '" + strconv.FormatInt(ms, 10) + "ms'; SELECT pg_advisory_xact_lock(" +
@@ -315,15 +315,15 @@ func pgPrologue(want int64, create bool, lock time.Duration) string {
 		" (another runner migrated this database)' USING ERRCODE = '55000'; END IF; END $sakutei$; "
 }
 
-// pgUpScript は 1 本の up をトランザクションで包み、同じトランザクションで完了印を
-// 書く。SQL の 1 行目は BEGIN と同じ行に続ける（psql の誤りの「psql:<stdin>:N」が
+// pgUpScript は 1 本の up をトランザクションで包み、同じトランザクションで完了の記録を
+// 書く。SQL の 1 行目は BEGIN と同じ行に続ける（psql のエラーの「psql:<stdin>:N」が
 // ファイルの行と一致するように）。
 func pgUpScript(v int64, sql string, lock time.Duration) string {
 	return pgPrologue(v-1, true, lock) + sql + "\n;\n" +
 		"INSERT INTO schema_migrations (version) VALUES (" + strconv.FormatInt(v, 10) + ");\n" + versionMark + "COMMIT;\n"
 }
 
-// pgDownScript は 1 本の down をトランザクションで包み、同じトランザクションで完了印を消す。
+// pgDownScript は 1 本の down をトランザクションで包み、同じトランザクションで完了の記録を消す。
 func pgDownScript(v int64, sql string, lock time.Duration) string {
 	return pgPrologue(v, false, lock) + sql + "\n;\n" +
 		"DELETE FROM schema_migrations WHERE version = " + strconv.FormatInt(v, 10) + ";\n" + versionMark + "COMMIT;\n"

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package load は 1 周の段 1・2（設計 §2.1）を行う：つなぎ方の設定と intent を
-// 読み、provider を組み、Expand を呼んで、その出力を検証する。断るときは
-// *core.RejectError（終了コード 2）。
+// Package load は 1 cycle の Stage 1・2（設計 §2.1）を行う。接続設定（config
+// ファイル）と intent を読み、provider を組み、Expand を呼んで、その出力を検証する。
+// reject するときは *core.RejectError（終了コード 2）を返す。
 package load
 
 import (
@@ -35,16 +35,16 @@ import (
 	"github.com/tjst-t/sakutei/v3/secret"
 )
 
-// Module は provider のモジュール。つなぎ方の設定の settings から provider を
-// 作る（E-O4・E-S1・N-S2）。範囲は settings でなく Range から受け取る。
+// Module は provider のモジュール。接続設定の settings から provider を作る
+// （E-O4・E-S1・N-S2）。Range は settings でなく intent の Range から受け取る。
 type Module func(settings map[string]any) (core.Provider, error)
 
-// SinkModule は Event の送り先のモジュール。つなぎ方の設定の sinks.<名前>.settings
-// から送り先を作る（E-H2・E-H3）。
+// SinkModule は Event の sink のモジュール。接続設定の sinks.<名前>.settings
+// から sink を作る（E-H2・E-H3）。
 type SinkModule func(settings map[string]any) (core.Sink, error)
 
-// SecretModule は秘密の保管先のモジュール。つなぎ方の設定の
-// secret_backends.<名前>.settings から保管先を作る（E-G3・E-O2・N-O2）。
+// SecretModule は secret backend のモジュール。接続設定の
+// secret_backends.<名前>.settings から secret backend を作る（E-G3・E-O2・N-O2）。
 type SecretModule func(settings map[string]any) (core.SecretBackend, error)
 
 // Options は読み込みの入力。
@@ -55,15 +55,15 @@ type Options struct {
 	Sinks      map[string]SinkModule
 	// Expanders は Go で組み込んだ Expand（intent の expand: の go:<名前>、E-A11）。
 	Expanders map[string]expand.Expander
-	// Secrets は秘密の保管先のモジュール（file は初めから、E-G3）。
+	// Secrets は secret backend のモジュール（file は初めから組み込み、E-G3）。
 	Secrets map[string]SecretModule
 	// Allocator は採番の空きの選び方。nil なら空きの先頭（E-T4・N-T5）。
 	Allocator core.Allocator
-	// RecordDir は前の周の目印（外部入力の件数）と採番の写しを読む Record（読む
-	// だけ。空なら読まない）。
+	// RecordDir は前の cycle の marks（外部入力の件数）と採番の写しを読む Record
+	// （読むだけ。空なら読まない）。
 	RecordDir string
-	// Checks は Condition の check(名前) で使う確かめ（E-B9）。登録していない名前は
-	// 読み込みで断る。
+	// Checks は Condition の check(名前) で使う check（E-B9）。登録していない名前は
+	// 読み込み時にエラーにする。
 	Checks map[string]core.CheckFunc
 }
 
@@ -74,27 +74,27 @@ type Loaded struct {
 	Resources []core.Resource
 	Ranges    []core.Range
 	Policies  []core.Policy
-	// Procedures は一回きりの手順（§3.7）。
+	// Procedures は一回きりの Procedure（§3.7）。
 	Procedures []core.Procedure
 	Cycle      core.CycleSettings   // 書かなければ既定の間隔
-	Sinks      map[string]core.Sink // つなぎ方の設定の sinks の名前 → 送り先（streams に events）
-	// AuditSinks は監査の鎖を送る送り先（streams に audit、E-L1・N-L1）。
+	Sinks      map[string]core.Sink // 接続設定の sinks の名前 → sink（streams に events）
+	// AuditSinks は audit のハッシュチェーンを送る sink（streams に audit、E-L1・N-L1）。
 	AuditSinks map[string]core.AuditSink
 	Checks     map[string]core.CheckFunc
 	Warnings   []core.Diagnostic
-	// Unknown は Expand・秘密の世代・採番で「分からない」にした宣言 → 理由
-	// （観測も Apply もしない、下流は待つ、E-G4・E-K3）。
+	// Unknown は Expand・secret の世代・採番で Unknown にした宣言 → 理由
+	// （観測も Apply もしない。下流は待つ、E-G4・E-K3）。
 	Unknown map[core.ID]string
 	// Incomplete は宣言が欠けているかもしれない provider → 理由（外部入力が
-	// 届かない。その provider の範囲は消さない、E-K3・不変条件 26）。
+	// 届かない。その provider の Range では消さない、E-K3・不変条件 26）。
 	Incomplete map[string]string
-	// Secrets は秘密の保管先（書き込みの文脈で値を取り出す、E-G2）。
+	// Secrets は secret backend（書き込みの文脈で値を取り出す、E-G2）。
 	Secrets core.SecretBackends
 	// IntentDir は intent のディレクトリ（採番のファイルを書き足す）。
 	IntentDir string
-	// Allocs は周がロックを持って書く採番（新しい値・写しの書き直し、N-B13）。
+	// Allocs は cycle がロックを持って書く採番（新しい値・写しの書き直し、N-B13）。
 	Allocs map[string]alloc.Write
-	// InputCounts は届いた外部入力の件数（Record の目印に書く、E-K3）。
+	// InputCounts は届いた外部入力の件数（Record の marks に書く、E-K3）。
 	InputCounts map[string]int
 }
 
@@ -117,7 +117,7 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 		return nil, err
 	}
 
-	// 段 2：外部入力を読み、Expand を順に呼ぶ（§2.1）。
+	// Stage 2：外部入力を読み、Expand を順に呼ぶ（§2.1）。
 	var marks record.Marks
 	if opt.RecordDir != "" {
 		marks, _ = record.ReadMarks(opt.RecordDir) // 読めなければ前の件数を見ない（急減は判定しない）
@@ -135,7 +135,7 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 		return nil, fmt.Errorf("expand: %w", err)
 	}
 
-	// 採番：intent のファイルの値を差し込み、無ければ空きを選ぶ（書くのは周）。
+	// 採番：intent のファイルの値を差し込み、無ければ空きを選ぶ（書くのは cycle）。
 	reqs, adiags := alloc.Requests(out.Resources)
 	out.Diagnostics = append(out.Diagnostics, adiags...)
 	copies, err := alloc.ReadCopies(opt.RecordDir, out.Pools)
@@ -147,7 +147,7 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 	out.Resources, adiags = alloc.Substitute(out.Resources, aplan)
 	out.Diagnostics = append(out.Diagnostics, adiags...)
 
-	// 秘密の世代（値は読まない、E-G2・E-G4）。
+	// secret の世代（値は読まない、E-G2・E-G4）。
 	kind := func(id core.ID) (core.KindSchema, bool) { ks, why := kindOf(id, providers); return ks, why == "" }
 	out.Resources, adiags = secret.Stamp(ctx, out.Resources, kind, backends)
 	out.Diagnostics = append(out.Diagnostics, adiags...)
@@ -184,8 +184,8 @@ func Load(ctx context.Context, opt Options) (*Loaded, error) {
 }
 
 // uncertain は Uncertain の診断の Target を、宣言（Unknown にする）か provider・
-// 種類（その provider の範囲を消さない）に振り分ける（E-G4・E-K3）。どれにも
-// 当たらなければ、全部の provider の範囲を消さない（安全側）。
+// type（その provider の Range では消さない）に振り分ける（E-G4・E-K3）。どれにも
+// 当たらなければ、全部の provider の Range で消さない（安全側）。
 func uncertain(d core.Diagnostic, declared map[string]bool, providers map[string]core.Provider, unknown map[core.ID]string, incomplete map[string]string) {
 	add := func(p string) {
 		if incomplete[p] == "" {
@@ -216,7 +216,7 @@ func buildSecrets(cfg *config.Config, modules map[string]SecretModule) (core.Sec
 		sc := cfg.SecretBackends[n]
 		m, ok := modules[sc.Module]
 		if !ok {
-			diags = append(diags, reject(sc.Origin, "secret_backends."+n, "知らない保管先のモジュール %q（組み込まれているもの: %s）", sc.Module, strings.Join(sortedKeys(modules), ", ")))
+			diags = append(diags, reject(sc.Origin, "secret_backends."+n, "知らない secret backend のモジュール %q（組み込まれているもの: %s）", sc.Module, strings.Join(sortedKeys(modules), ", ")))
 			continue
 		}
 		b, err := m(sc.Settings)
@@ -229,12 +229,12 @@ func buildSecrets(cfg *config.Config, modules map[string]SecretModule) (core.Sec
 	return out, diags
 }
 
-// readInputs は intent の inputs: に書いた外部入力を、つなぎ方の設定の在りかから
-// 読む（E-K3・E-P4）。入力は最上位がマップの YAML か JSON。件数は items の
-// リストの長さ（書かなければ最上位の項目の数）。読めない・形の誤りは届かない。expected_min より少ない・
-// 前の周の件数から max_drop を超えて減ったものは「届いたが欠けている」で、どちらも
-// Reachable を false にする（Expand はそれに依る宣言を作らない）。counts は届いた
-// ものの件数（Record の目印に書く）。
+// readInputs は intent の inputs: に書いた外部入力を、接続設定の在りかから読む
+// （E-K3・E-P4）。入力は最上位がマップの YAML か JSON。件数は items のリストの長さ
+// （書かなければ最上位の field の数）。読めない・形が誤っているものは「届かない」。
+// expected_min より少ない・前の cycle の件数から max_drop を超えて減ったものは
+// 「届いたが欠けている」。どちらも Reachable を false にする（Expand はそれに依る
+// 宣言を作らない）。counts は届いたものの件数（Record の marks に書く）。
 func readInputs(cfg *config.Config, docs []intent.Document, marks record.Marks) (map[string]expand.ExternalInput, map[string]int, []core.Diagnostic) {
 	inputs := map[string]expand.ExternalInput{}
 	counts := map[string]int{}
@@ -248,7 +248,7 @@ func readInputs(cfg *config.Config, docs []intent.Document, marks record.Marks) 
 			}
 			ic, ok := cfg.Inputs[spec.Name]
 			if !ok {
-				diags = append(diags, reject(spec.Origin, "inputs", "外部入力 %q の在りかがつなぎ方の設定の inputs に無い", spec.Name))
+				diags = append(diags, reject(spec.Origin, "inputs", "外部入力 %q の在りかが接続設定の inputs に無い", spec.Name))
 				continue
 			}
 			in := expand.ExternalInput{}
@@ -271,7 +271,7 @@ func readInputs(cfg *config.Config, docs []intent.Document, marks record.Marks) 
 			case spec.ExpectedMin > 0 && count < spec.ExpectedMin:
 				in.Note = fmt.Sprintf("届いたが欠けている（%d 件。expected_min %d）", count, spec.ExpectedMin)
 			case spec.MaxDrop >= 0 && had && prev > 0 && (prev-count)*100 > prev*spec.MaxDrop:
-				in.Note = fmt.Sprintf("届いたが欠けている（前の周の %d 件から %d 件に減った。max_drop %d%%）", prev, count, spec.MaxDrop)
+				in.Note = fmt.Sprintf("届いたが欠けている（前の cycle の %d 件から %d 件に減った。max_drop %d%%）", prev, count, spec.MaxDrop)
 			default:
 				in.Reachable = true
 				counts[spec.Name] = count
@@ -285,8 +285,8 @@ func readInputs(cfg *config.Config, docs []intent.Document, marks record.Marks) 
 	return inputs, counts, diags
 }
 
-// topKeysOf は文書の最上位の項目を全部（inputs: だけを読むので、ほかの項目を
-// ここでは断らない）。
+// topKeysOf は文書の最上位の field を全部返す（inputs: だけを読むので、ほかの
+// field をここでは reject しない）。
 func topKeysOf(doc intent.Document) []string {
 	if doc.Root == nil {
 		return nil
@@ -294,8 +294,8 @@ func topKeysOf(doc intent.Document) []string {
 	return doc.Root.Keys
 }
 
-// buildSinks は送り先を作り、streams で Events の送り先と監査の送り先に分ける
-// （E-H2・E-L1）。監査を送れないモジュールに streams: [audit] を書けば断る。
+// buildSinks は sink を作り、streams で Events の sink と audit の sink に分ける
+// （E-H2・E-L1）。audit を送れないモジュールに streams: [audit] を書けば reject する。
 func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]core.Sink, map[string]core.AuditSink, []core.Diagnostic) {
 	names := make([]string, 0, len(cfg.Sinks))
 	for n := range cfg.Sinks {
@@ -314,7 +314,7 @@ func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]c
 				known = append(known, k)
 			}
 			sort.Strings(known)
-			diags = append(diags, reject(sc.Origin, "sinks."+n, "知らない送り先のモジュール %q（組み込まれているもの: %s）", sc.Module, strings.Join(known, ", ")))
+			diags = append(diags, reject(sc.Origin, "sinks."+n, "知らない sink のモジュール %q（組み込まれているもの: %s）", sc.Module, strings.Join(known, ", ")))
 			continue
 		}
 		s, err := m(sc.Settings)
@@ -329,7 +329,7 @@ func buildSinks(cfg *config.Config, modules map[string]SinkModule) (map[string]c
 			case config.StreamAudit:
 				a, ok := s.(core.AuditSink)
 				if !ok {
-					diags = append(diags, reject(sc.Origin, "sinks."+n, "送り先のモジュール %q は監査（streams: [audit]）を送れない", sc.Module))
+					diags = append(diags, reject(sc.Origin, "sinks."+n, "sink のモジュール %q は audit（streams: [audit]）を送れない", sc.Module))
 					continue
 				}
 				audits[n] = a
@@ -379,14 +379,14 @@ func reject(o core.Origin, target, format string, a ...any) core.Diagnostic {
 
 // Validate は Expand の出力を検証し、Fields を正規形にした Resource を返す
 // （不変条件 25）。Expand の診断もそのまま含める。checks は Condition の check(名前)
-// で使える確かめ。
+// で使える check。
 func Validate(out expand.Output, providers map[string]core.Provider, checks map[string]core.CheckFunc) ([]core.Resource, []core.Diagnostic) {
 	diags := append([]core.Diagnostic(nil), out.Diagnostics...)
 	res := make([]core.Resource, 0, len(out.Resources))
 	seen := map[core.ID]core.Origin{}
 	for _, r := range out.Resources {
 		target := r.ID.String()
-		// 同じ ID は断る（E-M3・N-M3）。
+		// 同じ ID は reject する（E-M3・N-M3）。
 		if first, dup := seen[r.ID]; dup {
 			diags = append(diags, reject(r.Origin, target, "同じ ID が 2 回宣言されている（先は %s）", first))
 			continue
@@ -408,8 +408,8 @@ func Validate(out expand.Output, providers map[string]core.Provider, checks map[
 	return res, diags
 }
 
-// checkPolicies は同じ名前の Policy と、知らない種類に当てる select を断る
-// （E-M3：当たらない Policy は書き誤り）。
+// checkPolicies は同じ名前の Policy と、知らない type を対象にする select を
+// reject する（E-M3：何も対象にしない Policy は書き誤り）。
 func checkPolicies(ps []core.Policy, providers map[string]core.Provider) []core.Diagnostic {
 	var diags []core.Diagnostic
 	seen := map[string]core.Origin{}
@@ -429,16 +429,16 @@ func checkPolicies(ps []core.Policy, providers map[string]core.Provider) []core.
 	return diags
 }
 
-// kindOf は ID の provider と種類を引く。無ければ断る理由を返す
-// （E-M3：知らない provider・種類は未知の項目）。
+// kindOf は ID の provider と type を引く。無ければ reject の理由を返す
+// （E-M3：知らない provider・type は未知の field）。
 func kindOf(id core.ID, providers map[string]core.Provider) (core.KindSchema, string) {
 	p, ok := providers[id.Provider()]
 	if !ok {
-		return core.KindSchema{}, fmt.Sprintf("provider %q がつなぎ方の設定に無い", id.Provider())
+		return core.KindSchema{}, fmt.Sprintf("provider %q が接続設定に無い", id.Provider())
 	}
 	k, ok := p.Schema().Kinds[id.Kind()]
 	if !ok {
-		return core.KindSchema{}, fmt.Sprintf("provider %q に種類 %q が無い", id.Provider(), id.Kind())
+		return core.KindSchema{}, fmt.Sprintf("provider %q に type %q が無い", id.Provider(), id.Kind())
 	}
 	return k, ""
 }
@@ -451,25 +451,25 @@ func checkResource(r core.Resource, providers map[string]core.Provider, checks m
 		return r, []core.Diagnostic{reject(r.Origin, target, "%s", why)}
 	}
 	if r.Ensure == core.EnsureAbsent {
-		// 観測だけの種類は消せない（E-B7）。消す宣言に比べる項目は無い（E-D3）。
+		// 観測だけの type は消せない（E-B7）。消す宣言に比べる field は無い（E-D3）。
 		if ks.ObserveOnly {
-			diags = append(diags, reject(r.Origin, target, "観測だけの種類に ensure: absent は書けない"))
+			diags = append(diags, reject(r.Origin, target, "観測だけの type に ensure: absent は書けない"))
 		}
 		if len(r.Fields) > 0 {
 			diags = append(diags, reject(r.Origin, target, "ensure: absent に fields は書けない"))
 		}
 	}
-	// Schema に無い項目・型の合わない値は断る（E-M3・E-B12）。
+	// Schema に無い field・型の合わない値は reject する（E-M3・E-B12）。
 	norm := make(core.Fields, len(r.Fields))
 	for _, k := range sortedKeys(r.Fields) {
 		spec, ok := ks.Fields[k]
 		if !ok {
-			diags = append(diags, reject(r.Origin, target, "種類 %q に項目 %q が無い（ある項目: %s）", r.ID.Type, k, strings.Join(sortedKeys(ks.Fields), ", ")))
+			diags = append(diags, reject(r.Origin, target, "type %q に field %q が無い（ある field: %s）", r.ID.Type, k, strings.Join(sortedKeys(ks.Fields), ", ")))
 			continue
 		}
 		v, err := core.Normalize(spec.Type, r.Fields[k])
 		if err != nil {
-			diags = append(diags, reject(r.Origin, target, "項目 %q: %v", k, err))
+			diags = append(diags, reject(r.Origin, target, "field %q: %v", k, err))
 			continue
 		}
 		norm[k] = v
@@ -485,22 +485,22 @@ func checkResource(r core.Resource, providers map[string]core.Provider, checks m
 				diags = append(diags, reject(r.Origin, target, "depends_on %s: %s", d.On, why))
 			}
 		}
-		// when の参照を Schema と突き合わせる（E-M3：知らない種類・項目・確かめは断る）。
-		// desired.項目 はこの宣言の項目。
+		// when の参照を Schema と突き合わせる（E-M3：知らない type・field・check は
+		// reject する）。desired.<field> はこの宣言の field。
 		if d.When != nil {
 			for _, msg := range condition.Lint(d.When, lookup, &ks, hasCheck) {
 				diags = append(diags, reject(r.Origin, target, "depends_on の when %q: %s", d.When.String(), msg))
 			}
 		}
 	}
-	// 2 段の Apply は Transactor を持つ provider だけ（E-B3・E-B8）。確かめの式も
-	// when と同じに突き合わせる（E-B9・N-B9）。
+	// two-phase Apply（Transaction）は Transactor を持つ provider だけ（E-B3・E-B8）。
+	// confirm の式も when と同じに突き合わせる（E-B9・N-B9）。
 	if t := r.Txn(); t != nil {
 		if _, ok := providers[r.ID.Provider()].(core.Transactor); !ok {
-			diags = append(diags, reject(r.Origin, target, "provider %q は 2 段の Apply（apply.transaction）を持たない", r.ID.Provider()))
+			diags = append(diags, reject(r.Origin, target, "provider %q は two-phase Apply（apply.transaction）を持たない", r.ID.Provider()))
 		}
 		if ks.ObserveOnly {
-			diags = append(diags, reject(r.Origin, target, "観測だけの種類に apply.transaction は書けない"))
+			diags = append(diags, reject(r.Origin, target, "観測だけの type に apply.transaction は書けない"))
 		}
 		for _, c := range t.Confirm {
 			for _, msg := range condition.Lint(c.When, lookup, &ks, hasCheck) {
@@ -511,9 +511,9 @@ func checkResource(r core.Resource, providers map[string]core.Provider, checks m
 	return r, diags
 }
 
-// checkGroups は 2 段の Apply の group を確かめる（E-B9・N-B3）。同じ group は
-// 同じ波で 1 回に当てるので、group の中の依存は断る（片方が済むまで待てば
-// group ごと進めない）。
+// checkGroups は two-phase Apply の group を確かめる（E-B9・N-B3）。同じ group は
+// 同じ波で 1 回に Apply するので、group の中の依存は reject する（片方が済むまで
+// 待てば group ごと進めない）。
 func checkGroups(res []core.Resource) []core.Diagnostic {
 	g := graph.New(res)
 	var diags []core.Diagnostic
@@ -533,7 +533,8 @@ func checkGroups(res []core.Resource) []core.Diagnostic {
 }
 
 // checkCycles は宣言どうしの依存（depends_on の id と when が名指しする対象）の
-// 循環を断る（E-J7・E-M3）。宣言に無い依存先（外の持ち主のもの）は辺にしない。
+// 循環を reject する（E-J7・E-M3）。宣言に無い依存先（external owner のもの）は
+// 辺にしない。
 func checkCycles(res []core.Resource) []core.Diagnostic {
 	g := graph.New(res)
 	var diags []core.Diagnostic
@@ -549,31 +550,31 @@ func checkRanges(res []core.Resource, ranges []core.Range, providers map[string]
 	byProvider := map[string][]core.Range{}
 	for _, rg := range ranges {
 		if _, ok := providers[rg.Provider]; !ok {
-			diags = append(diags, reject(rg.Origin, "ranges", "provider %q がつなぎ方の設定に無い", rg.Provider))
+			diags = append(diags, reject(rg.Origin, "ranges", "provider %q が接続設定に無い", rg.Provider))
 			continue
 		}
 		// 同じ引数の Range は重なる（E-K8・N-K7）。意味の上の重なりは provider の
-		// Validator が断る。
+		// Validator が reject する。
 		for _, other := range byProvider[rg.Provider] {
 			if sameArgs(rg.Args, other.Args) {
-				diags = append(diags, reject(rg.Origin, "ranges", "provider %q の範囲 %s が %s の範囲と重なる", rg.Provider, argsString(rg.Args), other.Origin))
+				diags = append(diags, reject(rg.Origin, "ranges", "provider %q の Range %s が %s の Range と重なる", rg.Provider, argsString(rg.Args), other.Origin))
 			}
 		}
 		byProvider[rg.Provider] = append(byProvider[rg.Provider], rg)
-		// 外の持ち主のものを宣言していれば断る（E-D2：触らないものを書き換え・
-		// absent にしない）。
+		// external owner のものを宣言していれば reject する（E-D2：触らないものを
+		// 書き換えない・absent にしない）。
 		for _, r := range res {
 			if r.ID.Provider() != rg.Provider {
 				continue
 			}
 			for _, e := range rg.ExternalOwners {
 				if e.Matches(r.ID) {
-					diags = append(diags, reject(r.Origin, r.ID.String(), "外の持ち主 %q のもの（%s の external_owners）を宣言している", e.Owner, rg.Origin))
+					diags = append(diags, reject(r.Origin, r.ID.String(), "external owner %q のもの（%s の external_owners）を宣言している", e.Owner, rg.Origin))
 				}
 			}
 		}
 	}
-	// provider 固有の検証（範囲の外の宣言・意味の上の重なり、E-I6・E-M3・E-K8）。
+	// provider 固有の検証（Range の外の宣言・意味の上の重なり、E-I6・E-M3・E-K8）。
 	names := make([]string, 0, len(providers))
 	for n := range providers {
 		names = append(names, n)
@@ -625,7 +626,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// IsReject は err が読み込みで断ったもの（終了コード 2）か。
+// IsReject は err が読み込み時の reject（終了コード 2）か。
 func IsReject(err error) bool {
 	var rej *core.RejectError
 	return errors.As(err, &rej)

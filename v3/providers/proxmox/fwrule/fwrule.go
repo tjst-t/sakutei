@@ -14,7 +14,7 @@
 
 // Package fwrule は Proxmox VE の VM の FW の規則（/nodes/<n>/qemu/<id>/
 // firewall/rules の 1 行）の文の形（v2 の pvefwrule を移したもの、E-B6）。
-// provider proxmox の種類 fw-rules と、網の間の許可の実現先が共に使う葉の
+// provider proxmox の type fw-rules と、network policy の実現先が共に使う葉の
 // package。
 //
 // 1 つの規則の文:
@@ -28,8 +28,8 @@
 // （続く空白・タブ・改行を 1 つの空白に、CommentMax バイトで切る）。宣言の
 // comment に ";" は書けない（Comment は観測の ";" を "," に変える）。
 //
-// Sakutei が置いた規則は、Proxmox の comment の頭に印（Marker）を付けて見分ける
-// （Mark・Unmark）。宣言の文の comment には印を書かない（provider が付け外す）。
+// Sakutei が置いた規則は、Proxmox の comment の先頭に marker（Marker）を付けて見分ける
+// （Mark・Unmark）。宣言の文の comment には marker を書かない（provider が付け外す）。
 package fwrule
 
 import (
@@ -44,7 +44,7 @@ import (
 // Sep は規則の並びの区切り。
 const Sep = " ; "
 
-// Marker は Sakutei が置いた規則の comment の頭の印（"sakutei" か
+// Marker は Sakutei が置いた規則の comment の先頭の marker（"sakutei" か
 // "sakutei: <comment>"）。
 const Marker = "sakutei"
 
@@ -54,7 +54,7 @@ const (
 	TypeOut = "out"
 )
 
-// Rule は 1 つの規則。空の欄は書かない（Proxmox に渡さない）。
+// Rule は 1 つの規則。空の field は書かない（Proxmox に渡さない）。
 type Rule struct {
 	Type     string
 	Action   string
@@ -69,7 +69,7 @@ type Rule struct {
 	Log      string
 	// Disabled は enable=0（既定は効いている規則）。
 	Disabled bool
-	// Comment は印を除いた comment。
+	// Comment は marker を除いた comment。
 	Comment string
 }
 
@@ -129,7 +129,7 @@ func Parse(s string) (Rule, error) {
 			return Rule{}, fmt.Errorf("rule %q: a comment cannot hold ';' (it separates rules)", s)
 		}
 		// 観測の側（FromAPI）と同じ正規化をかける。宣言と読み戻しの値がずれて
-		// 毎周 drift にならないように（続く空白・タブ・長すぎる comment）。
+		// 毎 cycle drift にならないように（続く空白・タブ・長すぎる comment）。
 		r.Comment = Comment(comment)
 	}
 	toks := strings.Fields(head)
@@ -169,7 +169,7 @@ func Parse(s string) (Rule, error) {
 	return r, nil
 }
 
-// Validate は値の形を確かめる。
+// Validate は値の形を検証する。
 func (r Rule) Validate() error {
 	switch r.Type {
 	case TypeIn, TypeOut:
@@ -263,7 +263,7 @@ func Canonical(s string) (string, error) {
 	return Join(rules), nil
 }
 
-// CommentMax は comment に入れる長さの上限（バイト、印を除く）。
+// CommentMax は comment に入れる長さの上限（バイト、marker を除く）。
 const CommentMax = 200
 
 // Comment は文（reason など）を規則の comment に入る形にする: 改行・タブ・
@@ -298,7 +298,7 @@ func Comment(s string) string {
 	return strings.TrimRight(out[:cut], " ") + ell
 }
 
-// Mark は印を付けた Proxmox の comment。
+// Mark は marker を付けた Proxmox の comment。
 func Mark(comment string) string {
 	if comment == "" {
 		return Marker
@@ -306,7 +306,7 @@ func Mark(comment string) string {
 	return Marker + ": " + comment
 }
 
-// Unmark は Proxmox の comment から印を外す。印が無ければ false。
+// Unmark は Proxmox の comment から marker を外す。marker が無ければ false。
 func Unmark(comment string) (string, bool) {
 	comment = strings.TrimSpace(comment)
 	if comment == Marker {
@@ -318,7 +318,7 @@ func Unmark(comment string) (string, bool) {
 	return comment, false
 }
 
-// Params は規則を Proxmox の API の引数にする（comment には印を付ける。
+// Params は規則を Proxmox の API の引数にする（comment には marker を付ける。
 // enable はいつも渡す。作るときの既定は 0 のため）。
 func (r Rule) Params() url.Values {
 	v := url.Values{"type": {r.Type}, "action": {r.Action}, "comment": {Mark(r.Comment)}}
@@ -338,7 +338,7 @@ func (r Rule) Params() url.Values {
 	return v
 }
 
-// Unset は r が書かず、was が書いている欄（書き換えで消すもの。Proxmox の
+// Unset は r が書かず、was が書いている field（書き換えで消すもの。Proxmox の
 // PUT の delete に渡す名前）。
 func (r Rule) Unset(was Rule) []string {
 	var out []string
@@ -353,7 +353,7 @@ func (r Rule) Unset(was Rule) []string {
 	return out
 }
 
-// FromAPI は GET の 1 つの項目（キー → 文字列）を規則にする。marked は印の
+// FromAPI は GET の 1 つの要素（キー → 文字列）を規則にする。marked は marker の
 // 有無（comment から外す）。
 func FromAPI(m map[string]string) (r Rule, marked bool) {
 	r = Rule{Type: m["type"], Action: m["action"]}

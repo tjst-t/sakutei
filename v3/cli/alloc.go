@@ -26,25 +26,25 @@ import (
 	"github.com/tjst-t/sakutei/v3/record"
 )
 
-// allocLockWait は alloc release が Record のロックを待つ長さ（常駐の周が終わるのを
-// 待つ）。
+// allocLockWait は alloc release が Record のロックを待つ時間（daemon の cycle が
+// 終わるのを待つ）。
 const allocLockWait = 30 * time.Second
 
 // runAllocRelease は採番の値を人が返す（N-B13・N-J4）。intent のファイルと Record の
-// 写しを同じロックの下で書き換えるので、ほかの人の判断（ファイルを書くだけ）と
-// 違い、Record のロックを取る。reuse: false のプールは返した値も二度と払わない
-// （不変条件 11）。
+// 写しを同じロックの下で書き換えるので、ほかの人の判断のサブコマンド（ファイルを
+// 書くだけ）と違い、Record のロックを取る。reuse: false のプールは返した値も二度と
+// 払い出さない（不変条件 11）。
 func runAllocRelease(ctx context.Context, args []string, stdout, stderr io.Writer, o *options) int {
 	const name = "alloc release"
 	h := newHumanFlags(name, stderr)
 	intentDir := h.fs.String("intent", "", "intent のディレクトリ")
-	reason := h.fs.String("reason", "", "返す理由")
+	reason := h.fs.String("reason", "", "返却の理由")
 	pos, ok := h.parse(name, args, 2, stderr)
 	if !ok {
 		return ExitError
 	}
 	if *intentDir == "" || strings.TrimSpace(*reason) == "" {
-		fmt.Fprintf(stderr, "sakutei %s: --intent と --reason を書く\n", name)
+		fmt.Fprintf(stderr, "sakutei %s: --intent と --reason を指定する\n", name)
 		return ExitError
 	}
 	who, ok := h.who(name, stderr)
@@ -53,7 +53,7 @@ func runAllocRelease(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	v, err := strconv.ParseInt(pos[1], 10, 64)
 	if err != nil {
-		fmt.Fprintf(stderr, "sakutei %s: 値 %q は整数でない（プールの番号を書く）\n", name, pos[1])
+		fmt.Fprintf(stderr, "sakutei %s: 値 %q が整数でない（プールの番号を指定する）\n", name, pos[1])
 		return ExitError
 	}
 	rec, err := record.Open(*h.recd)
@@ -74,7 +74,7 @@ func runAllocRelease(ctx context.Context, args []string, stdout, stderr io.Write
 			break
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintf(stderr, "sakutei %s: Record のロックが %s 取れない（周が長く続いている）。あとでもう一度\n", name, allocLockWait)
+			fmt.Fprintf(stderr, "sakutei %s: Record のロックを %s 待っても取れない（cycle が長く続いている）。時間をおいて再実行する\n", name, allocLockWait)
 			return ExitError
 		}
 		select {
@@ -99,7 +99,7 @@ func runAllocRelease(ctx context.Context, args []string, stdout, stderr io.Write
 		res, field := splitKey(k)
 		if _, err := audit.Append(record.Entry{At: now, Kind: "alloc.release", Resource: res, Fields: []string{field}, Pool: pos[0],
 			Value: &v, By: who, Reason: *reason, Result: "ok"}); err != nil {
-			fmt.Fprintf(stderr, "sakutei %s: 返したが監査に書けない: %v\n", name, err)
+			fmt.Fprintf(stderr, "sakutei %s: 値は返したが監査に書けない: %v\n", name, err)
 			return ExitError
 		}
 	}

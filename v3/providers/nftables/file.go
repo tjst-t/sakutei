@@ -15,7 +15,7 @@
 package nftables
 
 // file.go — ruleset のファイルの読み書き（file の対象）。FW には反映しない（CI や
-// 手元で ruleset を作る・見る用、E-B2）。
+// 手元で ruleset を作る・確かめる用途、E-B2）。
 //
 //	table inet filter {
 //	    chain input {
@@ -28,8 +28,8 @@ package nftables
 //	    set blocked { ... }     # chain の外のものは読まず、書いたまま残す
 //	}
 //
-// 書き換えは chain の塊の行だけを置き換え、ほかの行（set・コメント・flush
-// ruleset など）は書いたまま残す。書き込みは一時ファイルに書いて rename。
+// 書き換えでは chain のブロックの行だけを置き換え、ほかの行（set・コメント・flush
+// ruleset など）は書いたまま残す。書き込みは一時ファイルに書いてから rename する。
 
 import (
 	"errors"
@@ -46,7 +46,7 @@ type chainState struct {
 	def    baseDef
 	rules  []string
 	opaque string // 管理できない理由（空なら管理できる）
-	// file の行の範囲（chain の頭の行〜閉じる行）と字下げ。
+	// file の行の範囲（chain の先頭行〜閉じる行）と字下げ。
 	start, end int
 	indent     string
 }
@@ -55,7 +55,7 @@ type chainState struct {
 type tableState struct {
 	exists bool
 	chains []*chainState
-	// file の行の範囲（table の頭の行〜閉じる行）。
+	// file の行の範囲（table の先頭行〜閉じる行）。
 	start, end int
 	indent     string
 }
@@ -132,7 +132,7 @@ func parseRuleset(text string) (*rulesetFile, error) {
 	}
 	var tbl *tableState
 	var ch *chainState
-	skip := 0 // chain の外の塊（set・map など）の深さ
+	skip := 0 // chain の外のブロック（set・map など）の深さ
 	for i, raw := range rf.lines {
 		line := strings.TrimSpace(stripHash(raw))
 		where := fmt.Sprintf("%d 行目", i+1)
@@ -144,7 +144,7 @@ func parseRuleset(text string) (*rulesetFile, error) {
 			f := strings.Fields(line)
 			if len(f) >= 1 && f[0] == "table" {
 				if len(f) != 4 || f[3] != "{" || !families[f[1]] {
-					return nil, fmt.Errorf("%s: table の頭は「table <family> <name> {」の 1 行で書く", where)
+					return nil, fmt.Errorf("%s: table の先頭行は「table <family> <name> {」の 1 行で書く", where)
 				}
 				key := f[1] + "/" + f[2]
 				if rf.tables[key] != nil {
@@ -155,7 +155,7 @@ func parseRuleset(text string) (*rulesetFile, error) {
 				continue
 			}
 			if braces(line) != 0 {
-				return nil, fmt.Errorf("%s: table の外の塊は扱わない", where)
+				return nil, fmt.Errorf("%s: table の外のブロックは扱わない", where)
 			}
 		case ch == nil:
 			if line == "}" {
@@ -165,7 +165,7 @@ func parseRuleset(text string) (*rulesetFile, error) {
 			f := strings.Fields(line)
 			if len(f) >= 1 && f[0] == "chain" {
 				if len(f) != 3 || f[2] != "{" {
-					return nil, fmt.Errorf("%s: chain の頭は「chain <name> {」の 1 行で書く", where)
+					return nil, fmt.Errorf("%s: chain の先頭行は「chain <name> {」の 1 行で書く", where)
 				}
 				if tbl.find(f[1]) != nil {
 					return nil, fmt.Errorf("%s: chain %s が 2 回ある", where, f[1])
@@ -189,7 +189,7 @@ func parseRuleset(text string) (*rulesetFile, error) {
 		}
 	}
 	if tbl != nil || skip > 0 {
-		return nil, errors.New("塊が閉じていない")
+		return nil, errors.New("ブロックが閉じていない")
 	}
 	return rf, nil
 }
@@ -276,12 +276,12 @@ func (rf *rulesetFile) set(op chainOp) {
 	}
 }
 
-// splice は lines[from:to] を block で置き換え、読み直す（行の番号を合わせる）。
+// splice は lines[from:to] を block で置き換え、パースし直す（行番号を合わせる）。
 func (rf *rulesetFile) splice(from, to int, block []string) {
 	lines := append(append(append([]string(nil), rf.lines[:from]...), block...), rf.lines[to:]...)
 	re, err := parseRuleset(strings.Join(lines, "\n"))
 	if err != nil {
-		// 書いた塊が読めないのは作り方の誤り。
+		// 書いたブロックを読めないのは実装のバグ。
 		panic(fmt.Sprintf("nftables: 書いた ruleset を読めない: %v", err))
 	}
 	*rf = *re

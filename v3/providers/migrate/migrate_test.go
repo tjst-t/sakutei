@@ -56,7 +56,7 @@ const www = `resources:
     fields: {name: www.example.com., type: A, value: 192.0.2.20, ttl: "300"}
 `
 
-// 書き直せないものは黙って落とさず、全部を挙げて断る（Refusal）。
+// 書き直せないものは黙って落とさず、全部を挙げてエラーにする（Refusal）。
 func TestRefusesWhatHasNoHome(t *testing.T) {
 	cases := map[string]struct {
 		intent string
@@ -67,15 +67,15 @@ func TestRefusesWhatHasNoHome(t *testing.T) {
 			[]string{"scope（ラベル）が要る"}},
 		"planned_change の承認者": {www + "planned_change:\n  scope: {zone: a}\n  kind: update\n  max_count: 3\n  window: \"2026-11-05 00:00 .. 2026-11-06 00:00\"\n", nil,
 			[]string{"承認者が分からない"}},
-		"窓の中だけ知らせる時間帯": {www + "remediation:\n  default: auto\n  schedule:\n    - {window: \"Sat 02:00-04:00\", mode: alert-only}\n", nil,
-			[]string{"窓の中だけ知らせる窓は書けない"}},
+		"window の中だけ通知する時間帯": {www + "remediation:\n  default: auto\n  schedule:\n    - {window: \"Sat 02:00-04:00\", mode: alert-only}\n", nil,
+			[]string{"window の中だけ通知する window は書けない"}},
 		"disruption": {"resources:\n  - {provider: fake, id: n1, fields: {v: \"2\"}}\nworkflows:\n  - workflow: w\n    target: {provider: fake}\n    disruption: {estimate: 20m}\n    stages: [{name: s, targets: [n1]}]\n    steps: [{apply: {v: \"2\"}}]\n", nil,
-			[]string{"disruption は新しいコアの手順の disruption に当たるが、まだ受け皿が無い"}},
-		"remediation の知らない項目": {www + "remediation: {mode: Auto}\n", nil, []string{"remediation.mode は書き直せない"}},
+			[]string{"disruption は新しいコアの Procedure の disruption に当たるが、まだ受け皿が無い"}},
+		"remediation の知らない field": {www + "remediation: {mode: Auto}\n", nil, []string{"remediation.mode は書き直せない"}},
 		"知らない provider": {"resources:\n  - {provider: proxmox-vm, id: web, fields: {cores: \"2\"}}\n", nil,
 			[]string{"provider proxmox-vm は書き直せない"}},
-		"知らない項目": {"resources:\n  - provider: dnszone\n    id: www.example.com./A\n    ready_conditions: {x: y}\n    fields: {value: 192.0.2.20}\n", nil,
-			[]string{"項目 ready_conditions は書き直せない"}},
+		"知らない field": {"resources:\n  - provider: dnszone\n    id: www.example.com./A\n    ready_conditions: {x: y}\n    fields: {value: 192.0.2.20}\n", nil,
+			[]string{"field ready_conditions は書き直せない"}},
 		"知らない最上位": {www + "network_policy: {}\n", nil, []string{"最上位の network_policy は書き直せない"}},
 		"scope だけで分かれていた ID": {"resources:\n  - {provider: dnszone, id: www.example.com./A, scope: {site: a}, fields: {value: 192.0.2.1}}\n  - {provider: dnszone, id: www.example.com./A, scope: {site: b}, fields: {value: 192.0.2.2}}\n", nil,
 			[]string{"dnszone/site=a/www.example.com./A と dnszone/site=b/www.example.com./A が同じ dns/record/www.example.com./A になる"}},
@@ -98,7 +98,7 @@ func TestRefusesWhatHasNoHome(t *testing.T) {
 			_, err := Convert(in)
 			var ref *Refusal
 			if !errors.As(err, &ref) {
-				t.Fatalf("断らない: %v", err)
+				t.Fatalf("エラーにならない: %v", err)
 			}
 			for _, w := range tc.want {
 				if !strings.Contains(err.Error(), w) {
@@ -109,7 +109,7 @@ func TestRefusesWhatHasNoHome(t *testing.T) {
 	}
 }
 
-// 断ったときは何も書かず、終了コード 2。書き出す先が空でなければ上書きしない。
+// エラーにしたときは何も書かず、終了コード 2。出力先が空でなければ上書きしない。
 func TestRunWritesNothingWhenRefused(t *testing.T) {
 	w := work(t, www+"network_policy: {}\n")
 	var so, se bytes.Buffer
@@ -118,7 +118,7 @@ func TestRunWritesNothingWhenRefused(t *testing.T) {
 		t.Fatalf("終了コード %d\n%s", code, se.String())
 	}
 	if _, err := os.Stat(out); !os.IsNotExist(err) {
-		t.Fatal("断ったのに書いた")
+		t.Fatal("エラーにしたのに書いた")
 	}
 	os.MkdirAll(out, 0o755)
 	os.WriteFile(filepath.Join(out, "keep"), nil, 0o644)
@@ -163,8 +163,8 @@ func TestEmittedIntentReadsBack(t *testing.T) {
 	}
 }
 
-// v2 の採番の記録（--alloc-store）を intent の採番のファイルに写す。新しいコアは
-// 払った値を払い直さない（不変条件 11）。値は v2 と同じく文字列にして入れる。
+// v2 の採番の記録（--alloc-store）を intent の採番のファイルにコピーする。新しいコアは
+// 払い出した値を払い出し直さない（不変条件 11）。値は v2 と同じく文字列にして入れる。
 func TestAllocStoreCarriesPaidValues(t *testing.T) {
 	w := work(t, `pools:
   - {name: ports, range: "8000-8009"}
@@ -191,7 +191,7 @@ resources:
 		t.Fatalf("採番のファイル:\n%s", data)
 	}
 	if !strings.Contains(se.String(), "予約（reserved）のまま") {
-		t.Errorf("予約を書き写さなかったことを知らせない:\n%s", se.String())
+		t.Errorf("予約をコピーしなかったことを通知しない:\n%s", se.String())
 	}
 	so.Reset()
 	se.Reset()
@@ -199,7 +199,7 @@ resources:
 		&so, &se, modules()...); code != cli.ExitOK {
 		t.Fatalf("plan: %d\n%s%s", code, so.String(), se.String())
 	}
-	// app1 は v2 で払った 8007、app2 は空きの先頭 8000。
+	// app1 は v2 で払い出した 8007、app2 は空きの先頭 8000。
 	for _, s := range []string{`+ dns/record/_port.app1.example.com./TXT`, `value: "8007"`, `value: "8000"`} {
 		if !strings.Contains(so.String(), s) {
 			t.Errorf("%q が無い\n%s", s, so.String())
@@ -221,8 +221,8 @@ func TestRemediationDefault(t *testing.T) {
 	}
 }
 
-// v2 の起動の引数の予算と mode は、全部に当たる Policy にする（新しいコアは方針を
-// 起動の引数に持たない）。
+// v2 の起動時の引数の budget と mode は、全部を選ぶ Policy にする（新しいコアは方針を
+// 起動時の引数に持たない）。
 func TestRuntimeFlagsBecomePolicy(t *testing.T) {
 	in := input(work(t, www), "max-changes-per-cycle", "5", "max-destructive-per-cycle", "1",
 		"max-destructive-per-window", "3", "window-duration", "24h", "mode", "alert-only")
@@ -242,8 +242,8 @@ func TestRuntimeFlagsBecomePolicy(t *testing.T) {
 	}
 }
 
-// deletion_policy: PruneWithinScope は範囲の prune: true に、v2 の scope はラベルに
-// する。範囲（ゾーン）は設定から intent に動く。
+// deletion_policy: PruneWithinScope は Range の prune: true に、v2 の scope はラベルに
+// する。Range（ゾーン）は設定から intent に移る。
 func TestPruneAndScopeMoveIntoIntent(t *testing.T) {
 	out, err := Convert(input(work(t, `resources:
   - provider: dnszone
@@ -261,14 +261,14 @@ func TestPruneAndScopeMoveIntoIntent(t *testing.T) {
 		t.Fatalf("%+v\n%s", d, out.Intent["main.yaml"])
 	}
 	if strings.Contains(out.Config, "zone:") {
-		t.Fatalf("範囲がつなぎ方の設定に残った:\n%s", out.Config)
+		t.Fatalf("Range が接続設定に残った:\n%s", out.Config)
 	}
 	if out.IDs["dnszone/site=a/www.example.com./A"] != "dns/record/www.example.com./A" {
 		t.Fatalf("%v", out.IDs)
 	}
 }
 
-// 承認者は名前の並び。ロールの無い gate に --approver が無ければ断る。
+// 承認者は名前の並び。ロールの無い gate に --approver が無ければエラーにする。
 func TestGateNeedsApprovers(t *testing.T) {
 	wf := `resources:
   - {provider: fake, id: n1, fields: {version: "2"}}
@@ -296,7 +296,7 @@ workflows:
 	}
 }
 
-// planned_change は別枠の Policy にする。承認者は承認できる人（quorum.of）、数と
+// planned_change は allow の Policy にする。承認者は承認できる人（quorum.of）、数と
 // separation はプロファイル、v2 の監査ログで使った数を max_count から引く。
 func TestPlannedChangeBecomesLane(t *testing.T) {
 	pc := `profile: enterprise
@@ -337,7 +337,7 @@ planned_change:
 	}
 }
 
-// remediation の時間帯は窓の Policy にする（default が alert-only で窓が auto）。
+// remediation の時間帯は window の Policy にする（default が alert-only で window が auto）。
 func TestRemediationScheduleBecomesWindows(t *testing.T) {
 	out, err := Convert(input(work(t, www+"remediation:\n  tz: Asia/Tokyo\n  schedule:\n    - {window: \"Sat 02:00-04:00\", mode: auto}\n    - {window: \"22:00-23:00\", mode: auto}\n")))
 	if err != nil {
@@ -346,7 +346,7 @@ func TestRemediationScheduleBecomesWindows(t *testing.T) {
 	if !strings.Contains(out.Intent["main.yaml"], `- "Sat 02:00-04:00 Asia/Tokyo"`) || !strings.Contains(out.Intent["main.yaml"], `- "22:00-23:00 Asia/Tokyo"`) {
 		t.Fatal(out.Intent["main.yaml"])
 	}
-	// "*" が auto ならいつでも当てる（Policy を書かない）。
+	// "*" が auto ならいつでも Apply する（Policy を書かない）。
 	out, err = Convert(input(work(t, www+"remediation:\n  schedule:\n    - {window: \"*\", mode: auto}\n")))
 	if err != nil || strings.Contains(out.Intent["main.yaml"], "policies") {
 		t.Fatalf("%v %s", err, out.Intent["main.yaml"])

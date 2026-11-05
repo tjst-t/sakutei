@@ -32,7 +32,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/sdk/fake"
 )
 
-// 観測の答えの種類。
+// 観測の答えの分類。
 type obsKind int
 
 const (
@@ -45,30 +45,30 @@ const (
 	obsKinds
 )
 
-// world は 1 周ぶんの偽の現実と、そこで消してよいかを外から判定する材料。
+// world は 1 cycle ぶんの偽の現実と、そこで消してよいかを外から判定する材料。
 type world struct {
 	obs         map[core.ID]obsKind
-	listBroken  bool // List の誤りか不完全
+	listBroken  bool // List のエラーか不完全
 	hidden      map[core.ID]bool
 	observeErr  bool
 	ineffective []core.ID
 }
 
 // 性質のテスト（§4 の「性質」、E-P1）：偽の provider にランダムな観測の並び・List の
-// 欠け・予算・mode を与えて周を重ね、どの周でも次が成り立つことを確かめる。
+// 欠け・budget・mode を与えて cycle を重ね、どの cycle でも次が成り立つことを確かめる。
 //
 //   - 不変条件 3：Unknown・Converging・答えなし・Observe の失敗の対象に書かない。
 //     Unknown の上流の下流に書かない。
-//   - 不変条件 6・7・9：宣言外を消すのは、prune の範囲で、List が完全で、List に
-//     出て、外の持ち主でなく、観測が Present で、消せる種類で、前の周の件数があり、
+//   - 不変条件 6・7・9：unmanaged を消すのは、prune の Range で、List が完全で、List に
+//     出て、external owner でなく、観測が Present で、消せる type で、前の cycle の件数があり、
 //     急減していないときだけ。
-//   - 不変条件 20：書いた数が予算を超えない。予算で止めた周は 1 件も書かない
+//   - 不変条件 20：書いた数が budget を超えない。budget で halt した cycle は 1 件も書かない
 //     （超過分だけを保留しない）。
-//   - 不変条件 1：Record のどのファイルにも観測の値が現れない（通知の状態・送り出しの
-//     列を含む）。
-//   - 不変条件 29：観測が Unknown・作業中・答えなし・Observe の失敗の対象と、List が
-//     壊れた周の範囲の Event を resolved にしない。
-//   - 不変条件 28：送れない sink があっても周の誤りにならない。
+//   - 不変条件 1：Record のどのファイルにも観測の値が現れない（通知の状態・outbox を
+//     含む）。
+//   - 不変条件 29：観測が Unknown・Converging・答えなし・Observe の失敗の対象と、List が
+//     壊れた cycle の Range の Event を resolved にしない。
+//   - 不変条件 28：送れない sink があっても cycle のエラーにならない。
 func TestCycleProperties(t *testing.T) {
 	seeds := 400
 	if testing.Short() || raceEnabled {
@@ -112,7 +112,7 @@ func property(t *testing.T, seed int64) {
 		declaredSet[declared[i].ID] = &declared[i]
 	}
 
-	// 宣言外：消せる種類・中身を失う種類・観測だけ・外の持ち主。
+	// unmanaged：消せる type・中身を失う type・観測だけ・external owner。
 	var strays []core.ID
 	for i := 0; i < rng.Intn(8); i++ {
 		kind := []string{"rec", "rec", "rec", "vol", "ro"}[rng.Intn(5)]
@@ -123,7 +123,7 @@ func property(t *testing.T, seed int64) {
 		strays = append(strays, rid(kind, name))
 	}
 
-	// 予算と mode。
+	// budget と mode。
 	switch rng.Intn(4) {
 	case 0:
 		h.in.Policies = []core.Policy{{Name: "b", Select: core.Selector{All: true}, Budget: &core.Budget{
@@ -136,7 +136,7 @@ func property(t *testing.T, seed int64) {
 	}
 
 	marker := fmt.Sprintf("obs-%d-", seed)
-	ineffective := map[core.ID]int{} // 続いた効かない Apply（不変条件 14）
+	ineffective := map[core.ID]int{} // 続いた ineffective Apply（不変条件 14）
 	for cyc := 0; cyc < 6; cyc++ {
 		h.p = fake.New(schema)
 		h.in.Providers["p"] = h.p
@@ -148,7 +148,7 @@ func property(t *testing.T, seed int64) {
 		for i, id := range all {
 			k := obsKind(rng.Intn(int(obsKinds)))
 			if _, ok := declaredSet[id]; !ok && rng.Intn(2) == 0 {
-				k = obsSame // 宣言外は Present を多めに
+				k = obsSame // unmanaged は Present を多めに
 			}
 			w.obs[id] = k
 			val := fmt.Sprintf("%s%d", marker, i) // Record に出てはいけない観測の値
@@ -197,7 +197,7 @@ func property(t *testing.T, seed int64) {
 			t.Fatal(err)
 		}
 		h.clock.t = h.clock.t.Add(time.Duration(rng.Intn(50)) * time.Minute)
-		// 送れない sink を混ぜても周は変わらない（不変条件 28）。
+		// 送れない sink を混ぜても cycle は変わらない（不変条件 28）。
 		h.in.Sinks = map[string]core.Sink{"flaky": failSink{fail: rng.Intn(2) == 0}}
 		r := h.run()
 		check(t, cyc, h, w, declaredSet, prev, r)
@@ -223,7 +223,7 @@ func property(t *testing.T, seed int64) {
 		t.Fatal(err)
 	}
 	if _, err := record.Verify(h.rec.Dir()); err != nil {
-		t.Fatalf("監査の鎖: %v", err)
+		t.Fatalf("audit のハッシュチェーン: %v", err)
 	}
 }
 
@@ -231,7 +231,7 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 	t.Helper()
 	fail := func(format string, a ...any) {
 		t.Helper()
-		t.Fatalf("周 %d: %s\nresult: %+v", cyc, fmt.Sprintf(format, a...), r)
+		t.Fatalf("cycle %d: %s\nresult: %+v", cyc, fmt.Sprintf(format, a...), r)
 	}
 	rg := h.in.Ranges[0]
 	writes := h.p.Writes()
@@ -255,7 +255,7 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 		if res != nil {
 			for _, d := range res.DependsOn {
 				if dk := w.obs[d.On]; wr.Op == "apply" && (dk == obsUnknown || dk == obsConverging || dk == obsOmit) {
-					fail("上流 %s が確かでないのに下流 %s を当てた", d.On, wr.ID)
+					fail("上流 %s が確かでないのに下流 %s を Apply した", d.On, wr.ID)
 				}
 			}
 			if wr.Op == "delete" {
@@ -268,33 +268,33 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 			}
 			continue
 		}
-		// 宣言外を消してよい条件（不変条件 6・7・9）。
+		// unmanaged を消してよい条件（不変条件 6・7・9）。
 		destructive++
 		switch {
 		case wr.Op != "delete":
-			fail("宣言外 %s に apply した", wr.ID)
+			fail("unmanaged %s に apply した", wr.ID)
 		case !rg.Prune:
-			fail("prune: false の範囲で %s を消した", wr.ID)
+			fail("prune: false の Range で %s を消した", wr.ID)
 		case w.listBroken:
 			fail("List が不完全なのに %s を消した", wr.ID)
 		case w.hidden[wr.ID]:
 			fail("List に出ない %s を消した", wr.ID)
 		case strings.HasPrefix(wr.ID.Name, "ext-") && len(rg.ExternalOwners) > 0:
-			fail("外の持ち主の %s を消した", wr.ID)
+			fail("external owner の %s を消した", wr.ID)
 		case k != obsSame && k != obsDiff:
 			fail("観測が Present でない %s を消した", wr.ID)
 		case wr.ID.Kind() != "rec":
-			fail("消せない種類の %s を消した", wr.ID)
+			fail("消せない type の %s を消した", wr.ID)
 		case !hasBase:
-			fail("前の周の件数が無いのに %s を消した", wr.ID)
+			fail("前の cycle の件数が無いのに %s を消した", wr.ID)
 		case dropped:
 			fail("急減（%d → %d、max_drop %d%%）なのに %s を消した", base, listed, rg.MaxDrop, wr.ID)
 		}
 	}
 
-	// 不変条件 20：予算を超えない。予算で止めた波は 1 件も書かない（超過分だけを
-	// 保留しない）。当てると決めたものは全部当てる。前の波で当てたものは、同じ周の
-	// 観測し直し（E-J7）の波が予算で止まっても残る。
+	// 不変条件 20：budget を超えない。budget で halt した wave は 1 件も書かない（超過分だけを
+	// 保留しない）。Apply すると決めたものは全部 Apply する。前の wave で Apply したものは、同じ cycle の
+	// 再観測（E-J7）の wave が budget で halt しても残る。
 	budgetHalt := false
 	for _, hl := range r.Halts {
 		budgetHalt = budgetHalt || strings.HasPrefix(hl.Scope, "policy ")
@@ -307,7 +307,7 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 	if budgetHalt {
 		for _, c := range r.Changes {
 			if c.Action == plan.ActApply && c.Wave == 0 {
-				fail("予算で止めた周に、当てずに残した %s がある", c.Resource)
+				fail("budget で halt した cycle に、Apply せずに残した %s がある", c.Resource)
 			}
 		}
 	}
@@ -318,7 +318,7 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 		}
 	}
 	if applied != len(writes) {
-		fail("当てると決めた %d 件のうち %d 件だけ書いた", applied, len(writes))
+		fail("Apply すると決めた %d 件のうち %d 件だけ書いた", applied, len(writes))
 	}
 	if len(h.in.Policies) == 1 && h.in.Policies[0].Budget != nil {
 		b := h.in.Policies[0].Budget
@@ -331,11 +331,11 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 		if b.DestructivePerWindow != core.Unlimited {
 			used := prev.Window("b", b.Window, h.clock.t).Destructive
 			if used+destructive > b.DestructivePerWindow {
-				fail("窓の destructive_per_window %d を超えた（%d+%d）", b.DestructivePerWindow, used, destructive)
+				fail("window の destructive_per_window %d を超えた（%d+%d）", b.DestructivePerWindow, used, destructive)
 			}
 		}
 	}
-	// report の Policy に当たる書き込みは無い。
+	// report の Policy に該当する書き込みは無い。
 	if len(h.in.Policies) == 1 && h.in.Policies[0].Mode == core.ModeReport && len(writes) > 0 {
 		for _, wr := range writes {
 			if wr.ID.Kind() == "rec" {
@@ -345,9 +345,9 @@ func check(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*cor
 	}
 }
 
-// checkIneffective は不変条件 14 を確かめる：同じ宣言の Resource に、効かない
-// Apply を上限（既定 3）を超えて続けない。効いた・宣言どおりだった周に数え直す。
-// 観測が確かでない周は数えも戻しもしない。
+// checkIneffective は不変条件 14 を確かめる：同じ宣言の Resource に、ineffective
+// Apply を上限（既定 3）を超えて続けない。効いた・宣言どおりだった cycle に数え直す。
+// 観測が確かでない cycle は数えも戻しもしない。
 func checkIneffective(t *testing.T, cyc int, h *harness, w world, declared map[core.ID]*core.Resource, count map[core.ID]int) {
 	t.Helper()
 	applied := map[core.ID]bool{}
@@ -366,7 +366,7 @@ func checkIneffective(t *testing.T, cyc int, h *harness, w world, declared map[c
 		case applied[id] && ineff[id]:
 			count[id]++
 			if count[id] > core.DefaultMaxIneffectiveApplies {
-				t.Fatalf("周 %d: %s に効かない Apply を %d 回続けた", cyc, id, count[id])
+				t.Fatalf("cycle %d: %s に ineffective Apply を %d 回続けた", cyc, id, count[id])
 			}
 		case applied[id]:
 			count[id] = 0
@@ -392,10 +392,10 @@ func (s failSink) Deliver(context.Context, []core.Event) error {
 func checkEvents(t *testing.T, cyc int, w world, r plan.Result) {
 	t.Helper()
 	if len(r.Errors) > 0 {
-		t.Fatalf("周 %d: 周の誤り %v", cyc, r.Errors)
+		t.Fatalf("cycle %d: cycle のエラー %v", cyc, r.Errors)
 	}
 	if len(r.Events) == 0 || r.Events[len(r.Events)-1].Kind != "CycleDone" {
-		t.Fatalf("周 %d: CycleDone が無い: %+v", cyc, r.Events)
+		t.Fatalf("cycle %d: CycleDone が無い: %+v", cyc, r.Events)
 	}
 	for _, e := range r.Events {
 		if e.Type != core.StateEvent || e.State != core.Resolved {
@@ -403,7 +403,7 @@ func checkEvents(t *testing.T, cyc int, w world, r plan.Result) {
 		}
 		if e.Resource == "" {
 			if w.listBroken && strings.HasPrefix(e.Scope, "range ") {
-				t.Fatalf("周 %d: List が壊れた周に %s を resolved にした", cyc, e.Key())
+				t.Fatalf("cycle %d: List が壊れた cycle に %s を resolved にした", cyc, e.Key())
 			}
 			continue
 		}
@@ -413,17 +413,17 @@ func checkEvents(t *testing.T, cyc int, w world, r plan.Result) {
 		}
 		k, seen := w.obs[id]
 		blind := w.observeErr || k == obsUnknown || k == obsConverging || k == obsOmit
-		// 宣言外は完全な List に出なければ無いとみなす（List が集合の正、不変条件 8）。
+		// unmanaged は完全な List に出なければ無いとみなす（List が集合の正、不変条件 8）。
 		// 偽の provider の List は Present だけを返す。
 		if e.Kind == "Unmanaged" {
 			listed := !w.hidden[id] && (k == obsSame || k == obsDiff || k == obsOmit)
 			blind = listed && (w.observeErr || k == obsOmit)
 		}
 		if seen && blind && e.Kind != "Unknown" && e.Kind != "Converging" {
-			t.Fatalf("周 %d: 観測できなかった %s を resolved にした", cyc, e.Key())
+			t.Fatalf("cycle %d: 観測できなかった %s を resolved にした", cyc, e.Key())
 		}
 		if w.listBroken && e.Kind == "Unmanaged" {
-			t.Fatalf("周 %d: List が壊れた周に宣言外 %s を resolved にした", cyc, e.Key())
+			t.Fatalf("cycle %d: List が壊れた cycle に unmanaged %s を resolved にした", cyc, e.Key())
 		}
 	}
 }

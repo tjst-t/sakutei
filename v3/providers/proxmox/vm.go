@@ -14,21 +14,21 @@
 
 package proxmox
 
-// vm.go — 種類 vm（E-D1・N-D1）。宣言した項目だけを比べ、書かないものは触らない。
+// vm.go — type vm（E-D1・N-D1）。宣言した field だけを比べ、書かないものは触らない。
 //
 //   - vmid（数）：作るときに使う（宣言するか採番で配る）。今の VM と違えば Apply の
-//     誤り（番号を変えない）。node：省けばクラスタの node。今の VM と違えば Apply の
-//     誤り（移行は扱わない）。
+//     エラー（番号を変えない）。node：省けばクラスタの node。今の VM と違えば Apply の
+//     エラー（移行は扱わない）。
 //   - template（名前か vmid）：作るときだけ使う full clone の元。観測せず、在る VM
 //     とは比べない（FieldSpec.Match）。
 //   - pool：作るときに渡し、違えば移す（"" は pool から外す）。pool は作らない。
 //   - cores（数）・memory（"2048"＝MiB・"2048M"・"2G"）。
-//   - disks："<slot> storage=<storage> size=<大きさ> [keep]" か "<slot> volume=<storage>:<volume>
-//     [size=<大きさ>] [keep]" を "," でつなぐ。宣言した slot だけを比べる。大きく
-//     するのはよい（resize）。小さくする・ストレージを変えるのは Apply の誤り。keep は
-//     消さない印（VM の tags の sakutei-keep-<slot>）。volume= は slot が空のときに
+//   - disks："<slot> storage=<storage> size=<サイズ> [keep]" か "<slot> volume=<storage>:<volume>
+//     [size=<サイズ>] [keep]" を "," でつなぐ。宣言した slot だけを比べる。大きく
+//     するのはよい（resize）。小さくする・ストレージを変えるのは Apply のエラー。keep は
+//     消さない marker（VM の tags の sakutei-keep-<slot>）。volume= は slot が空のときに
 //     既にある volume を付ける（ほかの VM のものなら Proxmox の reassign で付け替え
-//     る。付いたあとは volume の名前を比べない）。付け替えは承認の要る壊す変更
+//     る。付いたあとは volume の名前を比べない）。付け替えは承認の要る破壊的変更
 //     （Classify、E-C2・N-C12・N-D10）。
 //   - nics："<slot> bridge=<bridge> [vlan=<tag>] [mac=..] [model=..] [firewall=0|1]
 //     [mtu=..]"。宣言した slot だけを、bridge と vlan はいつも、ほかは書いたときだけ
@@ -44,8 +44,8 @@ package proxmox
 //     いる）」なら reboot、あれば never。
 //
 // 観測の値は VM の設定が言う値（pending があればその値）。宣言どおりの値が pending に
-// あれば差分にならず、重ねて書かない。観測だけの項目：cluster・name・lock・
-// pending（再起動を待つ項目の名前）・current_values（それらの今効いている値、JSON）。
+// あれば差分にならず、重ねて書かない。観測だけの field：cluster・name・lock・
+// pending（再起動を待つ field の名前）・current_values（それらの今効いている値、JSON）。
 
 import (
 	"context"
@@ -60,7 +60,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// 項目の名前。
+// field の名前。
 const (
 	FieldCluster       = "cluster"
 	FieldName          = "name"
@@ -95,26 +95,26 @@ const (
 	ApplyPendingNever  = "never"
 )
 
-// 一回きりの操作（Invoker、Procedure から、E-D1・N-D4）。
+// 1 回だけの操作（Invoker、Procedure から、E-D1・N-D4）。
 const (
 	OpReboot = "reboot" // 正常な再起動（pending の変更が効く）。止まっていれば起動
-	OpReset  = "reset"  // 強制の再起動（壊す）。止まっていれば起動
-	OpStop   = "stop"   // 強制の停止（壊す。正常停止で止まらない VM に）
+	OpReset  = "reset"  // 強制の再起動（破壊的）。止まっていれば起動
+	OpStop   = "stop"   // 強制の停止（破壊的。正常停止で止まらない VM に）
 )
 
-// configFields は VM の設定から観測し、pending を比べる項目。
+// configFields は VM の設定から観測し、pending を比べる field。
 var configFields = []string{FieldCores, FieldMemory, FieldDisks, FieldNICs, FieldCIUser, FieldCISSHKeys, FieldCIIP, FieldCIGateway, FieldCIDNS, FieldCIUpgrade}
 
 var ciFields = []string{FieldCIUser, FieldCISSHKeys, FieldCIIP, FieldCIGateway, FieldCIDNS, FieldCIUpgrade}
 
-// declarableVM は宣言できる項目（ほかは観測だけ）。
+// declarableVM は宣言できる field（ほかは観測だけ）。
 var declarableVM = []string{FieldCluster, FieldName, FieldVMID, FieldNode, FieldTemplate, FieldPool, FieldCores, FieldMemory, FieldDisks, FieldNICs, FieldFirewall,
 	FieldCIUser, FieldCISSHKeys, FieldCIIP, FieldCIGateway, FieldCIDNS, FieldCIUpgrade, FieldPower, FieldApplyPending}
 
 // poolName は pool の名前（Proxmox の決まり。入れ子は "/" で 3 段まで）。
 var poolName = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+){0,2}$`)
 
-// vmFields は種類 vm の項目。等しさで比べられないもの（書き方の違い・宣言した
+// vmFields は type vm の field。等しさで比べられないもの（書き方の違い・宣言した
 // slot・キーだけ・作るときだけ）は Match で比べる（E-I7・E-D1）。
 func vmFields() map[string]core.FieldSpec {
 	str := core.FieldSpec{Type: core.String}
@@ -157,14 +157,14 @@ func vmFields() map[string]core.FieldSpec {
 	}
 }
 
-// validateVM は宣言を確かめる（現実に触れない、E-I7）。
+// validateVM は宣言を検証する（現実に触れない、E-I7）。
 func validateVM(c *Cluster, id core.ID, f core.Fields) []string {
 	var msgs []string
 	bad := func(format string, a ...any) { msgs = append(msgs, fmt.Sprintf(format, a...)) }
 	_, vm, _ := split(id)
 	for _, k := range sortedKeys(f) {
 		if !contains(declarableVM, k) {
-			bad("項目 %q は観測だけで宣言できない（宣言できる項目: %s）", k, strings.Join(declarableVM, ", "))
+			bad("field %q は観測だけで宣言できない（宣言できる field: %s）", k, strings.Join(declarableVM, ", "))
 		}
 	}
 	s := func(k string) (string, bool) {
@@ -231,7 +231,7 @@ func validateVM(c *Cluster, id core.ID, f core.Fields) []string {
 		bad("ci_user %q に空白と ':' は書けない", v)
 	}
 	if v, ok := s(FieldPower); ok && v != PowerRunning && v != PowerStopped {
-		bad("power %q は %s か %s（再起動・強制の停止は一回きりの操作：apply_pending: reboot か、手順の invoke %s・%s・%s）", v, PowerRunning, PowerStopped, OpReboot, OpReset, OpStop)
+		bad("power %q は %s か %s（再起動・強制の停止は 1 回だけの操作：apply_pending: reboot か、Procedure の invoke %s・%s・%s）", v, PowerRunning, PowerStopped, OpReboot, OpReset, OpStop)
 	}
 	if v, ok := s(FieldApplyPending); ok && v != ApplyPendingReboot && v != ApplyPendingNever {
 		bad("apply_pending %q は %s か %s", v, ApplyPendingReboot, ApplyPendingNever)
@@ -302,7 +302,7 @@ func configState(cfg map[string]string) map[string]string {
 	return out
 }
 
-// pendingFields は再起動を待つ項目の名前（configFields の順）。
+// pendingFields は再起動を待つ field の名前（configFields の順）。
 func pendingFields(cur, next map[string]string) []string {
 	now, after := configState(cur), configState(next)
 	var names []string
@@ -382,7 +382,7 @@ func observeVolume(ctx context.Context, c *Cluster, cl *Client, r *Resource, key
 }
 
 // fieldMatches は宣言の値 want が観測の正規形 have と同じかを返す。宣言どおりに
-// できない違い（ディスクを小さくする・ストレージを変える）は error（Apply が断る）。
+// できない違い（ディスクを小さくする・ストレージを変える）は error（Apply がエラーにする）。
 func fieldMatches(field, want, have string) (bool, error) {
 	switch field {
 	case FieldMemory:
@@ -512,13 +512,13 @@ func wantOf(desired core.Fields) map[string]string {
 }
 
 // Classify は既にある volume を付ける（ほかの VM から付け替える）変更を、承認の
-// 要る壊す変更と言う（§3.3 の Classifier、E-C2・N-C12・N-D10）。宣言の volume= の
-// slot が観測に無いときだけ（付いたあとは要らない）。fw-rules の変更は壊す変更
+// 要る破壊的変更とする（§3.3 の Classifier、E-C2・N-C12・N-D10）。宣言の volume= の
+// slot が観測に無いときだけ（付いたあとは要らない）。fw-rules の変更は破壊的変更
 // （E-B6）。現実に触れない。
 func (p *Provider) Classify(id core.ID, current core.Observation, desired core.Fields) []core.Hint {
 	switch id.Kind() {
 	case KindFWRules:
-		return []core.Hint{{Field: FieldRules, Destructive: true, Reason: "VM の FW の規則を置く・変える・外す（FW の変更として壊す変更に数える）"}}
+		return []core.Hint{{Field: FieldRules, Destructive: true, Reason: "VM の FW の規則を置く・変える・外す（FW の変更として破壊的変更に数える）"}}
 	case KindVM:
 	default:
 		return nil
@@ -569,7 +569,7 @@ func (p *Provider) applyVM(ctx context.Context, c *Cluster, cl *Client, vm strin
 			return err
 		}
 		if found = findVM(res, vm); len(found) != 1 {
-			return fmt.Errorf("作った VM %s が一覧に無い（次の周に続ける）", vm)
+			return fmt.Errorf("作った VM %s が一覧に無い（次の cycle で続ける）", vm)
 		}
 		created = true
 	}
@@ -585,16 +585,16 @@ func (p *Provider) applyVM(ctx context.Context, c *Cluster, cl *Client, vm strin
 	}
 	if err := p.update(ctx, c, cl, cur, want, res); err != nil {
 		if created {
-			// 途中で落ちた：どこまで進んだかを知らせる（次の周は変える操作で続ける）。
-			return fmt.Errorf("%w（VM %d は作った。残りは次の周に続ける）", err, cur.VMID)
+			// 途中で落ちた：どこまで進んだかを通知する（次の cycle は変える操作で続ける）。
+			return fmt.Errorf("%w（VM %d は作った。残りは次の cycle で続ける）", err, cur.VMID)
 		}
 		return err
 	}
 	return nil
 }
 
-// create は VM を作る（テンプレートの複製か、空から）。仕事が task_wait のうちに
-// 終わらなければ誤りでなく戻る（仕事が走る間は Converging）。
+// create は VM を作る（テンプレートの複製か、空から）。task が task_wait のうちに
+// 終わらなければエラーにせずに戻る（task が走る間は Converging）。
 func (p *Provider) create(ctx context.Context, c *Cluster, cl *Client, vm string, want map[string]string, res []Resource) error {
 	fail := func(format string, args ...any) error { return fmt.Errorf("作る: "+format, args...) }
 	node := want[FieldNode]
@@ -638,7 +638,7 @@ func (p *Provider) create(ctx context.Context, c *Cluster, cl *Client, vm string
 			return fail("template %q がクラスタに無い（名前か vmid で書く）", tmpl)
 		}
 		if !src.Template {
-			// template の印も pvestatd の写し。設定で確かめる。
+			// template の flag も pvestatd のキャッシュ。設定で確かめる。
 			cfg, err := cl.Config(ctx, src.Node, src.VMID)
 			if err != nil {
 				return fail("template %q: %w", tmpl, err)
@@ -715,7 +715,7 @@ func (p *Provider) create(ctx context.Context, c *Cluster, cl *Client, vm string
 }
 
 // createError は作る・複製するときの失敗に、直し方を足す。pool が無い（Proxmox は
-// 403 で断る）・pool に権限が無いことと、見えない VM がその vmid を使っている
+// 403 で拒否する）・pool に権限が無いことと、見えない VM がその vmid を使っている
 // こと（pool に絞ったトークンには pool の外の VM が見えない）。
 func createError(err error, vmid int, pool string) error {
 	switch {
@@ -903,7 +903,7 @@ func (p *Provider) update(ctx context.Context, c *Cluster, cl *Client, vm Resour
 				resizes = append(resizes, resize{w.Slot, FormatSize(w.Size)})
 			}
 		}
-		// keep の印（E-C2）：宣言した slot の印だけを VM の tags で合わせる。
+		// keep の marker（E-C2）：宣言した slot の marker だけを VM の tags で合わせる。
 		if tags, changed := keepTagsFor(next["tags"], ws); changed {
 			if tags == "" {
 				params.Add("delete", "tags")
@@ -1023,7 +1023,7 @@ func (p *Provider) update(ctx context.Context, c *Cluster, cl *Client, vm Resour
 	return nil
 }
 
-// power は電源の操作を送り、仕事を待つ。
+// power は電源の操作を送り、task を待つ。
 func (p *Provider) power(ctx context.Context, c *Cluster, cl *Client, vm Resource, action string) error {
 	upid, err := cl.PowerAction(ctx, vm.Node, vm.VMID, action, nil)
 	if err != nil {
@@ -1032,7 +1032,7 @@ func (p *Provider) power(ctx context.Context, c *Cluster, cl *Client, vm Resourc
 	return p.waitTask(ctx, c, cl, upid)
 }
 
-// destroy は VM を消す（ensure: absent、壊す変更として予算と承認を通っている）。
+// destroy は VM を消す（ensure: absent。破壊的変更として budget と承認を通っている）。
 // 走っていれば先に止める（stop。ディスクごと消すので正常停止は待たない）。
 func (p *Provider) destroy(ctx context.Context, c *Cluster, cl *Client, vm string) error {
 	res, err := c.resources(ctx, cl)
@@ -1065,7 +1065,7 @@ func (p *Provider) destroy(ctx context.Context, c *Cluster, cl *Client, vm strin
 			return err
 		}
 	}
-	// keep の印のある VM は、設定に無い volume も消さない（E-C2）。
+	// keep の marker のある VM は、設定に無い volume も消さない（E-C2）。
 	upid, err := cl.Destroy(ctx, r.Node, r.VMID, len(keepSlots(cfg)) == 0)
 	if err != nil {
 		return err
@@ -1073,8 +1073,8 @@ func (p *Provider) destroy(ctx context.Context, c *Cluster, cl *Client, vm strin
 	return p.waitTask(ctx, c, cl, upid)
 }
 
-// waitTask は upid の仕事の終わりを c.TaskWait まで待つ。失敗で終われば error。
-// 終わらなければ誤りにせず戻る（その VM の仕事が走る間の観測は Converging、
+// waitTask は upid の task の終わりを c.TaskWait まで待つ。失敗で終われば error。
+// 終わらなければエラーにせず戻る（その VM の task が走る間の観測は Converging、
 // E-D1）。upid が空（同期で終わった）なら何もしない。
 func (p *Provider) waitTask(ctx context.Context, c *Cluster, cl *Client, upid string) error {
 	if upid == "" {
@@ -1085,7 +1085,7 @@ func (p *Provider) waitTask(ctx context.Context, c *Cluster, cl *Client, upid st
 		st, err := cl.Task(ctx, upid)
 		if err == nil && !st.Running {
 			if !st.OK() {
-				return fmt.Errorf("仕事 %s が失敗した: %s", upid, st.ExitStatus)
+				return fmt.Errorf("task %s が失敗した: %s", upid, st.ExitStatus)
 			}
 			return nil
 		}
@@ -1100,7 +1100,7 @@ func (p *Provider) waitTask(ctx context.Context, c *Cluster, cl *Client, upid st
 	}
 }
 
-// Ops は種類 vm の一回きりの操作（E-D1・N-D4）。reset と stop は壊す操作。
+// Ops は type vm の 1 回だけの操作（E-D1・N-D4）。reset と stop は破壊的な操作。
 func (p *Provider) Ops(kind string) map[string]core.OpSpec {
 	if kind != KindVM {
 		return nil
@@ -1108,12 +1108,12 @@ func (p *Provider) Ops(kind string) map[string]core.OpSpec {
 	return map[string]core.OpSpec{OpReboot: {}, OpReset: {Destructive: true}, OpStop: {Destructive: true}}
 }
 
-// Invoke は一回きりの操作を 1 回だけ送る。reboot・reset は止まっている VM には
+// Invoke は 1 回だけの操作を 1 回だけ送る。reboot・reset は止まっている VM には
 // 起動を送る。stop は止まっている VM には何も送らない。送る前に分かった送れない
-// 状況（届かない・lock・仕事が走っている）は core.ErrNotSent（不変条件 16、E-A2）。
+// 状況（届かない・lock・task が走っている）は core.ErrNotSent（不変条件 16、E-A2）。
 func (p *Provider) Invoke(ctx context.Context, w core.WriteContext, id core.ID, op string, args core.Fields) error {
 	if _, ok := p.Ops(id.Kind())[op]; !ok {
-		return fmt.Errorf("%w: 種類 %s に操作 %q は無い", core.ErrNotSent, id.Kind(), op)
+		return fmt.Errorf("%w: type %s に操作 %q は無い", core.ErrNotSent, id.Kind(), op)
 	}
 	if len(args) > 0 {
 		return fmt.Errorf("%w: 操作 %s は引数を取らない", core.ErrNotSent, op)

@@ -13,11 +13,12 @@
 # limitations under the License.
 
 # Sakutei の ansible provider（v3/providers/ansible。v2 の internal/ansible から
-# 移した）が ad-hoc の ansible に読ませる stdout callback。ansible-core は JSON の stdout callback を持たない（json は
-# ansible.posix にある）ので、ホストの結果ごとに 1 行の JSON を出すだけのものを
-# 自前で持つ。行は "SAKUTEI-RESULT " で始まる（ほかの callback の出力と混ざらない）。
-# 出すのは host・status（ok / failed / unreachable / skipped）・changed・msg・
-# diff（--diff の差分を ansible 自身の形にしたもの）だけ。
+# 移した）が ad-hoc の ansible に読ませる stdout callback。ansible-core は JSON の
+# stdout callback を持たない（json は ansible.posix にある）ので、ホストの結果ごとに
+# 1 行の JSON を出すだけの callback を自前で持つ。行は "SAKUTEI-RESULT " で始まる
+# （ほかの callback の出力と混ざらない）。出すのは host・status（ok / failed /
+# unreachable / skipped）・changed・msg・diff（--diff の差分を ansible 自身の形式に
+# したもの）だけ。
 from __future__ import annotations
 
 DOCUMENTATION = """

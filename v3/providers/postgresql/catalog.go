@@ -14,16 +14,16 @@
 
 package postgresql
 
-// catalog.go — カタログを読む問い合わせ（E-F1・N-F1）。どれも引数を持たない
-// 決まった文で（名前を SQL に埋め込まない）、結果を 1 つの JSON にして返す。先頭の
+// catalog.go — カタログを読むクエリ（E-F1・N-F1）。どれも引数を持たない固定の
+// SQL 文で（名前を SQL に埋め込まない）、結果を 1 つの JSON にして返す。先頭の
 // /* sakutei:<名前> */ は文の名前（サーバの pg_stat_activity・ログで見分けられる
-// ように。偽の psql もこれで見分ける）。観測用のロールは LOGIN だけで読める
+// ように。fake の psql もこれで見分ける）。観測用のロールは LOGIN だけで読める
 // （passwords を除く、E-G5）。
 //
 //   - snapshot：管理用の DB で 1 回。全ロール（属性・所属・コメント）と全
-//     データベース（所有者・符号化・照合順序・接続数の上限・権限・PUBLIC の権限）。
+//     データベース（所有者・文字コード・照合順序・接続数の上限・権限・PUBLIC の権限）。
 //   - extensions：データベースごとに 1 回（拡張はデータベースごとのカタログ）。
-//   - passwords：verify_passwords のときだけ。pg_authid（超ユーザだけが読める）。
+//   - passwords：verify_passwords のときだけ。pg_authid（superuser だけが読める）。
 //   - user-tables：データベースを消す前に 1 回（利用者の表の数、E-F1）。
 
 import (
@@ -130,7 +130,7 @@ type ExtensionInfo struct {
 	Version string `json:"version"`
 }
 
-// Snapshot は snapshot の問い合わせの結果。
+// Snapshot は snapshot のクエリの結果。
 type Snapshot struct {
 	CurrentUser string         `json:"current_user"`
 	Roles       []RoleInfo     `json:"roles"`
@@ -200,7 +200,7 @@ func (d *DatabaseInfo) grantees() []string {
 	return out
 }
 
-// conn は 1 つのサーバへの 1 本の資格（観測用か書き込み用）でのつなぎ方。
+// conn は 1 つのサーバへ、1 つの credential（観測用か書き込み用）で接続するためのもの。
 type conn struct {
 	c    *Client
 	srv  *Server
@@ -212,7 +212,7 @@ func (c conn) run(ctx context.Context, database, script string) (string, error) 
 	return c.c.Run(ctx, c.srv, c.cred, database, script)
 }
 
-// queryJSON は問い合わせを流して、出力の JSON を v に読む（読めなければ
+// queryJSON はクエリを流して、出力の JSON を v に読む（読めなければ
 // KindOutput、E-K1）。
 func (c conn) queryJSON(ctx context.Context, database, query string, v any) error {
 	out, err := c.run(ctx, database, query)

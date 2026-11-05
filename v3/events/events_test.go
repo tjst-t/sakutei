@@ -28,7 +28,7 @@ import (
 
 var t0 = time.Date(2026, 11, 5, 22, 0, 0, 0, time.UTC)
 
-// run は結果を順に Derive に通し、周ごとに積んだ Event を返す。
+// run は結果を順に Derive に通し、cycle ごとに積んだ Event を返す。
 func run(stuckAfter int, results ...plan.Result) [][]core.Event {
 	var prev []core.Event
 	var seq uint64
@@ -45,7 +45,7 @@ func res(changes ...plan.Change) plan.Result { return plan.Result{Changes: chang
 
 func ch(name string, op plan.Op) plan.Change { return plan.Change{Resource: "p/rec/" + name, Op: op} }
 
-// states は状態型の Event を "Kind 対象 state" の列にする。
+// states は level Event を "Kind 対象 state" の列にする。
 func states(evs []core.Event) []string {
 	var out []string
 	for _, e := range evs {
@@ -63,11 +63,11 @@ func states(evs []core.Event) []string {
 func eq(t *testing.T, cyc int, got []string, want ...string) {
 	t.Helper()
 	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("%d 周目: %q（期待 %q）", cyc, got, want)
+		t.Errorf("cycle %d: %q（期待 %q）", cyc, got, want)
 	}
 }
 
-// E-H1：始まりと終わりで 1 回ずつ。続いた周は数え、stuck_after で 1 回 stuck。
+// E-H1：始まりと終わりで 1 回ずつ。続いた cycle は数え、stuck_after で 1 回 stuck。
 func TestFiringResolvedOnce(t *testing.T) {
 	drift := ch("a", plan.Update)
 	fixed := ch("a", plan.Update)
@@ -79,15 +79,15 @@ func TestFiringResolvedOnce(t *testing.T) {
 	eq(t, 4, states(got[3]))
 	eq(t, 5, states(got[4]), "Drift p/rec/a resolved")
 	eq(t, 6, states(got[5]))
-	// 出来事型：当てた周に Applied、毎周 CycleDone。
+	// edge Event：Apply した cycle に Applied、cycle ごとに CycleDone。
 	var kinds []string
 	for _, e := range got[4] {
 		kinds = append(kinds, e.Kind)
 	}
 	if strings.Join(kinds, ",") != "Drift,Applied,CycleDone" {
-		t.Errorf("5 周目: %v", kinds)
+		t.Errorf("cycle 5: %v", kinds)
 	}
-	// 番号は周をまたいで続く。
+	// 番号は cycle をまたいで続く。
 	var last uint64
 	for _, evs := range got {
 		for _, e := range evs {
@@ -102,7 +102,7 @@ func TestFiringResolvedOnce(t *testing.T) {
 	}
 }
 
-// 不変条件 29：確かめられなかった周（Unknown・作業中・List が不完全）に resolved に
+// 不変条件 29：確かめられなかった cycle（Unknown・Converging・List が不完全）に resolved に
 // しない。count も進めない。
 func TestNoResolveWithoutConfirmation(t *testing.T) {
 	drift := ch("a", plan.Update)
@@ -115,10 +115,10 @@ func TestNoResolveWithoutConfirmation(t *testing.T) {
 	eq(t, 4, states(got[3]), "Converging p/rec/a resolved")
 	eq(t, 5, states(got[4]), "Drift p/rec/a resolved")
 	if c := got[4][0].Count; c != 2 {
-		t.Errorf("確かめられなかった周を数えた: count=%d", c)
+		t.Errorf("確かめられなかった cycle を数えた: count=%d", c)
 	}
 
-	// 宣言外：範囲の List が不完全な周は消えたと見ない。
+	// unmanaged：Range の List が不完全な cycle では消えたと見ない。
 	stray := plan.Change{Resource: "p/rec/s", Op: plan.Unmanaged, Range: "p:"}
 	ok := plan.RangeStatus{Range: "p:", Complete: true}
 	broken := plan.RangeStatus{Range: "p:", Note: "List が不完全"}
@@ -131,7 +131,7 @@ func TestNoResolveWithoutConfirmation(t *testing.T) {
 	eq(t, 2, states(got[1]), "Unknown range p: firing")
 	eq(t, 3, states(got[2]), "Unknown range p: resolved", "Unmanaged p/rec/s resolved")
 
-	// 急減で止めた範囲は、List が完全で急減しない周に消える。
+	// 急減で halt した Range は、List が完全で急減しない cycle に消える。
 	drop := plan.Result{Ranges: []plan.RangeStatus{{Range: "p:", Complete: true, Dropped: true, Prune: true}},
 		Halts: []plan.Halt{{Scope: "range p:", Reason: "急減"}}}
 	got = run(0, drop, plan.Result{Ranges: []plan.RangeStatus{broken}}, plan.Result{Ranges: []plan.RangeStatus{ok}})
@@ -140,20 +140,20 @@ func TestNoResolveWithoutConfirmation(t *testing.T) {
 	eq(t, 3, states(got[2]), "Halt range p: resolved", "Unknown range p: resolved")
 }
 
-// 断られた削除は、消す操作を試さなかった周には消えたと見ない。
+// reject された削除は、消す操作を試さなかった cycle には消えたと見ない。
 func TestDeleteRefused(t *testing.T) {
 	refused := ch("a", plan.Delete)
 	refused.Outcome, refused.Error, refused.After = plan.OutcomeRefused, "保護", plan.Delete
 	held := ch("a", plan.Delete)
-	held.Action, held.Blocked = plan.ActHalt, "予算"
+	held.Action, held.Blocked = plan.ActHalt, "budget"
 	got := run(0, res(refused), res(held), res(ch("a", plan.None)))
 	eq(t, 1, states(got[0]), "DeleteRefused p/rec/a firing", "Drift p/rec/a firing")
 	eq(t, 2, states(got[1]))
 	eq(t, 3, states(got[2]), "DeleteRefused p/rec/a resolved", "Drift p/rec/a resolved")
 }
 
-// 不変条件 29 の性質：ランダムな結果の並びで、対象が Unknown・作業中の周、範囲の
-// List が不完全な周に、その対象の（Unknown・Converging 以外の）Event を resolved に
+// 不変条件 29 の性質：ランダムな結果の並びで、対象が Unknown・Converging の cycle、
+// Range の List が不完全な cycle に、その対象の（Unknown・Converging 以外の）Event を resolved に
 // しない。また、同じキーの firing は resolved を挟まずに 2 回積まない。
 func TestPropertyNoResolveUnconfirmed(t *testing.T) {
 	ops := []plan.Op{plan.None, plan.Update, plan.Create, plan.Unknown, plan.Converging, plan.Drift}
@@ -191,29 +191,29 @@ func TestPropertyNoResolveUnconfirmed(t *testing.T) {
 				switch e.State {
 				case core.Resolved:
 					if unconfirmed[e.Resource] && e.Kind != events.KindUnknown && e.Kind != events.KindConverging {
-						t.Fatalf("seed %d 周 %d: 確かめられない %s を resolved にした", seed, cyc, e.Key())
+						t.Fatalf("seed %d cycle %d: 確かめられない %s を resolved にした", seed, cyc, e.Key())
 					}
 					if !complete && (e.Resource == "p/rec/stray" || e.Scope == "range p:") {
-						t.Fatalf("seed %d 周 %d: List が不完全な周に %s を resolved にした", seed, cyc, e.Key())
+						t.Fatalf("seed %d cycle %d: List が不完全な cycle に %s を resolved にした", seed, cyc, e.Key())
 					}
 					if !open[e.Key()] {
-						t.Fatalf("seed %d 周 %d: firing でない %s を resolved にした", seed, cyc, e.Key())
+						t.Fatalf("seed %d cycle %d: firing でない %s を resolved にした", seed, cyc, e.Key())
 					}
 					delete(open, e.Key())
 				case core.Firing:
 					if open[e.Key()] && !e.Stuck {
-						t.Fatalf("seed %d 周 %d: %s の firing を 2 回積んだ", seed, cyc, e.Key())
+						t.Fatalf("seed %d cycle %d: %s の firing を 2 回積んだ", seed, cyc, e.Key())
 					}
 					open[e.Key()] = true
 				}
 			}
 			for _, f := range o.Firing {
 				if !open[f.Key()] {
-					t.Fatalf("seed %d 周 %d: 積んでいない %s が firing の一覧にある", seed, cyc, f.Key())
+					t.Fatalf("seed %d cycle %d: 積んでいない %s が firing の一覧にある", seed, cyc, f.Key())
 				}
 			}
 			if len(o.Firing) != len(open) {
-				t.Fatalf("seed %d 周 %d: firing の一覧 %d と積んだ firing %d が合わない", seed, cyc, len(o.Firing), len(open))
+				t.Fatalf("seed %d cycle %d: firing の一覧 %d と積んだ firing %d が合わない", seed, cyc, len(o.Firing), len(open))
 			}
 			prev, seq = o.Firing, o.Seq
 		}

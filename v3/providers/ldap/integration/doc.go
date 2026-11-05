@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package integration は新しいコアの ldap provider の統合テスト（v3 段 8e、設計
+// Package integration は新しいコアの ldap provider の統合テスト（v3 Stage 8e、設計
 // §6.2 の統合テスト・E-G1・N-G1・E-G5・E-K1・E-P3）。v2 と同じ 389 Directory Server の
 // 公式のイメージ（tag と digest で固定）を docker で立て（sakutei-v3ldap-server。v2 の
 // sakutei-ldapit-* と重ならない）、v3 の CLI（cli.Run の plan・reconcile）をそこへ
-// 向けて回す：空から作る・手で変えたものを戻す・userPassword は書き込みだけ・何周
-// しても書かない・StartTLS と LDAPS・bind の失敗は Unknown・子のある項目は prune
-// しない・観測と書き込みの資格を分ける・止めると Unknown で何も消さない。
+// 向けて回す：空から作る・手で変えたものを戻す・userPassword は書き込みだけ・何 cycle
+// 回しても書かない・StartTLS と LDAPS・bind の失敗は Unknown・子のある entry は prune
+// しない・観測と書き込みの credential を分ける・サーバを止めると Unknown で何も消さない。
 //
 // ホストに OpenLDAP のクライアントが無くてもよいように、ldapsearch・ldapmodify は
 // 同じイメージのクライアントのコンテナ（sakutei-v3ldap-client）の中で動かす
 // （ラッパーのスクリプト。-y のパスワードのファイルと CA は docker cp で渡し、引数に
-// 秘密を出さない）。
+// secret を出さない）。
 //
 // テストは build tag integration_v3_ldap の付いたファイルにあり、make check・
 // make test には入らない。回すのは make integration-v3-ldap（docker と sudo

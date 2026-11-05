@@ -15,13 +15,13 @@
 package s3
 
 // sigv4.go — AWS Signature Version 4 の署名（stdlib だけ：crypto/hmac・
-// crypto/sha256）。S3 互換の API の要求に Authorization を付け、偽の S3 サーバ
+// crypto/sha256）。S3 互換の API のリクエストに Authorization を付け、偽の S3 サーバ
 // （s3/s3test）は同じ関数で署名を検証する。単体テストは AWS の公開のテストベクタの
 // 形で書く（sigv4_test.go）。
 //
 // 決まり（AWS の文書の Signature Version 4 と S3 の Authorization ヘッダの節）:
 //
-//   - 署名するヘッダ: host と、要求に付いている全部のヘッダ（名前は小文字、値は
+//   - 署名するヘッダ: host と、リクエストに付いている全部のヘッダ（名前は小文字、値は
 //     前後の空白を落として連続する空白を 1 つに）。Authorization は除く。Go の
 //     net/http が送るときに足す User-Agent・Accept-Encoding は req.Header に
 //     無いので署名に入らない。
@@ -52,14 +52,14 @@ const (
 	emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 )
 
-// Credentials は署名に使う資格。SecretKey はログ・エラーに出さない（String は
+// Credentials は署名に使う credential。SecretKey はログ・エラーに出さない（String は
 // AccessKey だけを返す）。
 type Credentials struct {
 	AccessKey string
 	SecretKey string
 }
 
-// String は SecretKey を伏せる（%v で資格を出してしまっても値が漏れない）。
+// String は SecretKey を伏せる（%v で credential を出してしまっても値が漏れない）。
 func (c Credentials) String() string {
 	return "Credentials{AccessKey: " + c.AccessKey + ", SecretKey: ***}"
 }
@@ -68,7 +68,7 @@ func (c Credentials) String() string {
 func (c Credentials) GoString() string { return c.String() }
 
 // SignV4 は req に x-amz-date を付け、Authorization を付ける。payloadHash は本文の
-// SHA-256（16 進）。S3 の要求では呼ぶ側が x-amz-content-sha256 を先に付ける。
+// SHA-256（16 進）。S3 のリクエストでは呼ぶ側が x-amz-content-sha256 を先に付ける。
 func SignV4(req *http.Request, payloadHash string, creds Credentials, region, service string, now time.Time) {
 	amzDate := now.UTC().Format(amzDateFormat)
 	req.Header.Set("X-Amz-Date", amzDate)

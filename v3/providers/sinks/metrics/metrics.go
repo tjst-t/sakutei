@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package metrics は Event から Prometheus の値を作って /metrics で見せる送り先
-// （module: metrics、設計 §3.9・§5.2・§5.6、E-H3・E-T3・N-J6）。周の件数と時間・
-// 予算の残りは CycleDone から、今 firing の数は周ごとの今の一覧
-// （core.StateSink）から作る。数えていない値は出さない（不変条件 29：まだ周の
-// 無いうちは周の値を出さない）。
+// Package metrics は Event から Prometheus の値を作って /metrics で公開する sink
+// （module: metrics、設計 §3.9・§5.2・§5.6、E-H3・E-T3・N-J6）。cycle の件数と時間・
+// budget の残りは CycleDone から、今 firing の数は cycle ごとの今の一覧
+// （core.StateSink）から作る。数えていない値は出さない（不変条件 29：まだ cycle が
+// 無いうちは cycle の値を出さない）。
 //
-// 待ち受けは最初に送られたときに始める（plan・status は送らないので待ち受け
-// ない）。常駐は周ごとに設定を読み直すので、同じ宛先・同じ設定なら同じ送り先を
-// 返して値と待ち受けを保つ。TLS・読むだけのトークン・クライアント証明書・外向き
-// の平文の明示は読み取り HTTP（listen.read）と同じ決まり（E-H5・N-L4）。
+// listen は最初に送られたときに始める（plan・status は送らないので listen しない）。
+// daemon は cycle ごとに設定を読み直すので、同じアドレス・同じ設定なら同じ sink を
+// 返して値と listener を保つ。TLS・読み取り専用のトークン・クライアント証明書・
+// 外向きの平文の明示は read-only HTTP API（listen.read）と同じ決まり（E-H5・N-L4）。
 package metrics
 
 import (
@@ -43,7 +43,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/readapi"
 )
 
-// Sink は /metrics の送り先。
+// Sink は /metrics の sink。
 type Sink struct {
 	key    string
 	listen config.ReadListen
@@ -54,24 +54,24 @@ type Sink struct {
 	closed    bool
 	cycles    int
 	last      *core.Event    // 最後の CycleDone
-	firing    map[string]int // 種類 → 今 firing の数（DeliverState を受けてから）
+	firing    map[string]int // kind → 今 firing の数（DeliverState を受けてから）
 	stuck     map[string]int
 	haveState bool
-	total     map[string]int // 種類 → 受け取った Event の数
+	total     map[string]int // kind → 受け取った Event の数
 }
 
 var (
 	openMu sync.Mutex
-	open   = map[string]*Sink{} // 待ち受けの宛先 → 送り先
+	open   = map[string]*Sink{} // listen アドレス → sink
 )
 
-// Module はつなぎ方の設定の module: metrics。
+// Module は接続設定の module: metrics。
 //
 //	settings:
 //	  listen: 127.0.0.1:9464
 //	  tls: {cert: /etc/sakutei/tls.crt, key: /etc/sakutei/tls.key, client_ca: …}  # 省略可
 //	  auth: {tokens_file: /etc/sakutei/metrics-tokens}                          # 省略可
-//	  plaintext: true    # loopback でない宛先を TLS なしで待ち受けるとき（明示）
+//	  plaintext: true    # loopback でないアドレスで TLS なしで listen するとき（明示）
 func Module(m map[string]any) (core.Sink, error) {
 	r := settings.New("metrics", m)
 	rl := config.ReadListen{Address: r.Str("listen")}
@@ -88,7 +88,7 @@ func Module(m map[string]any) (core.Sink, error) {
 	tls := rl.TLSCert != "" || rl.TLSKey != ""
 	switch {
 	case rl.Address == "":
-		r.Fail("listen に待ち受けの宛先（host:port）を書く")
+		r.Fail("listen に listen するアドレス（host:port）を書く")
 	case (rl.TLSCert == "") != (rl.TLSKey == ""):
 		r.Fail("tls に cert と key を両方書く")
 	case rl.ClientCA != "" && !tls:
@@ -96,7 +96,7 @@ func Module(m map[string]any) (core.Sink, error) {
 	case tls && rl.Plaintext:
 		r.Fail("tls と plaintext: true は一緒に書けない")
 	case !tls && !rl.Plaintext && !config.Loopback(rl.Address):
-		r.Fail("loopback でない宛先 %q を TLS なしで待ち受けるには plaintext: true を書く", rl.Address)
+		r.Fail("loopback でないアドレス %q で TLS なしで listen するには plaintext: true を書く", rl.Address)
 	}
 	if err := r.Err(subs...); err != nil {
 		return nil, err
@@ -108,7 +108,7 @@ func Module(m map[string]any) (core.Sink, error) {
 		if s.key == string(key) {
 			return s, nil
 		}
-		// 設定が変わった：前の待ち受けを止めて作り直す。
+		// 設定が変わった：前の listener を止めて作り直す。
 		_ = s.shutdown()
 	}
 	s := &Sink{key: string(key), listen: rl, firing: map[string]int{}, stuck: map[string]int{}, total: map[string]int{}}
@@ -116,7 +116,7 @@ func Module(m map[string]any) (core.Sink, error) {
 	return s, nil
 }
 
-// Close は待ち受けを止める（テスト・止めるとき）。
+// Close は listener を止める（テスト・終了時）。
 func (s *Sink) Close() error {
 	openMu.Lock()
 	if open[s.listen.Address] == s {
@@ -126,7 +126,7 @@ func (s *Sink) Close() error {
 	return s.shutdown()
 }
 
-// shutdown は待ち受けを止める。openMu → s.mu の順に取る。
+// shutdown は listener を止める。openMu → s.mu の順にロックを取る。
 func (s *Sink) shutdown() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -139,7 +139,7 @@ func (s *Sink) shutdown() error {
 	return err
 }
 
-// Addr は待ち受けている宛先（始めていなければ ""）。
+// Addr は listen しているアドレス（始めていなければ ""）。
 func (s *Sink) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -149,20 +149,20 @@ func (s *Sink) Addr() string {
 	return s.ln.Addr().String()
 }
 
-// start は待ち受けを始める（始めていれば何もしない）。s.mu を持って呼ぶ。
+// start は listen を始める（始めていれば何もしない）。s.mu を持って呼ぶ。
 func (s *Sink) start() error {
 	if s.srv != nil {
 		return nil
 	}
 	if s.closed {
-		return errors.New("閉じた送り先")
+		return errors.New("閉じた sink")
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /metrics", s.serve)
 	rl := s.listen
 	srv, ln, err := readapi.Listen(&rl, mux)
 	if err != nil {
-		return fmt.Errorf("metrics の待ち受け %s: %w", rl.Address, err)
+		return fmt.Errorf("metrics の listen %s: %w", rl.Address, err)
 	}
 	s.srv, s.ln = srv, ln
 	go func() { _ = srv.Serve(ln) }()
@@ -184,7 +184,7 @@ func (s *Sink) Deliver(_ context.Context, batch []core.Event) error {
 	return s.start()
 }
 
-// DeliverState は今 firing の数を種類ごとに数え直す。
+// DeliverState は今 firing の数を kind ごとに数え直す。
 func (s *Sink) DeliverState(_ context.Context, firing []core.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,11 +206,11 @@ func (s *Sink) serve(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(body))
 }
 
-// countKeys は CycleDone の件数のうち、無ければ 0 と数えたもの（周の中で全部の
+// countKeys は CycleDone の件数のうち、無ければ 0 と数えたもの（cycle の中で全部の
 // 宣言を数えている）。
 var countKeys = []string{"drift", "unknown", "converging", "unmanaged"}
 
-// text は Prometheus のテキストの形。s.mu を持って呼ぶ。
+// text は Prometheus のテキスト形式。s.mu を持って呼ぶ。
 func (s *Sink) text() string {
 	var b strings.Builder
 	family := func(name, typ, help string, samples ...string) {

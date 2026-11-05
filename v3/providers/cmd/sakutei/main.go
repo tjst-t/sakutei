@@ -12,12 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command sakutei は新しいコアに実の provider（dnszone・hostconf・nftables・
-// redfish・metrics-probe・netconf・cli-device・guest-os・proxmox・postgresql・
-// sqlmigrate・ldap・s3・ansible・template-file）と
-// Expand のモジュール（template・netpolicy（実現先 nftables・proxmox-fw）・compat）と秘密の保管先（vault-kv2・
-// command）と Events の送り先（alertmanager・syslog・metrics・otlp）を組み込んだ CLI（設計 §6.1 の cli.Main(With…)、E-O4・E-S4）。どれも
-// コアの外のモジュールで、コアはインターフェースだけを知る。
+// Command sakutei は、新しいコアに次のモジュールを組み込んだ CLI（設計 §6.1 の
+// cli.Main(With…)、E-O4・E-S4）。
+//   - 実の provider：dnszone・hostconf・nftables・redfish・metrics-probe・netconf・
+//     cli-device・guest-os・proxmox・postgresql・sqlmigrate・ldap・s3・ansible・
+//     template-file
+//   - Expand のモジュール：template・netpolicy（realizer は nftables・proxmox-fw）・compat
+//   - secret backend：vault-kv2・command
+//   - Events の sink：alertmanager・syslog・metrics・otlp
+//
+// どれもコアの外のモジュールで、コアは interface だけを知る。
 package main
 
 import (
@@ -25,7 +29,7 @@ import (
 	"github.com/tjst-t/sakutei/v3/providers/builtin"
 )
 
-// Options は組み込むモジュール（試用の手順のテストも同じものを使う）。一覧は
+// Options は組み込むモジュールを返す（試用の手順のテストも同じものを使う）。一覧は
 // builtin にある（sakutei-import と同じもの）。
 func Options() []cli.Option { return builtin.Options() }
 

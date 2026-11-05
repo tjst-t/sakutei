@@ -112,7 +112,7 @@ func find(r plan.Result, id core.ID) plan.Change {
 	return plan.Change{}
 }
 
-// 1 周目で範囲の件数を覚え、2 周目に宣言外を消す。これが基準の筋書きで、下の
+// 1 cycle 目で Range の件数を覚え、2 cycle 目に unmanaged を消す。これが基準の筋書きで、下の
 // テストは条件を 1 つずつ外す。
 func TestPruneHappyPath(t *testing.T) {
 	h := newHarness(t)
@@ -122,14 +122,14 @@ func TestPruneHappyPath(t *testing.T) {
 
 	r := h.run()
 	if c := find(r, rid("rec", "stray")); c.Op != plan.Prune || c.Action != plan.ActHold {
-		t.Fatalf("1 周目: %+v", c)
+		t.Fatalf("1 cycle 目: %+v", c)
 	}
 	if len(h.deletes()) != 0 || cli.ExitCode(r) != 3 {
-		t.Fatalf("1 周目に消した: %v exit=%d", h.deletes(), cli.ExitCode(r))
+		t.Fatalf("1 cycle 目に消した: %v exit=%d", h.deletes(), cli.ExitCode(r))
 	}
 	r = h.run()
 	if c := find(r, rid("rec", "stray")); c.Outcome != plan.OutcomeOK || c.After != plan.None {
-		t.Fatalf("2 周目: %+v", c)
+		t.Fatalf("2 cycle 目: %+v", c)
 	}
 	if got := h.deletes(); !reflect.DeepEqual(got, []core.ID{rid("rec", "stray")}) || cli.ExitCode(r) != 0 {
 		t.Fatalf("deletes=%v exit=%d", got, cli.ExitCode(r))
@@ -154,14 +154,14 @@ func TestPruneNeedsEveryCondition(t *testing.T) {
 		{"List が失敗", func(h *harness) { h.p.SetListError(errors.New("timeout")) }},
 		{"List に出ない", func(h *harness) { h.p.HideFromList(stray) }},
 		{"宣言にある", func(h *harness) { h.in.Resources = append(h.in.Resources, decl("stray", "x")) }},
-		{"外の持ち主", func(h *harness) {
+		{"external owner", func(h *harness) {
 			h.in.Ranges[0].ExternalOwners = []core.Exclusion{{Owner: "dhcp", IDPrefix: "rec/str", Reason: "動的"}}
 		}},
 		{"観測が Unknown", func(h *harness) { h.p.Set(stray, core.Observation{Availability: core.Unknown, Note: "届かない"}) }},
 		{"観測が Converging", func(h *harness) { h.p.Set(stray, core.Observation{Availability: core.Converging}) }},
 		{"観測が答えない", func(h *harness) { h.p.Omit(stray) }},
 		{"Observe が失敗", func(h *harness) { h.p.SetObserveError(errors.New("refused")) }},
-		{"予算 0", func(h *harness) {
+		{"budget 0", func(h *harness) {
 			h.in.Policies = []core.Policy{{Name: "b", Select: core.Selector{All: true},
 				Budget: &core.Budget{PerCycle: core.Unlimited, DestructivePerCycle: 0, DestructivePerWindow: core.Unlimited}}}
 		}},
@@ -192,8 +192,8 @@ func TestPruneNeedsEveryCondition(t *testing.T) {
 			}
 		})
 	}
-	// 前の周の件数が無ければ消さない（Record を失った・初めての周）。
-	t.Run("前の周の件数が無い", func(t *testing.T) {
+	// 前の cycle の件数が無ければ消さない（Record を失った・初めての cycle）。
+	t.Run("前の cycle の件数が無い", func(t *testing.T) {
 		h := newHarness(t)
 		h.p.Set(stray, present(core.Fields{"value": "x"}))
 		h.run()
@@ -201,8 +201,8 @@ func TestPruneNeedsEveryCondition(t *testing.T) {
 			t.Fatalf("消した: %v", got)
 		}
 	})
-	// 中身を失う種類・観測だけの種類は宣言外でも消さない（不変条件 9、E-C3）。
-	t.Run("中身を失う種類", func(t *testing.T) {
+	// 中身を失う type・観測だけの type は unmanaged でも消さない（不変条件 9、E-C3）。
+	t.Run("中身を失う type", func(t *testing.T) {
 		h := newHarness(t)
 		h.p.Set(rid("vol", "data"), present(core.Fields{"size": 10}))
 		h.p.Set(rid("ro", "fw"), present(core.Fields{"version": "1"}))
@@ -217,7 +217,7 @@ func TestPruneNeedsEveryCondition(t *testing.T) {
 	})
 }
 
-// 不変条件 7：List が急減した範囲は消さず周を止め（終了コード 4）、止めた件数を
+// 不変条件 7：List が急減した Range は消さず cycle を halt し（終了コード 4）、止めた件数を
 // 新しい基準にしない。自分が消した分は差し引く。
 func TestDropHaltsAndSubtractsOwnDeletes(t *testing.T) {
 	h := newHarness(t)
@@ -233,7 +233,7 @@ func TestDropHaltsAndSubtractsOwnDeletes(t *testing.T) {
 	h.run() // 基準 10
 	r := h.run()
 	if n := len(h.deletes()); n != 3 || cli.ExitCode(r) != 0 {
-		t.Fatalf("宣言外 3 件を消すはず: %v exit=%d", h.deletes(), cli.ExitCode(r))
+		t.Fatalf("unmanaged 3 件を消すはず: %v exit=%d", h.deletes(), cli.ExitCode(r))
 	}
 	// 自分が消した 3 件を差し引いて基準は 7。10 → 7 の 30% 減を急減と読まない。
 	r = h.run()
@@ -241,7 +241,7 @@ func TestDropHaltsAndSubtractsOwnDeletes(t *testing.T) {
 		t.Fatalf("自分の削除を急減と読んだ: %+v", r.Halts)
 	}
 
-	// ほかが 3 件消した（7 → 4、43% 減）：宣言外が現れても消さずに止める。
+	// ほかが 3 件消した（7 → 4、43% 減）：unmanaged が現れても消さずに halt する。
 	for _, n := range []string{"a", "b", "c"} {
 		h.p.HideFromList(rid("rec", n))
 	}
@@ -254,12 +254,12 @@ func TestDropHaltsAndSubtractsOwnDeletes(t *testing.T) {
 		}
 		m, _ := h.rec.Marks()
 		if m.RangeCounts["p:"] != 7 {
-			t.Fatalf("止めた周に基準を変えた: %v", m.RangeCounts)
+			t.Fatalf("halt した cycle に基準を変えた: %v", m.RangeCounts)
 		}
 	}
 }
 
-// 不変条件 20：予算を超えたら超過分の保留でなく周全体を止める。
+// 不変条件 20：budget を超えたら超過分の保留でなく cycle 全体を halt する。
 func TestBudgetHaltsWholeCycle(t *testing.T) {
 	for _, limit := range []int{0, 2, 4, 5, 9} {
 		h := newHarness(t)
@@ -283,7 +283,7 @@ func TestBudgetHaltsWholeCycle(t *testing.T) {
 					t.Fatalf("limit=%d: %+v", limit, c)
 				}
 			}
-			// 止めた周は窓も監査も使わない。
+			// halt した cycle は window も監査も使わない。
 			if n, err := record.Verify(h.rec.Dir()); n != 0 || err != nil {
 				t.Fatalf("監査: %d %v", n, err)
 			}
@@ -295,8 +295,8 @@ func TestBudgetHaltsWholeCycle(t *testing.T) {
 	}
 }
 
-// 不変条件 20：周をまたいだ壊す変更を窓で数える。窓が過ぎれば数え直す。
-// 断られた削除は数えない（不変条件 10）。
+// 不変条件 20：cycle をまたいだ壊す変更を window で数える。window が過ぎれば数え直す。
+// reject された削除は数えない（不変条件 10）。
 func TestBudgetWindow(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -311,29 +311,29 @@ func TestBudgetWindow(t *testing.T) {
 	}
 	gone("a", "b")
 	if r := h.run(); cli.ExitCode(r) != 0 || len(h.deletes()) != 2 {
-		t.Fatalf("1 周目: exit=%d %v", cli.ExitCode(r), h.deletes())
+		t.Fatalf("1 cycle 目: exit=%d %v", cli.ExitCode(r), h.deletes())
 	}
 	gone("c", "d")
 	h.clock.t = h.clock.t.Add(30 * time.Minute)
 	r := h.run()
 	if cli.ExitCode(r) != 4 || len(h.deletes()) != 2 || r.Budgets[0].WindowUsed != 4 {
-		t.Fatalf("2 周目は 2+2 > 3 で止まるはず: exit=%d %v %+v", cli.ExitCode(r), h.deletes(), r.Budgets)
+		t.Fatalf("2 cycle 目は 2+2 > 3 で止まるはず: exit=%d %v %+v", cli.ExitCode(r), h.deletes(), r.Budgets)
 	}
-	// 断られた削除は窓に数えない。
+	// reject された削除は window に数えない。
 	h.p.RefuseDelete(rid("rec", "c"), "子がある")
 	gone("c")
 	r = h.run()
 	if c := find(r, rid("rec", "c")); c.Outcome != plan.OutcomeRefused || c.Error != "子がある" || cli.ExitCode(r) != 3 {
-		t.Fatalf("断り: %+v exit=%d", c, cli.ExitCode(r))
+		t.Fatalf("reject: %+v exit=%d", c, cli.ExitCode(r))
 	}
 	if m, _ := h.rec.Marks(); m.BudgetWindows["w"].Destructive != 2 {
-		t.Fatalf("断りを数えた: %+v", m.BudgetWindows)
+		t.Fatalf("reject を数えた: %+v", m.BudgetWindows)
 	}
-	// 窓が過ぎれば数え直す。
+	// window が過ぎれば数え直す。
 	h.clock.t = h.clock.t.Add(time.Hour)
 	gone("d", "e")
 	if r := h.run(); cli.ExitCode(r) != 0 {
-		t.Fatalf("窓のあと: exit=%d %+v", cli.ExitCode(r), r.Halts)
+		t.Fatalf("window のあと: exit=%d %+v", cli.ExitCode(r), r.Halts)
 	}
 }
 
@@ -351,7 +351,7 @@ func TestReplaceIsDestructive(t *testing.T) {
 	}
 }
 
-// 不変条件 3：Unknown の上流の下流を進めない。上流が済めば下流を当てる。
+// 不変条件 3：Unknown の上流の下流を進めない。上流が済めば下流を Apply する。
 func TestUnknownUpstreamBlocksDownstream(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -370,8 +370,8 @@ func TestUnknownUpstreamBlocksDownstream(t *testing.T) {
 	if c := find(r, down.ID); c.Action != plan.ActWait || !strings.Contains(c.Blocked, "p/rec/up") {
 		t.Fatalf("%+v", c)
 	}
-	// 上流が無い（作る）周は、上流を当てて効いたら同じ周に下流を観測し直して
-	// 当てる（E-J7）。
+	// 上流が無い（作る）cycle は、上流を Apply して効いたら同じ cycle に下流を再観測して
+	// Apply する（E-J7）。
 	h.p.Set(up.ID, core.Observation{Availability: core.Absent})
 	h.p.Set(rid("rec", "external"), present(nil))
 	r = h.run()
@@ -383,7 +383,7 @@ func TestUnknownUpstreamBlocksDownstream(t *testing.T) {
 	}
 }
 
-// 当てて失敗したものは誤りとして出し（終了コード 1）、ほかは当てる。監査に残す。
+// Apply して失敗したものはエラーとして出し（終了コード 1）、ほかは Apply する。監査に残す。
 func TestApplyFailure(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -398,7 +398,7 @@ func TestApplyFailure(t *testing.T) {
 	}
 }
 
-// mode: report は観測して知らせるだけ（E-I3）。最も厳しいものが勝つ（E-J5）。
+// mode: report は観測して通知するだけ（E-I3）。最も厳しいものが勝つ（E-J5）。
 func TestReportMode(t *testing.T) {
 	h := newHarness(t)
 	h.in.Ranges = nil
@@ -418,7 +418,7 @@ func TestReportMode(t *testing.T) {
 	}
 }
 
-// ロックがほかにあれば進めない周：観測して比べるだけで、provider にも Record にも
+// ロックがほかにあれば進めない cycle：観測して比べるだけで、provider にも Record にも
 // 書かない（E-M5・N-M7）。
 func TestLockHeldElsewhere(t *testing.T) {
 	h := newHarness(t)
@@ -444,7 +444,7 @@ func TestLockHeldElsewhere(t *testing.T) {
 	}
 }
 
-// Record の目印が読めなければ当てず、目印を上書きしない（不変条件 7・20）。
+// Record の marks が読めなければ Apply せず、marks を上書きしない（不変条件 7・20）。
 func TestUnreadableMarks(t *testing.T) {
 	h := newHarness(t)
 	h.in.Resources = []core.Resource{decl("a", "1")}
@@ -461,7 +461,7 @@ func TestUnreadableMarks(t *testing.T) {
 	}
 }
 
-// 監査の最後の行が切れていれば当てない（鎖を書き換えて直さない、不変条件 28）。
+// 監査の最後の行が切れていれば Apply しない（ハッシュチェーンを書き換えて直さない、不変条件 28）。
 func TestBrokenAuditBlocksWrites(t *testing.T) {
 	h := newHarness(t)
 	h.in.Resources = []core.Resource{decl("a", "1")}
@@ -491,7 +491,7 @@ func TestPlanDecidesLikeReconcile(t *testing.T) {
 	p := plan.Decide(context.Background(), plan.Input{Resources: h.in.Resources, Ranges: h.in.Ranges,
 		Readers: map[string]core.Reader{"p": h.p}, Marks: marks, Now: h.clock.t})
 	if after, _ := h.rec.Marks(); !reflect.DeepEqual(marks, after) {
-		t.Fatal("plan が目印を変えた")
+		t.Fatal("plan が marks を変えた")
 	}
 	r := h.run()
 	if len(p.Changes) != len(r.Changes) {

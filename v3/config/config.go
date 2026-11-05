@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package config はつなぎ方の設定ファイル（設計 §5.6）を読む。書くのは
-// つなぎ方だけで、範囲・除外・方針は書けない（不変条件 24、E-I6・E-S1・N-S2）。
-// 書けば intent に書くよう案内して断る。書くのは provider のつなぎ方・Event の
-// 送り先（sinks）・読み取り HTTP の待ち受け（listen.read）。
+// Package config は接続設定（config ファイル、設計 §5.6）を読む。書くのは接続の
+// 設定だけで、Range・除外・Policy は書けない（不変条件 24、E-I6・E-S1・N-S2）。
+// 書けば intent に書くよう案内して reject する。書くのは provider の接続設定・
+// Event の sink（sinks）・read-only HTTP API の待ち受け（listen.read）。
 package config
 
 import (
@@ -29,12 +29,12 @@ import (
 	"github.com/tjst-t/sakutei/v3/internal/yaml"
 )
 
-// Config はつなぎ方の設定（E-O4：設定は 1 つのファイル）。
+// Config は接続設定（E-O4：設定は 1 つのファイル）。
 type Config struct {
-	Providers map[string]ProviderConfig // provider のインスタンス名 → つなぎ方
-	Sinks     map[string]SinkConfig     // Event の送り先の名前 → つなぎ方（E-H2・E-H3）
-	Read      *ReadListen               // 読み取り HTTP の待ち受け。書かなければ待ち受けない（E-H5）
-	// SecretBackends は秘密の保管先の名前 → つなぎ方（E-G3・E-O2・N-O2）。
+	Providers map[string]ProviderConfig // provider のインスタンス名 → 接続設定
+	Sinks     map[string]SinkConfig     // Event の sink の名前 → 接続設定（E-H2・E-H3）
+	Read      *ReadListen               // read-only HTTP API の待ち受け。書かなければ待ち受けない（E-H5）
+	// SecretBackends は secret backend の名前 → 接続設定（E-G3・E-O2・N-O2）。
 	SecretBackends map[string]SinkConfig
 	// Inputs は外部入力の名前 → 在りか（E-K3・E-P4）。どれを使うか・欠けの
 	// 目安は intent の inputs:。
@@ -57,23 +57,23 @@ type ExpanderConfig struct {
 	Origin core.Origin
 }
 
-// SinkConfig は Event の送り先 1 つ（E-H2・E-H3・N-H2）。
+// SinkConfig は Event の sink 1 つ（E-H2・E-H3・N-H2）。
 type SinkConfig struct {
 	Module   string
 	Settings map[string]any
 	// Streams は送るもの（events・audit、E-H2・E-L1）。書かなければ events だけ。
-	// 秘密の保管先では使わない。
+	// secret backend では使わない。
 	Streams []string
 	Origin  core.Origin
 }
 
-// 送り先に送るもの（sinks.<名前>.streams）。
+// sink に送るもの（sinks.<名前>.streams）。
 const (
-	StreamEvents = "events" // Events の送り出しの列（E-H2・E-H3）
-	StreamAudit  = "audit"  // 監査の鎖（E-L1・N-L1）
+	StreamEvents = "events" // Events の outbox（E-H2・E-H3）
+	StreamAudit  = "audit"  // audit のハッシュチェーン（E-L1・N-L1）
 )
 
-// ReadListen は読み取り HTTP の待ち受け（§5.3、E-H5・E-L3・N-L4）。
+// ReadListen は read-only HTTP API の待ち受け（§5.3、E-H5・E-L3・N-L4）。
 type ReadListen struct {
 	Address string
 	// TLSCert・TLSKey はサーバの証明書と鍵。ClientCA を書けばクライアント証明書を
@@ -86,31 +86,31 @@ type ReadListen struct {
 	Origin    core.Origin
 }
 
-// ProviderConfig は provider のインスタンス 1 つのつなぎ方（E-O4・E-S1・N-S2）。
+// ProviderConfig は provider のインスタンス 1 つの接続設定（E-O4・E-S1・N-S2）。
 type ProviderConfig struct {
 	Module   string         // provider のモジュールの名前
-	Settings map[string]any // モジュールが読む接続先など。範囲は書けない
+	Settings map[string]any // モジュールが読む接続先など。Range は書けない
 	Origin   core.Origin
 }
 
-// intentOnly は intent にだけ書く項目。設定に書けば理由を添えて断る
+// intentOnly は intent にだけ書く field。設定に書けば理由を添えて reject する
 // （不変条件 24、E-I6・E-D2・E-S1）。
 var intentOnly = map[string]string{
-	"ranges":          "範囲",
-	"range":           "範囲",
-	"args":            "範囲",
-	"scope":           "範囲",
-	"prune":           "範囲",
-	"max_drop":        "範囲",
+	"ranges":          "Range",
+	"range":           "Range",
+	"args":            "Range",
+	"scope":           "Range",
+	"prune":           "Range",
+	"max_drop":        "Range",
 	"external_owners": "除外",
 	"exclude":         "除外",
-	"policies":        "方針",
-	"policy_sets":     "方針",
+	"policies":        "Policy",
+	"policy_sets":     "Policy",
 	"resources":       "宣言",
 }
 
-// Load は設定ファイルを読む。形の誤り・知らない項目・intent に書く項目は
-// *core.RejectError で断る。
+// Load は設定ファイルを読む。形の誤り・知らない field・intent に書く field は
+// *core.RejectError で reject する。
 func Load(path string) (*Config, error) {
 	root, err := intent.ReadFile(path)
 	if err != nil {
@@ -126,10 +126,10 @@ func Load(path string) (*Config, error) {
 	unknown := func(parent *yaml.Node, target, key string, allowed []string) {
 		n := &yaml.Node{Line: parent.LineOf(key)}
 		if what, ok := intentOnly[key]; ok {
-			reject(n, target, "%s（%q）はつなぎ方の設定に書けない。intent に書く", what, key)
+			reject(n, target, "%s（%q）は接続設定に書けない。intent に書く", what, key)
 			return
 		}
-		reject(n, target, "知らない項目 %q（書ける項目: %s）", key, strings.Join(allowed, ", "))
+		reject(n, target, "知らない field %q（書ける field: %s）", key, strings.Join(allowed, ", "))
 	}
 
 	cfg := &Config{Providers: map[string]ProviderConfig{}, Sinks: map[string]SinkConfig{}, SecretBackends: map[string]SinkConfig{},
@@ -252,7 +252,7 @@ func sinkStreams(n *yaml.Node, target string, reject rejectFunc) []string {
 		s, _ := it.Scalar.(string)
 		switch {
 		case s != StreamEvents && s != StreamAudit:
-			reject(it, target+".streams", "知らない送るもの %v（%s・%s）", it.Value(), StreamEvents, StreamAudit)
+			reject(it, target+".streams", "知らない stream %v（%s・%s）", it.Value(), StreamEvents, StreamAudit)
 		case seen[s]:
 			reject(it, target+".streams", "%s が 2 回ある", s)
 		default:
@@ -283,11 +283,11 @@ func moduleOf(n *yaml.Node, target, path string, reject rejectFunc, unknown unkn
 				reject(v, target+".settings", "マップを書く")
 				continue
 			}
-			// settings の中身はモジュールが読むが、範囲・除外・方針の
-			// 項目はここでも断る（置き場を intent の 1 つに保つ）。
+			// settings の中身はモジュールが読むが、Range・除外・Policy の
+			// field はここでも reject する（置き場を intent の 1 つに保つ）。
 			for _, sk := range v.Keys {
 				if what, ok := intentOnly[sk]; ok {
-					reject(&yaml.Node{Line: v.LineOf(sk)}, target+".settings", "%s（%q）はつなぎ方の設定に書けない。intent の ranges に書く", what, sk)
+					reject(&yaml.Node{Line: v.LineOf(sk)}, target+".settings", "%s（%q）は接続設定に書けない。intent の ranges に書く", what, sk)
 				}
 			}
 			settings = v.Value().(map[string]any)

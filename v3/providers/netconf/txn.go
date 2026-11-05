@@ -14,32 +14,32 @@
 
 package netconf
 
-// txn.go — commit confirmed を使う 2 段の Apply（core.Transactor、E-B8・E-B9・E-B10・
-// N-B2・不変条件 17）。v2 の apply.go・group.go を新しいコアの口に移した。確かめ
-// （新しい接続で読み直して宣言どおりか・confirm の after）と確定するかの判断は
-// コアの周がする。
+// txn.go — commit confirmed を使う two-phase Apply（core.Transactor、E-B8・E-B9・
+// E-B10・N-B2・不変条件 17）。v2 の apply.go・group.go を新しいコアの interface に
+// 移した。check（新しい接続で読み直して宣言どおりか・confirm の after）と、確定
+// するかの判断はコアの cycle がする。
 //
 // Prepare（台ごと、名前の順に）：
 //
-//  1. 書き込み用のつなぎ方で新しいセッションを開き、機器が :candidate と
+//  1. 書き込み用の接続で新しいセッションを開き、機器が :candidate と
 //     :confirmed-commit（1.0 か 1.1）を持つことを確かめる。無ければ何も送らない。
 //  2. candidate を lock し、running の今の部分木を読み、部分木の置き換え（edit.go）を
 //     candidate に edit-config する。:validate があれば validate。
 //  3. 同じセッションで commit confirmed（confirm-timeout = TxnOptions.Timeout を秒に
 //     切り上げたもの）。commit_flow 1.1 で機器が 1.1 を持てば <persist> を付ける。
-//  4. どこかの台で落ちたら、それまでに準備した台を戻し（Rollback）、落ちた台の
+//  4. どこかの台で失敗したら、それまでに準備した台を戻し（Rollback）、失敗した台の
 //     candidate を捨てて閉じる。
 //
 // Commit は同じセッションで確定の commit（persist なら <persist-id>。セッションが
 // 切れていれば新しいセッションから）。Rollback は candidate を捨て、1.1 の機器には
 // cancel-commit を送り（すぐ戻る）、セッションを閉じる（1.0 の機器はセッションの
-// 終わりで戻す、RFC 6241 §8.4.1）。どちらも呼ばれなければ（Sakutei が落ちても）
+// 終わりで戻す、RFC 6241 §8.4.1）。どちらも呼ばれなければ（Sakutei が停止しても）
 // 機器が confirm-timeout で戻す。
 //
-// 部分木だけに絞ったユーザー（機器の側の NACM、E-B10）で動く：送る rpc は lock・
+// 部分木だけに絞ったユーザー（機器の側の NACM、E-B10）でも動く。送る rpc は lock・
 // unlock（candidate）・get-config（部分木の filter）・edit-config（部分木の置き換え）・
 // validate・commit・cancel-commit・discard-changes・close-session だけ。どれかが
-// access-denied で断られたら、何も確定せずに理由を返す。
+// access-denied で拒否されたら、何も確定せずに理由を返す。
 
 import (
 	"context"
@@ -53,15 +53,15 @@ import (
 	"github.com/tjst-t/sakutei/v3/core"
 )
 
-// applyDeniedHint は Apply の rpc が access-denied で断られたときの説明。
-const applyDeniedHint = "機器が利用者に断った（access-denied）：その部分を書けないか、rpc を実行できない。" +
-	"Sakutei は部分木の中だけを書く。利用者に部分木の読み書きと lock・unlock・get-config・edit-config・validate・commit・cancel-commit・discard-changes の実行を許す（NACM、RFC 8341）。" +
-	"読むのを許されていない部分木は無い（absent）と観測される"
+// applyDeniedHint は Apply の rpc が access-denied で拒否されたときの説明。
+const applyDeniedHint = "機器がユーザーの操作を拒否した（access-denied）。その部分を書けないか、rpc を実行できない。" +
+	"Sakutei は部分木の中だけを書く。ユーザーに部分木の読み書きと lock・unlock・get-config・edit-config・validate・commit・cancel-commit・discard-changes の実行を許可する（NACM、RFC 8341）。" +
+	"読み取りを許可されていない部分木は Absent と観測される"
 
-// Prepare は変更を台ごとに commit confirmed まで当てる。
+// Prepare は変更を台ごとに commit confirmed まで送る。
 func (p *Provider) Prepare(ctx context.Context, _ core.WriteContext, changes []core.Change, opt core.TxnOptions) (core.Txn, error) {
 	if !p.opt.Apply {
-		return nil, errors.New("netconf は観測だけ（settings の apply が無い）。何も当てていない")
+		return nil, errors.New("netconf は観測だけ（settings の apply が無い）。何も Apply していない")
 	}
 	timeout := opt.Timeout
 	if timeout <= 0 {
@@ -108,7 +108,7 @@ type edit struct {
 	d  *decl
 }
 
-// staged は 1 台の Apply のセッション：commit confirmed を送った状態。
+// staged は 1 台の Apply のセッション。commit confirmed を送った状態。
 type staged struct {
 	h       *host
 	s       *Session
@@ -144,7 +144,7 @@ func (p *Provider) stage(ctx context.Context, h *host, edits []edit, seconds int
 	abandon := func(step string, err error) error {
 		tail := "candidate を捨てた。何も確定していない"
 		if derr := s.DiscardChanges(ctx); derr != nil {
-			tail = fmt.Sprintf("何も確定していないが discard-changes に落ちた（%v）。candidate に編集が残るかもしれない", derr)
+			tail = fmt.Sprintf("何も確定していないが discard-changes に失敗した（%v）。candidate に編集が残るかもしれない", derr)
 		}
 		_ = s.Unlock(ctx, "candidate")
 		st.close()
@@ -154,11 +154,11 @@ func (p *Provider) stage(ctx context.Context, h *host, edits []edit, seconds int
 	for _, e := range edits {
 		data, err := s.GetConfig(ctx, e.st.filter)
 		if err != nil {
-			return nil, abandon(e.id.Name+" の running の読み", err)
+			return nil, abandon(e.id.Name+" の running の読み取り", err)
 		}
 		current, err := parseXML(data)
 		if err != nil {
-			return nil, abandon(e.id.Name+" の running の読み", err)
+			return nil, abandon(e.id.Name+" の running の読み取り", err)
 		}
 		current = contentNodes(current)
 		if canonical(onlyDeclaredAttrs(current, e.d.attrs), true, e.st.ordered) == e.d.canon {
@@ -189,7 +189,7 @@ func (p *Provider) stage(ctx context.Context, h *host, edits []edit, seconds int
 			st.release()
 			return nil, abandon("commit confirmed", err)
 		}
-		// 応答が無い：確定したか分からない。1.0 はセッションの終わりで、どれも
+		// 応答が無い。確定したか分からない。1.0 はセッションの終わりで、どれも
 		// confirm-timeout で戻る。
 		st.s.Abort()
 		st.closed = true
@@ -199,7 +199,7 @@ func (p *Provider) stage(ctx context.Context, h *host, edits []edit, seconds int
 	return st, nil
 }
 
-// release は確定・戻し・落ちたあとの印を付ける。
+// release は確定・戻し・失敗のあとに、済んだ印を付ける。
 func (st *staged) release() { st.done = true }
 
 func (st *staged) close() {
@@ -250,12 +250,12 @@ func (st *staged) confirm(ctx context.Context) error {
 	var re *RPCError
 	if errors.As(err, &re) {
 		st.close()
-		return fmt.Errorf("確定の commit を機器が断った（%v）。機器は confirm-timeout で戻す", err)
+		return fmt.Errorf("確定の commit を機器が拒否した（%v）。機器は confirm-timeout で戻す", err)
 	}
 	st.s.Abort()
 	st.closed = true
 	if st.persist != "" {
-		// 1.1 の persist：新しいセッションから確定する。
+		// 1.1 の persist。新しいセッションから確定する。
 		s, oerr := st.h.open(ctx, st.h.write)
 		if oerr == nil {
 			cerr := s.Commit(ctx, st.persist)
@@ -265,7 +265,7 @@ func (st *staged) confirm(ctx context.Context) error {
 			}
 		}
 	}
-	return fmt.Errorf("確定の commit の結果が分からない（%v）。次の周の観測に任せる", err)
+	return fmt.Errorf("確定の commit の結果が分からない（%v）。次の cycle の観測に任せる", err)
 }
 
 // Rollback は台ごとに candidate を捨て、確定を待つ commit confirmed をすぐ戻す。
@@ -295,15 +295,16 @@ func (st *staged) cancel(ctx context.Context) error {
 	if st.s.Has(CapConfirmedCommit11) {
 		err = st.s.CancelCommit(ctx, st.persist)
 	}
-	// candidate の lock はセッションの終わりで放れる（v2 と同じく unlock は送らない）。
+	// candidate の lock はセッションの終わりで外れる（v2 と同じく unlock は送らない）。
 	if st.persist == "" || err == nil {
 		// 1.0 の commit confirmed はセッションの終わりで戻る。
 		st.close()
 		if err != nil {
-			return fmt.Errorf("cancel-commit に落ちた（%v）。機器は confirm-timeout で戻す", err)
+			return fmt.Errorf("cancel-commit に失敗した（%v）。機器は confirm-timeout で戻す", err)
 		}
 		return nil
 	}
 	st.close()
-	return fmt.Errorf("persist の cancel-commit に落ちた（%v）。機器は confirm-timeout で戻す", err)
+	return fmt.Errorf("persist の cancel-commit に失敗した（%v）。機器は confirm-timeout で戻す", err)
+
 }

@@ -36,11 +36,11 @@
 //   - /redfish/v1/Systems/1/Bios と Bios/Settings（qemu-bmc 0.10.0 の Bios を
 //     真似る、#140）: Settings の PATCH（200、本文は Settings）は保留中の変更に
 //     足し、次の起動（Off → On・ForceRestart・GracefulRestart）で今の値に移して
-//     空にする。登録簿（/redfish/v1/Registries の BiosAttributeRegistry）に
+//     空にする。registry（/redfish/v1/Registries の BiosAttributeRegistry）に
 //     無い・読み取り専用・型が違う・選べない値・長すぎる文字列の属性があれば
-//     400 で、何も変えない。qemu-bmc と違い、値は文字列だけでなく数（Integer）
-//     と真偽（Boolean）の属性も持つ。Options.NoBios なら Bios のリンクも無く
-//     404、Options.NoBiosRegistry なら登録簿だけが無い。
+//     400 で、何も変えない。qemu-bmc と違い、値は文字列だけでなく数値（Integer）
+//     と真偽値（Boolean）の属性も持つ。Options.NoBios なら Bios のリンクも無く
+//     404、Options.NoBiosRegistry なら registry だけが無い。
 //   - /redfish/v1/UpdateService・FirmwareInventory・SimpleUpdate・
 //     MultipartHttpPushUri と /redfish/v1/TaskService（#148、update.go）。
 //     qemu-bmc は持たないので、DMTF の Redfish の仕様（DSP0266・UpdateService・
@@ -49,16 +49,16 @@
 // 時刻は Options.Now で差し替えられる（状態の移り変わりは要求を受けたときに
 // その時刻で進めるので、goroutine を持たない）。
 //
-// 試験用の口: SetUnreachable（接続を切って到達不能にする）・SetFailStatus
+// テスト用のメソッド: SetUnreachable（接続を切って到達不能にする）・SetFailStatus
 // （すべての要求に 5xx などを返す）・SetDelay（応答を遅らせる）・
 // SetIgnorePowerActions（電源の Reset に 204 を返すが電源を変えない。qemu-bmc
 // の障害注入 power-action-ignored を真似る、#166）・Requests（受けた要求の記録）・
-// UserCalls（利用者ごとの GET と書き込みの回数）。
+// UserCalls（ユーザーごとの GET と書き込みの回数）。
 //
 // Options.ReadOnlyUsername・ReadOnlyPassword は Redfish の ReadOnly の役割（Login
-// 権限だけ）の利用者（#186）: GET は通し、PATCH・POST・DELETE は 403
+// 権限だけ）のユーザー（#186）: GET は通し、PATCH・POST・DELETE は 403
 // （Base.1.0.InsufficientPrivilege）で何も変えない。qemu-bmc 0.11.0 は役割を
-// 持たない（どの利用者も書ける）ので、これは実機の BMC を真似たもの。
+// 持たない（どのユーザーも書ける）ので、これは実機の BMC を真似たもの。
 package redfishtest
 
 import (
@@ -88,13 +88,13 @@ const (
 	BiosPath         = SystemPath + "/Bios"
 	BiosSettingsPath = BiosPath + "/Settings"
 	RegistriesPath   = "/redfish/v1/Registries"
-	// BiosRegistryID は Bios の AttributeRegistry（登録簿の Id）。
+	// BiosRegistryID は Bios の AttributeRegistry（registry の Id）。
 	BiosRegistryID       = "BiosAttributeRegistry.1.0.0"
 	BiosRegistryFilePath = RegistriesPath + "/BiosAttributeRegistry"
 	BiosRegistryURI      = BiosRegistryFilePath + "/" + BiosRegistryID + ".json"
 )
 
-// BiosAttribute は偽 BMC の Bios の属性の登録簿の 1 行。
+// BiosAttribute は偽 BMC の Bios の属性の registry の 1 行。
 type BiosAttribute struct {
 	Name     string
 	Type     string // Enumeration / String / Integer / Boolean
@@ -105,8 +105,8 @@ type BiosAttribute struct {
 	Default  any
 }
 
-// DefaultBiosAttributes は偽 BMC の Bios の登録簿（qemu-bmc 0.10.0 の一部に、
-// 数と真偽の属性を足したもの）。
+// DefaultBiosAttributes は偽 BMC の Bios の registry（qemu-bmc 0.10.0 の一部に、
+// 数値と真偽値の属性を足したもの）。
 var DefaultBiosAttributes = []BiosAttribute{
 	{Name: "BootMode", Type: "Enumeration", ReadOnly: true, Values: []string{"Uefi", "Bios"}, Default: "Uefi"},
 	{Name: "ProcVirtualization", Type: "Enumeration", Values: []string{"Enabled", "Disabled"}, Default: "Enabled"},
@@ -117,12 +117,12 @@ var DefaultBiosAttributes = []BiosAttribute{
 	{Name: "SriovGlobalEnable", Type: "Boolean", Default: false},
 }
 
-// Options は偽 BMC の初期値。ゼロ値の項目は既定値になる。
+// Options は偽 BMC の初期値。ゼロ値の field は既定値になる。
 type Options struct {
-	// Username・Password は Basic 認証の資格（既定 admin / password）。
+	// Username・Password は Basic 認証の credential（既定 admin / password）。
 	Username string
 	Password string
-	// ReadOnlyUsername・ReadOnlyPassword は ReadOnly の役割の利用者（省略可、
+	// ReadOnlyUsername・ReadOnlyPassword は ReadOnly の役割のユーザー（省略可、
 	// #186）。GET だけを受け付け、ほかは 403。
 	ReadOnlyUsername, ReadOnlyPassword string
 	// PowerState は最初の電源状態（既定 On）。
@@ -152,7 +152,7 @@ type Options struct {
 	MediaFetchDelay time.Duration
 	// NoBios は Bios を持たない BMC（System に Bios のリンクが無く、Bios は 404）。
 	NoBios bool
-	// NoBiosRegistry は Bios はあるが属性の登録簿（/redfish/v1/Registries）が
+	// NoBiosRegistry は Bios はあるが属性の registry（/redfish/v1/Registries）が
 	// 空の BMC。
 	NoBiosRegistry bool
 	// FW の更新（update.go、#148）。
@@ -166,7 +166,7 @@ type Request struct {
 	Method string
 	Path   string
 	Body   string
-	// User は Basic 認証の利用者（無ければ空）。
+	// User は Basic 認証のユーザー（無ければ空）。
 	User string
 }
 
@@ -196,7 +196,7 @@ type Server struct {
 	biosResetPending bool
 	// FW の更新（update.go）。
 	fw fwState
-	// 試験用の口。
+	// テスト用のメソッド。
 	ignoreGraceful bool
 	ignorePower    bool
 	unreachable    bool
@@ -204,7 +204,7 @@ type Server struct {
 	broken         bool
 	delay          time.Duration
 	requests       []Request
-	byUser         map[string]map[string]int // 利用者 → "GET"・"WRITE" → 回数
+	byUser         map[string]map[string]int // ユーザー → "GET"・"WRITE" → 回数
 }
 
 // New は偽 BMC を立てる。終わったら Close する。
@@ -275,7 +275,7 @@ func (s *Server) WriteCAFile(dir string) (string, error) {
 	return p, os.WriteFile(p, s.CAPEM(), 0o600)
 }
 
-// ---- 試験用の口 ----
+// ---- テスト用のメソッド ----
 
 // SetUnreachable は true のあいだ、受けた接続を応答せずに切る（BMC に届かない）。
 func (s *Server) SetUnreachable(v bool) { s.mu.Lock(); s.unreachable = v; s.mu.Unlock() }
@@ -287,7 +287,7 @@ func (s *Server) SetFailStatus(code int) { s.mu.Lock(); s.failStatus = code; s.m
 // （定義に合わない出力、E-B11）。
 func (s *Server) SetBroken(v bool) { s.mu.Lock(); s.broken = v; s.mu.Unlock() }
 
-// SetDelay は応答を d だけ遅らせる（クライアントの時間切れの試験用）。
+// SetDelay は応答を d だけ遅らせる（クライアントのタイムアウトのテスト用）。
 func (s *Server) SetDelay(d time.Duration) { s.mu.Lock(); s.delay = d; s.mu.Unlock() }
 
 // SetIgnoreGraceful は OS が GracefulShutdown に応えないかを決める。
@@ -323,8 +323,8 @@ func (s *Server) SetBiosAttribute(name string, v any) {
 	s.biosAttrs[name] = v
 }
 
-// SetBiosPending は保留中の変更を直接足す（ほかの道具が Settings に書いた、
-// の代役。登録簿では確かめない）。
+// SetBiosPending は保留中の変更を直接足す（ほかのツールが Settings に書いた、
+// の代役。registry では確かめない）。
 func (s *Server) SetBiosPending(attrs map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -400,7 +400,7 @@ func (s *Server) Boots() int {
 	return s.boots
 }
 
-// Requests は受けた要求（到達不能・失敗の口で返したものも含む）の写しを返す。
+// Requests は受けた要求（到達不能・失敗のメソッドで返したものも含む）の写しを返す。
 func (s *Server) Requests() []Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -410,8 +410,8 @@ func (s *Server) Requests() []Request {
 // ClearRequests は要求の記録を消す（UserCalls も）。
 func (s *Server) ClearRequests() { s.mu.Lock(); s.requests, s.byUser = nil, nil; s.mu.Unlock() }
 
-// UserCalls は user（Basic 認証の利用者）で受けた要求の回数（"GET" と、ほかの
-// "WRITE"。断った要求も数える、#186）。
+// UserCalls は user（Basic 認証のユーザー）で受けた要求の回数（"GET" と、ほかの
+// "WRITE"。拒否した要求も数える、#186）。
 func (s *Server) UserCalls(user string) map[string]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -674,7 +674,7 @@ func (s *Server) postInsert(w http.ResponseWriter, body []byte) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// patchBiosSettings は Settings の PATCH を受ける。属性を 1 つでも断れば何も
+// patchBiosSettings は Settings の PATCH を受ける。属性を 1 つでも拒否すれば何も
 // 変えない（qemu-bmc と同じ）。
 func (s *Server) patchBiosSettings(w http.ResponseWriter, body []byte) {
 	var req struct {
@@ -702,7 +702,7 @@ func (s *Server) patchBiosSettings(w http.ResponseWriter, body []byte) {
 	_ = json.NewEncoder(w).Encode(doc)
 }
 
-// checkBiosAttribute は属性 k に v を書けるかを登録簿で確かめ、書けなければ
+// checkBiosAttribute は属性 k に v を書けるかを registry で確かめ、書けなければ
 // 理由を返す。
 func checkBiosAttribute(k string, v any) string {
 	for _, a := range DefaultBiosAttributes {
@@ -740,7 +740,7 @@ func checkBiosAttribute(k string, v any) string {
 	return fmt.Sprintf("The property %s is not in the list of valid properties for the resource.", k)
 }
 
-// biosRegistry は登録簿の文書（AttributeRegistry）。
+// biosRegistry は registry の文書（AttributeRegistry）。
 func biosRegistry() map[string]any {
 	var attrs []any
 	for _, a := range DefaultBiosAttributes {
