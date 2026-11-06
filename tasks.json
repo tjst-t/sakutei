@@ -5460,7 +5460,7 @@
       "number": 233,
       "kind": "task",
       "title": "v3：policy_sets と --policy-set",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5468,7 +5468,7 @@
       "labels": [],
       "body": "docs/core/README.md §3.6・§5.5。いまは intent の最上位の field として reject している。",
       "doneWhen": "--policy-set で選んだ Policy の組が効くことをテストで確かめる。§8.1 から行を消す。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。intent の policy_sets: と --policy-set（daemon・reconcile・plan・status）。Record は組ごとに分け（policy_set.json）、別の組の daemon が同じ Record を使うと断る。組どうしの範囲の重なりは既知の限界として設計書に書いた。",
       "refs": [],
       "threads": [
         {
@@ -5477,8 +5477,8 @@
         }
       ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T04:38:29.813Z",
-      "closedAt": null,
+      "updatedAt": "2026-11-06T05:12:19.647Z",
+      "closedAt": "2026-11-06T05:12:19.647Z",
       "extra": {}
     },
     {
