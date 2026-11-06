@@ -5731,6 +5731,27 @@
       "updatedAt": "2026-11-06T05:25:14.107Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "v3-disruption-overrun",
+      "number": 246,
+      "kind": "task",
+      "title": "v3：disruption の見積もりを超えたときの知らせ（overrun）",
+      "status": "ready",
+      "parent": "v3",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [],
+      "body": "#237 で Procedure の disruption（見積もり・影響・Event `Disruption`）を入れた。見積もりの時間を超えても終わらないときに強めに知らせる部分は、設計書にユースケースとして挙がっているだけで形が決まっていないため、§8.1 の残りの行として残した。",
+      "doneWhen": "disruption の見積もりを超えた Procedure が状態型の Event で知らせられ、終われば resolved になることをテストで確かめる。§8.1 から行を消す。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-11-06T05:35:35.643Z",
+      "updatedAt": "2026-11-06T05:35:35.643Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
