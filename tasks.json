@@ -5549,7 +5549,7 @@
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
-      "priority": "normal",
+      "priority": "low",
       "labels": [],
       "body": "docs/core/README.md §6.1。各 provider が自分で持っている HTTP の処理（TLS・認証・時間切れ・エラーの Unknown への寄せ）を SDK にまとめ、既存の HTTP の provider を移す。",
       "doneWhen": "SDK に HTTP のヘルパーがあり、HTTP を使う provider がそれを使う。契約テストと統合テストが通る。§8.1 から行を消す。",
@@ -5557,7 +5557,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-05T12:38:01.774Z",
+      "updatedAt": "2026-11-06T04:02:30.433Z",
       "closedAt": null,
       "extra": {}
     },
