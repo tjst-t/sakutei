@@ -5581,7 +5581,7 @@
       "number": 243,
       "kind": "task",
       "title": "v3：新しいモジュール ledger・secret/generate・probe",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5591,9 +5591,14 @@
       "doneWhen": "3 つのモジュールがあり、それぞれ契約テストかユニットテストが通る。§8.1 から行を消す。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "842b31fe-c4b4-4859-a4f2-ebe5f6966616",
+          "threadId": "12fb8b5e-6b71-4ba1-b226-afd2fc57b2e3"
+        }
+      ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-05T12:38:01.774Z",
+      "updatedAt": "2026-11-06T04:15:07.213Z",
       "closedAt": null,
       "extra": {}
     },
