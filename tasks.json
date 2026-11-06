@@ -5333,7 +5333,7 @@
       "number": 230,
       "kind": "task",
       "title": "v3：provider のバージョンでの停止と sakutei accept-version",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5343,9 +5343,14 @@
       "doneWhen": "バージョンが変わった cycle で差分なし→自動で受け入れ、差分あり→accept-version まで Apply しないことをテストで確かめる。make check・make test-race が通る。§8.1 から行を消す。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "842b31fe-c4b4-4859-a4f2-ebe5f6966616",
+          "threadId": "12fb8b5e-6b71-4ba1-b226-afd2fc57b2e3"
+        }
+      ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T04:01:43.800Z",
+      "updatedAt": "2026-11-06T04:04:23.368Z",
       "closedAt": null,
       "extra": {}
     },
