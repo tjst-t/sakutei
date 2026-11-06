@@ -5512,7 +5512,7 @@
       "number": 237,
       "kind": "task",
       "title": "v3：Procedure の残り（trigger policy・before_delete、step exec、on_failure の rollback、disruption と Event Disruption）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5520,7 +5520,7 @@
       "labels": [],
       "body": "docs/core/README.md §3.7・§5.2。いまは trigger が on_drift・manual、on_failure は halt だけで、ほかは reject する。",
       "doneWhen": "各 trigger・exec・rollback・disruption がテストで動き、危険な手順は one-shot 実行で進まないことを確かめる。§8.1 から行を消す。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。見積もりを超えたときの知らせは #246 に分けた。",
       "refs": [],
       "threads": [
         {
@@ -5529,8 +5529,8 @@
         }
       ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T05:12:45.873Z",
-      "closedAt": null,
+      "updatedAt": "2026-11-06T05:51:52.249Z",
+      "closedAt": "2026-11-06T05:51:52.249Z",
       "extra": {}
     },
     {
