@@ -5592,7 +5592,7 @@
       "number": 238,
       "kind": "task",
       "title": "v3：Expand の Now",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5600,7 +5600,7 @@
       "labels": [],
       "body": "docs/core/README.md §3.8。Expand の Input に時刻を渡す（cycle の開始時刻で固定し、golden テストで差し替えられるように）。",
       "doneWhen": "Expand のモジュールが Input の Now を読めて、golden テストで時刻を固定できる。§8.1 から行を消す。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [
         {
@@ -5609,8 +5609,8 @@
         }
       ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T05:34:10.907Z",
-      "closedAt": null,
+      "updatedAt": "2026-11-06T06:04:28.499Z",
+      "closedAt": "2026-11-06T06:04:28.499Z",
       "extra": {}
     },
     {
