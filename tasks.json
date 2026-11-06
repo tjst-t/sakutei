@@ -5667,13 +5667,13 @@
       "labels": [
         "bug"
       ],
-      "body": "daemon として試したときに見つけた。freeze・unfreeze の直後の cycle が temp-policies/ を書き換え（期限切れ・終了の印など）、daemon の見張り（v3/daemon の watch。approvals/・temp-policies/・commands/ の名前・大きさ・更新時刻のハッシュを見る）がそれを外からの書き込みと取って、interval を待たずにもう 1 cycle 回る。1 回で止まり、結果も変わらない（余分な CycleDone が 1 つ出るだけ）。\n\n直し方の案：cycle が自分で書いた後のハッシュを見張りの基準に取り込む。ただし cycle の途中に人が書いたものを取りこぼさないこと（取りこぼすくらいなら今のままでよい）。",
+      "body": "daemon として試したときに見つけた。freeze・unfreeze の直後の cycle が temp-policies/ を書き換え（期限切れ・終了の印など）、daemon の見張り（v3/daemon の watch。approvals/・temp-policies/・commands/ の名前・大きさ・更新時刻のハッシュを見る）がそれを外からの書き込みと取って、interval を待たずにもう 1 cycle 回る。1 回で止まり、結果も変わらない（余分な CycleDone が 1 つ出るだけ）。\n\n直し方の案：cycle が自分で書いた後のハッシュを見張りの基準に取り込む。ただし cycle の途中に人が書いたものを取りこぼさないこと（取りこぼすくらいなら今のままでよい）。\n\n関連：`v3/daemon` の `TestWake` が race 付きでまれに落ちる（-count=10 を 3 回で 1 回、「起こしていないのに cycle 5 を回した」）。intent の書き換え・SIGHUP のあとに余分な cycle が 1 つ回っている。同じ見張りの基準の取り方が原因かを確かめ、直すときに一緒に直す。",
       "doneWhen": "freeze → unfreeze のあとに余分な cycle が回らないことを daemon のテストで確かめる。cycle の途中に人が書いた approve で次の cycle が起きることも確かめる。",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-11-05T12:41:04.334Z",
-      "updatedAt": "2026-11-05T12:41:04.334Z",
+      "updatedAt": "2026-11-06T04:39:33.876Z",
       "closedAt": null,
       "extra": {}
     }
