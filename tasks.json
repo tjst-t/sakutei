@@ -5538,12 +5538,14 @@
       "number": 239,
       "kind": "task",
       "title": "v3：接続設定の max_concurrent",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "needs-decision"
+      ],
       "body": "docs/core/README.md §5.6。いまは未知の field として reject する。",
       "doneWhen": "同じ接続先への同時の呼び出しが max_concurrent を超えないことをテストで確かめる。§8.1 から行を消す。",
       "resolution": null,
@@ -5555,7 +5557,7 @@
         }
       ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T05:32:41.189Z",
+      "updatedAt": "2026-11-06T05:34:22.982Z",
       "closedAt": null,
       "extra": {}
     },
