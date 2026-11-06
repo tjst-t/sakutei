@@ -5664,7 +5664,7 @@
       "number": 244,
       "kind": "task",
       "title": "v3：daemon が cycle 自身の書き込み（temp-policies/ など）で 1 回余分に wake する",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5676,9 +5676,14 @@
       "doneWhen": "freeze → unfreeze のあとに余分な cycle が回らないことを daemon のテストで確かめる。cycle の途中に人が書いた approve で次の cycle が起きることも確かめる。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "842b31fe-c4b4-4859-a4f2-ebe5f6966616",
+          "threadId": "12fb8b5e-6b71-4ba1-b226-afd2fc57b2e3"
+        }
+      ],
       "createdAt": "2026-11-05T12:41:04.334Z",
-      "updatedAt": "2026-11-06T04:39:44.254Z",
+      "updatedAt": "2026-11-06T04:59:56.446Z",
       "closedAt": null,
       "extra": {}
     }
