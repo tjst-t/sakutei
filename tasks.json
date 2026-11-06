@@ -5379,7 +5379,7 @@
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
-      "priority": "normal",
+      "priority": "high",
       "labels": [],
       "body": "docs/core/README.md §2.1・§5.5。Record を読んで daemon の /status と同じ内容を出す CLI。いまは daemon の /status だけ。",
       "doneWhen": "sakutei status が daemon 無しでも Record から状態を出し、/status と同じ内容になることをテストで確かめる。§8.1 から行を消す。",
@@ -5387,7 +5387,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-05T12:38:01.774Z",
+      "updatedAt": "2026-11-06T04:02:19.138Z",
       "closedAt": null,
       "extra": {}
     },
