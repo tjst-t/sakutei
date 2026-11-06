@@ -5455,7 +5455,7 @@
       "number": 233,
       "kind": "task",
       "title": "v3：policy_sets と --policy-set",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5465,9 +5465,14 @@
       "doneWhen": "--policy-set で選んだ Policy の組が効くことをテストで確かめる。§8.1 から行を消す。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "842b31fe-c4b4-4859-a4f2-ebe5f6966616",
+          "threadId": "12fb8b5e-6b71-4ba1-b226-afd2fc57b2e3"
+        }
+      ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-05T12:38:01.774Z",
+      "updatedAt": "2026-11-06T04:38:29.813Z",
       "closedAt": null,
       "extra": {}
     },
