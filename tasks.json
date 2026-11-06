@@ -5696,6 +5696,29 @@
       "updatedAt": "2026-11-06T04:59:56.446Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "v3-record-writecommand",
+      "number": 245,
+      "kind": "task",
+      "title": "v3：record.WriteCommand が最終の名前で空のファイルを先に作る",
+      "status": "ready",
+      "parent": "v3",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "bug"
+      ],
+      "body": "#244 の作業で見つけた。`record.WriteCommand` は commands/ の下に最終の名前で空のファイルを作ってから中身を書くため、その間に daemon が起きると、cycle が空の依頼を読んで失敗しうる。ほかの依頼の置き場と同じく、一時ファイルに書いてから名前を付け替える形にする。",
+      "doneWhen": "WriteCommand が一時ファイル＋rename で書き、書きかけの依頼を cycle が読まないことをテストで確かめる。make check と make test-race が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-11-06T05:25:14.107Z",
+      "updatedAt": "2026-11-06T05:25:14.107Z",
+      "closedAt": null,
+      "extra": {}
     }
   ]
 }
