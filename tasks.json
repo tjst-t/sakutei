@@ -5714,7 +5714,7 @@
       "number": 245,
       "kind": "task",
       "title": "v3：record.WriteCommand が最終の名前で空のファイルを先に作る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5726,9 +5726,14 @@
       "doneWhen": "WriteCommand が一時ファイル＋rename で書き、書きかけの依頼を cycle が読まないことをテストで確かめる。make check と make test-race が通る。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "842b31fe-c4b4-4859-a4f2-ebe5f6966616",
+          "threadId": "12fb8b5e-6b71-4ba1-b226-afd2fc57b2e3"
+        }
+      ],
       "createdAt": "2026-11-06T05:25:14.107Z",
-      "updatedAt": "2026-11-06T05:25:14.107Z",
+      "updatedAt": "2026-11-06T05:52:13.770Z",
       "closedAt": null,
       "extra": {}
     },
