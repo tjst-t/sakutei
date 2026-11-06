@@ -5586,7 +5586,7 @@
       "number": 243,
       "kind": "task",
       "title": "v3：新しいモジュール ledger・secret/generate・probe",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5594,7 +5594,7 @@
       "labels": [],
       "body": "docs/core/README.md §7.1。いまは無く、到達の確認は check(<名前>)（cli.WithCheck）か、ほかの provider の観測で書いている。",
       "doneWhen": "3 つのモジュールがあり、それぞれ契約テストかユニットテストが通る。§8.1 から行を消す。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。ledger（観測だけ、verified_at と since_verified）・secret/generate（作るだけで上書きしない、rotate は破壊的な Invoke）・probe（tcp・ssh・http、拒否は reachable false、時間切れは Unknown）を builtin に組み込んだ。",
       "refs": [],
       "threads": [
         {
@@ -5603,8 +5603,8 @@
         }
       ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T04:15:07.213Z",
-      "closedAt": null,
+      "updatedAt": "2026-11-06T04:38:05.766Z",
+      "closedAt": "2026-11-06T04:38:05.766Z",
       "extra": {}
     },
     {
