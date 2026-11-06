@@ -5570,7 +5570,7 @@
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
-      "priority": "normal",
+      "priority": "low",
       "labels": [],
       "body": "docs/core/README.md §6.2。いまは観測の並び・失敗・ineffective Apply だけ注入できる。",
       "doneWhen": "fake provider で Observe・Apply の遅さを注入でき、時間切れ・settle のテストに使える。§8.1 から行を消す。",
@@ -5578,7 +5578,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-05T12:38:01.774Z",
+      "updatedAt": "2026-11-06T04:02:39.159Z",
       "closedAt": null,
       "extra": {}
     },
