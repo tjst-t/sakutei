@@ -5408,7 +5408,7 @@
       "number": 231,
       "kind": "task",
       "title": "v3：原因の 3 分類（宣言・外部入力・ずれ）と intent_revision",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5416,7 +5416,7 @@
       "labels": [],
       "body": "docs/core/README.md §2.1 Phase 4・§3.8・§5.1。Expand の入力と出力のハッシュ、`--expect-revision`、audit の `cause`・`intent_revision` を入れる。いまは原因を付けない。",
       "doneWhen": "変更ごとに cause が 3 分類のどれかで audit に残り、--expect-revision が違えば止まることをテストで確かめる。§8.1 から行を消す。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。",
       "refs": [],
       "threads": [
         {
@@ -5425,8 +5425,8 @@
         }
       ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T04:49:08.583Z",
-      "closedAt": null,
+      "updatedAt": "2026-11-06T05:23:51.341Z",
+      "closedAt": "2026-11-06T05:23:51.341Z",
       "extra": {}
     },
     {
