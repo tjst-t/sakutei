@@ -5333,7 +5333,7 @@
       "number": 230,
       "kind": "task",
       "title": "v3：provider のバージョンでの停止と sakutei accept-version",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5341,7 +5341,7 @@
       "labels": [],
       "body": "docs/core/README.md §3.3・§3.6・§5.4・不変条件 23。marks に provider_versions を記録し、バージョンが変わった cycle は止める。その cycle に差分が出なければ自動で受け入れ、出たら `sakutei accept-version` まで止める。いまはバージョンを記録も比較もしない。",
       "doneWhen": "バージョンが変わった cycle で差分なし→自動で受け入れ、差分あり→accept-version まで Apply しないことをテストで確かめる。make check・make test-race が通る。§8.1 から行を消す。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。marks の provider_versions、バージョンが変わった cycle の停止（差分なしなら自動で受け入れ）、sakutei accept-version（commands/ 経由、audit の version.accept）。新しい Record でも差分の出る最初の cycle は受け入れを待つ（§5.1）。",
       "refs": [],
       "threads": [
         {
@@ -5350,8 +5350,8 @@
         }
       ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T04:04:23.368Z",
-      "closedAt": null,
+      "updatedAt": "2026-11-06T04:48:33.538Z",
+      "closedAt": "2026-11-06T04:48:33.538Z",
       "extra": {}
     },
     {
