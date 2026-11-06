@@ -5371,6 +5371,29 @@
       "extra": {}
     },
     {
+      "id": "v3-nftables-classifier-base-chain-policy",
+      "number": 236,
+      "kind": "task",
+      "title": "v3：nftables の Classifier（base chain の作成・policy の変更を破壊的に数える）",
+      "status": "ready",
+      "parent": "v3",
+      "dependsOn": [
+        "v3-fieldspec-destructive-field"
+      ],
+      "milestone": null,
+      "priority": "high",
+      "labels": [],
+      "body": "docs/core/README.md §7.1。v2 の #179 と同じ守り。いまの nftables は Classifier を持たない。",
+      "doneWhen": "base chain の作成・type/hook/priority/policy の変更・削除が budget に数えられ承認を通ることをテストで確かめる。§8.1 から行を消す。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-11-05T12:38:01.774Z",
+      "updatedAt": "2026-11-06T04:02:00.409Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "v3-3-intent-revision",
       "number": 231,
       "kind": "task",
@@ -5451,29 +5474,6 @@
       "threads": [],
       "createdAt": "2026-11-05T12:38:01.774Z",
       "updatedAt": "2026-11-05T12:38:01.774Z",
-      "closedAt": null,
-      "extra": {}
-    },
-    {
-      "id": "v3-nftables-classifier-base-chain-policy",
-      "number": 236,
-      "kind": "task",
-      "title": "v3：nftables の Classifier（base chain の作成・policy の変更を破壊的に数える）",
-      "status": "ready",
-      "parent": "v3",
-      "dependsOn": [
-        "v3-fieldspec-destructive-field"
-      ],
-      "milestone": null,
-      "priority": "high",
-      "labels": [],
-      "body": "docs/core/README.md §7.1。v2 の #179 と同じ守り。いまの nftables は Classifier を持たない。",
-      "doneWhen": "base chain の作成・type/hook/priority/policy の変更・削除が budget に数えられ承認を通ることをテストで確かめる。§8.1 から行を消す。",
-      "resolution": null,
-      "refs": [],
-      "threads": [],
-      "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T04:02:00.409Z",
       "closedAt": null,
       "extra": {}
     },
