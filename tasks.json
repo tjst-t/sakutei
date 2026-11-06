@@ -5359,7 +5359,7 @@
       "number": 235,
       "kind": "task",
       "title": "v3：FieldSpec.Destructive（field ごとの破壊的な変更の印）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5369,9 +5369,14 @@
       "doneWhen": "FieldSpec.Destructive の変更が budget と承認を通ることをテストで確かめる、または設計書を今の実装に合わせて直す。§8.1 から行を消す。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "842b31fe-c4b4-4859-a4f2-ebe5f6966616",
+          "threadId": "12fb8b5e-6b71-4ba1-b226-afd2fc57b2e3"
+        }
+      ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T04:01:52.283Z",
+      "updatedAt": "2026-11-06T04:04:30.202Z",
       "closedAt": null,
       "extra": {}
     },
