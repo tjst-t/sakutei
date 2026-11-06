@@ -5534,7 +5534,7 @@
       "number": 242,
       "kind": "task",
       "title": "v3：dnszone の soa_serial: keep",
-      "status": "in-progress",
+      "status": "done",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
@@ -5542,7 +5542,7 @@
       "labels": [],
       "body": "docs/core/README.md §7.1（v2 の #70 と同じ）。いまはシリアルを必ず上げる。",
       "doneWhen": "soa_serial: keep でシリアルを上げないことをテストで確かめる。§8.1 から行を消す。",
-      "resolution": null,
+      "resolution": "main に取り込んだ。soa_serial は dns/record の field（bump が既定・keep）。sakutei-migrate も v2 の設定を変換する。",
       "refs": [],
       "threads": [
         {
@@ -5551,8 +5551,8 @@
         }
       ],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-06T04:04:52.760Z",
-      "closedAt": null,
+      "updatedAt": "2026-11-06T04:14:41.409Z",
+      "closedAt": "2026-11-06T04:14:41.409Z",
       "extra": {}
     },
     {
