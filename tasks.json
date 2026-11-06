@@ -5337,7 +5337,7 @@
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
-      "priority": "normal",
+      "priority": "high",
       "labels": [],
       "body": "docs/core/README.md §3.3・§3.6・§5.4・不変条件 23。marks に provider_versions を記録し、バージョンが変わった cycle は止める。その cycle に差分が出なければ自動で受け入れ、出たら `sakutei accept-version` まで止める。いまはバージョンを記録も比較もしない。",
       "doneWhen": "バージョンが変わった cycle で差分なし→自動で受け入れ、差分あり→accept-version まで Apply しないことをテストで確かめる。make check・make test-race が通る。§8.1 から行を消す。",
@@ -5345,7 +5345,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-05T12:38:01.774Z",
+      "updatedAt": "2026-11-06T04:01:43.800Z",
       "closedAt": null,
       "extra": {}
     },
