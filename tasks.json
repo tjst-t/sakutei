@@ -5659,11 +5659,11 @@
       "number": 244,
       "kind": "task",
       "title": "v3：daemon が cycle 自身の書き込み（temp-policies/ など）で 1 回余分に wake する",
-      "status": "backlog",
+      "status": "ready",
       "parent": "v3",
       "dependsOn": [],
       "milestone": null,
-      "priority": "low",
+      "priority": "normal",
       "labels": [
         "bug"
       ],
@@ -5673,7 +5673,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-11-05T12:41:04.334Z",
-      "updatedAt": "2026-11-06T04:39:33.876Z",
+      "updatedAt": "2026-11-06T04:39:44.254Z",
       "closedAt": null,
       "extra": {}
     }
