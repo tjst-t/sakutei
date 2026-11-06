@@ -5461,9 +5461,11 @@
       "title": "v3：nftables の Classifier（base chain の作成・policy の変更を破壊的に数える）",
       "status": "ready",
       "parent": "v3",
-      "dependsOn": [],
+      "dependsOn": [
+        "v3-fieldspec-destructive-field"
+      ],
       "milestone": null,
-      "priority": "normal",
+      "priority": "high",
       "labels": [],
       "body": "docs/core/README.md §7.1。v2 の #179 と同じ守り。いまの nftables は Classifier を持たない。",
       "doneWhen": "base chain の作成・type/hook/priority/policy の変更・削除が budget に数えられ承認を通ることをテストで確かめる。§8.1 から行を消す。",
@@ -5471,7 +5473,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-11-05T12:38:01.774Z",
-      "updatedAt": "2026-11-05T12:38:01.774Z",
+      "updatedAt": "2026-11-06T04:02:00.409Z",
       "closedAt": null,
       "extra": {}
     },
